@@ -1,3 +1,6 @@
+import { closestCenter, DndContext, type DragEndEvent } from '@dnd-kit/core'
+import { arrayMove, SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
 import { useStore } from '@nanostores/react'
 import { type ComponentProps, memo, type ReactNode, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
@@ -19,8 +22,11 @@ import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { cn } from '@/lib/utils'
 import {
   $statusbarHiddenIds,
+  $statusbarItemOrder,
   isStatusbarLayoutDefault,
+  orderStatusbarItems,
   resetStatusbarLayout,
+  setStatusbarItemOrder,
   setStatusbarItemVisible,
   toggleStatusbarVisible
 } from '@/store/statusbar-prefs'
@@ -92,6 +98,9 @@ interface StatusbarControlsProps extends ComponentProps<'footer'> {
 export function StatusbarControls({ className, leftItems = [], items = [], ...props }: StatusbarControlsProps) {
   const navigate = useNavigate()
   const hiddenIds = useStore($statusbarHiddenIds)
+  const itemOrder = useStore($statusbarItemOrder)
+  const orderedLeftItems = useMemo(() => orderStatusbarItems(leftItems, itemOrder.left), [itemOrder.left, leftItems])
+  const orderedItems = useMemo(() => orderStatusbarItems(items, itemOrder.right), [itemOrder.right, items])
 
   const visible = (item: StatusbarItem) =>
     !item.hidden && (item.lockedVisible || !item.toggleLabel || !hiddenIds.includes(item.id))
@@ -112,18 +121,18 @@ export function StatusbarControls({ className, leftItems = [], items = [], ...pr
               horizontal scrollbar across the bottom of the window. Items already
               `truncate` their labels, so clipping is the right behavior. */}
           <div className="flex min-w-0 items-stretch gap-0.5 overflow-x-clip">
-            {leftItems.filter(visible).map(item => (
+            {orderedLeftItems.filter(visible).map(item => (
               <StatusbarItemView item={item} key={`left:${item.id}`} navigate={navigate} />
             ))}
           </div>
           <div className="flex min-w-0 items-stretch gap-0.5 overflow-x-clip">
-            {items.filter(visible).map(item => (
+            {orderedItems.filter(visible).map(item => (
               <StatusbarItemView item={item} key={`right:${item.id}`} navigate={navigate} />
             ))}
           </div>
         </footer>
       </ContextMenuTrigger>
-      <StatusbarVisibilityMenu hiddenIds={hiddenIds} items={items} leftItems={leftItems} />
+      <StatusbarVisibilityMenu hiddenIds={hiddenIds} items={orderedItems} leftItems={orderedLeftItems} />
     </ContextMenu>
   )
 }
@@ -143,50 +152,73 @@ function StatusbarVisibilityMenu({
 }) {
   const { t } = useI18n()
   const copy = t.shell.statusbar
+  const itemOrder = useStore($statusbarItemOrder)
 
   // Deduped by id: an item can legitimately appear in both clusters across
   // renders (contributions move sides), and a repeated checkbox would let one
   // row's toggle silently contradict the other's.
-  const toggles = useMemo(() => {
+  const toggleGroups = useMemo(() => {
     const seen = new Set<string>()
 
-    return [...leftItems, ...items].filter(item => {
-      if (!item.toggleLabel || seen.has(item.id)) {
-        return false
-      }
+    const collect = (group: readonly StatusbarItem[]) =>
+      group.filter(item => {
+        if (!item.toggleLabel || seen.has(item.id)) {
+          return false
+        }
 
-      seen.add(item.id)
+        seen.add(item.id)
 
-      return true
-    })
+        return true
+      })
+
+    return { left: collect(leftItems), right: collect(items) }
   }, [items, leftItems])
+
+  const hasToggles = toggleGroups.left.length + toggleGroups.right.length > 0
+
+  const reorder = (side: StatusbarItemSide, event: DragEndEvent) => {
+    const group = toggleGroups[side]
+
+    if (!event.over || event.active.id === event.over.id) {
+      return
+    }
+
+    const from = group.findIndex(item => item.id === event.active.id)
+    const to = group.findIndex(item => item.id === event.over?.id)
+
+    if (from >= 0 && to >= 0) {
+      setStatusbarItemOrder(
+        side,
+        arrayMove(
+          group.map(item => item.id),
+          from,
+          to
+        )
+      )
+    }
+  }
 
   return (
     <ContextMenuContent className="w-52">
-      {toggles.length > 0 && (
+      {hasToggles && (
         <>
           <ContextMenuLabel>{copy.customizeTitle}</ContextMenuLabel>
           <ContextMenuSeparator />
-          {toggles.map(item => (
-            <ContextMenuCheckboxItem
-              checked={item.lockedVisible || !hiddenIds.includes(item.id)}
-              disabled={item.lockedVisible}
-              key={item.id}
-              onCheckedChange={checked => setStatusbarItemVisible(item.id, checked)}
-              // Radix closes the menu on select; keep it open so several items can
-              // be toggled in one pass (this is a preferences surface, not a
-              // command list).
-              onSelect={event => event.preventDefault()}
-            >
-              <span className="truncate">{item.toggleLabel}</span>
-            </ContextMenuCheckboxItem>
+          {(['left', 'right'] as const).map(side => (
+            <DndContext collisionDetection={closestCenter} key={side} onDragEnd={event => reorder(side, event)}>
+              <SortableContext items={toggleGroups[side].map(item => item.id)} strategy={verticalListSortingStrategy}>
+                {toggleGroups[side].map(item => (
+                  <SortableStatusbarVisibilityItem hiddenIds={hiddenIds} item={item} key={item.id} />
+                ))}
+              </SortableContext>
+            </DndContext>
           ))}
           <ContextMenuSeparator />
           {/* Disabled rather than hidden when nothing is customized: the row is
               also how you find out there IS a shipped layout to get back to.
               Groups with the hide row below — both act on the bar, not an item. */}
           <ContextMenuItem
-            disabled={isStatusbarLayoutDefault(hiddenIds)}
+            disabled={isStatusbarLayoutDefault(hiddenIds, itemOrder)}
             onSelect={event => {
               event.preventDefault()
               resetStatusbarLayout()
@@ -201,6 +233,39 @@ function StatusbarVisibilityMenu({
         <StatusbarHideHint />
       </ContextMenuItem>
     </ContextMenuContent>
+  )
+}
+
+function SortableStatusbarVisibilityItem({ hiddenIds, item }: { hiddenIds: readonly string[]; item: StatusbarItem }) {
+  const { t } = useI18n()
+  const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({ id: item.id })
+
+  return (
+    <ContextMenuCheckboxItem
+      aria-label={item.toggleLabel}
+      checked={item.lockedVisible || !hiddenIds.includes(item.id)}
+      disabled={item.lockedVisible}
+      onCheckedChange={checked => setStatusbarItemVisible(item.id, checked)}
+      onSelect={event => event.preventDefault()}
+      ref={setNodeRef}
+      style={{
+        opacity: isDragging ? 0.5 : undefined,
+        transform: CSS.Transform.toString(transform),
+        transition
+      }}
+    >
+      {/* Keeping the drag activator off the checkbox preserves one-click
+          visibility toggles while making the full menu row reorderable. */}
+      <span
+        {...attributes}
+        {...listeners}
+        aria-label={t.sidebar.projects.reorder(item.toggleLabel ?? item.id)}
+        className="-ml-0.5 mr-1 cursor-grab text-(--ui-text-quaternary) active:cursor-grabbing"
+      >
+        ⠿
+      </span>
+      <span className="truncate">{item.toggleLabel}</span>
+    </ContextMenuCheckboxItem>
   )
 }
 

@@ -533,17 +533,36 @@ class Nodejs(_BionicDebArm, BinaryPackage, DebPackage):
         Keep this out of verify(): doctor/status checks call verify and must
         never gain permission to install host packages.
         """
-        if target != current_target() or not target.startswith("linux") or "libatomic.so.1" not in reason:
+        if target != current_target() or not target.startswith("linux"):
             return reason, ""
-        from pm.libatomic import try_install_libatomic
+        if "libatomic.so.1" in reason:
+            from pm.libatomic import try_install_libatomic
 
-        installed, remedy = try_install_libatomic()
-        if not installed:
-            return reason, remedy
-        retried = self.verify(entry, target)
-        if "libatomic.so.1" in retried:
-            return retried, "the libatomic package installed, but Node still cannot load libatomic.so.1; check the loader path"
-        return retried, ""
+            installed, remedy = try_install_libatomic()
+            if not installed:
+                return reason, remedy
+            retried = self.verify(entry, target)
+            if "libatomic.so.1" in retried:
+                return retried, "the libatomic package installed, but Node still cannot load libatomic.so.1; check the loader path"
+            return retried, ""
+        if _missing_cxx_symbols(reason):
+            # libstdc++ is a core system library: upgrading it unattended can
+            # break the host, so diagnose with an actionable remedy instead of
+            # repairing (#137491).
+            return reason, (
+                "the Node.js binary needs a newer libstdc++ than this system provides "
+                "(missing C++ symbols); update the system's C++ runtime "
+                "(e.g. `sudo apt update && sudo apt install libstdc++6`) and re-run the installer"
+            )
+        return reason, ""
+
+
+def _missing_cxx_symbols(reason: str) -> bool:
+    """True when the loader failed on C++ ABI symbols: the Node.js binary was
+    built against a newer libstdc++ than the host provides (#137491)."""
+    loader_failed = "symbol not found" in reason or "undefined symbol" in reason
+    cxx_marker = any(marker in reason for marker in ("_ZNSt", "_ZSt", "GLIBCXX", "CXXABI"))
+    return loader_failed and cxx_marker
 
 
 @register

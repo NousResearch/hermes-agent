@@ -18,7 +18,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from agent.redact import redact_for_egress
 
-from agent.memory_caller_scope import caller_scope, claim_instance, in_owner_home, refused_tool_message
+from agent.memory_caller_scope import bound_scope, caller_scope, claim_instance, in_owner_home, refused_tool_message
 # Moved to agent.memory_context; still importable here because agent.memory_manager is a public
 # module for plugins (hermes_cli/plugin_validate_private_imports.py).
 from agent.memory_context import StreamingContextScrubber, build_memory_context_block, sanitize_context
@@ -251,6 +251,7 @@ class MemoryManager:
         }
         # The profile ``initialize_all`` bound the providers to; tool calls must come from it (#140058).
         self._bound_scope: Optional[dict[str, Any]] = None
+        self._tool_call_keywords_cache: dict[int, Optional[frozenset[str]]] = {}
 
     def _each_provider(self, label: str, call: Callable[[MemoryProvider], Any], *, level: int = logging.DEBUG,
                        providers: Optional[list[MemoryProvider]] = None, exc_info: bool = False) -> list[Any]:
@@ -269,7 +270,17 @@ class MemoryManager:
         for (#140058; see ``agent/memory_caller_scope.py``). Nothing to reach, nothing to refuse."""
         return not self._providers or caller_scope(self._bound_scope, f"hook {hook}") is not None
 
+    def _tool_call_keywords(self, provider: MemoryProvider) -> Optional[frozenset[str]]:
+        """The keywords ``provider.handle_tool_call`` declares; None when it takes any (``**kwargs``, or
+        a signature that can't be read). Worked out once per provider, not on every tool call."""
+        if id(provider) not in self._tool_call_keywords_cache:
+            params = _signature_params(provider.handle_tool_call)
+            self._tool_call_keywords_cache[id(provider)] = (
+                None if params is None or _has_var_kwargs(params) else frozenset(params))
+        return self._tool_call_keywords_cache[id(provider)]
+
     def _drop_provider(self, provider: MemoryProvider) -> None:
+        self._tool_call_keywords_cache.pop(id(provider), None)
         self._providers = [p for p in self._providers if p is not provider]
         self._tool_to_provider = {t: p for t, p in self._tool_to_provider.items() if p is not provider}
         self._has_external = any(p.name != "builtin" for p in self._providers)
@@ -565,9 +576,9 @@ class MemoryManager:
             return tool_error(refused_tool_message(tool_name))
         kwargs = {**kwargs, **scope}
         # A provider written against ``handle_tool_call(tool_name, args)`` gets only what it declares.
-        params = _signature_params(provider.handle_tool_call)
-        if params is not None and not _has_var_kwargs(params):
-            kwargs = {k: v for k, v in kwargs.items() if k in params}
+        accepted = self._tool_call_keywords(provider)
+        if accepted is not None:
+            kwargs = {k: v for k, v in kwargs.items() if k in accepted}
         args = _redact_for_provider(args)
         from hermes_cli.observability.shared_metrics_loop import record_provider_memory_call
         try:
@@ -870,7 +881,7 @@ class MemoryManager:
         if "hermes_home" not in kwargs:
             from hermes_constants import get_hermes_home
             kwargs["hermes_home"] = str(get_hermes_home())
-        self._bound_scope = {key: kwargs.get(key) for key in ("hermes_home", "agent_identity")}
+        self._bound_scope = bound_scope(kwargs["hermes_home"], kwargs.get("agent_identity"))
         # One instance, one profile: never rebind an instance another profile's manager bound (#140058).
         for provider in [p for p in self._providers if p.name != "builtin"]:
             if not claim_instance(provider, kwargs["hermes_home"]):

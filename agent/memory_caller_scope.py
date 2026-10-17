@@ -62,11 +62,17 @@ def _refuse(label: str, reason: str, caller_home: Any, bound_home: Any, multiple
                    label, CALLER_PROFILE_REFUSAL, reason, caller_home, bound_home, multiplexed)
 
 
+def bound_scope(hermes_home: Any, agent_identity: Any = None) -> dict[str, Any]:
+    """What ``initialize_all`` records for ``caller_scope``: the bound home's key is resolved once
+    here, so each call only resolves the caller's."""
+    return {"hermes_home": hermes_home, "agent_identity": agent_identity, "home_key": _home_key(hermes_home)}
+
+
 def caller_scope(bound: Optional[dict[str, Any]], label: str) -> Optional[dict[str, Any]]:
     """Provider kwargs naming the calling profile, or None when the call/hook must be refused.
 
-    ``bound`` is what ``initialize_all`` recorded (``hermes_home``, ``agent_identity``); ``label``
-    names the call in the log (``tool <name>`` / ``hook <name>``)."""
+    ``bound`` is what ``initialize_all`` recorded (``bound_scope``); ``label`` names the call in the
+    log (``tool <name>`` / ``hook <name>``)."""
     from agent.secret_scope import is_multiplex_active
     bound = bound or {}
     bound_home = bound.get("hermes_home")
@@ -84,7 +90,7 @@ def caller_scope(bound: Optional[dict[str, Any]], label: str) -> Optional[dict[s
             return None
         return {"hermes_home": str(caller_home)}
     caller_key = _home_key(caller_home)
-    if caller_key is None or caller_key != _home_key(bound_home):
+    if caller_key is None or caller_key != (bound.get("home_key") or _home_key(bound_home)):
         _refuse(label, "the caller's profile is not the one its provider was initialized for",
                 caller_home, bound_home, multiplexed)
         return None

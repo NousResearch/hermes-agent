@@ -333,6 +333,23 @@ def test_multiplexed_lifecycle_hook_without_a_caller_scope_is_refused(homes, hoo
     assert _InstanceScopedProvider.events == []
 
 
+def test_tool_calls_reuse_what_initialize_bound(homes, monkeypatch):
+    # Per call, only the caller's home is resolved: the bound home's key and the provider's
+    # handle_tool_call signature are worked out once per manager, not on every call.
+    from agent import memory_caller_scope, memory_manager
+    alpha_home, _ = homes
+    alpha = _manager(alpha_home)
+    keys, signatures = [], []
+    real_key, real_signature = memory_caller_scope._home_key, memory_manager._signature_params
+    monkeypatch.setattr(memory_caller_scope, "_home_key", lambda home: keys.append(home) or real_key(home))
+    monkeypatch.setattr(memory_manager, "_signature_params", lambda fn: signatures.append(fn) or real_signature(fn))
+    with _Scope(alpha_home):
+        for _ in range(3):
+            assert json.loads(alpha.handle_tool_call(_HOOK_TOOL, {})) == {"ok": True}
+    assert keys == [str(alpha_home)] * 3, keys
+    assert len(signatures) <= 1, signatures
+
+
 def test_refused_checkpoint_compression_fails_closed(homes):
     alpha_home, beta_home = homes
     alpha = _manager(alpha_home)

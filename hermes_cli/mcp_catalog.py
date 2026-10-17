@@ -627,10 +627,9 @@ def _apply_tool_selection(
     name = entry.name
     configure_hint = f"`hermes mcp configure {name}`"
 
-    # Exclude-mode manifests never probe: the curated exclude list (names or globs) is written as-is
-    # and everything else stays enabled, including tools the server adds later. A prior include
-    # selection falls through to the checklist; a prior user-edited exclude list is kept verbatim.
-    if entry.tools.default_excluded and prior_selection is None:
+    # Keep exclude lists as patterns so reinstall cannot re-enable excluded or future tools.
+    # A prior include selection still takes precedence and falls through to the checklist.
+    if prior_selection is None and (prior_exclude is not None or entry.tools.default_excluded):
         edit_hint = f"Edit mcp_servers.{name}.tools.exclude in config.yaml or run {configure_hint} to change."
         if prior_exclude is not None:
             _write_tools_filter(name, "exclude", prior_exclude)

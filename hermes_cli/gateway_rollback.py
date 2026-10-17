@@ -71,14 +71,8 @@ def _restored(cli, connection, result, file_path):
     restored = {"hash": result.get("restored_to", ""), "reason": result.get("reason", "")}
     print(f"  {_t('rollback.restored_file', file=file_path, **restored)}" if file_path
           else f"  {_t('rollback.restored_all', **restored)}")
-    from hermes_cli.cli_commands_mixin import _summarize_paths
-    from hermes_cli.cli_commands_session_tools import _gt, _lines, _pr
-    if skipped := result.get("skipped_user_edits"):
-        _pr(*_lines(_gt("rollback.kept_user_edits", files=_summarize_paths(skipped))))
-    if oversize := result.get("skipped_oversize"):
-        print(f"  {_gt('rollback.kept_oversize', files=_summarize_paths(oversize))}")
-    if failed := result.get("failed_deletes"):
-        print(f"  {_gt('rollback.failed_deletes', files=_summarize_paths(failed))}")
+    from hermes_cli.cli_commands_session_tools import _rollback_kept
+    _rollback_kept(result)  # the in-process CLI's own lines
     print(f"  {_t('rollback.snapshot_saved')}")
     if result.get("history_removed"):
         snapshot = connection.call("session.resume", session_id=cli.session_id)

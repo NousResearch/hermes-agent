@@ -338,6 +338,7 @@ def test_api_auth_me_returns_session_after_login(gated_app):
     assert body["display_name"] == "Stub User"
     assert body["provider"] == "stub"
     assert body["org_id"] == "stub-org-1"
+    assert body["issuer"] == ""
     assert "expires_at" in body
 
 
@@ -391,6 +392,7 @@ def test_api_auth_me_returns_loopback_identity_with_valid_token(loopback_app):
     body = r.json()
     assert body["provider"] == "loopback"
     assert body["user_id"] == "local"
+    assert "issuer" not in body
     assert "display_name" in body
     assert "email" in body
     assert "org_id" in body
@@ -498,5 +500,4 @@ def test_all_providers_unreachable_returns_503(_gated_state):
     r = client.get("/api/auth/me")
     assert r.status_code == 503
     assert "unreachable" in r.text.lower()
-
 

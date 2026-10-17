@@ -994,6 +994,40 @@ One directory per plugin means every plugin's data is inspectable in one
 predictable place. Secrets don't belong here — credential reads go through
 the standard `.env` / secret-scope path like everywhere else.
 
+### Verified account context in hosted Locations history routes
+
+Hosted dashboard requests normally do not carry the parent process's request
+state. The `hermes-locations` history API has a narrow exception: `GET /history`
+and `POST /history/sync`, `/history/import`, and `/history/context` receive
+`request.state.verified_session_principal` when dashboard auth middleware has
+established an actual `Session`. This is a request-local dictionary with exactly
+four string fields: `provider`, `issuer`, `org_id`, and `user_id`. Only `issuer`
+and `org_id` may be empty. Email, display name, tokens, and the full `Session`
+are not included in this context.
+For these allowlisted hosted routes, gateway credential headers and query
+parameters are also stripped before IPC; the child needs the verified identity,
+not reusable dashboard credentials.
+
+The parent derives this context from verified middleware state, not headers,
+query parameters, request bodies, profiles, or tool arguments. Both sides of
+the plugin-host IPC enforce the exact plugin/method/path allowlist. Other
+plugins and routes do not receive it. With no verified Session (including
+native or static-token admission without an interactive account), the state
+key is absent; account-scoped history must return an unauthorized response.
+In-process routes continue to use the verified `request.state.session`.
+
+`GET /api/auth/me` exposes this same account tuple for verified Sessions,
+including the actual `issuer`. Empty `issuer` and `org_id` strings are valid
+for non-federated and non-organization accounts. Clients must distinguish a
+present empty string from a missing legacy field; missing account fields
+must not be silently replaced with empty strings when binding history caches
+or outboxes. The synthetic loopback identity is not a verified Session and
+does not advertise `issuer`.
+
+This HTTP bridge does **not** establish a bot-turn account identity or enable
+history tools. Bot queries require a separate trusted chat-admission identity
+path; never infer that account from a profile, task, or session ID.
+
 ### Bundle skills
 
 Plugins can ship skill files that the agent loads via `skill_view("plugin:skill")`. Register them in your `__init__.py`:

@@ -973,8 +973,12 @@ def _mount_hosted_plugin_api(app, plugin: dict, api_file_name: str) -> None:
         from hermes_cli.web_server_plugin_profiles import run_hosted_request
         query, headers = request.url.query, [(k, v) for k, v in request.headers.items() if k.lower() != "host"]
         body = await request.body()
+        from hermes_cli.plugin_host_principal import principal_for_request
+        principal = principal_for_request(request, name, "/" + path)
+        principal_args = {"verified_session_principal": principal} if principal is not None else {}
         return await run_hosted_request(host.home, name, lambda timeout: host.asgi_request(
-            name, dashboard_dir, api_file, request.method, "/" + path, query, headers, body, timeout=timeout))
+            name, dashboard_dir, api_file, request.method, "/" + path, query, headers, body,
+            timeout=timeout, **principal_args))
 
     app.add_api_route(f"/api/plugins/{name}/{{path:path}}", forward, include_in_schema=False,
                       methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],

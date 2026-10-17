@@ -550,7 +550,8 @@ async def api_auth_me(request: Request):
         }
     return {
         "user_id": sess.user_id, "email": sess.email, "display_name": sess.display_name,
-        "org_id": sess.org_id, "provider": sess.provider, "expires_at": sess.expires_at}
+        "org_id": sess.org_id, "provider": sess.provider, "issuer": sess.issuer,
+        "expires_at": sess.expires_at}
 
 
 @router.post("/api/auth/ws-ticket", name="auth_ws_ticket")

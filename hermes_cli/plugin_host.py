@@ -34,7 +34,10 @@ import threading
 import time
 import weakref
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional
+
+if TYPE_CHECKING:
+    from hermes_cli.plugin_host_principal import VerifiedSessionPrincipal
 
 from hermes_cli.plugin_host_wire import (
     Channel, PluginHostUnavailable, PluginHostUnsupported, decode, encode, signature_from,
@@ -291,12 +294,17 @@ class PluginHost:
                                            "attr": attr, "args": encode(list(args)), "kwargs": encode(kwargs)})
 
     def asgi_request(self, plugin_name: str, dashboard_dir: str, api_file: str, method: str, path: str,
-                     query: str, headers: list, body: bytes, *, timeout: Optional[float] = None) -> dict[str, Any]:
+                     query: str, headers: list, body: bytes, *, timeout: Optional[float] = None,
+                     verified_session_principal: VerifiedSessionPrincipal | None = None) -> dict[str, Any]:
         """One dashboard ``/api/plugins/<name>/`` request, served by the plugin's router in the host;
         ``TimeoutError`` when no answer comes within ``timeout`` seconds (the host is left running)."""
         self.ensure_started()
+        from hermes_cli.plugin_host_principal import encode_principal, history_http_input
+        principal = encode_principal(verified_session_principal, plugin_name, method, path)
+        query, headers = history_http_input(plugin_name, method, path, query, headers)
         return self._call("asgi", {"plugin": plugin_name, "dashboard_dir": dashboard_dir, "api_file": api_file,
                                    "method": method, "path": path, "query": query,
+                                   "verified_session_principal": principal,
                                    "headers": [list(h) for h in headers], "body": encode(body)},
                           timeout=timeout)
 

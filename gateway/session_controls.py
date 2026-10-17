@@ -30,6 +30,8 @@ def _refusal_data(exc: RuntimeStoreError) -> dict:
     for key in ('revision', 'execution_generation'):
         if isinstance(getattr(exc, key, None), int):
             data[key] = getattr(exc, key)
+    if getattr(exc, 'admitted', None) is False:
+        data['admitted'] = False  # nothing admitted yet: the sender may finalize with ``bot_relay.settle``
     return data
 
 
@@ -166,6 +168,7 @@ class AuthorityConnection:
                     'slash.exec': self.slash_exec, 'command.dispatch': self.command_dispatch,
                     'session.list': self.list_sessions, 'session.info': self.info,
                     'session.mutate': self.mutate, 'bot_relay.deliver': self.bot_deliver,
+                    'bot_relay.settle': self.bot_settle,
                     'bot_relay.roster.sync': self.bot_roster, 'bot_relay.outbox.drain': self.bot_outbox,
                     'bot_relay.reply': self.bot_reply, 'a2a.forward': self.a2a_forward,
                     'kanban.run': self.kanban_run,
@@ -348,6 +351,10 @@ class AuthorityConnection:
     async def bot_deliver(self, ref, params):
         from gateway.session_bot import deliver
         return await deliver(self, params)
+
+    async def bot_settle(self, ref, params):
+        from gateway.session_bot import settle
+        return await settle(self, params)
 
     async def worker_register(self, ref, params):
         from gateway.session_worker import worker_request

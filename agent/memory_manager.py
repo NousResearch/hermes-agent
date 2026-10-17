@@ -153,7 +153,14 @@ def inject_memory_provider_tools(agent: Any) -> int:
                 "name; skipping to avoid poisoning the request (%r)", raw_schema,
             )
         elif schema["name"] not in existing_tool_names:
-            tools.append({"type": "function", "function": schema})
+            # Appended AFTER model_tools' sanitize_tool_schemas pass: without the same
+            # treatment here, a top-level allOf/anyOf/oneOf conditional-required hint in a
+            # provider schema survives to the wire and strict backends reject the ENTIRE
+            # request with HTTP 400 (#134383).
+            from tools.schema_sanitizer import sanitize_tool_schemas
+            tools.append(
+                sanitize_tool_schemas([{"type": "function", "function": schema}])[0]
+            )
             agent.valid_tool_names.add(schema["name"])
             existing_tool_names.add(schema["name"])
             added += 1

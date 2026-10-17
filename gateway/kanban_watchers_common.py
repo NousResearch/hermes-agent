@@ -148,3 +148,56 @@ def _release_singleton_lock(handle) -> None:
         _release_file_lock(handle)
     with contextlib.suppress(Exception):
         handle.close()
+
+
+# --- the one ``timed_out`` cause decision ------------------------------------
+#
+# A ``timed_out`` event carries EITHER the runtime cap that stopped the worker
+# (``limit_seconds``, written by ``enforce_max_runtime``) OR the iteration budget it
+# exhausted (``budget_used``/``budget_max``, written by the turn finalizer) - never
+# both, and sometimes neither. The desktop notice and the Telegram notice render
+# different sentences for the same event, so WHICH cause a payload records is decided
+# here and both surfaces read it. Two hand-kept guards already drifted apart once: a
+# negative cap was a "1-minute limit" on one surface and "cause not recorded" on the
+# other, and a zero-iteration budget the other way round.
+
+TIMED_OUT_CAP = "cap"
+TIMED_OUT_BUDGET = "budget"
+TIMED_OUT_UNRECORDED = "unrecorded"
+
+
+def _cause_int(value: Any) -> Optional[int]:
+    """A cause field as an ``int``, or ``None`` when it is absent or not a number.
+
+    Never raises: a payload is a database row, so a notice must not fail to render
+    because one of its fields was written as text.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def timed_out_cause(payload: Any) -> "tuple[str, int, int]":
+    """Classify a ``timed_out`` payload into the ONE cause it records.
+
+    ``(TIMED_OUT_CAP, seconds, 0)``   - the runtime cap stopped the worker.
+    ``(TIMED_OUT_BUDGET, used, cap)`` - an iteration-budget exhaustion.
+    ``(TIMED_OUT_UNRECORDED, 0, 0)``  - the payload records no cause.
+
+    A cap counts only when it is POSITIVE: a non-positive ``limit_seconds`` is not a
+    deadline anyone can act on, and reading one as a deadline is how a notice came to
+    name a "1-minute limit" out of ``-5``. Budget keys count when BOTH are present,
+    zero included - the payload recorded them, so both surfaces must read them.
+    """
+    payload = payload if isinstance(payload, dict) else {}
+    limit = _cause_int(payload.get("limit_seconds"))
+    if limit is not None and limit > 0:
+        return TIMED_OUT_CAP, limit, 0
+    used = _cause_int(payload.get("budget_used"))
+    cap = _cause_int(payload.get("budget_max"))
+    if used is not None and cap is not None:
+        return TIMED_OUT_BUDGET, used, cap
+    return TIMED_OUT_UNRECORDED, 0, 0

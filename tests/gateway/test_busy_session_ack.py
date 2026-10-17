@@ -237,8 +237,8 @@ class TestBusySessionAck:
         runner, _sentinel = _make_runner()
         runner._busy_input_mode = "steer"
         runner._should_echo_stt_transcripts = MagicMock(return_value=False)
-        runner._enrich_message_with_transcription = AsyncMock(
-            return_value=('"yönü teknik mimariye çevir"', ["yönü teknik mimariye çevir"])
+        runner._transcribe_one_clip = AsyncMock(
+            return_value=("yönü teknik mimariye çevir", '"yönü teknik mimariye çevir"')
         )
         adapter = _make_adapter()
 
@@ -255,8 +255,8 @@ class TestBusySessionAck:
 
         await runner._handle_active_session_busy_message(event, sk)
 
-        runner._enrich_message_with_transcription.assert_awaited_once_with(
-            "", ["/tmp/follow-up.ogg"], ANY
+        runner._transcribe_one_clip.assert_awaited_once_with(
+            "/tmp/follow-up.ogg", ANY, ANY
         )
         agent.steer.assert_called_once()
         injected = agent.steer.call_args.args[0]

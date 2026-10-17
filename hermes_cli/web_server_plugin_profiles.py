@@ -28,6 +28,7 @@ from starlette._utils import get_route_path
 from starlette.websockets import WebSocket
 
 from hermes_cli.config import get_process_hermes_home
+from hermes_cli.plugin_isolation import GATEWAY_FORWARDED_HEADER
 
 _log = logging.getLogger("hermes_cli.web_server")
 
@@ -245,6 +246,7 @@ async def forward_secondary_plugin_request(request, name: str) -> Optional[Respo
     query = urlencode([(k, v) for k, v in parse_qsl(request.url.query, keep_blank_values=True)
                        if k not in _GATEWAY_QUERY_KEYS])
     headers = [(k, v) for k, v in request.headers.items() if k.lower() not in _GATEWAY_CREDENTIAL_HEADERS]
+    headers.append((GATEWAY_FORWARDED_HEADER, "1"))  # authenticated upstream; see plugin_isolation
     body = await request.body()
 
     def call(timeout: float) -> dict[str, Any]:

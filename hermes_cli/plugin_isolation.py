@@ -48,7 +48,9 @@ HOST_SKIPPED_CTX_METHODS: dict[str, str] = {
 }
 
 # Live ctx facades the host reaches by method call; each call returns plain data.
-HOST_REMOTE_FACADES: frozenset[str] = frozenset({"state", "llm", "platform_actions", "subagent_lifecycle"})
+HOST_REMOTE_FACADES: frozenset[str] = frozenset(
+    {"state", "llm", "platform_actions", "subagent_lifecycle"}
+)
 
 # Object-taking ctx methods and the ABC the parent checks. The host sends the object's method table
 # and the parent builds a subclass of that ABC whose methods run in the host.
@@ -76,6 +78,7 @@ HOST_DEGRADED_HOOKS: dict[str, str] = {
 def _plugins_config(config: Optional[Mapping[str, Any]] = None) -> Mapping[str, Any]:
     if config is None:
         from hermes_cli.config import load_config_readonly
+
         config = load_config_readonly() or {}
     section = config.get("plugins") if isinstance(config, Mapping) else None
     return section if isinstance(section, Mapping) else {}
@@ -93,8 +96,11 @@ def isolation_mode(config: Optional[Mapping[str, Any]] = None) -> str:
     raw = _plugins_config(config).get("isolation", ISOLATION_IN_PROCESS)
     mode = str(raw or ISOLATION_IN_PROCESS).strip().lower().replace("-", "_")
     if mode not in _ISOLATION_MODES:
-        logger.warning("plugins.isolation=%r is not one of %s; loading plugins in-process",
-                       raw, ", ".join(sorted(_ISOLATION_MODES)))
+        logger.warning(
+            "plugins.isolation=%r is not one of %s; loading plugins in-process",
+            raw,
+            ", ".join(sorted(_ISOLATION_MODES)),
+        )
         return ISOLATION_IN_PROCESS
     return mode
 
@@ -107,12 +113,14 @@ def host_launcher(config: Optional[Mapping[str, Any]] = None) -> list[str]:
         return []
     if isinstance(launcher, str):
         import shlex
+
         return shlex.split(launcher)
     return [str(part) for part in launcher]
 
 
-def in_process_import_refusal(what: str, *, source: str = "user",
-                              config: Optional[Mapping[str, Any]] = None) -> Optional[str]:
+def in_process_import_refusal(
+    what: str, *, source: str = "user", config: Optional[Mapping[str, Any]] = None
+) -> Optional[str]:
     """Reason an in-process import of third-party code must not happen, or ``None`` when allowed.
 
     Every loader that imports a user-supplied module into the Hermes process asks this first;
@@ -120,8 +128,10 @@ def in_process_import_refusal(what: str, *, source: str = "user",
     """
     if source == "bundled" or isolation_mode(config) != ISOLATION_HOST:
         return None
-    return (f"{what} runs only in-process, and plugins.isolation is 'host' (third-party plugin code "
-            f"never runs inside the Hermes process); set plugins.isolation: in_process to load it")
+    return (
+        f"{what} runs only in-process, and plugins.isolation is 'host' (third-party plugin code "
+        f"never runs inside the Hermes process); set plugins.isolation: in_process to load it"
+    )
 
 
 def user_plugin_host() -> Any:
@@ -133,4 +143,42 @@ def user_plugin_host() -> Any:
     if isolation_mode() != ISOLATION_HOST:
         return None
     from hermes_cli.plugins import get_plugin_manager
+
     return get_plugin_manager()._plugin_host()
+
+
+# Header the gateway forwarder sets on requests it authenticated upstream and
+# forwarded to a plugin host (PLG-3). The host's bare ASGI app stamps
+# ``request.state.gateway_forwarded`` from it; the sensitive-endpoint guard
+# accepts that stamp. The host is only reachable through the gateway's
+# authenticated forwarder (private pipe), and the header never reaches plugin
+# code: it is dropped by the same credential filter that strips auth tokens.
+GATEWAY_FORWARDED_HEADER = "x-hermes-gateway-forwarded"
+
+
+def install_gateway_forwarded_stamp(app) -> None:
+    """Mark every request of a plugin-host ASGI app as gateway-authenticated.
+
+    The host serves exactly one caller: the gateway's
+    ``forward_secondary_plugin_request``, which authenticated the request before
+    forwarding. Without the stamp, the documented route-local guard
+    (``web_server._require_token``) can never pass in the host (its session
+    token belongs to the host process; the gateway stripped the credential
+    headers) and every mutating plugin endpoint 401s (issue #140499).
+    """
+
+    class GatewayForwardedStamp:
+        def __init__(self, inner):
+            self.inner = inner
+
+        async def __call__(self, scope, receive, send):
+            if scope["type"] == "http":
+                headers = {
+                    k.decode("latin-1").lower(): v.decode("latin-1")
+                    for k, v in scope.get("headers") or []
+                }
+                if headers.get(GATEWAY_FORWARDED_HEADER) == "1":
+                    scope.setdefault("state", {})["gateway_forwarded"] = True
+            await self.inner(scope, receive, send)
+
+    app.add_middleware(GatewayForwardedStamp)

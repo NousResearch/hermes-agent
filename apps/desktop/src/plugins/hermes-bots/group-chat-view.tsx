@@ -1709,8 +1709,10 @@ export function openGroupChat(group: string): void {
 
   if (typeof host.openWorkspace === 'function') {
     try {
+      const title = $canonicalGroupBindings.get()[group]?.roomName || group
+
       const close = host.openWorkspace(`${ID}:group:${slugifyProfileName(group)}`, {
-        title: group,
+        title,
         minWidth: '24rem',
         render: () => <GroupChatMainView group={group} />,
         onClose: () => {

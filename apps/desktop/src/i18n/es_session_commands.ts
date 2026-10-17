@@ -13,5 +13,10 @@ export const esSessionCommands = {
   queued: (preview: string) => `en cola: "${preview}"`,
   queueFailed: 'No se pudo poner el mensaje en cola',
   countOne: (count: string) => `${count} mensaje en cola`,
-  countOther: (count: string) => `${count} mensajes en cola`
+  countOther: (count: string) => `${count} mensajes en cola`,
+  queueEditKeptTitle: 'Mensaje en cola sin cambios',
+  queueEditKept: 'Empezó o fue rechazado antes de guardar tu edición. Tu texto editado está en el editor.',
+  queueEditUnconfirmedTitle: 'Edición sin confirmar',
+  queueEditUnconfirmed:
+    'Hermes no pudo confirmar tu edición. Guarda de nuevo para reintentar la misma edición; nunca se pone en cola dos veces.'
 }

@@ -139,3 +139,100 @@ def test_cli_specify_tenant_filter(kanban_home, capsys):
         assert kb.get_task(conn, inside).status in {"todo", "ready"}
 
 
+
+
+# ---------------------------------------------------------------------------
+# PROMPT_BODY_LIMIT — refuse over-bound bodies; --force preserves the tail
+# ---------------------------------------------------------------------------
+
+def _over_bound_body(*, marker: str = "ACCEPTANCE_TAIL_MARKER") -> str:
+    """Body just over PROMPT_BODY_LIMIT with a distinctive acceptance-criteria tail."""
+    head = "H" * (spec.PROMPT_BODY_LIMIT - 40)
+    return head + f"\n\n**Acceptance criteria**\n- {marker}\n"
+
+
+def test_specify_refuses_over_bound_body_without_writing(kanban_home):
+    """Over-bound triage body: refuse before the LLM call; DB untouched."""
+    original = _over_bound_body()
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="long", body=original, triage=True)
+
+    called = MagicMock()
+    with patch("agent.auxiliary_client.call_llm", called):
+        outcome = spec.specify_task(tid, author="ace")
+
+    assert outcome.ok is False
+    assert "PROMPT_BODY_LIMIT" in outcome.reason
+    assert outcome.body_length == len(original)
+    assert outcome.prompt_body_limit == spec.PROMPT_BODY_LIMIT
+    called.assert_not_called()
+
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task.status == "triage"
+    assert task.body == original
+
+
+def test_specify_force_appends_unseen_tail_exactly_once(kanban_home):
+    """--force accepts the spec and appends the original unseen tail verbatim once."""
+    marker = "ACCEPTANCE_TAIL_UNIQUE_9f3a"
+    original = _over_bound_body(marker=marker)
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="long", body=original, triage=True)
+
+    new_body = "**Goal**\nRewritten goal.\n**Acceptance criteria**\n- done"
+    content = jsonlib.dumps({"title": "Refined long", "body": new_body})
+    p, _ = _patch_aux_client(content)
+    with p:
+        outcome = spec.specify_task(tid, author="ace", force=True)
+
+    assert outcome.ok is True
+    assert outcome.body_truncated is True
+    assert outcome.body_length == len(original)
+
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task.status in {"todo", "ready"}
+    assert marker in (task.body or "")
+    assert (task.body or "").count(marker) == 1
+    assert "Original body tail" in (task.body or "")
+    # The unseen complement starts at PROMPT_BODY_LIMIT - 1 (truncate keeps limit-1 + '…').
+    assert original[spec.PROMPT_BODY_LIMIT - 1:] in (task.body or "")
+
+
+def test_specify_body_exactly_at_bound_passes_through(kanban_home):
+    """A body of exactly PROMPT_BODY_LIMIT chars is not refused."""
+    body = "B" * spec.PROMPT_BODY_LIMIT
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="exact", body=body, triage=True)
+
+    content = jsonlib.dumps({"title": "Exact", "body": "**Goal**\nok"})
+    p, mock_fn = _patch_aux_client(content)
+    with p:
+        outcome = spec.specify_task(tid, author="ace")
+
+    assert outcome.ok is True
+    assert outcome.body_truncated is False
+    mock_fn.assert_called_once()
+    # Prompt received the full body (no ellipsis clamp).
+    user_msg = mock_fn.call_args.kwargs["messages"][1]["content"]
+    assert body in user_msg
+    assert "…" not in user_msg.split("Current body:\n", 1)[1]
+
+
+def test_specify_force_malformed_reply_does_not_overwrite_over_bound_body(kanban_home):
+    """Forced over-bound + malformed reply: promote unchanged, never write raw text."""
+    original = _over_bound_body()
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="long", body=original, triage=True)
+
+    p, _ = _patch_aux_client("this is not json at all")
+    with p:
+        outcome = spec.specify_task(tid, author="ace", force=True)
+
+    assert outcome.ok is True
+    assert "unchanged" in outcome.reason
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task.body == original
+    assert task.status in {"todo", "ready"}

@@ -1297,9 +1297,19 @@ def _cmd_specify(args: argparse.Namespace) -> int:
     """Spec a triage task (or all) via the auxiliary LLM, promote to todo."""
     from hermes_cli import kanban_specify as spec
 
-    return _run_triage_sweep(args, "specify", spec, spec.specify_task, "specified",
-                             ("task_id", "ok", "reason", "new_title"),
-                             lambda o: f"Specified {o.task_id} → todo{_retitled_suffix(o)}")
+    force = bool(getattr(args, "force", False))
+
+    def run_one(task_id: str, *, author=None):
+        return spec.specify_task(task_id, author=author, force=force)
+
+    def _specify_ok_line(o) -> str:
+        tail = " (body truncated; original tail appended)" if getattr(o, "body_truncated", False) else ""
+        return f"Specified {o.task_id} → todo{_retitled_suffix(o)}{tail}"
+
+    return _run_triage_sweep(args, "specify", spec, run_one, "specified",
+                             ("task_id", "ok", "reason", "new_title",
+                              "body_truncated", "body_length", "prompt_body_limit"),
+                             _specify_ok_line)
 
 
 def _decompose_ok_line(o) -> str:
@@ -1313,8 +1323,15 @@ def _cmd_decompose(args: argparse.Namespace) -> int:
     """Fan a triage task (or all) out into child tasks via the auxiliary LLM."""
     from hermes_cli import kanban_decompose as decomp
 
-    return _run_triage_sweep(args, "decompose", decomp, decomp.decompose_task, "decomposed",
-                             ("task_id", "ok", "reason", "fanout", "child_ids", "new_title"), _decompose_ok_line)
+    force = bool(getattr(args, "force", False))
+
+    def run_one(task_id: str, *, author=None):
+        return decomp.decompose_task(task_id, author=author, force=force)
+
+    return _run_triage_sweep(args, "decompose", decomp, run_one, "decomposed",
+                             ("task_id", "ok", "reason", "fanout", "child_ids", "new_title",
+                              "body_truncated", "body_length", "prompt_body_limit"),
+                             _decompose_ok_line)
 
 
 _HANDLERS = {

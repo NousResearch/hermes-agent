@@ -26,6 +26,7 @@ from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.base_exec_approval import ea_default_reason_text
+from gateway.run_turn_runner_approval_settle import _renders_exec_approval_buttons
 from gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
 from utils import is_truthy_value
@@ -47,16 +48,6 @@ _CARD_DESTINATION_REFUSALS = {
     "slack task_card requires a thread anchor",
     "slack task_card requires a thread anchor (Slack streams are thread replies)",
 }
-
-
-def _renders_exec_approval_buttons(adapter_cls: type) -> bool:
-    """True when the adapter class renders native approval buttons. BasePlatformAdapter subclasses
-    say so through ``supports_exec_approval_buttons``; anything else (test doubles, relay-style
-    duck types) counts when it defines ``send_exec_approval`` itself."""
-    probe = getattr(adapter_cls, "supports_exec_approval_buttons", None)
-    if callable(probe) and issubclass(adapter_cls, BasePlatformAdapter):
-        return bool(probe())
-    return getattr(adapter_cls, "send_exec_approval", None) is not None
 
 
 # Rendered on a native clarify card whose wait ended without a click (mirrors the notice the
@@ -932,7 +923,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         token = set_current_session_key(session_key)
         register_gateway_notify(session_key, self._approval_notify_sync)
         try:
-            api_message = _wrap_current_message_with_observed_context(self._native_image_run_message(), observed_group_context)
+            run_message = self._native_image_run_message()
+            api_message = _wrap_current_message_with_observed_context(run_message, observed_group_context)
             kwargs = {"conversation_history": agent_history, "task_id": ctx.session_id}
             from gateway.session_api_turn import api_execution
             api = api_execution.get()
@@ -949,7 +941,11 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             if persist_user_message_override is not None:
                 kwargs["persist_user_message"] = persist_user_message_override
             elif observed_group_context:
-                kwargs["persist_user_message"] = ctx.message
+                # The observed wrapper is API-only, so the transcript keeps the bare turn. On the
+                # multimodal path that means the pre-wrap part list: a plain-text override cannot
+                # replace a part-list content, so ctx.message here would persist the wrapped text
+                # (which then embeds itself twice per image turn, #137627).
+                kwargs["persist_user_message"] = run_message
             if ctx.persist_user_display_kind:
                 # Internal self-injected turn: type the persisted user row so UIs render it as a
                 # timeline notice, not a user bubble (stripped from provider payloads downstream).

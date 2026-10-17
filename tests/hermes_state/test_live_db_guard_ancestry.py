@@ -24,8 +24,10 @@ test itself writing to the developer's live database.
 import os
 import subprocess
 import sys
+import types
 from pathlib import Path
 
+import psutil
 import pytest
 
 import hermes_state
@@ -160,3 +162,77 @@ class TestPytestProcessRecognition:
                 raise PermissionError("access denied")
 
         assert not hermes_state_guard._process_looks_like_pytest(_Denied())
+
+
+class TestAncestryWalkStopsAtAccessDenied:
+    """The walk must not read past the first ``psutil.AccessDenied`` (#137948).
+
+    On native Windows the chain above a user session climbs into protected
+    system processes (``svchost`` → ``services`` → ``wininit``), and each denied
+    ``cmdline()`` makes psutil fall back to a full process snapshot
+    (``NtQuerySystemInformation``) — hundreds of ms per process, ~30 s for the
+    whole walk on a slow-snapshot host, which blew the dashboard chat backend's
+    15 s ``gateway.ready`` budget. No pytest of the current user can hide above
+    a process it is not allowed to read, so the walk stops there.
+    """
+
+    class _Proc:
+        """Ancestor stub, near-to-far order, counting ``cmdline()`` reads."""
+
+        def __init__(self, cmdline=None, *, denied=False, error=None):
+            self._cmdline = cmdline or []
+            self._denied = denied
+            self._error = error
+            self.cmdline_reads = 0
+
+        def cmdline(self):
+            self.cmdline_reads += 1
+            if self._denied:
+                raise psutil.AccessDenied()
+            if self._error is not None:
+                raise self._error
+            return self._cmdline
+
+    @staticmethod
+    def _walk(monkeypatch, procs):
+        psutil_stub = types.SimpleNamespace(
+            Process=lambda: types.SimpleNamespace(parents=lambda: procs),
+            # The guard's except clauses resolve these through its module-global
+            # psutil, so the stub must carry the real exception classes.
+            AccessDenied=psutil.AccessDenied,
+            NoSuchProcess=psutil.NoSuchProcess,
+            Error=psutil.Error,
+        )
+        monkeypatch.setattr(hermes_state_guard, "psutil", psutil_stub)
+        monkeypatch.setattr(hermes_state_guard, "_PYTEST_ANCESTOR", None)
+        return hermes_state_guard._has_pytest_ancestor()
+
+    def test_does_not_read_ancestors_above_an_access_denied_one(self, monkeypatch):
+        above = [
+            self._Proc(["C:\\Windows\\system32\\services.exe"]),
+            self._Proc(["C:\\Windows\\system32\\wininit.exe"]),
+        ]
+        procs = [
+            self._Proc(["C:\\Windows\\Explorer.EXE"]),
+            self._Proc(["C:\\Windows\\System32\\svchost.exe", "-k", "netsvcs"], denied=True),
+            *above,
+        ]
+        assert self._walk(monkeypatch, procs) is False
+        assert [p.cmdline_reads for p in above] == [0, 0]
+
+    def test_pytest_below_the_unreadable_ancestor_is_still_found(self, monkeypatch):
+        """The #82770 ancestry protection must survive the early stop."""
+        procs = [
+            self._Proc(["/venv/bin/pytest", "-q"]),
+            self._Proc(["C:\\Windows\\System32\\svchost.exe"], denied=True),
+            self._Proc(["C:\\Windows\\system32\\services.exe"]),
+        ]
+        assert self._walk(monkeypatch, procs) is True
+
+    def test_a_vanished_ancestor_does_not_stop_the_walk(self, monkeypatch):
+        """A dead ancestor (e.g. NoSuchProcess) is skipped, not treated as a wall."""
+        procs = [
+            self._Proc(["/usr/bin/zsh"], error=psutil.NoSuchProcess(1234)),
+            self._Proc(["/venv/bin/pytest", "-q"]),
+        ]
+        assert self._walk(monkeypatch, procs) is True

@@ -32,6 +32,7 @@ export function useClarifyKeys({
   shortcuts = true
 }: ClarifyKeysOptions) {
   const [cursor, setCursor] = useState({ question: 0, row: initialRow })
+  const [hasKeyboardCursor, setHasKeyboardCursor] = useState(false)
   const questionIndex = Math.min(cursor.question, Math.max(questions.length - 1, 0))
   const active = questions[questionIndex]
   const choices = active?.choices ?? []
@@ -118,6 +119,7 @@ export function useClarifyKeys({
         onClear?.(active)
       }
 
+      setHasKeyboardCursor(true)
       setCursor({ question: questionIndex, row: (row + delta + itemCount) % itemCount })
     },
     [active, choices.length, onClear, otherRows, questionIndex, row]
@@ -214,5 +216,5 @@ export function useClarifyKeys({
     shortcuts
   ])
 
-  return { activeQuestion: questionIndex, cursorRow: row, focusQuestion, focusRow, onOtherFocus, pick }
+  return { activeQuestion: questionIndex, cursorRow: row, focusQuestion, focusRow, hasKeyboardCursor, onOtherFocus, pick }
 }

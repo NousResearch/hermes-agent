@@ -117,14 +117,20 @@ function lock(answer: string, requestId = 'request-1') {
   return ['clarify.lock', { answer, question_id: 'q0', request_id: requestId }]
 }
 
-function renderLiveClarify({ multiSelect = false }: { multiSelect?: boolean } = {}) {
+function renderLiveClarify({
+  multiSelect = false,
+  questions = [{ choices: ['staging', 'production'], multiSelect, qid: 'q0', question: 'Which deployment target?' }]
+}: {
+  multiSelect?: boolean
+  questions?: { choices: string[]; multiSelect: boolean; qid: string; question: string }[]
+} = {}) {
   const request = vi.fn().mockResolvedValue({ ok: true, remaining: [] })
   const respond = liveServerRequest('request-1')
 
   $activeSessionId.set('session-1')
   $gateway.set({ request } as never)
   setClarifyRequest({
-    questions: [{ choices: ['staging', 'production'], multiSelect, qid: 'q0', question: 'Which deployment target?' }],
+    questions,
     requestId: 'request-1',
     sessionId: 'session-1'
   })
@@ -253,6 +259,33 @@ describe('ClarifyTool live card stays mounted across settle', () => {
 })
 
 describe('ClarifyTool choice selection', () => {
+  it('requires an explicit answer for every question before batch confirmation', async () => {
+    const { request } = renderLiveClarify({
+      questions: [
+        { choices: ['staging', 'production'], multiSelect: false, qid: 'q0', question: 'Which deployment target?' },
+        { choices: ['fast', 'safe'], multiSelect: false, qid: 'q1', question: 'Which rollout mode?' }
+      ]
+    })
+
+    const confirm = screen.getByRole('button', { name: /Confirm and continue/ })
+    expect(confirm.hasAttribute('disabled')).toBe(true)
+
+    fireEvent.click(screen.getByRole('button', { name: /staging/ }))
+    expect(confirm.hasAttribute('disabled')).toBe(true)
+
+    fireEvent.click(screen.getByRole('button', { name: /safe/ }))
+    expect(confirm.hasAttribute('disabled')).toBe(false)
+    fireEvent.click(confirm)
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledWith('clarify.lock', {
+        answer: 'safe',
+        question_id: 'q1',
+        request_id: 'request-1'
+      })
+    })
+  })
+
   it('labels single-select vs multi-select before the user clicks', () => {
     const { rerender } = renderLiveClarify()
 
@@ -302,6 +335,15 @@ describe('ClarifyTool choice selection', () => {
 })
 
 describe('ClarifyTool keyboard navigation', () => {
+  it('does not paint the initial keyboard cursor as a selected-looking row', () => {
+    renderLiveClarify()
+
+    const staging = screen.getByRole('button', { name: /staging/ })
+
+    expect(staging.getAttribute('data-highlighted')).toBeNull()
+    expect(staging.getAttribute('aria-pressed')).toBe('false')
+  })
+
   it('cycles through choices and Other with the arrow keys', () => {
     renderLiveClarify()
 
@@ -309,8 +351,7 @@ describe('ClarifyTool keyboard navigation', () => {
     const production = screen.getByRole('button', { name: /production/ })
     const other = screen.getByPlaceholderText(/Other/)
 
-    expect(staging.getAttribute('data-highlighted')).toBe('true')
-    expect(staging.getAttribute('aria-current')).toBe('true')
+    expect(staging.getAttribute('aria-current')).toBeNull()
     expect(staging.getAttribute('aria-keyshortcuts')).toBe('A 1')
 
     fireEvent.keyDown(window, { key: 'ArrowDown' })
@@ -576,6 +617,7 @@ describe('ClarifyTool submit shortcut', () => {
     for (const modifier of [{ metaKey: true }, { ctrlKey: true }]) {
       const { request } = renderLiveBatch()
       const field = screen.getByPlaceholderText('Type your answer…')
+      fireEvent.click(screen.getByRole('button', { name: /red/ }))
       fireEvent.change(field, { target: { value: 'packet' } })
       field.focus()
       fireEvent.keyDown(field, { key: 'Enter', shiftKey: true })
@@ -584,7 +626,7 @@ describe('ClarifyTool submit shortcut', () => {
       fireEvent.keyDown(field, { key: 'Enter', ...modifier })
       await waitFor(() => expect(request).toHaveBeenCalledTimes(2))
       expect(request).toHaveBeenNthCalledWith(1, 'clarify.lock', {
-        answer: null,
+        answer: 'red',
         question_id: 'q0',
         request_id: 'request-batch'
       })
@@ -730,7 +772,7 @@ describe('ClarifyTool batch card', () => {
     })
   })
 
-  it('stages locally and enables the single confirm once one question is answered', async () => {
+  it('stages locally and enables the single confirm only after every question is answered', async () => {
     const { request } = renderLiveBatch()
     const confirm = screen.getByRole('button', { name: /Confirm and continue/ })
 
@@ -740,7 +782,7 @@ describe('ClarifyTool batch card', () => {
     fireEvent.click(screen.getByRole('button', { name: /red/ }))
     expect(screen.getByText('1 of 2 answered')).toBeTruthy()
     expect(request).not.toHaveBeenCalled()
-    expect((confirm as HTMLButtonElement).disabled).toBe(false)
+    expect((confirm as HTMLButtonElement).disabled).toBe(true)
 
     fireEvent.change(screen.getByPlaceholderText('Type your answer…'), { target: { value: 'packet' } })
     expect(screen.getByText('2 of 2 answered')).toBeTruthy()

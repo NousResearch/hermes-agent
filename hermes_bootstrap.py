@@ -550,9 +550,9 @@ def _pin_launcher_home() -> None:
     the repair above: a merge killed while writing ``hermes_constants.py`` must not keep the repair
     from ever running. The flag name is ``_launchers.PIN_DEFAULT_HOME_FLAG``."""
     if getattr(sys, "_hermes_pin_default_home", False) and not os.environ.get("HERMES_HOME"):
-        from hermes_constants import get_default_hermes_root
+        from hermes_constants import sudo_aware_default_hermes_root
 
-        os.environ["HERMES_HOME"] = str(get_default_hermes_root())
+        os.environ["HERMES_HOME"] = str(sudo_aware_default_hermes_root())
 
 
 _pin_launcher_home()

@@ -167,6 +167,39 @@ def _check_mcp_security(should_fix: bool, f: Finding) -> None:
         check_ok("No suspicious MCP stdio commands")
 
 
+@doctor_check("MCP subprocess owner check failed: {e}")
+def _check_mcp_subprocess_owners(should_fix: bool, f: Finding) -> None:
+    """Tell duplicate-by-design MCP connections apart from a true orphan.
+
+    Gateway, dashboard, and any interactive TUI/CLI session each keep their OWN
+    independent stdio MCP connections (per-process, not per-host — see
+    references/native-mcp.md), each with its own tools/mcp_death_supervisor.py
+    watchdog. Seeing several supervisors is expected, not a leak. The one row that
+    IS a genuine leak is a supervisor whose --parent-pgid process is dead but which
+    is itself still running (it should have reaped and exited on pipe EOF).
+    """
+    from tools.mcp_tool_diagnostics import list_mcp_subprocess_owners
+    owners = list_mcp_subprocess_owners()
+    if not owners:
+        check_info("No MCP death-supervisor processes found (no stdio MCP servers currently connected anywhere)")
+        return
+    leaks = [o for o in owners if o["leak_signal"]]
+    for o in sorted(owners, key=lambda o: (o["role"] or "zzz", o["parent_pid"])):
+        role = o["role"] or "unknown surface"
+        names = ", ".join(o["server_names"]) if o["server_names"] else "no MCP children found"
+        if o["alive"]:
+            check_ok(f"{role} (pid {o['parent_pid']}, alive) owns {names}", f"(supervisor pid {o['supervisor_pid']})")
+        else:
+            check_fail(f"Parent pid {o['parent_pid']} is DEAD but its MCP death-supervisor (pid {o['supervisor_pid']}) is still running",
+                       f"(likely leaked; registered server pgids: {o['server_pgids'] or 'none resolved'})")
+    if leaks:
+        f.manual_issues.append(
+            f"{len(leaks)} MCP death-supervisor process(es) outlived their parent — see 'MCP Subprocess Owners' above; "
+            "this is a real leak (unlike duplicate per-process connections, which are expected).")
+    else:
+        check_ok(f"All {len(owners)} MCP death-supervisor process(es) have a live owning parent (no orphans)")
+
+
 @doctor_check()
 def _check_env_file(should_fix: bool, f: Finding) -> None:
     """Managed scope plus ~/.hermes/.env presence and provider credentials."""

@@ -57,7 +57,7 @@ def runtime_command(repo_root: Path, args=(), *, module: str = "hermes_cli.main"
     else:
         pin = f"sys.{PIN_DEFAULT_HOME_FLAG} = True; "
         settle = ("os.environ.get('HERMES_HOME') or os.environ.__setitem__('HERMES_HOME', "
-                  "str(__import__('hermes_constants').get_default_hermes_root())); ")
+                  "str(__import__('hermes_constants').sudo_aware_default_hermes_root())); ")
     bootstrap = (
         "import os, sys, runpy; "
         "os.environ.pop('PYTHONHOME', None); os.environ.pop('PYTHONPATH', None); "
@@ -455,8 +455,8 @@ def _launcher_script(name: str, repo_root: Path, dependencies: Path | None) -> s
         "        _early_recovery = None  # a tree without the repair: the imports below report real damage\n"
         f"    if _early_recovery is not None and _early_recovery.restore_interrupted_pull(Path({root!r})):\n"
         "        _early_recovery.relaunch_after_restore()\n"
-        "    from hermes_constants import get_default_hermes_root\n"
-        "    os.environ['HERMES_HOME'] = os.environ.get('HERMES_HOME') or str(get_default_hermes_root())\n"
+        "    from hermes_constants import sudo_aware_default_hermes_root\n"
+        "    os.environ['HERMES_HOME'] = os.environ.get('HERMES_HOME') or str(sudo_aware_default_hermes_root())\n"
         "    from hermes_cli._launchers import print_runtime_command\n"
         f"    print_runtime_command(Path({root!r}), sys.argv[2:])\n"
         "    sys.exit(0)\n"
@@ -467,8 +467,8 @@ def _launcher_script(name: str, repo_root: Path, dependencies: Path | None) -> s
         "    _hermes_closure_repair()\n"
         "    raise\n"
         "if not os.environ.get('HERMES_HOME'):\n"
-        "    from hermes_constants import get_default_hermes_root\n"
-        "    os.environ['HERMES_HOME'] = str(get_default_hermes_root())\n"
+        "    from hermes_constants import sudo_aware_default_hermes_root\n"
+        "    os.environ['HERMES_HOME'] = str(sudo_aware_default_hermes_root())\n"
         "if sys.argv[1:2] == ['--run-module']:\n"
         "    import runpy\n"
         "    if len(sys.argv) < 3: sys.exit('hermes: --run-module needs a module')\n"

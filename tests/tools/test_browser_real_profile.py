@@ -189,6 +189,23 @@ class TestRealProfileCdpLaunch:
         assert cdp is None
         assert err and "boom" in err
 
+    def test_attach_failure_reports_code_and_stderr_tail_not_last_line(self):
+        """A failing attach surfaces the exit code plus the stderr tail: Chrome's LAST
+        stderr line is often a generic launch hint (the --no-sandbox suggestion), not
+        the actual exit reason, so trusting it alone misdiagnoses the failure (#134684)."""
+        self._reset()
+        proc = Mock(returncode=1, stdout="", stderr=(
+            "[31337:31337:ERROR:profile_loader.cc(99)] Singleton lock held by pid 4242\n"
+            "\n"
+            'Hint: try --args "--no-sandbox"'))
+        with patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
+             patch.object(bt_real_profile, "_capture_agent_browser_cli", return_value=proc):
+            cdp, err = bt_real_profile._attach_agent_browser_to_real_profile(41000, "/tmp/copy-dir")
+        assert cdp is None
+        assert "exit 1" in err
+        assert "Singleton lock held" in err
+        assert "--no-sandbox" in err  # the generic hint stays too, but no longer alone
+
     def test_stale_resolver_holder_fails_fast(self, monkeypatch):
         """A timed-out worker holding the launch lock must not wedge later calls."""
         import threading

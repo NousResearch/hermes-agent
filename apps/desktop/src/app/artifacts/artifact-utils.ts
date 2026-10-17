@@ -330,7 +330,20 @@ function collectStringValues(
   }
 }
 
-function collectArtifactsFromText(text: string, pushValue: PushValue): void {
+function collectArtifactsFromText(text: string, collector: PushValue): void {
+  const pushValue: PushValue = (value, explicit = false) => {
+    // Raw named placeholders in a URL path describe a template, not a
+    // generated deliverable. Keep encoded literal braces, query/fragment
+    // data, and explicit MEDIA deliveries untouched.
+    const path = value.split(/[?#]/, 1)[0]
+
+    if (!explicit && /^https?:\/\//i.test(value) && /\{[A-Za-z_][\w-]*\}/.test(path)) {
+      return
+    }
+
+    collector(value, explicit)
+  }
+
   collectMediaValues(text, pushValue)
 
   for (const match of text.matchAll(MARKDOWN_IMAGE_RE)) {

@@ -117,5 +117,36 @@ def test_skills_breakdown_attributes_demoted_category_shared_line(isolated_home)
         assert entry["index_line_skill_count"] == 2
 
 
+def test_requested_platform_filters_disabled_skills(isolated_home, monkeypatch):
+    """The requested platform scopes the measured skills index."""
+    from agent.system_prompt import build_system_prompt_parts
 
+    _seed_skill(isolated_home, "shared", "available on every platform")
+    _seed_skill(
+        isolated_home,
+        "telegram-hidden",
+        "excluded from telegram prompt-size measurements",
+    )
+    (isolated_home / "config.yaml").write_text(
+        "skills:\n"
+        "  platform_disabled:\n"
+        "    telegram:\n"
+        "      - telegram-hidden\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_PLATFORM", "cli")
+    monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._get_platform_tools",
+        lambda _cfg, _platform: {"skills"},
+    )
 
+    def skills_block_for(platform):
+        parts = build_system_prompt_parts(_build_inspection_agent(platform))
+        match = _SKILLS_BLOCK_RE.search(parts.get("volatile", ""))
+        match = match or _SKILLS_BLOCK_RE.search(parts.get("stable", ""))
+        assert match is not None
+        return match.group(0)
+
+    assert "telegram-hidden" in skills_block_for("cli")
+    assert "telegram-hidden" not in skills_block_for("Telegram")

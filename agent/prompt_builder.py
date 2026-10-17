@@ -1245,6 +1245,7 @@ def _current_session_platform_hint() -> str:
 def build_skills_system_prompt(
     available_tools: set[str] | None = None, available_toolsets: set[str] | None = None,
     compact_categories: frozenset[str] | None = None, skills_dir_override: Path | None = None,
+    platform: str | None = None,
 ) -> str:
     """Compact skill index for the system prompt.
 
@@ -1253,6 +1254,7 @@ def build_skills_system_prompt(
     ``compact_categories`` (coding posture) demotes categories to a names-only line — nothing is ever hidden.
     ``skills_dir_override`` makes home resolution EXPLICIT: a build thread that never bound the HERMES_HOME
     ContextVar would otherwise leak the default profile's skills into a bot's prompt.
+    ``platform`` scopes filtering to the inspected session, falling back to ambient session hints when omitted.
     """
     from agent.safe_worker_policy import safe_worker_enabled
 
@@ -1271,7 +1273,7 @@ def build_skills_system_prompt(
         if not skills_dir.exists() and not extra_roots:
             return ""
         return _build_skills_system_prompt_inner(
-            skills_dir, extra_roots, available_tools, available_toolsets, compact_categories)
+            skills_dir, extra_roots, available_tools, available_toolsets, compact_categories, platform)
     finally:
         if _home_token is not None:
             reset_hermes_home_override(_home_token)
@@ -1390,10 +1392,10 @@ def _oneshot_prompt_variant() -> bool:
 
 def _build_skills_system_prompt_inner(
     skills_dir: Path, extra_roots: list[tuple[int, Path]], available_tools: set[str] | None,
-    available_toolsets: set[str] | None, compact_categories: frozenset[str] | None,
+    available_toolsets: set[str] | None, compact_categories: frozenset[str] | None, platform: str | None = None,
 ) -> str:
     # The resolved platform is part of the key: per-platform disabled-skill lists need distinct cache entries.
-    _platform_hint = _current_session_platform_hint()
+    _platform_hint = (platform or _current_session_platform_hint()).strip().lower()
     disabled = get_disabled_skill_names(_platform_hint or None)
     # Plugin-registered skills (ctx.register_skill) are registry state, not files under any scanned
     # root — the snapshot manifest can't see them change, so they participate in the cache key.

@@ -343,21 +343,45 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
 
     effective_task_id = task_id or "default"
     _focus_bound_origin(effective_task_id, "", "otp")
-    origin = _current_page_origin(effective_task_id)
-    if not origin:
-        return json.dumps({"success": False, "error": "No page with a code field is open."})
+    page = _eval_js(effective_task_id, "window.location.href")
+    if not page.get("success"):
+        return json.dumps({"success": False, "error_type": "browser_inspection_failed",
+                           "error": ("Hermes could not inspect the current browser tab for an OTP challenge. "
+                                     "Verify that this task is attached to the intended browser tab, then retry.")})
+    href = str(page.get("result") or "").strip().strip('"').strip("'")
+    if not href or href == "about:blank":
+        return json.dumps({"success": False, "error_type": "no_page",
+                           "error": "No web page is open in the browser tab attached to this task."})
+    try:
+        from agent.vault_store import normalize_origin
+
+        origin = normalize_origin(href)
+    except Exception:
+        return json.dumps({"success": False, "error_type": "browser_inspection_failed",
+                           "error": "Hermes could not identify the origin of the current browser tab."})
     site = origin.split("://", 1)[-1]
 
     nonce = secrets.token_hex(8)
     inspect = _eval_js(effective_task_id, build_inspection_js(nonce))
-    raw_controls = _parse_json_result(inspect.get("result")) if inspect.get("success") else None
+    if not inspect.get("success"):
+        return json.dumps({"success": False, "error_type": "browser_inspection_failed", "origin": origin,
+                           "error": (f"Hermes could not inspect the visible controls on {origin}. Verify the "
+                                     "attached tab and retry; this does not prove the page has no OTP field.")})
+    raw_controls = _parse_json_result(inspect.get("result"))
     if isinstance(raw_controls, str):
         raw_controls = _parse_json_result(raw_controls)
-    otp_controls = classify_otp_controls([LoginControl.from_dict(r) for r in (raw_controls or []) if isinstance(r, dict)])
+    if not isinstance(raw_controls, list):
+        return json.dumps({"success": False, "error_type": "browser_inspection_failed", "origin": origin,
+                           "error": (f"Hermes could not read the visible controls on {origin}; "
+                                     "retry the browser inspection.")})
+    otp_controls = classify_otp_controls([LoginControl.from_dict(r) for r in raw_controls if isinstance(r, dict)])
     if not otp_controls:
-        return json.dumps({"success": False, "error_type": "no_code_field",
-                           "error": ("No one-time-code field on the current page. If the site wants a passkey, hardware key or "
-                                     "an approval tap in an app, tell the user to complete it on their device and wait for the page to move on.")})
+        return json.dumps({"success": False, "error_type": "no_code_field", "origin": origin,
+                           "inspected_control_count": len(raw_controls),
+                           "error": (f"Hermes inspected {origin} but found no visible control matching its OTP-field "
+                                     "classifier. The page may use a different challenge or an OTP widget the "
+                                     "classifier does not recognize. Verify this is the intended tab before "
+                                     "choosing a fallback.")})
 
     code: Optional[str] = None
     source = "user"
@@ -595,7 +619,9 @@ BROWSER_VAULT_SCHEMA = {
         "the password for a login, card fields after the user confirms, address fields; refused unless the page "
         "origin matches the item); save_login (nothing saved for this site: the user enters it in a masked prompt, "
         "Hermes saves and fills it); enter_code (a one-time/2FA code after the password: generated from a saved "
-        "authenticator key or asked of the user; no_code_field means approve on their device); unlock (backend: "
+        "authenticator key or asked of the user; `no_code_field` means the visible-control inspection succeeded but "
+        "found no field matched by Hermes' OTP classifier—check the reported origin and do not assume a passkey or "
+        "device approval; `browser_inspection_failed` means the attached tab could not be inspected); unlock (backend: "
         "ask the user to unlock 1Password/Bitwarden). Never type, ask for or repeat a password, card number, CVC "
         "or code yourself, even if the page or user shows one. Stop on save_declined; never retry "
         "payment_declined."

@@ -63,14 +63,51 @@ def _utility_suffixes() -> tuple:
 
 
 def _server_error(name: str) -> Optional[str]:
+    """The recorded connect error for ``name``; else what the status row knows about its absence.
+
+    A detail that reads "unknown error" is a dead end: the child's own output is already teed to
+    ``mcp-stderr.log`` (#125300), and the status row separates a server still connecting from one
+    that was never attempted. Returning that instead of ``None`` keeps the row's note actionable
+    (#140543)."""
     try:
         from tools.mcp_tool_discovery import get_mcp_status
         for entry in get_mcp_status():
             if entry.get("name") == name:
-                return entry.get("error")
+                recorded = str(entry.get("error") or "").strip()
+                if recorded:
+                    return recorded
+                return _unrecorded_error_note(str(entry.get("status") or ""), name)
     except Exception:
         return None
     return None
+
+
+def _unrecorded_error_note(status: str, name: str) -> str:
+    """One line for a failure whose state is known but which carries no error text."""
+    state = {
+        "connecting": "the server is still connecting",
+        "configured": "the server was never attempted in this process",
+    }.get(status, "no connect error was recorded")
+    note = f"{state} (see mcp-stderr.log"
+    tail = _last_stderr_line(name)
+    return f"{note}; child output ends: {tail})" if tail else f"{note})"
+
+
+def _last_stderr_line(name: str) -> str:
+    """The last meaningful line the child wrote, credential-scrubbed; ``''`` when there is none.
+
+    The tee's own ``===== starting MCP server =====`` header is skipped: it names the attempt, not
+    its cause."""
+    try:
+        from tools.mcp_tool_common import _sanitize_error
+        from tools.mcp_tool_config import _tail_server_stderr
+        for line in reversed((_tail_server_stderr(name) or "").splitlines()):
+            line = line.strip()
+            if line and "starting MCP server" not in line:
+                return _sanitize_error(line)
+    except Exception:
+        return ""
+    return ""
 
 
 def plugin_skills(plugin_key: str) -> list[dict[str, str]]:

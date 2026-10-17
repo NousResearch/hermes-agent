@@ -342,7 +342,8 @@ def _installed_row(target: Target, outcome: dict[str, Any]) -> tuple:
     server_errors = [{"name": s["name"], "error": s.get("error") or ""} for s in servers if not s.get("connected")]
     enabled = bool(outcome.get("enabled", True))
     missing_env = list(outcome.get("missing_env") or ())
-    notes = [f"MCP server {e['name']} not connected: {e['error'] or 'unknown error'}" for e in server_errors]
+    notes = [f"MCP server {e['name']} not connected: {e['error'] or _missing_error_note()}"
+             for e in server_errors]
     if not enabled:
         notes.append("installed but not enabled")
     if missing_env:
@@ -352,6 +353,14 @@ def _installed_row(target: Target, outcome: dict[str, Any]) -> tuple:
         extra["skill"] = skills[0]
     facts = {"tools": tools, "enabled": enabled, "missing_env": missing_env, "server_errors": server_errors}
     return {**extra, **facts}, "; ".join(notes)
+
+
+def _missing_error_note() -> str:
+    """Wording for a failed connect the connector reported without any diagnostic text (#140543).
+
+    "unknown error" reads as a dead end. The child's output is teed to the profile's
+    ``mcp-stderr.log``, so the note points there instead of naming the absence."""
+    return "no diagnostic was recorded (the child's output is in the profile's mcp-stderr.log)"
 
 
 def _save_credentials(env: dict[str, str]) -> None:

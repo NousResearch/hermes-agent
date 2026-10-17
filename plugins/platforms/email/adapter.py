@@ -71,7 +71,7 @@ _PREAUTH_FETCH = (
     f"<0.{_MAX_PREAUTH_HEADER_BYTES + 1}>)"
 )
 # Authentication-Results clause head (``dmarc=pass``), matched only at the start of a clause.
-_AUTH_METHOD_RE = re.compile(r"\s*(dmarc|dkim|spf)\s*=\s*([a-z]+)", re.IGNORECASE)
+_AUTH_METHOD_RE = re.compile(r"\s*(dmarc|dkim|spf|auth)\s*=\s*([a-z]+)", re.IGNORECASE)
 _NO_AUTH_RESULTS_REASON = "no Authentication-Results header"
 _UNTRUSTED_AUTHSERV_REASON = "no Authentication-Results from trusted authserv-id"
 _MISSING_AUTHSERV_REASON = "authserv-id is not configured; refusing to trust Authentication-Results"
@@ -363,14 +363,18 @@ def _domains_aligned(a: str, b: str) -> bool:
     return bool(a and b) and (a == b or a.endswith("." + b) or b.endswith("." + a))
 
 
-def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str, *, authserv_id: str) -> tuple[bool, str]:
+def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str, *, authserv_id: str,
+                                  own_domain: str = "") -> tuple[bool, str]:
     """Verify the ``From:`` domain is authenticated; returns ``(authenticated, reason)``.
     ``From:`` is attacker-controlled (GHSA-rxqh-5572-8m77); the only trustworthy signal is the
     ``Authentication-Results`` header stamped by the *receiving* server. It prepends, so only the
     FIRST instance is authoritative, and it must match the required, already-normalised *authserv_id* exactly. A matching id is a
     pin, not proof of provenance: the receiving MTA must strip inbound results claiming its id (RFC 8601).
     True on DMARC pass, aligned SPF pass, or aligned DKIM (``header.d``) pass. No header or no pin → fail-closed
-    (opt out via ``EmailAdapter._require_authenticated_sender``)."""
+    (opt out via ``EmailAdapter._require_authenticated_sender``).
+    Also true on a lone ``auth=pass`` for *own_domain* mail with an aligned envelope: same-domain users
+    submit over authenticated SMTP to the agent's own MTA, which signs DKIM without verifying it and
+    skips SPF/DMARC, leaving ``auth=pass`` the only verdict (#140747)."""
     from_domain = _domain_of(from_addr)
     if not from_domain:
         return False, "missing From domain"
@@ -387,7 +391,7 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
         return False, _UNTRUSTED_AUTHSERV_REASON
     # Each verdict comes from the head of its own clause (split outside quotes/comments) and its domains only from that
     # clause: a quoted local part or comment can otherwise smuggle ``spf=pass``/``header.d=`` (GHSA-rxqh-5572-8m77).
-    results: dict[str, list[tuple[str, list[tuple[str, str]]]]] = {"dmarc": [], "spf": [], "dkim": []}
+    results: dict[str, list[tuple[str, list[tuple[str, str]]]]] = {"dmarc": [], "spf": [], "dkim": [], "auth": []}
     for clause in clauses:
         if m := _AUTH_METHOD_RE.match(clause):
             results[m.group(1).lower()].append((m.group(2).lower(), _auth_props(clause)))
@@ -409,6 +413,14 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
     if any(r == "pass" and aligned(props, ("header.d",) if any(p == "header.d" for p, _ in props) else ("header.from",))
            for r, props in results["dkim"]):
         return True, "dkim=pass aligned"
+    # A same-domain submission the receiving MTA itself authenticated carries only auth=pass (#140747): the
+    # pinned authserv-id already trusts that MTA to strip inbound results, and its sender ACL keeps a logged-in
+    # user on their own addresses, so an aligned envelope from the agent's own domain needs no DKIM/DMARC.
+    # One SMTP transaction has one auth verdict, and cross-domain mail keeps the strict path above.
+    if (len(results["auth"]) == 1 and (auth := results["auth"][0])[0] == "pass" and own_domain
+            and _domains_aligned(from_domain, own_domain)
+            and aligned(auth[1], ("smtp.mailfrom", "smtp.from", "envelope-from"))):
+        return True, "auth=pass same-domain"
     return False, f"authentication failed ({trusted[:120]})"
 
 
@@ -740,7 +752,8 @@ class EmailAdapter(BasePlatformAdapter):
         if _is_automated_sender(sender_addr, dict(msg.items())):
             logger.debug("[Email] Skipping automated sender: %s", sender_addr)
             return None
-        sender_authenticated, auth_reason = _verify_sender_authentication(msg, sender_addr, authserv_id=self._authserv_id)
+        sender_authenticated, auth_reason = _verify_sender_authentication(msg, sender_addr, authserv_id=self._authserv_id,
+                                                                          own_domain=_domain_of(self._address))
         return {"uid": uid, "sender_addr": sender_addr, "sender_name": sender_name, "subject": subject,
                 "message_id": msg.get("Message-ID", ""), "in_reply_to": msg.get("In-Reply-To", ""),
                 "date": msg.get("Date", ""), "sender_authenticated": sender_authenticated, "auth_reason": auth_reason}

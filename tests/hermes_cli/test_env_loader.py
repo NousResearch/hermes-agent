@@ -1,5 +1,6 @@
 import codecs
 import os
+import sys
 
 from hermes_cli.env_loader import load_hermes_dotenv
 
@@ -622,3 +623,82 @@ def test_dotenv_published_dashboard_session_token_still_reloads(tmp_path, monkey
     (home / ".env").write_text("HERMES_DASHBOARD_SESSION_TOKEN=second\n", encoding="utf-8")
     load_hermes_dotenv(hermes_home=home)
     assert os.environ["HERMES_DASHBOARD_SESSION_TOKEN"] == "second"
+
+
+def test_windows_cmd_style_vars_expand_on_win32(tmp_path, monkeypatch):
+    """On Windows, %NAME% references in .env values expand like the shell wrote them (#134540).
+
+    ``SSL_CERT_FILE=%USERPROFILE%\\certs\\bundle.crt`` written with cmd/Notepad syntax previously
+    reached git and ssl_verify as a literal ``%USERPROFILE%`` path, failing the update fetch.
+    References to a key defined earlier in the same file resolve too, like ``${VAR}`` does.
+    """
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text(
+        "SSL_CERT_FILE=%USERPROFILE%\\certs\\bundle.crt\n"
+        "WIN_ROOT=C:\\hermes\n"
+        "WIN_DATA=%WIN_ROOT%\\data\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+    monkeypatch.delenv("WIN_ROOT", raising=False)
+    monkeypatch.delenv("WIN_DATA", raising=False)
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [home / ".env"]
+    assert os.environ["SSL_CERT_FILE"] == f"{tmp_path}\\certs\\bundle.crt"
+    assert os.environ["WIN_DATA"] == "C:\\hermes\\data"
+
+
+def test_windows_cmd_style_undefined_var_stays_literal(tmp_path, monkeypatch):
+    """An undefined %NAME% keeps its literal form, matching cmd.exe and python-dotenv's unknown
+    ``${VAR}`` — so a value that merely contains a ``%`` pair is not mangled."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text(
+        "PCT_VALUE=100% done, %NOSUCHVAR% left\n", encoding="utf-8"
+    )
+    monkeypatch.delenv("PCT_VALUE", raising=False)
+    monkeypatch.delenv("NOSUCHVAR", raising=False)
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.environ["PCT_VALUE"] == "100% done, %NOSUCHVAR% left"
+
+
+def test_non_windows_leaves_cmd_style_vars_literal(tmp_path, monkeypatch):
+    """POSIX keeps %NAME% literal: ``%`` is not an expansion character there, so secrets or URLs
+    containing a ``%`` pair must survive the load unchanged."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text(
+        "KEEP_LITERAL=%USERPROFILE%\\certs\\bundle.crt\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.delenv("KEEP_LITERAL", raising=False)
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.environ["KEEP_LITERAL"] == "%USERPROFILE%\\certs\\bundle.crt"
+
+
+def test_windows_cmd_style_reload_resolves_against_baseline(tmp_path, monkeypatch):
+    """A self-referencing %VAR% must not grow on reload: the reference resolves against the
+    pre-publish baseline (the same peel ``_DOTENV_PUBLISHED`` applies to ``${VAR}``), so gateway
+    per-turn and cron reloads keep the value stable instead of appending to it."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text("WIN_CHAIN=%WIN_CHAIN%tail\n", encoding="utf-8")
+    monkeypatch.delenv("WIN_CHAIN", raising=False)
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    load_hermes_dotenv(hermes_home=home)
+    assert os.environ["WIN_CHAIN"] == "%WIN_CHAIN%tail"
+
+    load_hermes_dotenv(hermes_home=home)
+    load_hermes_dotenv(hermes_home=home)
+    assert os.environ["WIN_CHAIN"] == "%WIN_CHAIN%tail"

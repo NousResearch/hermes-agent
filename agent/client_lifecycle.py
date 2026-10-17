@@ -585,6 +585,23 @@ class ClientLifecycleMixin:
         singleton_key = str(singleton_now.get("api_key") or "").strip()
         old_key = str(self.api_key or "").strip()
         if singleton_key and old_key and singleton_key != old_key:
+            # Same ChatGPT account: the store already holds this account's newer token (the pool refreshed
+            # it after this agent was built), so adopting it is not a swap. Without this the turn dies on
+            # the stale bearer until the process restarts.
+            if self.provider == "openai-codex":
+                from hermes_cli.auth_constants import _decode_jwt_claims
+
+                def _account(token: str) -> str:
+                    claims = _decode_jwt_claims(token).get("https://api.openai.com/auth")
+                    return str(claims.get("chatgpt_account_id") or "") if isinstance(claims, dict) else ""
+
+                base_url = singleton_now.get("base_url")
+                if _account(old_key) and _account(old_key) == _account(singleton_key) and _valid_credential_pair(
+                    singleton_key, base_url
+                ):
+                    return self._adopt_openai_credentials(
+                        singleton_key, base_url, reason="openai-codex_stored_token_adopted"
+                    )
             logger.debug(
                 "%s singleton tokens differ from the active api_key; skipping singleton force-refresh to avoid "
                 "silent account swap. Reactive credential rotation should go through the pool.", self.provider,

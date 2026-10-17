@@ -53,16 +53,17 @@ def test_declared_own_policy_env_refuses_open_policy_without_allow_all(probe_pla
     assert _own_policy_open_startup_violation(cfg) is None
 
 
-@pytest.mark.parametrize("declared", [True, False])
+@pytest.mark.parametrize("declared", ["both", "group_only", "none"])
 def test_declared_group_chat_env_and_pairing_suppression(monkeypatch, declared):
-    """A plugin platform declaring ``group_allowed_chats_env`` / ``allowlist_suppresses_pairing``
-    gets chat-id group authorization and the allowlist-aware "ignore" default; undeclared, neither."""
+    """``group_allowed_chats_env`` authorizes group chats by id; only ``allowlist_suppresses_pairing``
+    turns the unauthorized-DM default from "pair" into "ignore" (a group list alone never does)."""
     from gateway.platform_registry import PlatformEntry, platform_registry
     from gateway.run import GatewayRunner
 
     for var in ("GRPPROBE_ALLOWED_USERS", "GRPPROBE_GROUP_CHATS", "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS"):
         monkeypatch.delenv(var, raising=False)
-    fields = dict(group_allowed_chats_env="GRPPROBE_GROUP_CHATS", allowlist_suppresses_pairing=True) if declared else {}
+    fields = {"both": dict(group_allowed_chats_env="GRPPROBE_GROUP_CHATS", allowlist_suppresses_pairing=True),
+              "group_only": dict(group_allowed_chats_env="GRPPROBE_GROUP_CHATS"), "none": {}}[declared]
     platform_registry.register(PlatformEntry(
         name="grpprobe", label="Group Probe", adapter_factory=lambda cfg: None, check_fn=lambda: True,
         allowed_users_env="GRPPROBE_ALLOWED_USERS", **fields))
@@ -73,9 +74,11 @@ def test_declared_group_chat_env_and_pairing_suppression(monkeypatch, declared):
         group = SessionSource(platform=Platform("grpprobe"), chat_id="g1", chat_type="group", user_id=None,
                               user_name="")
         monkeypatch.setenv("GRPPROBE_GROUP_CHATS", "g1")
-        assert runner._is_user_authorized(group) is declared
+        assert runner._is_user_authorized(group) is (declared != "none")
+        dm = runner._get_unauthorized_dm_behavior(Platform("grpprobe"))
+        assert dm == ("ignore" if declared == "both" else "pair")
         monkeypatch.delenv("GRPPROBE_GROUP_CHATS")
         monkeypatch.setenv("GRPPROBE_ALLOWED_USERS", "owner")
-        assert runner._get_unauthorized_dm_behavior(Platform("grpprobe")) == ("ignore" if declared else "pair")
+        assert runner._get_unauthorized_dm_behavior(Platform("grpprobe")) == ("ignore" if declared == "both" else "pair")
     finally:
         platform_registry.unregister("grpprobe")

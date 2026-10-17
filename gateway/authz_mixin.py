@@ -749,9 +749,10 @@ class GatewayAuthorizationMixin:
             if dm_policy in {"allowlist", "disabled"}:
                 return "ignore"
             entry = _registry_entry(platform)
-            env_key = (authz_field(platform.value, "allowed_users_env", entry) or ""
-                       if authz_field(platform.value, "allowlist_suppresses_pairing", entry) else "")
-            allowlist_keys = [env_key, _GROUP_USER_ENV.get(platform), _group_chat_env(platform, entry), *allowlist_keys]
+            # A group allowlist alone must not silence DM pairing: only platforms that opt in.
+            if authz_field(platform.value, "allowlist_suppresses_pairing", entry):
+                allowlist_keys = [authz_field(platform.value, "allowed_users_env", entry) or "",
+                                  _GROUP_USER_ENV.get(platform), _group_chat_env(platform, entry), *allowlist_keys]
         if any(key and _auth_env(key).strip() for key in allowlist_keys):
             return "ignore"
         return "pair"

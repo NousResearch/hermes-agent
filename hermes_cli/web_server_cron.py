@@ -173,6 +173,16 @@ def _call_cron_for_profile(target_profile: Optional[str], func_name: str, *args,
     return result
 
 
+def _cron_store_health_sync(profile: Optional[str]) -> dict[str, Any]:
+    """`hermes cron status`'s write probe for one profile's cron store. ``unwritable`` is None when
+    the store accepts writes, else the same fields the CLI and doctor report."""
+    from cron.store_health import probe_report
+    profile_name, home = _cron_profile_home(profile)
+    with _cron_store_scope(home) as cron_jobs:
+        report = probe_report(cron_jobs._current_cron_store().cron_dir)
+    return {"profile": profile_name, "writable": report is None, "unwritable": report}
+
+
 def _notify_cron_provider_for_profile(target_profile: Optional[str]) -> None:
     """Best-effort provider reconcile against one profile's job store.
 

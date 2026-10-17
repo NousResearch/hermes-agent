@@ -371,6 +371,48 @@ class TestGatewayRuntimeStatus:
         assert payload["pid"] == os.getpid(), "PID should be overwritten, not preserved via setdefault"
         assert payload["start_time"] != 1000.0, "start_time should be overwritten on restart"
 
+    def test_write_runtime_status_refreshes_the_previous_writers_home_on_restart(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression: ``hermes_home`` was the one identity field the restamp left behind (#136909).
+
+        Same contract as the PID test above (#1631: a state file outlives its creator, so the
+        top-level record must describe the CURRENT writer), but for the field that is read back as
+        an ownership proof.  ``gateway_state.json`` keeps living at a fixed path across a HERMES_HOME
+        move (an old root symlinked to the new one, a restored backup), so a restart loads the
+        previous writer's ``hermes_home`` and — without the refresh — republishes it under a current
+        pid/argv/start_time.  Then the compatibility symlink is removed, the stale string resolves to
+        a nonexistent path, and the live gateway is reported as another home's.
+        """
+        live_root = tmp_path / "live-root"
+        live_root.mkdir()
+        retired_root = tmp_path / "retired-root"
+        retired_root.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(live_root))
+
+        # The previous writer ran under the now-retired root and left its record at the path the
+        # live root reaches (the compatibility symlink is what made this look harmless).
+        (live_root / "gateway_state.json").write_text(
+            json.dumps({
+                "pid": 99999,
+                "kind": "hermes-gateway",
+                "argv": ["hermes", "gateway", "run"],
+                "hermes_home": str(retired_root),
+                "updated_at": "2025-01-01T00:00:00Z",
+                "platforms": {},
+            }),
+            encoding="utf-8",
+        )
+
+        status.write_runtime_status(gateway_state="running", reload_existing=True)
+
+        payload = status.read_runtime_status()
+        assert payload["pid"] == os.getpid()
+        assert payload["hermes_home"] == str(status._canonical_hermes_home(live_root))
+        # The live writer is at home: no cross-profile kill guard may fire on its own record.
+        assert status.recorded_gateway_home_conflicts(payload) is False
+        # The retired path later reused by an unrelated home must not read as "same home".
+        assert status.recorded_gateway_home_conflicts(payload, expected_home=retired_root) is True
 
     def test_runtime_status_running_pid_rejects_pid_reused_by_other_profile(self, monkeypatch):
         """Regression (user report): a stale profile's recycled PID must not be

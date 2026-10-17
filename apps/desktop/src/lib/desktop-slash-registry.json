@@ -121,7 +121,7 @@
   "/upgrade": null,
   "/usage": null,
   "/v": null,
-  "/verbose": "terminal",
+  "/verbose": null,
   "/version": null,
   "/voice": "composer-voice",
   "/wake": null,

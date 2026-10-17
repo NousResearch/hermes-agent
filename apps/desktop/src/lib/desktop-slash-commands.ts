@@ -334,6 +334,29 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     description: 'Show current session status',
     surface: rpc('session.status', ctx => ({ session_id: ctx.sessionId }))
   },
+  // /focus must reach the gateway's config.set branch (the Ink TUI's path),
+  // not exec: the slash worker's HermesCLI toggles its own process-local
+  // state and writes config.yaml, but the live gateway session's
+  // tool_progress_mode is seeded once at session create and never re-read,
+  // so the confirmation rendered while the visible tool feed stayed
+  // unchanged (#136058). The gateway resolves on|off|status and a bare
+  // toggle; the reply carries the effective tool_progress mode.
+  {
+    name: '/focus',
+    description: 'Toggle focus view — show only your prompt and the final response',
+    surface: rpc('config.set', ctx => ({ key: 'focus', value: ctx.arg.trim(), session_id: ctx.sessionId })),
+    argumentMode: 'options'
+  },
+  // /verbose rides the same config.set branch (explicit off|new|all|verbose,
+  // or a bare cycle) so the toggle lands on the live session instead of the
+  // worker's throwaway CLI. The registry keeps offering it while the
+  // display.tool_progress_command messaging gate stays untouched (#136058).
+  {
+    name: '/verbose',
+    description: 'Cycle tool progress display: off -> new -> all -> verbose',
+    surface: rpc('config.set', ctx => ({ key: 'verbose', value: ctx.arg.trim(), session_id: ctx.sessionId })),
+    argumentMode: 'options'
+  },
   {
     // Keep this explicit so a current Desktop can review staged writes even
     // when connected to an older backend whose catalog still says the Skills

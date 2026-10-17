@@ -4194,17 +4194,8 @@ Write only the summary body. Do not include any preamble or prefix."""
         # Auth/permission/quota failures are not retryable: flag so compress() preserves the
         # session. A distinct summary_model still gets the one-shot main-model fallback.
         if access_error:
-            # Field name kept for caller compatibility; now covers the whole access/quota class.
-            self._last_summary_auth_failure = True
-            # A 401/403 on the already-pinned main route means the stored snapshot (or the pool
-            # entry recovery landed on) is dead. Drop the latch so the next attempt re-reads
-            # ``auxiliary.compression`` instead of re-pinning the same broken main route for hours (#138469).
-            if getattr(self, "_summary_model_fallen_back", False):
-                self._summary_model_fallen_back = False
-                logger.info(
-                    "Cleared compression fallback latch after auth/quota failure on main route "
-                    "so auxiliary.compression can apply again"
-                )
+            self._last_summary_auth_failure = True  # name kept for callers; covers access/quota class
+            self._clear_fallback_latch_after_access_error()  # #138469
         if kind.json_decode and not kind.model_not_found and not kind.timeout:
             logger.error(
                 "Context compression failed: auxiliary LLM returned a non-JSON response. provider=%s "

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import inspect
+import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.auxiliary_client import AuxiliaryExplicitCancellation
 
 if TYPE_CHECKING:
     from agent.context_compressor import _HandoffScan
+
+logger = logging.getLogger(__name__)
 
 
 def _accepts_keyword_argument(callable_obj: Any, name: str) -> bool:
@@ -75,6 +78,15 @@ class SummaryDispatchMixin:
         ):
             if value:
                 call_kwargs[key] = value
+
+    def _clear_fallback_latch_after_access_error(self) -> None:
+        """A 401/403/quota error on the already-pinned main route means the stored snapshot (or the
+        pool entry recovery landed on) is dead. Drop the latch so the next attempt re-reads
+        ``auxiliary.compression`` instead of re-pinning the same broken main route for hours (#138469)."""
+        if getattr(self, "_summary_model_fallen_back", False):
+            self._summary_model_fallen_back = False
+            logger.info("Cleared compression fallback latch after auth/quota failure on main route "
+                        "so auxiliary.compression can apply again")
 
     def _summarize_window(
         self, messages: list[dict[str, Any]], turns_to_summarize: list[dict[str, Any]], scan: _HandoffScan,

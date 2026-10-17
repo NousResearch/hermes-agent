@@ -108,7 +108,38 @@ def _managed_or_provider_row(feature, name: str, managed_label: str, missing_hin
 
 def _web_row(config, feats):
     # Web tools (Exa, Parallel, Firecrawl, Tavily, or Keenable)
-    return _managed_or_provider_row(feats.web, "Web Search & Extract", "Nous subscription", _WEB_MISSING)
+    feature = feats.web
+    if feature.managed_by_nous or not feature.explicit_configured:
+        return _managed_or_provider_row(feature, "Web Search & Extract", "Nous subscription", _WEB_MISSING)
+
+    # A configured provider can work through an explicit keyless tier even though the subscription
+    # feature snapshot only sees credentials. Resolve both capabilities exactly as dispatch does;
+    # a configured paid tier with no key remains unavailable because is_keyless_available() is false.
+    try:
+        from agent.web_search_registry import get_active_extract_provider, get_active_search_provider
+        from tools.web_tools import _ensure_web_plugins_loaded, _provider_is_ready
+
+        _ensure_web_plugins_loaded()
+        search_provider = get_active_search_provider()
+        extract_provider = get_active_extract_provider()
+        if search_provider is not None and extract_provider is not None and _provider_is_ready(
+            search_provider
+        ) and _provider_is_ready(extract_provider):
+            search_name = _web_provider_name(search_provider)
+            extract_name = _web_provider_name(extract_provider)
+            search_key = getattr(search_provider, "name", None) or search_name
+            extract_key = getattr(extract_provider, "name", None) or extract_name
+            detail = search_name if search_key == extract_key else (
+                f"{search_name} search, {extract_name} extract"
+            )
+            return (f"Web Search & Extract ({detail})", True, None)
+    except Exception:
+        logger.debug("Could not resolve selected web providers for setup summary", exc_info=True)
+    return ("Web Search & Extract", False, _WEB_MISSING)
+
+
+def _web_provider_name(provider):
+    return str(getattr(provider, "display_name", None) or getattr(provider, "name", None) or "web provider")
 
 
 def _browser_row(config, feats):

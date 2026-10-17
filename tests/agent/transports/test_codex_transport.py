@@ -1752,6 +1752,38 @@ class TestCodexTransportXaiReasoningEffort:
 
         assert kw["reasoning"]["effort"] == "xhigh"
 
+    @pytest.mark.parametrize(("model", "effort", "expected"), [
+        ("grok-4.7", "low", "low"),
+        ("x-ai/grok-4.7-latest", "medium", "medium"),
+        ("grok-4.7", "high", "high"),
+        ("grok-4.7", "xhigh", "xhigh"),
+        ("grok-4.7", "max", "xhigh"),
+    ])
+    def test_grok_47_sends_reasoning_effort(self, transport, model, effort, expected):
+        """grok-4.7 was missing from the effort allowlist, so reasoning.effort was dropped."""
+        kw = transport.build_kwargs(
+            model=model,
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_xai_responses=True,
+            reasoning_config={"enabled": True, "effort": effort},
+        )
+
+        assert kw["reasoning"] == {"effort": expected}
+        assert "context_management" not in kw
+
+    def test_grok_47_omits_reasoning_when_disabled(self, transport):
+        """grok-4.7 rejects reasoning.effort=none. An explicit disable sends no reasoning key."""
+        kw = transport.build_kwargs(
+            model="grok-4.7",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_xai_responses=True,
+            reasoning_config={"enabled": False},
+        )
+
+        assert "reasoning" not in kw
+
     @pytest.mark.parametrize("effort", ["max", "ultra"])
     def test_grok_46_clamps_hermes_aliases_to_model_ceiling(self, transport, effort):
         """Hermes ladder aliases mean "this model's ceiling" — on grok-4.6
@@ -1833,6 +1865,42 @@ class TestCodexTransportXaiServiceTierStrip:
         )
 
         assert kw.get("service_tier") == "priority"
+
+    @pytest.mark.parametrize("model", ["grok-4.7", "x-ai/grok-4.7-latest"])
+    def test_grok_47_preserves_priority_service_tier(self, transport, model):
+        kw = transport.build_kwargs(
+            model=model,
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_xai_responses=True,
+            request_overrides={"service_tier": "priority"},
+        )
+
+        assert kw.get("service_tier") == "priority"
+
+    def test_grok_47_strips_non_priority_service_tier(self, transport):
+        kw = transport.build_kwargs(
+            model="grok-4.7",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_xai_responses=True,
+            request_overrides={"service_tier": "flex"},
+        )
+
+        assert "service_tier" not in kw
+
+    def test_grok_47_replays_checkpoint_without_context_management(self, transport):
+        """xAI compaction is POST /v1/responses/compact. The OpenAI field must stay off."""
+        kw = transport.build_kwargs(
+            model="grok-4.7",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_xai_responses=True,
+            native_compaction_eligible=True,
+        )
+
+        assert "context_management" not in kw
+        assert any(item.get("role") == "user" for item in kw["input"])
 
     def test_grok_46_strips_non_priority_service_tier(self, transport):
         kw = transport.build_kwargs(

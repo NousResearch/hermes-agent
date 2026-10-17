@@ -264,8 +264,8 @@ class ProviderProfile:
         """Provider-qualified context bound; explicit user overrides take precedence."""
         return None
 
-    def get_usage_cost(self, model: str, usage: Any) -> Any | None:
-        """Optional CostResult from canonical usage; distinguish estimates from invoices."""
+    def get_usage_cost(self, model: str, usage: Any, *, base_url: str | None = None) -> Any | None:
+        """Optional CostResult from canonical usage; base_url is the request origin."""
         return None
 
     def get_max_tokens(self, model: str | None) -> int | None:

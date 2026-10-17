@@ -44,7 +44,8 @@ DAYBREAK_MODEL_IDS: frozenset[str] = frozenset(
     {"gpt-daybreak-blue-latest", "gpt-daybreak-blue-latest-900k"}
 )
 
-#: xAI Responses — Grok 4.6+ accepts xhigh; older Grok tops out at high.
+#: xAI Responses — Grok 4.6 and 4.7 accept xhigh; older Grok tops out at high.
+#: Neither ladder includes "none": grok-4.5+ reject it and keep their default (high).
 XAI_GROK46_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh")
 XAI_LEGACY_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
 

@@ -245,6 +245,25 @@ wrappers, command substitutions (`$(...)`, backticks, `<(...)`) and commands
 whose approval category would change without the `&` are still refused with
 guidance, because Hermes cannot safely tell which part should keep running.
 
+### Repeated waits on a quiet process
+
+When the agent calls `process(action="wait")` or `process(action="poll")` twice in a row on a
+process that is still running and has printed nothing new, Hermes turns on `notify_on_complete`
+for that process and the result tells the agent to stop checking: the exit (code and final output)
+arrives later as its own message, so the agent can do other work or end its turn instead of
+spending a model call on every unchanged check. New output, the process exiting, or any other
+action on that process resets the count.
+
+This applies where a completion can reach the agent: the interactive CLI, the TUI and desktop app,
+`hermes chat -q`, and messaging chats. One-shot `hermes -z` runs, cron jobs, Kanban workers,
+stateless API requests and delegated subagents cannot receive a later completion, so they keep the
+previous behaviour. To keep plain polling everywhere, set:
+
+```yaml
+terminal:
+  process_wait_auto_notify: false
+```
+
 Completed background commands retain their exit status and captured output in the
 active profile. Resume the conversation that launched the command (or its
 compressed continuation), then use the original `session_id` with

@@ -64,9 +64,20 @@ def test_parent_explicit_disable_still_wins(delegation_cfg):
 
 @pytest.mark.parametrize("value", [[], "", None, 0])
 def test_empty_values_are_noop(delegation_cfg, value):
+    baseline = dts._resolve_child_toolsets(_parent(), None, "leaf")
     delegation_cfg["child_extra_toolsets"] = value
-    assert dts._resolve_child_toolsets(_parent(), None, "leaf") == dts._resolve_child_toolsets(
-        _parent(), None, "leaf"
-    )
+    assert dts._resolve_child_toolsets(_parent(), None, "leaf") == baseline
+
+
+def test_wildcards_are_rejected(delegation_cfg):
+    delegation_cfg["child_extra_toolsets"] = ["all", "*"]
     child, _ = dts._resolve_child_toolsets(_parent(), None, "leaf")
-    assert "browser" not in child
+    assert not {"all", "*"} & set(child)
+
+
+def test_plugin_registered_toolset_is_accepted(delegation_cfg, monkeypatch):
+    real = dts.validate_toolset
+    monkeypatch.setattr(dts, "validate_toolset", lambda name: name == "google_meet" or real(name))
+    delegation_cfg["child_extra_toolsets"] = ["google_meet"]
+    child, _ = dts._resolve_child_toolsets(_parent(), None, "leaf")
+    assert "google_meet" in child

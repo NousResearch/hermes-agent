@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import List, Optional
 
-from toolsets import TOOLSETS, resolve_toolset
+from toolsets import TOOLSETS, resolve_toolset, validate_toolset
 from tools.delegate_tool_config import _cfg, _get_inherit_mcp_toolsets
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
@@ -38,7 +38,8 @@ def _get_child_extra_toolsets() -> list[str]:
     for name in (str(n).strip() for n in names):
         if not name or name in out:
             continue
-        if name not in TOOLSETS and not _is_mcp_toolset_name(name):
+        # validate_toolset covers static, plugin-registered and alias toolsets; "all"/"*" would grant everything.
+        if name in {"all", "*"} or not (validate_toolset(name) or _is_mcp_toolset_name(name)):
             logger.warning("delegation.child_extra_toolsets: unknown toolset %r ignored", name)
             continue
         out.append(name)

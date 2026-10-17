@@ -60,6 +60,55 @@ def test_ambient_only_launch_credential_never_reaches_a_routed_child(homes):
         served_profile_child_env(inherit_credentials=True)
 
 
+def test_routed_child_scrubs_launch_external_source_credentials(homes, monkeypatch):
+    """Arbitrary names written by the launch profile's secret source never reach a sibling."""
+    from hermes_cli import env_loader
+
+    a, b = homes
+    monkeypatch.setitem(
+        env_loader._SECRET_SOURCE_OWNED_NAMES_BY_HOME,
+        str(a.resolve()),
+        frozenset({"VAULT_ONLY_SECRET"}),
+    )
+    env = served_profile_child_env(
+        base={
+            "HERMES_HOME": str(a),
+            "VAULT_ONLY_SECRET": "launch-vault-secret",
+            "UNRELATED_SETTING": "keep",
+        },
+        target_home=b,
+        launch_home=a,
+        inherit_credentials=True,
+    )
+
+    assert "VAULT_ONLY_SECRET" not in env
+    assert env["UNRELATED_SETTING"] == "keep"
+
+
+def test_routed_child_scrubs_case_variants_of_profile_credentials(homes):
+    """Windows-style case variants cannot bypass routed-profile credential isolation."""
+    a, b = homes
+    env = served_profile_child_env(
+        base={
+            "HERMES_HOME": str(a),
+            "aws_access_key_id": "launch-access",
+            "Aws_Shared_Credentials_File": "/launch/credentials",
+            "hermes_custom_demo_api_key": "launch-custom",
+            "aws_ec2_metadata_disabled": "false",
+        },
+        target_home=b,
+        launch_home=a,
+        inherit_credentials=True,
+    )
+
+    assert "aws_access_key_id" not in env
+    assert "Aws_Shared_Credentials_File" not in env
+    assert "hermes_custom_demo_api_key" not in env
+    assert "aws_ec2_metadata_disabled" not in env
+    assert env["AWS_SHARED_CREDENTIALS_FILE"] == str(b / ".aws" / "credentials")
+    assert env["AWS_EC2_METADATA_DISABLED"] == "true"
+
+
 def test_routed_home_with_multiplex_flag_off_gets_no_launch_residue(homes, monkeypatch):
     """Desktop/dashboard topology: B served via the HERMES_HOME override only. The slash-worker /
     helper child sees B's env, and the browser passthrough resolves B's (absent) key as no key."""

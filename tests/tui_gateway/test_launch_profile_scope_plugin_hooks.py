@@ -42,7 +42,7 @@ def two_homes(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(launch))
     monkeypatch.setattr(server, "_hermes_home", launch)
     monkeypatch.setattr(server, "_served_profile_homes", set())
-    monkeypatch.setattr(lpp, "_snapshot", None)
+    monkeypatch.setattr(lpp, "_authority", None)
     plugins_mod._reset_plugin_managers_for_tests()
     seen: list[dict] = []
 

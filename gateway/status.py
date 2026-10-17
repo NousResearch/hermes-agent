@@ -16,6 +16,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone, UTC
 from pathlib import Path
@@ -316,7 +317,9 @@ def _get_runtime_status_path() -> Path:
     return _get_process_hermes_home() / _RUNTIME_STATUS_FILE
 
 
-def _get_lock_dir() -> Path:
+def _get_lock_dir(
+    env: Mapping[str, str] | None = None, *, home: Path | None = None
+) -> Path:
     """Cross-profile rendezvous dir for machine-local locks; ``HERMES_GATEWAY_LOCK_DIR`` overrides.
 
     Scope is the **OS user**, not the kernel host: separate users have separate ``$HOME``s,
@@ -325,13 +328,19 @@ def _get_lock_dir() -> Path:
     and the host-role lock + rendezvous record (``gateway/host_rendezvous.py``); the per-home
     ``gateway.pid``/``gateway.lock`` above deliberately stay under each profile's HERMES_HOME.
     """
-    override = os.getenv("HERMES_GATEWAY_LOCK_DIR")
+    source = os.environ if env is None else env
+    override = source.get("HERMES_GATEWAY_LOCK_DIR")
     if override:
         return Path(override)
     # XDG spec: a relative $XDG_STATE_HOME is INVALID and must be ignored. Honouring one made the
     # lock dir CWD-relative, so two serves started from different directories shared no singleton.
-    state_home_env = os.getenv("XDG_STATE_HOME") or ""
-    state_home = Path(state_home_env) if os.path.isabs(state_home_env) else Path.home() / ".local" / "state"
+    state_home_env = source.get("XDG_STATE_HOME") or ""
+    if os.path.isabs(state_home_env):
+        state_home = Path(state_home_env)
+    else:
+        if env is not None and home is None:
+            raise ValueError("explicit lock-dir environment requires a captured OS home")
+        state_home = (Path.home() if home is None else home) / ".local" / "state"
     return state_home / "hermes" / _LOCKS_DIRNAME
 
 

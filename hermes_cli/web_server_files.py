@@ -299,6 +299,19 @@ def _managed_files_policy(request: Optional[Request], *, create_root: bool = Tru
     return ManagedFilesPolicy(default_path=home, locked_root=None, can_change_path=True)
 
 
+def _docker_media_host_candidate(candidate: Path) -> Optional[Path]:
+    """Container-absolute MEDIA path (``/workspace/...``) resolved to its host bind-mount
+    source, so Docker-sandbox files download through the dashboard file APIs like they
+    already deliver on messaging platforms (#137381)."""
+    if not candidate.is_absolute() or candidate.exists():
+        return None
+    try:
+        from gateway.platforms.base import _translate_docker_container_media_path
+        return _translate_docker_container_media_path(candidate)
+    except (ImportError, OSError, RuntimeError, ValueError):
+        return None
+
+
 def _resolve_managed_path(
     raw_path: str | None, request: Request, *, for_write: bool = False,
     for_agent_read: bool = False,
@@ -336,7 +349,9 @@ def _resolve_managed_path(
         parent = _canonical_path(candidate.parent)
         resolved = parent / candidate.name
     else:
-        resolved = _canonical_path(candidate, require_exists=not for_write)
+        resolved = _docker_media_host_candidate(candidate)
+        if resolved is None:
+            resolved = _canonical_path(candidate, require_exists=not for_write)
 
     if root is not None and not _path_is_under(root, resolved):
         raise HTTPException(status_code=403, detail="Path outside managed files root")

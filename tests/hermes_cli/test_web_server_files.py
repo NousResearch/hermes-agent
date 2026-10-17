@@ -706,3 +706,28 @@ def test_dangling_symlink_does_not_break_directory_listing(forced_files_client):
     # Reading or downloading the broken symlink directly is still an error.
     assert client.get("/api/files/read", params={"path": str(root / "dangling")}).status_code == 404
     assert client.get("/api/files/download", params={"path": str(root / "dangling")}).status_code == 404
+
+
+def test_download_translates_docker_sandbox_media_paths(local_files_client, monkeypatch, tmp_path):
+    """A MEDIA: path emitted inside the Docker sandbox (/workspace/...) downloads through
+    the dashboard file API like it already delivers on messaging platforms (#137381)."""
+    sandbox_root = tmp_path / "sandboxes"
+    monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(sandbox_root))
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
+    workspace = sandbox_root / "docker" / "default" / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / "report.txt").write_bytes(b"sandbox artifact")
+
+    client, _home = local_files_client
+    ok = client.get("/api/files/download", params={"path": "/workspace/report.txt"})
+    assert ok.status_code == 200
+    assert ok.content == b"sandbox artifact"
+
+
+def test_download_keeps_404_when_no_docker_translation_resolves(local_files_client, monkeypatch):
+    """Without Docker env (or a matching sandbox mount) a container-shaped path stays 404."""
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+    client, _home = local_files_client
+    missing = client.get("/api/files/download", params={"path": "/workspace/missing.txt"})
+    assert missing.status_code == 404

@@ -747,7 +747,10 @@ The Microsoft Teams platform adapter (Bot Framework / Azure AD), distinct from t
 | Variable | Description |
 |----------|-------------|
 | `TEAMS_CLIENT_ID` | Azure AD application (Bot Framework) client ID. |
-| `TEAMS_CLIENT_SECRET` | Azure AD application client secret. |
+| `TEAMS_CLIENT_SECRET` | Azure AD application client secret. Omit when certificate auth is configured. |
+| `TEAMS_CLIENT_CERT_PATH` | PEM certificate for Entra certificate auth (alternative to the client secret). May also contain the private key. |
+| `TEAMS_CLIENT_KEY_PATH` | PEM private key for certificate auth, when it is not inside `TEAMS_CLIENT_CERT_PATH`. |
+| `TEAMS_CLIENT_CERT_THUMBPRINT` | SHA-1 or SHA-256 certificate thumbprint (hex). Optional when the certificate PEM is set; required with a key-only PEM. |
 | `TEAMS_TENANT_ID` | Azure AD tenant ID hosting the bot application. |
 | `TEAMS_HOST` | Webhook bind host (default: unset → dual-stack, all interfaces IPv4+IPv6). |
 | `TEAMS_PORT` | Webhook listen port (Bot Framework default: `3978`). |

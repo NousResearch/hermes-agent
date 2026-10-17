@@ -26,6 +26,18 @@ requires_env:
     prompt: "Teams / Azure AD tenant ID"
     password: false
 optional_env:
+  - name: TEAMS_CLIENT_CERT_PATH
+    description: "PEM certificate for Entra certificate auth (alternative to TEAMS_CLIENT_SECRET). May also contain the private key."
+    prompt: "Certificate PEM path (or empty)"
+    password: false
+  - name: TEAMS_CLIENT_KEY_PATH
+    description: "PEM private key for certificate auth, when it is not inside TEAMS_CLIENT_CERT_PATH"
+    prompt: "Private key PEM path (or empty)"
+    password: false
+  - name: TEAMS_CLIENT_CERT_THUMBPRINT
+    description: "SHA-1 or SHA-256 certificate thumbprint (hex). Optional when the certificate PEM is set; required with a key-only PEM."
+    prompt: "Certificate thumbprint (or empty)"
+    password: false
   - name: TEAMS_PORT
     description: "Webhook listen port (Bot Framework default: 3978)"
     prompt: "Webhook port"

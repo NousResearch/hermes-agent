@@ -106,6 +106,8 @@ TEAMS_TENANT_ID=<your-tenant-id>
 TEAMS_ALLOWED_USERS=<your-aad-object-id>
 ```
 
+To use a certificate instead of the client secret, omit `TEAMS_CLIENT_SECRET` and set the [certificate variables](#certificate-authentication). When any certificate setting is set, Hermes signs the token request with that key and does not send the secret.
+
 ---
 
 ## Step 5: Start the Gateway
@@ -167,7 +169,10 @@ Open the printed link in your browser — it opens directly in the Teams client.
 | Variable | Description |
 |----------|-------------|
 | `TEAMS_CLIENT_ID` | Azure AD App (client) ID |
-| `TEAMS_CLIENT_SECRET` | Azure AD client secret |
+| `TEAMS_CLIENT_SECRET` | Azure AD client secret. Not used when a certificate is configured. |
+| `TEAMS_CLIENT_CERT_PATH` | PEM certificate for [certificate auth](#certificate-authentication). May also contain the private key. |
+| `TEAMS_CLIENT_KEY_PATH` | PEM private key, when it is not inside `TEAMS_CLIENT_CERT_PATH`. |
+| `TEAMS_CLIENT_CERT_THUMBPRINT` | SHA-1 or SHA-256 thumbprint (hex). Optional when the certificate PEM is set. |
 | `TEAMS_TENANT_ID` | Azure AD tenant ID |
 | `TEAMS_ALLOWED_USERS` | Comma-separated AAD object IDs allowed to use the bot |
 | `TEAMS_ALLOW_ALL_USERS` | Set `true` to skip the allowlist and allow anyone |
@@ -191,6 +196,25 @@ platforms:
       port: 3978
     require_mention: false   # true once the app has RSC message-read consent
 ```
+
+### Certificate authentication
+
+Entra app registrations can authenticate with a certificate instead of a client secret. Upload the certificate on the app's **Certificates & secrets** blade, then point Hermes at the PEM private key and either the certificate file or its thumbprint:
+
+```bash
+TEAMS_CLIENT_ID=<your-client-id>
+TEAMS_TENANT_ID=<your-tenant-id>
+TEAMS_CLIENT_CERT_PATH=/path/to/cert.pem
+TEAMS_CLIENT_KEY_PATH=/path/to/key.pem
+# Optional when TEAMS_CLIENT_CERT_PATH holds the certificate. Required for a key-only PEM.
+# TEAMS_CLIENT_CERT_THUMBPRINT=<sha1-or-sha256-hex>
+```
+
+The same keys live under `platforms.teams.extra` as `client_cert_path`, `client_key_path`, and `client_cert_thumbprint`. A single PEM that contains both the certificate and the private key only needs `client_cert_path` / `TEAMS_CLIENT_CERT_PATH`. Hermes builds the OAuth `client_assertion` (RS256 JWT, `x5t` or `x5t#S256` thumbprint) and uses it for Bot Framework tokens, including the Teams SDK's outbound calls, attachment downloads, and cron sends.
+
+`hermes gateway setup` asks whether to use a certificate. Choosing one clears a previously saved client secret, and choosing a secret clears previously saved certificate settings, so the two methods do not stay stacked.
+
+If neither a secret nor a certificate is configured, the adapter refuses to start and names both options.
 
 ---
 
@@ -269,7 +293,7 @@ Make sure the public HTTPS endpoint is reachable from the internet and uses a va
 | `health` endpoint works but bot doesn't respond | Check that your tunnel is still running and the bot's messaging endpoint matches the tunnel URL |
 | Logs show `"UNKNOWN / HTTP/1.0" 400` when Teams sends a message | The tunnel or reverse proxy is forwarding HTTPS to Hermes' plain HTTP listener. Terminate TLS at the proxy and forward HTTP to port `3978` |
 | `KeyError: 'teams'` in logs | Restart the container — this is fixed in the current version |
-| Bot responds with auth errors | Verify `TEAMS_CLIENT_ID`, `TEAMS_CLIENT_SECRET`, and `TEAMS_TENANT_ID` are all set correctly |
+| Bot responds with auth errors | Verify `TEAMS_CLIENT_ID`, `TEAMS_TENANT_ID`, and either `TEAMS_CLIENT_SECRET` or the certificate settings are set correctly |
 | `No inference provider configured` | Check that `ANTHROPIC_API_KEY` (or another provider key) is set in `~/.hermes/.env` |
 | Bot receives messages but ignores them | Your AAD object ID may not be in `TEAMS_ALLOWED_USERS`. Run `teams status --verbose` to find it |
 | Tunnel URL changes on restart | devtunnel URLs are persistent if you use a named tunnel (`devtunnel create hermes-bot`). ngrok and cloudflared generate a new URL each run unless you have a paid plan — update the bot endpoint with `teams app update` when it changes |
@@ -283,7 +307,7 @@ Make sure the public HTTPS endpoint is reachable from the internet and uses a va
 :::warning
 **Always set `TEAMS_ALLOWED_USERS`** with the AAD object IDs of authorized users. Without this, anyone who can find or install your bot can interact with it.
 
-Treat `TEAMS_CLIENT_SECRET` like a password — rotate it periodically via the Azure portal or Teams CLI.
+Treat `TEAMS_CLIENT_SECRET` like a password — rotate it periodically via the Azure portal or Teams CLI. A certificate private key is the same kind of secret: keep the PEM mode `600` and rotate the credential in the app registration when you replace the file.
 :::
 
 - Store credentials in `~/.hermes/.env` with permissions `600` (`chmod 600 ~/.hermes/.env`)

@@ -47,6 +47,11 @@ services:
       # - TEAMS_CLIENT_ID=${TEAMS_CLIENT_ID}
       # - TEAMS_CLIENT_SECRET=${TEAMS_CLIENT_SECRET}
       # - TEAMS_TENANT_ID=${TEAMS_TENANT_ID}
+      # Certificate auth instead of TEAMS_CLIENT_SECRET: mount the PEM into the
+      # container and set the path (and key path and/or thumbprint).
+      # - TEAMS_CLIENT_CERT_PATH=${TEAMS_CLIENT_CERT_PATH}
+      # - TEAMS_CLIENT_KEY_PATH=${TEAMS_CLIENT_KEY_PATH}
+      # - TEAMS_CLIENT_CERT_THUMBPRINT=${TEAMS_CLIENT_CERT_THUMBPRINT}
       # - TEAMS_ALLOWED_USERS=${TEAMS_ALLOWED_USERS}
       # - TEAMS_PORT=${TEAMS_PORT:-3978}
       # Google Chat — uncomment and fill in to enable the Google Chat gateway.

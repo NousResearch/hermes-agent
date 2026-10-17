@@ -396,3 +396,40 @@ class TestContinuityFlag:
         assert "previous run" in prompt.lower()
 
 
+class TestContextBlockFence:
+    """Injected output containing its own fenced code block stays inside the data block."""
+
+    def test_body_with_code_fence_gets_longer_outer_fence(self):
+        from cron.scheduler_prompt import _prepend_context_block
+
+        body = "Before\n```bash\necho hi\n```\nAfter the snippet"
+        result = _prepend_context_block("TASK", "H", "I", body)
+        # Outer fence (4 backticks) outgrows the inner ``` run; text after the
+        # inner fence stays inside the data block instead of leaking into the prompt.
+        assert "\n````\nBefore\n```bash\necho hi\n```\nAfter the snippet\n````\n\nTASK" in result
+
+    def test_body_without_backticks_keeps_three_backtick_fence(self):
+        from cron.scheduler_prompt import _prepend_context_block
+
+        result = _prepend_context_block("TASK", "H", "I", "plain body")
+        assert "\n```\nplain body\n```\n\nTASK" in result
+
+    def test_context_from_output_with_fence_stays_in_data_block(self, cron_env):
+        from cron.jobs import create_job, OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+
+        job_a = create_job(prompt="Find news", schedule="every 1h")
+        output_dir = OUTPUT_DIR / job_a["id"]
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "2026-04-22_10-00-00.md").write_text(
+            "Report body\n```bash\necho hi\n```\n## Follow-up notes", encoding="utf-8"
+        )
+        job_b = create_job(
+            prompt="Summarize", schedule="every 2h", context_from=job_a["id"]
+        )
+        prompt = _build_job_prompt(job_b)
+        opening = prompt.index("````")
+        closing = prompt.index("````", opening + 4)
+        block = prompt[opening:closing + 4]
+        assert "## Follow-up notes" in block  # still inside the data block
+        assert prompt.index("## Follow-up notes") < prompt.index("Summarize")

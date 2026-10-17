@@ -1,5 +1,6 @@
 import { isMissingRestEndpoint, isUnroutedRestPath } from '@/lib/gateway-rpc'
 import { maybeBackfillLegacySessionOwners } from '@/lib/legacy-session-owner-backfill'
+import { sessionKey } from '@/lib/session-branch-tree'
 import { stampRowsWithOwningConnection } from '@/lib/session-owner-stamp'
 import { pageHonorsLatestOrder, recordTranscriptTail } from '@/store/transcript-tail'
 import type {
@@ -92,13 +93,39 @@ function stampActiveConnectionOwner(sessions: SessionInfo[]): SessionInfo[] {
  * inside the most-recent page.
  */
 function pageWindow(sessions: SessionInfo[], limit: number): SessionInfo[] {
-  if (sessions.length <= limit) {
+  const roots = sessions.filter(session => !session.spawned_by_session_id)
+
+  if (roots.length <= limit) {
     return sessions
   }
 
-  const recent = sessions.slice(0, limit)
+  const recent = roots.slice(0, limit)
+  const window = [...recent, ...roots.slice(limit).filter(session => session.pinned)]
 
-  return [...recent, ...sessions.slice(limit).filter(session => session.pinned)]
+  const visible = new Set(
+    window.flatMap(session => (session._lineage_ids ?? [session.id]).map(id => sessionKey(session, id)))
+  )
+
+  const pending = sessions.filter(session => session.spawned_by_session_id)
+  const descendants: SessionInfo[] = []
+
+  while (pending.length) {
+    const index = pending.findIndex(session => visible.has(sessionKey(session, session.spawned_by_session_id!)))
+
+    if (index === -1) {
+      break
+    }
+
+    const [session] = pending.splice(index, 1)
+
+    descendants.push(session)
+
+    for (const id of session._lineage_ids ?? [session.id]) {
+      visible.add(sessionKey(session, id))
+    }
+  }
+
+  return [...window, ...descendants]
 }
 
 export async function listSessions(
@@ -133,6 +160,7 @@ export async function listSessions(
 export interface SessionSourceFilter {
   source?: string
   excludeSources?: string[]
+  includeSpawned?: boolean
 }
 
 export async function listAllProfileSessions(
@@ -150,11 +178,13 @@ export async function listAllProfileSessions(
     ? `&exclude_sources=${encodeURIComponent(filter.excludeSources.join(','))}`
     : ''
 
+  const spawnedParam = filter.includeSpawned ? '&include_spawned=true' : ''
+
   const result = await hermesApi<PaginatedSessions>({
     ...profileScoped(),
     path:
       `/api/profiles/sessions?limit=${limit}&offset=${Math.max(0, offset)}&min_messages=${Math.max(0, minMessages)}` +
-      `&archived=${archived}&order=${order}&profile=${encodeURIComponent(profile)}${sourceParam}${excludeParam}`,
+      `&archived=${archived}&order=${order}&profile=${encodeURIComponent(profile)}${sourceParam}${excludeParam}${spawnedParam}`,
     timeoutMs: SESSION_LIST_REQUEST_TIMEOUT_MS
   })
 
@@ -201,6 +231,10 @@ function profilesTruncatedFrom(sessions: SessionInfo[], cap: number): Record<str
   const counts = new Map<string, number>()
 
   for (const session of sessions) {
+    if (session.spawned_by_session_id) {
+      continue
+    }
+
     const key = session.profile || 'default'
 
     counts.set(key, (counts.get(key) ?? 0) + 1)
@@ -255,11 +289,16 @@ export function resetSidebarBatchCapability() {
 async function listSidebarSessionsLegacy(req: SidebarSessionsRequest): Promise<SidebarSessionsResponse> {
   const [recents, cron, messaging] = await Promise.all([
     listAllProfileSessions(req.recentsLimit, 1, 'exclude', 'recent', req.recentsProfile, {
-      excludeSources: req.recentsExclude
+      excludeSources: req.recentsExclude,
+      includeSpawned: true
     }),
-    listAllProfileSessions(req.cronLimit, 1, 'exclude', 'recent', req.recentsProfile, { source: 'cron' }),
+    listAllProfileSessions(req.cronLimit, 1, 'exclude', 'recent', req.recentsProfile, {
+      includeSpawned: true,
+      source: 'cron'
+    }),
     listAllProfileSessions(req.messagingLimit, 1, 'exclude', 'recent', req.recentsProfile, {
-      excludeSources: req.messagingExclude
+      excludeSources: req.messagingExclude,
+      includeSpawned: true
     })
   ])
 
@@ -318,7 +357,8 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
     recents_profile: req.recentsProfile,
     recents_limit: String(Math.max(1, req.recentsLimit)),
     cron_limit: String(Math.max(1, req.cronLimit)),
-    messaging_limit: String(Math.max(1, req.messagingLimit))
+    messaging_limit: String(Math.max(1, req.messagingLimit)),
+    include_spawned: 'true'
   })
 
   if (req.recentsExclude.length) {

@@ -1,3 +1,4 @@
+import { flattenSessionsWithBranches } from '@/lib/session-branch-tree'
 import type { SessionInfo } from '@/types/hermes'
 
 /**
@@ -89,6 +90,35 @@ export function resolvePinnedSessions(
 
     seen.add(session.id)
     out.push(session)
+  }
+
+  return out
+}
+
+/** Add each pinned row's existing branch/spawn descendant closure without changing pin state. */
+export function withSessionDescendants(
+  roots: readonly SessionInfo[],
+  allSessions: readonly SessionInfo[]
+): SessionInfo[] {
+  const entries = flattenSessionsWithBranches(allSessions, { preserveOrder: true })
+  const seen = new Set<SessionInfo>()
+  const out: SessionInfo[] = []
+
+  for (const root of roots) {
+    const start = entries.findIndex(entry => entry.session === root)
+    const rootDepth = start < 0 ? 0 : (entries[start].branchDepth ?? 0)
+
+    const end =
+      start < 0 ? start : entries.findIndex((entry, index) => index > start && (entry.branchDepth ?? 0) <= rootDepth)
+
+    const tree = start < 0 ? [{ session: root }] : entries.slice(start, end < 0 ? undefined : end)
+
+    for (const entry of tree) {
+      if (!seen.has(entry.session)) {
+        seen.add(entry.session)
+        out.push(entry.session)
+      }
+    }
   }
 
   return out

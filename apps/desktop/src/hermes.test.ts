@@ -77,7 +77,8 @@ describe('Hermes REST helpers', () => {
       expect.objectContaining({
         path:
           '/api/profiles/sessions/sidebar?recents_profile=work&recents_limit=30&cron_limit=50' +
-          '&messaging_limit=100&recents_exclude=cron%2Ctool&messaging_exclude=cron%2Cdesktop'
+          '&messaging_limit=100&include_spawned=true&recents_exclude=cron%2Ctool' +
+          '&messaging_exclude=cron%2Cdesktop'
       })
     )
   })
@@ -312,7 +313,7 @@ describe('Hermes REST helpers', () => {
     ).toHaveLength(3)
     expect(paths.some(path => path.includes('profile=all'))).toBe(false)
     expect(paths).toContainEqual(expect.stringContaining('source=cron'))
-    expect(paths).toContainEqual(expect.stringContaining('exclude_sources=cron%2Ctool'))
+    expect(paths).toContainEqual(expect.stringContaining('exclude_sources=cron%2Ctool&include_spawned=true'))
   })
 
   it('keeps per-slice errors on the legacy fallback so a cron failure does not taint recents', async () => {

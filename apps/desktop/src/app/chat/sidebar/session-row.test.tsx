@@ -29,7 +29,8 @@ vi.mock('@/i18n', () => ({
         messageCount: (count: number) => `${count} messages`,
         toolCallCount: (count: number) => `${count} tool calls`,
         projects: {
-          home: 'Home'
+          home: 'Home',
+          toggle: (label: string, open: boolean) => `${open ? 'Show' : 'Hide'} ${label} sessions`
         },
         row: {
           ageMin: 'm',
@@ -161,7 +162,7 @@ function makeSession(overrides: Partial<SessionInfo> & { title: string }): Sessi
 
 const noop = vi.fn()
 
-const renderRow = (session: SessionInfo, extra?: { card?: boolean }) =>
+const renderRow = (session: SessionInfo, extra?: { card?: boolean; onToggleTree?: () => void; treeOpen?: boolean }) =>
   render(
     <SidebarSessionRow
       card={extra?.card}
@@ -171,11 +172,42 @@ const renderRow = (session: SessionInfo, extra?: { card?: boolean }) =>
       onDelete={noop}
       onPin={noop}
       onResume={noop}
+      onToggleTree={extra?.onToggleTree}
       onToggleUnread={noop}
       session={session}
+      treeOpen={extra?.treeOpen}
       unread={false}
     />
   )
+
+it('exposes a separate accessible descendant disclosure without resuming the session', () => {
+  const onToggleTree = vi.fn()
+  const onResume = vi.fn()
+  const parent = makeSession({ title: 'Parent' })
+
+  render(
+    <SidebarSessionRow
+      isPinned={false}
+      isSelected={false}
+      onArchive={noop}
+      onDelete={noop}
+      onPin={noop}
+      onResume={onResume}
+      onToggleTree={onToggleTree}
+      onToggleUnread={noop}
+      session={parent}
+      treeOpen
+      unread={false}
+    />
+  )
+
+  const disclosure = screen.getByRole('button', { name: 'Hide Parent sessions' })
+
+  expect(disclosure.getAttribute('aria-expanded')).toBe('true')
+  fireEvent.click(disclosure)
+  expect(onToggleTree).toHaveBeenCalledOnce()
+  expect(onResume).not.toHaveBeenCalled()
+})
 
 // The row no longer takes its running state as a prop, so this drives the real
 // store the way the app does. $workingSessionIds is the actual computed here

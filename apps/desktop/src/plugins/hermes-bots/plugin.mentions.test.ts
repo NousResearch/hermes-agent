@@ -437,6 +437,29 @@ describe('the mention middleware', () => {
     expect(result.text).toMatch(/on Vera/)
   })
 
+  it("uses the local handle when a source-qualified row belongs to the sender's gateway", async () => {
+    const { handler } = await contributions({
+      focused: 'ops',
+      profiles: [
+        {
+          connectionId: 'local',
+          connectionLabel: 'This device',
+          handle: 'default-local',
+          name: 'default',
+          remoteSource: true
+        },
+        { connectionId: 'local', name: 'ops' }
+      ]
+    })
+
+    const result = await handler({ text: 'ask @default-local for the status' })
+
+    expect(result.text).toMatch(/@default-local = agent profile "default"/)
+    expect(result.text).toMatch(/message_agent target: "hermes"/)
+    expect(result.text).not.toMatch(/default@local/)
+    expect(result.text).not.toMatch(/on This device/)
+  })
+
   it('annotates the resolvable handle for a local row whose UI alias differs', async () => {
     // The reporter's shape (#97678 / Discord video): the LOCAL twin carries
     // the 'default-this-device' alias when the remote gateway is active.

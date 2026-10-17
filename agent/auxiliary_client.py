@@ -4007,13 +4007,13 @@ def _fallback_destination(
 def _replan_synchronous_cache_sections(
     messages: list, tools: Optional[list], *, destination: _FallbackDestination
 ) -> tuple[list, list]:
-    """Strip source decoration and plan one synchronous destination locally."""
+    """Plan one destination at the configured TTL (1h must not regress to 5m); one-shots never cache."""
     from agent.agent_runtime_helpers import configured_cache_ttl, plan_cache_sections_for_destination
+    from agent.prompt_caching import is_one_shot_request
     return plan_cache_sections_for_destination(
         messages, tools, provider=destination.provider, base_url=destination.base_url,
-        api_mode=destination.api_mode or "", model=destination.model or "",
-        # Operator's configured TTL so fallbacks don't regress 1h → 5m default (no live agent here; read config).
-        cache_ttl=configured_cache_ttl(),
+        api_mode=destination.api_mode or "", model=destination.model or "", cache_ttl=configured_cache_ttl(),
+        cache_disabled=True if is_one_shot_request(messages, tools) else None,
     )
 
 

@@ -1,12 +1,13 @@
-"""Regression tests for model-forwarded web-search result objects."""
+"""Regression tests for model-supplied web_extract URL items (search-result objects, bare hosts)."""
 
 import json
+import socket
 
 import pytest
 
 from agent import web_search_registry
 from agent.web_search_provider import WebSearchProvider
-from tools import web_tools
+from tools import url_safety, web_tools
 
 
 class _FakeExtractProvider(WebSearchProvider):
@@ -87,3 +88,39 @@ def test_web_extract_registry_dispatch_accepts_search_result_objects(
 
     assert extract_provider.received_urls == ["https://example.net/from-registry"]
     assert result["results"][0]["url"] == "https://example.net/from-registry"
+
+
+_DNS = {"localhost": "127.0.0.1", "example.com": "93.184.216.34"}  # anything else: a private address
+
+
+@pytest.fixture
+def gated_extract_provider(extract_provider, monkeypatch):
+    """``extract_provider`` behind the real SSRF gate, with private-address blocking on and fake DNS."""
+    monkeypatch.setattr(web_tools, "async_is_safe_url", url_safety.async_is_safe_url)
+    monkeypatch.setattr(url_safety, "_global_allow_private_urls", lambda: False)
+    monkeypatch.setattr(socket, "getaddrinfo", lambda host, *_a, **_k: [
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", (_DNS.get(host, "10.0.0.5"), 0))])
+    return extract_provider
+
+
+@pytest.mark.asyncio
+async def test_web_extract_fetches_bare_host_url_over_https(gated_extract_provider):
+    """A URL without a scheme names a public page; it must not be reported as a private address."""
+    result = json.loads(await web_tools.web_extract_tool(["example.com/docs/page"]))
+
+    assert gated_extract_provider.received_urls == ["https://example.com/docs/page"]
+    assert result["results"][0]["error"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("url", [
+    "intranet.example/admin",                        # resolves to a private address
+    "metadata.google.internal/computeMetadata/v1/",  # cloud metadata hostname
+    "localhost:8080/admin",
+    "10.0.0.5/admin",
+])
+async def test_web_extract_still_blocks_bare_private_hosts(gated_extract_provider, url):
+    result = json.loads(await web_tools.web_extract_tool([url]))
+
+    assert gated_extract_provider.received_urls == []
+    assert result["results"][0]["error"] == "Blocked: URL targets a private or internal network address"

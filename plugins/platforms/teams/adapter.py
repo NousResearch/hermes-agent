@@ -21,6 +21,7 @@ import re
 import sys
 from collections import deque
 from contextlib import contextmanager, suppress
+from pathlib import Path
 from typing import Any, Dict, Iterator, Optional
 from urllib.parse import urlparse
 
@@ -751,8 +752,8 @@ class TeamsAdapter(BasePlatformAdapter):
             else:
                 path = source.removeprefix("file://")
                 mime_type = mimetypes.guess_type(path)[0] or default_mime
-                with open(path, "rb") as f:
-                    content_url = f"data:{mime_type};base64,{base64.b64encode(f.read()).decode()}"
+                data = await asyncio.to_thread(Path(path).read_bytes)
+                content_url = f"data:{mime_type};base64,{base64.b64encode(data).decode()}"
             activity = MessageActivityInput().add_attachments(Attachment(content_type=mime_type, content_url=content_url))
             if caption:
                 activity = activity.add_text(caption)
@@ -838,6 +839,8 @@ def _install_hint() -> str:
 def register(ctx) -> None:
     ctx.register_platform(
         name="teams", label="Microsoft Teams", adapter_factory=lambda cfg: TeamsAdapter(cfg),
+        dashboard_description="Connect Hermes to Microsoft Teams chats via the Bot Framework.",
+        docs_url="https://hermes-agent.nousresearch.com/docs/user-guide/messaging/teams",
         check_fn=check_requirements,  # PASSIVE probe — never installs
         ensure_deps_fn=check_teams_requirements,  # ACTIVE lazy-installer, run by create_adapter()
         validate_config=validate_config, is_connected=is_connected,

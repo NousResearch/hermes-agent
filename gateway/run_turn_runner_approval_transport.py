@@ -18,6 +18,16 @@ def approval_transport(turn):
         turn._approval_notify_sync(data)
 
     def background_notify(data):
+        # Canonical approvals are owned by a running execution generation, not
+        # by this dispatch lease. They cannot safely be projected/responded to
+        # after the parent settles (or into its successor). Until the authority
+        # supports dispatch-owned prompts, reject BEFORE sending any native card.
+        # Legacy messaging sessions without an authority retain off-turn delivery.
+        if presenter._approval_owner is not None:
+            raise RuntimeError(
+                "Background approval is unsupported for authority-owned sessions; "
+                "a dispatch-owned approval lifecycle is required"
+            )
         presenter._approval_notify_sync(data, background=True)
 
     notify.background_notify = background_notify

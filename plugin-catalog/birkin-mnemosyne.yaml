@@ -1,17 +1,18 @@
 name: birkin-mnemosyne
 repo: https://github.com/ashmoonori-afk/birkin-mnemosyne
-sha: 4244768c9afcc14001a59af6e39151e96a43bc2a
+sha: 8ebfd19ec79ae5d308dd4ce1f2be056836e01d19
 subdir: integrations/hermes
-version: "0.1.0"
+version: "0.2.2"
 description: >-
   Local Markdown memory provider with multilingual lexical recall and profile-local
   durable notes. Create-only writes are limited to primary agent contexts. Uses
-  published birkin-mnemosyne 0.4.0; no API key, network service, telemetry or
-  automatic conversation capture. Native Hermes memory files remain separate.
+  published birkin-mnemosyne 0.7.1 with compatible updates below 1.0;
+  no API key, network service or telemetry.
+  Session handoff capture is opt-in. Native Hermes memory files remain separate.
 maintainer: ashmoonori-afk
 tier: community
 category: memory
-docs_url: https://github.com/ashmoonori-afk/birkin-mnemosyne/tree/4244768c9afcc14001a59af6e39151e96a43bc2a/integrations/hermes
+docs_url: https://github.com/ashmoonori-afk/birkin-mnemosyne/tree/8ebfd19ec79ae5d308dd4ce1f2be056836e01d19/integrations/hermes
 capabilities:
   provides_tools: []
   provides_hooks: []

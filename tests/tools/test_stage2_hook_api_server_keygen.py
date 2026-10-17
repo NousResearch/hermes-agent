@@ -71,6 +71,7 @@ def _run_keygen(
         capture_output=True,
         text=True,
         timeout=30,
+        check=False,
     )
 
 
@@ -193,7 +194,8 @@ def test_keygen_env_key_drops_stale_empty_assignment(
 def _sed_is_gnu() -> bool:
     try:
         probe = subprocess.run(
-            ["sed", "--version"], capture_output=True, text=True, timeout=10
+            ["sed", "--version"], capture_output=True, text=True, timeout=10,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return False

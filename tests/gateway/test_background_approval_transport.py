@@ -71,3 +71,44 @@ def test_background_transport_refusal_fails_closed(monkeypatch, buttons):
     with pytest.raises(RuntimeError):
         transport.background_notify({"command": "print(1)"})
     assert sent == [("origin-chat", "origin-session")] if buttons else sent == ["text"]
+
+
+@pytest.mark.parametrize("generation,present", [(1, True), (2, True), (1, False)])
+def test_authority_background_never_borrows_parent_generation(monkeypatch, generation, present):
+    authority = SimpleNamespace(
+        sessions={"s": object()},
+        db=SimpleNamespace(get_session=lambda sid: {"runtime_generation": 1}),
+        logical_owner=lambda sid: "s",
+    )
+    monkeypatch.setattr("gateway.session_authorities.active_authority", lambda runner: authority)
+    turn = TurnRunner(None, TurnContext(session_key="route", session_id="s"))
+    transport = approval_transport(turn)
+    authority.db.get_session = lambda sid: {"runtime_generation": generation}
+    if not present:
+        authority.sessions.clear()
+    monkeypatch.setattr(TurnRunner, "_render_approval_sync", lambda *a, **kw: pytest.fail("native send"))
+    with pytest.raises(RuntimeError, match="dispatch-owned approval lifecycle"):
+        transport.background_notify({"command": "example"})
+
+
+@pytest.mark.parametrize("declined", [False, True])
+def test_foreground_authority_checks_renders_then_registers(monkeypatch, declined):
+    events = []
+    authority = SimpleNamespace(
+        check_approval_generation=lambda *a: events.append("check"),
+        register_approval=lambda *a, **kw: events.append("register"),
+    )
+    turn = TurnRunner(None, TurnContext(session_key="route"))
+    turn._approval_owner = (authority, "s", 1)
+    def render(*a, **kw):
+        events.append("render")
+        if declined:
+            raise RuntimeError("connector declined")
+    monkeypatch.setattr(turn, "_render_approval_sync", render)
+    monkeypatch.setattr("gateway.local_viewer_events.prompt_timeout_s", lambda *a: 30)
+    if declined:
+        with pytest.raises(RuntimeError, match="connector declined"):
+            turn._approval_notify_sync({"command": "example"})
+    else:
+        turn._approval_notify_sync({"command": "example"})
+    assert events == (["check", "render"] if declined else ["check", "render", "register"])

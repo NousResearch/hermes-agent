@@ -10,8 +10,8 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from agent.image_eviction_policy import outbound_image_retire_count
-from agent.anthropic_thinking_policy import anthropic_thinking_route, model_preserves_prior_thinking
+from agent.image_eviction_policy import images_all_within_many_image_limit, outbound_image_retire_count
+from agent.anthropic_thinking_policy import anthropic_thinking_route, route_replays_prior_thinking
 
 logger = logging.getLogger(__name__)
 
@@ -570,20 +570,36 @@ def _keep_valid_thinking(content: list[Any], signature_dead: bool) -> list[Any]:
     return new_content
 
 
+def _current_tool_loop_start(result: list[dict[str, Any]]) -> int:
+    """Index after the last user message carrying no tool result: every assistant turn from there on belongs
+    to the in-flight tool loop, whose thinking Anthropic requires back. A steer merged into a tool_result
+    turn still continues the loop."""
+    for i in range(len(result) - 1, -1, -1):
+        m = result[i]
+        if m.get("role") != "user":
+            continue
+        content = m.get("content")
+        if not (isinstance(content, list) and any(_block_type(b) == "tool_result" for b in content)):
+            return i + 1
+    return 0
+
+
 def _manage_thinking_signatures(result: list[dict[str, Any]], base_url: str | None, model: str | None) -> None:
     """Strip or preserve thinking blocks per endpoint. Mutates ``result`` in place.
 
     Anthropic signs thinking blocks against the full turn; any upstream mutation invalidates them
-    (400 "Invalid signature in thinking block"). Native preserved-thinking models keep valid signed
-    blocks on every assistant turn; older Claude models retain the established latest-turn-only
-    policy. Signatures are proprietary: third-party endpoints strip all thinking. Kimi replays as-is;
-    DeepSeek needs unsigned blocks round-tripped but rejects signed ones. Nous Portal proxies Claude
-    with sticky sessions and validates the same signatures, so it takes the native path despite not
-    being anthropic.com.
+    (400 "Invalid signature in thinking block"). Signed routes (Anthropic, Nous Portal, Bedrock,
+    Vertex, Foundry; MiniMax for its own blocks) keep valid signed blocks on every assistant turn
+    when the model keeps prior thinking, else on every turn of the in-flight tool loop (the API
+    requires those back and strips older turns itself; cutting at the latest assistant message
+    broke the loop's earlier steps). Unknown relays cannot verify signatures and strip all; Kimi
+    replays as-is; DeepSeek needs unsigned blocks round-tripped but rejects signed ones.
     """
     route = anthropic_thinking_route(base_url, model)
-    last_assistant_idx = next((i for i in range(len(result) - 1, -1, -1) if result[i].get("role") == "assistant"), None)
-    preserve_prior = model_preserves_prior_thinking(model)
+    # The latest assistant turn always keeps its thinking, even once a new user message closes its loop.
+    loop_start = min(_current_tool_loop_start(result),
+                     next((i for i in range(len(result) - 1, -1, -1) if result[i].get("role") == "assistant"), len(result)))
+    preserve_prior = route_replays_prior_thinking(route, model)
     for idx, m in _assistant_block_lists(result):
         if route == "kimi":
             pass  # shared cleanup below still strips cache markers + the flag
@@ -594,7 +610,7 @@ def _manage_thinking_signatures(result: list[dict[str, Any]], base_url: str | No
                 if _block_type(b) not in _THINKING_TYPES or not (b.get("signature") or b.get("data"))
             ]
             m["content"] = new_content or [_text_block("(empty)")]
-        elif route == "third_party" or (idx != last_assistant_idx and not preserve_prior):
+        elif route == "third_party" or (idx < loop_start and not preserve_prior):
             m["content"] = _strip_thinking(m["content"]) or [_text_block("(thinking elided)")]
         else:
             new_content = _keep_valid_thinking(m["content"], bool(m.get("_thinking_signature_invalidated")))
@@ -606,32 +622,57 @@ def _manage_thinking_signatures(result: list[dict[str, Any]], base_url: str | No
         m.pop("_thinking_signature_invalidated", None)  # internal flag, never on the wire
 
 
+def _image_source_data(block: Any) -> Optional[str]:
+    """Base64 payload of a wire ``image`` block, or None for a URL/native source (unmeasurable)."""
+    source = block.get("source") if isinstance(block, dict) else None
+    data = source.get("data") if isinstance(source, dict) else None
+    return data if isinstance(data, str) else None
+
+
 def _evict_old_screenshots(result: list[dict[str, Any]]) -> None:
     """Retire screenshot payloads once the request would cross the API's per-request image limit.
 
-    Mutates ``result`` in place. This wire pass has no byte sizes, so it enforces the block
-    ceiling only; the auxiliary Anthropic client (``agent.auxiliary_client`` via
-    ``anthropic_adapter.build_anthropic_kwargs``) reaches it without the compressor's
-    send-path pass, so it must hold the invariant alone. Policy: :mod:`agent.image_eviction_policy`.
+    Mutates ``result`` in place. The block ceiling is conditional on the request's actual image
+    dimensions (the strict 20 only when some image exceeds the many-image per-side cap), so this
+    pass reads the headers of the ``source.data`` payloads it already holds. It sizes the block
+    budget AND the byte budget, the latter because the auxiliary Anthropic client
+    (``agent.auxiliary_client`` via ``anthropic_adapter.build_anthropic_kwargs``) reaches this pass
+    without the compressor's send-path pass, so it must hold the invariant alone -- previously with
+    no request-size guard at all (post-#113953 review). Policy and rationale:
+    :mod:`agent.image_eviction_policy`.
     """
-    reserved = sum(
-        1
+    reserved = [
+        (block, _image_source_data(block))
         for msg in result
         for block in (msg.get("content") if isinstance(msg.get("content"), list) else [])
         if _block_type(block) == "image"
-    )
+    ]
     # Parallel tool calls land as sibling tool_result blocks inside ONE user message
     # (oldest first), so the inner walk must also run newest -> oldest or a batch that
     # ends mid-message retires the newest frames instead of the oldest (#103217).
     carriers = [
-        (block, sum(1 for b in block["content"] if _block_type(b) == "image"))
+        (block, [(b, _image_source_data(b)) for b in block["content"] if _block_type(b) == "image"])
         for msg in reversed(result)
         for block in reversed(msg.get("content") if isinstance(msg.get("content"), list) else [])
         if _block_type(block) == "tool_result"
         and isinstance(block.get("content"), list)
         and _has_block_type(block["content"], {"image"})
     ]
-    retire = outbound_image_retire_count([n for _, n in carriers], reserved)
+    many_image_safe = images_all_within_many_image_limit(
+        [
+            *(data for _, data in reserved),
+            *(data for _, images in carriers for _, data in images),
+        ]
+    )
+    retire = outbound_image_retire_count(
+        [len(images) for _, images in carriers],
+        len(reserved),
+        carrier_bytes_newest_first=[
+            sum(len(data) for _, data in images if data) for _, images in carriers
+        ],
+        reserved_bytes=sum(len(data) for _, data in reserved if data),
+        many_image_safe=many_image_safe,
+    )
     for block, _ in carriers[len(carriers) - retire:]:
         placeholder = _text_block("[screenshot removed to save context]")
         block["content"] = [
@@ -716,8 +757,8 @@ def convert_messages_to_anthropic(
 ) -> tuple[Optional[Any], list[dict]]:
     """Convert OpenAI-format messages to Anthropic format -> ``(system, messages)``. System is
     extracted into its own param (a string, or a block list when cache_control is present).
-    ``base_url``/``model`` drive thinking-signature policy — third-party endpoints strip signatures
-    (proprietary, they 400 on them); Kimi-family endpoints/models keep unsigned
+    ``base_url``/``model`` drive thinking-signature policy — unknown third-party relays strip
+    signatures (they cannot verify them); Kimi-family endpoints/models keep unsigned
     reasoning_content-derived blocks, which Kimi requires even when empty."""
     system = None
     result: list[dict[str, Any]] = []

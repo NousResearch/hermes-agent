@@ -53,12 +53,26 @@ class _ReceiptRefused(RuntimeStoreError):
     """A refused receipt ``restore_local_session`` already logged with its failing check."""
 
 
+class _CatchUpPending(RuntimeStoreError):
+    """The receipt's compression catch-up is committing in a worker; this restore is refused."""
+
+
 def _with_untracked_compression(authority, sid, receipt):
-    """*receipt*, after recording compression steps an older build published past its tip (#140060)."""
-    from hermes_state_local_lineage import adopt_untracked_compression, untracked_compression_tip
+    """*receipt*, after recording compression steps an older build published past its tip (#140060).
+
+    The catch-up writes, so it never runs on the owner loop: a contended writer there would stall every
+    profile the loop serves. The async restore paths commit it in a worker first
+    (``session_local_adoption``); a sync restore on the loop that still finds it hands it to a tracked
+    worker, which publishes the session once it commits, and refuses this read.
+    """
+    from hermes_state_local_lineage import adopt_untracked_compression, adoptable_compression
     with authority.db._read_ctx() as conn:
-        if untracked_compression_tip(conn, receipt) is None:
+        if adoptable_compression(conn, receipt) is None:
             return receipt
+    from gateway.session_local_adoption import on_owner_loop, schedule_adoption
+    if on_owner_loop():
+        schedule_adoption(authority, sid, receipt)
+        raise _CatchUpPending('storage_unavailable')
     adopt_untracked_compression(authority.db, epoch=authority.epoch, session_id=sid, expected=receipt)
     return local_receipt(authority.db, sid)
 
@@ -82,23 +96,28 @@ def _checked_entry(authority, receipt, source, route):
     return entry
 
 
+def owned_receipt(authority, sid):
+    """*sid*'s stored receipt with its LOCAL source, route and entry, once all are this owner's."""
+    receipt = local_receipt(authority.db, sid)
+    if receipt['profile_id'] != authority.profile_id:
+        raise RuntimeStoreError('profile_mismatch')
+    chat_id = (receipt['legacy_session_id'] if 'legacy_session_id' in receipt else
+               local_identity(receipt['profile_id'], receipt['principal_id'], receipt['request_id']))
+    if receipt['session_id'] != sid or sid != chat_id:
+        raise ValueError('identity mismatch')
+    source = local_source(authority, chat_id, receipt['principal_id'])
+    route = authority.runner.session_store._generate_session_key(source)
+    return receipt, source, route, _checked_entry(authority, receipt, source, route)
+
+
 def restore_local_session(authority, sid):
     from gateway.session_authority import LiveSession
     from gateway.session_local import LocalSessionAdapter
     from gateway.session_policy import restore_policy
     try:
-        receipt = local_receipt(authority.db, sid)
-        if receipt['profile_id'] != authority.profile_id:
-            raise RuntimeStoreError('profile_mismatch')
-        chat_id = (receipt['legacy_session_id'] if 'legacy_session_id' in receipt else
-                   local_identity(receipt['profile_id'], receipt['principal_id'], receipt['request_id']))
-        if receipt['session_id'] != sid or sid != chat_id:
-            raise ValueError('identity mismatch')
-        source = local_source(authority, chat_id, receipt['principal_id'])
-        store = authority.runner.session_store
-        route = store._generate_session_key(source)
         # The catch-up writes, so the receipt as stored must already be this owner's (#140060).
-        entry = _checked_entry(authority, receipt, source, route)
+        receipt, source, route, entry = owned_receipt(authority, sid)
+        chat_id, store = source.chat_id, authority.runner.session_store
         adopted = _with_untracked_compression(authority, sid, receipt)
         policy = restore_policy(adopted['policy'])
         if adopted is not receipt:  # re-read after a catch-up: check the copy that will be served
@@ -107,6 +126,8 @@ def restore_local_session(authority, sid):
         from hermes_state_local_lineage import validate_local_lineage
         with authority.db._read_ctx() as conn:
             validate_local_lineage(conn, receipt)
+    except _CatchUpPending:
+        raise
     except (KeyError, TypeError, ValueError, AttributeError) as exc:
         # The client only sees the bounded code: gateway.log names the check that refused (#140099).
         logging.getLogger(__name__).warning('Local session %s receipt refused: %s', sid, _refused_check(exc))
@@ -207,17 +228,20 @@ def reset_local_session(store, old_entry, session_id, now, display_name):
     return entry
 
 
-def recover_local_sessions(authority, *, schedule=False):
+def local_receipt_ids(authority):
     with authority.db._read_ctx() as conn:
-        ids = [row[0][len(POLICY_PREFIX):] for row in conn.execute(
+        return [row[0][len(POLICY_PREFIX):] for row in conn.execute(
             'SELECT key FROM state_meta WHERE key LIKE ?', (POLICY_PREFIX + '%',))]
-    for sid in ids:
+
+
+def recover_local_sessions(authority, *, schedule=False):
+    for sid in local_receipt_ids(authority):
         try:
             ref = restore_local_session(authority, sid)
             pending = list_session_admissions(authority.db, session_id=sid)
             if schedule and pending and not any(row['status'] == 'unknown' for row in pending):
                 authority._schedule(ref)
-        except _ReceiptRefused:
-            continue  # restore_local_session logged the check that refused it
+        except (_ReceiptRefused, _CatchUpPending):
+            continue  # logged: the check that refused it, or the catch-up handed to a worker
         except RuntimeStoreError as exc:
             logging.getLogger(__name__).warning('Local session %s paused: %s', sid, exc.reason)

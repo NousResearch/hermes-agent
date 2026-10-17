@@ -58,6 +58,20 @@ def _compact_chain_like_0_22_2(db, parent_id, child_ids):
     db._execute_write(write)
 
 
+def _unrecovered_owner(tmp_path, instance_id):
+    """An owner of the same store whose boot recovery never reached the session: its first read restores."""
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import SessionAuthority
+    from hermes_state_runtime import begin_runtime_epoch
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+                             _cached_agent_for=lambda route: None, _adapter_for_source=lambda source: None)
+    authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id=instance_id, db=store._db,
+                                 epoch=begin_runtime_epoch(store._db, instance_id=instance_id))
+    return authority, AuthorityConnection(authority, object(), {'user_id': 'owner'})
+
+
 def _receipt(db, sid):
     from hermes_state_local import local_receipt
     return local_receipt(db, sid)
@@ -276,6 +290,42 @@ async def test_a_chain_that_loops_back_past_one_walk_is_not_adopted(tmp_path, mo
     finally:
         await connection.close()
         second.db.close()
+
+
+@pytest.mark.asyncio
+async def test_a_restore_on_the_owner_loop_hands_the_catch_up_to_a_worker(tmp_path, monkeypatch):
+    """A restore reached synchronously on the owner loop (a bot, cron or A2A turn, a claim) never takes
+    the writer lock there: a contended writer would stall every profile the loop serves. It hands the
+    catch-up to a tracked worker and refuses this read; the worker's commit is published on the loop."""
+    import asyncio
+    import threading
+    import hermes_state_local_lineage as lineage
+    from gateway.session_local import create_local_session
+    from gateway.session_local_recovery import restore_local_session
+    from gateway.session_runtime_workers import mutation_tasks
+    from hermes_state_runtime import RuntimeStoreError
+
+    first, connection = await _owner(tmp_path, monkeypatch, 'first')
+    ref = create_local_session(first, connection.actor, {'request_id': 'r', 'source': 'tui',
+                                                         'cwd': str(tmp_path), 'model': 'm', 'toolsets': []})
+    _compact_like_0_22_2(first.db, ref.session_id, 'classic-child')
+    await connection.close()
+    first.db.close()
+
+    cold, connection = _unrecovered_owner(tmp_path, 'cold')
+    threads, adopt = [], lineage.adopt_untracked_compression
+    monkeypatch.setattr(lineage, 'adopt_untracked_compression',
+                        lambda *a, **k: threads.append(threading.get_ident()) or adopt(*a, **k))
+    try:
+        with pytest.raises(RuntimeStoreError, match='storage_unavailable'):
+            restore_local_session(cold, ref.session_id)
+        await asyncio.gather(*mutation_tasks(cold))
+        assert threads and threading.get_ident() not in threads, 'the catch-up ran on the owner loop'
+        assert _receipt(cold.db, ref.session_id)['entry']['session_id'] == 'classic-child'
+        assert ref.session_id in cold.sessions, 'the committed catch-up was not published'
+    finally:
+        await connection.close()
+        cold.db.close()
 
 
 @pytest.mark.asyncio

@@ -119,11 +119,20 @@ def _untracked_steps(conn, tip, lineage):
         current = batch[-1]
 
 
-def untracked_compression_tip(conn, receipt):
-    """The compression child of *receipt*'s tip, when the receipt does not record it yet."""
-    from hermes_state_compression import _CHAIN_STEP_SQL
-    step = conn.execute(_CHAIN_STEP_SQL, (receipt['entry']['session_id'],)).fetchone()
-    return step['id'] if step is not None else None
+def adoptable_compression(conn, receipt):
+    """``(steps, routed)``: the untracked compression steps *receipt* would adopt and its route's
+    entry, else None. Read-only; ``adopt_untracked_compression`` repeats it inside its write."""
+    tip = receipt['entry']['session_id']
+    children = _untracked_steps(conn, tip, receipt.get('lineage', [receipt['session_id']]))
+    if not children:
+        return None
+    identity = (receipt['route'], receipt['session_id'], receipt['principal_id'])
+    for child_id in children:
+        child = conn.execute('SELECT session_key,chat_id,user_id FROM sessions WHERE id=?', (child_id,)).fetchone()
+        if tuple(child) != identity:
+            return None
+    routed = _routed_entry(conn, receipt['route'], tip)
+    return (children, routed) if routed is not None else None
 
 
 def adopt_untracked_compression(db, *, epoch, session_id, expected):
@@ -144,19 +153,12 @@ def adopt_untracked_compression(db, *, epoch, session_id, expected):
         receipt = json.loads(saved[0])
         if receipt != expected:
             return
-        identity = (receipt['route'], receipt['session_id'], receipt['principal_id'])
-        lineage = list(receipt.get('lineage', [session_id]))
-        tip = receipt['entry']['session_id']
-        children = _untracked_steps(conn, tip, lineage)
-        for child_id in children or ():
-            child = conn.execute('SELECT session_key,chat_id,user_id FROM sessions WHERE id=?', (child_id,)).fetchone()
-            if tuple(child) != identity:
-                return
-        routed = _routed_entry(conn, receipt['route'], tip)
-        if not children or routed is None:
+        adoptable = adoptable_compression(conn, receipt)
+        if adoptable is None:
             return
+        children, routed = adoptable
         receipt['entry'] = dict(receipt['entry'], session_id=children[-1])
-        receipt['lineage'] = [*lineage, *children]
+        receipt['lineage'] = [*receipt.get('lineage', [session_id]), *children]
         validate_local_lineage(conn, receipt)
         _commit_local_target(conn, receipt, dict(routed, session_id=children[-1]))
     db._execute_write(write)

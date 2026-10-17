@@ -19,6 +19,9 @@ def test_list_includes_a_compression_tip_whose_root_has_no_created_source(tmp_pa
         db._conn.execute("UPDATE sessions SET created_source=NULL WHERE id=?", ("chain-root",))
         db._conn.commit()
     db.append_message("chain-root", role="user", content="hi")
+    # A subagent child is not a continuation: its own surface must not stamp the root.
+    db.create_session("delegate-run", source="subagent", parent_session_id="chain-root")
+    assert db.get_session("chain-root")["created_source"] is None
     db.publish_compression_child(
         parent_session_id="chain-root", child_session_id="chain-mid", source="local",
         messages=[{"role": "user", "content": "hi"}], require_compression_lease=False)

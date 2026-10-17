@@ -1411,6 +1411,7 @@ class _LoopState:
     active_system_prompt: Any
     current_turn_user_idx: Any
     _preflight_compression_blocked: Any
+    _preflight_blocked_at_tokens: Any
     # Compression attempt cap shared by the pre-API gate, 413 handlers and post-tool compaction:
     # a consecutive-ineffective-attempt backstop, rearmed only after a provider response
     # reports a prompt below threshold.
@@ -1473,6 +1474,7 @@ _CTX_FIELDS = frozenset({
     "user_message", "original_user_message", "conversation_history", "effective_task_id", "turn_id",
     "_should_review_memory", "_plugin_user_context", "_ext_prefetch_cache", "messages",
     "active_system_prompt", "current_turn_user_idx", "_preflight_compression_blocked",
+    "_preflight_blocked_at_tokens",
 })
 # Keyword names each phase helper takes (minus ``agent``), cached per function object.
 _PHASE_PARAMS: dict[Any, tuple] = {}

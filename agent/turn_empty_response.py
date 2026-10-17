@@ -40,6 +40,7 @@ class EmptyResponseVerdict:
     turn_exit_reason: Any
     active_system_prompt: Any
     preflight_compression_blocked: bool
+    preflight_blocked_at_tokens: int
     api_call_count: int
 
 
@@ -142,6 +143,7 @@ def recover_empty_response(
     messages: list[dict[str, Any]], api_messages: Any, conversation_history: Any,
     active_system_prompt: Any, api_call_count: int, turn_exit_reason: Any,
     preflight_compression_blocked: bool,
+    preflight_blocked_at_tokens: int = 0,
 ) -> EmptyResponseVerdict:
     """Recover from a final response with no visible content (see module docstring for
     the ladder). Role alternation is preserved: the post-tool nudge appends the empty
@@ -150,12 +152,14 @@ def recover_empty_response(
 
     _turn_exit_reason = turn_exit_reason
     _preflight_compression_blocked = preflight_compression_blocked
+    _preflight_blocked_at_tokens = preflight_blocked_at_tokens
 
     def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> EmptyResponseVerdict:
         return EmptyResponseVerdict(
             action=action, result=result, final_response=final_response,
             turn_exit_reason=_turn_exit_reason, active_system_prompt=active_system_prompt,
             preflight_compression_blocked=_preflight_compression_blocked,
+            preflight_blocked_at_tokens=_preflight_blocked_at_tokens,
             api_call_count=api_call_count,
         )
 
@@ -285,6 +289,7 @@ def recover_empty_response(
             # OUTER loop: `continue` re-runs preflight against the fallback's window;
             # `break` would end the turn without calling the fallback.
             _preflight_compression_blocked = False
+            _preflight_blocked_at_tokens = 0
             # The fallback hop is a provider switch, not a model turn: refund the empty
             # call so a mid-turn fallback doesn't eat the iteration budget (#77305).
             api_call_count = _refund_api_call(agent, api_call_count)

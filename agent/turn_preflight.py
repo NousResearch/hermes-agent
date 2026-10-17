@@ -51,6 +51,7 @@ class PreflightGateVerdict:
     _preflight_compression_blocked: Any
     _provider_overflow_recovery_pending: Any
     _last_preflight_pressure: Any
+    _preflight_blocked_at_tokens: Any = 0
     result: Optional[dict[str, Any]] = None
 
 

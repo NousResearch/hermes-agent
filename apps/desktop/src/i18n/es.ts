@@ -4618,6 +4618,13 @@ export const esOverrides = {
       offDescription: 'Ejecutar sin solicitudes de aprobación'
     },
     statusbar: {
+      workhorse: {
+        label: 'Subagentes',
+        inherit: 'Modelo del agente principal',
+        effortInherit: 'Heredar',
+        resetModel: 'Heredar modelo y ruta del agente principal',
+        resetEffort: 'Heredar esfuerzo del agente principal'
+      },
       unknown: 'desconocido',
       restart: 'reiniciar',
       update: 'actualizar',

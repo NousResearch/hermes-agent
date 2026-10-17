@@ -3728,6 +3728,13 @@ export interface Translations extends NoticeTranslations {
       modelPinned: string
       modelTitle: (provider: string, model: string) => string
       providerModelTitle: (provider: string, model: string) => string
+      workhorse: {
+        label: string
+        resetModel: string
+        resetEffort: string
+        inherit: string
+        effortInherit: string
+      }
     }
   }
 

@@ -274,6 +274,14 @@ delegation:
 
 If omitted, subagents use the same model as the parent.
 
+### Desktop controls
+
+In Desktop, the **Subagents** group icon beside the main model selector opens the same compact model menu, with the same curated models, favorites and filters for that profile. No subagent model or effort label occupies the toolbar. Inside the menu, **Effort** changes `delegation.reasoning_effort` independently of the parent's reasoning level.
+
+These controls save the composer owner's **profile** configuration. They affect newly launched subagents in that profile, not just the current conversation, and do not change the main model or already running children. A side-by-side session tile edits its own profile and connection.
+
+Use **Inherit parent model** in the picker to clear the model/provider pin and direct endpoint overrides. Use **Inherit parent effort** in the effort menu to clear only the effort override. The two choices are independent. Selecting a catalog provider clears a previous direct `base_url`, `api_key`, and `api_mode` override so the selected provider's configured route and credentials take effect.
+
 ### Cost strategy: frontier planner, inexpensive workers
 
 Decomposing a problem into well-specified subtasks takes frontier-level judgment; executing a subtask that already comes with a clear goal, full context, and an output contract usually doesn't. Meanwhile the children are where the tokens go — a parallel batch of subagents typically burns the large majority of a run's total tokens, so the worker model is where the cost actually lives. Pinning `delegation.model` to an inexpensive model while your main session stays on a frontier model keeps the planning quality where it matters and cuts spend where the volume is:

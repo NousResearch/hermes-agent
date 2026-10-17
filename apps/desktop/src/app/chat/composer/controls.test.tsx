@@ -9,6 +9,7 @@ import { applyWakeStartResult, applyWakeStatus, resetWakeWordState } from '@/sto
 import { ComposerControls } from './controls'
 
 vi.mock('./model-pill', () => ({ ModelPill: () => null }))
+vi.mock('./workhorse-model-pill', () => ({ WorkhorseModelPill: () => null }))
 
 const state: ChatBarState = {
   model: { canSwitch: false, model: '', provider: '' },

@@ -169,6 +169,9 @@ export interface ModelMenuController {
 
 interface ModelCatalogMenuProps {
   controller: ModelMenuController
+  /** Keep a child picker on its parent's exact shortlist (including the
+   * parent's current hidden row), while its own selection/edits stay isolated. */
+  visibilitySelection?: Pick<ModelChoice, 'model' | 'provider'>
   /** Rows appended under the catalog (Refresh Models, Edit Models, …). */
   footer?: ReactNode
   /** Rows above the search, outside the keyboard list (the local-setup offer). */
@@ -241,7 +244,8 @@ export function ModelCatalogMenu({
   ownerConnectionId,
   profile = 'default',
   request,
-  sessionId = null
+  sessionId = null,
+  visibilitySelection
 }: ModelCatalogMenuProps): ReactElement {
   const { t } = useI18n()
   const copy = t.shell.modelMenu
@@ -253,6 +257,7 @@ export function ModelCatalogMenu({
   // type. Typing a slug without this works too; the row just makes it findable.
   const [slugEntry, setSlugEntry] = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
+  const footerRef = useRef<HTMLDivElement>(null)
   const collapsedProviders = useStoreCollapsed()
   const defaultEffort = useDefaultEffort()
   // Which models the user curated in Edit Models. Read HERE rather than taken
@@ -328,6 +333,7 @@ export function ModelCatalogMenu({
   )
 
   const current = controller.current
+  const visibleCurrent = visibilitySelection ?? current
 
   const q = normalize(search)
 
@@ -373,11 +379,11 @@ export function ModelCatalogMenu({
       groupModels(
         pickerProviders,
         search,
-        { model: current.model, provider: current.provider },
+        { model: visibleCurrent.model, provider: visibleCurrent.provider },
         shownKeys,
         q ? null : favoriteSet
       ),
-    [pickerProviders, search, current.model, current.provider, shownKeys, q, favoriteSet]
+    [pickerProviders, search, visibleCurrent.model, visibleCurrent.provider, shownKeys, q, favoriteSet]
   )
 
   // Presets are searchable rows like everything else — an unfiltered preset
@@ -411,11 +417,11 @@ export function ModelCatalogMenu({
             .filter(provider => (provider.models ?? []).length > 0)
             .sort(
               (a, b) =>
-                Number(catalogProviderMatches(b, current.provider)) -
-                Number(catalogProviderMatches(a, current.provider))
+                Number(catalogProviderMatches(b, visibleCurrent.provider)) -
+                Number(catalogProviderMatches(a, visibleCurrent.provider))
             )
         : [],
-    [customSlug, pickerProviders, current.provider]
+    [customSlug, pickerProviders, visibleCurrent.provider]
   )
 
   const selectFamily = async (family: ModelFamily, provider: ModelOptionProvider): Promise<boolean> => {
@@ -690,6 +696,15 @@ export function ModelCatalogMenu({
             event.preventDefault()
             event.stopPropagation()
             stepKb(event.key === 'ArrowDown' ? 1 : -1)
+          } else if (event.key === 'Tab') {
+            // The flat model list owns arrows while search has focus. Give
+            // footer actions (inheritance, refresh, curation) a keyboard path
+            // too, then let Radix navigate their rows/submenus normally.
+            event.preventDefault()
+            event.stopPropagation()
+            const items = footerRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]:not([data-disabled])')
+            const target = event.shiftKey ? items?.[items.length - 1] : items?.[0]
+            target?.focus()
           } else if (isSubmitEnter(event) && event.shiftKey) {
             event.preventDefault()
             event.stopPropagation()
@@ -894,28 +909,30 @@ export function ModelCatalogMenu({
           contributes rows (the composer's Refresh Models) keeps the single
           trailing block it has always rendered. */}
       <DropdownMenuSeparator className="mx-0" />
-      {footer}
-      <DropdownMenuItem
-        className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)', slugEntry && 'text-foreground')}
-        onSelect={event => {
-          event.preventDefault()
-          setSearch('')
-          setKbOverride(null)
-          setSlugEntry(true)
-          // Radix hands focus back to the row after onSelect; refocus after.
-          window.setTimeout(() => searchRef.current?.focus(), 0)
-        }}
-      >
-        <Codicon name="add" size="0.75rem" />
-        {copyPicker.addCustomModelAction}
-      </DropdownMenuItem>
-      <DropdownMenuItem
-        className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
-        onSelect={() => setModelVisibilityOpen(true)}
-      >
-        <Codicon name="settings-gear" size="0.75rem" />
-        {copy.editModels}
-      </DropdownMenuItem>
+      <div ref={footerRef}>
+        {footer}
+        <DropdownMenuItem
+          className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)', slugEntry && 'text-foreground')}
+          onSelect={event => {
+            event.preventDefault()
+            setSearch('')
+            setKbOverride(null)
+            setSlugEntry(true)
+            // Radix hands focus back to the row after onSelect; refocus after.
+            window.setTimeout(() => searchRef.current?.focus(), 0)
+          }}
+        >
+          <Codicon name="add" size="0.75rem" />
+          {copyPicker.addCustomModelAction}
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
+          onSelect={() => setModelVisibilityOpen(true)}
+        >
+          <Codicon name="settings-gear" size="0.75rem" />
+          {copy.editModels}
+        </DropdownMenuItem>
+      </div>
     </>
   )
 }

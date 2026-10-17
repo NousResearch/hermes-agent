@@ -191,12 +191,29 @@ def read(url: str) -> dict:
     raise SystemExit(f"no feed found at {url}; tried {len(candidates)} candidates\n" + "\n".join(errors))
 
 
+def _published_dt(value: str | None) -> datetime | None:
+    """Publication time for date filtering; None when missing or unparseable.
+
+    parse_date preserves unrecognised feed dates as raw strings, so the
+    per-entry parse must not raise; the --since cutoff itself is user input
+    and its errors stay visible to the CLI.
+    """
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt
+
+
 def filter_entries(entries: list[dict], limit: int, since: str | None) -> list[dict]:
     if since:
         cutoff = datetime.fromisoformat(since).replace(tzinfo=UTC) if "T" not in since else datetime.fromisoformat(since)
         if cutoff.tzinfo is None:
             cutoff = cutoff.replace(tzinfo=UTC)
-        entries = [e for e in entries if e["published"] and datetime.fromisoformat(e["published"]) >= cutoff]
+        entries = [e for e in entries
+                   if (dt := _published_dt(e["published"])) is not None and dt >= cutoff]
     entries.sort(key=lambda e: e["published"] or "", reverse=True)
     return entries[:limit]
 

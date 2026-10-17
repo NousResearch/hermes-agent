@@ -106,7 +106,27 @@ Standard OpenAI Chat Completions format. Stateless — the full conversation is 
 
 Uploaded files (`file` / `input_file` / `file_id`) and non-image `data:` URLs return `400 unsupported_content_type`.
 
-**Streaming** (`"stream": true`): Returns Server-Sent Events (SSE) with token-by-token response chunks. For **Chat Completions**, the stream uses standard `chat.completion.chunk` events plus Hermes' custom `hermes.tool.progress` event for tool-start UX. For **Responses**, the stream uses OpenAI Responses event types such as `response.created`, `response.output_text.delta`, `response.output_item.added`, `response.output_item.done`, and `response.completed`.
+**Client-executed functions:** Requests containing `tools`, `tool_choice`, or assistant/tool-call history use a separate, single-inference path. They return OpenAI `message.tool_calls` with `finish_reason: "tool_calls"` for the client to execute. Hermes does **not** execute these functions, even if a function has the same name as a built-in tool such as `terminal`. Requests without these fields keep the server-executed agent behavior described above.
+
+```json
+{
+  "model": "hermes-agent",
+  "messages": [{"role": "user", "content": "Look up order 123"}],
+  "tools": [{"type": "function", "function": {
+    "name": "lookup_order",
+    "description": "Look up an order in the client's application",
+    "parameters": {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}
+  }}],
+  "tool_choice": {"type": "function", "function": {"name": "lookup_order"}},
+  "stream": false
+}
+```
+
+For the next request, include the returned assistant message (including `tool_calls`) and a `role: "tool"` message with the matching `tool_call_id` and the function result. The client must supply complete history; this path does not load or persist Hermes sessions through session headers. `tool_choice` supports `auto`, `none`, `required`, and a named function. Only `n=1` is supported. The supported upstream transports are Chat Completions and Codex Responses. This initial client-function path does not forward generation controls such as `temperature`, `max_tokens`, or `max_completion_tokens`; do not rely on those fields to constrain generation.
+
+With client functions, `stream: true` returns valid indexed `delta.tool_calls` events and `[DONE]`, but currently buffers the upstream completion before emitting SSE; it is not token-by-token streaming and does not send keepalives while waiting for the upstream result. Agent retry/fallback loops and Hermes built-in tools are not involved in this mode.
+
+**Agent-mode streaming** (`"stream": true`, without client function fields): Returns Server-Sent Events (SSE) with token-by-token response chunks. For **Chat Completions**, the stream uses standard `chat.completion.chunk` events plus Hermes' custom `hermes.tool.progress` event for tool-start UX. For **Responses**, the stream uses OpenAI Responses event types such as `response.created`, `response.output_text.delta`, `response.output_item.added`, `response.output_item.done`, and `response.completed`.
 
 All SSE streams (Chat Completions, Responses, `/api/sessions/{id}/chat/stream`, `/v1/runs/{id}/events`) emit a `: keepalive` comment line whenever no event has been sent for 10 seconds, so long tool calls do not trip client idle timeouts. Standard SSE clients ignore comment lines; custom parsers must skip lines that start with `:`.
 

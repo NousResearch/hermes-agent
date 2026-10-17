@@ -9,6 +9,7 @@ import os
 import re
 import shlex
 import threading
+from typing import Mapping
 from urllib.parse import unquote_plus
 
 # Shared with agent/file_safety's read-block list so the two defenses can't
@@ -74,6 +75,153 @@ def redact_registered_vault_values(text: str) -> str:
         if value in text:
             text = text.replace(value, "«redacted-vault-secret»")
     return text
+
+
+# ---------------------------------------------------------------------------
+# Exact-value redaction of APPLIED secrets (#77162)
+# ---------------------------------------------------------------------------
+# Every shape-based pass below keys on a recognizable form (vendor prefix,
+# ``KEY=value`` assignment, auth header, URL userinfo). A value applied from an
+# external secret source under a NON-credential-shaped name — ``DATABASE_URL``,
+# ``FOO``, an arbitrary 1Password item key — has no such form, so a tool that
+# echoes it back (config/env artifact read, ``printenv``, a backend error
+# quoting the key) transmits it verbatim to the model provider. Only an
+# exact-value pass can catch it. Two authoritative sources:
+#
+#   * the per-home snapshot of values applied from external secret sources
+#     (Bitwarden / 1Password / command — ``hermes_cli.env_loader``), read for the
+#     ACTIVE profile home only. A multiplex gateway must never scrub profile A's
+#     tool output with profile B's values: the mask itself would confirm to A
+#     that B's bytes exist (same reasoning as the vault registry above).
+#   * credential-suffixed process env vars (``MY_SERVICE_TOKEN``,
+#     ``BWS_ACCESS_TOKEN``, ``*_API_KEY/_TOKEN/_SECRET/_KEY/_PASSWORD/...``),
+#     which is where a non-multiplex deployment keeps applied credentials.
+_EXACT_SECRET_MIN_LEN = 6  # masking ``KEY=true`` or ``TOKEN=1`` mangles prose for no protection
+_EXACT_SECRET_ENV_SUFFIXES = (
+    "_API_KEY",
+    "_TOKEN",
+    "_SECRET",
+    "_KEY",
+    "_PASSWORD",
+    "_PASSWD",
+    "_CREDENTIAL",
+    "_CREDENTIALS",
+)
+_EXACT_SECRET_MASK = "***"
+
+
+def _credential_shaped_values(mapping: Mapping[str, str]) -> list[str]:
+    """Values of credential-shaped entries in ``mapping`` (suffix-matched on the name)."""
+    out: list[str] = []
+    for name, value in mapping.items():
+        try:
+            if str(name).upper().endswith(_EXACT_SECRET_ENV_SUFFIXES):
+                out.append(value)
+        except Exception:  # noqa: BLE001 — a hostile entry must not break egress redaction
+            continue
+    return out
+
+
+def _routed_credential_values() -> list[str]:
+    """Credential-shaped candidate values for the profile actually serving the task.
+
+    The regression this fixes (#77162 P2): an unconditional ``os.environ`` scan
+    ignores ownership, so in a multiplex process the launcher profile's
+    ``SERVICE_TOKEN`` is both applied to another profile's output and used as the
+    mask source, while the serving profile's own value is missing.
+
+    * Routed scope installed (``set_secret_scope`` under multiplex): candidates
+      come from THAT mapping only — the same ownership ``get_secret`` enforces.
+      An explicitly empty scope inherits nothing from the launcher; a missing
+      scope under multiplex fails closed (empty) rather than reading ``os.environ``.
+    * No scope (single-profile shell / systemd / ``op run``): the process env IS
+      where applied credentials live, so the suffix scan applies as before.
+    """
+    from agent import secret_scope
+
+    scope = secret_scope.current_secret_scope()
+    if scope is not None:
+        return _credential_shaped_values(scope)
+    if secret_scope._MULTIPLEX_ACTIVE:
+        # Multiplexing with no routed owner: fail closed, never the launcher env.
+        return []
+    return _credential_shaped_values(os.environ)
+
+
+def _exact_secret_values() -> list[str]:
+    """Candidate exact values for the active profile, longest first.
+
+    Longest-first matters: a value that is a substring of another must never
+    shadow its superstring and leave a partial leak behind.
+
+    Candidate ownership is routed-profile-scoped (see :func:`_routed_credential_values`);
+    the active-home external-source half (arbitrary-name values that belong to the
+    active home) is kept unconditionally.
+    """
+    values: set[str] = set()
+    try:
+        from hermes_constants import get_hermes_home
+        from hermes_cli.env_loader import get_secret_source_values
+
+        values.update(get_secret_source_values(get_hermes_home()).values())
+    except Exception:  # noqa: BLE001 — snapshot unavailable: the routed half still applies
+        pass
+    values.update(_routed_credential_values())
+    candidates: list[str] = [
+        v for v in values if isinstance(v, str) and len(v) >= _EXACT_SECRET_MIN_LEN
+    ]
+    candidates.sort(key=len, reverse=True)  # longest first: a substring must never shadow its superstring
+    return candidates
+
+
+def _mask_exact_values(text: str, values: list[str]) -> str:
+    for value in values:
+        if value in text:
+            text = text.replace(value, _EXACT_SECRET_MASK)
+    return text
+
+
+def _mask_exact_values_in_node(node, values: list[str]):
+    """Walk tool-result content (str / list-of-parts / dict carriers) masking every string leaf."""
+    if isinstance(node, str):
+        return _mask_exact_values(node, values)
+    if isinstance(node, list):
+        return [_mask_exact_values_in_node(item, values) for item in node]
+    if isinstance(node, dict):
+        return {key: _mask_exact_values_in_node(val, values) for key, val in node.items()}
+    return node
+
+
+def mask_exact_secret_values(text: str) -> str:
+    """Exact-substring scrub of every applied secret value for the active profile.
+
+    No-op when ``security.redact_secrets`` is off (the documented opt-out covers
+    this pass too — see PR #77020's rationale for the log path). Callers that must
+    redact regardless pass through ``redact_sensitive_text(force=True)``, which
+    applies the same values under its own force gate.
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    if not _redact_enabled():
+        return text
+    values = _exact_secret_values()
+    return _mask_exact_values(text, values) if values else text
+
+
+def mask_exact_secret_values_in_content(content):
+    """Content-shaped sibling of :func:`mask_exact_secret_values` for tool results.
+
+    Tool results are ``str`` or a list/dict of content parts, so the mask walks
+    the structure instead of ``str()``-ing it (which would corrupt a structured
+    result into a JSON string the model then re-parses).
+    """
+    if not isinstance(content, (str, list, dict)) or not content:
+        return content
+    if not _redact_enabled():
+        return content
+    values = _exact_secret_values()
+    return _mask_exact_values_in_node(content, values) if values else content
+
 
 # Sensitive query-string param names (case-insensitive): opaque tokens / OAuth
 # codes / pre-signed signatures with no vendor prefix.
@@ -933,6 +1081,10 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     text = redact_registered_vault_values(text)
     if not (force or _redact_enabled()):
         return text
+    # Exact-value pass (#77162): shape-based rules below cannot see an opaque value applied from an
+    # external secret source under a non-credential name, so match the applied bytes themselves. Runs
+    # under the same gate as the shape passes — ``force=True`` boundaries always, opt-out otherwise.
+    text = _mask_exact_values(text, _exact_secret_values())
     # ``secret_file`` is authoritative: a caller that classified the source as secret-bearing must not
     # be silently fail-open because another flag (code_file, or file_read implying it) was also set.
     code_file = (code_file or file_read) and not secret_file

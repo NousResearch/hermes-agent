@@ -7,6 +7,7 @@ through ``hermes_cli.plugins`` so tests that patch them on the origin keep worki
 
 from __future__ import annotations
 
+
 import contextvars
 import hashlib
 import importlib
@@ -32,6 +33,23 @@ if TYPE_CHECKING:  # pragma: no cover
     from hermes_cli.plugins import LoadedPlugin, PluginContext
 
 logger = logging.getLogger("hermes_cli.plugins")
+
+
+def _ignore_after_abandoned_load(method):
+    """Turn a registrar into a no-op once the context's load timed out: the abandoned worker thread may
+    still be executing register(), and a late registration would land in registries that the failure
+    path already swept (#108139)."""
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        if getattr(self, "_load_abandoned", False):
+            logger.warning(
+                "Plugin '%s' called %s() after its load timed out; ignored", self.manifest.name,
+                method.__name__,
+            )
+            return None
+        return method(self, *args, **kwargs)
+
+    return wrapped
 
 _NS_PARENT = "hermes_plugins"
 _MODULE_NAMESPACE_LOCK = threading.RLock()

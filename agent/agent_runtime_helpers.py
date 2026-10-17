@@ -22,7 +22,7 @@ from agent.message_sanitization import (
 from agent.message_metadata import (
     TOOL_CALL_UIDS, merge_tool_call_uids, per_occurrence_tool_call_uids, record_absorbed_message)
 from agent.prompt_builder import STEER_DISPLAY_KIND, steer_user_row
-from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
+from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message, _pre_tool_block_message
 from agent.think_scrubber import THINK_TAG_NAMES
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import (
@@ -2528,22 +2528,6 @@ def switch_model(
     _persist_switch_billing_route(agent)
 
 
-def _pre_tool_block_message(agent, function_name, function_args, effective_task_id, tool_call_id, middleware_trace):
-    """Plugin pre-tool-call hook verdict: ``(block_message, function_args)``; failures never block."""
-    try:
-        from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
-        block_message, modified_args = _dispatch_pre_tool_call_hooks(
-            function_name, function_args, task_id=effective_task_id or "",
-            session_id=getattr(agent, "session_id", "") or "", tool_call_id=tool_call_id or "",
-            turn_id=getattr(agent, "_current_turn_id", "") or "",
-            api_request_id=getattr(agent, "_current_api_request_id", "") or "",
-            middleware_trace=list(middleware_trace),
-        )
-        return block_message, (modified_args if modified_args is not None else function_args)
-    except Exception:
-        return None, function_args
-
-
 def invoke_tool(agent, function_name: str, function_args: dict, effective_task_id: str,
                  tool_call_id: Optional[str] = None, messages: list | None = None,
                  pre_tool_block_checked: bool = False,
@@ -2619,12 +2603,16 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 dispatch_kwargs["skip_tool_execution_middleware"] = True
             import model_tools
             return model_tools.handle_function_call(function_name, next_args, effective_task_id, **dispatch_kwargs)
+    from agent.tool_execution_context import dispatch_in_tool_context
+    execute_in_context = lambda args: dispatch_in_tool_context(
+        agent, lambda: _execute(args), task_id=effective_task_id, tool_call_id=tool_call_id or "",
+    )
     if skip_tool_execution_middleware:
-        return _execute(function_args)
+        return execute_in_context(function_args)
     from hermes_cli.middleware import run_tool_execution_middleware
     return run_tool_execution_middleware(
         function_name, function_args,
-        lambda next_args: _execute(next_args if isinstance(next_args, dict) else function_args),
+        lambda next_args: execute_in_context(next_args if isinstance(next_args, dict) else function_args),
         original_args=function_args, **hook_ids,
     )
 

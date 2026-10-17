@@ -29,6 +29,28 @@ def test_core_and_optional_speech_dependencies():
     }
 
 
+def test_runtime_data_files_ship_in_package_data():
+    """Data files the runtime resolves via ``__file__`` must be declared as package data or
+    sealed wheels drop them (uv2nix builds from the wheel): the bundled wake word model,
+    the NeuTTS reference voice and the termux runtime-lib table all load by path."""
+    import fnmatch
+
+    manifest = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    package_data = manifest["tool"]["setuptools"]["package-data"]
+    runtime_files = {
+        # tools/wake_word.py::_bundled_wakeword_path
+        "tools": ["wakewords/hey_hermes.tflite",
+                  # tools/tts_tool_local.py::_NEUTTS_SAMPLES
+                  "neutts_samples/jo.wav", "neutts_samples/jo.txt"],
+        # pm/termux_libs.py::table_path
+        "pm": ["termux_runtime_libs.json"],
+    }
+    for package, files in runtime_files.items():
+        patterns = package_data[package]
+        for path in files:
+            assert any(fnmatch.fnmatch(path, pattern) for pattern in patterns), (package, path)
+
+
 def test_starlette_server_pins_and_lock_exclude_cve_2026_48710():
     # BadHost's reviewed fixed boundary is independent of today's exact pin.
     floor = Version("1.0.1")

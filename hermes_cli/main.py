@@ -803,6 +803,7 @@ from hermes_cli.main_agent_cmds import (
     cmd_skills,
     cmd_tools,
 )
+from hermes_cli.foreign_sessions import _import_foreign_resume
 from hermes_cli.main_platform_setup import (
     cmd_slack,
     cmd_whatsapp,
@@ -1477,9 +1478,22 @@ def _resolve_continue_arg(args, *, use_tui: bool) -> None:
 
 
 def _apply_in_dir(args) -> None:
-    """--in DIR: chdir first so workspace-scoped lookups key off DIR; pins the session there."""
+    """--in DIR: chdir first so workspace-scoped lookups key off DIR; pins the session there.
+    No --in: refresh an inherited TERMINAL_CWD to the launch dir (#136842)."""
     in_dir = getattr(args, "in_dir", None)
     if not in_dir:
+        # Every cwd consumer prefers TERMINAL_CWD over the process cwd, so a value
+        # inherited from a parent surface, the shell or .env re-homes a local session
+        # in the old directory while sessions.cwd still records the launch dir
+        # (#136842). The interactive path re-exports the variable from the launch dir
+        # at cli import (cli_config_load: "Local backend: cwd is always os.getcwd()");
+        # --oneshot bypasses cli.py entirely, so refresh here like the --in branch
+        # below (#106220). Unset stays unset; non-local backends keep their own anchor.
+        if (
+            str(os.environ.get("TERMINAL_ENV") or "local") == "local"
+            and os.environ.get("TERMINAL_CWD", "").strip()
+        ):
+            os.environ["TERMINAL_CWD"] = os.getcwd()
         return
     # Git Bash / MSYS hands us POSIX-style paths (`--in ~` → `/c/Users/x`);
     # translate drive-root spellings to native Windows form. No-op elsewhere.
@@ -1504,26 +1518,6 @@ def _apply_in_dir(args) -> None:
     if os.environ.get("TERMINAL_CWD", "").strip():
         os.environ["TERMINAL_CWD"] = _target_dir
     args.no_restore_cwd = True
-
-
-def _import_foreign_resume(args) -> None:
-    """--resume @claude / @codex: import a foreign session and resume it."""
-    _resume_foreign = getattr(args, "resume", None)
-    if not (isinstance(_resume_foreign, str) and _resume_foreign.strip().lower() in ("@claude", "@codex")):
-        return
-    from hermes_cli.foreign_sessions import import_foreign_session, pick_foreign_session
-
-    _picked = pick_foreign_session(_resume_foreign.strip().lower().lstrip("@"))
-    if _picked is None:
-        sys.exit(1)
-    try:
-        _imported_id = import_foreign_session(_picked.source, _picked.path)
-    except ValueError as e:
-        print(f"Error: {e}")
-        sys.exit(1)
-    print(f"✓ Imported as {_imported_id} — resuming it now.")
-    print(f"  (later: hermes --resume {_imported_id})")
-    args.resume = _imported_id
 
 
 def _resolve_chat_session_args(args, use_tui: bool) -> None:

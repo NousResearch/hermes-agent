@@ -867,22 +867,35 @@ export function normalizeComposerEditorDom(editor: HTMLElement) {
       // Moving the text nodes out resets Chromium's selection to the editor's
       // start. Keep DOM endpoints (and direction), not serialized text offsets:
       // chips are atomic and the wrapper's trailing newline is being removed.
+      // The caret can also sit at the editor's own element position — that is
+      // what placeCaretEnd and paste's setStartAfter leave behind — and such a
+      // selection must be restored too, or it collapses to offset 0 and the
+      // next paste lands at the very start of the draft (#139578).
       const selection = editor.ownerDocument.getSelection()
       const anchorNode = selection?.anchorNode
       const focusNode = selection?.focusNode
       const anchorOffset = selection?.anchorOffset ?? 0
       const focusOffset = selection?.focusOffset ?? 0
-      const ownsSelection = anchorNode && focusNode && wrapper.contains(anchorNode) && wrapper.contains(focusNode)
+
+      const ownsSelection =
+        anchorNode &&
+        focusNode &&
+        (anchorNode === editor || wrapper.contains(anchorNode)) &&
+        (focusNode === editor || wrapper.contains(focusNode))
 
       editor.replaceChildren(...Array.from(wrapper.childNodes))
 
-      if (ownsSelection && editor.isConnected) {
-        selection?.setBaseAndExtent(
-          anchorNode === wrapper ? editor : anchorNode,
-          anchorOffset,
-          focusNode === wrapper ? editor : focusNode,
-          focusOffset
-        )
+      if (ownsSelection && anchorNode && focusNode && editor.isConnected) {
+        // An element-positioned endpoint past the wrapper (the editor held
+        // exactly one child, so any offset > 0 meant "after it") maps to the
+        // editor's new end; an offset of 0 keeps meaning "before the text".
+        const endpoint = (node: Node, offset: number): [Node, number] =>
+          node === wrapper ? [editor, offset] : node === editor && offset > 0 ? [editor, editor.childNodes.length] : [node, offset]
+
+        const [restoredAnchorNode, restoredAnchorOffset] = endpoint(anchorNode, anchorOffset)
+        const [restoredFocusNode, restoredFocusOffset] = endpoint(focusNode, focusOffset)
+
+        selection?.setBaseAndExtent(restoredAnchorNode, restoredAnchorOffset, restoredFocusNode, restoredFocusOffset)
       }
     }
   }

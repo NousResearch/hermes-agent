@@ -148,6 +148,9 @@ class SessionState:
     runtime_lock: Any = field(default_factory=threading.Lock)
     current_prompt_text: str = ""
     interrupted_prompt_text: str = ""
+    # Which kind of turn currently owns the session ("user" vs an internal
+    # completion-driven autonomous turn). Set by the server when it claims a turn.
+    active_turn_origin: str = ""
     # Per-session allocator for ACP assistant messageIds (lazily created by
     # the server so streamed chunks group into distinct assistant replies).
     message_ids: Any = None
@@ -193,6 +196,11 @@ class SessionManager:
             with self._lock:
                 state = self._sessions.get(session_id)  # a concurrent restore may have installed it
             return state if state is not None else self._restore(session_id)
+
+    def get_in_memory(self, session_id: str) -> Optional[SessionState]:
+        """Return an attached in-process session without restoring from disk."""
+        with self._lock:
+            return self._sessions.get(session_id)
 
     def fork_session(self, session_id: str, cwd: str = ".") -> Optional[SessionState]:
         """Deep-copy a session's history into a new session."""

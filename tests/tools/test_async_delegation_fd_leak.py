@@ -73,6 +73,7 @@ def test_ledger_operations_close_every_connection(monkeypatch, tmp_path):
     ad.restore_undelivered_completions(queue.Queue())
     ad.mark_completion_delivered("nope")
     ad.claim_completion_delivery("nope", "claim-1")
+    ad.renew_completion_delivery("nope", "claim-1")
 
     assert opened, "expected at least one connection to be opened"
     assert len(opened) == len(closed)
@@ -135,3 +136,32 @@ def test_schema_init_failure_still_closes_connection(monkeypatch, tmp_path):
 
     assert len(opened) == 1
     assert closed == opened
+
+
+def test_completion_claim_renewal_extends_only_the_owners_lease(
+    monkeypatch, tmp_path
+):
+    """A long autonomous turn must retain its durable at-most-once claim."""
+    _point_ledger(monkeypatch, tmp_path)
+    monkeypatch.setattr(ad.time, "time", lambda: 1_000.0)
+    ad._persist_dispatch(
+        {
+            "delegation_id": "deleg-renew",
+            "goal": "wait for a background result",
+            "session_key": "acp-session",
+            "dispatched_at": 900.0,
+        }
+    )
+    assert ad.claim_completion_delivery("deleg-renew", "claim-owner") is True
+
+    monkeypatch.setattr(ad.time, "time", lambda: 1_060.0)
+    assert ad.renew_completion_delivery("deleg-renew", "claim-other") is False
+    assert ad.renew_completion_delivery("deleg-renew", "claim-owner") is True
+
+    with ad._DB_LOCK, ad._transaction() as conn:
+        claim, claimed_at = conn.execute(
+            "SELECT delivery_claim, delivery_claimed_at "
+            "FROM async_delegations WHERE delegation_id='deleg-renew'"
+        ).fetchone()
+    assert claim == "claim-owner"
+    assert claimed_at == 1_060.0

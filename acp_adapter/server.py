@@ -39,8 +39,14 @@ from acp_adapter.tools import build_tool_complete, build_tool_start, coerce_tool
 from agent.context_compressor import (COMPRESSED_SUMMARY_METADATA_KEY, ContextCompressor)
 from agent.interrupt_compat import request_hard_interrupt
 from tools.approval_context import reset_hermes_interactive_context, set_hermes_interactive_context
+from tools.process_registry import process_registry
 
 logger = logging.getLogger(__name__)
+
+
+class _SyntheticNotificationBusy(RuntimeError):
+    """The target session became busy before an autonomous turn started."""
+
 
 # Runs the synchronous AIAgent off the event loop.
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="acp-agent")
@@ -250,6 +256,8 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
     }
     _MODE_TO_EDIT_APPROVAL_POLICY = {mode: spec[0] for mode, spec in _MODES.items()}
     _EDIT_APPROVAL_POLICY_TO_MODE = {spec[0]: mode for mode, spec in _MODES.items()}
+    # How often a long autonomous turn re-extends its durable delivery claim.
+    _BACKGROUND_CLAIM_RENEW_INTERVAL_SECONDS = 60.0
 
     def __new__(cls, session_manager=None):
         if session_manager is None:
@@ -261,13 +269,242 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         super().__init__()
         self.session_manager = session_manager or SessionManager()
         self._conn: Optional[acp.Client] = None
+        self._connected_session_ids: set[str] = set()
+        self._background_notification_task: asyncio.Task | None = None
 
     # ---- Connection lifecycle -----------------------------------------------
 
     def on_connect(self, conn: acp.Client) -> None:
         """Store the client connection for sending session updates."""
+        if self._background_notification_task is not None:
+            self._background_notification_task.cancel()
+        self._background_notification_task = None
+        # Session ownership belongs to one transport connection. A replacement
+        # client must attach or load its own sessions before receiving events.
+        self._connected_session_ids.clear()
         self._conn = conn
         logger.info("ACP client connected")
+        self._ensure_background_notification_task()
+
+    def _ensure_background_notification_task(self) -> None:
+        """Ensure async process notifications have a live dispatcher on this loop."""
+        conn = self._conn
+        task = self._background_notification_task
+        if conn is None or (task is not None and not task.done()):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+            coroutine = self._background_notification_loop(conn)
+            created = loop.create_task(coroutine)
+            if not asyncio.isfuture(created):
+                coroutine.close()
+                self._background_notification_task = None
+                return
+            self._background_notification_task = created
+            logger.info("ACP background notification dispatcher started")
+        except RuntimeError:
+            self._background_notification_task = None
+            logger.debug("ACP connection has no running loop for background notifications")
+
+    async def _renew_background_delivery_claim(
+        self,
+        event: dict[str, Any],
+        claim: str,
+    ) -> None:
+        """Keep a durable delegation claim live during a long model turn."""
+        from tools.async_delegation import renew_event_delivery
+
+        while True:
+            await asyncio.sleep(self._BACKGROUND_CLAIM_RENEW_INTERVAL_SECONDS)
+            try:
+                renewed = await asyncio.to_thread(renew_event_delivery, event, claim)
+            except Exception:
+                logger.warning(
+                    "ACP background notification claim renewal failed delegation=%s",
+                    event.get("delegation_id"),
+                    exc_info=True,
+                )
+                return
+            if not renewed:
+                logger.warning(
+                    "ACP background notification claim expired delegation=%s",
+                    event.get("delegation_id"),
+                )
+                return
+
+    async def _dispatch_background_notifications_once(self) -> int:
+        """Run autonomous turns for pending events owned by this connection."""
+        conn = self._conn
+        if conn is None or not self._connected_session_ids:
+            return 0
+        pending = process_registry.drain_notifications(
+            owns_event=lambda event: str(event.get("session_key") or "")
+            in self._connected_session_ids,
+            # ACP, like gateway/TUI, must still deliver an autonomous result
+            # after the agent only polled the process status inline.
+            skip_poll_observed=False,
+        )
+        delivered = 0
+
+        def requeue_from(start_index: int) -> None:
+            for queued_event, _ in pending[start_index:]:
+                process_registry.completion_queue.put(queued_event)
+
+        for index, (event, text) in enumerate(pending):
+            session_id = str(event.get("session_key") or "")
+            state = self.session_manager.get_in_memory(session_id)
+            if state is None:
+                # Only an attached in-process session may receive an autonomous
+                # turn. Leave the event pending for a later reconnect rather
+                # than restoring a database-only session in this transport.
+                self._connected_session_ids.discard(session_id)
+                process_registry.completion_queue.put(event)
+                continue
+
+            with state.runtime_lock:
+                if state.is_running:
+                    # Never interrupt or redirect a user-owned turn. The next
+                    # dispatcher pass will retry once the session is idle.
+                    process_registry.completion_queue.put(event)
+                    continue
+
+            from tools.async_delegation import (
+                claim_event_delivery,
+                complete_event_delivery,
+                release_event_delivery,
+            )
+
+            claim = claim_event_delivery(event, f"acp:{os.getpid()}")
+            if claim is None:
+                continue
+            renewal_task: asyncio.Task | None = None
+            turn_task: asyncio.Task | None = None
+            turn_progress = {"model_started": False, "model_completed": False}
+            try:
+                event_type = str(event.get("type") or "completion")
+                process_status = str(event.get("status") or "")
+                if not process_status:
+                    process_status = "running"
+                    if event_type == "completion":
+                        process_status = (
+                            "completed" if event.get("exit_code") == 0 else "failed"
+                        )
+                process_meta: dict[str, Any] = {
+                    "id": str(
+                        event.get("delegation_id") or event.get("session_id") or ""
+                    ),
+                    "event": event_type,
+                    "status": process_status,
+                }
+                if event.get("exit_code") is not None:
+                    process_meta["exitCode"] = event.get("exit_code")
+                if claim:
+                    renewal_task = asyncio.create_task(
+                        self._renew_background_delivery_claim(event, claim)
+                    )
+                turn_task = asyncio.create_task(
+                    self.prompt(
+                        prompt=[TextContentBlock(type="text", text=text)],
+                        session_id=session_id,
+                        _synthetic_notification=True,
+                        _synthetic_notification_progress=turn_progress,
+                        _synthetic_notification_meta={
+                            "hermes": {
+                                "backgroundNotification": True,
+                                "process": process_meta,
+                            }
+                        },
+                    )
+                )
+                # Connection replacement cancels the dispatcher, not the
+                # already-accepted model turn. Let that turn finish against its
+                # captured transport so it cannot race a retry in the new one.
+                await asyncio.shield(turn_task)
+                complete_event_delivery(event, claim)
+                delivered += 1
+                logger.info(
+                    "ACP background notification resumed session=%s process=%s status=%s",
+                    session_id,
+                    process_meta["id"],
+                    process_meta["status"],
+                )
+            except _SyntheticNotificationBusy:
+                release_event_delivery(event, claim)
+                process_registry.completion_queue.put(event)
+                continue
+            except asyncio.CancelledError:
+                turn_completed = False
+                if turn_task is not None:
+                    if not turn_progress["model_started"]:
+                        turn_task.cancel()
+                        try:
+                            await turn_task
+                        except asyncio.CancelledError:
+                            pass
+                        with state.runtime_lock:
+                            if state.active_turn_origin == "autonomous":
+                                state.is_running = False
+                                state.current_prompt_text = ""
+                                state.active_turn_origin = ""
+                    else:
+                        try:
+                            await turn_task
+                        except asyncio.CancelledError:
+                            logger.debug(
+                                "Cancelled ACP autonomous turn did not finish for %s",
+                                session_id,
+                            )
+                        except Exception:
+                            logger.debug(
+                                "Cancelled ACP dispatcher's autonomous turn failed for %s",
+                                session_id,
+                                exc_info=True,
+                            )
+                        if turn_progress["model_completed"]:
+                            complete_event_delivery(event, claim)
+                            turn_completed = True
+                if not turn_completed:
+                    release_event_delivery(event, claim)
+                    process_registry.completion_queue.put(event)
+                # The rest of the drained batch has not started and must remain
+                # available to the replacement connection.
+                requeue_from(index + 1)
+                raise
+            except Exception:
+                # Preserve this event and every not-yet-attempted owned event.
+                # The transport is no longer usable, so do not repeatedly drain
+                # and retry the same queue entries on this connection.
+                release_event_delivery(event, claim)
+                requeue_from(index)
+                if self._conn is conn:
+                    self._conn = None
+                logger.debug(
+                    "Failed to deliver ACP background notification for %s",
+                    session_id,
+                    exc_info=True,
+                )
+                break
+            finally:
+                if renewal_task is not None:
+                    renewal_task.cancel()
+                    try:
+                        await renewal_task
+                    except asyncio.CancelledError:
+                        pass
+        return delivered
+
+    async def _background_notification_loop(self, conn: acp.Client) -> None:
+        """Poll the shared completion queue while this ACP connection is active."""
+        try:
+            while self._conn is conn:
+                await self._dispatch_background_notifications_once()
+                if self._conn is not conn:
+                    break
+                await asyncio.sleep(0.25)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("ACP background notification loop stopped", exc_info=True)
 
     async def _send(self, session_id: str, update: Any, *, fail_msg: str, level: int = logging.WARNING) -> bool:
         """``session_update`` that logs instead of raising; False on failure."""
@@ -429,6 +666,30 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         await self._send(
             session_id, update, fail_msg="Could not send ACP session info update for %s", level=logging.DEBUG
         )
+
+    def _schedule_session_info_update_from_thread(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        session_id: str,
+    ) -> None:
+        """Schedule a title/provenance update without creating an orphan coroutine.
+
+        Auto-title callbacks run on a worker thread. Constructing the coroutine
+        before ``call_soon_threadsafe`` leaks it when the owning ACP event loop
+        has already closed. Defer construction until the callback executes on
+        that loop instead.
+        """
+
+        def _schedule_on_loop() -> None:
+            asyncio.create_task(self._send_session_info_update(session_id))
+
+        try:
+            loop.call_soon_threadsafe(_schedule_on_loop)
+        except RuntimeError:
+            logger.debug(
+                "ACP event loop closed before title update for %s",
+                session_id,
+            )
 
     async def _register_session_mcp_servers(
         self, state: SessionState, mcp_servers: list[McpServerStdio | McpServerHttp | McpServerSse] | None
@@ -623,6 +884,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         # Agent construction (config, memory-provider import, SessionDB) is slow and fully
         # blocking; inline it froze the loop serving every JSON-RPC request (#58083).
         state = await asyncio.to_thread(self.session_manager.create_session, cwd=cwd)
+        self._connected_session_ids.add(state.session_id)
         await self._attach_session_mcp(state, mcp_servers, "New session %s (cwd=%s)", state.session_id, cwd)
         return NewSessionResponse(session_id=state.session_id, **await self._session_response_fields(state))
 
@@ -633,6 +895,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         if state is None:
             logger.warning("load_session: session %s not found", session_id)
             return None
+        self._connected_session_ids.add(state.session_id)
         await self._attach_session_mcp(state, mcp_servers, "Loaded session %s", session_id)
         return LoadSessionResponse(**await self._session_response_fields(state, "load"))
 
@@ -643,6 +906,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         if state is None:
             logger.warning("resume_session: session %s not found, creating new", session_id)
             state = await asyncio.to_thread(self.session_manager.create_session, cwd=cwd)
+        self._connected_session_ids.add(state.session_id)
         await self._attach_session_mcp(state, mcp_servers, "Resumed session %s", state.session_id)
         return ResumeSessionResponse(**await self._session_response_fields(state, "resume"))
 
@@ -653,7 +917,11 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         if not (state and state.cancel_event):
             return
         with state.runtime_lock:
-            if state.is_running and state.current_prompt_text:
+            # Never salvage an internal completion notification as a replayable user
+            # prompt: only a turn that is not autonomous may be replayed after a cancel.
+            # An unclassified turn (``""``, e.g. state restored before this flag existed)
+            # keeps upstream's salvage behavior.
+            if state.is_running and state.active_turn_origin != "autonomous" and state.current_prompt_text:
                 state.interrupted_prompt_text = state.current_prompt_text
             # Cancel + hard-stop under the lock so no other prompt mistakes this turn for
             # redirectable work.
@@ -676,6 +944,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         if state is None:
             logger.info("Forked session %s -> %s", session_id, "")
             return ForkSessionResponse(session_id="")
+        self._connected_session_ids.add(state.session_id)
         await self._register_session_mcp_servers(state, mcp_servers)
         logger.info("Forked session %s -> %s", session_id, state.session_id)
         self._schedule_available_commands_update(state.session_id)
@@ -736,17 +1005,28 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         return user_text, user_content
 
     def _claim_turn_or_queue(
-        self, state: SessionState, session_id: str, user_text: str, user_content: Any, text_only: bool
+        self, state: SessionState, session_id: str, user_text: str, user_content: Any, text_only: bool,
+        synthetic_notification: bool = False,
     ) -> str | None:
         """Mark the session running; if a turn is active, redirect it (text-only, supported
-        runtime) or queue it. Returns the client message when absorbed, else None."""
+        runtime) or queue it. Returns the client message when absorbed, else None.
+
+        A synthetic (completion-notification) turn is neither a redirect nor a queue
+        candidate: when the session cannot take it right now the dispatcher is told so
+        it can retry a pending event on a later pass, instead of injecting internal
+        text into the user's turn or queueing it as if the user had typed it."""
         with state.runtime_lock:
+            if synthetic_notification and (state.is_running or state.command_op):
+                raise _SyntheticNotificationBusy(session_id)
             if not state.is_running and not state.command_op:
                 state.is_running = True
                 state.current_prompt_text = user_text or "[Image attachment]"
+                state.active_turn_origin = "autonomous" if synthetic_notification else "user"
                 return None
             # Redirect steers a live turn; a state-mutating command (command_op) has none.
-            if state.is_running and text_only and isinstance(user_content, str) and hasattr(state.agent, "redirect") and (
+            # A user prompt that arrives during an autonomous turn queues behind it
+            # rather than redirecting an internal turn's model work.
+            if state.is_running and not synthetic_notification and state.active_turn_origin != "autonomous" and text_only and isinstance(user_content, str) and hasattr(state.agent, "redirect") and (
                 getattr(state.agent, "_supports_active_turn_redirect", False) is True
             ):
                 try:
@@ -760,6 +1040,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
     def _run_agent_turn(
         self, *, state: SessionState, session_id: str, user_text: str, user_content: Any, conn: Any,
         loop: asyncio.AbstractEventLoop, approval_cb: Any, edit_approval_requester: Any,
+        synthetic_notification: bool = False,
     ) -> dict:
         """Executor-thread body of one turn, run inside ``contextvars.copy_context()`` so
         ContextVar writes are isolated from concurrent sessions.
@@ -807,11 +1088,15 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             os.environ["HERMES_SESSION_ID"] = session_id
 
             # Auto-titling fires in the turn prologue; push the title now as a session-info update.
+            # An internal completion notification must not retitle the session, so the
+            # callback is left uninstalled for a synthetic (autonomous) turn.
             def _notify_title_update(_title: str, _source: str) -> None:
                 if conn:
-                    loop.call_soon_threadsafe(asyncio.create_task, self._send_session_info_update(session_id))
+                    self._schedule_session_info_update_from_thread(loop, session_id)
 
-            agent._on_session_title = _notify_title_update
+            if not synthetic_notification:
+                agent._on_session_title = _notify_title_update
+
             try:
                 return agent.run_conversation(
                     user_message=user_content, conversation_history=state.history, task_id=session_id,
@@ -822,22 +1107,33 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 return {"final_response": f"Error: {e}", "messages": state.history}
 
     async def prompt(self, prompt: list[PromptBlock], session_id: str, **kwargs: Any) -> PromptResponse:
-        """Run Hermes on the user's prompt and stream events back to the editor."""
+        """Run Hermes on a user prompt or an internal completion notification."""
+        synthetic_notification = bool(kwargs.pop("_synthetic_notification", False))
+        synthetic_notification_progress = kwargs.pop("_synthetic_notification_progress", None)
+        synthetic_notification_meta = kwargs.pop("_synthetic_notification_meta", None)
+        self._ensure_background_notification_task()
         state = await asyncio.to_thread(self.session_manager.get_session, session_id)
         if state is None:
             logger.error("prompt: session %s not found", session_id)
             return PromptResponse(stop_reason="refusal")
 
+        self._connected_session_ids.add(state.session_id)
         user_text = _extract_text(prompt).strip()
         user_content = _content_blocks_to_openai_user_content(prompt)
         text_only_prompt = all(isinstance(block, TextContentBlock) for block in prompt)
         if not user_text and not (isinstance(user_content, list) and user_content):
             return PromptResponse(stop_reason="end_turn")
 
-        user_text, user_content = self._rewrite_prompt_for_interrupt(state, user_text, user_content, text_only_prompt)
+        # An internal completion notification is injected verbatim: it is not user text, so
+        # neither the /steer + interrupt salvage nor slash-command parsing may touch it
+        # (in particular a cancelled user request must not be replayed onto it).
+        if not synthetic_notification:
+            user_text, user_content = self._rewrite_prompt_for_interrupt(
+                state, user_text, user_content, text_only_prompt
+            )
 
         # Slash commands are text-only; a prompt with media goes to the agent even if it starts with "/".
-        if text_only_prompt and isinstance(user_content, str) and user_text.startswith("/"):
+        if not synthetic_notification and text_only_prompt and isinstance(user_content, str) and user_text.startswith("/"):
             # Off the loop: /model validates through switch_model (network I/O) and /compress
             # calls the LLM; handlers are sync and hold no loop-bound state.
             response_text = await asyncio.to_thread(self._handle_slash_command, user_text, state)
@@ -849,7 +1145,9 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 await self._drain_queued_prompts(state, session_id, self._conn)
                 return PromptResponse(stop_reason="end_turn")
 
-        absorbed = self._claim_turn_or_queue(state, session_id, user_text, user_content, text_only_prompt)
+        absorbed = self._claim_turn_or_queue(
+            state, session_id, user_text, user_content, text_only_prompt, synthetic_notification
+        )
         if absorbed is not None:
             if self._conn:
                 await self._conn.session_update(session_id, acp.update_agent_message_text(absorbed))
@@ -857,6 +1155,33 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
         logger.info("Prompt on session %s: %s", session_id, user_text[:100])
         conn, loop = self._conn, asyncio.get_running_loop()
+
+        if synthetic_notification and conn:
+            # Show the internal notification on the user side of the transcript so the
+            # autonomous turn renders in-context, carrying the process metadata clients
+            # use to group the completion with its process.
+            try:
+                await conn.session_update(
+                    session_id=session_id,
+                    update=UserMessageChunk(
+                        session_update="user_message_chunk",
+                        content=TextContentBlock(type="text", text=user_text),
+                        field_meta=synthetic_notification_meta,
+                    ),
+                )
+            except asyncio.CancelledError:
+                with state.runtime_lock:
+                    state.is_running = False
+                    state.current_prompt_text = ""
+                    state.active_turn_origin = ""
+                raise
+            except Exception:
+                with state.runtime_lock:
+                    state.is_running = False
+                    state.current_prompt_text = ""
+                    state.active_turn_origin = ""
+                raise
+
         if state.cancel_event:
             state.cancel_event.clear()
         cbs = self._wire_turn_callbacks(state, session_id, conn, loop)
@@ -866,6 +1191,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 return self._run_agent_turn(
                     state=state, session_id=session_id, user_text=user_text, user_content=user_content, conn=conn,
                     loop=loop, approval_cb=cbs.approval_cb, edit_approval_requester=cbs.edit_approval_requester,
+                    synthetic_notification=synthetic_notification,
                 )
             finally:
                 # Still on the executor thread: ``_send_update`` blocks on the loop, so flushing
@@ -878,15 +1204,27 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             pre_turn_hermes_id = getattr(state.agent, "session_id", None)
             # Fresh context copy: concurrent sessions on the shared executor must not share ContextVars.
             ctx = contextvars.copy_context()
+            if synthetic_notification_progress is not None:
+                synthetic_notification_progress["model_started"] = True
             result = await loop.run_in_executor(_executor, ctx.run, _run_agent)
+            if synthetic_notification_progress is not None:
+                synthetic_notification_progress["model_completed"] = True
         except Exception:
             logger.exception("Executor error for session %s", session_id)
             with state.runtime_lock:
                 state.is_running = False
                 state.current_prompt_text = ""
+                state.active_turn_origin = ""
+            # A failed autonomous turn must surface to the dispatcher so it can release
+            # its durable claim and requeue the event.
+            if synthetic_notification:
+                raise
             return PromptResponse(stop_reason="end_turn")
 
-        return await self._finish_turn(state, session_id, conn, result, pre_turn_hermes_id, cbs.streamed)
+        return await self._finish_turn(
+            state, session_id, conn, result, pre_turn_hermes_id, cbs.streamed,
+            synthetic_notification=synthetic_notification,
+        )
 
     def _flush_turn_tool_calls(
         self, cbs: _TurnCallbacks, session_id: str, conn: Any, loop: asyncio.AbstractEventLoop
@@ -953,7 +1291,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
     async def _finish_turn(
         self, state: SessionState, session_id: str, conn: Any, result: dict, pre_turn_hermes_id: Any,
-        streamed_message: bool,
+        streamed_message: bool, synthetic_notification: bool = False,
     ) -> PromptResponse:
         """Persist, emit provenance/final text, drain queued prompts, report usage."""
         try:
@@ -992,13 +1330,26 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                     else:
                         update.message_id = state.message_ids.current()
                     state.message_ids.close()
-                await conn.session_update(session_id, update)
+                try:
+                    await conn.session_update(session_id, update)
+                except Exception:
+                    if not synthetic_notification:
+                        raise
+                    # The autonomous result is already persisted in session history; a
+                    # replacement client can replay it, while retrying the completion
+                    # would make the parent act twice.
+                    logger.warning(
+                        "ACP transport closed after autonomous result for %s",
+                        session_id,
+                        exc_info=True,
+                    )
 
         finally:
             # Go idle before draining so recursive prompt() calls can acquire the session.
             with state.runtime_lock:
                 state.is_running = False
                 state.current_prompt_text = ""
+                state.active_turn_origin = ""
             await self._drain_queued_prompts(state, session_id, conn)
 
         usage = None
@@ -1008,7 +1359,8 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 total_tokens=result.get("total_tokens", 0), thought_tokens=result.get("reasoning_tokens"),
                 cached_read_tokens=result.get("cache_read_tokens"),
             )
-        await self._send_usage_update(state)
+        if not synthetic_notification or self._conn is conn:
+            await self._send_usage_update(state)
         return PromptResponse(stop_reason="cancelled" if cancelled else "end_turn", usage=usage)
 
     async def _drain_queued_prompts(self, state: SessionState, session_id: str, conn: Any) -> None:

@@ -168,6 +168,7 @@ def test_background_command_prefers_recorded_session_cwd_over_init_time_cwd(monk
     assert len(registry.calls) == 1
     assert registry.calls[0]["cwd"] == "/workspace/live"
     assert registry.calls[0]["session_key"] == task_id
+    assert registry.calls[0]["notify_on_complete"] is False
 
 
 def test_host_local_background_command_bypasses_configured_backend(tmp_path, monkeypatch):

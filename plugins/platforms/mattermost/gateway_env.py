@@ -18,4 +18,5 @@ ENV_OVERRIDES = (
 AUTHZ = {
     "allowed_users_env": "MATTERMOST_ALLOWED_USERS",
     "allow_all_env": "MATTERMOST_ALLOW_ALL_USERS",
+    "allowlist_suppresses_pairing": True,
 }

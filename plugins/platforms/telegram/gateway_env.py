@@ -24,4 +24,6 @@ AUTHZ = {
     "allowed_users_env": "TELEGRAM_ALLOWED_USERS",
     "allow_all_env": "TELEGRAM_ALLOW_ALL_USERS",
     "allow_bots_env": "TELEGRAM_ALLOW_BOTS",
+    "group_allowed_chats_env": "TELEGRAM_GROUP_ALLOWED_CHATS",
+    "allowlist_suppresses_pairing": True,
 }

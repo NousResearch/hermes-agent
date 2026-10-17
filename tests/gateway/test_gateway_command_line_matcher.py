@@ -27,6 +27,8 @@ ACCEPT = [
     "python gateway/run.py",
     "python -m gateway.run",   # module spelling of the dedicated entrypoint
     "hermes-gateway.exe",
+    "python3 /opt/hermes/hermes-gateway --profile work",
+    "/usr/bin/env hermes-gateway",
     "hermes gateway",          # bare `hermes gateway` defaults to run
     "hermes gateway run",
     # profile selector AFTER the `gateway` token (argv is profile-position
@@ -44,6 +46,8 @@ ACCEPT = [
 ]
 
 REJECT = [
+    "/usr/bin/claude --resume hermes-gateway",         # ordinary argument, not its entrypoint
+    "tmux new-session -s hermes-gateway",              # session name, not its entrypoint
     "python -m tui_gateway",                              # unrelated module
     "python -m hermes_cli.main gateway status",           # other subcommand
     "python -m hermes_cli.main gateway restart",

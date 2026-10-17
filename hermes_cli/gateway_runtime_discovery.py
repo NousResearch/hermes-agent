@@ -7,6 +7,7 @@ import errno
 import json
 import os
 from pathlib import Path
+import shlex
 import socket
 import stat
 import sys
@@ -15,9 +16,22 @@ import time
 
 
 class DiscoveryError(ValueError):
-    def __init__(self, reason: str, detail: str | None = None):
-        super().__init__(f"{reason}: {detail}" if detail else reason)
-        self.reason = reason
+    def __init__(self, reason: str, detail: str | None = None, fix: str | None = None):
+        # The stable code callers match on stays in ``reason``; ``detail`` is what the user reads,
+        # ending in the shell command that repairs the node (``fix``) when there is one.
+        self.reason, self.cause, self.fix = reason, detail, fix
+        self.detail = f"{detail}; {fix}" if detail and fix else detail
+        super().__init__(f"{reason}: {self.detail}" if self.detail else reason)
+
+    def bounded_detail(self, limit: int) -> str | None:
+        """``detail`` within ``limit`` characters, never with a cut-off command: a repair command
+        that does not fit is dropped with a notice, and an overlong description is cut visibly."""
+        if self.detail is None or len(self.detail) <= limit:
+            return self.detail
+        notice = "; repair command omitted (path too long to print)" if self.fix else ""
+        room, marker, cause = limit - len(notice), "… [truncated]", self.cause or ""
+        cause = cause if len(cause) <= room else cause[:room - len(marker)] + marker
+        return cause + notice
 
 
 def _may_have_access_acl(path: Path) -> bool:
@@ -68,16 +82,25 @@ def _private_node(path: Path, *, kind: str, home: bool = False) -> os.stat_resul
             "unsafe_control_path",
             f"{path} is {stat.filemode(node.st_mode)}, expected {kind}",
         )
-    expected_uid = os.getuid()
+    expected_uid = os.getuid()  # windows-footgun: ok — POSIX socket path only
     if node.st_uid != expected_uid:  # windows-footgun: ok — POSIX socket path only
         raise DiscoveryError(
             "unsafe_control_path",
             f"{path} is owned by uid {node.st_uid}, expected uid {expected_uid} (gateway user); "
             "chown it to the gateway user",
         )
-    if home_mode_unsafe(node, path) if home else stat.S_IMODE(node.st_mode) & 0o077:
-        raise DiscoveryError("unsafe_control_permissions")
+    mode = stat.S_IMODE(node.st_mode)
+    if home and home_mode_unsafe(node, path):
+        raise DiscoveryError("unsafe_control_permissions", f"{path} has mode {mode:04o}, writable by another user",
+                             f"chmod go-w {shlex.quote(str(path))}")
+    if not home and mode & 0o077:
+        raise _open_mode(path, mode, 0o700 if kind == "directory" else 0o600)
     return node
+
+
+def _open_mode(path: Path, mode: int, expected: int) -> DiscoveryError:
+    return DiscoveryError("unsafe_control_permissions", f"{path} has mode {mode:04o}, expected {expected:04o}",
+                          f"chmod {expected:o} {shlex.quote(str(path))}")
 
 
 def socket_peer_uid(sock: socket.socket) -> int | None:
@@ -145,7 +168,7 @@ def _socket_path(home: Path) -> Path:
         raise DiscoveryError("invalid_control_pointer")
     directory = _private_node(target.parent, kind="directory")
     if directory.st_mode & 0o077:
-        raise DiscoveryError("unsafe_control_permissions")
+        raise _open_mode(target.parent, stat.S_IMODE(directory.st_mode), 0o700)
     _private_node(target, kind="socket")
     return target
 

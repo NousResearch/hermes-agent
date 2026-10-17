@@ -78,6 +78,109 @@ def test_private_node_reports_path_kind_and_owner_recovery_hint(tmp_path, monkey
 
 
 @pytest.mark.platforms("linux", "macos")
+def test_the_client_verdict_names_the_unsafe_node_and_its_fix(monkeypatch, request):
+    """``Gateway inaccessible: <code> (<detail>)`` is what a client prints (``connect_gateway``): the
+    detail must survive discovery and ensure, with the code unchanged for callers that match it."""
+    import os
+    import shutil
+    from hermes_cli.gateway_runtime import discover_gateway_endpoint, ensure_gateway_runtime
+    # A short root: the socket path must fit AF_UNIX's limit.
+    root = Path(tempfile.mkdtemp(prefix='h-'))
+    request.addfinalizer(lambda: shutil.rmtree(root, ignore_errors=True))
+    home = root / 'h'
+    home.mkdir(mode=0o700)
+    control = home / 'gateway.sock'
+    # Discovery names the canonical home, the path a chmod/chown must act on: on macOS the temp
+    # root sits under /var, a symlink to /private/var, so the caller's spelling is not what it prints.
+    shown, shown_control = home.resolve(), home.resolve() / 'gateway.sock'
+    control.write_text('not a socket', encoding='utf-8')
+    verdict = ensure_gateway_runtime(home, timeout=2)
+    assert (verdict.state, verdict.reason_code) == ('inaccessible', 'unsafe_control_path')
+    detail = verdict.detail or ''
+    assert f'{shown_control} is -rw' in detail and 'expected socket' in detail, verdict
+
+    control.unlink()
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+        server.bind(str(control))
+        control.chmod(0o660)
+        verdict = discover_gateway_endpoint(home)
+        assert verdict.reason_code == 'unsafe_control_permissions'
+        assert verdict.detail == f'{shown_control} has mode 0660, expected 0600; chmod 600 {shown_control}', verdict
+    control.unlink()
+
+    home.chmod(0o757)
+    verdict = discover_gateway_endpoint(home)
+    assert verdict.reason_code == 'unsafe_control_permissions'
+    assert verdict.detail == (f'{shown} has mode 0757, writable by another user; chmod go-w {shown}'), verdict
+    home.chmod(0o700)
+
+    owner = home.lstat().st_uid
+    monkeypatch.setattr(os, 'getuid', lambda: owner + 1)
+    verdict = discover_gateway_endpoint(home)
+    assert verdict.reason_code == 'unsafe_control_path'
+    assert f'{shown} is owned by uid {owner}, expected uid {owner + 1}' in (verdict.detail or ''), verdict
+
+
+@pytest.mark.platforms("linux", "macos")
+def test_a_long_home_keeps_the_repair_command_whole_or_drops_it(tmp_path):
+    """The detail is bounded to 500 characters; a long profile home (named twice: the node and the
+    command) must not leave the client printing a chmod cut off mid-path or missing its quote."""
+    from hermes_cli.gateway_runtime import discover_gateway_endpoint
+
+    omitted = '; repair command omitted (path too long to print)'
+    home = tmp_path.resolve() / ('p' * 200) / "profile's home"
+    home.mkdir(parents=True, mode=0o700)
+    home.chmod(0o757)
+    verdict = discover_gateway_endpoint(home)
+    assert verdict.reason_code == 'unsafe_control_permissions'
+    assert verdict.detail == f'{home} has mode 0757, writable by another user{omitted}', verdict
+
+    # Too long even without the command: the description is cut with a visible marker.
+    deeper = home / ('q' * 250) / ('r' * 100)
+    deeper.mkdir(parents=True, mode=0o700)
+    deeper.chmod(0o757)
+    detail = discover_gateway_endpoint(deeper).detail or ''
+    assert len(detail) == 500 and detail.endswith(f'… [truncated]{omitted}'), detail
+    assert detail.startswith(str(deeper)[:300]) and 'chmod' not in detail, detail
+
+
+@pytest.mark.platforms("linux", "macos")
+def test_a_permission_hint_runs_as_printed_for_a_path_with_spaces(tmp_path):
+    """The hint is a command the user pastes into a shell: a profile home with a space must survive it."""
+    import subprocess
+    from hermes_cli.gateway_runtime_discovery import _private_node
+
+    home = tmp_path / 'profile home'
+    home.mkdir(mode=0o700)
+    control = home / 'control file'
+    control.write_text('', encoding='utf-8')
+    for path, kind, is_home, mode in ((control, 'file', False, 0o660), (home, 'directory', True, 0o702)):
+        path.chmod(mode)
+        with pytest.raises(DiscoveryError, match='unsafe_control_permissions') as error:
+            _private_node(path, kind=kind, home=is_home)
+        hint = str(error.value).split('; ', 1)[1]
+        ran = subprocess.run(['sh', '-c', hint], capture_output=True, text=True, check=False)
+        assert ran.returncode == 0, (hint, ran.stderr)
+        _private_node(path, kind=kind, home=is_home)
+
+
+@pytest.mark.platforms("linux")
+def test_an_open_control_directory_names_its_path_and_mode(tmp_path):
+    home = tmp_path / 'profile'
+    home.mkdir(mode=0o700)
+    with tempfile.TemporaryDirectory(prefix='h-owner-') as root:
+        directory = Path(root) / f'hermes-gw-{_home_hash(home)}'
+        directory.mkdir(mode=0o755)
+        pointer = home / 'gateway.sock.path'
+        pointer.write_text(str(directory / 'control.sock'), encoding='utf-8')
+        pointer.chmod(0o600)
+        with pytest.raises(DiscoveryError, match='unsafe_control_permissions') as refused:
+            query_identify(home, timeout=2)
+        assert refused.value.reason == 'unsafe_control_permissions'
+        assert getattr(refused.value, 'detail', None) == f'{directory} has mode 0755, expected 0700; chmod 700 {directory}'
+
+
+@pytest.mark.platforms("linux", "macos")
 def test_home_mode_refuses_only_writes_another_user_can_make(tmp_path, monkeypatch):
     import grp
     import os

@@ -98,6 +98,54 @@ def test_plugin_workspace_trusts_core_lock_instead_of_rechecking_release_age(lay
 # --- classified failures + staging surface (FINAL-RUNTIME-CONTRACT) ---
 
 
+def test_plugin_local_groups_do_not_constrain_runtime_workspace(layout):
+    """Local developer tools must not participate in the host's runtime lock."""
+    import tomllib
+
+    tmp, core, plugin, _ = layout
+    metadata = plugin / "pyproject.toml"
+    metadata.write_text(metadata.read_text() +
+        '\n[project.optional-dependencies]\nfeature=["chosen-dep==1.0"]\n'
+        '[dependency-groups]\ndev=["base-dep==2.0"]\nlint=[{include-group="dev"}]\n'
+        '[tool.uv.dependency-groups]\ndev={requires-python=">=3.11"}\n')
+    metadata.write_text(metadata.read_text().replace('[tool.uv]\n',
+        '[tool.uv]\ndefault-groups=["dev"]\ndev-dependencies=["other-dep==2.0"]\n'
+        'conflicts=[[{group="dev"},{extra="feature"}]]\n', 1))
+    original = metadata.read_bytes()
+    root = tmp / "runtime-workspace"
+    environment = managed_environment(tmp / "runtime-env")
+    ws.lock_and_sync([plugin], [], root=root, source=core, seed_lock=None,
+                     environment=environment)
+    snapshot = next((root / "plugin-sources").iterdir())
+    projected = tomllib.loads((snapshot / "pyproject.toml").read_text())
+    assert "dependency-groups" not in projected
+    assert projected["project"]["dependencies"] == ["member-dep==1.0"]
+    assert projected["project"]["optional-dependencies"] == {"feature": ["chosen-dep==1.0"]}
+    assert not {"default-groups", "dev-dependencies", "dependency-groups", "conflicts"} & projected["tool"]["uv"].keys()
+    assert metadata.read_bytes() == original
+    locked = tomllib.loads((root / "uv.lock").read_text())["package"]
+    assert any(p["name"] == "base-dep" and p["version"] == "1.0" for p in locked)
+    assert any(p["name"] == "member-dep" for p in locked)
+
+    # A buildable member keeps its original package identity and runtime metadata too.
+    metadata.write_text(metadata.read_text() +
+        '\n[build-system]\nrequires=[]\nbuild-backend="local_backend"\n')
+    buildable_original = metadata.read_bytes()
+    buildable = ws._workspace_member(plugin, tmp / "buildable", identity=plugin)
+    built = tomllib.loads((buildable / "pyproject.toml").read_text())
+    assert built["project"]["name"] == "plugin-member"
+    assert "dependency-groups" not in built
+    assert built["project"]["dependencies"] == ["member-dep==1.0"]
+    assert metadata.read_bytes() == buildable_original
+
+    # Genuine published runtime conflicts still fail loudly; this is not a resolver bypass.
+    metadata.write_text(metadata.read_text().replace('dependencies=["member-dep==1.0"]',
+                                                     'dependencies=["base-dep==2.0"]'))
+    with pytest.raises(ws.ResolutionConflict):
+        ws.lock_and_sync([plugin], [], root=tmp / "conflicting-runtime", source=core,
+                         seed_lock=None, environment=managed_environment(tmp / "conflicting-env"))
+
+
 def test_classify_network_failure_stays_generic():
     from pm.workspace import ResolutionConflict, classify_uv_failure
 

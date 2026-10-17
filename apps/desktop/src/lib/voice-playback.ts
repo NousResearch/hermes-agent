@@ -386,6 +386,8 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
   let context: AudioContext | null = null
   let streamRate = 24_000
   let nextStartAt = 0
+  let pendingAudioBuffers = 0
+  let inputEnded = false
   let carry: null | Uint8Array = null
   let started = false
   let settled = false
@@ -434,8 +436,11 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
   liveStops.add(stop)
 
   const finishWhenDrained = () => {
-    const remainingMs = context ? Math.max(0, nextStartAt - context.currentTime) * 1_000 : 0
-    window.setTimeout(() => settle('done'), remainingMs + 100)
+    inputEnded = true
+
+    if (pendingAudioBuffers === 0) {
+      settle('done')
+    }
   }
 
   const schedule = (data: ArrayBuffer) => {
@@ -475,6 +480,16 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
     const source = context.createBufferSource()
     source.buffer = buffer
     source.connect(context.destination)
+    // Device startup and suspension pause the audio clock, not wall timers.
+    pendingAudioBuffers += 1
+
+    source.onended = () => {
+      pendingAudioBuffers -= 1
+
+      if (inputEnded && pendingAudioBuffers === 0) {
+        settle('done')
+      }
+    }
 
     const startAt = Math.max(context.currentTime + 0.05, nextStartAt)
     source.start(startAt)

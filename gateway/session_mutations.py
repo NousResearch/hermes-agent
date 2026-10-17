@@ -49,12 +49,17 @@ def _authorize_control(authority, actor, ref, params, owner=None):
     # transaction still verifies the entire digest and current epoch.
     if not has_mutation_receipt(authority.db, actor.subject, ref.session_id, params['request_id']):
         ref = owner or _owner_ref(authority, ref, params)
+        if ref.session_id in authority.sessions:
+            row = authority.db.get_session(ref.session_id)
+            if row is not None and row['source'] == 'subagent':
+                raise RuntimeStoreError('session_busy')
         if ref.session_id not in authority.sessions:
             from hermes_state_mutation_binding import authorize_history
             with authority.db._read_ctx() as conn:
                 from gateway.session_local_migration import require_history_claim
                 require_history_claim(authority, conn, actor, ref.session_id)
-                cold_history = authorize_history(conn, actor, ref.session_id)
+                cold_history = authorize_history(conn, actor, ref.session_id, db=authority.db,
+                                                 operation=params['operation'], payload=params['payload'])
         if not cold_history:
             authority.authorize(actor, ref, 'session:control')
     return cold_history
@@ -148,7 +153,10 @@ async def _mutate_session(authority, actor, ref, params, *, commit_lock=None, ow
         if operation == 'import':
             import_history_control(conn, actor, imported_ids)
             return
-        if not authorize_history(conn, actor, ref.session_id, claim=True):
+        from gateway.session_local_migration import require_history_claim
+        require_history_claim(authority, conn, actor, ref.session_id)
+        if not authorize_history(conn, actor, ref.session_id, claim=True, db=authority.db,
+                                 operation=operation, payload=payload):
             raise RuntimeStoreError('permission_denied')
 
     return await write_mutation(authority, ref, params, editor_servers, principal_id=actor.subject,
@@ -234,8 +242,7 @@ async def write_mutation(authority, ref, params, editor_servers, *, principal_id
         else:
             # The receipt transaction is synchronous SQLite: run it off the event loop so a large
             # state.db or a contended writer lock never stalls other clients (main 1769024ca3b).
-            result = await asyncio.to_thread(mutate_runtime_session, authority.db, **fields,
-                                             _prepared=prepared, _authorize_write=authorize_write)
+            result = await asyncio.to_thread(_commit_mutation, authority, fields, prepared, authorize_write)
         try:
             await _project_result(authority, ref, live, params, result, editor_servers, applied=applied)
         finally:
@@ -250,6 +257,27 @@ async def write_mutation(authority, ref, params, editor_servers, *, principal_id
         from hermes_state_media import collect_retired_media
         await asyncio.to_thread(collect_retired_media, authority.db)
     return result
+
+
+def _commit_mutation(authority, fields, prepared, authorize_write):
+    """Keep delegate liveness locked through the receipt transaction, in writer lock order."""
+    from pathlib import Path
+    from hermes_cli.active_sessions import active_session_liveness_guard, ActiveSessionRegistryError
+    from hermes_state_mutation_retirement import has_mutation_receipt
+    db, sid = authority.db, fields['session_id']
+    row = db.get_session(sid)
+    guard = nullcontext(False)
+    history = (row is not None and row['source'] == 'subagent'
+               and not has_mutation_receipt(db, fields['principal_id'], sid, fields['request_id']))
+    if history:
+        guard = active_session_liveness_guard(sid, registry_home=Path(db.db_path).parent)
+    try:
+        with guard as active:
+            if active or (history and sid in authority.sessions):
+                raise RuntimeStoreError('session_busy')
+            return mutate_runtime_session(db, **fields, _prepared=prepared, _authorize_write=authorize_write)
+    except ActiveSessionRegistryError as exc:
+        raise RuntimeStoreError('runtime_coordination_required') from exc
 
 
 async def _project_result(authority, ref, live, params, result, editor_servers, *, applied):

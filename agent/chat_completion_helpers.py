@@ -3205,6 +3205,7 @@ class _StreamingCall(StreamingWaitMonitor):
         if runaway:
             _close_half_read_stream("runaway_stream_close_failed")
             self._log_runaway_cut(runaway)
+            self._dump_runaway_request(runaway)
         tool_calls.materialize()
         self._close_managed_stream()
         if self._stream_attempt_was_cancelled(stream_attempt_id):
@@ -3220,6 +3221,20 @@ class _StreamingCall(StreamingWaitMonitor):
             # Cut, not finished: the length path ends the turn on this mark instead of continuing.
             response._runaway_repetition = True
         return response
+
+    def _dump_runaway_request(self, channel: str) -> None:
+        """Write a request breadcrumb for a repetition cut (request_dump_*.json).
+
+        The cut DISCARDS the degenerate partial and is not an API error, so the normal
+        dump path (``agent/turn_recovery.py``: ``non_retryable_client_error`` /
+        ``max_retries_exhausted``) never fires and the exact request (tools + messages)
+        is lost. Mirrors that call site so the forensic record survives.
+        """
+        try:
+            self.agent._dump_api_request_debug(
+                self.api_kwargs, reason=f"runaway_repetition_{channel}")
+        except Exception:
+            pass
 
     def _log_runaway_cut(self, channel: str) -> None:
         logger.warning(
@@ -3482,6 +3497,7 @@ class _StreamingCall(StreamingWaitMonitor):
             return None
         if runaway:
             self._log_runaway_cut(runaway)
+            self._dump_runaway_request(runaway)
             # No message_stop, so no final message: the SDK's snapshot is what streamed so far.
             message = accumulator.response(_stream_context["stream"].current_message_snapshot)
             message.stop_reason = "max_tokens"

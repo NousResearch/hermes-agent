@@ -30,6 +30,7 @@ from tools.approval_context import (
 )
 from tools.approval_detection import (
     _approval_key_aliases, _check_sudo_stdin_guard, detect_dangerous_command, detect_hardline_command,
+    detect_execute_code_config_mutation,
 )
 from tools.approval_floors import (
     _command_matches_permanent_allowlist, _hardline_block_result, _match_user_deny_rule, _sudo_stdin_block_result,
@@ -1075,6 +1076,24 @@ def _floor_block(command: str, *, sudo_guard: bool = False) -> dict | None:
     return _user_deny_block(command)
 
 
+def _sensitive_config_mutation(command: str) -> tuple[str, str] | None:
+    """Return the detector finding for a sensitive Hermes config mutation."""
+    dangerous, pattern_key, description = detect_dangerous_command(command)
+    if dangerous and description == "modify Hermes security-sensitive configuration":
+        return pattern_key, description
+    return None
+
+
+def _block_sensitive_config_bypass() -> dict:
+    """Block sensitive config mutations authorized only by a policy bypass."""
+    return _blocked(
+        "BLOCKED: security-sensitive Hermes configuration changes require "
+        "an explicit human approval and cannot use general approval bypasses.",
+        pattern_key="hermes_security_config_mutation",
+        description="modify Hermes security-sensitive configuration",
+    )
+
+
 def check_dangerous_command(command: str, env_type: str,
                             approval_callback=None,
                             has_host_access: bool = False) -> dict:
@@ -1086,6 +1105,21 @@ def check_dangerous_command(command: str, env_type: str,
     blocked = _floor_block(command)
     if blocked is not None:
         return blocked
+
+    finding = _sensitive_config_mutation(command)
+    if finding:
+        approval_mode = approval_context._get_approval_mode()
+        if (
+            _yolo_active()
+            or approval_mode == "off"
+            or _command_matches_permanent_allowlist(command)
+        ):
+            return _block_sensitive_config_bypass()
+
+        _, is_cli, is_gateway, is_ask = _presence(approval_callback)
+        if not (is_cli or is_gateway or is_ask):
+            return _block_sensitive_config_bypass()
+
     if _yolo_active():
         return _approved()
     if _command_matches_permanent_allowlist(command):
@@ -1179,18 +1213,36 @@ def check_all_command_guards(command: str, env_type: str,
     if blocked is not None:
         return blocked
 
+    finding = _sensitive_config_mutation(command)
+
     from agent.terminal_approval_batch import consume_prepared_guard
     prepared = consume_prepared_guard(command, env_type, has_host_access)
     if prepared is not None:
+        if (
+            finding
+            and prepared.get("approved")
+            and not prepared.get("user_approved")
+        ):
+            return _block_sensitive_config_bypass()
         return prepared
 
     approval_mode = approval_context._get_approval_mode()
+    if finding and (
+        _yolo_active()
+        or approval_mode == "off"
+        or _command_matches_permanent_allowlist(command)
+    ):
+        return _block_sensitive_config_bypass()
+
     if _yolo_active() or approval_mode == "off":
         return _approved()
     if _command_matches_permanent_allowlist(command):
         return _approved()
 
     approval_callback, is_cli, is_gateway, is_ask = _presence(approval_callback)
+    if finding and not (is_cli or is_gateway or is_ask):
+        return _block_sensitive_config_bypass()
+
     # Outside CLI/gateway/ask flows we never block on approvals: each
     # unattended context applies its configured deny/approve mode, else allow.
     if not is_cli and not is_gateway and not is_ask:
@@ -1256,6 +1308,16 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     """
     pattern_key = "execute_code"
     description = _EXECUTE_CODE_DESCRIPTION
+
+    # This hard preflight check must precede isolated-backend, YOLO, and approval-mode
+    # shortcuts. It catches obvious config.yaml mutations, not arbitrary dynamic paths.
+    config_mutation, config_reason = detect_execute_code_config_mutation(code)
+    if config_mutation:
+        return _blocked(
+            "BLOCKED: " + (config_reason or "execute_code appears to modify Hermes security-sensitive configuration."),
+            pattern_key="execute_code_config_mutation",
+            description="modify Hermes security-sensitive configuration",
+        )
 
     # Isolated backends already sandbox the child. vercel_sandbox has no host-bind concept so it stays always-skipped.
     if env_type == "vercel_sandbox":

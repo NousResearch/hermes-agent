@@ -349,6 +349,26 @@ DANGEROUS_PATTERNS = [
     # between `hermes` and `gateway` (`hermes -p ade gateway restart`) are allowed so a profile flag can't slip past.
     (r'\bhermes\s+' + _GLOBAL_FLAGS + r'gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
     (r'\bhermes\s+update\b', "hermes update (restarts gateway, kills running agents)"),
+    # Hermes config.yaml contains the approval/security policy itself. The file-tool path
+    # hard-denies direct writes, so the sanctioned `hermes config set/unset` front door must not
+    # become an approval bypass. Keep this in DANGEROUS_PATTERNS rather than the unconditional
+    # hardline: normal host/local execution should require the configured approval flow, while a
+    # genuinely isolated Docker container may still use its own container-local config without
+    # needlessly prompting. Scope this to security-sensitive configuration only so ordinary
+    # `hermes config set` remains frictionless.
+    (
+        r'\bhermes\s+' + _GLOBAL_FLAGS +
+        r'config\s+(?:set|unset)\s+'
+        r'(?:'
+        r'approvals(?:\.[A-Za-z0-9_.-]+)?'
+        r'|command_allowlist(?:\b|\.)'
+        r'|security(?:\.[A-Za-z0-9_.-]+)?'
+        r'|terminal\.backend\b'
+        r'|terminal\.container_[A-Za-z0-9_.-]+\b'
+        r'|terminal\.docker_[A-Za-z0-9_.-]+\b'
+        r')',
+        "modify Hermes security-sensitive configuration",
+    ),
     # Docker/Podman daemon redirect — global flags or env that point the CLI at a DIFFERENT (often remote) daemon:
     # `docker -H ssh://prod stop app` looks local but operates on remote infra, so any redirect requires approval
     # regardless of subcommand. The flag must be in global position (before the subcommand) and -H/--host/--context
@@ -1546,3 +1566,457 @@ def detect_dangerous_command(command: str) -> tuple:
     if _is_shell_token_spliced_gateway_lifecycle(command):
         return (True, _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION, _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION)
     return (False, None, None)
+
+def detect_execute_code_config_mutation(code: str) -> tuple[bool, str | None]:
+    """Detect obvious Python attempts to mutate Hermes configuration.
+
+    This AST-based preflight heuristic associates supported write calls with their
+    path arguments, resolves simple top-level static import aliases, and tracks
+    unambiguous top-level path variables assigned once. It is not a complete security
+    boundary: dynamically constructed paths, unresolved or dynamic aliases, and
+    indirect file operations require runtime enforcement.
+    """
+    import ast
+
+    text = str(code or "")
+    if not text.strip():
+        return False, None
+
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError, TypeError):
+        return False, None
+
+    path_aliases: dict[str, ast.AST] = {}
+
+    def is_config_path(node: ast.AST | None) -> bool:
+        if node is None:
+            return False
+        if isinstance(node, ast.Name) and node.id in path_aliases:
+            assigned_value = path_aliases[node.id]
+            if node.lineno >= assigned_value.lineno:
+                return is_config_path(assigned_value)
+            return False
+
+        def static_string(expression: ast.AST) -> str | None:
+            if isinstance(expression, ast.Constant) and isinstance(
+                expression.value, str
+            ):
+                return expression.value
+            if (
+                isinstance(expression, ast.BinOp)
+                and isinstance(expression.op, ast.Add)
+            ):
+                left = static_string(expression.left)
+                right = static_string(expression.right)
+                if left is not None and right is not None:
+                    return left + right
+            return None
+
+        def matches_config_path(value: str) -> bool:
+            import posixpath
+
+            normalized = posixpath.normpath(value.replace("\\", "/"))
+            return re.fullmatch(
+                r"(?i)/(?:home/[^/]+|[^/]+)/\.hermes/config\.ya?ml",
+                normalized,
+            ) is not None
+
+        value = static_string(node)
+        if value is not None and matches_config_path(value):
+            return True
+
+        def expression_name(expression: ast.AST) -> str:
+            if isinstance(expression, ast.Name):
+                return import_aliases.get(expression.id, expression.id)
+            if (
+                isinstance(expression, ast.Attribute)
+                and isinstance(expression.value, ast.Name)
+            ):
+                owner = import_aliases.get(
+                    expression.value.id, expression.value.id
+                )
+                return f"{owner}.{expression.attr}"
+            return ""
+
+        def home_path_parts(expression: ast.AST) -> list[str] | None:
+            if (
+                isinstance(expression, ast.Call)
+                and isinstance(expression.func, ast.Attribute)
+                and expression.func.attr == "home"
+                and expression_name(expression.func.value)
+                in {"Path", "pathlib.Path", "PurePath", "pathlib.PurePath"}
+                and not expression.args
+                and not expression.keywords
+            ):
+                return []
+
+            if (
+                isinstance(expression, ast.BinOp)
+                and isinstance(expression.op, ast.Div)
+            ):
+                parts = home_path_parts(expression.left)
+                segment = static_string(expression.right)
+                if parts is not None and segment is not None:
+                    return parts + [segment]
+
+            if (
+                isinstance(expression, ast.Call)
+                and isinstance(expression.func, ast.Attribute)
+                and expression.func.attr == "joinpath"
+                and not expression.keywords
+            ):
+                parts = home_path_parts(expression.func.value)
+                segments = [static_string(arg) for arg in expression.args]
+                if parts is not None and all(
+                    segment is not None for segment in segments
+                ):
+                    return parts + segments
+
+            return None
+
+        home_parts = home_path_parts(node)
+        if home_parts in (
+            [".hermes", "config.yaml"],
+            [".hermes", "config.yml"],
+        ):
+            return True
+
+        for part in ast.walk(node):
+            if not isinstance(part, ast.Call):
+                continue
+            if (
+                isinstance(part.func, ast.Name)
+                and part.func.id == "get_config_path"
+            ):
+                return True
+            constructor_name = None
+            if isinstance(part.func, ast.Name):
+                constructor_name = import_aliases.get(
+                    part.func.id, part.func.id
+                )
+            elif (
+                isinstance(part.func, ast.Attribute)
+                and isinstance(part.func.value, ast.Name)
+            ):
+                owner_name = import_aliases.get(
+                    part.func.value.id, part.func.value.id
+                )
+                constructor_name = f"{owner_name}.{part.func.attr}"
+
+            if (
+                constructor_name
+                in {"Path", "PurePath", "pathlib.Path", "pathlib.PurePath"}
+                and part.args
+            ):
+                value = static_string(part.args[0])
+                if value is not None and matches_config_path(value):
+                    return True
+
+        return False
+
+    # Resolve simple aliases introduced by top-level import statements.
+    # This is deliberately limited to static imports; it does not attempt
+    # to track reassignment, scopes, or dynamically constructed callables.
+    import_aliases: dict[str, str] = {}
+    for statement in tree.body:
+        if isinstance(statement, ast.Import):
+            for alias in statement.names:
+                local_name = alias.asname or alias.name.split(".", 1)[0]
+                canonical_name = (
+                    alias.name if alias.asname
+                    else alias.name.split(".", 1)[0]
+                )
+                import_aliases[local_name] = canonical_name
+        elif isinstance(statement, ast.ImportFrom) and statement.module:
+            for alias in statement.names:
+                if alias.name == "*":
+                    continue
+                local_name = alias.asname or alias.name
+                canonical_name = (
+                    alias.name
+                    if statement.module == "builtins"
+                    else f"{statement.module}.{alias.name}"
+                )
+                import_aliases[local_name] = canonical_name
+
+    # Track only unambiguous module-level assignments. Any additional store to
+    # the same name anywhere in the script disqualifies it, avoiding stale aliases
+    # when a variable is reassigned or reused in another scope.
+    assigned_name_counts: dict[str, int] = {}
+    for part in ast.walk(tree):
+        if isinstance(part, ast.Name) and isinstance(part.ctx, ast.Store):
+            assigned_name_counts[part.id] = (
+                assigned_name_counts.get(part.id, 0) + 1
+            )
+
+    for statement in tree.body:
+        target = None
+        value = None
+        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+            target = statement.targets[0]
+            value = statement.value
+        elif isinstance(statement, ast.AnnAssign):
+            target = statement.target
+            value = statement.value
+
+        if (
+            isinstance(target, ast.Name)
+            and value is not None
+            and assigned_name_counts.get(target.id) == 1
+            and is_config_path(value)
+        ):
+            path_aliases[target.id] = value
+
+    # Track unambiguous aliases of configuration-file write methods.
+    # Only a single-assignment name bound directly to a recognized config
+    # path's write_text/write_bytes method is followed.
+    write_method_aliases: dict[str, ast.AST] = {}
+    for statement in tree.body:
+        target = None
+        value = None
+        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+            target = statement.targets[0]
+            value = statement.value
+        elif isinstance(statement, ast.AnnAssign):
+            target = statement.target
+            value = statement.value
+
+        if (
+            isinstance(target, ast.Name)
+            and value is not None
+            and assigned_name_counts.get(target.id) == 1
+            and isinstance(value, ast.Attribute)
+            and value.attr in {"write_text", "write_bytes"}
+            and is_config_path(value.value)
+        ):
+            write_method_aliases[target.id] = value.value
+
+    def call_name(call: ast.Call) -> str:
+        func = call.func
+        if isinstance(func, ast.Name):
+            return import_aliases.get(func.id, func.id)
+        if isinstance(func, ast.Attribute):
+            owner = func.value
+            if isinstance(owner, ast.Name):
+                canonical_owner = import_aliases.get(owner.id, owner.id)
+                return canonical_owner + "." + func.attr
+            return func.attr
+        return ""
+
+    def call_argument(
+        call: ast.Call, position: int, *keyword_names: str
+    ) -> ast.AST | None:
+        """Return a call argument whether supplied positionally or by keyword."""
+        if len(call.args) > position:
+            return call.args[position]
+        for keyword in call.keywords:
+            if keyword.arg in keyword_names:
+                return keyword.value
+        return None
+
+    def open_may_write(call: ast.Call) -> bool:
+        mode_node = call_argument(call, 1, "mode")
+        if mode_node is None:
+            return False
+        if isinstance(mode_node, ast.Constant) and isinstance(mode_node.value, str):
+            return any(flag in mode_node.value for flag in ("w", "a", "x", "+"))
+        return True
+
+    def os_open_may_write(call: ast.Call) -> bool:
+        flags = call_argument(call, 1, "flags")
+        if flags is None:
+            return True
+
+        write_flag_names = {
+            "O_WRONLY", "O_RDWR", "O_CREAT", "O_TRUNC",
+            "O_APPEND", "O_TMPFILE",
+        }
+
+        def static_int(node: ast.AST) -> int | None:
+            """Evaluate simple integer flag expressions without executing code."""
+            if isinstance(node, ast.Constant) and type(node.value) is int:
+                return node.value
+
+            if isinstance(node, ast.Name):
+                canonical = import_aliases.get(node.id, "")
+                if canonical.startswith("os."):
+                    value = getattr(os, canonical.rsplit(".", 1)[-1], None)
+                    if type(value) is int:
+                        return value
+                return None
+
+            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+                owner = import_aliases.get(node.value.id, node.value.id)
+                if owner == "os" and node.attr.startswith("O_"):
+                    value = getattr(os, node.attr, None)
+                    if type(value) is int:
+                        return value
+                return None
+
+            if isinstance(node, ast.BinOp):
+                left = static_int(node.left)
+                right = static_int(node.right)
+                if left is None or right is None:
+                    return None
+                try:
+                    if isinstance(node.op, ast.BitOr):
+                        return left | right
+                    if isinstance(node.op, ast.BitAnd):
+                        return left & right
+                    if isinstance(node.op, ast.BitXor):
+                        return left ^ right
+                    if isinstance(node.op, ast.LShift):
+                        return left << right
+                    if isinstance(node.op, ast.RShift):
+                        return left >> right
+                except (ValueError, OverflowError):
+                    return None
+                return None
+
+            if isinstance(node, ast.UnaryOp):
+                value = static_int(node.operand)
+                if value is None:
+                    return None
+                if isinstance(node.op, ast.Invert):
+                    return ~value
+                if isinstance(node.op, ast.UAdd):
+                    return value
+                if isinstance(node.op, ast.USub):
+                    return -value
+
+            return None
+
+        value = static_int(flags)
+        if value is not None:
+            access_mode = getattr(os, "O_ACCMODE", 3)
+            read_only = getattr(os, "O_RDONLY", 0)
+
+            # O_WRONLY and O_RDWR are encoded in O_ACCMODE. Other flags
+            # can also mutate the filesystem even with read-only access.
+            if value & access_mode != read_only:
+                return True
+
+            for flag_name in write_flag_names - {"O_WRONLY", "O_RDWR"}:
+                flag_value = getattr(os, flag_name, None)
+                if (
+                    type(flag_value) is int
+                    and flag_value != 0
+                    and value & flag_value == flag_value
+                ):
+                    return True
+
+            return False
+
+        # If a dynamic expression contains an explicit write flag, block it.
+        # Unknown expressions remain conservatively classified as writable.
+        attributes = [
+            part.attr
+            for part in ast.walk(flags)
+            if isinstance(part, ast.Attribute)
+        ]
+        attributes.extend(
+            canonical_name.rsplit(".", 1)[-1]
+            for part in ast.walk(flags)
+            if isinstance(part, ast.Name)
+            and (
+                canonical_name := import_aliases.get(part.id, "")
+            ).startswith("os.")
+            and canonical_name.rsplit(".", 1)[-1].startswith("O_")
+        )
+
+        if any(flag in write_flag_names for flag in attributes):
+            return True
+
+        return True
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+
+        name = call_name(node)
+        targets: list[ast.AST] = []
+
+        if (
+            isinstance(node.func, ast.Name)
+            and node.func.id in write_method_aliases
+        ):
+            targets.append(write_method_aliases[node.func.id])
+        elif (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr in {"write_text", "write_bytes"}
+        ):
+            targets.append(node.func.value)
+        elif (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "open"
+            and name not in {"io.open", "os.open"}
+        ):
+            # Path.open(mode) stores the path in the receiver.
+            mode_node = call_argument(node, 0, "mode")
+            if mode_node is not None:
+                if isinstance(mode_node, ast.Constant) and isinstance(mode_node.value, str):
+                    if any(flag in mode_node.value for flag in ("w", "a", "x", "+")):
+                        targets.append(node.func.value)
+                else:
+                    targets.append(node.func.value)
+        elif name in {"open", "io.open"}:
+            file_node = call_argument(node, 0, "file")
+            if file_node is not None and open_may_write(node):
+                targets.append(file_node)
+        elif name == "os.open":
+            path_node = call_argument(node, 0, "path")
+            if path_node is not None and os_open_may_write(node):
+                targets.append(path_node)
+        elif name in {
+            "os.remove", "os.unlink", "os.chmod", "os.truncate"
+        }:
+            path_node = call_argument(node, 0, "path")
+            if path_node is not None:
+                targets.append(path_node)
+        elif name == "os.link":
+            # os.link(src, dst) creates a hard link at dst; src is read-only.
+            destination = call_argument(node, 1, "dst")
+            if destination is not None:
+                targets.append(destination)
+        elif name in {"os.replace", "os.rename"}:
+            # Both source and destination are mutation-sensitive targets.
+            for position, parameter in enumerate(("src", "dst")):
+                argument = call_argument(node, position, parameter)
+                if argument is not None:
+                    targets.append(argument)
+        elif name == "shutil.move":
+            # A move can remove the source as well as create the destination.
+            for position, parameter in enumerate(("src", "dst")):
+                argument = call_argument(node, position, parameter)
+                if argument is not None:
+                    targets.append(argument)
+        elif name in {"shutil.copy", "shutil.copy2", "shutil.copyfile"}:
+            # Copying reads the source; only the destination is modified.
+            destination = call_argument(node, 1, "dst")
+            if destination is not None:
+                targets.append(destination)
+        elif name == "os.symlink":
+            # os.symlink(src, dst) creates a link at dst.
+            destination = call_argument(node, 1, "dst", "link_name")
+            if destination is not None:
+                targets.append(destination)
+        elif name in {"rename", "replace"} and isinstance(node.func, ast.Attribute):
+            targets.append(node.func.value)
+            targets.extend(node.args[:1])
+        elif name in {"unlink", "chmod"} and isinstance(node.func, ast.Attribute):
+            targets.append(node.func.value)
+        elif name == "hardlink_to" and isinstance(node.func, ast.Attribute):
+            # Path.hardlink_to(target) creates a link at the receiver path.
+            targets.append(node.func.value)
+        elif name == "symlink_to" and isinstance(node.func, ast.Attribute):
+            # The receiver is the path of the newly created link.
+            targets.append(node.func.value)
+
+        if any(is_config_path(target) for target in targets):
+            return True, (
+                "execute_code script appears to modify Hermes security-sensitive configuration "
+                "(config.yaml) and must be blocked before execution."
+            )
+
+    return False, None

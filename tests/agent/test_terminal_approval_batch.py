@@ -373,3 +373,127 @@ def test_switching_yolo_off_mid_batch_re_gates_later_commands(tmp_path, monkeypa
             worker.join(timeout=5)
             cleanup_vm(key)
             clear_session_vars(tokens)
+
+
+def test_smart_approved_sensitive_config_mutation_is_blocked_in_real_batch(
+    tmp_path, monkeypatch
+):
+    """A prepared smart approval must not authorize sensitive config mutation."""
+    from tools import approval_smart
+    from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
+    from tools.terminal_tool_lifecycle import cleanup_vm
+
+    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+    monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+
+    monkeypatch.setattr(
+        "tools.approval_context._get_approval_config",
+        lambda: {"mode": "smart"},
+    )
+    monkeypatch.setattr("tools.approval._YOLO_MODE_FROZEN", False)
+    monkeypatch.setattr(
+        "tools.approval._command_matches_permanent_allowlist",
+        lambda _command: False,
+    )
+    monkeypatch.setattr(
+        "tools.approval._tirith_scan",
+        lambda _command: {"action": "allow", "findings": [], "summary": ""},
+    )
+    monkeypatch.setattr(approval_smart, "_smart_approve", lambda *_: "approve")
+    monkeypatch.setattr(
+        "agent.title_generator.maybe_auto_title", lambda *a, **kw: None
+    )
+
+    sensitive = "hermes config set approvals.mode off"
+    benign = "printf batch-control"
+    key = "smart-sensitive-config-real-batch"
+    calls = [_call("sensitive", sensitive), _call("benign", benign)]
+    messages, errors, foreground_commands = [], [], []
+
+    agent = _agent()
+    agent._flush_messages_to_session_db = lambda *a, **kw: True
+
+    def fake_run_foreground(command, env, plan, **kwargs):
+        # Safety boundary: record any command that reaches foreground execution,
+        # but never launch a shell or execute the supplied command.
+        foreground_commands.append(command)
+        return json.dumps({
+            "output": "batch-control",
+            "exit_code": 0,
+            "status": "success",
+        })
+
+    monkeypatch.setattr(
+        "tools.terminal_tool._run_foreground", fake_run_foreground
+    )
+
+    from tui_gateway import server
+
+    approval.register_gateway_notify(key, lambda _data: None)
+    monkeypatch.setattr(server, "_sessions", {
+        key: {
+            "session_key": key,
+            "source": "desktop",
+            "agent": agent,
+            "cwd": str(tmp_path),
+        }
+    })
+    tokens = server._set_session_context(key)
+
+    def run():
+        try:
+            agent._execute_tool_calls(
+                SimpleNamespace(tool_calls=calls), messages, key
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    with ExitStack() as scope:
+        scope.callback(
+            reset_terminal_scope,
+            set_terminal_scope({
+                "TERMINAL_ENV": "local",
+                "TERMINAL_CWD": str(tmp_path),
+            }),
+        )
+        worker = threading.Thread(
+            target=propagate_context_to_thread(run), daemon=True
+        )
+        worker.start()
+        try:
+            worker.join(timeout=20)
+
+            assert not worker.is_alive(), "Terminal batch did not finish"
+            assert errors == [], f"Unexpected batch exception: {errors}"
+            assert [m["tool_call_id"] for m in messages] == [
+                "sensitive", "benign"
+            ]
+
+            results = {
+                message["tool_call_id"]: json.loads(message["content"])
+                for message in messages
+            }
+
+            assert results["sensitive"]["status"] == "blocked", (
+                "Smart-approved sensitive config mutation was not blocked: "
+                f"{results['sensitive']}"
+            )
+            assert "BLOCKED: security-sensitive Hermes configuration changes require" in (
+                results["sensitive"].get("error", "")
+            ), results["sensitive"]
+
+            # The sensitive command must never reach foreground execution.
+            # The harmless control command demonstrates the batch continued.
+            assert foreground_commands == [benign], foreground_commands
+            assert results["benign"]["exit_code"] == 0
+            assert results["benign"]["output"] == "batch-control"
+            assert approval.list_gateway_approvals(key) == []
+        finally:
+            agent.interrupt("test cleanup")
+            approval.unregister_gateway_notify(key)
+            worker.join(timeout=5)
+            cleanup_vm(key)
+            clear_session_vars(tokens)

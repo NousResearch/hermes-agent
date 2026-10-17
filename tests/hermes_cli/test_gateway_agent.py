@@ -363,6 +363,47 @@ def test_agent_follows_mains_session_id_switch(make_agent):
     assert agent.session_api_calls == 3
 
 
+def test_new_session_starts_with_zeroed_usage_and_no_context_occupancy(make_agent):
+    """/new points the agent at a fresh gateway session with no usage yet: the previous session's
+    counters and measured context occupancy must not carry over (status bar, /usage, and the
+    model-switch context-cache guard all read them)."""
+    from hermes_cli.model_selection_guards import selection_context_for_agent
+    agent, _ = make_agent([])
+    agent.connection.state(SID).apply_usage(SESSION_USAGE)
+    assert agent.session_total_tokens == 580 and agent.context_compressor.last_prompt_tokens == 229
+
+    agent.session_id = "local-fresh"
+
+    assert (agent.session_total_tokens, agent.session_input_tokens, agent.session_api_calls) == (0, 0, 0)
+    assert agent.context_compressor.last_prompt_tokens == 0
+    assert agent.context_compressor.compression_count == 0
+    assert agent._context_tokens == 0
+    assert selection_context_for_agent(agent) is None
+    # The context window is a model property, not session usage: it survives the switch.
+    assert agent.context_compressor.context_length == 128000
+
+
+def test_previous_sessions_late_usage_frame_does_not_reach_the_switched_agent(make_agent):
+    """After /new the agent detaches from the old session's usage stream: a late ``session.usage``
+    for the old session must not overwrite the new session's figures."""
+    agent, _ = make_agent([])
+    agent.session_id = "local-fresh"
+    agent.connection.state(SID).apply_usage(SESSION_USAGE)
+    assert agent.session_total_tokens == 0
+    assert agent.context_compressor.last_prompt_tokens == 0
+    assert agent.apply_session_usage not in agent.connection.state(SID).usage_listeners
+
+
+def test_resumed_session_shows_its_own_usage_after_the_switch(make_agent):
+    """/resume onto a session that already has usage shows that session's figures, not zero."""
+    agent, _ = make_agent([])
+    agent.connection.state(SID).apply_usage(SESSION_USAGE)
+    agent.connection.state("local-other").usage = {"api_calls": 2, "total_tokens": 40, "last_prompt_tokens": 12}
+    agent.session_id = "local-other"
+    assert (agent.session_api_calls, agent.session_total_tokens) == (2, 40)
+    assert agent.context_compressor.last_prompt_tokens == 12
+
+
 def test_turn_after_a_rewind_anchors_on_its_first_response(make_agent):
     """/undo and /retry bump the session's runtime generation, so the gateway rebuilds its agent and the
     cumulative counters restart below this viewer's turn base. The turn still completed an API call:

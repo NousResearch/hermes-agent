@@ -3263,6 +3263,7 @@ export const ruOverrides = {
       ultrafast: 'Ultrafast',
       useStandardSpeed: 'Использовать стандартную скорость',
       effort: 'Усилия',
+      auto: 'Авто',
       minimal: 'Минимально',
       low: 'Низкое',
       medium: 'Среднее',

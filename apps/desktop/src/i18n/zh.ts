@@ -3996,6 +3996,7 @@ export const zhOverrides = {
       ultrafast: 'Ultrafast',
       useStandardSpeed: '使用标准速度',
       effort: '推理强度',
+      auto: '自动',
       minimal: '最小',
       low: '低',
       medium: '中',

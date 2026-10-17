@@ -296,6 +296,7 @@ export const zhHantChrome = {
       ultrafast: '極速',
       useStandardSpeed: '使用標準速度',
       effort: '推理強度',
+      auto: '自動',
       minimal: '最小',
       low: '低',
       medium: '中',

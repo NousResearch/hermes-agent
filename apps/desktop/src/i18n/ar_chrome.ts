@@ -396,6 +396,7 @@ export const arChrome = {
       ultrafast: 'فائق السرعة',
       useStandardSpeed: 'استخدام السرعة القياسية',
       effort: 'الجهد',
+      auto: 'تلقائي',
       minimal: 'أدنى',
       low: 'منخفض',
       medium: 'متوسط',

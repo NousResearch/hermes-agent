@@ -35,6 +35,7 @@ from agent.chat_completion_local import _streams_llamacpp, stale_giveup
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
 from agent.fast_mode import effective_request_overrides
+from agent.effort_updates import strip_effort_updates
 from agent.turn_context import substitute_api_content
 from agent.gemini_native_adapter import is_native_gemini_base_url
 # Remote endpoints must never be fingerprinted: the probe waterfall is only valid for local/LM-Studio/Ollama
@@ -1257,7 +1258,6 @@ def _codex_silent_hang_hint(agent, api_kwargs: dict) -> Optional[str]:
     return None
 
 
-
 def interruptible_api_call(agent, api_kwargs: dict):
     """Run the API call on a worker thread so the caller can detect interrupts
     without waiting for the full HTTP round-trip. Each worker gets its own
@@ -1427,12 +1427,11 @@ def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, re
         cache_scope_id=cache_scope_id, base_url=agent.base_url,
         max_tokens=ephemeral_out if ephemeral_out is not None else agent.max_tokens,
         timeout=agent._resolved_api_call_timeout(), request_overrides=request_overrides,
-        provider=getattr(agent, "provider", None), is_github_responses=is_github_responses,
+        provider=getattr(agent, "provider", None), is_github_responses=is_github_responses, capabilities=getattr(agent, "capabilities", None),
         is_codex_backend=is_codex_backend, is_xai_responses=is_xai_responses,
         github_reasoning_extra=agent._github_models_reasoning_extra_body() if is_github_responses else None,
         replay_encrypted_reasoning=bool(getattr(agent, "_codex_reasoning_replay_enabled", True)),
         context_management=context_management, text_verbosity=getattr(agent, "text_verbosity", None))
-
 
 
 def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id):
@@ -1532,6 +1531,7 @@ def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | 
     request_overrides = effective_request_overrides(agent)
     if agent.api_mode == "anthropic_messages":
         return _build_anthropic_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides)
+    api_messages = api_messages if agent.api_mode == "codex_responses" else strip_effort_updates(api_messages)  # only Anthropic/Responses lower effort markers
     if agent.api_mode == "bedrock_converse":
         return _build_bedrock_kwargs(agent, api_messages, tools_for_api, reasoning_config)
     # Rotation-stable logical cache scope shared by every OpenAI-wire branch

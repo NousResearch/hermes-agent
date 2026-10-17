@@ -143,6 +143,8 @@ class AuthorityConnection:
                     'bot_relay.reply': self.bot_reply, 'a2a.forward': self.a2a_forward,
                     'kanban.run': self.kanban_run,
                     'cron.submit': self.cron_submit, 'cron.status': self.cron_status,
+                    'cron.submit_v2': self.cron_submit_v2, 'cron.recover_v2': self.cron_recover_v2,
+                    'cron.cancel_v2': self.cron_cancel_v2,
                     'cron.cancel': self.cron_cancel, 'cron.recover': self.cron_recover,
                     'worker.register': self.worker_register, 'worker.adopt': self.worker_adopt,
                     'worker.persist': self.worker_persist,
@@ -276,6 +278,18 @@ class AuthorityConnection:
     async def cron_recover(self, ref, params):
         from gateway.session_cron import rpc
         return await rpc(self, 'recover', params)
+
+    async def cron_submit_v2(self, ref, params):
+        from gateway.session_cron import rpc
+        return await rpc(self, 'submit_v2', params)
+
+    async def cron_cancel_v2(self, ref, params):
+        from gateway.session_cron import rpc
+        return await rpc(self, 'cancel_v2', params)
+
+    async def cron_recover_v2(self, ref, params):
+        from gateway.session_cron import rpc
+        return await rpc(self, 'recover_v2', params)
 
     async def cron_submit(self, ref, params):
         from gateway.session_cron import rpc

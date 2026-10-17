@@ -6696,12 +6696,18 @@ export interface CanonicalRpcMethods {
   'config.set': { params: CanonicalConfigSetParams; result: ConfigSetResult }
   /** Cancel a queued cron admission or latch cancellation on a started one. */
   'cron.cancel': { params: CronAdmissionParams; result: CronCancelResult }
+  /** Latch cancellation during monitor preparation or cancel its admitted run. */
+  'cron.cancel_v2': { params: CronRunParams; result: CronCancelResult }
   /** Re-observe a firing after a scheduler restart (same request identity). */
   'cron.recover': { params: CronRunParams; result: CronStatusResult }
+  /** Observe a monitor-aware firing, including preparing and sessionless terminal results. */
+  'cron.recover_v2': { params: CronRunParams; result: CronStatusResult }
   /** Status and, once terminal, the result of one cron admission. */
   'cron.status': { params: CronAdmissionParams; result: CronStatusResult }
   /** Admit one cron firing into the owning profile's durable FIFO. */
   'cron.submit': { params: CronRunParams; result: CronSubmitResult }
+  /** Begin owner-side monitor preparation before allocating a conversation; poll recover_v2. */
+  'cron.submit_v2': { params: CronRunParams; result: CronStatusResult }
   'groups.approve': { params: CanonicalRoomApproveParams; result: GroupsApproveResult }
   /** Read one committed attachment for a live room viewer. */
   'groups.attachment.download': { params: GroupsAttachmentDownloadParams; result: RoomAttachmentBytes }
@@ -6764,9 +6770,12 @@ export const CANONICAL_RPC_METHODS = [
   'config.get',
   'config.set',
   'cron.cancel',
+  'cron.cancel_v2',
   'cron.recover',
+  'cron.recover_v2',
   'cron.status',
   'cron.submit',
+  'cron.submit_v2',
   'groups.approve',
   'groups.attachment.download',
   'groups.attachment.upload',

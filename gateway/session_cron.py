@@ -61,7 +61,7 @@ def _actor(authority, actor):
     return Principal(CRON_PRINCIPAL_ID, authority.profile_id, actor.capabilities, actor.transport_id)
 
 
-def _create(authority, actor, params):
+def _create(authority, actor, params, prepared=None):
     from cron.jobs import get_job
     from gateway.session_local_recovery import local_identity, restore_local_session
     from gateway.session_policy import build_policy, bind_launch_key
@@ -86,7 +86,7 @@ def _create(authority, actor, params):
         # job. Ledger ids are hex, so only a hand-made id has one; an identity admitted before this
         # guard keeps its exact retry above, and run history files it by its stored policy.
         raise RuntimeStoreError('invalid_params')
-    job = get_job(jid)
+    job = prepared['job'] if prepared is not None else get_job(jid)
     if job is None or job.get('no_agent'):
         raise RuntimeStoreError('not_found')
     config = _load_gateway_config()
@@ -95,8 +95,14 @@ def _create(authority, actor, params):
     if job.get('workdir'):
         launch['cwd'] = job['workdir']
     policy = build_policy(launch, config, private_secrets=private)
+    frozen = {'cron_job': job, 'extra_prompt': extra, 'request_id': request_id}
+    if prepared is not None:
+        frozen['monitor_prepared'] = {
+            'context': prepared['context'], 'profile_id': authority.profile_id,
+            'job_id': jid, 'request_id': execution_id,
+        }
     policy = replace(policy, source='cron', platform='cron', model=_load_cron_job_config(job, jid, job.get('name') or jid).model,
-                     request_json=json.dumps({'cron_job': job, 'extra_prompt': extra, 'request_id': request_id}))
+                     request_json=json.dumps(frozen))
     policy = bind_launch_key(authority, sid, policy, None, config_secrets=private)
     from gateway.session_local_recovery import local_source
     source = local_source(authority, sid, actor.subject)
@@ -121,7 +127,11 @@ async def operation(authority, name, params, actor=None):
     # Only new work is fenced by a drain. ``recover``/``status``/``cancel`` observe or stop work
     # already admitted, which the drain is waiting for: refusing them makes the firer give up
     # (CronExecutionUnknown pauses the job) on every restart that overlaps a cron run.
+    if name in {'submit_v2', 'recover_v2', 'cancel_v2'}:
+        from gateway.session_cron_monitor import operation as monitor_operation
+        return await monitor_operation(authority, name, params, actor)
     if name == 'recover':
+        from gateway.session_cron_monitor import lookup
         from gateway.session_local_recovery import local_identity
         if (set(params) != {'job_id', 'request_id', 'extra_prompt'}
                 or any(not isinstance(params[k], str) or not params[k] for k in ('job_id', 'request_id'))
@@ -133,6 +143,11 @@ async def operation(authority, name, params, actor=None):
         rows = list_session_admissions(authority.db, session_id=sid, pending_only=False)
         row = next((r for r in rows if r['request_id'] == request_id and r['principal_id'] == actor.subject), None)
         if row is None:
+            # Observation may have advanced the monitor baseline before the caller
+            # disappeared. Absence of an admission does not prove no work occurred.
+            if (sid in getattr(authority, '_cron_monitor_fires', {})
+                    or lookup(authority, actor, params) is not None):
+                return {'status': 'unknown', 'result': None}
             return {'status': 'missing', 'result': None}
         state = await operation(authority, 'status', {'session_id': sid, 'admission_id': row['admission_id']}, actor)
         from gateway.session_local_recovery import restore_local_session
@@ -148,25 +163,8 @@ async def operation(authority, name, params, actor=None):
         state.update(session_id=sid, admission_id=row['admission_id'])
         return state
     if name == 'submit':
-        authority._require_admission_open()
-        from gateway.session_authorities import owner_scope
-        # The job id, jobs file and gateway config belong to the OWNING profile.
-        with owner_scope(authority):
-            ref, request_id = _create(authority, actor, params)
-        from functools import partial
-        from gateway.session_runtime_workers import tracked_write
-        if isinstance(ref, dict):
-            # The creation commit waits on the writer off the owner loop, like session.create (N50).
-            from gateway.session_local_recovery import restore_local_session
-            from hermes_state_local import commit_local_session
-            await tracked_write(authority, partial(commit_local_session, authority.db, epoch=authority.epoch, receipt=ref))
-            ref = restore_local_session(authority, ref['session_id'])
-        receipt = await tracked_write(authority, partial(
-            admit_session_input, authority.db, epoch=authority.epoch, principal_id=actor.subject,
-            session_id=ref.session_id, request_id=request_id, payload={'text': params['extra_prompt'] or ''},
-            _authorize_write=authority._admission_gate()), then=partial(authority._admitted, ref, None), ordered=True,
-            after=partial(authority._schedule_admitted, ref))
-        return {'session_id': ref.session_id, 'admission_id': receipt.admission_id}
+        from gateway.session_cron_monitor import submit_legacy
+        return await submit_legacy(authority, actor, params)
     if set(params) != {'session_id', 'admission_id'} or name not in {'status', 'cancel'}:
         raise RuntimeStoreError('invalid_params')
     ref = SessionRef(authority.profile_id, params['session_id'])
@@ -193,6 +191,28 @@ async def operation(authority, name, params, actor=None):
     from cron.scheduler_liveness import owner_progress
     return {'status': row['status'], 'result': result, 'job_flags': flags,
             'progress_at': owner_progress.get(row['request_id'].rsplit(':', 1)[-1])}
+
+
+async def _submit(authority, actor, params, prepared=None):
+    from functools import partial
+    from gateway.session_authorities import owner_scope
+    from gateway.session_runtime_workers import tracked_write
+
+    authority._require_admission_open()
+    with owner_scope(authority):
+        ref, request_id = _create(authority, actor, params, prepared)
+    if isinstance(ref, dict):
+        from gateway.session_local_recovery import restore_local_session
+        from hermes_state_local import commit_local_session
+        await tracked_write(authority, partial(
+            commit_local_session, authority.db, epoch=authority.epoch, receipt=ref))
+        ref = restore_local_session(authority, ref['session_id'])
+    receipt = await tracked_write(authority, partial(
+        admit_session_input, authority.db, epoch=authority.epoch, principal_id=actor.subject,
+        session_id=ref.session_id, request_id=request_id, payload={'text': params['extra_prompt'] or ''},
+        _authorize_write=authority._admission_gate()), then=partial(authority._admitted, ref, None), ordered=True,
+        after=partial(authority._schedule_admitted, ref))
+    return {'session_id': ref.session_id, 'admission_id': receipt.admission_id}
 
 
 def _cancellations(authority):
@@ -241,6 +261,8 @@ async def execute(authority, ref, row, policy):
     # The frozen snapshot predates the fire's ledger row; the run's progress stamps need its id.
     job = dict(data['cron_job'], execution_id=execution_id)
     token = bind_execution(authority, ref.session_id, job['id'], execution_id)
+    from gateway.session_cron_monitor import bind_context, reset_context
+    monitor_token = bind_context(data.get('monitor_prepared'))
     try:
         db_path = await asyncio.to_thread(Path(authority.db.db_path).resolve)
         with _profile_runtime_scope(db_path.parent):
@@ -259,4 +281,5 @@ async def execute(authority, ref, row, policy):
         from cron.scheduler_liveness import owner_progress
         owner_progress.pop(execution_id, None)
         _execution.reset(token)
+        reset_context(monitor_token)
         cancellations.pop(row['admission_id'], None)

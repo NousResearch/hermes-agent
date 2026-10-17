@@ -46812,8 +46812,44 @@
       }
     },
     {
+      "name": "cron.cancel_v2",
+      "summary": "Latch cancellation during monitor preparation or cancel its admitted run.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CronRunParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CronCancelResult"
+        }
+      }
+    },
+    {
       "name": "cron.recover",
       "summary": "Re-observe a firing after a scheduler restart (same request identity).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CronRunParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CronStatusResult"
+        }
+      }
+    },
+    {
+      "name": "cron.recover_v2",
+      "summary": "Observe a monitor-aware firing, including preparing and sessionless terminal results.",
       "params": [
         {
           "name": "params",
@@ -46862,6 +46898,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/CronSubmitResult"
+        }
+      }
+    },
+    {
+      "name": "cron.submit_v2",
+      "summary": "Begin owner-side monitor preparation before allocating a conversation; poll recover_v2.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CronRunParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CronStatusResult"
         }
       }
     },

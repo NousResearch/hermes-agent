@@ -374,6 +374,12 @@ canonical_method("cron.recover", params=CronRunParams, result=CronStatusResult,
                  doc="Re-observe a firing after a scheduler restart (same request identity).")
 
 
+canonical_method("cron.submit_v2", params=CronRunParams, result=CronStatusResult,
+                 doc="Begin owner-side monitor preparation before allocating a conversation; poll recover_v2.")
+canonical_method("cron.recover_v2", params=CronRunParams, result=CronStatusResult,
+                 doc="Observe a monitor-aware firing, including preparing and sessionless terminal results.")
+
+
 class CronAdmissionParams(Params):
     session_id: str
     admission_id: str
@@ -389,6 +395,8 @@ class CronCancelResult(Result):
 
 canonical_method("cron.cancel", params=CronAdmissionParams, result=CronCancelResult,
                  doc="Cancel a queued cron admission or latch cancellation on a started one.")
+canonical_method("cron.cancel_v2", params=CronRunParams, result=CronCancelResult,
+                 doc="Latch cancellation during monitor preparation or cancel its admitted run.")
 
 
 class KanbanRunParams(Params):

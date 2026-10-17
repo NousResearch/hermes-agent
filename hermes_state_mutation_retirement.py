@@ -102,6 +102,10 @@ def retire_sessions(conn, session_ids):
     retire_routes(conn, session_ids)
     from hermes_state_local import retire_local_receipts
     retire_local_receipts(conn, session_ids)
+    # A monitor observation is copied into the admitted cron policy. Its staging
+    # copy must not outlive deletion of that conversation, including crash windows.
+    for sid in session_ids:
+        conn.execute('DELETE FROM state_meta WHERE key=?', ('gateway.cron_monitor.v1:' + sid,))
 
 
 # Mutation-receipt fields that copy user content: the rewound message, a compaction summary and
@@ -218,6 +222,8 @@ def prune_retired_tombstones(conn, older_than=RETRY_HORIZON_S):
     from hermes_state_terminal import ADMISSION_PREFIX, RESULT_PREFIX, WORKER_PREFIX, identity_key
     prefixes = (ADMISSION_PREFIX, WORKER_PREFIX, RETIRED_PREFIX)
     now = time.time()
+    from hermes_state_cron_monitor import prune_monitor_results
+    prune_monitor_results(conn, now=now, horizon=older_than)
     for prefix in prefixes:
         conn.execute("UPDATE state_meta SET value=json_set(value, '$.retired_at', ?) WHERE key GLOB ? "
                      "AND json_valid(value) AND json_extract(value, '$.retired_at') IS NULL", (now, prefix + '*'))

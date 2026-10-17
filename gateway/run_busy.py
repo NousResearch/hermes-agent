@@ -11,6 +11,7 @@ import logging
 from typing import TYPE_CHECKING
 import asyncio
 import contextlib
+import contextvars
 import json
 import os
 import time
@@ -46,6 +47,16 @@ def approval_input_words(input_key: str) -> tuple[str, ...]:
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+# A local session's ``pre_command`` (gateway/session_commands.py), awaited by the mid-run dispatch once it
+# accepts a command and before it acts, so a refused one fires nothing. Unset on messaging.
+BUSY_ACCEPTED: contextvars.ContextVar = contextvars.ContextVar("busy_accepted", default=None)
+
+
+async def _busy_accepted() -> None:
+    hook = BUSY_ACCEPTED.get()
+    if hook is not None:
+        await hook()
 
 
 def _strip_slot(text: str, slot: str) -> Optional[str]:
@@ -1048,27 +1059,38 @@ class GatewayBusySessionMixin:
         1. ``busy_handler`` — special mid-run variant (e.g. /goal's control-verb whitelist, /queue's FIFO
         enqueue, /model's custom reject text). 2. 3. See #5057, #6252, #10370.
         """
-        name = cmd_def.name
+        kind, target = self._busy_slash_route(cmd_def)
+        if kind == "special":
+            return await getattr(self, target)(event, quick_key, source)
+        if kind == "plain":
+            await _busy_accepted()
+            async with self._async_profile_scope_for_source(source):
+                return await target(event)
+        return t(target) if target else t("gateway.busy.slash_rejected", command=cmd_def.name)
+
+    def _busy_slash_route(self, cmd_def):
+        """``(kind, target)`` :meth:`_dispatch_busy_slash_command` takes mid-run: ``special`` (the
+        variant's method name), ``plain`` (the normal handler) or ``reject`` (its text key, None for the
+        catch-all). A ``special`` variant may still refuse its arguments: it awaits ``_busy_accepted``
+        only once it accepts."""
         policy = getattr(cmd_def, "busy_policy", "reject")
         handler_key = getattr(cmd_def, "busy_handler", None)
         if handler_key:
             special = self._BUSY_SPECIAL_HANDLERS.get(handler_key)
             if special is not None:
-                return await getattr(self, special)(event, quick_key, source)
+                return "special", special
             reject_key = self._BUSY_REJECT_TEXT.get(handler_key)
             if reject_key is not None:
-                return t(reject_key)
+                return "reject", reject_key
         if policy in ("dispatch", "interrupt_then_dispatch"):
-            plain = self._gateway_plain_command_handlers().get(name)
+            plain = self._gateway_plain_command_handlers().get(cmd_def.name)
             if plain is not None:
-                async with self._async_profile_scope_for_source(source):
-                    return await plain(event)
+                return "plain", plain
             logger.warning(
                 "busy_policy=%s for /%s has no mid-run handler — "
-                "falling back to busy-reject", policy, name,
+                "falling back to busy-reject", policy, cmd_def.name,
             )
-
-        return t("gateway.busy.slash_rejected", command=name)
+        return "reject", None
 
     async def _handle_pause_command(self, event: MessageEvent):
         """`/pause [reason]` engages the global emergency stop; `/pause off` lifts it (the estop gate
@@ -1089,16 +1111,19 @@ class GatewayBusySessionMixin:
 
     async def _busy_start_command(self, event: MessageEvent, quick_key: str, source):
         # Telegram's /start is a platform ping (bot launch/deep-link), not a user command.
+        await _busy_accepted()
         logger.info("Ignoring /start platform ping for active session %s", quick_key)
         return ""
 
     async def _busy_egress_command(self, event: MessageEvent, quick_key: str, source):
         from hermes_cli.proxy_cli import format_status_text
+        await _busy_accepted()
         return format_status_text()
 
     async def _busy_stop_command(self, event: MessageEvent, quick_key: str, source):
         # Hard-kill: a soft interrupt can't reach a truly hung executor thread.
         from gateway.run import _INTERRUPT_REASON_STOP
+        await _busy_accepted()
         await self._interrupt_and_clear_session(
             quick_key, source, interrupt_reason=_INTERRUPT_REASON_STOP, invalidation_reason="stop_command",
         )
@@ -1109,6 +1134,7 @@ class GatewayBusySessionMixin:
         # /reset and /new bypass the running-agent guard (else they'd queue as user text and replay
         # into the same broken history); clear pending messages so the old text doesn't replay.
         from gateway.run import _INTERRUPT_REASON_RESET
+        await _busy_accepted()
         # Interrupt the agent first, then clear the adapter's pending queue so the stale "/reset" text
         # doesn't get re-processed as a user message after the interrupt completes. See #2170.
         await self._interrupt_and_clear_session(
@@ -1123,6 +1149,7 @@ class GatewayBusySessionMixin:
         has_media = bool(getattr(event, "media_urls", None))
         if not queued_text and not has_media:
             return t("gateway.queue.usage")
+        await _busy_accepted()
         adapter = self._delivery_adapter_for(source)
         if adapter:
             self._enqueue_fifo(quick_key, MessageEvent(
@@ -1148,6 +1175,7 @@ class GatewayBusySessionMixin:
         steer_text = event.get_command_args().strip()
         if not steer_text:
             return t("gateway.steer.usage")
+        await _busy_accepted()
         _steer_state = self._peek_session_state(quick_key)
         running_agent = _steer_state.turn.agent if _steer_state else None
 
@@ -1185,6 +1213,7 @@ class GatewayBusySessionMixin:
         from hermes_cli.goal_command import is_goal_control
 
         if is_goal_control(event.get_command_args() or ""):
+            await _busy_accepted()
             return await self._handle_goal_command(event)
         return t("gateway.busy.reject_goal")
 
@@ -1192,6 +1221,7 @@ class GatewayBusySessionMixin:
         # Mirrors /goal: control verbs are safe mid-run; a new loop is rejected.
         _loop_arg = (event.get_command_args() or "").strip().lower()
         if not _loop_arg or _loop_arg in {"status", "pause", "resume", "stop", "clear", "cancel", "help", "--help", "-h"}:
+            await _busy_accepted()
             return await self._handle_loop_command(event)
         return t("gateway.busy.reject_loop")
 

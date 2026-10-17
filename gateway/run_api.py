@@ -270,9 +270,8 @@ class GatewayRuntimeAPI:
                 await JSONResponse({'error': 'gateway_not_ready', 'state': descriptor['state']},
                                    status_code=503)(scope, receive, send)
             return
-        if scope['type'] == 'http':
-            # Capture before Uvicorn's proxy middleware rewrites scope.client.
-            scope['hermes.gateway_socket_peer'] = scope.get('client')
+        # Capture before Uvicorn's proxy middleware rewrites scope.client (native grants, both kinds).
+        scope['hermes.gateway_socket_peer'] = scope.get('client')
         from gateway.run_idle_exit import attached_client, note_client_activity
         if scope['type'] != 'websocket' or scope['path'] != '/api/ws':
             note_client_activity(self.runner)  # dashboard/API traffic keeps an idle-exit gateway up

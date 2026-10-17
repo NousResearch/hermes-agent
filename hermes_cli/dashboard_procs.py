@@ -745,7 +745,14 @@ def _restart_killed_backends(
     respawn_cmds = _filter_dashboard_respawn_candidates(respawn_candidates)
     failed_cmds = _dash._respawn_dashboard_processes(respawn_cmds) if respawn_cmds else None
     if failed_cmds:
-        unrecovered.extend(p for p in killed if pid_cmdline.get(p) in failed_cmds)
+        failed_pids = [p for p in killed if pid_cmdline.get(p) in failed_cmds]
+        unrecovered.extend(failed_pids)
+        # The killed backend is not coming back automatically: discharge its durable reminder
+        # here instead of waiting for the liveness probe, which can stay blind past a recycled
+        # pid and would then warn on every invocation (#134995).
+        from hermes_cli.update_serve_obligations import clear_pending_restart_markers
+
+        clear_pending_restart_markers(failed_pids)
     if failed_restarts or unrecovered:
         print("  Restart anything not auto-restarted when you're ready:\n    hermes dashboard --port <port>")
     return unrecovered

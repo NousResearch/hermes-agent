@@ -44,6 +44,12 @@ router = APIRouter()
 
 _BOARD_Q = Query(None, description="Kanban board slug (omit for current)")
 
+# Sentinel accepted by GET /board only: merge every live board into the same
+# status columns (each card tagged with ``board`` / ``board_name``). It is not a
+# real slug, so ``_resolve_board`` rejects it on every write endpoint — the
+# aggregate view is deliberately read-only.
+ALL_BOARDS_SLUG = "*"
+
 
 # --- Connection / board helpers ---------------------------------------------
 
@@ -287,14 +293,15 @@ def _link_tasks(conn: sqlite3.Connection, links: dict[str, list[str]]) -> list[d
 
 # --- GET /board -------------------------------------------------------------
 
-def get_board(
-    tenant: Optional[str] = Query(None, description="Filter to a single tenant"),
-    include_archived: bool = Query(False),
-    board: Optional[str] = _BOARD_Q,
-    workflow_template_id: Optional[str] = Query(None, description="Restrict to tasks using this workflow template id"),
-    current_step_key: Optional[str] = Query(None, description="Restrict to tasks at this workflow step key")):
-    """Full board grouped by status column; omitting ``board`` uses the active board
-    (``HERMES_KANBAN_BOARD`` env → on-disk ``current`` pointer → ``default``)."""
+def _board_payload(
+    board: Optional[str],
+    *,
+    tenant: Optional[str],
+    include_archived: bool,
+    workflow_template_id: Optional[str],
+    current_step_key: Optional[str]) -> dict[str, Any]:
+    """One board's status-grouped payload. ``board`` is a slug (``None`` = the
+    active board). ``board=*`` never reaches here — see :func:`get_board`."""
     with _board_conn(board) as (board, conn):
         tasks = kanban_db.list_tasks(
             conn, tenant=tenant, include_archived=include_archived,
@@ -351,6 +358,86 @@ def get_board(
         return {
             "columns": [{"name": name, "tasks": columns[name]} for name in columns], "tenants": tenants,
             "assignees": assignees, "latest_event_id": int(latest_event_id), "now": int(time.time())}
+
+
+def _all_boards_payload(
+    *,
+    tenant: Optional[str],
+    include_archived: bool,
+    workflow_template_id: Optional[str],
+    current_step_key: Optional[str]) -> dict[str, Any]:
+    """Every live board merged into one status-grouped payload (``board=*``).
+
+    Boards are separate SQLite files, so this fans out one ``_board_payload``
+    read per board and concatenates the columns. Each card gains ``board``
+    (slug) and ``board_name`` — task ids are only unique *within* a board, so
+    the UI must key on the pair. ``latest_event_id`` is the max across boards
+    and is NOT a usable cursor (event ids are per-database); the dashboard polls
+    this endpoint instead of tailing ``/events`` while in aggregate mode.
+    """
+    boards: list[dict[str, Any]] = []
+    columns: dict[str, list[dict]] = {}
+    tenants: list[str] = []
+    assignees: list[str] = []
+    latest_event_id = 0
+    for meta in kanban_db.list_boards(include_archived=False):
+        slug = meta.get("slug") or kanban_db.DEFAULT_BOARD
+        try:
+            payload = _board_payload(
+                slug, tenant=tenant, include_archived=include_archived,
+                workflow_template_id=workflow_template_id, current_step_key=current_step_key)
+        except HTTPException:
+            # Board archived/deleted between list_boards() and the read — skip it
+            # rather than failing the whole aggregate (a stale tab must not 500).
+            continue
+        name = meta.get("name") or slug
+        boards.append({"slug": slug, "name": name})
+        for col in payload.get("columns") or []:
+            bucket = columns.setdefault(col["name"], [])
+            for task in col.get("tasks") or []:
+                task["board"] = slug
+                task["board_name"] = name
+                bucket.append(task)
+        for tn in payload.get("tenants") or []:
+            if tn not in tenants:
+                tenants.append(tn)
+        for a in payload.get("assignees") or []:
+            if a not in assignees:
+                assignees.append(a)
+        latest_event_id = max(latest_event_id, int(payload.get("latest_event_id") or 0))
+    # Fixed column order (the default workflow + optional archived), matching the
+    # single-board payload so the UI renders the same lanes in both modes.
+    order = list(BOARD_COLUMNS) + (["archived"] if include_archived else [])
+    # Done is history: newest-completed-first across every board, same key the
+    # single-board path uses (completed_at DESC NULLS LAST, then id DESC).
+    columns.get("done", []).sort(key=lambda d: d.get("id") or "")
+    columns.get("done", []).sort(key=lambda d: (d.get("completed_at") is None, -(d.get("completed_at") or 0)))
+    return {
+        "columns": [{"name": name, "tasks": columns.get(name, [])} for name in order],
+        "tenants": tenants, "assignees": assignees,
+        "latest_event_id": int(latest_event_id), "now": int(time.time()),
+        "aggregate": True, "boards": boards,
+    }
+
+
+def get_board(
+    tenant: Optional[str] = Query(None, description="Filter to a single tenant"),
+    include_archived: bool = Query(False),
+    board: Optional[str] = _BOARD_Q,
+    workflow_template_id: Optional[str] = Query(None, description="Restrict to tasks using this workflow template id"),
+    current_step_key: Optional[str] = Query(None, description="Restrict to tasks at this workflow step key")):
+    """Full board grouped by status column; omitting ``board`` uses the active board
+    (``HERMES_KANBAN_BOARD`` env → on-disk ``current`` pointer → ``default``).
+
+    ``board=*`` (``ALL_BOARDS_SLUG``) returns every live board merged into the same
+    status columns instead of a single board."""
+    if board == ALL_BOARDS_SLUG:
+        return _all_boards_payload(
+            tenant=tenant, include_archived=include_archived,
+            workflow_template_id=workflow_template_id, current_step_key=current_step_key)
+    return _board_payload(
+        board, tenant=tenant, include_archived=include_archived,
+        workflow_template_id=workflow_template_id, current_step_key=current_step_key)
 
 
 _read_board = coalesced_read(get_board)

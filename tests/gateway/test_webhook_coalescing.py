@@ -28,7 +28,7 @@ def _capture_admissions(adapter, monkeypatch):
         admitted.append(event)
         return SimpleNamespace(admission_id=f"adm-{len(admitted)}", ref=SimpleNamespace(profile_id="default"))
 
-    async def _finalize(event, authority, receipt):
+    async def _finalize(event, authority, receipt, **_completion):
         return None
 
     monkeypatch.setattr(webhook_ingress, "admit_producer", _admit)

@@ -65,7 +65,9 @@ def test_run_steps_isolates_failures():
 def test_migrate_config_noop_when_current(monkeypatch):
     import hermes_cli.config as cfg
 
-    monkeypatch.setattr(cfg, "check_config_version", lambda: (34, 34))
+    monkeypatch.setattr(
+        cfg, "_read_config_version_stamp",
+        lambda *, raise_on_parse_error=False: (34, 34))
     result = step_migrate_config()
     assert result == {"ok": True, "skipped": "up-to-date"}
 
@@ -81,8 +83,11 @@ def test_migrate_config_restores_backup_when_version_does_not_advance(
     env_path = tmp_path / ".env"
 
     floor = getattr(mig, "SUPPORT_FLOOR_VERSION", 12)
-    versions = iter([(max(20, floor), 34), (max(20, floor), 34)])
-    monkeypatch.setattr(cfg, "check_config_version", lambda: next(versions))
+    explicit = (max(20, floor), 34)
+    monkeypatch.setattr(
+        cfg, "_read_config_version_stamp",
+        lambda *, raise_on_parse_error=False: explicit)
+    monkeypatch.setattr(cfg, "check_config_version", lambda: explicit)
     monkeypatch.setattr(cfg, "get_config_path", lambda: config_path)
     monkeypatch.setattr(cfg, "get_env_path", lambda: env_path)
 
@@ -99,6 +104,51 @@ def test_migrate_config_restores_backup_when_version_does_not_advance(
     assert config_path.read_text(encoding="utf-8") == "_config_version: 20\n"
     backups = list(tmp_path.glob("config.yaml.bak-*"))
     assert backups, "backup file must exist"
+
+
+def test_migrate_config_migrates_a_markerless_config(tmp_path, monkeypatch):
+    """A config.yaml seeded without ``_config_version`` reads as v0 but is not
+    an ancient install: the step must migrate and stamp it, not refuse it."""
+    import hermes_cli.config as cfg
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("model:\n  default: demo\n", encoding="utf-8")
+
+    calls = []
+
+    def fake_migrate(**kw):
+        calls.append(kw)
+        config_path.write_text(
+            f"model:\n  default: demo\n_config_version: {cfg.DEFAULT_CONFIG['_config_version']}\n",
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(cfg, "migrate_config", fake_migrate)
+
+    result = step_migrate_config()
+
+    assert calls, "a markerless config must be migrated, not skipped"
+    assert result == {"ok": True, "migrated": f"0->{cfg.DEFAULT_CONFIG['_config_version']}"}
+
+
+def test_migrate_config_still_refuses_an_explicit_subfloor_config(tmp_path, monkeypatch):
+    """The floor keeps refusing an EXPLICIT old version — the fix must not hide
+    legitimately stale installs."""
+    import hermes_cli.config as cfg
+    import hermes_cli.config_migrations as mig
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("_config_version: 3\n", encoding="utf-8")
+
+    called = []
+    monkeypatch.setattr(cfg, "migrate_config", lambda **kw: called.append(kw))
+
+    result = step_migrate_config()
+
+    assert result == {"ok": True, "skipped": "below-support-floor"}
+    assert not called
+    assert mig.SUPPORT_FLOOR_VERSION > 3
 
 
 # ── step_state_db_guard ──────────────────────────────────────────────

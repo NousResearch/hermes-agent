@@ -845,6 +845,37 @@ def _output_text_of(item: Any) -> str:
     ).strip()
 
 
+def _collapse_cumulative_message_snapshots(items: list[Any]) -> tuple[list[Any], bool]:
+    """Collapse cumulative ``message`` snapshots emitted by some relays (Bedrock mantle, #41321).
+
+    Each ``output_item.done`` message is a prefix-superset of the previous one, so keeping them all
+    duplicates the text once concatenated downstream. Only items in a strict prefix chain collapse —
+    two genuinely distinct messages (neither a prefix of the other) are both kept. Returns
+    ``(collapsed_items, did_collapse)``.
+    """
+    deduped: list[Any] = []
+    last_msg_idx: int | None = None
+    did_collapse = False
+    for item in items:
+        if _event_field(item, "type", "") == "message":
+            text = _output_text_of(item)
+            if last_msg_idx is not None:
+                prev = _output_text_of(deduped[last_msg_idx])
+                if (isinstance(text, str) and isinstance(prev, str)
+                        and (text.startswith(prev) or prev.startswith(text))):
+                    # Prefix chain: keep the superset snapshot, drop the narrower one.
+                    if len(text) >= len(prev):
+                        deduped[last_msg_idx] = item
+                    did_collapse = True
+                    continue
+            deduped.append(item)
+            last_msg_idx = len(deduped) - 1
+        else:
+            deduped.append(item)
+            last_msg_idx = None
+    return deduped, did_collapse
+
+
 class _CodexResponseAssembler:
     """Assemble a Response-shaped ``SimpleNamespace`` from raw Responses SSE events.
 
@@ -1083,8 +1114,20 @@ class _CodexResponseAssembler:
         # No terminal frame AND no usable content = truncated / rejected stream.
         if not self.saw_terminal and not output:
             raise RuntimeError("Codex Responses stream did not emit a terminal response")
+        output_text = "".join(self.text_deltas)
+        # Cumulative snapshots duplicate the delta join too (each snapshot re-sent its full text).
+        # Derive output_text from the last surviving message — including one followed by
+        # function_call items — but only when it is actually shorter than the join (or no deltas
+        # arrived at all), so a provider legitimately streaming distinct messages keeps them.
+        output, did_collapse = _collapse_cumulative_message_snapshots(output)
+        if did_collapse:
+            last_msg = next(
+                (it for it in reversed(output) if _event_field(it, "type", "") == "message"), None)
+            derived = _output_text_of(last_msg) if last_msg is not None else ""
+            if derived and (not output_text or len(derived) < len(output_text)):
+                output_text = derived
         return SimpleNamespace(
-            output=output, output_text="".join(self.text_deltas), usage=self.terminal_usage, status=self.terminal_status,
+            output=output, output_text=output_text, usage=self.terminal_usage, status=self.terminal_status,
             id=self.terminal_response_id, model=self.model, incomplete_details=self.terminal_incomplete_details,
             error=self.terminal_error, service_tier=self.terminal_service_tier)
 

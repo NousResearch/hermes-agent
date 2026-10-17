@@ -31835,7 +31835,9 @@
           "streaming",
           "queued",
           "steered",
-          "redirected"
+          "redirected",
+          "clarify_answered",
+          "clarify_retry"
         ],
         "title": "PromptSubmitStatus",
         "type": "string"

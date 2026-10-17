@@ -96,6 +96,7 @@ export function useSystemResourcesStatusbarItem(): StatusbarItem {
           window.clearTimeout(timer)
           timer = null
         }
+
         void poll()
       }
     }

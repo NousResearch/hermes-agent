@@ -680,7 +680,7 @@ When the bot answers a human message with only a [silence token](index.md#intent
 :::
 
 :::info
-Slack supports both patterns: `@mention` required to start a conversation by default, but you can opt specific channels out via `SLACK_FREE_RESPONSE_CHANNELS` (comma-separated channel IDs) or `slack.free_response_channels` in `config.yaml`. Once the bot has an active session in a thread, subsequent thread replies do not require a mention. In **1:1 DMs** the bot always responds without needing a mention.
+Slack supports both patterns: `@mention` required to start a conversation by default, but you can opt specific channels out via `SLACK_FREE_RESPONSE_CHANNELS` (comma-separated channel IDs) or `slack.free_response_channels` in `config.yaml`. Once the bot has an active session in a thread, subsequent thread replies do not require a mention. In **1:1 DMs** the bot always responds without needing a mention. These gating keys can be set in the top-level `slack:` block or under `platforms.slack.extra`; within user YAML, when the same key is set in both, `platforms.slack.extra` wins and the gateway logs a warning. Administrator-managed pins remain authoritative, and explicit environment settings retain their existing precedence.
 :::
 
 :::caution Group DMs (MPIMs) are shared surfaces, not 1:1 DMs
@@ -1024,7 +1024,7 @@ slack:
       performance implications.
 ```
 
-Keys are Slack channel IDs (find them via channel details → "About" → scroll to bottom). All messages in the matching channel get the prompt injected as an ephemeral system instruction.
+Keys are Slack channel IDs (find them via channel details → "About" → scroll to bottom). All messages in the matching channel, including slash-command turns (`/hermes <question>` and native `/<command>`), get the prompt injected as an ephemeral system instruction.
 
 ## Per-Channel Skill Bindings
 
@@ -1050,7 +1050,7 @@ slack:
 ```
 
 Notes:
-- The binding matches by channel ID. For threaded messages in a bound channel, the thread inherits the parent channel's binding.
+- The binding matches by channel ID. For threaded messages in a bound channel, the thread inherits the parent channel's binding. A session started by a slash command (`/hermes <question>`) loads the binding too.
 - The skill is loaded only at session start (new session). If you change the binding, run `/new` for it to take effect.
 - Combine with `channel_prompts` for per-channel tone/constraints on top of the skill's instructions.
 

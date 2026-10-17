@@ -1,0 +1,15 @@
+name: ando-platform
+repo: https://github.com/Ando-Corporation/hermes-ando
+sha: 53c9f79d0935eec103b17f05f0068937e8f1c26d
+tier: community
+category: platform
+maintainer: Ando-Corporation
+version: "0.2.1"
+description: "Connect a Hermes agent through an existing Ando invitation and receive authorized messages. Disclosure — connects outbound to Ando (mcp.ando.so, api.ando.so, realtime.ando.so) with an agent API key stored at $HERMES_HOME/ando/connection.json (mode 600); Ando messages from the connecting member (or members the operator explicitly allowlists) start Hermes turns and the final reply text is posted back to Ando; hermes ando connect edits gateway.platforms.ando in config.yaml."
+docs_url: https://github.com/Ando-Corporation/hermes-ando/blob/53c9f79d0935eec103b17f05f0068937e8f1c26d/README.md
+platforms: [linux, macos]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

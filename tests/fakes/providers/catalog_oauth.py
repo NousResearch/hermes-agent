@@ -73,7 +73,7 @@ class OAuthFake:
         self._lock = threading.Lock()
         self._server: ThreadingHTTPServer | None = None
 
-    def __enter__(self) -> "OAuthFake":
+    def __enter__(self) -> OAuthFake:
         server = ThreadingHTTPServer(("127.0.0.1", 0), _handler_for(self))
         server.daemon_threads = True
         self._server = server
@@ -150,7 +150,7 @@ def _handler_for(fake: OAuthFake) -> type[BaseHTTPRequestHandler]:
                 self.wfile.write(b"data: [DONE]\n\n")
             self.wfile.flush()
 
-        def do_GET(self) -> None:  # noqa: N802
+        def do_GET(self) -> None:
             headers = {k.lower(): v for k, v in self.headers.items()}
             with fake._lock:
                 fake.requests.append(Req("GET", self.path, headers, {}, None))
@@ -159,7 +159,7 @@ def _handler_for(fake: OAuthFake) -> type[BaseHTTPRequestHandler]:
                 return
             self._json(404, {"error": "not_found"})
 
-        def do_POST(self) -> None:  # noqa: N802
+        def do_POST(self) -> None:
             raw = self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode("utf-8", "replace")
             headers = {k.lower(): v for k, v in self.headers.items()}
             ctype = headers.get("content-type", "")

@@ -135,7 +135,7 @@ class TestPluginDiscovery:
             "_collect_directory_manifests",
             lambda: [manifest],
         )
-        monkeypatch.setattr(manager, "_scan_entry_points", lambda: [])
+        monkeypatch.setattr(manager, "_scan_entry_points", list)
         monkeypatch.setattr(
             plugins_mod,
             "_get_enabled_plugins",
@@ -1516,7 +1516,6 @@ class TestForceReloadSymmetry:
             starts.append(1)
             if len(starts) == 1:
                 hold.wait(timeout=10.0)  # the first fire hangs for good
-            return None  # later fires decide: allow
 
         mgr = PluginManager()
         mgr._hook_timeout_suppression_seconds = 0.2
@@ -1584,7 +1583,6 @@ class TestForceReloadSymmetry:
 
         def hung_policy(**_kwargs):
             hold.wait(timeout=10.0)
-            return None
 
         mgr = PluginManager()
         mgr._hooks["pre_tool_call"] = [hung_policy]
@@ -1619,7 +1617,6 @@ class TestForceReloadSymmetry:
 
         def policy(**_kwargs):
             calls.append(1)
-            return None
 
         real_start = threading.Thread.start
         attempts = 0
@@ -1656,7 +1653,6 @@ class TestForceReloadSymmetry:
 
         def hung_policy(**_kwargs):
             hold.wait(timeout=10.0)
-            return None
 
         mgr = PluginManager()
         mgr._hooks["pre_tool_call"] = [hung_policy]
@@ -1947,7 +1943,7 @@ class TestPreToolCallModify:
                 {"action": "modify", "args": {"path": "/second"}},
             ],
         )
-        block_msg, modified = _dispatch_pre_tool_call_hooks(
+        _block_msg, modified = _dispatch_pre_tool_call_hooks(
             "write_file", {"path": "/original"}
         )
         assert modified == {"path": "/second"}
@@ -2016,7 +2012,7 @@ class TestPreToolCallModify:
                 {"action": "modify", "args": {"path": "/real"}},
             ],
         )
-        block_msg, modified = _dispatch_pre_tool_call_hooks(
+        _block_msg, modified = _dispatch_pre_tool_call_hooks(
             "write_file", {"path": "/original"}
         )
         assert modified == {"path": "/real"}
@@ -2616,7 +2612,7 @@ class TestPluginCommandResultResolution:
         async def _handler():
             return "threaded-ok"
 
-        monkeypatch.setattr("hermes_cli.plugins.asyncio.get_running_loop", lambda: _Loop())
+        monkeypatch.setattr("hermes_cli.plugins_dispatch.asyncio.get_running_loop", lambda: _Loop())
         assert resolve_plugin_command_result(_handler()) == "threaded-ok"
 
     def test_running_loop_timeout_does_not_hang_forever(self, monkeypatch):
@@ -2630,8 +2626,8 @@ class TestPluginCommandResultResolution:
             await _asyncio.sleep(10)
             return "should-not-reach"
 
-        monkeypatch.setattr("hermes_cli.plugins.asyncio.get_running_loop", lambda: _Loop())
-        monkeypatch.setattr("hermes_cli.plugins._PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS", 0.1)
+        monkeypatch.setattr("hermes_cli.plugins_dispatch.asyncio.get_running_loop", lambda: _Loop())
+        monkeypatch.setattr("hermes_cli.plugins_dispatch._PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS", 0.1)
 
         with pytest.raises(TimeoutError):
             resolve_plugin_command_result(_slow_handler())

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -32,16 +32,29 @@ function configuredElectronFlags(env: NodeJS.ProcessEnv): string[] {
 
 const linux = process.platform === 'linux'
 const electronFlags = linux ? configuredElectronFlags(process.env) : []
-// Present only when the NVIDIA proprietary kernel module is loaded (not
-// nouveau, not WSL's dxg passthrough).
-const nvidiaProprietaryDriver = linux && existsSync('/proc/driver/nvidia/version')
+
+// True only when the NVIDIA proprietary kernel module is loaded
+// (not nouveau, not the open kernel module, not WSL's dxg passthrough).
+function hasNvidiaProprietaryDriver() {
+  if (process.platform !== 'linux') {
+    return false
+  }
+
+  try {
+    const version = readFileSync('/proc/driver/nvidia/version', 'utf8') || ''
+
+    return !/Open Kernel Module/.test(version)
+  } catch {
+    return false // no nvidia driver on this box
+  }
+}
 
 const args = wslgLaunchArgs(
   process.argv.slice(1),
   process.env,
   process.platform,
   electronFlags,
-  nvidiaProprietaryDriver
+  hasNvidiaProprietaryDriver()
 )
 
 if (args) {

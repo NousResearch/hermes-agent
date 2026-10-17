@@ -32,13 +32,16 @@ def portable_stdio(log: Path, tag: str, **env: str) -> dict[str, Any]:
 
 
 def write_portable_plugin(eh: E2EHome, dirname: str, servers: dict[str, dict[str, Any]], *,
-                          name: str | None = None, version: str = "1.0.0") -> Path:
+                          name: str | None = None, version: str = "1.0.0",
+                          extensions: dict[str, Any] | None = None) -> Path:
     """``<HERMES_HOME>/plugins/<dirname>/`` with ``plugin.json`` (manifest ``name``), ``mcp.json`` and an
     in-root launcher that execs the fixture MCP server with this interpreter."""
     root = eh.hermes_home / "plugins" / dirname
     root.mkdir(parents=True, exist_ok=True)
-    (root / "plugin.json").write_text(json.dumps(
-        {"$schema": PLUGIN_SCHEMA, "name": name or dirname, "version": version}), encoding="utf-8")
+    manifest = {"$schema": PLUGIN_SCHEMA, "name": name or dirname, "version": version}
+    if extensions:
+        manifest["extensions"] = extensions
+    (root / "plugin.json").write_text(json.dumps(manifest), encoding="utf-8")
     (root / "mcp.json").write_text(json.dumps({"$schema": MCP_SCHEMA, "mcpServers": servers}), encoding="utf-8")
     launcher = root / LAUNCHER
     launcher.write_text(f"#!/bin/sh\nexec '{sys.executable}' '{FIXTURE_SERVER}' \"$@\"\n", encoding="utf-8")

@@ -27,7 +27,12 @@ _SAFE_ENV_PREFIXES = ("PATH", "HOME", "USER", "LANG", "LC_", "TERM", "TMPDIR", "
 # "PASS" is intentionally absent: it false-positives on BYPASS_CACHE /
 # COMPASS_DIR / PASSENGER_HOST while PASSWORD/PASSWD already cover credentials.
 _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "PASSWD", "AUTH", "DSN",
-                      "WEBHOOK", "CREDS", "BEARER", "APIKEY")
+                      "WEBHOOK", "CREDS", "BEARER", "APIKEY", "COOKIE")
+
+
+def is_secret_env_name(name: str) -> bool:
+    """The credential-name policy, shared with a local session's client environment (``agent.session_client_env``)."""
+    return any(s in name.upper() for s in _SECRET_SUBSTRINGS)
 
 # Non-secret runtime-location flags that repo-root modules a sandbox script
 # imports may read at import time. HERMES_DELEGATED_CHILD_CONTEXT must ride
@@ -49,21 +54,22 @@ _WINDOWS_ESSENTIAL_ENV_VARS = frozenset({
 })
 
 
-def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
+def _scrub_child_env(source_env, is_passthrough=None, is_windows=None, toolchain=frozenset()):
     """Produce the scrubbed child-process env for execute_code.
 
     Rules, in order: (1) passthrough vars (skill/config-declared) resolve
     through the active profile secret scope — an absent scoped value is
-    omitted; (2) secret-substring names are blocked; (3) safe prefixes pass;
+    omitted; (2) secret-substring names are blocked; (3) safe prefixes pass,
+    as do a local session's client ``toolchain`` names (NVM_DIR, GOPATH...);
     (4) operational HERMES_* pass by exact name; (5) on Windows the
     OS-essential allowlist passes by exact name.
     """
     try:
         from tools.env_passthrough import is_env_passthrough, resolve_passthrough_value, scoped_passthrough_additions
     except Exception:
-        is_env_passthrough = lambda _: False  # noqa: E731
-        resolve_passthrough_value = lambda _name, _fallback: None  # noqa: E731
-        scoped_passthrough_additions = lambda _present: {}  # noqa: E731
+        is_env_passthrough = lambda _: False
+        resolve_passthrough_value = lambda _name, _fallback: None
+        scoped_passthrough_additions = lambda _present: {}
     if is_passthrough is None:
         is_passthrough = is_env_passthrough
     if is_windows is None:
@@ -78,9 +84,9 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
             if resolved is not None:
                 scrubbed[k] = resolved
             continue
-        if any(s in k.upper() for s in _SECRET_SUBSTRINGS):
+        if is_secret_env_name(k):
             continue
-        if (any(k.startswith(p) for p in _SAFE_ENV_PREFIXES)
+        if (any(k.startswith(p) for p in _SAFE_ENV_PREFIXES) or k in toolchain
                 or k in _HERMES_CHILD_ALLOWED
                 or (is_windows and k.upper() in _WINDOWS_ESSENTIAL_ENV_VARS)):
             scrubbed[k] = v
@@ -114,10 +120,13 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
 
 
 def _build_child_env(*, rpc_endpoint: str, rpc_token: str, tmpdir: str,
-                     child_python: str) -> Dict[str, str]:
+                     child_python: str) -> dict[str, str]:
     """Build the scrubbed child environment both execution paths share."""
     from hermes_constants import apply_scratch_tmp_env, apply_subprocess_home_env, get_hermes_home_override
-    child_env = _scrub_child_env(os.environ)
+    from agent.session_client_env import tool_env, toolchain_environ
+    # A local session's client toolchain replaces the daemon's PATH / venv, then the whole scrub (secret
+    # names, delegated-child restrictions) runs over the merged environment.
+    child_env = _scrub_child_env(toolchain_environ(), toolchain=frozenset(tool_env()))
     child_env["HERMES_RPC_SOCKET"] = rpc_endpoint
     child_env["HERMES_RPC_TOKEN"] = rpc_token
     child_env["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -211,6 +220,7 @@ def _probe_python(python_path: str, code: str, *, text: bool = False):
             [python_path, "-c", code], timeout=5, capture_output=True, text=text,
             creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
             stdin=subprocess.DEVNULL, env=delegated_child_subprocess_env(),
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
         return None
@@ -256,9 +266,11 @@ def _resolve_child_python(mode: str) -> str:
     VIRTUAL_ENV/CONDA_PREFIX python if it exists and passes the 3.8+ probe, else ``sys.executable``."""
     if mode != "project":
         return sys.executable
+    from agent.session_client_env import toolchain_environ
+    environ = toolchain_environ()  # a local session's: its client's venv/conda, not the daemon's
     subdir, exe_names = ("Scripts", ("python.exe", "python3.exe")) if _IS_WINDOWS else ("bin", ("python", "python3"))
     for var in ("VIRTUAL_ENV", "CONDA_PREFIX"):
-        root = os.environ.get(var, "").strip()
+        root = environ.get(var, "").strip()
         for exe in exe_names if root else ():
             candidate = os.path.join(root, subdir, exe)
             if not (os.path.isfile(candidate) and os.access(candidate, os.X_OK)):

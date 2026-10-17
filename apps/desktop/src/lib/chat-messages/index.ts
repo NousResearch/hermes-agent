@@ -11,7 +11,9 @@ export {
   finalizeInterruptedMessages,
   mergeFinalAssistantText,
   normalizeWs,
+  partsText,
   reasoningPart,
+  reasoningTextFromDetails,
   renderMediaTags,
   textPart
 } from './parts'
@@ -23,6 +25,7 @@ export {
   spliceOlderPreservedRows
 } from './reconciliation'
 export {
+  QUESTION_CARD_TOOLS,
   restorePendingBlockingToolCall,
   restorePendingClarifyToolCall,
   sealOpenToolParts,

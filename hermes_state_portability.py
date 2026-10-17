@@ -6,17 +6,24 @@ Must never import hermes_state (cycle); shared constants live in hermes_state_co
 
 import logging
 import json
+import math
 import time
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Dict, List, Optional
 
 from agent.skill_commands import AUTO_LOAD_SCAFFOLD_SQL_LIKE, SKILL_SCAFFOLD_SQL_LIKE
 from utils import safe_json_loads
 from hermes_cli.timefmt import coerce_epoch
 from hermes_state_ids import new_session_id
-from hermes_state_common import SCHEMA_SQL, _PREVIEW_RAW_SUBQUERY_SQL, _shape_preview, _sql_session_last_active
+from hermes_state_keys import (
+    CRON_PRINCIPAL_ID, CRON_REQUEST_PREFIX, cron_request_range, cron_run_from_request, legacy_cron_run_job,
+    prefix_range,
+)
+from hermes_state_local import POLICY_PREFIX
+from hermes_state_common import SCHEMA_SQL, _shape_preview, _sql_preview_raw, _sql_session_last_active
 from hermes_state_messages import _parse_tool_calls, _tool_calls_count
+import itertools
 
 # Pre-split logger identity so log filtering/capture is unchanged.
 logger = logging.getLogger("hermes_state")
@@ -42,7 +49,7 @@ _IMPORT_SESSION_INSERT_SQL = """INSERT INTO sessions (
                            cwd, git_branch, git_repo_root,
                            billing_provider, billing_base_url, billing_mode,
                            estimated_cost_usd, actual_cost_usd, cost_status, cost_source,
-                           pricing_version, title, api_call_count, archived
+                           pricing_version, title, api_call_count, archived, auto_archived, pinned, hidden
                        )
                        VALUES (
                            :id, :source, :user_id, :model, :model_config,
@@ -53,7 +60,7 @@ _IMPORT_SESSION_INSERT_SQL = """INSERT INTO sessions (
                            :billing_provider, :billing_base_url, :billing_mode,
                            :estimated_cost_usd, :actual_cost_usd, :cost_status,
                            :cost_source, :pricing_version, :title,
-                           :api_call_count, :archived
+                           :api_call_count, :archived, :auto_archived, :pinned, :hidden
                        )"""
 # Columns copied verbatim from the payload; typed columns are converted below.
 _IMPORT_PASSTHROUGH_COLS = (
@@ -64,6 +71,8 @@ _IMPORT_INT_COLS = (
     "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "api_call_count",
 )
 _IMPORT_FLOAT_COLS = ("ended_at", "estimated_cost_usd", "actual_cost_usd")
+# Flags a restore must keep: pinned/hidden/auto_archived drive the prune, listings and resume-unarchive.
+_IMPORT_FLAG_COLS = ("archived", "auto_archived", "pinned", "hidden")
 
 
 def _rich_select(select_cols: str, where: str, tail: str = "", prompt_select: Optional[str] = "") -> str:
@@ -73,7 +82,7 @@ def _rich_select(select_cols: str, where: str, tail: str = "", prompt_select: Op
     prompt_join = "" if prompt_select is None else "LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash"
     return f"""
             SELECT {select_cols}{prompt_select or ""},
-                {_PREVIEW_RAW_SUBQUERY_SQL},
+                {_sql_preview_raw()},
                 {_sql_session_last_active("s")} AS last_active
             FROM sessions s
             {prompt_join}
@@ -83,8 +92,32 @@ def _rich_select(select_cols: str, where: str, tail: str = "", prompt_select: Op
 
 _PROMPT_RESOLVED_SQL = "COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved"
 
+# One job's scheduler admissions (``:request_lo``/``:request_hi`` = cron_request_range). The principal
+# is inlined so the partial index applies (a bound parameter cannot prove its WHERE). A request id
+# whose only ``:`` after ``cron:`` ends the job id is unambiguous (fresh execution ids hold none);
+# any other in the range (job ``a`` vs ``a:b``, or an execution id admitted with a ``:`` before that
+# was refused) belongs to the job its creation receipt's policy names, never to a ``:`` split.
+# A legacy id is the prefix plus exactly ``YYYYmmdd_HHMMSS``: the GLOB keeps job ``daily`` from
+# claiming job ``daily_digest``'s ``cron_daily_digest_<ts>`` runs inside the same id range.
+_CRON_POLICY_JOB_SQL = (
+    "(SELECT CASE WHEN json_valid(r) THEN json_extract(r, '$.cron_job.id') END FROM"
+    " (SELECT CASE WHEN json_valid(value) THEN json_extract(value, '$.policy.request_json') END AS r"
+    f" FROM state_meta WHERE key = '{POLICY_PREFIX}' || target_session_id))")
+_CRON_ADMISSION_SQL = (
+    f"principal_id = '{CRON_PRINCIPAL_ID}' AND request_id >= :request_lo AND request_id < :request_hi"
+    f" AND ((instr(substr(request_id, {len(CRON_REQUEST_PREFIX) + 1}), ':') = length(:request_lo) - {len(CRON_REQUEST_PREFIX)}"
+    " AND instr(substr(request_id, length(:request_lo) + 1), ':') = 0)"
+    f" OR {_CRON_POLICY_JOB_SQL} = :job_id)")
+_CRON_RUN_IDS_SQL = (
+    "SELECT id FROM sessions WHERE source = 'cron' AND id >= :prefix AND id < :prefix_hi"
+    " AND substr(id, length(:prefix) + 1) GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9][0-9][0-9]'"
+    f" UNION ALL SELECT target_session_id FROM session_admissions WHERE {_CRON_ADMISSION_SQL}")
+_CRON_EXECUTION_SQL = (
+    "(SELECT substr(request_id, length(:request_lo) + 1) FROM session_admissions"
+    f" WHERE target_session_id = s.id AND {_CRON_ADMISSION_SQL} LIMIT 1)")
 
-def _export_timings(messages: List[Dict[str, Any]], session_id: Optional[str] = None) -> Dict[str, Any]:
+
+def _export_timings(messages: list[dict[str, Any]], session_id: Optional[str] = None) -> dict[str, Any]:
     """Text-free timing evidence for a session export.
 
     Exports get attached to bug reports; a reader should not have to infer from raw
@@ -103,9 +136,9 @@ def _export_timings(messages: List[Dict[str, Any]], session_id: Optional[str] = 
     intervals = [{
         "from_message_id": prev.get("id"), "to_message_id": nxt.get("id"),
         "from_role": prev.get("role"), "to_role": nxt.get("role"),
-        "gap_ms": max(0, int(round((nxt_ts - prev_ts) * 1000))),
-    } for (prev, prev_ts), (nxt, nxt_ts) in zip(timestamped, timestamped[1:])]
-    iso = lambda ts: datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()  # noqa: E731
+        "gap_ms": max(0, round((nxt_ts - prev_ts) * 1000)),
+    } for (prev, prev_ts), (nxt, nxt_ts) in itertools.pairwise(timestamped)]
+    iso = lambda ts: datetime.fromtimestamp(ts, tz=UTC).isoformat()
     first_ts, last_ts = (timestamped[0][1], timestamped[-1][1]) if timestamped else (None, None)
     return {
         "source": "message_timestamps",
@@ -115,7 +148,7 @@ def _export_timings(messages: List[Dict[str, Any]], session_id: Optional[str] = 
         "message_timestamps": {"available": len(timestamped), "missing": len(messages) - len(timestamped)},
         "first_message_at": iso(first_ts) if first_ts is not None else None,
         "last_message_at": iso(last_ts) if last_ts is not None else None,
-        "wall_clock_ms": max(0, int(round((last_ts - first_ts) * 1000))) if timestamped else None,
+        "wall_clock_ms": max(0, round((last_ts - first_ts) * 1000)) if timestamped else None,
         "largest_gap_ms": max(i["gap_ms"] for i in intervals) if intervals else None,
         "role_counts": dict(role_counts),
         "tool_result_count": role_counts.get("tool", 0),
@@ -187,7 +220,7 @@ class SessionPortabilityMixin:
         return cls._session_compact_cols_sql
 
     @classmethod
-    def _rich_row(cls, row) -> Dict[str, Any]:
+    def _rich_row(cls, row) -> dict[str, Any]:
         """Session row dict with ``_preview_raw`` shaped into ``preview``."""
         s = cls._session_row_dict(row)
         s["preview"] = _shape_preview(s.pop("_preview_raw", ""))
@@ -198,7 +231,7 @@ class SessionPortabilityMixin:
         with self._read_ctx() as conn:
             return conn.execute(sql, params).fetchall()
 
-    def distinct_session_cwds(self, include_archived: bool = False) -> List[Dict[str, Any]]:
+    def distinct_session_cwds(self, include_archived: bool = False) -> list[dict[str, Any]]:
         """Distinct non-empty session cwds with usage stats, for repo discovery. Aggregates
         across ALL history; children/branches count (a worktree session is a real
         workspace signal)."""
@@ -212,23 +245,49 @@ class SessionPortabilityMixin:
         return [{"cwd": r["cwd"], "sessions": int(r["sessions"] or 0), "last_active": float(r["last_active"] or 0)}
                 for r in rows]
 
-    def list_cron_job_runs(self, job_id: str, limit: int = 20, offset: int = 0) -> List[Dict[str, Any]]:
-        """Run sessions of one cron job, newest first, in the ``list_sessions_rich`` row shape.
-        Cron runs are flat ``cron_{job_id}_{timestamp}`` sessions that never compress or
-        branch, so this skips ``list_sessions_rich``'s compression-chain CTE /
-        leading-wildcard ``id_query`` path (which seeds from EVERY ``source='cron'`` row)
-        for a ``[prefix, prefix_hi)`` id range scan that scales with the window."""
-        prefix = f"cron_{job_id}_"
-        # Half-open upper bound: bump the final byte so the range covers exactly the prefix.
-        prefix_hi = prefix[:-1] + chr(ord(prefix[-1]) + 1)
+    def list_cron_job_runs(self, job_id: str, limit: int = 20, offset: int = 0) -> list[dict[str, Any]]:
+        """Run sessions of one cron job, newest first, in the ``list_sessions_rich`` row shape,
+        stamped with ``cron_job_id`` and ``cron_execution_id`` (None for a pre-unified run).
+
+        Pre-unified runs are flat ``cron_{job_id}_{timestamp}`` sessions: a ``[prefix,
+        prefix_hi)`` id range. Unified-runtime runs keep their runtime-minted ``local-*`` id, which
+        must not change (exact-retry recovery re-derives it), but the scheduler principal admitted
+        each under ``cron:<job>:<execution>``: a range of ``idx_session_admissions_cron_request``.
+        Both scans scale with this job's runs, never with total cron history or with every local
+        session's policy receipt, and skip ``list_sessions_rich``'s compression-chain CTE.
+
+        Limitation (legacy runs had it too): only a run's FIRST session is listed. A run that
+        compressed continues in a child session this does not return, and the row's liveness
+        (``scheduler_owned``) and detail identity follow that first session, not the tip."""
+        prefix, prefix_hi = prefix_range(f"cron_{job_id}_")
+        request_lo, request_hi = cron_request_range(job_id)
         query = _rich_select(
-            "s.*", "s.source = 'cron' AND s.id >= ? AND s.id < ?",
-            "\n            ORDER BY s.started_at DESC, s.id DESC\n            LIMIT ? OFFSET ?",
+            f"s.*, {_CRON_EXECUTION_SQL} AS cron_execution_id", f"s.source = 'cron' AND s.id IN ({_CRON_RUN_IDS_SQL})",
+            "\n            ORDER BY s.started_at DESC, s.id DESC\n            LIMIT :limit OFFSET :offset",
             prompt_select=f",\n                {_PROMPT_RESOLVED_SQL}",
         )
-        return [self._rich_row(row) for row in self._read_rows(query, (prefix, prefix_hi, limit, offset))]
+        rows = self._read_rows(query, {"prefix": prefix, "prefix_hi": prefix_hi, "request_lo": request_lo,
+                                       "request_hi": request_hi, "job_id": job_id, "limit": limit, "offset": offset})
+        return [{**self._rich_row(row), "cron_job_id": job_id} for row in rows]
 
-    def _get_session_rich_row(self, session_id: str, compact_rows: bool = False) -> Optional[Dict[str, Any]]:
+    def cron_run_identity(self, session_id: str) -> Optional[dict[str, Any]]:
+        """``{"cron_job_id", "cron_execution_id"}`` of a cron run session, else None: a legacy id
+        names its job (no execution), a unified-runtime run is one probe of its scheduler admission
+        (and, when its request id is ambiguous, of the job its creation receipt's policy names)."""
+        legacy_job = legacy_cron_run_job(session_id)
+        if legacy_job is not None:
+            return {"cron_job_id": legacy_job, "cron_execution_id": None}
+        rows = self._read_rows(
+            "SELECT request_id, " + _CRON_POLICY_JOB_SQL + " AS policy_job FROM session_admissions"
+            " WHERE principal_id = ? AND target_session_id = ? ORDER BY seq LIMIT 1", (CRON_PRINCIPAL_ID, session_id))
+        run = None
+        if rows:
+            run = cron_run_from_request(rows[0]["request_id"])
+            if run is None and isinstance(rows[0]["policy_job"], str):
+                run = cron_run_from_request(rows[0]["request_id"], rows[0]["policy_job"])
+        return {"cron_job_id": run[0], "cron_execution_id": run[1]} if run else None
+
+    def _get_session_rich_row(self, session_id: str, compact_rows: bool = False) -> Optional[dict[str, Any]]:
         """One session with the ``list_sessions_rich`` enriched columns, or None.
         ``compact_rows=True`` omits the ``system_prompt`` blob. Public alias:
         :meth:`get_session_rich_row` (web server hydration)."""
@@ -236,7 +295,7 @@ class SessionPortabilityMixin:
 
     get_session_rich_row = _get_session_rich_row
 
-    def _get_session_rich_rows_batch(self, session_ids, compact_rows: bool = False) -> Dict[str, Dict[str, Any]]:
+    def _get_session_rich_rows_batch(self, session_ids, compact_rows: bool = False) -> dict[str, dict[str, Any]]:
         """Enriched rows for many sessions in one query, keyed by id; missing ids are absent
         (a page of compression tips resolves in one round trip)."""
         ids = [sid for sid in session_ids if sid]
@@ -246,7 +305,7 @@ class SessionPortabilityMixin:
         # callers exist. Chunk here — the single choke point.
         _CHUNK = 900
         if len(ids) > _CHUNK:
-            result: Dict[str, Dict[str, Any]] = {}
+            result: dict[str, dict[str, Any]] = {}
             for start in range(0, len(ids), _CHUNK):
                 result.update(self._get_session_rich_rows_batch(ids[start:start + _CHUNK], compact_rows=compact_rows))
             return result
@@ -258,7 +317,7 @@ class SessionPortabilityMixin:
         )
         return {s["id"]: s for s in map(self._rich_row, self._read_rows(query, ids))}
 
-    def list_skill_scaffolded_sessions(self, limit: int = 200) -> List[Dict[str, Any]]:
+    def list_skill_scaffolded_sessions(self, limit: int = 200) -> list[dict[str, Any]]:
         """Titled sessions whose first user turn was a ``/skill`` invocation or a gateway
         auto-load scaffold (their titles describe the expanded skill body, not the
         request). Returns ``id``, ``title`` and the first-turn ``content`` so callers can
@@ -280,13 +339,13 @@ class SessionPortabilityMixin:
 
     # ── Export ─────────────────────────────────────────────────────────────
 
-    def _with_messages(self, session: Dict[str, Any], include_compacted: bool = False,
-                       include_inactive: bool = False) -> Dict[str, Any]:
+    def _with_messages(self, session: dict[str, Any], include_compacted: bool = False,
+                       include_inactive: bool = False) -> dict[str, Any]:
         messages = self.get_messages(session["id"], include_inactive=include_inactive, include_compacted=include_compacted)
         return {**session, "messages": messages, "timings": _export_timings(messages, session["id"])}
 
     def export_session(self, session_id: str, include_compacted: bool = False,
-                       include_inactive: bool = False) -> Optional[Dict[str, Any]]:
+                       include_inactive: bool = False) -> Optional[dict[str, Any]]:
         """Export a single session with all its messages as a dict. ``include_compacted`` adds the turns
         in-place compaction archived (the history the user still sees); it stays off for payloads that go
         back through :meth:`import_sessions`, because that projection is deduped and ordered for display, and
@@ -296,7 +355,7 @@ class SessionPortabilityMixin:
         return self._with_messages(session, include_compacted, include_inactive) if session else None
 
     def export_session_lineage(self, session_id: str, include_compacted: bool = False,
-                               include_inactive: bool = False) -> Optional[Dict[str, Any]]:
+                               include_inactive: bool = False) -> Optional[dict[str, Any]]:
         """Export a compression lineage as one logical session dict (flags as in :meth:`export_session`)."""
         lineage_ids = self.get_compression_lineage(session_id)
         if not lineage_ids:
@@ -312,8 +371,8 @@ class SessionPortabilityMixin:
             "messages": messages, "timings": _export_timings(messages, session_id),
         }
 
-    def export_all(self, source: str = None, include_compacted: bool = False,
-                   include_inactive: bool = False) -> List[Dict[str, Any]]:
+    def export_all(self, source: str | None = None, include_compacted: bool = False,
+                   include_inactive: bool = False) -> list[dict[str, Any]]:
         """Export all sessions (with messages) as dicts, e.g. for JSONL backup (flags as in
         :meth:`export_session`; that display read dedupes per session, so it skips the batched read).
         Backups that go back through :meth:`import_sessions` pass ``include_inactive`` so
@@ -339,7 +398,7 @@ class SessionPortabilityMixin:
         return [{**session, "messages": messages_by_session[session["id"]],
                  "timings": _export_timings(messages_by_session[session["id"]], session["id"])} for session in sessions]
 
-    def adopt_session_lineage_from(self, donor_db: Any, session_id: str, *, retire_donor: bool = True) -> Dict[str, Any]:
+    def adopt_session_lineage_from(self, donor_db: Any, session_id: str, *, retire_donor: bool = True) -> dict[str, Any]:
         """Adopt *session_id*'s full compression lineage from *donor_db* (stranded-bot-session
         heal: a profile bot's rows accumulated in the DEFAULT profile's state.db before the
         desktop routed session RPCs by target session). Pure composition
@@ -434,12 +493,46 @@ class SessionPortabilityMixin:
             raise ValueError(f"{field} must be an integer") from exc
 
     @staticmethod
-    def _import_json_object_or_none(value: Any, field: str) -> Optional[str]:
+    def _import_non_finite_path(value: Any, path: str) -> Optional[str]:
+        """First ``path`` of a NaN/inf number anywhere in decoded JSON data, else None.
+
+        Iterative walk (a recursive visitor would overflow on crafted nesting); cycles
+        can't arrive through ``json.loads`` but guard anyway.
+        """
+        pending = [(value, path)]
+        while pending:
+            current, current_path = pending.pop()
+            if isinstance(current, float) and not math.isfinite(current):
+                return current_path
+            if isinstance(current, dict):
+                pending.extend((child, f"{current_path}.{key}") for key, child in current.items())
+            elif isinstance(current, list):
+                pending.extend((child, f"{current_path}[{key}]") for key, child in enumerate(current))
+        return None
+
+    @classmethod
+    def _import_load_json(cls, value: str, path: str) -> Any:
+        """``json.loads`` that refuses NaN/Infinity anywhere in the decoded value.
+
+        A JSON exponent like ``1e309`` decodes to ``float("inf")``, which strict
+        serializers reject and cost analytics mis-handle. Callers that intentionally
+        decode a JSON-backed column (model_config, reasoning items) re-check through
+        here so non-finite values can't reappear after the outer payload was inspected.
+        """
+        parsed = json.loads(value)  # NaN/Infinity are accepted syntax; catch them after decode
+        non_finite = cls._import_non_finite_path(parsed, path)
+        if non_finite is not None:
+            raise ValueError(f"non-finite number at {non_finite}")
+        return parsed
+
+    @classmethod
+    def _import_json_object_or_none(cls, value: Any, field: str) -> Optional[str]:
         if value is None:
             return None
+        path = f"session.{field}"
         if isinstance(value, str):
             try:
-                parsed = json.loads(value)
+                parsed = cls._import_load_json(value, path)
             except json.JSONDecodeError as exc:
                 raise ValueError(f"{field} must be valid JSON") from exc
             if not isinstance(parsed, dict):
@@ -447,6 +540,8 @@ class SessionPortabilityMixin:
             return value
         if not isinstance(value, dict):
             raise ValueError(f"{field} must be a JSON object")
+        if cls._import_non_finite_path(value, path) is not None:
+            raise ValueError(f"non-finite number at {path}")
         try:
             return json.dumps(value)
         except (TypeError, ValueError) as exc:
@@ -460,30 +555,112 @@ class SessionPortabilityMixin:
         except (TypeError, ValueError):
             return default
 
-    def _normalize_import_session(self, raw: Dict[str, Any], session_id: str, messages: list) -> Dict[str, Any]:
+    # SQLite binds Python ints only inside the signed 64-bit range; anything wider
+    # raises OverflowError at INSERT time (an unhandled 500, not a 400).
+    _SQLITE_INT_MIN = -(1 << 63)
+    _SQLITE_INT_MAX = (1 << 63) - 1
+
+    @classmethod
+    def _import_int_or_bounded(cls, value: Any, field: str, default: int) -> int:
+        """Import an int column: SQL-int-range or *default* (never fails the import)."""
+        number = cls._coerce_or(value, int, default)
+        if number is None:
+            return default
+        if isinstance(number, bool) or not (cls._SQLITE_INT_MIN <= number <= cls._SQLITE_INT_MAX):
+            return default
+        return number
+
+    def _normalize_import_message(self, message: dict[str, Any], message_index: int) -> dict[str, Any]:
+        """Type-check one payload message; raises ValueError naming the offending field."""
+        clean_message = dict(message)
+        role = clean_message.get("role")
+        if not isinstance(role, str) or not role:
+            raise ValueError(f"messages[{message_index}].role must be a non-empty string")
+        for field in _IMPORT_MESSAGE_TEXT_FIELDS:
+            clean_message[field] = self._import_text_or_none(clean_message.get(field), field)
+        token_count = self._import_int_or_none(clean_message.get("token_count"), "token_count")
+        if token_count is not None and not (self._SQLITE_INT_MIN <= token_count <= self._SQLITE_INT_MAX):
+            raise ValueError("token_count is outside SQLite's integer range")
+        clean_message["token_count"] = token_count
+        message_path = f"session.messages[{message_index}]"
+        timestamp = clean_message.get("timestamp")
+        if timestamp is not None and coerce_epoch(timestamp, field="messages[].timestamp") is None:
+            raise ValueError(f"{message_path}.timestamp must be a supported Unix timestamp")
+        self._validate_import_message_content(clean_message.get("content"), message_path)
+        for field in _IMPORT_MESSAGE_JSON_FIELDS:
+            json_value = clean_message.get(field)
+            if isinstance(json_value, str):
+                # Malformed JSON text persists verbatim (readers fall back via _json_or);
+                # only a PARSED non-finite number is rejected — it would break strict
+                # JSON serializers once decoded back out of the row.
+                try:
+                    self._import_load_json(json_value, f"{message_path}.{field}")
+                except json.JSONDecodeError:
+                    pass
+                except ValueError:
+                    raise
+            elif json_value is not None:
+                non_finite = self._import_non_finite_path(json_value, f"{message_path}.{field}")
+                if non_finite is not None:
+                    raise ValueError(f"non-finite number at {non_finite}")
+        return clean_message
+
+    @classmethod
+    def _validate_import_message_content(cls, content: Any, message_path: str) -> None:
+        """Scalar message content must be bindable and later serializable."""
+        if isinstance(content, int) and not isinstance(content, bool) and not (
+                cls._SQLITE_INT_MIN <= content <= cls._SQLITE_INT_MAX):
+            # SQLite can't bind a wider int: this reached INSERT and raised OverflowError.
+            raise ValueError(f"{message_path}.content is outside SQLite's integer range")
+        if isinstance(content, float) and not math.isfinite(content):
+            raise ValueError(f"non-finite number at {message_path}.content")
+        if isinstance(content, (bytes, bytearray)):
+            raise ValueError(f"{message_path}.content must be a string, list, object, finite number, or null")
+
+    @classmethod
+    def _import_float_or_finite(cls, value: Any, field: str) -> Optional[float]:
+        """Import a float column: finite float or None (never fails the import).
+
+        A JSON exponent like ``1e309`` decodes to ``float("inf")``; persisted, it later
+        breaks strict JSON serialization in the session APIs. Missing stays missing.
+        """
+        if value is None:
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return number if math.isfinite(number) else None
+
+    def _normalize_import_session(self, raw: dict[str, Any], session_id: str, messages: list) -> dict[str, Any]:
         """Type-check one payload session + its messages; raises ValueError."""
         clean_session = dict(raw)
         clean_session["id"] = session_id
         clean_session["model_config"] = self._import_json_object_or_none(clean_session.get("model_config"), "model_config")
         for field in ("parent_session_id", *_IMPORT_SESSION_TEXT_FIELDS):
             clean_session[field] = self._import_text_or_none(clean_session.get(field), field)
-        clean_messages: List[Dict[str, Any]] = []
+        started_at = clean_session.get("started_at")
+        if started_at is not None and coerce_epoch(started_at, field="started_at") is None:
+            raise ValueError("session.started_at must be a supported Unix timestamp")
+        for field in _IMPORT_FLOAT_COLS:
+            value = clean_session.get(field)
+            if isinstance(value, float) and not math.isfinite(value):
+                raise ValueError(f"non-finite number at session.{field}")
+        for field in _IMPORT_INT_COLS:
+            value = clean_session.get(field)
+            if isinstance(value, int) and not isinstance(value, bool) and not (
+                    self._SQLITE_INT_MIN <= value <= self._SQLITE_INT_MAX):
+                raise ValueError(f"{field} is outside SQLite's integer range")
+        clean_messages: list[dict[str, Any]] = []
         for message_index, message in enumerate(messages):
-            clean_message = dict(message)
-            role = clean_message.get("role")
-            if not isinstance(role, str) or not role:
-                raise ValueError(f"messages[{message_index}].role must be a non-empty string")
-            for field in _IMPORT_MESSAGE_TEXT_FIELDS:
-                clean_message[field] = self._import_text_or_none(clean_message.get(field), field)
-            clean_message["token_count"] = self._import_int_or_none(clean_message.get("token_count"), "token_count")
-            clean_messages.append(clean_message)
+            clean_messages.append(self._normalize_import_message(message, message_index))
         return {"session": clean_session, "messages": clean_messages}
 
-    def _validate_import_payload(self, sessions: List[Dict[str, Any]]) -> tuple:
+    def _validate_import_payload(self, sessions: list[dict[str, Any]]) -> tuple:
         """Size/shape/type validation of the whole payload; returns ``(normalized_items,
         errors)``. Every rejected entry is reported."""
-        normalized: List[Dict[str, Any]] = []
-        errors: List[Dict[str, Any]] = []
+        normalized: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
         seen_ids: set[str] = set()
         totals = {"messages": 0, "bytes": 0}
         for index, raw in enumerate(sessions):
@@ -500,7 +677,7 @@ class SessionPortabilityMixin:
             normalized.append({"index": index, **item})
         return normalized, errors
 
-    def _validate_import_session(self, raw: Any, session_id: str, seen_ids: set, totals: Dict[str, int]) -> Dict[str, Any]:
+    def _validate_import_session(self, raw: Any, session_id: str, seen_ids: set, totals: dict[str, int]) -> dict[str, Any]:
         """One payload session -> normalized item; ValueError(message) on rejection. *totals*
         accumulate before their limit check (a rejected oversize entry still counts)."""
         if not isinstance(raw, dict):
@@ -534,18 +711,19 @@ class SessionPortabilityMixin:
             raise ValueError("messages exceeds the total import limit")
         return item
 
-    def _import_session_row(self, conn, raw: Dict[str, Any], messages: List[Dict[str, Any]], session_id: str) -> None:
+    def _import_session_row(self, conn, raw: dict[str, Any], messages: list[dict[str, Any]], session_id: str) -> None:
         """INSERT one normalized session + its messages; counts fixed up after."""
         started_at = coerce_epoch(raw.get("started_at"), session_id=session_id, field="started_at")
         params = {
             "id": session_id, "source": str(raw.get("source") or "import"),
             "system_prompt_hash": self._store_system_prompt(conn, raw.get("system_prompt")),
             "started_at": time.time() if started_at is None else started_at,
-            "archived": 1 if raw.get("archived") else 0,
+            **{col: 1 if self._coerce_or(raw.get(col), int, 0) else 0 for col in _IMPORT_FLAG_COLS},
             **{col: raw.get(col) for col in _IMPORT_PASSTHROUGH_COLS},
-            **{col: self._coerce_or(raw.get(col), float, None) for col in _IMPORT_FLOAT_COLS},
-            **{col: self._coerce_or(raw.get(col), int, 0) for col in _IMPORT_INT_COLS},
+            **{col: self._import_float_or_finite(raw.get(col), col) for col in _IMPORT_FLOAT_COLS},
+            **{col: self._import_int_or_bounded(raw.get(col), col, 0) for col in _IMPORT_INT_COLS},
         }
+        params["auto_archived"] &= params["archived"]  # only the sweep sets it, and only on rows it archives
         conn.execute(_IMPORT_SESSION_INSERT_SQL, params)
         def _json_value(value: Any) -> Any:
             return safe_json_loads(value, default=value) if isinstance(value, str) else value
@@ -555,8 +733,8 @@ class SessionPortabilityMixin:
         # A row exported archived (``include_inactive``) must stay archived: inserted live, compacted or
         # rewound turns would re-enter model context. Flags are coerced like the int session columns, so a
         # hand-edited "0" archives and a missing/null/unparsable flag imports live (older exports have none).
-        live: List[Dict[str, Any]] = []
-        archived: List[Dict[str, Any]] = []
+        live: list[dict[str, Any]] = []
+        archived: list[dict[str, Any]] = []
         for msg in sanitized_messages:
             (live if self._coerce_or(msg.get("active"), int, 1) else archived).append(msg)
         self._insert_message_rows(conn, session_id, sanitized_messages, prune_checkpoints=False)
@@ -573,7 +751,7 @@ class SessionPortabilityMixin:
                       session_id))
 
     @staticmethod
-    def _attach_import_parents(conn, parent_updates: List[tuple]) -> int:
+    def _attach_import_parents(conn, parent_updates: list[tuple]) -> int:
         """Re-attach imported children whose parent exists (in the store or the same payload)
         without creating a cycle; returns the detached count. Only the closing edge of a
         cycle is dropped, so later entries can still attach to the now-root session."""
@@ -607,7 +785,7 @@ class SessionPortabilityMixin:
                 detached += 1
         return detached
 
-    def import_sessions(self, sessions: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def import_sessions(self, sessions: list[dict[str, Any]]) -> dict[str, Any]:
         """Import sessions exported by :meth:`export_session` or ``export_all``. Existing ids
         are skipped. A child keeps its parent only when the parent exists or is in the
         same payload; otherwise it is detached so partial imports pass FK validation.
@@ -631,9 +809,16 @@ class SessionPortabilityMixin:
             return {"ok": False, "imported": 0, "skipped": 0, "detached": 0, "errors": errors}
 
         def _do(conn):
-            imported_ids: List[str] = []
-            skipped_ids: List[str] = []
-            parent_updates: List[tuple[str, str]] = []
+            from hermes_state_mutation_retirement import retired_in
+            # A user-deleted id stays fenced for good: its row restored beside the fence would list
+            # fine and refuse every turn, so the import is refused by name and writes nothing.
+            ids = [str(item["session"].get("id") or "").strip() for item in normalized]
+            if deleted := [sid for sid in ids if retired_in(conn, sid)]:
+                return {"ok": False, "imported": 0, "skipped": 0, "detached": 0, "errors": [
+                    f"session {sid} was deleted here; a deleted session is not restored" for sid in deleted]}
+            imported_ids: list[str] = []
+            skipped_ids: list[str] = []
+            parent_updates: list[tuple[str, str]] = []
             for item in normalized:
                 raw = item["session"]
                 session_id = str(raw.get("id") or "").strip()

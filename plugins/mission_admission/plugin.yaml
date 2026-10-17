@@ -1,0 +1,12 @@
+{
+  "name": "mission-admission",
+  "version": "0.2.0",
+  "description": "Durable Fred mission admission backed by the shared mission ownership store.",
+  "author": "FTr3d",
+  "manifest_version": 1,
+  "kind": "standalone",
+  "provides_tools": [],
+  "provides_hooks": ["post_gateway_admission"],
+  "provides_middleware": [],
+  "requires_env": []
+}

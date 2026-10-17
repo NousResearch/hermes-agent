@@ -708,6 +708,43 @@ def _dispatch_authorized_once(
         elif callback is not None:
             callback()
 
+    # The model_tools guard covers registry dispatch, but agent-level inline
+    # tools (including delegate_task) never pass through model_tools. Keep the
+    # authority fence at the shared executor boundary so every tool type is
+    # checked immediately before any side effect.
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        if str(get_active_profile_name() or "").casefold() == "fred":
+            from hermes_cli.kanban_db_connect import connect_closing
+            from hermes_cli import mission_ownership as _missions
+            session_id = str(getattr(agent, "session_id", "") or "").strip()
+            task_id = str(ref.task_id or "").strip()
+            if not (task_id or session_id):
+                raise RuntimeError("session and task identity are missing")
+            with connect_closing() as conn:
+                allowed = _missions.authorize_actor(
+                    conn, task_id=task_id if task_id else "",
+                    session_id=session_id if not task_id else "",
+                )
+            if not allowed:
+                _advance_start_order()
+                state.blocked = True
+                return _blocked_tool_result(
+                    agent, ref,
+                    block_body={"error": "Tool execution refused: this session or worker no longer owns an active Fred mission."},
+                    block_error_type="mission_owner_stale", guardrail_decision=None,
+                )
+    except Exception as _mission_authority_error:
+        from hermes_cli.profiles import get_active_profile_name
+        if str(get_active_profile_name() or "").casefold() == "fred":
+            _advance_start_order()
+            state.blocked = True
+            return _blocked_tool_result(
+                agent, ref,
+                block_body={"error": f"Tool execution refused because Fred mission authority could not be verified ({type(_mission_authority_error).__name__})."},
+                block_error_type="mission_authority_error", guardrail_decision=None,
+            )
+
     block_message, block_error_type = scope_block, "tool_scope_block"
     if block_message is None:
         block_error_type = "plugin_block"

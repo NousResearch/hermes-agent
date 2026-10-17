@@ -2681,6 +2681,25 @@ def complete_task(
     auditable event. Approving a card out of ``review`` stays exempt.
     """
     now = int(time.time())
+    # A task that currently owns a Fred root mission cannot be marked done by
+    # the ordinary summary-only Kanban completion path. The mission receipt
+    # must pass first; then the worker may close its execution card.
+    try:
+        from hermes_cli import mission_ownership
+        mission_ownership.ensure_schema(conn)
+        active_mission = conn.execute(
+            "SELECT id FROM missions WHERE owner_kind='task' AND owner_id=? AND status='active' LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        if active_mission:
+            raise mission_ownership.MissionError(
+                f"task {task_id} owns active Fred mission {active_mission['id']}; "
+                "complete the mission against its current contract first"
+            )
+    except ImportError:
+        # A source install missing the mandatory mission module must not claim
+        # this new guard is available. The application startup gate blocks Fred.
+        raise RuntimeError("Fred mission completion guard is unavailable")
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):
         return False

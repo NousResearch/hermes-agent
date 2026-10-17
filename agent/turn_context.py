@@ -9,6 +9,7 @@ returns a ``TurnContext`` with only the locals the loop reads back.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import threading
 import time
@@ -852,6 +853,51 @@ def _collect_pre_llm_call_context(
     return ""
 
 
+def _admit_fred_mission(agent: Any, user_message: Any) -> str:
+    """Mandatory core admission for Fred; independent of optional plugin hooks."""
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        if str(get_active_profile_name() or "").casefold() != "fred":
+            return ""
+        from hermes_cli.kanban_db_connect import connect_closing
+        from hermes_cli import mission_ownership as missions
+        if isinstance(user_message, list):
+            text = " ".join(
+                str(part.get("text", "")) if isinstance(part, dict) else str(part)
+                for part in user_message
+            )
+        else:
+            text = str(user_message or "")
+        with connect_closing() as conn:
+            mission = missions.ensure_turn_mission(
+                conn, session_id=str(getattr(agent, "session_id", "") or ""), text=text,
+                task_id=str(os.environ.get("HERMES_KANBAN_TASK", "")),
+            )
+        if mission is None:
+            return ""
+        contract = mission["contract"]
+        return (
+            "Durable mission authority (shared across Fred interfaces): "
+            f"mission_id={mission['id']}; owner={mission['owner_kind']}:{mission['owner_id']}; "
+            f"generation={mission['owner_generation']}; contract_version={mission['contract_version']}.\n"
+            "Original request and current contract are recorded in the mission store. "
+            f"Current outcome: {contract.get('outcome', '')}\n"
+            f"Acceptance criteria: {contract.get('acceptance', [])}\n"
+            f"User steering appended: {contract.get('user_updates', [])}\n"
+            "Do not start a second root orchestrator. Use the mission ownership tools for "
+            "progress, explicit handoff, and completion."
+        )
+    except Exception as exc:
+        # Mandatory authority failure stops a substantial Fred turn; optional
+        # pre_llm_call plugin hooks remain best-effort and cannot bypass it.
+        from hermes_cli import mission_ownership as missions
+        if isinstance(exc, missions.MissionError):
+            raise
+        raise RuntimeError(
+            f"Fred mission admission failed closed ({type(exc).__name__}); no model turn started"
+        ) from exc
+
+
 def _merge_gateway_notes(
     agent: Any, messages: list[Any], current_turn_user_idx: int, plugin_user_context: str
 ) -> str:
@@ -1174,11 +1220,16 @@ def build_turn_context(
     conversation_history = compaction.conversation_history
     current_turn_user_idx = compaction.current_turn_user_idx
 
+    mission_user_context = _admit_fred_mission(agent, original_user_message)
     plugin_user_context = _collect_pre_llm_call_context(
         agent, effective_task_id=effective_task_id, turn_id=turn_id,
         original_user_message=original_user_message, messages=messages,
         conversation_history=conversation_history,
     )
+    if mission_user_context:
+        plugin_user_context = "\n\n".join(
+            part for part in (mission_user_context, plugin_user_context) if part
+        )
     # Every turn, not only on a prompt restore: a long-lived agent (CLI, TUI, Desktop) keeps its
     # prompt in memory for the whole conversation and would never re-check its skills index.
     stage_skills_index_note(agent, active_system_prompt, messages)

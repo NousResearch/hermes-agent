@@ -766,11 +766,40 @@ def _apply_request_middleware(
 def _pre_dispatch_guards(function_name: str, function_args: dict[str, Any], skip_pre_tool_call_hook: bool,
                          ids: _CallIds, middleware_trace: list[dict[str, Any]],
                          ) -> tuple[dict[str, Any], Optional[tuple[Any, str, Optional[str]]]]:
-    """Plugin pre_tool_call hook, then ACP edit approval.
+    """Mandatory mission fence, plugin pre_tool_call hook, then ACP edit approval.
 
     ``(args, None)`` to proceed (args possibly plugin-modified), or
     ``(args, (result, error_type, error_message))`` when blocked.
     """
+    # Mission ownership is a core gate, not a plugin hook: it runs even when
+    # optional hooks are missing, throwing, or intentionally skipped by a
+    # caller. A failed authority read denies Fred tool execution.
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        if str(get_active_profile_name() or "").casefold() == "fred":
+            from hermes_cli.kanban_db_connect import connect_closing
+            from hermes_cli import mission_ownership as _missions
+            session_id = str(ids.session_id or "").strip()
+            task_id = str(os.environ.get("HERMES_KANBAN_TASK", "")).strip()
+            if not (task_id or session_id):
+                return function_args, (tool_error("Mission ownership could not be verified: session identity is missing."), "mission_authority_error", None)
+            with connect_closing() as conn:
+                authorized = _missions.authorize_actor(
+                    conn, task_id=task_id if task_id else "",
+                    session_id=session_id if not task_id else "",
+                )
+            if not authorized:
+                message = (
+                    "Tool execution refused: this session or worker no longer owns an active Fred mission. "
+                    "A completed handoff fences the previous owner; reopen the current mission overview "
+                    "from its new owner instead of continuing side effects."
+                )
+                return function_args, (tool_error(message), "mission_owner_stale", message)
+    except Exception as _mission_err:
+        logger.error("mandatory Fred mission authority check failed", exc_info=True)
+        message = f"Tool execution refused because mission authority could not be verified ({type(_mission_err).__name__})."
+        return function_args, (tool_error(message), "mission_authority_error", message)
+
     # pre_tool_call fires exactly once per execution: one invoke_hook pass yields
     # both the block message and modified args. skip=True: caller already fired it.
     if not skip_pre_tool_call_hook:

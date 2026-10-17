@@ -360,6 +360,48 @@ def _media_tag(paths: list[str], voice_compatible: bool) -> str:
     return f"[[audio_as_voice]]\n{media_tag}" if voice_compatible else media_tag
 
 
+def _tts_observer_value(config: dict[str, Any], *names: str) -> Optional[str]:
+    """Return the first configured non-empty TTS provider metadata value."""
+    for name in names:
+        value = config.get(name)
+        if value is not None and str(value).strip():
+            return str(value)
+    return None
+
+
+def _enqueue_post_tts_files(
+    paths: list[str], *, provider: str, tts_config: dict[str, Any], reencoded: bool,
+) -> None:
+    """Queue final TTS deliverables for observers without delaying their delivery."""
+    try:
+        from agent.plugin_stream_hooks import enqueue_plugin_stream_hook
+        from gateway.session_context import get_session_env
+        from tools.approval_context import get_current_observability_context
+
+        provider_config = tts_config.get(provider)
+        if not isinstance(provider_config, dict):
+            provider_config = (tts_config.get("providers") or {}).get(provider, {})
+        if not isinstance(provider_config, dict):
+            provider_config = {}
+        correlation = get_current_observability_context()
+        session_id = correlation["session_id"] or get_session_env("HERMES_SESSION_ID", "")
+        metadata = {
+            "provider": provider,
+            "model": _tts_observer_value(provider_config, "model", "model_id"),
+            "voice_id": _tts_observer_value(provider_config, "voice_id", "voice"),
+            "tool_name": "text_to_speech",
+            "tool_call_id": correlation["tool_call_id"],
+            "session_id": session_id,
+            "reencoded": reencoded,
+        }
+        for path in paths:
+            absolute_path = os.path.abspath(path)
+            enqueue_plugin_stream_hook(
+                "post_tts_file", path=absolute_path, byte_length=os.path.getsize(absolute_path), **metadata)
+    except Exception:
+        logger.debug("post_tts_file observer enqueue failed", exc_info=True)
+
+
 def _tool_failure(prefix: str, provider: str, exc: BaseException) -> str:
     """Log and wrap a synthesis failure as the standard error envelope (traceback except for config errors)."""
     error_msg = f"{prefix} ({provider}): {exc}"
@@ -401,12 +443,14 @@ def _text_to_speech_single(
 
         # Sniff once for every provider: MP3/WAV bytes in a .ogg path render as 0-second bubbles.
         file_str = _repair_ogg_container(file_str)
+        final_before_voice_delivery = file_str
         file_str, voice_compatible = _finalize_voice_delivery(
             file_str, provider, command_provider_config, want_opus)
         logger.info("TTS audio saved: %s (%s bytes, provider: %s)", file_str, f"{os.path.getsize(file_str):,}", provider)
         return json.dumps({
             "success": True, "file_path": file_str, "media_tag": _media_tag([file_str], voice_compatible),
             "provider": provider, "voice_compatible": voice_compatible,
+            "reencoded": file_str != final_before_voice_delivery,
         }, ensure_ascii=False)
     except ValueError as e:
         return _tool_failure("TTS configuration error", provider, e)
@@ -499,6 +543,12 @@ def text_to_speech_tool(
             encoded_paths, str(delivery_base), delivery_profile, voice_compatible=voice_compatible)
         for path in final_paths:
             logger.info("TTS audio saved: %s (%s bytes, provider: %s)", path, f"{os.path.getsize(path):,}", provider)
+        _enqueue_post_tts_files(
+            final_paths,
+            provider=chunk_results[0].get("provider", provider),
+            tts_config=tts_config,
+            reencoded=any(bool(result.get("reencoded")) for result in chunk_results),
+        )
         return json.dumps({
             "success": True, "file_path": final_paths[0], "file_paths": final_paths,
             "media_tag": _media_tag(final_paths, voice_compatible),

@@ -175,6 +175,7 @@ Tool hooks describe individual tool calls:
 | --- | --- |
 | `pre_tool_call` | Before guardrail-approved tool dispatch. |
 | `post_tool_call` | After tool dispatch, cancellation, block, or error completion. |
+| `post_tts_file` | After `text_to_speech` writes each final delivery file; callbacks run on a per-consumer background queue and cannot alter or delay audio delivery. |
 | `transform_tool_result` | After `post_tool_call`, before the result is appended to model context. |
 
 `pre_tool_call` includes `tool_name`, `args`, `task_id`, `session_id`,

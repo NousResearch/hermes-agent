@@ -41,12 +41,17 @@ class SlashAccessPolicy:
             return True
         return bool(user_id) and str(user_id) in self.admin_user_ids
 
-    def can_run(self, user_id: Optional[str], canonical_cmd: str) -> bool:
+    def can_run(
+        self, user_id: Optional[str], canonical_cmd: str,
+        *, command_key: Callable[[str], object] = str,
+    ) -> bool:
         if self.is_admin(user_id):
             return True
-        return bool(canonical_cmd) and (
-            canonical_cmd in _ALWAYS_ALLOWED_FOR_USERS or canonical_cmd in self.user_allowed_commands
-        )
+        if not canonical_cmd:
+            return False
+        target = command_key(canonical_cmd)
+        return any(command_key(name) == target
+                   for name in _ALWAYS_ALLOWED_FOR_USERS | self.user_allowed_commands)
 
 
 _DISABLED_POLICY = SlashAccessPolicy(

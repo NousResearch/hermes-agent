@@ -1229,8 +1229,11 @@ class GatewayBusySessionMixin:
         if not canonical_cmd:
             return None
         policy = policy_for_runner_source(self, source)
-        if not policy.enabled or policy.can_run(source.user_id, canonical_cmd):
+        if not policy.enabled or policy.can_run(
+            source.user_id, canonical_cmd, command_key=self._hm_command_key,
+        ):
             return None
+        canonical_cmd = self._hm_command_key(canonical_cmd)[1]
         logger.info(
             "Slash command /%s denied for %s:%s (not admin, not in user_allowed_commands)",
             canonical_cmd, source.platform.value if source.platform else "?", source.user_id,

@@ -795,7 +795,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         def _canon(cmd):
             # Aliases resolve to the canonical name so dispatch and hook names don't depend on them.
             _def = _resolve_cmd(cmd) if cmd else None
-            return _def, (_def.name if _def else cmd)
+            return _def, (self._hm_command_key(cmd)[1] if cmd else None)
 
         command = event.get_command()
         _cmd_def, canonical = _canon(command)
@@ -817,7 +817,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         # Per-platform slash access control: only active when the operator set ``allow_admin_from``
         # for the source's scope; then non-admins get ``user_allowed_commands`` plus the
         # /help, /whoami floor. Plain chat is never gated.
-        _denied = self._check_slash_access(source, canonical)
+        _denied = self._check_slash_access(source, command)
         if _denied is not None:
             return True, _denied, command, canonical
 
@@ -829,6 +829,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         if new_command is not None:
             command = new_command
             _cmd_def, canonical = _canon(command)
+            _denied = self._check_slash_access(source, command)
+            if _denied is not None:
+                return True, _denied, command, canonical
         return False, None, command, canonical
 
     async def _hm_confirm_destructive(self, event, command: str, detail: str, handler) -> tuple[bool, Optional[str]]:

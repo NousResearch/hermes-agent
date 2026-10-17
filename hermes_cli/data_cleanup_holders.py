@@ -14,21 +14,36 @@ _OWNER_STOP_HINTS = {
 }
 
 
-def _drain_manual_gateway(home: Path) -> None:
-    from gateway.control_socket import identify_gateway, launch_supervisor, pause_gateway_for_update
-    from gateway.status import get_process_start_time, get_running_pid_identity_strict, _pid_exists
+def manual_gateway_identity(home: Path) -> dict | None:
+    """The ``identify`` answer of the manually launched gateway owning ``home``, None when none runs.
+
+    Raises RuntimeError for a gateway this client may not drain: a supervisor (systemd, launchd,
+    Desktop, ...) relaunches it right after a pause, so it would take the profile back.
+    """
+    from gateway.control_socket import identify_gateway, launch_supervisor
+    from gateway.status import get_running_pid_identity_strict
 
     identity = identify_gateway(home)
     if identity is None:
         if get_running_pid_identity_strict(home / "gateway.pid") is not None:
             raise RuntimeError(f"gateway has no usable control socket for {home}; stop it through its owner and retry")
-        return
+        return None
     if not identity.get("hermes_home") or Path(identity["hermes_home"]).resolve() != home:
         raise RuntimeError(f"gateway control identity does not match {home}")
     owner = launch_supervisor(identity)
     if owner != "manual":
         hint = _OWNER_STOP_HINTS.get(owner or "", "stop it through its supervisor before retrying")
         raise RuntimeError(f"{owner or 'unknown'} gateway still owns {home}; {hint}")
+    return identity
+
+
+def _drain_manual_gateway(home: Path) -> None:
+    from gateway.control_socket import identify_gateway, pause_gateway_for_update
+    from gateway.status import get_process_start_time, get_running_pid_identity_strict, _pid_exists
+
+    identity = manual_gateway_identity(home)
+    if identity is None:
+        return
     if identity.get("served_profiles"):
         raise RuntimeError("gateway serves multiple profiles; stop it explicitly before deleting one profile's data")
     pid = identity.get("pid")

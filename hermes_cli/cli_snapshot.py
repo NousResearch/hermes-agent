@@ -65,14 +65,15 @@ def _local_snapshot_exists(snap_id):
     return target.resolve().is_relative_to(root.resolve()) and (target / "manifest.json").is_file()
 
 
-def _pause_owner(home, control_home):
+def _pause_owner(home, control_home, identity):
     from gateway.control_socket import pause_gateway_for_update, request_unserve_profile
     if control_home != home:
         ack = request_unserve_profile(control_home, home.name)
         accepted = ack is not None and (ack.get("unserved") == home.name or ack.get("pending"))
     else:
         ack = pause_gateway_for_update(control_home, timeout=8)
-        accepted = ack is not None and ack.get("pausing")
+        accepted = (ack is not None and (ack.get("pausing") or ack.get("already_stopping"))
+                    and identity is not None and ack.get("pid") == identity.get("pid"))
     if not accepted:
         raise GatewayClientError("Gateway refused the snapshot maintenance handoff; nothing was restored. "
                                  "Stop the gateway and retry.")
@@ -81,6 +82,7 @@ def _pause_owner(home, control_home):
 def _restore_gateway_snapshot(cli, store, snap_id):
     from gateway.control_socket import request_serve_profile_hot
     from hermes_cli.backup import restore_quick_snapshot
+    from hermes_cli.data_cleanup_holders import manual_gateway_identity
     from hermes_cli.gateway_connection import GatewayConnection
     from hermes_cli.gateway_profile_lifecycle import _confirmed, _failure
     from hermes_cli.gateway_runtime import control_home_for, discover_gateway_endpoint
@@ -94,13 +96,20 @@ def _restore_gateway_snapshot(cli, store, snap_id):
     if observed.state != "ready" or observed.endpoint is None:
         raise GatewayClientError("Local gateway is not ready for snapshot maintenance. Reconnect and retry.")
     control_home = control_home_for(home, observed.endpoint).resolve()
+    identity = None
+    if control_home == home:
+        # A supervised owner is relaunched right after the pause and takes the profile back.
+        try:
+            identity = manual_gateway_identity(home)
+        except RuntimeError as exc:
+            raise GatewayClientError(f"Nothing was restored: {exc}.") from exc
     store.close_reader()
     close_all_under(home)
     # A final viewer cannot redial from an idle poll while maintenance is replacing its database.
     store.connection.close()
     unserved = False
     try:
-        _pause_owner(home, control_home)
+        _pause_owner(home, control_home, identity)
         unserved = control_home != home
         if not wait_profile_unowned(home):
             raise GatewayClientError("Gateway still owns the profile; nothing was restored. "

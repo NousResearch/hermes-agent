@@ -151,6 +151,7 @@ class GatewayChatView:
         handler = {
             "message.delta": self._delta, "message.complete": self._complete,
             "tool.start": self._tool_start, "tool.complete": self._tool_complete,
+            "reasoning.delta": self._reasoning,
             "approval.request": self._request, "clarify.request": self._request,
             "approval.settled": self._settled, "clarify.settled": self._settled,
             "session.info": self._session_info,
@@ -158,6 +159,14 @@ class GatewayChatView:
         }.get(kind)
         if handler:
             handler(admission, payload)
+
+    def _reasoning(self, admission, payload):
+        # The owner already gated display.show_reasoning (tui_gateway emits reasoning.delta only
+        # when on); the viewer forwards it solely to the JSONL emitter. The plain human CLI keeps its
+        # existing spinner presentation, and the legacy thinking.delta (status notices) is not
+        # registered here at all.
+        if self.emitter is not None:
+            self.emitter.on_reasoning_delta(payload.get("text"))
 
     def _session_info(self, admission, payload):
         self.pending = payload.get("pending", self.pending)

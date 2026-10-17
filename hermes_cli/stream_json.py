@@ -1,7 +1,7 @@
 """``hermes chat -q … --format stream-json``: one JSON object per stdout line.
 
 CI runners and orchestrators consume a one-shot run without scraping human-formatted text:
-``system/init`` → ``text`` deltas / ``tool_use`` / ``tool_result`` → one terminal ``result``
+``system/init`` → ``text`` / ``reasoning`` deltas / ``tool_use`` / ``tool_result`` → one terminal ``result``
 envelope (exit code, final text, token stats). Diagnostics and ``session_id`` stay on stderr.
 """
 
@@ -44,10 +44,12 @@ class StreamJsonEmitter:
         self._emit({"type": "system", "subtype": "init", "model": model, "session_id": session_id})
 
     def attach(self, agent) -> StreamJsonEmitter:
-        """Route the agent's streaming/tool callbacks into this emitter (``init`` was already written at
-        construction, before credentials/agent init, so a failed start still yields init + result)."""
+        """Route the agent's streaming/tool/reasoning callbacks into this emitter (``init`` was already
+        written at construction, before credentials/agent init, so a failed start still yields init +
+        result)."""
         agent.stream_delta_callback = self.on_text_delta
         agent.tool_progress_callback = self.on_tool_progress
+        agent.reasoning_callback = self.on_reasoning_delta
         return self
 
     def bind_session(self, session_id: str) -> None:
@@ -61,10 +63,16 @@ class StreamJsonEmitter:
         if text:
             self._emit({"type": "text", "text": str(text)})
 
+    def on_reasoning_delta(self, text: str | None) -> None:
+        """Native reasoning tokens as their own ``reasoning`` events: never merged into the answer
+        stream, with the same lossless contract (only None/"" dropped, whitespace preserved)."""
+        if text:
+            self._emit({"type": "reasoning", "text": str(text)})
+
     def on_tool_progress(self, event_type: str, tool_name: str | None = None, preview: Any = None, args: Any = None,
                          **kwargs: Any) -> None:
         """``tool.started`` → ``tool_use`` (with ``input`` when the args are a dict); ``tool.completed`` →
-        ``tool_result``. Other progress events (reasoning, output risk) are not part of the protocol."""
+        ``tool_result``. Reasoning uses its dedicated callback; other progress events are ignored here."""
         name = tool_name or "unknown"
         # Parallel same-name calls would clobber each other's start time under a name-only key.
         key = kwargs.get("tool_call_id") or name

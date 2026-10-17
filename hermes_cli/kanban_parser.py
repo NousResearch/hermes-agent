@@ -159,6 +159,7 @@ _SPECS = [
          )),
     _cmd("create", [
         _arg("title", help="Task title"),
+        _arg("--kind", default="task", help="Free-form task classification (default: task; does not change routing)"),
         _arg("--body", help="Optional opening post"),
         _arg("--body-file", metavar="PATH",
              help="Read the opening post from a file ('-' = stdin), so bodies with embedded "
@@ -235,6 +236,7 @@ _SPECS = [
         _arg("--mine", action="store_true", help="Filter by $HERMES_PROFILE as assignee"),
         _arg("--assignee"),
         _arg("--status", choices=sorted(kb.VALID_STATUSES)),
+        _arg("--kind", help="Filter by exact task classification (case-sensitive)"),
         _arg("--tenant"),
         _arg("--session",
              help="Filter by originating chat/agent session id (set on tasks created from inside an ACP loop)"),

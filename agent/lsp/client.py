@@ -752,6 +752,27 @@ class LSPClient:
         pull = doc.pull if not fresh_only or doc.fresh_pull() else []
         return _dedupe(push, pull)
 
+    def baseline_reusable(self, path: str) -> Optional[list[dict[str, Any]]]:
+        """Fresh diagnostics for ``path`` iff the tracked document still matches disk; None = no reuse.
+
+        The pre-write baseline snapshot re-observes the CURRENT on-disk state; when the
+        client's tracked text (same utf-8-sig read as ``open_file``) and the on-disk bytes
+        agree AND the stores hold a fresh verdict, that verdict already describes the file:
+        reuse it (``[]`` legitimately means checked-clean) instead of waiting out the full
+        budget again.  Stale, seed-only or no-verdict stores return None → caller runs the
+        normal open+wait.  An unreadable file (deleted since the tracked read) simply never
+        matches and returns None → full path.
+        """
+        abs_path = os.path.abspath(path)
+        doc = self._docs.get(abs_path)
+        if doc is None or doc.version < 0 or not doc.fresh():
+            return None
+        try:
+            text = Path(abs_path).read_text(encoding="utf-8-sig", errors="replace")
+        except OSError:
+            return None
+        return list(self.diagnostics_for(abs_path, fresh_only=True)) if text == doc.text else None
+
 
 def _dedupe(*lists: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen: set[str] = set()

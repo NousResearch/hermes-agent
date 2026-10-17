@@ -489,7 +489,35 @@ class LSPService:
     async def _snapshot_async(self, file_path: str, budget: Optional[float] = None) -> _Diags:
         # No fresh data for the pre-edit content → empty baseline.  Safe: the delta
         # filter then removes less, never more.  Never seed from stale stores.
+        # A no-op didChange invalidates a clean verdict that the server may not republish.
+        # Reuse it only while both the document version and decoded file content still match.
+        reused = self._reusable_baseline(file_path)
+        if reused is not None:
+            return reused
         return await self._open_and_wait_async(file_path, snapshot=True, budget=budget) or []
+
+    def _reusable_baseline(self, file_path: str) -> Optional[_Diags]:
+        """Fresh client diagnostics for ``file_path`` iff the tracked text still matches disk; else None.
+
+        Pure sync check against the running client's stores — an empty list means checked-clean
+        and is reusable; None ("no verdict") never is.  Text must match under the SAME
+        read rules as ``open_file`` (utf-8-sig strips a BOM; errors=replace), so externally
+        changed or unreadable content falls back to the full fresh-snapshot path.
+        """
+        srv = self._server_for(file_path)
+        if srv is None:
+            return None
+        ws, gated = resolve_workspace_for_file(file_path)
+        if not (ws and gated):
+            return None
+        root = srv.resolve_root(file_path, ws)
+        if root is None:
+            return None
+        with self._state_lock:
+            client = self._clients.get(self._live_key(srv, root))
+        if client is None or not client.is_running:
+            return None
+        return client.baseline_reusable(file_path)
 
     async def _open_and_wait_async(
         self, file_path: str, *, snapshot: bool = False, budget: Optional[float] = None,

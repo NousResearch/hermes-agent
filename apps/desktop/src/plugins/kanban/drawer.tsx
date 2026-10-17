@@ -862,7 +862,9 @@ export function TaskDrawer({
     enabled: query => !!id && routedToScope(query),
     queryFn: () => fetchLog(id!),
     queryKey: logKey(scope, slug, id ?? ''),
-    refetchInterval: running ? 3_000 : 15_000
+    refetchInterval: running ? 3_000 : 15_000,
+    // A running worker keeps appending while the user is on another window.
+    refetchIntervalInBackground: true
   })
 
   const invalidate = () => {

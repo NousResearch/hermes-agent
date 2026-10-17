@@ -411,7 +411,7 @@ def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
     from hermes_cli.backup_restore import _safe_restore_db
 
     snap_state.stat()  # Preserve the caller's OSError reporting for missing snapshots.
-    if not verify_sqlite_integrity(snap_state, check_header=True, run_pragma=True).get("valid"):
+    if verify_sqlite_integrity(snap_state, check_header=True, run_pragma=True).get("valid") is not True:
         return False
     if not _safe_restore_db(snap_state, state_path):
         print("  ✗ Auto-restore refused or failed; state.db was not restored.")
@@ -433,8 +433,12 @@ def _verify_and_restore_one_state_db(home: Path, *, label: str) -> None:
         if not state_path.exists():
             return
         ok = verify_sqlite_integrity(state_path, check_header=True, run_pragma=True)
-        if ok.get("valid"):
+        if ok.get("valid") is True:
             logger.debug("Post-update state.db integrity OK (%s): %s", label, ok.get("message"))
+            return
+        if ok.get("valid") is None:
+            print(f"  ⚠ state.db verification deferred ({label}): {ok.get('message', 'unknown error')}")
+            print("    Preserve state.db and its WAL/SHM sidecars; no automatic restore.")
             return
         print()
         print(f"⚠ state.db is corrupted after update ({label}): " + ok.get("message", "unknown error"))
@@ -446,7 +450,7 @@ def _verify_and_restore_one_state_db(home: Path, *, label: str) -> None:
             snap_state = snap_dir / "state.db"
             if not snap_state.exists():
                 continue
-            if not verify_sqlite_integrity(snap_state, check_header=True, run_pragma=True).get("valid"):
+            if verify_sqlite_integrity(snap_state, check_header=True, run_pragma=True).get("valid") is not True:
                 continue
             try:
                 if _restore_state_db_from_snapshot(state_path, snap_state):
@@ -643,7 +647,11 @@ def _verify_state_db_after_snapshot(snapshot_id: str) -> None:
     _integrity = verify_sqlite_integrity(
         _src_path, check_header=True, run_pragma=True, max_bytes=_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
     )
-    if _integrity.get("valid"):
+    if _integrity.get("valid") is True:
+        return
+    if _integrity.get("valid") is None:
+        print(f"  ⚠ state.db verification deferred after snapshot: {_integrity.get('message', 'unknown error')}")
+        print("    Preserve state.db and its WAL/SHM sidecars; seek manual review, not automatic restore.")
         return
     print(f"  ⚠ state.db integrity check FAILED after snapshot: {_integrity.get('message', 'unknown error')}")
     _snap_state = _quick_snapshot_root(get_hermes_home()) / snapshot_id / "state.db"

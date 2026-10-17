@@ -138,9 +138,16 @@ def step_state_db_guard() -> dict:
     if not state_path.exists():
         return {"ok": True, "skipped": "no-state-db"}
     result = verify_sqlite_integrity(state_path, check_header=True, run_pragma=True)
-    if result.get("valid"):
+    if result.get("valid") is True:
         return {"ok": True}
     message = result.get("message", "unknown error")
+    if result.get("valid") is None:
+        logger.warning(
+            "state.db verification deferred after a code update: %s — "
+            "preserve state.db and its WAL/SHM sidecars for manual review",
+            message,
+        )
+        return {"ok": False, "unverified": True, "error": message}
     logger.error(
         "state.db failed integrity check after a code update: %s — "
         "restore a backup with `hermes backup` tooling or contact support",

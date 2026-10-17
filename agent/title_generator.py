@@ -648,11 +648,16 @@ def auto_title_session(
     title_callback: Optional[TitleCallback] = None,
     runtime_validator: Optional[RuntimeValidator] = None,
     title_preview: str | None = None,
+    retry_of_failed_upgrade: bool = False,
 ) -> None:
     """Generate and store the model title (daemon-thread target); skips sessions already carrying an
     ``llm``/``user`` title (a ``derived`` one is expected — upgrading it is the point). Never lets an
     exception escape (the threading excepthook would spray a traceback into the terminal); the canonical
-    trigger is the post-``hermes update`` window where lazy imports read NEW source against OLD modules."""
+    trigger is the post-``hermes update`` window where lazy imports read NEW source against OLD modules.
+
+    ``retry_of_failed_upgrade`` marks a cooldown-gated retry of the stage-2 upgrade on a later turn: the
+    session already holds a ``derived`` title, so a second model failure leaves that title as-is instead
+    of re-deriving one from the latest message — churn without quality."""
     try:
         if not session_db or not session_id or _has_upgraded_title(session_db, session_id):
             return
@@ -673,7 +678,12 @@ def auto_title_session(
         ), "llm"
         if title and _is_provisional_greeting_title(title):
             source = "derived"
-        if not title:  # the inline attempt declined collisions; off the critical path the lineage scan is affordable
+        if not title:
+            if retry_of_failed_upgrade:
+                # The model failed again on a retry: keep the existing ``derived`` title rather than
+                # churn the sidebar with a fresh derivation of the latest message.
+                return
+            # the inline attempt declined collisions; off the critical path the lineage scan is affordable
             title, source = derive_title(user_message, title_preview), "derived"
         if not title:
             return
@@ -708,6 +718,42 @@ def _session_is_untitled(session_db, session_id: str) -> bool:
     except Exception:
         logger.debug("Untitled check failed for %s", session_id, exc_info=True)
         return False
+
+
+# Cooldown between LLM-upgrade retries for a session whose title is still
+# ``derived`` because the stage-2 upgrade never landed (aux-provider 500s, rate
+# limits, a dead fallback chain). In-memory and per process: the worst case
+# after a restart is one extra attempt on the next turn, which is intended.
+_RETRY_COOLDOWN_S = 600
+_derived_retry_last: dict = {}
+
+
+def _session_title_source_is_derived(session_db, session_id: str) -> bool:
+    """Whether the session holds a title but only at ``derived`` authority.
+
+    A ``derived`` name is a placeholder — the instant slice of the opener, or the
+    model's greeting title for a bare "hi". When the stage-2 upgrade failed on the
+    opening turn (a rate limit, a briefly dead fallback chain, a timeout) the
+    session keeps that placeholder for life. This detects the state so a later
+    turn can retry the upgrade.
+    """
+    source_fn = getattr(session_db, "get_session_title_source", None)
+    if not callable(source_fn):
+        return False
+    try:
+        return source_fn(session_id) == "derived"
+    except Exception:
+        logger.debug("Derived-title check failed for %s", session_id, exc_info=True)
+        return False
+
+
+def _derived_retry_allowed(session_id: str) -> bool:
+    """Cooldown gate, so a long session spends at most one upgrade call per window."""
+    return (time.time() - _derived_retry_last.get(session_id, 0)) >= _RETRY_COOLDOWN_S
+
+
+def _mark_derived_retry(session_id: str) -> None:
+    _derived_retry_last[session_id] = time.time()
 
 
 def _kanban_task_title() -> Optional[str]:
@@ -755,12 +801,26 @@ def maybe_auto_title(
     # name is still a placeholder (instant slice, or the model's greeting title for a bare "hi") that
     # the first substantive turn should replace. Untitled sessions always get another shot; a
     # placeholder gets turns 2-3, so a failing title model costs at most three calls, not one per turn.
+    # Past turn 3 a ``derived``-only title earns one more attempt per cooldown window: the stage-2
+    # upgrade may have failed on the opening turn merely because the title model was rate-limited or
+    # briefly 500ing, and the session must not be stranded on its opener's slice for life. The cooldown
+    # preserves the cost cap — still at most one auxiliary call per window, never one per turn.
     user_msg_count = sum(1 for m in (conversation_history or []) if _is_real_user_turn(m))
+    is_derived_retry = False
     if user_msg_count > 1 and (
         _has_upgraded_title(session_db, session_id)
         or (user_msg_count > 3 and not _session_is_untitled(session_db, session_id))
     ):
-        return None
+        # The only way past the guard is a session still on a ``derived`` placeholder whose cooldown
+        # has elapsed. ``_session_title_source_is_derived`` already implies the title is not upgraded.
+        if not (
+            user_msg_count > 3
+            and _session_title_source_is_derived(session_db, session_id)
+            and _derived_retry_allowed(session_id)
+        ):
+            return None
+        _mark_derived_retry(session_id)
+        is_derived_retry = True
     kanban_title = _kanban_task_title()
     if kanban_title:
         # The card already carries a human-written name; an auxiliary model call per spawned worker
@@ -776,7 +836,10 @@ def maybe_auto_title(
     if not _auto_title_enabled():  # config read after the cheap guards so the file isn't touched every turn
         logger.debug("Auto-title skipped: auxiliary.title_generation.enabled=false")
         return None
-    apply_instant_title(session_db, session_id, user_message, title_callback, title_preview=title_preview)
+    if not is_derived_retry:
+        # First titling pass: land the instant slice of this message. On a retry the session already
+        # holds a ``derived`` title, so re-deriving here would only churn the sidebar.
+        apply_instant_title(session_db, session_id, user_message, title_callback, title_preview=title_preview)
     if not _model_title_upgrade_enabled():
         logger.debug("Instant title persisted; model upgrade disabled by auxiliary.title_generation.model_upgrade_enabled=false")
         return None
@@ -785,7 +848,7 @@ def maybe_auto_title(
     # profile under multiplex, titling X's session with the default profile's model and billing its key.
     from agent.memory_provider import spawn_context_thread
     upgrade_kwargs = dict(failure_callback=failure_callback, main_runtime=main_runtime, title_callback=title_callback,
-                          runtime_validator=runtime_validator)
+                          runtime_validator=runtime_validator, retry_of_failed_upgrade=is_derived_retry)
     if isinstance(title_preview, str) and title_preview.strip():
         upgrade_kwargs["title_preview"] = title_preview
     upgrade = spawn_context_thread(

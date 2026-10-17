@@ -115,9 +115,60 @@ class PlatformEntry:
     # Built-in display defaults tier ("high" | "medium" | "low" | "minimal", see
     # gateway/display_config.py) used below the user's display.* overrides; "" = global defaults.
     display_tier: str = ""
+    # --- prompt ---
+    # Per-key display defaults layered over ``display_tier`` (e.g. Discord ``reasoning_style``);
+    # empty = the tier as-is. Same keys as display_config._GLOBAL_DEFAULTS.
+    display_overrides: dict = field(default_factory=dict)
     # Env prefixes shared with a non-channel capability (the same plugin's tools): profile clones
     # strip keys under them only when the source profile runs the adapter (profile_channels.py).
     shared_env_prefixes: tuple = ()
+    # --- config ---
+    # Gateway "sufficiently configured?" verdict from the PlatformConfig ALONE (yaml + env seeding
+    # already merged into it), for ``GatewayConfig.get_connected_platforms``. Unlike ``is_connected``
+    # it never falls back to the env / ``.env`` (the gateway runs from the merged config, setup UIs
+    # read the env), and it owns the ``token``/``api_key`` shortcut so a platform that needs more
+    # than a token (Weixin: token AND account_id) can refuse it. None = ``token or api_key``, then
+    # ``is_connected`` / ``validate_config``.
+    config_connected_fn: Optional[Callable[[Any], bool]] = None
+    # --- authz ---
+    # ``<PLATFORM>_ALLOW_BOTS`` (YAML ``allow_bots`` wins): bot senders it admits ("mentions"/"all")
+    # bypass the human allowlist, checked before the no-user-id guard. "" = bots get no bypass.
+    allow_bots_env: str = ""
+    # (dm_policy_env, group_policy_env) of a platform with its own dm/group policy: when enabled and
+    # either resolves "open" without ``allow_all_env`` / GATEWAY_ALLOW_ALL_USERS, startup is refused.
+    # A "" member = that policy is YAML-only (QQ Bot). None = no own policy, never checked.
+    own_policy_env: Optional[tuple] = None
+    # --- send ---
+    # send_message native target syntax, see ``gateway.platforms.send_targets``. A hint, not an
+    # authority like ``parse_target_ref_fn``: None / NOT_EXPLICIT fall back to core's generic id
+    # rules / channel directory, it also re-parses channel-directory hits, and it keeps
+    # ``pass_unresolved_references`` lenient.
+    target_ref_syntax_fn: Optional[Callable[[str], Any]] = None
+    # ``gateway.platforms.send_targets.StandaloneSendPolicy`` or None (generic send routing).
+    standalone_send: Optional[Any] = None
+    # --- dashboard ---
+    # Channels-page card metadata (hermes_cli/web_server_messaging.py, Desktop + web dashboard).
+    # Every field defaults to "not declared": the card then falls back to ``label`` / ``install_hint``
+    # / ``required_env`` + prefix-discovered env vars.
+    dashboard_label: str = ""  # card title when it differs from ``label`` (status/CLI keep ``label``)
+    dashboard_description: str = ""  # human description; ``install_hint`` is a dependency note
+    docs_url: str = ""  # setup guide linked from the card
+    dashboard_env_vars: tuple = ()  # card fields shown first, in this order, before discovered vars
+    # Credentials the card treats as "configured"; None = ``required_env`` (which also drives
+    # ``hermes setup`` and the child-env scrub, so the card may legitimately ask for a different set).
+    dashboard_required_env: Optional[tuple] = None
+    # ``{ENV_KEY: (accepts(value) -> bool, 400 detail)}``: the dashboard PUT rejects a non-empty value
+    # the predicate refuses, catching credentials pasted into the wrong field.
+    env_value_rules: dict = field(default_factory=dict)
+    # --- env ---
+    # Ordered ``step(GatewayConfig) -> None`` env->config bridge run by ``_apply_env_overrides`` for a
+    # platform with activation evidence (``gateway.platform_env.EnvCred`` / ``home_step`` /
+    # ``reply_mode_step``); () = none. Unlike ``env_enablement_fn`` it runs whether or not deps are
+    # importable and may set token / home channel / reply mode or force-disable.
+    env_overrides: tuple = ()
+    # Env names whose presence drives that enable, cited by the explicit-disable WARNING and used by
+    # ``hermes_cli.profile_channels`` as the platform's credential set; () = none declared.
+    env_enable_credentials: tuple = ()
 
 
 def core_ships_platform(name: str) -> bool:

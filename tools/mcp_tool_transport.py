@@ -4,6 +4,7 @@ protocol negotiation and initial tool discovery. Split from tools/mcp_tool.py.""
 
 import logging
 import asyncio
+import json
 import os
 import urllib.parse
 import urllib.request
@@ -85,6 +86,134 @@ def _pgroup_alive(pgid: Optional[int]) -> bool:
         return True
     except (AttributeError, TypeError, OSError):  # non-POSIX / pgid None / gone
         return False
+
+
+# Handshake-era MCP SDK stamps only ``mcp-protocol-version``. Keep the SDK's
+# stamp intact and add SEP-2243 routing headers afterwards; newer SDK stamps
+# already own these headers, so writes are deliberately setdefault.
+_SEP2243_METHOD_HEADER = "mcp-method"
+_SEP2243_NAME_HEADER = "mcp-name"
+_SEP2243_NAME_BEARING = {
+    "tools/call": "name",
+    "prompts/get": "name",
+    "resources/read": "uri",
+}
+
+
+def _sep2243_header_helpers():
+    """Return SDK routing-header helpers, with safe compatibility fallbacks."""
+    method_header = _SEP2243_METHOD_HEADER
+    name_header = _SEP2243_NAME_HEADER
+    name_bearing = dict(_SEP2243_NAME_BEARING)
+    encode = None
+    try:
+        from mcp.shared.inbound import MCP_METHOD_HEADER, MCP_NAME_HEADER, NAME_BEARING_METHODS, encode_header_value
+        method_header = MCP_METHOD_HEADER or method_header
+        name_header = MCP_NAME_HEADER or name_header
+        name_bearing = dict(NAME_BEARING_METHODS or name_bearing)
+        encode = encode_header_value
+    except Exception:
+        pass
+    return method_header, name_header, name_bearing, encode
+
+
+def _encode_sep2243_name(value: str, encode) -> Optional[str]:
+    """Encode an MCP routing name without allowing optional SDK helpers to break I/O."""
+    if encode is not None:
+        try:
+            encoded = encode(value)
+            if isinstance(encoded, str):
+                return encoded
+        except Exception:
+            pass
+    try:
+        if value.isascii() and value == value.strip() and "\n" not in value and "\r" not in value:
+            return value
+    except Exception:
+        pass
+    return None
+
+
+def _has_header(headers, name: str) -> bool:
+    """Whether an HTTP-equivalent header is already present, regardless of casing."""
+    try:
+        return any(str(key).lower() == name.lower() for key in headers)
+    except Exception:
+        return False
+
+
+def _apply_sep2243_headers(data, opts, method_header, name_header, name_bearing, encode) -> None:
+    """Set missing SEP-2243 routing headers on a JSON-RPC request, fail-open."""
+    try:
+        if not isinstance(data, dict) or not isinstance(opts, dict):
+            return
+        method = data.get("method")
+        if not isinstance(method, str) or not method:
+            return
+        headers = opts.get("headers")
+        if headers is None:
+            headers = {}
+            opts["headers"] = headers
+        if not hasattr(headers, "__setitem__"):
+            return
+        if not _has_header(headers, method_header):
+            headers[method_header] = method
+        name_key = name_bearing.get(method)
+        params = data.get("params")
+        if not isinstance(name_key, str) or not isinstance(params, dict):
+            return
+        name = params.get(name_key)
+        if not isinstance(name, str):
+            return
+        encoded = _encode_sep2243_name(name, encode)
+        if encoded is not None and not _has_header(headers, name_header):
+            headers[name_header] = encoded
+    except Exception:
+        return
+
+
+def _ensure_sep2243_headers_stamp(session) -> None:
+    """Wrap an established session's SDK stamp with SEP-2243 header stamping."""
+    original = getattr(session, "_stamp", None)
+    if not callable(original):
+        return
+    method_header, name_header, name_bearing, encode = _sep2243_header_helpers()
+
+    def stamp(data, opts):
+        original(data, opts)
+        _apply_sep2243_headers(data, opts, method_header, name_header, name_bearing, encode)
+
+    try:
+        session._stamp = stamp
+    except Exception:
+        return
+
+
+def _make_sep2243_request_header_stamper():
+    """Return the owned-client hook that covers SDK 1.x transport POSTs.
+
+    MCP 1.x does not expose ``ClientSession._stamp``. Its Streamable HTTP
+    transport creates headers for each queued JSON-RPC message, so stamp the
+    request body at the HTTP boundary as well. SDK 2.x requests are harmless:
+    existing routing headers win case-insensitively.
+    """
+    method_header, name_header, name_bearing, encode = _sep2243_header_helpers()
+
+    async def stamp(request):
+        try:
+            if getattr(request, "method", "").upper() != "POST":
+                return
+            body = getattr(request, "content", b"")
+            if isinstance(body, bytes):
+                body = body.decode("utf-8")
+            if not isinstance(body, str):
+                return
+            _apply_sep2243_headers(json.loads(body), {"headers": request.headers}, method_header,
+                                   name_header, name_bearing, encode)
+        except Exception:
+            return
+
+    return stamp
 
 
 class LiveEndpointUnavailable(ConnectionError):
@@ -251,6 +380,7 @@ class MCPServerTransportMixin:
         breaker state but leaves the session UNPROVEN: flapping transports handshake fine and drop
         moments later, so only keepalive/tool-call success clears the reconnect budget."""
         self.initialize_result = await self._negotiate_session(session, connect_timeout)
+        _ensure_sep2243_headers_stamp(session)
         self.session = session
         if mark_lifecycle:
             self._mark_lifecycle_started()
@@ -558,7 +688,22 @@ class MCPServerTransportMixin:
                 raise ImportError(f"MCP server '{self.name}' requires mcp >= 1.24.0 to "
                                   "enforce the portable redirect-header boundary "
                                   "(strict_redirect_headers). Upgrade the mcp package.")
+            # SDK <1.24 owns its StreamableHTTPTransport, but accepts a client factory. Give it an
+            # owned client so the per-request hook can inspect each JSON-RPC POST; static headers
+            # alone cannot express SEP-2243 method/name routing on that SDK generation.
+            def _legacy_httpx_client_factory(headers=None, timeout=None, auth=None):
+                httpx = _core.sdk_httpx()
+                inner_transport = httpx.AsyncHTTPTransport(verify=ssl_verify, **_present(cert=client_cert))
+                return httpx.AsyncClient(
+                    follow_redirects=True,
+                    timeout=timeout,
+                    transport=_make_mcp_body_cap_transport(httpx, inner_transport),
+                    event_hooks={"request": [_make_sep2243_request_header_stamper()]},
+                    **_present(headers=headers, auth=auth,
+                               mounts=_mcp_proxy_mounts(httpx, url, ssl_verify, client_cert, self.name)),
+                )
             return _core.streamablehttp_client(url, headers=headers, timeout=float(connect_timeout), verify=ssl_verify,
+                                               httpx_client_factory=_legacy_httpx_client_factory,
                                                **_present(auth=oauth_auth))
         # Explicit AsyncClient matching the SDK's create_mcp_http_client defaults; MUST come from the
         # SDK's httpx (httpx2 on mcp >= 2.0) since the SDK sends its own Requests through it.
@@ -570,7 +715,10 @@ class MCPServerTransportMixin:
         inner_transport = httpx.AsyncHTTPTransport(verify=ssl_verify, **_present(cert=client_cert))
         client_kwargs: dict = {"follow_redirects": True, "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
                                **({"headers": headers} if headers else {}),
-                               "event_hooks": {"response": [_make_http_rejection_recorder(self._http_rejection)]},
+                               "event_hooks": {
+                                   "request": [_make_sep2243_request_header_stamper()],
+                                   "response": [_make_http_rejection_recorder(self._http_rejection)],
+                               },
                                "transport": _make_mcp_body_cap_transport(httpx, inner_transport),
                                **_present(mounts=_mcp_proxy_mounts(httpx, url, ssl_verify, client_cert, self.name),
                                           auth=oauth_auth)}

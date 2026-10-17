@@ -1169,6 +1169,12 @@ skills:
   # Set to 0 to disable.
   creation_nudge_interval: 15
 
+  # Also review a turn that took this many tool rounds, or where a tool failed
+  # and then worked, even before the nudge intervals fire (once per session,
+  # plus once per recovered tool). review_slow_turns: false turns it off.
+  # review_slow_turns: true
+  # slow_turn_tool_rounds: 4
+
   # External skill directories — share skills across tools/agents without
   # copying them into ~/.hermes/skills/.  Each path is expanded (~ and ${VAR})
   # and resolved to an absolute path.  External dirs are read-only: skill

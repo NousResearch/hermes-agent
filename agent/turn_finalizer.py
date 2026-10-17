@@ -6,6 +6,7 @@ imported lazily from ``agent.conversation_loop`` (no cycle, same logger name).""
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -91,6 +92,82 @@ def _drop_verification_continuation_scaffolding(messages) -> None:
         m for m in messages
         if not (isinstance(m, dict) and any(m.get(f) for f in _VERIFICATION_CONTINUATION_FLAGS))
     ]
+
+
+def _tool_row_failed(content: Any) -> Optional[bool]:
+    """True/False for a plain-JSON tool result with/without a truthy ``error``; None otherwise."""
+    if not isinstance(content, str) or not content.lstrip().startswith("{"):
+        return None
+    try:
+        parsed = json.loads(content)
+    except ValueError:
+        return None
+    return isinstance(parsed, dict) and bool(parsed.get("error"))
+
+
+def _recovered_tool_names(messages) -> set[str]:
+    """Tools that failed in the latest user turn and then succeeded later in that same turn."""
+    start = next((i + 1 for i in range(len(messages) - 1, -1, -1)
+                  if isinstance(messages[i], dict) and messages[i].get("role") == "user"), 0)
+    failed: set[str] = set()
+    recovered: set[str] = set()
+    for msg in messages[start:]:
+        if not isinstance(msg, dict) or msg.get("role") != "tool":
+            continue
+        name = msg.get("tool_name") or msg.get("name") or ""
+        verdict = _tool_row_failed(msg.get("content"))
+        if verdict:
+            failed.add(name)
+        elif verdict is False and name in failed:
+            recovered.add(name)
+    return recovered
+
+
+def _turn_tool_rounds(messages) -> int:
+    """Tool-calling assistant rows since the latest user message."""
+    rounds = 0
+    for msg in reversed(messages):
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") == "user":
+            break
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            rounds += 1
+    return rounds
+
+
+def _slow_turn_review_flags(agent, messages, final_response, interrupted, review_memory: bool,
+                            review_skills: bool, logger: logging.Logger) -> tuple[bool, bool]:
+    """``(review_memory, review_skills)`` after the slow-turn rule.
+
+    A request that took several tool rounds (lookups, a failed call and its retry) never reaches
+    the session-wide nudges when the chat is short, so the next chat redoes the same discovery.
+    Review it directly. Self-limiting: once the review has saved the shortcut, the same request
+    takes fewer rounds and stops triggering. Bounded per session: one review for a slow turn,
+    plus one per tool that failed and then worked."""
+    if (not getattr(agent, "_review_slow_turns", False) or not final_response or interrupted
+            or review_memory or review_skills):
+        return review_memory, review_skills
+    reviewed = getattr(agent, "_recovery_reviewed_tools", None) or set()
+    recovered = _recovered_tool_names(messages) - reviewed
+    rounds = _turn_tool_rounds(messages)
+    slow = (not getattr(agent, "_slow_turn_reviewed", False)
+            and 0 < getattr(agent, "_slow_turn_tool_rounds", 0) <= rounds)
+    if not (recovered or slow):
+        return review_memory, review_skills
+    agent._recovery_reviewed_tools = reviewed | recovered
+    if slow:
+        agent._slow_turn_reviewed = True
+    review_skills = agent._skill_nudge_interval > 0 and "skill_manage" in agent.valid_tool_names
+    review_memory = (agent._memory_nudge_interval > 0 and "memory" in agent.valid_tool_names
+                     and bool(getattr(agent, "_memory_store", None)))
+    if review_skills:
+        agent._iters_since_skill = 0
+    if review_memory:
+        agent._turns_since_memory = 0
+    logger.info("Turn took %d tool rounds (recovered: %s): queueing background review",
+                rounds, ", ".join(sorted(recovered)) or "none")
+    return review_memory, review_skills
 
 
 def _clone_background_review_messages(messages):
@@ -767,6 +844,10 @@ def finalize_turn(
     )
     if _should_review_skills:
         agent._iters_since_skill = 0
+
+    _should_review_memory, _should_review_skills = _slow_turn_review_flags(
+        agent, messages, final_response, interrupted, _should_review_memory, _should_review_skills,
+        logger)
 
     # External memory provider: sync the completed turn + queue next prefetch.
     agent._sync_external_memory_for_turn(

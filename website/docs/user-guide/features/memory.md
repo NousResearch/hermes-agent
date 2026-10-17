@@ -424,6 +424,25 @@ Reasoning settings, the system prompt, the full conversation snapshot, and tool 
 
 To reduce review work without changing the main conversation's effort, adjust `memory.nudge_interval` / `skills.creation_nudge_interval`, disable automatic reviews as described below, or route reviews to a different model. A different-model route uses a digest and does not share the parent's warm prefix; on that route `auxiliary.background_review.reasoning_effort` IS honored (unset = the routed provider's default). A one-time warning is printed when the key is set but the review stays on the main model. These frequency and routing controls do not decouple same-model reasoning.
 
+### Reviewing slow turns (`skills.review_slow_turns`)
+
+The nudge intervals count across a whole session, so a short chat rarely
+reaches them, and the next chat repeats the same discovery work. Hermes
+therefore also reviews a turn that took several tool rounds, or one where a
+tool failed and then worked later in the same turn:
+
+```yaml
+skills:
+  review_slow_turns: true     # false = only the nudge intervals trigger reviews
+  slow_turn_tool_rounds: 4    # tool-calling rounds in one turn that count as slow
+```
+
+This is bounded per session: one review for a slow turn, plus one per tool
+that failed and then worked. It is self-limiting too: once the review has saved
+the shortcut, the same request takes fewer rounds and stops triggering. These
+reviews follow the same switches as the others (`auxiliary.background_review.enabled`,
+cron's `skip_background_review`).
+
 ### Disabling automatic reviews (`enabled`)
 
 The review fork can burn a meaningful share of total tokens on busy hosts.

@@ -1470,24 +1470,24 @@ DEFAULT_CONFIG = {
         # code via terminal() ungated, so it mostly blocks prose with risky keywords. On: a
         # dangerous verdict is a tool error the agent can retry. Hub installs are always scanned.
         "guard_agent_created": False,
-        # Advisory NVIDIA SkillEvaluator Tier 1 scan on `hermes skills install` (alongside the
-        # enforcing built-in guard), only if `skillevaluator` is on PATH (uv tool install
-        # "skillevaluator @ git+https://github.com/NVIDIA/SkillEvaluator.git"). Informational, never
-        # blocking; secrets-class findings shown red. No-op without it.
+        # Advisory NVIDIA SkillEvaluator Tier 1 scan on `hermes skills install` (beside the enforcing
+        # built-in guard) if `skillevaluator` is on PATH (uv tool install "skillevaluator @
+        # git+https://github.com/NVIDIA/SkillEvaluator.git"). Never blocking; secrets findings red.
         "tier1_advisory": True,
-        # Approval gate for skill_manage mutations on BOTH foreground turns and the background
-        # review fork. true = ALWAYS stage (SKILL.md too large for an inline prompt): /skills
-        # pending, /skills diff <id>, /skills approve|reject <id>.
+        # Approval gate for skill_manage mutations on BOTH foreground turns and the background review
+        # fork. true = ALWAYS stage (SKILL.md too large to inline): /skills pending|diff|approve|reject.
         "write_approval": False,
         # Audit ledger: every skill mutation appends to ~/.hermes/skills/.curator_ledger.jsonl with
         # before/after hashes (blobs under ~/.hermes/.curator_backups/blobs/); powers `hermes
-        # curator ledger` / `rollback <entry-id>`. Never a gate — failures can't block.
-        # See #79686.
+        # curator ledger` / `rollback <entry-id>`. Never a gate — failures can't block (#79686).
         "ledger": True,
-        # Size cap for that ledger: once the file grows past this, the next append rewrites it
-        # through the unchanged-file dedup and, if still over, drops the oldest entries (0 = keep
-        # the ledger append-only forever, the previous behaviour).
+        # Ledger size cap: past it, the next append rewrites it through the unchanged-file dedup and,
+        # if still over, drops the oldest entries (0 = append-only forever, the previous behaviour).
         "ledger_max_bytes": 5 * 1024 * 1024,
+        # Also review a turn with >= slow_turn_tool_rounds tool rounds, or a tool that failed and then
+        # worked, before the nudge intervals fire (once per session, plus once per recovered tool).
+        "review_slow_turns": True,
+        "slow_turn_tool_rounds": 4,
     },
 
     # Curator — background maintenance of AGENT-CREATED skills (never hub-installed): marks

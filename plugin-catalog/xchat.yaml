@@ -1,6 +1,6 @@
 name: xchat
 repo: https://github.com/NousResearch/hermes-official-plugins
-sha: 4bb2249d11722eeff23d7c3ef97569dc6f99f569
+sha: 82e9e4b89099d1ca32a4917874e245bce36ac881
 subdir: xchat
 description: 'X Chat gateway platform: run Hermes as a bot in X''s end-to-end encrypted DMs. Messages are
   decrypted and encrypted locally with X''s official Chat XDK, so X only routes ciphertext. Encrypted media,
@@ -10,7 +10,7 @@ tier: official
 category: platform
 requires_hermes: ">=0.21.5"
 version: "0.1.0"
-image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/4bb2249d11722eeff23d7c3ef97569dc6f99f569/assets/xchat.jpg
+image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/82e9e4b89099d1ca32a4917874e245bce36ac881/assets/xchat.jpg
 docs_url: https://github.com/NousResearch/hermes-official-plugins/tree/main/xchat
 platforms: []
 capabilities:

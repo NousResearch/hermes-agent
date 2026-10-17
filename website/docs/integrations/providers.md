@@ -341,6 +341,10 @@ hermes chat --provider gmi --model zai-org/GLM-5.1-FP8
 # Nebius Token Factory
 hermes chat --provider nebius --model deepseek-ai/DeepSeek-V4-Pro
 # Requires: NEBIUS_API_KEY in ~/.hermes/.env
+
+# Lanseq (OpenAI-compatible; base URL defaults to https://api.lanseq.cloud/v1)
+hermes chat --provider lanseq --model qwen3.8-27b-int4
+# Requires: LANSEQ_API_KEY in ~/.hermes/.env
 ```
 
 Fireworks uses its native slash-form catalog IDs, such as `accounts/fireworks/models/kimi-k2p6`. Run `hermes model`, choose **Fireworks AI**, and select from the live catalog or enter another Fireworks model ID. The default endpoint is `https://api.fireworks.ai/inference/v1`; configure a different endpoint through `model.base_url` in `config.yaml`, not `.env`.
@@ -352,7 +356,30 @@ model:
   default: "zai-org/GLM-5.1-FP8"
 ```
 
-Base URLs can be overridden with `NOVITA_BASE_URL`, `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, `MINIMAX_CN_BASE_URL`, `DASHSCOPE_BASE_URL`, `XIAOMI_BASE_URL`, `GMI_BASE_URL`, `META_BASE_URL`, or `TOKENHUB_BASE_URL` environment variables.
+Base URLs can be overridden with `NOVITA_BASE_URL`, `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, `MINIMAX_CN_BASE_URL`, `DASHSCOPE_BASE_URL`, `XIAOMI_BASE_URL`, `GMI_BASE_URL`, `META_BASE_URL`, `TOKENHUB_BASE_URL`, or `LANSEQ_BASE_URL` (Lanseq defaults to `https://api.lanseq.cloud/v1`) environment variables.
+
+### Lanseq
+
+Lanseq is an OpenAI-compatible provider. Set `LANSEQ_API_KEY` in `~/.hermes/.env` and chat:
+
+```bash
+hermes chat --provider lanseq --model qwen3.8-27b-int4
+```
+
+The base URL defaults to `https://api.lanseq.cloud/v1`; point at a different endpoint with the optional `LANSEQ_BASE_URL` environment variable.
+
+Initial model: `qwen3.8-27b-int4`.
+
+If auto-detection reports a context window that doesn't match what your deployment actually serves, pin it with `model_overrides` in `config.yaml` (verified local configuration; `context_window` is the total context window):
+
+```yaml
+model_overrides:
+  lanseq:
+    qwen3.8-27b-int4:
+      context_window: 70000
+```
+
+`model_overrides` is read from config at model-resolution time. A running CLI will not pick up a new or changed context window until the CLI is restarted — the session we verified against only displayed 70K after a full restart.
 
 :::note Meta contributor tier
 `muse-spark-1.2-contributor` and `muse-spark-1.3-contributor` are Meta's contributor tiers — Meta may train on your prompts and completions, so [interactive model selection asks for confirmation](../user-guide/configuring-models.md) before using either. For current pricing and rate limits, see [Meta Model API pricing and rate limits](https://dev.meta.ai/docs/pricing-rate-limits/). Use the standard `muse-spark-1.2` / `muse-spark-1.3` (no training) for confidential work.

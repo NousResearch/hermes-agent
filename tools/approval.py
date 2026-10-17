@@ -29,7 +29,8 @@ from tools.approval_context import (
     get_current_session_key,
 )
 from tools.approval_detection import (
-    _approval_key_aliases, _check_sudo_stdin_guard, detect_dangerous_command, detect_hardline_command,
+    _approval_key_aliases, _check_sudo_stdin_guard, detect_dangerous_command, detect_dangerous_commands,
+    detect_hardline_command,
 )
 from tools.approval_floors import (
     _command_matches_permanent_allowlist, _hardline_block_result, _match_user_deny_rule, _sudo_stdin_block_result,
@@ -399,12 +400,16 @@ def load_permanent(patterns: set):
 
 
 def _persist_choice(session_key: str, choice: str, keys: list[str]) -> None:
-    """Persist a human ``session``/``always`` choice for each pattern key. ``once`` persists nothing."""
-    for key in keys:
+    """Persist a human ``session``/``always`` choice for each pattern key. ``once`` persists nothing.
+
+    One prompt can name several patterns, and ``always`` is a standing grant for the primary one
+    (``keys[0]``) only; the rest are approved for the session. Otherwise answering ``always`` to
+    ``rm -rf build && git push --force`` would also allowlist every later force push."""
+    for index, key in enumerate(keys):
         if choice not in ("session", "always"):
             continue
         approve_session(session_key, key)
-        if choice == "always":
+        if choice == "always" and index == 0:
             approve_permanent(key)
             # Pass only this process's grants, taken against the baseline of the same snapshot. A
             # check that syncs a hand removal before the save runs advances the baseline, so a
@@ -655,6 +660,18 @@ def _unattended_contexts() -> list[_Unattended]:
     return contexts
 
 
+def _dangerous_matches(command: str) -> list:
+    """Every ``(pattern_key, description)`` the command trips. Approvals are keyed per pattern, so
+    each one has to be approved on its own; the first comes from ``detect_dangerous_command``, which
+    stays the single detection seam (a safe command is scanned once; only a flagged one is rescanned
+    for its other matches)."""
+    is_dangerous, pattern_key, description = detect_dangerous_command(command)
+    if not is_dangerous:
+        return []
+    return [(pattern_key, description)] + [
+        match for match in detect_dangerous_commands(command) if match[0] != pattern_key]
+
+
 def _unattended_deny(command: str, ctx: _Unattended) -> dict | None:
     """Deny-mode handling for one unattended context (cron / -q / webhook); None = allow."""
     if ctx.mode() != "deny":
@@ -665,8 +682,9 @@ def _unattended_deny(command: str, ctx: _Unattended) -> dict | None:
             subject, noun="dangerous commands",
             advice="Find an alternative approach that avoids this command.")}
 
-    is_dangerous, pattern_key, description = detect_dangerous_command(command)
-    if is_dangerous and not _is_permanently_approved(pattern_key):
+    unapproved = [m for m in _dangerous_matches(command) if not _is_permanently_approved(m[0])]
+    if unapproved:
+        pattern_key, description = unapproved[0]
         result = block(f"Command flagged as dangerous ({description})")
         if ctx.name == "single_query":
             result.update(pattern_key=pattern_key, description=description)
@@ -1107,9 +1125,11 @@ def check_dangerous_command(command: str, env_type: str,
         return _approved()
     if _command_matches_permanent_allowlist(command):
         return _approved()
-    is_dangerous, pattern_key, description = detect_dangerous_command(command)
-    if not is_dangerous:
+    session_key = get_current_session_key()
+    unapproved = [m for m in _dangerous_matches(command) if not is_approved(session_key, m[0])]
+    if not unapproved:
         return _approved()
+    pattern_key, description = unapproved[0]
     return _run_approval_gate(
         pattern_key=pattern_key, description=description, display_target=command, approval_callback=approval_callback,
         subject=f"Command flagged as dangerous ({description})", noun="dangerous commands",
@@ -1182,13 +1202,13 @@ def check_all_command_guards(command: str, env_type: str,
                 return result
         return _approved()
 
-    is_dangerous, pattern_key, description = detect_dangerous_command(command)
     session_key = get_current_session_key()
-    if not is_dangerous or is_approved(session_key, pattern_key):
+    unapproved = [m for m in _dangerous_matches(command) if not is_approved(session_key, m[0])]
+    if not unapproved:
         return _approved()
     return _human_decision(
-        _COMMAND_GATE, command=command, description=description,
-        pattern_key=pattern_key, pattern_keys=[pattern_key],
+        _COMMAND_GATE, command=command, description="; ".join(desc for _, desc in unapproved),
+        pattern_key=unapproved[0][0], pattern_keys=[key for key, _ in unapproved],
         session_key=session_key, approval_callback=approval_callback,
         is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask, smart=approval_mode == "smart",
     )

@@ -282,3 +282,35 @@ def test_nested_dist_travels_but_root_dist_stays_out(tmp_path):
 
     assert (destination / "plugins/kanban/dashboard/dist/index.js").read_text(encoding="utf-8") == "ENTRY\n"
     assert not (destination / "dist").exists(), "root build output never enters the snapshot"
+
+
+def test_store_entries_stay_out_of_a_doubled_tools_root(tmp_path, monkeypatch):
+    """A container's tools/ is both the package and HERMES_RUNTIME_DIR; the
+    store's immutable binaries must not ride into every generation (#136295)."""
+    core = tmp_path / "core"
+    tools = core / "tools"
+    (tools / "environments").mkdir(parents=True)
+    (tools / "environments" / "__init__.py").write_text("", encoding="utf-8")
+    (tools / "top.py").write_text("TOOL\n", encoding="utf-8")
+    (tools / "chromium-1208").mkdir()
+    (tools / "chromium-1208" / "chrome").write_text("BIN\n", encoding="utf-8")
+    (tools / "node-26.7.0-linux-x64").mkdir()
+    (tools / "facts.json").write_text(json.dumps(
+        {"schema": 1, "packages": {"chromium": {"entry": "chromium-1208", "version": "1208"},
+                                    "node": {"entry": "node-26.7.0-linux-x64", "version": "26.7.0"}}}
+    ), encoding="utf-8")
+    (core / "pyproject.toml").write_text(
+        '[project]\nname="core"\nversion="1"\nrequires-python=">=3.11"\n'
+        '[tool.setuptools.packages.find]\ninclude=["tools"]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(workspace.paths, "store_root", lambda: tools)
+
+    destination = tmp_path / "stage"
+    workspace._copy_core_inputs(core, destination)
+
+    assert (destination / "tools/top.py").read_text(encoding="utf-8") == "TOOL\n"
+    assert (destination / "tools/environments/__init__.py").exists()
+    assert not (destination / "tools/chromium-1208").exists(), "store entry copied into the snapshot"
+    assert not (destination / "tools/node-26.7.0-linux-x64").exists(), "store entry copied into the snapshot"
+    assert not (destination / "tools/facts.json").exists(), "store metadata copied into the snapshot"

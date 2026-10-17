@@ -62,6 +62,36 @@ def members_stamp(plugin_dirs) -> str:
     return h.hexdigest()
 
 
+def _store_managed_names(directory: Path) -> frozenset[str]:
+    """Names PM owns when a package root doubles as the tool store.
+
+    The container layout is one tree: ``/opt/hermes/tools`` is both the
+    ``tools`` package and ``HERMES_RUNTIME_DIR``, so the store's immutable
+    chromium/ffmpeg/node/python entries sit inside the directory the
+    snapshot copies — a full multi-gigabyte copy per dependency
+    generation (#136295). A source checkout's tools/ resolves to no store
+    and copies whole; transient store entries (``.staging-*``,
+    ``.displaced-*``) are already dot-prefixed.
+    """
+    from pm.filesystem import long_root
+
+    if long_root(directory) != long_root(paths.store_root()):
+        return frozenset()
+    import json
+
+    try:
+        facts = json.loads((directory / "facts.json").read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return frozenset()
+    packages = facts.get("packages") if isinstance(facts, dict) else None
+    managed = {"facts.json"}
+    for fact in packages.values() if isinstance(packages, dict) else ():
+        entry = fact.get("entry") if isinstance(fact, dict) else None
+        if isinstance(entry, str):
+            managed.add(entry)
+    return frozenset(managed)
+
+
 def _copy_core_inputs(source: Path, destination: Path) -> None:
     """Build from a writable snapshot, never from signed/read-only source."""
     import fnmatch
@@ -88,16 +118,23 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
     # A root dist/ is build output, but below a package root it is shipped: the managed
     # environment runs from this snapshot and serves bundled plugins' dashboard/dist/.
     nested_excluded = excluded - {"dist"}
-    def ignore(directory, names):
-        return [name for name in names if name in nested_excluded or name.startswith(".")
-                or name.endswith(".egg-info") or (Path(directory) / name).is_symlink()]
+    def ignore(directory, names, managed, root):
+        # Store entries only ride at the top of the doubled root; a nested
+        # file that happens to share a name is ordinary package content.
+        ignored = [name for name in names if name in nested_excluded or name.startswith(".")
+                   or name.endswith(".egg-info") or (Path(directory) / name).is_symlink()]
+        if managed and Path(directory) == root:
+            ignored += [name for name in names if name in managed]
+        return ignored
 
     for entry in source.iterdir():
         if (entry.is_dir() and not entry.is_symlink() and entry.name not in excluded
                 and not entry.name.startswith(".") and entry.resolve() != destination.resolve()
                 and any(fnmatch.fnmatchcase(entry.name, pattern) for pattern in package_roots)):
             target = destination / entry.name
-            shutil.copytree(entry, target, ignore=ignore)
+            managed = _store_managed_names(entry)
+            shutil.copytree(entry, target,
+                            ignore=lambda directory, names: ignore(directory, names, managed, entry))
     for name in files:
         entry = source / name
         if not entry.is_file() or entry.is_symlink():

@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 from agent.auxiliary_client import AuxiliaryExplicitCancellation
+from agent.context_compressor_recovery import recover_after_overflow
 from agent.context_compressor_summary import _accepts_keyword_argument
 from agent.context_engine import automatic_compaction_status_message, sanitize_memory_context
 from agent.conversation_compression_codex import _compress_context_via_codex_app_server
@@ -179,14 +180,14 @@ _COMPRESSOR_ATTEMPT_STATE_FIELDS = (
     "_ineffective_compression_count", "_anti_thrash_recovery_deadline", "_fallback_compression_streak",
     "_verify_compaction_cleared_threshold", "_last_compression_made_progress", "_summary_failure_cooldown_until",
     "_cooldown_persist_failed", "_last_summary_error", "_consecutive_timeout_failures", "_consecutive_truncation_failures",
-    "_last_summary_dropped_count",
+    "_last_summary_dropped_count", "_ineffective_growth_probe_pending",
     "_last_summary_fallback_used", "_last_compress_aborted", "_last_summary_auth_failure",
     "_last_summary_network_failure", "_last_summary_empty_content_failure", "_last_summary_truncated_failure",
     "_last_summary_overload_failure", "_consecutive_overload_aborts", "_last_summary_overload_degraded",
     "_last_aux_model_failure_error", "_last_aux_model_failure_model", "_last_aux_resolved_model",
     "_summary_model_fallen_back", "summary_model",
     "_last_compression_telemetry", "_active_compression_telemetry", "_compression_telemetry_seed",
-    "_proactive_prune_rearm_tokens",
+    "_proactive_prune_rearm_tokens", "_ineffective_growth_tokens", "_ineffective_overflow_probe_used",
 )
 
 _COMPRESSOR_COOLDOWN_STATE_FIELDS = ("_summary_failure_cooldown_until", "_last_summary_error", "_cooldown_persist_failed")
@@ -4065,8 +4066,7 @@ def compress_context(
     callers use the default ``False``. bypass_cooldown: If True, the automatic breaker gates ignore ONLY the
     summary-failure cooldown for this attempt (#100661). Set by the provider-proven overflow recovery path:
     the provider already rejected the request, so deferring until the cooldown lapses wedges the session.
-    Unlike ``force`` it does not clear the cooldown, and the ineffective/structural breakers still apply; a
-    failed attempt records its cooldown normally. defer_context_engine_notification: Delay the existing
+    Structural backoff still applies; overflow earns one ineffective-breaker probe. Failures retain cooldowns. defer_context_engine_notification: Delay the existing
     context-engine hook until a manual host commits its outer history transaction. commit_fence: Optional
     cooperative fence for executor callers that may time out. It prevents a late worker from mutating
     session state after its caller has moved on. verbatim_tail: The exchanges ``/compress here N`` keeps
@@ -4102,8 +4102,8 @@ def compress_context(
             task_id=task_id, force=force,
         )
 
-    # All automatic entrypoints honor compressor cooldown/breaker state; hygiene's
-    # fresh AIAgent loads the persisted streak via bind_session_state() first.
+    recover_after_overflow(agent.context_compressor, trigger=trigger, bypass_cooldown=bypass_cooldown, force=force)
+    # All automatic entrypoints honor the remaining cooldown/breaker state.
     if not force and (block_reason := _automatic_compression_gate_blocks(agent, bypass_cooldown)):
         _emit_blocked_attempt_telemetry(agent, attempt.started_at, approx_tokens, attempt.seed, block_reason)
         return messages, _existing_system_prompt(agent, system_message)

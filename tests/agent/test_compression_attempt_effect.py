@@ -291,6 +291,8 @@ def test_overflow_block_names_the_guard_that_blocked_not_the_bypassed_cooldown(
     compressor._summary_failure_cooldown_until = time.monotonic() + 600
     compressor._structural_no_op_backoff_until = time.monotonic() + 600 if backoff else 0.0
     compressor._ineffective_compression_count = 2 if tripped else 0
+    # This is the exhausted emergency-probe case; the first overflow may recover.
+    compressor._ineffective_overflow_probe_used = True
 
     with patch.object(type(compressor), "_refresh_durable_guards"), \
             caplog.at_level(logging.INFO, logger="agent.conversation_compression"):

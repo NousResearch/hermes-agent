@@ -170,6 +170,28 @@ def _fire_task_hook(event: str, task: Optional[Task], task_id: str, run_id: Opti
     )
 
 
+def _fire_task_hook_by_id(
+    conn: sqlite3.Connection, event: str, task_id: str, *,
+    run_id: Optional[int] = None, **fields: Any,
+) -> None:
+    """``_fire_task_hook`` for callers that hold only an id (e.g. comments).
+
+    Reads ``assignee`` through the caller's connection so observers see the same
+    field the transition hooks carry, then fires the hook directly — building a
+    partial ``Task`` for ``_fire_task_hook`` would need every required dataclass
+    field. ``run_id`` is supplied here (the caller knows which attempt it is);
+    ``fields`` must NOT contain ``assignee``/``board``/``run_id``.
+    """
+    try:
+        row = conn.execute("SELECT assignee FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    except Exception:  # pragma: no cover - defensive  # health: allow BLE001 -- a failed assignee read must not skip the lifecycle hook
+        row = None
+    _fire_kanban_lifecycle_hook(
+        event, task_id, board=get_current_board(),
+        assignee=row[0] if row else None, run_id=run_id, **fields,
+    )
+
+
 def _hook_profile_name() -> str:
     """Active profile for hook payloads; ``"default"`` when it cannot be resolved."""
     from hermes_cli.profiles import get_active_profile_name
@@ -999,6 +1021,61 @@ CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, start
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
+
+-- Remote-worker board RPC.
+--
+-- One row per *mutating* request the owner executed for a remote worker, written
+-- in the SAME transaction as the mutation it describes. A retry that finds its
+-- receipt returns the stored result instead of re-running the operation, which is
+-- what makes a lost reply harmless. Committing the receipt separately from the
+-- mutation (or a "processed" marker before it) would break the property — see
+-- hermes_cli/kanban_rpc.py.
+--
+-- ``request_hash`` covers the canonical validated envelope (version, board, actor
+-- task/run, target, operation, payload) but never a credential, so rotating a
+-- capability does not change a request's identity. A reused request id with a
+-- different hash is refused as request_id_conflict rather than silently served.
+CREATE TABLE IF NOT EXISTS board_rpc_receipts (
+    board_id         TEXT NOT NULL,
+    run_id           INTEGER NOT NULL,
+    request_id       TEXT NOT NULL,
+    actor_task_id    TEXT NOT NULL,
+    target_task_id   TEXT,
+    operation        TEXT NOT NULL,
+    request_hash     BLOB NOT NULL,
+    result_json      TEXT NOT NULL,
+    committed_at     INTEGER NOT NULL,
+    PRIMARY KEY (board_id, run_id, request_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_rpc_receipts_actor ON board_rpc_receipts(actor_task_id, run_id);
+
+-- Per-run capability grants for remote workers.
+--
+-- The owner issues a cryptographically random token when it dispatches a run to a
+-- remote host and persists only its HASH here, so the board never holds a usable
+-- credential. This is authentication; the (task, run, claim_lock) triple is a
+-- concurrency coordinate and does not authenticate anyone.
+--
+-- ``board_uuid`` is a durable board identity, not a filesystem path or slug: a
+-- path is not a stable identity across hosts and a slug can be re-pointed.
+CREATE TABLE IF NOT EXISTS board_run_grants (
+    grant_id         TEXT PRIMARY KEY,
+    board_uuid       TEXT NOT NULL,
+    actor_task_id    TEXT NOT NULL,
+    run_id           INTEGER NOT NULL,
+    token_hash       BLOB NOT NULL,
+    profile          TEXT,
+    worker_host      TEXT,
+    allowed_ops      TEXT NOT NULL,
+    issued_at        INTEGER NOT NULL,
+    expires_at       INTEGER,
+    revoked_at       INTEGER,
+    replay_until     INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_run_grants_run ON board_run_grants(actor_task_id, run_id);
+CREATE INDEX IF NOT EXISTS idx_run_grants_token ON board_run_grants(token_hash);
 """
 
 
@@ -1687,22 +1764,49 @@ def task_graph_context(conn: sqlite3.Connection, task_id: str) -> dict:
 
 # --- Comments & events ---
 
+def insert_comment_txn(conn: sqlite3.Connection, task_id: str, author: str, body: str) -> int:
+    """Write a comment + its ``commented`` event. **Transaction-owned: fires NO observer.**
+
+    The caller owns the transaction, so the lifecycle hook must be fired by the
+    caller *after* its commit. Firing inside an outer transaction is a defect:
+    an observer reading through another connection cannot see the row yet, and a
+    later rollback leaves the external effect already delivered — see the
+    post-commit contract on ``_fire_kanban_lifecycle_hook``.
+
+    Returns the new comment id.
+    """
+    if not body or not body.strip():
+        raise ValueError("comment body is required")
+    if not author or not author.strip():
+        raise ValueError("comment author is required")
+    _require_task(conn, task_id)
+    cur = conn.execute(
+        "INSERT INTO task_comments (task_id, author, body, created_at) "
+        "VALUES (?, ?, ?, ?)",
+        (task_id, author.strip(), body.strip(), int(time.time())),
+    )
+    _append_event(conn, task_id, "commented", {"author": author, "len": len(body)})
+    return int(cur.lastrowid or 0)
+
+
 def add_comment(conn: sqlite3.Connection, task_id: str, author: str, body: str) -> int:
     if not body or not body.strip():
         raise ValueError("comment body is required")
     if not author or not author.strip():
         raise ValueError("comment author is required")
-    now = int(time.time())
     # ``allow_nested=True``: graph builders (kanban_swarm blackboard seeding)
     # compose comment writes under one outer commit.
     with write_txn(conn, allow_nested=True):
-        _require_task(conn, task_id)
-        cur = conn.execute(
-            "INSERT INTO task_comments (task_id, author, body, created_at) "
-            "VALUES (?, ?, ?, ?)", (task_id, author.strip(), body.strip(), now),
-        )
-        _append_event(conn, task_id, "commented", {"author": author, "len": len(body)})
-        return int(cur.lastrowid or 0)
+        comment_id = insert_comment_txn(conn, task_id, author, body)
+    # Lifecycle hook AFTER the txn commits, so observers never see partial state.
+    # Human input on a card is the one signal with no other delivery path: without
+    # this, a reply to a blocked question (kanban_block kind=needs_input) sits
+    # unread until some agent happens to re-read the card.
+    _fire_task_hook_by_id(
+        conn, "kanban_task_commented", task_id,
+        author=author.strip(), body=body.strip(), comment_id=comment_id,
+    )
+    return comment_id
 
 
 def _require_task(conn: sqlite3.Connection, task_id: str) -> None:

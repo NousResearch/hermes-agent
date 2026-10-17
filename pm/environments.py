@@ -235,7 +235,8 @@ def store_root(project_root: Path, *, honor_runtime_override: bool = True) -> Pa
             except (OSError, ValueError):
                 return _unstamped_store(root)
             value = data.get("runtimeDir") if isinstance(data, dict) else None
-            return Path(value).resolve() if value else _unstamped_store(root)
+            # Relative to the stamp's directory (write_install_stamp.py), never the caller's cwd.
+            return (stamp.parent / value).resolve() if value else _unstamped_store(root)
     return get_default_hermes_root() / "tools"
 
 

@@ -1,0 +1,91 @@
+{
+  "version": "slice-1",
+  "issue": "chipoto69/latens#2",
+  "canonical_host_policy": "host-agnostic-relative-paths-until-founder-approval",
+  "terms": [
+    {
+      "term": "LATENS",
+      "slug": "latens",
+      "canonical_path": "/lexicon/latens",
+      "concept_route": "/latens",
+      "definition": "The parent public corpus/site spine that holds reviewed editions, artifacts, lexicon entries, and provenance packets."
+    },
+    {
+      "term": "FERROGLYPH",
+      "slug": "ferroglyph",
+      "canonical_path": "/lexicon/ferroglyph",
+      "concept_route": "/ferroglyph",
+      "definition": "A LATENS concept lane reserved for FERROGLYPH editions and artifacts."
+    },
+    {
+      "term": "OZVENA",
+      "slug": "ozvena",
+      "canonical_path": "/lexicon/ozvena",
+      "concept_route": "/ozvena",
+      "definition": "A LATENS concept lane reserved for OZVENA editions and artifacts."
+    },
+    {
+      "term": "provenance spine",
+      "slug": "provenance-spine",
+      "canonical_path": "/lexicon/provenance-spine",
+      "concept_route": "/provenance/{run_id}",
+      "definition": "The required metadata chain that lets a public artifact be traced to its model, prompt seed, run, sources, approvals, and redaction boundary."
+    },
+    {
+      "term": "emotion signature",
+      "slug": "emotion-signature",
+      "canonical_path": "/lexicon/emotion-signature",
+      "concept_route": "/provenance/{run_id}",
+      "definition": "A reviewed descriptive tag set for the artifact's intended affective profile; it is not a psychological diagnosis or user inference."
+    },
+    {
+      "term": "prompt seed",
+      "slug": "prompt-seed",
+      "canonical_path": "/lexicon/prompt-seed",
+      "concept_route": "/provenance/{run_id}",
+      "definition": "The stable, redacted prompt descriptor used to reproduce or audit the generation without exposing private notes or credentials."
+    },
+    {
+      "term": "run id",
+      "slug": "run-id",
+      "canonical_path": "/lexicon/run-id",
+      "concept_route": "/provenance/{run_id}",
+      "definition": "The durable identifier for one generation or editorial run."
+    },
+    {
+      "term": "edition id",
+      "slug": "edition-id",
+      "canonical_path": "/lexicon/edition-id",
+      "concept_route": "/editions/{edition_id}",
+      "definition": "The durable identifier for an approved release grouping one or more public artifacts."
+    },
+    {
+      "term": "artifact id",
+      "slug": "artifact-id",
+      "canonical_path": "/lexicon/artifact-id",
+      "concept_route": "/artifacts/{artifact_id}",
+      "definition": "The durable identifier for one public artifact within an edition."
+    },
+    {
+      "term": "source refs",
+      "slug": "source-refs",
+      "canonical_path": "/lexicon/source-refs",
+      "concept_route": "/provenance/{run_id}",
+      "definition": "The reviewed references that support public context or claims. Private notes are represented by redacted descriptors only."
+    },
+    {
+      "term": "approval gate",
+      "slug": "approval-gate",
+      "canonical_path": "/lexicon/approval-gate",
+      "concept_route": "/review/{run_id}",
+      "definition": "The documented human review step required before public publication, push, merge, deploy, or production dispatch."
+    },
+    {
+      "term": "public/private split",
+      "slug": "public-private-split",
+      "canonical_path": "/lexicon/public-private-split",
+      "concept_route": "/provenance/{run_id}",
+      "definition": "The rule that public pages may expose only sanitized metadata while private review packets may contain restricted operational context."
+    }
+  ]
+}

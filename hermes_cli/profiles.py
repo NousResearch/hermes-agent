@@ -101,12 +101,19 @@ _PLACEHOLDER_ENV = (
 )
 
 
+# Machine-local tool environments. A venv's pyvenv.cfg and console scripts hardcode
+# absolute paths, and a .uv-cache only makes sense on the host that filled it, so
+# neither survives a move to another profile or machine (#137905).
+_NON_PORTABLE_ENV_DIRS = frozenset({".venv", ".uv-cache"})
+
+
 def _non_exportable_entries(directory: str, contents: list) -> set:
     """Entries under *directory* that must never be copied out of a profile: bytecode caches,
-    ``*.sock``/``*.tmp`` names, and anything that is not a regular file, directory, or symlink.
-    :func:`shutil.copytree` cannot copy special files, so a single live Unix socket without a
-    ``.sock`` name (or a FIFO, or a device node) would abort the whole export or clone with
-    ``[Errno 6] No such device or address``. Symlinks survive — copytree recreates them."""
+    ``*.sock``/``*.tmp`` names, ``.venv``/``.uv-cache`` environment dirs, and anything that is
+    not a regular file, directory, or symlink. :func:`shutil.copytree` cannot copy special
+    files, so a single live Unix socket without a ``.sock`` name (or a FIFO, or a device node)
+    would abort the whole export or clone with ``[Errno 6] No such device or address``.
+    Symlinks survive — copytree recreates them."""
     ignored: set = set()
     for entry in contents:
         if entry == "__pycache__" or entry.endswith((".sock", ".tmp", ".pyc", ".pyo")):
@@ -116,6 +123,9 @@ def _non_exportable_entries(directory: str, contents: list) -> set:
             mode = os.lstat(os.path.join(directory, entry)).st_mode
         except OSError:
             ignored.add(entry)  # vanished mid-walk — copytree would fail on it anyway
+            continue
+        if entry in _NON_PORTABLE_ENV_DIRS and stat.S_ISDIR(mode):
+            ignored.add(entry)  # a same-named symlink stays a link to wherever it points
             continue
         if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode) or stat.S_ISLNK(mode)):
             ignored.add(entry)

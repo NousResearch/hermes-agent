@@ -1,18 +1,22 @@
 """Regression coverage for hermes doctor command-link install layouts."""
 
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import pytest
 
-from hermes_cli import doctor_platform
 import hermes_constants
+from hermes_cli import doctor_platform
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="FHS install layout is Linux-only")
-def test_fhs_checkout_uses_system_link_even_for_non_root(monkeypatch):
+def test_fhs_checkout_uses_system_link_even_for_non_root(monkeypatch, tmp_path):
     monkeypatch.delenv("PREFIX", raising=False)
     monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    monkeypatch.setattr(doctor_platform.os, "geteuid", lambda: 1000, raising=False)
+    legacy = tmp_path / "hermes-agent" / ".git"
+    legacy.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     # The active checkout path, not effective UID or a stale legacy checkout,
     # identifies a system-wide FHS install for all its users.
     location, label = doctor_platform._command_link_location(Path("/usr/local/lib/hermes-agent"))

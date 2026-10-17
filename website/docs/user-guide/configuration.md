@@ -2961,7 +2961,10 @@ delegation:
   max_spawn_depth: 1                        # Delegation tree depth cap (1-3, clamped). 1 = flat (default): parent spawns leaves that cannot delegate. 2 = orchestrator children can spawn leaf grandchildren. 3 = three levels.
   orchestrator_enabled: true                # Global kill switch. When false, role="orchestrator" is ignored and every child is forced to leaf regardless of max_spawn_depth.
   oneshot_max_children: 2                   # Total subagents a one-shot run (hermes chat -q / --oneshot) may spawn; 0 = unlimited. Interactive and gateway sessions are never capped by this.
+  service_tier: inherit                     # Subagent speed: inherit = children run at the parent's /fast tier; normal = children run at standard speed while the parent stays fast.
 ```
+
+**Subagent speed tier (`service_tier`):** With `/fast` on (or `agent.service_tier: fast` / `ultrafast`), children inherit the parent's paid speed tier by default, so a ten-task fan-out pays the Fast premium ten times over. `delegation.service_tier: normal` keeps the parent fast and builds every new child at standard speed: the premium buys a fast orchestrator that keeps up with its workers, and the saved budget can go to more workers. Only the tier Hermes itself pins (`service_tier: priority` / `ultrafast`, Anthropic `speed: fast`) is dropped; a tier you pin yourself through `delegation.request_overrides` is explicit and still wins, and a child on its own `delegation.provider` or `base_url` is unaffected (it never inherited the parent's tier). Running children are not re-tiered; the setting applies to children built after the change. Available in the Desktop app under Settings → Advanced → Delegation as **Subagent Speed**.
 
 **Subagent provider:model override:** By default, subagents inherit the parent agent's provider and model. Set `delegation.provider` and `delegation.model` to route subagents to a different provider:model pair — e.g., use a cheap/fast model for narrowly-scoped subtasks while your primary agent runs an expensive reasoning model.
 

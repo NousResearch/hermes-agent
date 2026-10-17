@@ -84,6 +84,9 @@ type KanbanMessages = {
   createTask: string
   cancel: string
   save: string
+  completeTitle: (n: number) => string
+  completePlaceholder: string
+  complete: string
   estimate: string
   estimateEffort: string
   estimating: string
@@ -310,6 +313,9 @@ export const en: KanbanMessages = {
   createTask: 'Create task',
   cancel: 'Cancel',
   save: 'Save',
+  completeTitle: n => (n === 1 ? 'Complete task' : `Complete ${n} tasks`),
+  completePlaceholder: 'What was done? Saved as the completion summary.',
+  complete: 'Complete',
   estimate: 'Estimate',
   estimateEffort: 'Estimate effort',
   estimating: 'Estimating…',
@@ -538,6 +544,9 @@ const ja: KanbanMessages = {
   createTask: 'タスクを作成',
   cancel: 'キャンセル',
   save: '保存',
+  completeTitle: n => (n === 1 ? 'タスクを完了' : `${n} 件のタスクを完了`),
+  completePlaceholder: '何を行いましたか？完了の要約として保存されます。',
+  complete: '完了',
   estimate: '見積もり',
   estimateEffort: '工数を見積もり',
   estimating: '見積もり中…',
@@ -764,6 +773,9 @@ const zh: KanbanMessages = {
   createTask: '创建任务',
   cancel: '取消',
   save: '保存',
+  completeTitle: n => (n === 1 ? '完成任务' : `完成 ${n} 个任务`),
+  completePlaceholder: '做了什么？将保存为完成摘要。',
+  complete: '完成',
   estimate: '估算',
   estimateEffort: '估算工作量',
   estimating: '估算中…',
@@ -988,6 +1000,9 @@ const zhHant: KanbanMessages = {
   createTask: '建立任務',
   cancel: '取消',
   save: '儲存',
+  completeTitle: n => (n === 1 ? '完成任務' : `完成 ${n} 個任務`),
+  completePlaceholder: '做了什麼？將儲存為完成摘要。',
+  complete: '完成',
   estimate: '估算',
   estimateEffort: '估算工作量',
   estimating: '估算中…',

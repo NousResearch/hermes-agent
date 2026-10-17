@@ -111,6 +111,36 @@ def resolved_max_export_messages() -> int:
     return _configured_transcript_limit("max_export_messages")
 
 
+# Import guards follow the resume/export shape (#81283): the class constants stay the defaults,
+# config widens or disables them. Global, not per-caller — see docs "Import Limits".
+def resolved_import_max_sessions() -> int:
+    return _configured_transcript_limit("import_max_sessions", fallback=SessionDB._IMPORT_MAX_SESSIONS)
+
+
+def resolved_import_max_messages_per_session() -> int:
+    return _configured_transcript_limit(
+        "import_max_messages_per_session", fallback=SessionDB._IMPORT_MAX_MESSAGES_PER_SESSION,
+    )
+
+
+def resolved_import_max_total_messages() -> int:
+    return _configured_transcript_limit(
+        "import_max_total_messages", fallback=SessionDB._IMPORT_MAX_TOTAL_MESSAGES,
+    )
+
+
+def resolved_import_max_session_bytes() -> int:
+    return _configured_transcript_limit(
+        "import_max_session_bytes", fallback=SessionDB._IMPORT_MAX_SESSION_BYTES,
+    )
+
+
+def resolved_import_max_total_bytes() -> int:
+    return _configured_transcript_limit(
+        "import_max_total_bytes", fallback=SessionDB._IMPORT_MAX_TOTAL_BYTES,
+    )
+
+
 class SessionResumeTooLargeError(ValueError):
     def __init__(
         self, message_count: int, limit: int = _MAX_SAFE_MESSAGES, scope: str = "across its lineage",
@@ -503,6 +533,7 @@ class SessionDB(
     # DB, longer than a writer's patience); up to _COMMANDS_PER_PASS per index, stopping on no-progress.
     _FTS_MERGE_EVERY_N_WRITES, _FTS_MERGE_MAX_PAGES_PER_INDEX, _FTS_MERGE_COMMANDS_PER_PASS = 1000, 500, 4
     # Imports cap lower than exports: an import holds one BEGIN IMMEDIATE.
+    # Defaults for sessions.import_max_* (resolved_import_max_*()).
     _IMPORT_MAX_SESSIONS, _IMPORT_MAX_MESSAGES_PER_SESSION, _IMPORT_MAX_TOTAL_MESSAGES = 500, 10_000, 50_000
     _IMPORT_MAX_SESSION_BYTES, _IMPORT_MAX_TOTAL_BYTES = 5 * 1024 * 1024, 25 * 1024 * 1024
     # Accounting workers retire when idle so a bound-method target can't keep an abandoned SessionDB alive.

@@ -647,6 +647,23 @@ def _launcher_python(target: Path) -> Path | None:
         return None
 
 
+def _probe_is_file(path: Path) -> bool:
+    """Existence probe that reads an inaccessible path as missing.
+
+    A launcher's recorded interpreter can sit under a tree whose ACL denies
+    the stat outright, and ``Path.is_file`` then raises instead of answering
+    (#135036). A probe is a question about the launcher's binding, so an
+    unreadable interpreter must read exactly like an absent one: not bound,
+    letting the publish/repair path that already handles a dead pin proceed
+    instead of crashing the launch. Shared with ``pm.environments`` so the
+    semantics cannot drift between the two probe sites.
+    """
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
 def _kept_shared_launcher(name: str, local: Path, store: Path, own: Path | None) -> Path | None:
     """Existing checkout launcher already bound outside this root's store.
 
@@ -674,7 +691,7 @@ def _kept_shared_launcher(name: str, local: Path, store: Path, own: Path | None)
         python = _launcher_python(target)
         if python is None or python == own:
             continue
-        if not python.is_file():
+        if not _probe_is_file(python):
             dead.append(target)
             continue
         try:

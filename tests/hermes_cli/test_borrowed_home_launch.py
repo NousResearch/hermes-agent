@@ -208,3 +208,62 @@ def test_the_owner_still_owes_and_runs_its_tail(tmp_path, monkeypatch, completio
     assert venv_sync.prepare_launch(root, []) == Path(sys.executable)
     assert len(completion_tail) == 1
     assert published == [root]
+
+
+def _write_bound_launcher(local: Path, python: Path) -> None:
+    """A shared launcher whose embedded interpreter is *python*, in the platform's format."""
+    import os
+    import shlex
+
+    local.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        (local / "hermes.cmd").write_text('@echo off\r\n"%s" -I -c "eA==" %%*\r\n' % python,
+                                          encoding="utf-8")
+    else:
+        (local / "hermes").write_text(f"#!/bin/sh\nexec {shlex.join([str(python)])} -I -c 'pass'\n",
+                                      encoding="utf-8")
+
+
+def test_an_acl_denied_interpreter_probe_reads_as_not_bound(tmp_path, monkeypatch):
+    """`_launcher_bound_root` asks the shared launcher which root owns the checkout. A denied
+    stat on the recorded interpreter (a Windows parent-tree ACL, an elevated-only store) must
+    read exactly like a missing one — not bound, degrading to the recorded-state fallback —
+    instead of crashing the launch path (#135036)."""
+    import os
+
+    from pm.environments import _launcher_bound_root
+
+    default = tmp_path / ".hermes"
+    root = _checkout(tmp_path, monkeypatch)
+    _state(default, root)
+    rel = "python.exe" if os.name == "nt" else "bin/python3"
+    owner_python = default / "tools" / "python-owner" / rel
+    owner_python.parent.mkdir(parents=True)
+    owner_python.touch()
+    _write_bound_launcher(root / ".hermes" / "bin", owner_python)
+    _home(monkeypatch, tmp_path / "borrower")
+
+    # Sanity: a readable interpreter under the owner's store binds it.
+    assert _launcher_bound_root(root, [default]) == default
+    assert owning_home_root(root) == default
+
+    real_is_file = Path.is_file
+    denied: list[Path] = []
+
+    def is_file_or_denied(self: Path) -> bool:
+        if denied and self == denied[0]:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", is_file_or_denied)
+    denied.append(owner_python)
+    # Inaccessible reads like missing: the launcher is not bound and the recorded
+    # state answers, rather than the probe failing the whole launch.
+    assert _launcher_bound_root(root, [default]) is None
+    assert owning_home_root(root) == default
+
+    # A genuinely missing interpreter behaves identically.
+    owner_python.unlink()
+    denied.clear()
+    assert _launcher_bound_root(root, [default]) is None
+    assert owning_home_root(root) == default

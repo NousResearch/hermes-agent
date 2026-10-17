@@ -395,9 +395,13 @@ def _collect_skill_candidates(name, local_category_name, all_dirs):
                 _record(found_skill_md.parent, found_skill_md)
         # Legacy flat <name>.md anywhere under the dir. Markdown owned by an ancestor
         # directory skill loads through file_path and must not shadow a real skill.
+        # Artifact dirs (.campaign review reports are named <skill>.md too) are filtered
+        # out for the same reason as support docs: they are not skills and must not
+        # manufacture a phantom candidate or a same-basename collision.
         for found_md in search_dir.rglob(f"{name}.md"):
             if (found_md.name != "SKILL.md" and not _is_skill_support_path(found_md)
-                    and not _is_package_owned_markdown(found_md, search_dir)):
+                    and not _is_package_owned_markdown(found_md, search_dir)
+                    and not any(part in _EXCLUDED_SKILL_DIRS for part in found_md.parts)):
                 _record(None, found_md)
     return candidates
 

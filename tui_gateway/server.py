@@ -95,6 +95,21 @@ from tui_gateway.render import make_stream_renderer, render_diff, render_message
 
 _sessions: dict[str, dict] = {}
 _methods: dict[str, callable] = {}
+
+
+def in_memory_draft_session_keys() -> set:
+    """Durable session keys of live sessions whose DB row does not exist yet (lazy drafts).
+
+    The REST layer uses this to answer 200-empty for a draft's transcript reads instead of 404:
+    the renderer fetches /messages immediately after ``session.create`` while the row is still
+    created lazily on the first prompt, and the spurious 404 fail-latches the transcript bind
+    (see tui_gateway/methods_session.py ``session.create`` — the same reason seeded branch
+    children persist their row up front). Records carry ``_db_row_pending`` from creation and
+    drop it at the single persist chokepoint (``_ensure_session_db_row``) or the seeded-row
+    paths."""
+    with _sessions_lock:
+        return {rec["session_key"] for rec in _sessions.values()
+                if rec.get("session_key") and rec.get("_db_row_pending")}
 _db = None
 _db_error: str | None = None
 _stdout_lock = threading.Lock()
@@ -2160,6 +2175,7 @@ from . import (
     methods_complete as _methods_complete, methods_config as _methods_config,
     methods_config_set as _methods_config_set, methods_images as _methods_images,
     methods_profiles as _methods_profiles, methods_prompt as _methods_prompt, methods_session as _methods_session,
+    methods_session_seed as _methods_session_seed,
     methods_tools as _methods_tools, methods_tools_plugin_servers as _methods_tools_plugin_servers,
     methods_projects as _methods_projects, methods_session_foreign as _methods_session_foreign,
     methods_session_control as _methods_session_control, methods_subagents as _methods_subagents,
@@ -2175,7 +2191,7 @@ for _m in (
     _session_compression, _change_watcher, _tool_progress, _session_notifications,
     _prompt_attachments, _session_history, _agent_callbacks, _session_auto_continue, _plugin_inject, _rpc_dispatch,
     _methods_complete_helpers, _methods_slash, _methods_voice, _methods_browser,
-    _methods_browser_control, _methods_session, _methods_prompt, _methods_config,
+    _methods_browser_control, _methods_session, _methods_session_seed, _methods_prompt, _methods_config,
     _methods_config_set, _methods_complete, _methods_tools, _methods_tools_plugin_servers, _methods_profiles, _methods_images,
     _methods_bot_relay, _prompt_turn, _billing_view, _methods_projects, _methods_session_foreign,
     _methods_session_control, _methods_subagents, _methods_vault, _methods_free_tier, _methods_connectors,

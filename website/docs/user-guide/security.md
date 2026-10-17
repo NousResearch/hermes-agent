@@ -665,6 +665,8 @@ terminal:
 
 Paths are relative to `~/.hermes/`. Files are mounted to `/root/.hermes/` inside the container. This list is read by `tools/credential_files.py` (`terminal.credential_files`) — it lives under the `terminal:` block but is loaded by the credential-files module, not the core terminal backend, so it isn't part of the bundled `DEFAULT_CONFIG` snapshot.
 
+Master credential stores are never mounted or synced, whichever list names them: `.env`, `auth.json`, `mcp-tokens/` and the other files the agent is denied from reading are refused for skill-declared files and for `terminal.credential_files` alike, on every backend. Mount a per-service token instead.
+
 ### Borrowed CLI logins (Codex CLI, Claude Code) {#borrowed-cli-logins}
 
 When Hermes has no usable login of its own for `openai-codex` or `anthropic`, it can borrow the Codex CLI's `~/.codex/auth.json` and Claude Code's `~/.claude/.credentials.json` (or Keychain entry) and refresh them on your behalf. Both use single-use, rotating refresh tokens: once two programs hold one token family, whichever refreshes first invalidates the other's copy, which shows up as "I logged in once in the terminal and Hermes keeps failing" (or the reverse). If you run those CLIs alongside Hermes, give Hermes its own login and turn adoption off:

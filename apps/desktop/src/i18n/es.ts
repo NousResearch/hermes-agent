@@ -1,5 +1,6 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
+import { completionSoundCopy } from './completion-sound-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { esAuxTasks } from './es_aux_tasks'
 import { esBoot } from './es_boot'
@@ -973,10 +974,7 @@ export const esOverrides = {
       testSent:
         'Prueba enviada. Si no aparece nada, revisa los permisos de notificaciones del sistema operativo y el modo Concentración o No molestar.',
       testUnsupported: 'Este sistema no admite notificaciones nativas.',
-      completionSoundTitle: 'Sonido de finalización',
-      completionSoundDesc:
-        'Reproduce un sonido cuando termina el turno de un agente. Elige un ajuste predefinido y pruébalo aquí.',
-      completionSoundPreview: 'Vista previa'
+      ...completionSoundCopy.es
     },
     sections: {
       model: 'Modelo',

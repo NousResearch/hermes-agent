@@ -3,12 +3,19 @@ import type { ReactNode } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Slider } from '@/components/ui/slider'
 import { useI18n } from '@/i18n'
 import { COMPLETION_SOUND_VARIANTS, previewCompletionSound } from '@/lib/completion-sound'
 import { triggerHaptic } from '@/lib/haptics'
 import { Bell, Play } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $completionSoundVariantId, setCompletionSoundVariantId } from '@/store/completion-sound'
+import {
+  $completionSoundVolume,
+  MAX_COMPLETION_SOUND_VOLUME,
+  MIN_COMPLETION_SOUND_VOLUME,
+  setCompletionSoundVolume
+} from '@/store/completion-sound-volume'
 import {
   $nativeNotifyPrefs,
   NATIVE_NOTIFICATION_KINDS,
@@ -37,6 +44,7 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
   const { t } = useI18n()
   const prefs = useStore($nativeNotifyPrefs)
   const completionSoundVariantId = useStore($completionSoundVariantId)
+  const completionSoundVolume = useStore($completionSoundVolume)
   const copy = t.settings.notifications
   const showAlerts = subpage === undefined || subpage === 'alerts'
   const showSounds = subpage === undefined || subpage === 'sounds'
@@ -79,51 +87,75 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
       )}
 
       {showSounds && (
-        <ListRow
-          action={
-            <>
-              <Select
-                onValueChange={value => {
-                  const variantId = Number.parseInt(value, 10)
+        <>
+          <ListRow
+            action={
+              <>
+                <Select
+                  onValueChange={value => {
+                    const variantId = Number.parseInt(value, 10)
 
-                  setCompletionSoundVariantId(variantId)
-                  previewCompletionSound(variantId)
-                  triggerHaptic('selection')
-                }}
-                value={String(completionSoundVariantId)}
-              >
-                <SelectTrigger className={cn('min-w-56', CONTROL_TEXT)}>
-                  <SelectValue />
-                </SelectTrigger>
+                    setCompletionSoundVariantId(variantId)
+                    previewCompletionSound(variantId)
+                    triggerHaptic('selection')
+                  }}
+                  value={String(completionSoundVariantId)}
+                >
+                  <SelectTrigger className={cn('min-w-56', CONTROL_TEXT)}>
+                    <SelectValue />
+                  </SelectTrigger>
 
-                <SelectContent>
-                  {COMPLETION_SOUND_VARIANTS.map(variant => (
-                    <SelectItem key={variant.id} value={String(variant.id)}>
-                      {variant.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                  <SelectContent>
+                    {COMPLETION_SOUND_VARIANTS.map(variant => (
+                      <SelectItem key={variant.id} value={String(variant.id)}>
+                        {variant.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
 
-              <Button
-                className="gap-1.5"
-                onClick={() => {
-                  previewCompletionSound()
-                  triggerHaptic('crisp')
-                }}
-                size="sm"
-                type="button"
-                variant="outline"
-              >
-                <Play className="size-3.5" />
-                {copy.completionSoundPreview}
-              </Button>
-            </>
-          }
-          description={copy.completionSoundDesc}
-          id={settingElementId(SETTING_IDS.notifications.completionSound)}
-          title={copy.completionSoundTitle}
-        />
+                <Button
+                  className="gap-1.5"
+                  onClick={() => {
+                    previewCompletionSound()
+                    triggerHaptic('crisp')
+                  }}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  <Play className="size-3.5" />
+                  {copy.completionSoundPreview}
+                </Button>
+              </>
+            }
+            description={copy.completionSoundDesc}
+            id={settingElementId(SETTING_IDS.notifications.completionSound)}
+            title={copy.completionSoundTitle}
+          />
+
+          <ListRow
+            action={
+              <div className="flex items-center gap-3">
+                <Slider
+                  aria-label={copy.completionSoundVolumeTitle}
+                  max={MAX_COMPLETION_SOUND_VOLUME * 100}
+                  min={MIN_COMPLETION_SOUND_VOLUME * 100}
+                  onChange={event => setCompletionSoundVolume(Number.parseInt(event.target.value, 10) / 100)}
+                  onKeyUp={() => previewCompletionSound()}
+                  onPointerUp={() => previewCompletionSound()}
+                  step={5}
+                  value={Math.round(completionSoundVolume * 100)}
+                />
+
+                <span className={cn(CONTROL_TEXT, 'tabular-nums')}>{Math.round(completionSoundVolume * 100)}%</span>
+              </div>
+            }
+            description={copy.completionSoundVolumeDesc}
+            id={settingElementId(SETTING_IDS.notifications.completionSoundVolume)}
+            title={copy.completionSoundVolumeTitle}
+          />
+        </>
       )}
 
       {showAlerts && (

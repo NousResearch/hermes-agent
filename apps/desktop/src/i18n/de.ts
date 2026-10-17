@@ -1,5 +1,6 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
+import { completionSoundCopy } from './completion-sound-copy'
 import { deAuxTasks } from './de_aux_tasks'
 import { deBoot } from './de_boot'
 import { deClarify } from './de_clarify'
@@ -970,10 +971,7 @@ export const deOverrides = {
       testSent:
         'Test gesendet. Wenn nichts erscheint, überprüfen Sie die Benachrichtigungsberechtigungen Ihres Betriebssystems und Fokus/Nicht stören.',
       testUnsupported: 'Dieses System unterstützt keine nativen Benachrichtigungen.',
-      completionSoundTitle: 'Abschluss-Sound',
-      completionSoundDesc:
-        'Wird abgespielt, wenn ein Agent-Turn endet. Wählen Sie eine Vorlage aus und hören Sie sie hier an.',
-      completionSoundPreview: 'Vorschau'
+      ...completionSoundCopy.de
     },
     sections: {
       model: 'Modell',

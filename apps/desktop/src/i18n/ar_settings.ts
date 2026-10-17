@@ -1,4 +1,5 @@
 import { arUpdateChannel } from './ar_update_channel'
+import { completionSoundCopy } from './completion-sound-copy'
 import type { TranslationOverrides } from './define-locale'
 
 export const arSettings = {
@@ -229,9 +230,7 @@ export const arSettings = {
       testBody: 'الإشعارات تعمل.',
       testSent: 'تم إرسال التجربة. إذا لم يظهر شيء، تحقق من أذونات الإشعارات في نظام التشغيل ووضع التركيز/عدم الإزعاج.',
       testUnsupported: 'هذا النظام لا يدعم الإشعارات الأصلية.',
-      completionSoundTitle: 'صوت الاكتمال',
-      completionSoundDesc: 'يُشغّل عند انتهاء دور الوكيل. اختر إعدادا مسبقا وعاينه هنا.',
-      completionSoundPreview: 'معاينة'
+      ...completionSoundCopy.ar
     },
     sections: {
       model: 'النموذج',

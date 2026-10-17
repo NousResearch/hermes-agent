@@ -142,13 +142,53 @@ def _span_occurrences(text: str, span: str) -> int:
     return sum(text.startswith(span, i) for i in range(len(text) - len(span) + 1))
 
 
+def _folded_spans(entry: str, old_text: str) -> list[tuple[int, int]]:
+    """``(start, end)`` in *entry* of each place *old_text* matches only in the
+    ``_normalize_for_match`` form (curly quotes, dashes, re-wrapped whitespace, literal ``\\n``),
+    so patch can splice the span the entry match was made on."""
+    folded, starts, ends = [], [], []
+    i = 0
+    while i < len(entry):
+        if entry.startswith("\\n", i) or entry[i].isspace():
+            j = i + 2 if entry.startswith("\\n", i) else i + 1
+            if folded and folded[-1] == " ":
+                ends[-1] = j
+            else:
+                folded.append(" "), starts.append(i), ends.append(j)
+            i = j
+            continue
+        folded.append(entry[i].translate(_MATCH_FOLD)), starts.append(i), ends.append(i + 1)
+        i += 1
+    hay, needle = "".join(folded), _normalize_for_match(old_text)
+    if not needle:
+        return []
+    spans = []
+    for k in range(len(hay) - len(needle) + 1):
+        if hay.startswith(needle, k):
+            start, end = starts[k], ends[k + len(needle) - 1]
+            # Whitespace kept at the edge of old_text ("tea " -> "coffee ") stays part of the span.
+            if old_text[:1].isspace() and k and hay[k - 1] == " ":
+                start = starts[k - 1]
+            if old_text[-1:].isspace() and k + len(needle) < len(hay) and hay[k + len(needle)] == " ":
+                end = ends[k + len(needle)]
+            spans.append((start, end))
+    return spans
+
+
 def _patch_entry(entry: str, old_text: str, new_text: str) -> tuple[Optional[str], str, str]:
     """``(patched entry, "", "none")``, or ``(None, error, failure class)`` when the span occurs more
     than once in the entry, the edit changes nothing, or the patched entry fails the threat scan.
-    Single and batch patches both go through here, so they share one rule."""
-    if (count := _span_occurrences(entry, old_text)) > 1:
+    Single and batch patches both go through here, so they share one rule. An old_text the entry
+    was matched on only in folded form (``_substring_matches``) is spliced at that span."""
+    count = _span_occurrences(entry, old_text)
+    spans = [] if count else _folded_spans(entry, old_text)
+    if (count := count or len(spans)) > 1:
         return None, _repeated_span_message(old_text, count), "ambiguous"
-    patched = entry.replace(old_text, new_text, 1)
+    if spans:
+        (start, end), = spans
+        patched = entry[:start] + new_text + entry[end:]
+    else:
+        patched = entry.replace(old_text, new_text, 1)
     if patched == entry:
         return None, f"Patch is a no-op: '{old_text}' -> '{new_text}' leaves the entry unchanged.", "invalid_args"
     if scan_error := _scan_memory_content(patched):

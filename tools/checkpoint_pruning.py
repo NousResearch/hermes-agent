@@ -1,11 +1,14 @@
 """Checked history rewrites shared by snapshot limits and store maintenance."""
 from __future__ import annotations
 
+import logging
 from contextlib import contextmanager
 from dataclasses import dataclass
 import os
 from pathlib import Path
 from typing import Callable
+
+logger = logging.getLogger(__name__)
 
 
 class PruneError(RuntimeError):
@@ -79,6 +82,15 @@ class Pruner:
             raise PruneError(f"checkpoint ref has no readable history: {ref}")
         return commits
 
+    def _commits_skipping_unwalkable(self, ref: str) -> list[str] | None:
+        """A ref whose history cannot be walked (e.g. a missing parent object) is skipped by
+        round-based pruning rather than aborting the round for every other project."""
+        try:
+            return self._commits(ref)
+        except PruneError as exc:
+            logger.warning("Skipping unprunable checkpoint ref %s: %s", ref, exc)
+            return None
+
     def _rewrite(self, ref: str, original: list[str], keep: list[str], *, gc: bool) -> None:
         parent = None
         for sha in keep:
@@ -117,8 +129,8 @@ class Pruner:
             return False
         changed = False
         for ref in self._git(["for-each-ref", "--format=%(refname)", self.refs_prefix]).splitlines():
-            commits = self._commits(ref)
-            if len(commits) > 1:
+            commits = self._commits_skipping_unwalkable(ref)
+            if commits is not None and len(commits) > 1:
                 self._rewrite(ref, commits, commits[1:], gc=False)
                 changed = True
         return changed
@@ -137,8 +149,8 @@ class Pruner:
         for _ in range(20):
             changed = False
             for ref in refs:
-                commits = self._commits(ref)
-                if len(commits) <= 1:
+                commits = self._commits_skipping_unwalkable(ref)
+                if commits is None or len(commits) <= 1:
                     continue
                 self._rewrite(ref, commits, commits[1:], gc=True)
                 changed = True

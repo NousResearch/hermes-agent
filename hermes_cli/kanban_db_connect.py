@@ -874,6 +874,7 @@ _LATER_TASK_COLUMNS = (
     # Per-task override for the consecutive-failure circuit breaker; NULL =
     # ``kanban.failure_limit`` config, then ``DEFAULT_FAILURE_LIMIT``.
     ("max_retries", "max_retries INTEGER"),
+    ("max_iterations", "max_iterations INTEGER"),
     ("model_override", "model_override TEXT"),
     ("provider_override", "provider_override TEXT"),
     ("reasoning_effort", "reasoning_effort TEXT"),
@@ -979,6 +980,7 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
                 )
 
     if _table_exists(conn, "task_runs"):
+        _add_column_if_missing(conn, "task_runs", "max_iterations", "max_iterations INTEGER")
         run_cols = _column_names(conn, "task_runs")
         for name, ddl in _TASK_RUN_COLUMNS:
             if name not in run_cols:

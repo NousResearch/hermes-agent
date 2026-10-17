@@ -78,7 +78,10 @@ def test_show_defaults_to_env_task_id(worker_env):
     assert "task" in d
     assert d["task"]["id"] == worker_env
     assert d["task"]["status"] == "running"
-    assert "worker_context" in d
+    # Compact default avoids duplicating the dispatcher context into every
+    # model turn; complete task body and bounded tail stay in the response.
+    assert "worker_context" not in d
+    assert d["history"]["detail"] == "compact"
     assert "runs" in d
 
 

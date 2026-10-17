@@ -196,6 +196,8 @@ _SPECS = [
                   f"first failure (no retries), --max-retries 3 allows two retries. Omit to use "
                   f"the dispatcher's kanban.failure_limit config (default "
                   f"{kb.DEFAULT_FAILURE_LIMIT})."),
+        _arg("--max-iterations", type=int, metavar="N",
+             help="Per-task native tool-loop cap. With --goal, total calls are bounded by this times goal turns. Omit to use the profile/global default."),
         _arg("--model", dest="model_override",
              help="Pin the worker to this model (passed as -m <model>) without "
                   "changing the profile's configured model. Combine with --provider "
@@ -257,6 +259,11 @@ _SPECS = [
              help="Provider the model belongs to (worker is spawned with "
                   "--provider <name>). Cleared together with the model."),
     ], help="Set or clear a task's model/provider override (takes effect on the next dispatch)"),
+    _cmd("set-limits", [
+        _TASK_ID,
+        _arg("--max-retries", metavar="N", help="Positive retry limit, or 'none' to clear."),
+        _arg("--max-iterations", metavar="N", help="Positive native tool-loop limit, or 'none' to clear."),
+    ], help="Set or clear per-task retry and iteration limits (next dispatch)"),
     _cmd("reclaim", [_TASK_ID, _RECLAIM_REASON], help="Release an active worker claim on a running task"),
     _cmd("reassign", [
         _TASK_ID,

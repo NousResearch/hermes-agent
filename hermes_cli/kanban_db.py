@@ -648,6 +648,8 @@ class Task:
     reasoning_effort: Optional[str] = None   # VALID_REASONING_EFFORTS | "none"; NULL = profile's
     # Breaker trip count; None -> ``kanban.failure_limit`` -> DEFAULT_FAILURE_LIMIT.
     max_retries: Optional[int] = None
+    # Per-task native tool-loop cap. None keeps the profile/global default.
+    max_iterations: Optional[int] = None
     # ``/goal``-style loop: a judge re-checks each turn IN THE SAME SESSION until
     # done / budget exhausted (-> kanban_block); ``goal_max_turns`` None -> goals default.
     goal_mode: bool = False
@@ -688,7 +690,7 @@ _TASK_EPOCH_COLUMNS = ("created_at", "started_at", "completed_at", "claim_expire
 _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "current_run_id", "workflow_template_id",
-    "current_step_key", "max_retries", "session_id", "completion_contract",
+    "current_step_key", "max_retries", "max_iterations", "session_id", "completion_contract",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
@@ -710,6 +712,7 @@ class Run:
     claim_expires: Optional[int]
     worker_pid: Optional[int]
     max_runtime_seconds: Optional[int]
+    max_iterations: Optional[int]
     last_heartbeat_at: Optional[int]
     started_at: int
     ended_at: Optional[int]
@@ -724,7 +727,7 @@ class Run:
             **{
                 col: _lossy_text(row[col]) for col in (
                     "task_id", "profile", "step_key", "status", "claim_lock",
-                    "worker_pid", "max_runtime_seconds", "outcome", "summary", "error",
+                    "worker_pid", "max_runtime_seconds", "max_iterations", "outcome", "summary", "error",
                 )
             },
             **{col: _to_epoch(row[col]) for col in ("claim_expires", "last_heartbeat_at", "ended_at")},
@@ -864,6 +867,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- case) falls through to the dispatcher-level ``kanban.failure_limit``
     -- config and then ``DEFAULT_FAILURE_LIMIT``.
     max_retries          INTEGER,
+    -- Per-task native tool-loop cap. NULL leaves the profile/global setting unchanged.
+    max_iterations       INTEGER,
     -- When 1, the dispatched worker runs in a Ralph-style goal loop: an
     -- auxiliary judge re-evaluates the worker's response against the
     -- card title/body after each turn and feeds a continuation prompt
@@ -941,6 +946,8 @@ CREATE TABLE IF NOT EXISTS task_runs (
     -- still be found and reaped; NULL = legacy row, never signalled.
     worker_started_at   INTEGER,
     max_runtime_seconds INTEGER,
+    -- Snapshot of the task's native tool-loop cap for this exact run.
+    max_iterations       INTEGER,
     last_heartbeat_at   INTEGER,
     started_at          INTEGER NOT NULL,
     ended_at            INTEGER,
@@ -1180,7 +1187,8 @@ def create_task(
     branch_name: Optional[str] = None, tenant: Optional[str] = None, priority: int = 0,
     parents: Iterable[str] = (), triage: bool = False, idempotency_key: Optional[str] = None,
     max_runtime_seconds: Optional[int] = None, skills: Optional[Iterable[str]] = None,
-    max_retries: Optional[int] = None, model_override: Optional[str] = None,
+    max_retries: Optional[int] = None, max_iterations: Optional[int] = None,
+    model_override: Optional[str] = None,
     provider_override: Optional[str] = None, reasoning_effort: Optional[str] = None,
     goal_mode: bool = False, goal_max_turns: Optional[int] = None, initial_status: str = "running",
     session_id: Optional[str] = None, board: Optional[str] = None, project_id: Optional[str] = None,
@@ -1212,6 +1220,8 @@ def create_task(
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
         raise ValueError("title is required")
+    max_retries = normalize_task_budget(max_retries, "max_retries")
+    max_iterations = normalize_task_budget(max_iterations, "max_iterations")
     if initial_status not in VALID_INITIAL_STATUSES:
         raise ValueError(f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}")
     # A project-scoped board anchors every new task to its project's repo
@@ -1284,10 +1294,10 @@ def create_task(
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, project_id, tenant, idempotency_key,
                         max_runtime_seconds,
-                        skills, max_retries, model_override, provider_override,
+                        skills, max_retries, max_iterations, model_override, provider_override,
                         reasoning_effort,
                         goal_mode, goal_max_turns, session_id, completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1295,7 +1305,7 @@ def create_task(
                         branch_name, project_id, tenant, idempotency_key,
                         _opt_int(max_runtime_seconds),
                         json.dumps(skills_list) if skills_list is not None else None,
-                        _opt_int(max_retries), model_override, provider_override, reasoning_effort,
+                        _opt_int(max_retries), _opt_int(max_iterations), model_override, provider_override, reasoning_effort,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
                     ),
                 )
@@ -1548,6 +1558,39 @@ def set_reasoning_effort(conn: sqlite3.Connection, task_id: str, effort: Optiona
     )
 
 
+def set_task_limits(
+    conn: sqlite3.Connection, task_id: str, *, max_retries: Optional[int], max_iterations: Optional[int],
+) -> bool:
+    """Set or clear task-scoped retry and native iteration caps together.
+
+    ``None`` clears an override and restores the existing dispatcher/profile
+    behavior. Values are positive before any spawn can observe them.
+    """
+    max_retries = normalize_task_budget(max_retries, "max_retries")
+    max_iterations = normalize_task_budget(max_iterations, "max_iterations")
+    return _set_task_override(
+        conn, task_id,
+        "UPDATE tasks SET max_retries = ?, max_iterations = ? WHERE id = ?",
+        (_opt_int(max_retries), _opt_int(max_iterations)),
+        "limits_set", {"max_retries": _opt_int(max_retries), "max_iterations": _opt_int(max_iterations)},
+        ("max_retries", "max_iterations"), archived_msg="cannot set task limits",
+    )
+
+
+def normalize_task_budget(value: Any, name: str) -> Optional[int]:
+    """Return one positive integer task budget, preserving ``None`` as unset.
+
+    This is intentionally stricter than ``int(value)``: JSON booleans and
+    fractional numbers must fail at every write surface rather than silently
+    turning into a different cap.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"{name} must be a positive integer when set")
+    return value
+
+
 # --- Links ---
 
 def link_tasks(
@@ -1717,7 +1760,9 @@ def _task_rows(conn: sqlite3.Connection, table: str, task_id: str, order: str) -
 
 
 def list_comments(conn: sqlite3.Connection, task_id: str) -> list[Comment]:
-    return [Comment.from_row(r) for r in _task_rows(conn, "task_comments", task_id, "created_at ASC")]
+    # Stable ID tiebreaker makes compact-read cursors lossless for comments
+    # written in the same second.
+    return [Comment.from_row(r) for r in _task_rows(conn, "task_comments", task_id, "created_at ASC, id ASC")]
 
 
 def list_comments_after(
@@ -1730,6 +1775,47 @@ def list_comments_after(
         "WHERE task_id = ? AND id > ? ORDER BY id ASC", (task_id, int(after_id)),
     ).fetchall()
     return [Comment.from_row(r) for r in rows]
+
+
+_TASK_HISTORY_SPECS = {
+    "comments": ("task_comments", Comment.from_row),
+    "runs": ("task_runs", Run.from_row),
+    "events": ("task_events", Event.from_row),
+}
+
+
+def list_task_history_page(
+    conn: sqlite3.Connection, task_id: str, *, kind: str, before_id: Optional[int] = None,
+    limit: Optional[int] = None,
+) -> tuple[list[Any], dict[str, Optional[int] | int]]:
+    """Read one structural-ID page without materializing the full task history.
+
+    New rows always receive larger IDs. A client paging with ``before_id``
+    therefore sees each older record exactly once; a later fresh compact read
+    exposes any intervening new correction at the tail.
+    """
+    try:
+        table, factory = _TASK_HISTORY_SPECS[kind]
+    except KeyError as exc:
+        raise ValueError(f"unknown task history kind {kind!r}") from exc
+    if before_id is not None and (isinstance(before_id, bool) or not isinstance(before_id, int) or before_id < 1):
+        raise ValueError("before_id must be a positive integer")
+    if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or limit < 1):
+        raise ValueError("limit must be a positive integer")
+    where = "task_id = ?" + (" AND id < ?" if before_id is not None else "")
+    params: list[Any] = [task_id] + ([before_id] if before_id is not None else [])
+    count = int(conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {where}", params).fetchone()[0])
+    query = f"SELECT * FROM {table} WHERE {where} ORDER BY id DESC"
+    if limit is not None:
+        query += " LIMIT ?"
+        params.append(limit)
+    rows = conn.execute(query, params).fetchall()
+    items = [factory(row) for row in reversed(rows)]
+    return items, {
+        "returned": len(items), "total": count,
+        "next_before_id": items[0].id if len(items) < count else None,
+        "latest_id": items[-1].id if items else None,
+    }
 
 
 # --- Attachments ---
@@ -1876,6 +1962,7 @@ def _append_event(
 def _end_run(
     conn: sqlite3.Connection, task_id: str, *, outcome: str, summary: Optional[str] = None,
     error: Optional[str] = None, metadata: Optional[dict] = None, status: Optional[str] = None,
+    expected_run_id: Optional[int] = None,
 ) -> Optional[int]:
     """Close the active run (``status`` defaults to ``outcome``) and clear
     ``current_run_id``; None when no run was active (never-claimed task).
@@ -1886,9 +1973,9 @@ def _end_run(
     to end a worker that survived its own terminal transition."""
     now = int(time.time())
     run_id = _current_run_id(conn, task_id)
-    if run_id is None:
+    if run_id is None or (expected_run_id is not None and run_id != expected_run_id):
         return None
-    conn.execute(
+    cur = conn.execute(
         """
         UPDATE task_runs
            SET status        = ?,
@@ -1903,7 +1990,9 @@ def _end_run(
         """,
         (status or outcome, outcome, summary, error, _json_or_null(metadata), now, run_id),
     )
-    conn.execute("UPDATE tasks SET current_run_id = NULL WHERE id = ?", (task_id,))
+    if cur.rowcount != 1:
+        return None
+    conn.execute("UPDATE tasks SET current_run_id = NULL WHERE id = ? AND current_run_id = ?", (task_id, run_id))
     return run_id
 
 
@@ -2162,20 +2251,21 @@ def _claim_and_open_run(
     if cur.rowcount != 1:
         return None
     trow = conn.execute(
-        "SELECT assignee, max_runtime_seconds, current_step_key "
+        "SELECT assignee, max_runtime_seconds, max_iterations, current_step_key "
         "FROM tasks WHERE id = ?", (task_id,),
     ).fetchone()
     run_cur = conn.execute(
         """
         INSERT INTO task_runs (
             task_id, profile, step_key, status,
-            claim_lock, claim_expires, max_runtime_seconds,
+            claim_lock, claim_expires, max_runtime_seconds, max_iterations,
             started_at
-        ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)
         """,
         (
             task_id, trow["assignee"] if trow else None, trow["current_step_key"] if trow else None,
-            lock, expires, trow["max_runtime_seconds"] if trow else None, now,
+            lock, expires, trow["max_runtime_seconds"] if trow else None,
+            trow["max_iterations"] if trow else None, now,
         ),
     )
     run_id = run_cur.lastrowid
@@ -2853,8 +2943,8 @@ def _cleaned_artifact_paths(metadata: Any) -> list[str]:
 def _completed_event_payload(
     result: Optional[str], event_summary: Optional[str], verified_cards: list[str], metadata: Any,
 ) -> dict:
-    """``completed`` event payload: first summary line (400 chars) so gateway
-    notifiers / dashboard WS render without a second round-trip; verified
+    """``completed`` event payload: lossless summary so adapters can chunk at
+    their native delivery limit; verified
     cards; and ``metadata["artifacts"]`` promoted so the notifier can upload
     them as native attachments without fetching the run row."""
     # Mirror CLI's _show_voice_status: include STT/TTS provider availability so the user can tell at a
@@ -2864,7 +2954,7 @@ def _completed_event_payload(
     # ignored the config (#18994).
     payload: dict = {
         "result_len": len(result) if result else 0,
-        "summary": _first_line(event_summary, 400) or None,
+        "summary": event_summary or None,
     }
     if verified_cards:
         payload["verified_cards"] = verified_cards
@@ -3140,6 +3230,7 @@ def edit_task(
 def block_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
     kind: Optional[str] = None, expected_run_id: Optional[int] = None,
+    input_request: Optional[dict[str, str]] = None,
 ) -> bool:
     """``running``/``ready`` -> ``blocked`` (or ``todo`` / ``triage``, see
     :func:`_route_block`). ``kind='dependency'`` with no incomplete parent is
@@ -3157,6 +3248,17 @@ def block_task(
     """
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None")
+    # Explicit typed requests are deliverable; legacy reasons stay board notes.
+    if input_request is not None:
+        fields = {"question", "facts", "recommendation"}
+        if kind != "needs_input" or not isinstance(input_request, dict):
+            raise ValueError("input_request is only valid for needs_input blocks")
+        if set(input_request) != fields or any(
+            not isinstance(value, str) or not value.strip()
+            for value in input_request.values()
+        ):
+            raise ValueError("input_request requires exactly question, facts, and recommendation as non-empty strings")
+        input_request = redact_review_value(input_request)
     with write_txn(conn):
         cur_row = conn.execute(
             "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?", (task_id,),
@@ -3202,6 +3304,8 @@ def block_task(
         if rekind_reason:
             payload["requested_kind"] = requested_kind
             payload["rekind_reason"] = rekind_reason
+        if input_request is not None:
+            payload["input_request"] = input_request
         sql = f"""
                 UPDATE tasks
                    SET status        = '{new_status}',

@@ -394,6 +394,26 @@ def _canonical_tool_name(function_name: str) -> str:
     return _lta.get(function_name, function_name)
 
 
+def _unwrap_authorized_message_agent(agent, function_args: dict) -> tuple[str, dict, None] | None:
+    """Unwrap a lone ``tool_call`` of injected ``message_agent`` when the session may send it.
+
+    Returns ``(name, args, None)`` or None. Never raises.
+    """
+    try:
+        from tools.bot_mode_dm import MESSAGE_AGENT_TOOL_NAME, message_agent_authorized
+        from tools.tool_search_validation import normalize_tool_call_entries
+
+        entries, err = normalize_tool_call_entries(function_args or {})
+        if err or len(entries) != 1 or entries[0].get("name") != MESSAGE_AGENT_TOOL_NAME:
+            return None
+        if not message_agent_authorized(agent):
+            return None
+        args = entries[0].get("arguments")
+        return MESSAGE_AGENT_TOOL_NAME, args if isinstance(args, dict) else {}, None
+    except Exception:
+        return None
+
+
 def _unwrap_tool_search_call(
     agent, function_name: str, function_args: dict, *, flatten_probe: bool = False
 ) -> tuple[str, dict, Optional[str]]:
@@ -412,6 +432,13 @@ def _unwrap_tool_search_call(
         from tools import tool_search as _ts
         if function_name != _ts.TOOL_CALL_NAME:
             return function_name, function_args, None
+        # message_agent is injected into Bot Chat, never registered, so the
+        # deferral check rejects a bridge call with "not a known tool name"
+        # and the model retries the same bridge forever. An authorized session
+        # dispatches the inline tool instead.
+        injected = _unwrap_authorized_message_agent(agent, function_args)
+        if injected is not None:
+            return injected
         underlying, underlying_args, err = _ts.resolve_underlying_call(function_args)
         if err or not underlying:
             return function_name, function_args, None

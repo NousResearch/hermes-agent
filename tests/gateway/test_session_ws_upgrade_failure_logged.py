@@ -107,3 +107,31 @@ def test_a_failed_session_upgrade_is_logged_with_its_cause(tmp_path):
     # One line per refused dial (the cron turn's and the worker's), each naming the cause.
     assert len(refused) == 2, log
     assert all("NameError: name 'Path' is not defined" in line for line in refused), refused
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('refused_first', [False, True])
+async def test_the_log_line_names_the_status_the_dialer_got(caplog, refused_first):
+    """Uvicorn answers 500 only when the handler raised before sending anything; a handler that had
+    already closed the upgrade got its own refusal (403) out, so the line must not claim a 500."""
+    from gateway.run_api import GatewayRuntimeAPI
+
+    api = GatewayRuntimeAPI(None, None, None)
+
+    async def fail(scope, receive, send):
+        if refused_first:
+            await send({'type': 'websocket.close', 'code': 1008})
+        raise RuntimeError('late failure')
+
+    api._serve = fail
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {'type': 'websocket', 'path': '/api/ws', 'client': ('127.0.0.1', 5)}
+    with caplog.at_level('ERROR', logger='gateway.run_api'), pytest.raises(RuntimeError, match='late failure'):
+        await api(scope, None, send)
+    [line] = [record.getMessage() for record in caplog.records if 'session WebSocket upgrade' in record.getMessage()]
+    assert 'RuntimeError: late failure' in line
+    assert ('HTTP 500' in line) is not refused_first, line

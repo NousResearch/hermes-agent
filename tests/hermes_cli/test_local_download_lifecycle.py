@@ -31,7 +31,7 @@ def _saved_plan(lm):
 
 
 @pytest.mark.parametrize("age_days,force_gc,fresh_checkpoint,retained", [
-    (2, False, False, True), (8, False, False, False), (0, True, False, False), (8, False, True, True),
+    (2, False, False, True), (8, False, False, False), (0, True, False, True), (8, False, True, True),
 ])
 def test_recipe_retention_matches_partial_gc(client, monkeypatch, age_days, force_gc, fresh_checkpoint, retained):
     from hermes_cli.web_routers import local_models as lm
@@ -47,6 +47,7 @@ def test_recipe_retention_matches_partial_gc(client, monkeypatch, age_days, forc
     collect_partials(part.parent, **({"grace_seconds": 0} if force_gc else {}))
     monkeypatch.setattr(lm, "_JOBS", {})
     monkeypatch.setattr(lm, "_RUNNING", {})
+    lm._restore_download_plans()
     restored = client.get("/api/local-models/jobs").json()["jobs"]
     assert recipe.exists() is retained
     assert bool(restored) is retained
@@ -81,4 +82,33 @@ def test_discard_removes_a_parked_plan_and_releases_quickstart_ownership(client,
     assert client.get("/api/local-models/jobs").json()["jobs"] == []
     assert not (lm.download_plans._root() / f"{key}.json").exists()
     assert first.read_bytes() == b"completed model"
+    assert not part.exists() and not side.exists()
+
+
+def test_discard_does_not_delete_a_partial_owned_by_another_process(client):
+    from hermes_cli.web_routers import local_models as lm
+    from pm.download_state import partial_lock
+
+    job, _key, first, part, side = _saved_plan(lm)
+    lm._spawn_job(job, "parked-test", lambda: None, resumable=True, start_paused=True)
+    with partial_lock(part.parent, part.stem):
+        result = client.post("/api/local-models/download/discard", json={"job_id": job["job_id"]})
+        assert result.json()["discarded"]
+        assert part.read_bytes() == b"part" and side.is_file()
+    assert first.read_bytes() == b"completed model"
+
+
+def test_discard_preserves_partial_referenced_by_another_saved_plan(client):
+    from hermes_cli.web_routers import local_models as lm
+
+    job, _key, first, part, side = _saved_plan(lm)
+    shared_url = "https://example.invalid/pending.gguf"
+    other = [(shared_url, first.parent / "another.gguf", 8)]
+    other_key = lm.download_plans.save_plan({"target": "another model"}, other)
+    lm._spawn_job(job, "parked-test", lambda: None, resumable=True, start_paused=True)
+    result = client.post("/api/local-models/download/discard", json={"job_id": job["job_id"]})
+    assert result.json()["discarded"]
     assert part.read_bytes() == b"part" and side.is_file()
+    assert lm.download_plans.has_plan(other_key)
+    assert lm.download_plans.discard_plan(other_key)
+    assert not part.exists() and not side.exists()

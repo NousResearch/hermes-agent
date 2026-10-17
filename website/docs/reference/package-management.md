@@ -132,11 +132,13 @@ hash, an interrupted transfer restarts instead of mixing different versions.
 The small `.locks/` files remain after completion so waiting processes use
 the same lock.
 
-Ranged transfers checkpoint flushed data during a long request, syncing the
-partial before atomically saving its coverage. Successful durable progress
+Ranged transfers checkpoint new progress every five seconds during a long
+request and at the end of each attempt. The partial is synced before its
+coverage is saved atomically. Successful durable progress
 renews the transfer's retry budget; four attempts without further progress
 still stop a sustained outage. Metadata requests retain their existing retry
-limit. Retry backoff remains interruptible by Pause.
+limit and 30-second delay cap, as do non-resumable transfers. Retry backoff
+remains interruptible by Pause.
 Resumable transfers honor `Retry-After` waits up to five minutes; a longer
 server-requested wait stops automatic recovery and leaves the job resumable.
 
@@ -144,12 +146,19 @@ An interrupted local-model job keeps its Resume action. Its saved download
 plan can also be rediscovered after restarting the backend, including split
 weights and companion assets. Resume checks the remote identity again and
 reuses completed files and valid coverage, never the preallocated file length.
-Partial-cache garbage collection gives inactive downloads seven days to resume.
-Saved plans expire on the same schedule, measured from the latest checkpoint.
+Saved model plans and their partial files stay eligible for resume for seven
+inactive days, measured from the latest plan or checkpoint activity. Other PM
+partials keep the existing six-hour retention. These files occupy disk space
+until `pm gc` removes them; seven days is not a scheduled deletion time.
 A running process holds the plan's ownership lock, so another process cannot
 restore it as an abandoned download. Paused model downloads offer **Discard**
-beside **Resume**. Discard removes the pending plan and job. Completed files
-remain, and shared partial files follow normal cache cleanup.
+beside **Resume**, including setup interrupted during engine installation.
+Discard removes the pending plan and job and deletes partial files it can lock.
+Completed files and partials used by another transfer or saved plan remain
+untouched.
+Plans are restored at backend startup and reconciled once a minute. Job status
+reads do not scan or change files. Desktop recovery messages use the selected
+language.
 Starting setup for a paused model download adopts its saved plan and retains
 the server-start and default-model steps.
 ETags remain representation validators, not expected SHA-256 hashes; the model
@@ -587,9 +596,14 @@ launchers, and invokes native packaging. Maintainers can read
 ## Network retries
 
 PM retries transient HTTP failures during tool downloads, artifact hashing and
-version lookups. Each probe or transfer gets at most four attempts. Backoff
-waits are 1, 2 and 4 seconds. A `Retry-After` header can extend a wait, up to
-30 seconds. Each retry reports its cause, delay and next attempt in the log.
+version lookups. Probes and non-resumable transfers get at most four attempts.
+Their backoff waits are 1, 2 and 4 seconds. A `Retry-After` header can extend
+these waits up to 30 seconds. Resumable transfers renew their retry budget
+when they save new progress; four failures without new progress stop recovery.
+They honor `Retry-After` up to five minutes and pause for longer requested waits.
+Each retry logs its cause, delay and consecutive failures without progress.
+An unresolved host leaves a local-model job paused with manual Resume available.
+This does not add automatic retries for permanent name-resolution failures.
 
 Retryable HTTP statuses are 408, 429, 500, 502, 503 and 504. Connection resets,
 timeouts, temporary DNS failures and interrupted response bodies also retry.

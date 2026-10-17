@@ -327,6 +327,8 @@ def test_truncated_download_retains_resume_without_publishing(client, monkeypatc
 
     from hermes_cli.web_routers import local_models as lm
     from hermes_cli.local_runtime.bootstrap import models_dir
+    real_wait = lm.Download._wait_retry
+    monkeypatch.setattr(lm.Download, "_wait_retry", lambda self, _: real_wait(self, 0))
     requests = []
     class Truncated(_FakeRangeOpener):
         def open(self, req, timeout=None):

@@ -48,7 +48,6 @@ from pm.network import edge_block, is_transient, retry_network
 _UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) hermes-pm/1.0", "Accept-Encoding": "identity"}
 _LOOPBACK = ("http://127.0.0.1:", "http://localhost:", "http://[::1]:")
 _CHUNK = 1 << 20  # read/write block, also the minimum range size
-_CHECKPOINT_BYTES = 8 << 20
 _CHECKPOINT_SECONDS = 5.0
 
 
@@ -133,10 +132,12 @@ class DownloadTransportError(DownloadError):
     def __init__(self, url: str, cause: Exception):
         self.url = url
         self.status = cause.code if isinstance(cause, urllib.error.HTTPError) else None
-        self.recoverable = is_transient(cause)
         # A host that does not resolve is not worth a retry, but the pinned
         # mirror is a different host and the hash still guards the bytes.
         unresolved = isinstance(getattr(cause, "reason", cause), socket.gaierror)
+        # Resolver errors can mean an offline host on macOS. Keep manual
+        # recovery available without extending the automatic retry policy.
+        self.recoverable = is_transient(cause) or unresolved
         self.fallback_allowed = (
             self.status in (401, 403, 404, 410) or unresolved or is_transient(cause)
         )
@@ -396,7 +397,7 @@ class Download:
             configured_connections = self.connections
             try:
                 size = retry_network(fetch, wait=self._wait_retry,
-                                     progress=lambda: self._durable_done if self.resume and resumable else 0)
+                                     progress=(lambda: self._durable_done) if self.resume and resumable else None)
             except (OSError, http.client.HTTPException) as exc:
                 if isinstance(exc, urllib.error.URLError) or is_transient(exc):
                     raise DownloadTransportError(source.url, exc) from exc
@@ -420,7 +421,7 @@ class Download:
             self._state(phase, detail)
 
     def _wait_retry(self, delay: float) -> None:
-        self._report_state("retrying", f"Connection interrupted. Retrying in {delay:g}s; saved progress is retained")
+        self._report_state("retrying", f"Connection interrupted. Retrying in {delay:g}s")
         if self._paused.wait(delay):
             raise DownloadPaused("download paused during retry backoff")
         self._report_state("downloading", "Continuing the download from saved progress")
@@ -443,7 +444,7 @@ class Download:
                     raise DownloadError(f"unexpected download probe status: {response.status}")
                 return _Remote(int(response.headers.get("Content-Length") or 0), False, etag)
         try:
-            return retry_network(request, wait=self._wait_retry, progress=lambda: 0)
+            return retry_network(request, wait=self._wait_retry)
         except (OSError, http.client.HTTPException) as exc:
             raise DownloadTransportError(url, exc) from exc
         except DownloadError:
@@ -452,13 +453,15 @@ class Download:
             return _Remote(0, False)
 
     def _key(self, url: str) -> str:
-        return hashlib.sha256(url.encode("utf-8")).hexdigest()
+        from pm.download_state import partial_key
+
+        return partial_key(url)
 
     def _load_sidecar(self, side: Path, part: Path, remote: _Remote, sha256: str) -> _Ranges:
         if not self.resume or not (sha256 or remote.etag):
             return []
         try:
-            data = json.loads(side.read_text(encoding="utf-8-sig"))
+            data = json.loads(side.read_bytes())
             if (data["total"], data["etag"], data["sha256"]) != (remote.total, remote.etag, sha256):
                 return []
             size = part.stat().st_size
@@ -478,6 +481,30 @@ class Download:
         key = self._key(source.url)
         return self._load_sidecar(self.partials_dir / f"{key}.ranges",
                                   self.partials_dir / f"{key}.part", remote, source.sha256)
+
+    def retained_progress(self, estimates: Sequence[int] = ()) -> tuple[int, int, dict[str, _Ranges]]:
+        """Read local coverage for display; run() rechecks remote identity before reuse."""
+        ranges = {}
+        total = 0
+        for index, source in enumerate(self.sources):
+            covered = []
+            size = estimates[index] if index < len(estimates) else 0
+            if source.dest.is_file():
+                size = source.dest.stat().st_size
+                covered = [(0, size)]
+            else:
+                side = self.partials_dir / f"{self._key(source.url)}.ranges"
+                try:
+                    record = json.loads(side.read_bytes())
+                    if type(record["total"]) is int and record["total"] > 0:
+                        size = record["total"]
+                        covered = self._partial_ranges(source, _Remote(size, True, record["etag"]))
+                except (OSError, ValueError, KeyError, TypeError):
+                    pass  # Preallocation is not evidence of reusable coverage.
+            ranges[str(source.dest)] = covered
+            total += size
+        done = sum(end - start for rows in ranges.values() for start, end in rows)
+        return done, total, ranges
 
     @staticmethod
     def _write_sidecar(side: Path, part: Path, covered: _Ranges, remote: _Remote, sha256: str) -> None:
@@ -572,8 +599,7 @@ class Download:
         covered = list(covered)
         reported = list(covered)
         checkpointed = list(covered)
-        saved_bytes = sum(end - start for start, end in covered)
-        saved_at = time.monotonic()
+        next_checkpoint = time.monotonic() + _CHECKPOINT_SECONDS
 
         def record(start: int, position: int) -> None:
             with lock:
@@ -600,22 +626,23 @@ class Download:
             observer_failed = False
             finished = not ranges
             while not finished:
-                updated.wait(_CHECKPOINT_SECONDS)
+                updated.wait(max(0.0, next_checkpoint - time.monotonic()))
                 with lock:
                     snapshot = list(covered)
                     finished = pending == 0
                     updated.clear()
                 now = time.monotonic()
                 written = sum(end - start for start, end in snapshot)
-                if snapshot != checkpointed and (written - saved_bytes >= _CHECKPOINT_BYTES
-                                                  or now - saved_at >= _CHECKPOINT_SECONDS):
-                    try:
-                        self._write_sidecar(part.with_suffix(".ranges"), part, snapshot, remote, source.sha256)
-                    except BaseException:
-                        stop.set()
-                        raise
-                    self._durable_done = written
-                    checkpointed, saved_bytes, saved_at = snapshot, written, now
+                if now >= next_checkpoint:
+                    if snapshot != checkpointed:
+                        try:
+                            self._write_sidecar(part.with_suffix(".ranges"), part, snapshot, remote, source.sha256)
+                        except BaseException:
+                            stop.set()
+                            raise
+                        self._durable_done = written
+                        checkpointed = snapshot
+                    next_checkpoint = time.monotonic() + _CHECKPOINT_SECONDS
                 # Only the coordinator observes progress. Slow UI/worker IPC
                 # coalesces intermediate snapshots, never holds up range writes.
                 if not observer_failed and snapshot != reported:

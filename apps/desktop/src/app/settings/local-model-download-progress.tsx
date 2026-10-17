@@ -62,6 +62,11 @@ export function gbLabel(bytes: number | null | undefined): string {
 // words around each number without the caller knowing the grammar.
 export interface DownloadStatusCopy {
   downloadPausedLabel: string
+  downloadRetryingLabel: string
+  downloadWaitingLabel: string
+  downloadVerifyingLabel: string
+  downloadInterruptedLabel: string
+  downloadInterruptedEmptyLabel: string
   downloadStatusRunning: string
   downloadProgress: (done: string, total: string) => string
   downloadSpeed: (rate: string) => string
@@ -116,9 +121,16 @@ export function downloadStatusText(job: LocalRuntimeJob, copy: DownloadStatusCop
     job.phase === 'interrupted' ||
     (job.status === 'running' && ['retrying', 'waiting', 'verifying'].includes(job.phase))
 
+  const recoveryLabels: Record<string, string> = {
+    retrying: copy.downloadRetryingLabel,
+    waiting: copy.downloadWaitingLabel,
+    verifying: copy.downloadVerifyingLabel,
+    interrupted: job.done_bytes ? copy.downloadInterruptedLabel : copy.downloadInterruptedEmptyLabel
+  }
+
   const parts: string[] = [
-    recovering && job.detail
-      ? job.detail
+    recovering
+      ? recoveryLabels[job.phase]
       : job.status === 'paused'
         ? copy.downloadPausedLabel
         : copy.downloadStatusRunning
@@ -150,7 +162,7 @@ export function downloadStatusText(job: LocalRuntimeJob, copy: DownloadStatusCop
     }
   }
 
-  return parts.length > 1 || job.status === 'paused' ? parts.join(' · ') : job.detail || parts[0]
+  return parts.length > 1 || job.status === 'paused' || recovering ? parts.join(' · ') : job.detail || parts[0]
 }
 
 // Phases where bytes are actually moving (or parked mid-move). Quickstart

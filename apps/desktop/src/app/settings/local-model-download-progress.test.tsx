@@ -204,6 +204,11 @@ const statusCopy = {
   downloadEtaMinutes: (count: number) => `${count} min`,
   downloadEtaSeconds: (count: number) => `${count} sec`,
   downloadPausedLabel: 'Paused',
+  downloadRetryingLabel: 'Erneuter Versuch',
+  downloadWaitingLabel: 'Warten',
+  downloadVerifyingLabel: 'Prüfen',
+  downloadInterruptedLabel: 'Unterbrochen; fortsetzen',
+  downloadInterruptedEmptyLabel: 'Keine gespeicherten Daten; neu starten',
   downloadProgress: (done: string, total: string) => `${done} of ${total}`,
   downloadSpeed: (rate: string) => `${rate}`,
   downloadStatusRunning: 'Downloading'
@@ -225,10 +230,24 @@ describe('downloadStatusText', () => {
         statusCopy
       )
 
-      expect(text).toBe('Saved progress is retained · 1.0 GB of 4.0 GB')
+      const labels: Record<string, string> = {
+        retrying: statusCopy.downloadRetryingLabel,
+        waiting: statusCopy.downloadWaitingLabel,
+        verifying: statusCopy.downloadVerifyingLabel,
+        interrupted: statusCopy.downloadInterruptedLabel
+      }
+
+      expect(text).toBe(`${labels[phase]} · 1.0 GB of 4.0 GB`)
+      expect(text).not.toContain('Saved progress is retained')
       expect(isDownloadPhase(job({ kind: 'quickstart', phase }))).toBe(true)
     }
   )
+
+  it('translates an interruption with no saved bytes', () => {
+    expect(
+      downloadStatusText(job({ phase: 'interrupted', status: 'paused', done_bytes: 0, total_bytes: null }), statusCopy)
+    ).toBe(statusCopy.downloadInterruptedEmptyLabel)
+  })
 
   it('composes state, bytes, speed and ETA while bytes move', () => {
     const text = downloadStatusText(

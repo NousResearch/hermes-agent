@@ -2,7 +2,13 @@ import type { Translations } from './types'
 
 export const enLocalModels: Translations['settings']['localModels'] = {
   downloadDiscardAction: 'Discard',
-  downloadDiscardDetail: 'Remove this unfinished download. Completed files will stay.',
+  downloadRetryingLabel: 'Connection interrupted. Retrying automatically.',
+  downloadWaitingLabel: 'Waiting for another download of this file to finish.',
+  downloadVerifyingLabel: 'Verifying and saving the completed file.',
+  downloadInterruptedLabel: 'Download interrupted. Resume to continue from saved progress.',
+  downloadInterruptedEmptyLabel: 'Download interrupted. No saved bytes remain. Resume to start again.',
+
+  downloadDiscardDetail: 'Remove this download and its unused temporary files. Completed files will stay.',
   downloadDiscardFailed: model => `Could not discard the download of ${model}`,
   connectionChanged: 'Local models connection changed',
   title: 'Local Models',

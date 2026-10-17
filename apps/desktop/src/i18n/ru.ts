@@ -332,8 +332,18 @@ export const ruOverrides = {
   },
   settings: {
     localModels: {
+      downloadPausedLabel: 'Приостановлено',
+      downloadPauseAction: 'Приостановить',
+      downloadResumeAction: 'Возобновить',
       downloadDiscardAction: 'Отменить загрузку',
-      downloadDiscardDetail: 'Удалить эту незавершённую загрузку. Готовые файлы будут сохранены.',
+      downloadRetryingLabel: 'Соединение прервано. Повторная попытка выполняется автоматически.',
+      downloadWaitingLabel: 'Ожидание завершения другой загрузки этого файла.',
+      downloadVerifyingLabel: 'Проверка и сохранение готового файла.',
+      downloadInterruptedLabel: 'Загрузка прервана. Возобновите её с сохранённого места.',
+      downloadInterruptedEmptyLabel:
+        'Загрузка прервана. Сохранённых данных нет. Возобновите загрузку, чтобы начать заново.',
+
+      downloadDiscardDetail: 'Удалить эту загрузку и её неиспользуемые временные файлы. Готовые файлы будут сохранены.',
       downloadDiscardFailed: model => `Не удалось отменить загрузку ${model}`
     },
     subpages: {

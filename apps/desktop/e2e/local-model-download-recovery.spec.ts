@@ -128,7 +128,7 @@ for (const action of ['resume', 'discard'] as const) {
             '(root / (key + ".ranges")).write_text(json.dumps({"total": 4 * block, "etag": \'"recovery-fixture-v1"\', "sha256": "", "ranges": [[0, block]]}))',
             'plan = [(sys.argv[1] + "/complete", first, first.stat().st_size), (url, second, 4 * block), (sys.argv[1] + "/companion", asset, 15)]',
             'download_plans.save_plan({"target": entry.display_name, "model_id": entry.id}, plan)',
-            'print(json.dumps({"first": str(first), "second": str(second), "asset": str(asset)}))'
+            'print(json.dumps({"first": str(first), "second": str(second), "asset": str(asset), "part": str(root / (key + ".part")), "side": str(root / (key + ".ranges"))}))'
           ].join('\n'),
           endpoint
         ],
@@ -136,7 +136,15 @@ for (const action of ['resume', 'discard'] as const) {
       )
 
       expect(seed.status, seed.stderr).toBe(0)
-      const files = JSON.parse(seed.stdout) as { first: string; second: string; asset: string }
+
+      const files = JSON.parse(seed.stdout) as {
+        first: string
+        second: string
+        asset: string
+        part: string
+        side: string
+      }
+
       const firstTime = fs.statSync(files.first).mtimeMs
       let launched = await launchDesktop(env)
       app = launched.app
@@ -145,11 +153,11 @@ for (const action of ['resume', 'discard'] as const) {
       const original = (await jobs(page))[0]
       expect(original.done_bytes).toBe(BLOCK + fs.statSync(files.first).size)
       await page.getByRole('button', { name: 'Resume', exact: true }).click()
-      await expect(page.getByText(/Connection interrupted\. Retrying in/)).toBeVisible({ timeout: 15_000 })
+      await expect(page.getByText('Connection interrupted. Retrying automatically.')).toBeVisible({ timeout: 15_000 })
       await page.screenshot({ path: testInfo.outputPath('retrying.png') })
       await page.getByRole('button', { name: 'Pause', exact: true }).click()
       await expect(page.getByRole('button', { name: 'Resume', exact: true })).toBeVisible({ timeout: 5_000 })
-      await expect(page.getByText(/Connection interrupted\. Retrying in/)).toBeHidden()
+      await expect(page.getByText('Connection interrupted. Retrying automatically.')).toBeHidden()
       await page.getByRole('button', { name: 'Resume', exact: true }).click()
       await expect(page.getByText(/Download interrupted\. Resume to continue from saved progress/)).toBeVisible({
         timeout: 30_000
@@ -181,6 +189,8 @@ for (const action of ['resume', 'discard'] as const) {
         await page.screenshot({ path: testInfo.outputPath('discard.png') })
         await discard.click()
         await expect.poll(() => jobs(page)).toEqual([])
+        expect(fs.existsSync(files.part)).toBe(false)
+        expect(fs.existsSync(files.side)).toBe(false)
         await expect(discard).toBeHidden()
         await app.close()
         app = undefined

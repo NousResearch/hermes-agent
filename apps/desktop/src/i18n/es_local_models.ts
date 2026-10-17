@@ -3,8 +3,18 @@ import type { TranslationOverride } from '@hermes/shared/i18n'
 import type { Translations } from './types'
 
 export const esLocalModels: TranslationOverride<Translations['settings']['localModels']> = {
+  downloadPausedLabel: 'En pausa',
+  downloadPauseAction: 'Pausar',
+  downloadResumeAction: 'Reanudar',
   downloadDiscardAction: 'Descartar',
-  downloadDiscardDetail: 'Eliminar esta descarga incompleta. Los archivos completos se conservarán.',
+  downloadRetryingLabel: 'Conexión interrumpida. Se reintentará automáticamente.',
+  downloadWaitingLabel: 'Esperando a que termine otra descarga de este archivo.',
+  downloadVerifyingLabel: 'Verificando y guardando el archivo completo.',
+  downloadInterruptedLabel: 'Descarga interrumpida. Reanuda para continuar desde el progreso guardado.',
+  downloadInterruptedEmptyLabel: 'Descarga interrumpida. No quedan datos guardados. Reanuda para empezar de nuevo.',
+
+  downloadDiscardDetail:
+    'Eliminar esta descarga y sus archivos temporales sin uso. Los archivos completos se conservarán.',
   downloadDiscardFailed: model => `No se pudo descartar la descarga de ${model}`,
   connectionChanged: 'Cambió la conexión de los modelos locales',
   title: 'Modelos locales',
@@ -40,7 +50,7 @@ export const esLocalModels: TranslationOverride<Translations['settings']['localM
   noRecommendationAction: 'Explorar modelos',
   downloaded: 'Descargado',
   downloadAction: size => `Descargar · ${size}`,
-  downloadProgress: (done, total) => `Descargando ${done} de ${total}`,
+  downloadProgress: (done, total) => `${done} de ${total}`,
   downloadDoneToast: model => `${model} está listo.`,
   installDoneToast: 'Entorno local instalado y listo.',
   quickstartTitle: 'Ejecutar un modelo en este equipo',

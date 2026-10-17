@@ -127,7 +127,7 @@ def test_progress_renews_only_the_consecutive_failure_budget():
     with pytest.raises(ConnectionResetError):
         network.retry_network(request, wait=waits.append, progress=lambda: durable[0])
     assert len(attempts) == 1 + network._ATTEMPTS
-    assert waits == [1, 1, 2, 4]
+    assert waits == [1, 2, 4, 8]
 
 
 @pytest.mark.parametrize("status,headers,cdn", [

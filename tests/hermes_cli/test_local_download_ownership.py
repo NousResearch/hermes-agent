@@ -60,6 +60,7 @@ def test_restore_skips_live_plan_and_reconciles_owner_exit(client, outcome):
         try:
             side = lm.download_plans._root().parent / (hashlib.sha256(url.encode()).hexdigest() + ".ranges")
             wait_until(side.is_file, timeout=10)
+            lm._restore_download_plans()
             assert client.get("/api/local-models/jobs").json()["jobs"] == []
             if outcome == "complete":
                 release.set()
@@ -71,6 +72,7 @@ def test_restore_skips_live_plan_and_reconciles_owner_exit(client, outcome):
                 child.communicate(timeout=5)
             release.set()
 
+    lm._restore_download_plans()
     restored = client.get("/api/local-models/jobs").json()["jobs"]
     if outcome == "complete":
         assert restored == [] and dest.read_bytes() == payload

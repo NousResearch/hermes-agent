@@ -43,7 +43,31 @@ from hermes_cli.local_runtime.gguf import split_parts
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+_RECOVERY_SCAN_SECONDS = 60.0
+
+
+@contextlib.asynccontextmanager
+async def _download_recovery_lifespan(_app):
+    await run_in_threadpool(_restore_download_plans)
+
+    async def reconcile():
+        while True:
+            await asyncio.sleep(_RECOVERY_SCAN_SECONDS)
+            try:
+                await run_in_threadpool(_restore_download_plans)
+            except Exception:
+                logger.warning("saved download reconciliation failed", exc_info=True)
+
+    task = asyncio.create_task(reconcile())
+    try:
+        yield
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
+router = APIRouter(lifespan=_download_recovery_lifespan)
 
 _JOBS: dict[str, dict[str, Any]] = {}
 _JOBS_LOCK = threading.Lock()
@@ -191,13 +215,14 @@ def _record_rate(job: dict[str, Any], done: int) -> None:
 def _job_view(job: dict[str, Any]) -> dict[str, Any]:
     out = dict(job)
     out.pop("plan_saved", None)
+    out.pop("partial_url", None)
     running = _RUNNING.get(job["job_id"], {})
     pause = running.get("pause")
     out["pause_requested"] = bool(pause is not None and pause.is_set() and out["status"] == "running")
     out["can_pause"] = bool(pause is not None and out["status"] == "running"
                             and out["phase"] in _DOWNLOAD_PHASES and not out["pause_requested"])
     out["can_resume"] = out["status"] == "paused" and "resume" in running
-    out["can_discard"] = out["status"] == "paused" and bool(job.get("plan_key")) and "discard" in running
+    out["can_discard"] = out["status"] == "paused" and "discard" in running
     if out["total_bytes"]:
         out["percent"] = min(100, round(out["done_bytes"] / out["total_bytes"] * 100))
     # A rate and ETA describe a transfer in motion; a parked or settled job
@@ -250,6 +275,7 @@ def _spawn_job(job: dict[str, Any], name: str, body: Callable[[], None], *, fail
             status = "paused" if recoverable else "error"
             job["error"] = str(exc)
             if recoverable:
+                job["partial_url"] = exc.url
                 job.update(phase="interrupted", detail=_interrupted_detail(job.get("done_bytes", 0)))
         finally:
             try:
@@ -293,11 +319,15 @@ def _spawn_job(job: dict[str, Any], name: str, body: Callable[[], None], *, fail
             return False
         try:
             key = job.get("plan_key")
-            if (_JOBS.get(job["job_id"]) is not job or job["status"] != "paused"
-                    or not key):
+            if _JOBS.get(job["job_id"]) is not job or job["status"] != "paused":
                 return False
-            if remove_plan and not download_plans.discard_plan(key):
+            if remove_plan and key and not download_plans.discard_plan(key):
                 return False
+            if remove_plan and not key and job.get("partial_url"):
+                from pm.download_state import discard_partial
+                from pm.paths import partials_root
+
+                discard_partial(partials_root(), job["partial_url"])
             if on_exit is not None:
                 on_exit()
             with _JOBS_LOCK:
@@ -514,8 +544,10 @@ def _download_job(job: dict[str, Any], plan) -> None:
 def _download_owned_plan(job: dict[str, Any], plan, pause) -> None:
     download_plans.save_plan(job, plan)
     job["plan_saved"] = True
-    dl = Download([Source(url, dest) for url, dest, _ in plan], pause_event=pause,
-                  state=lambda phase, detail: _step(job, phase, detail))
+    def state(phase, detail):
+        _step(job, phase, f"Downloading {job['target']}" if phase == "downloading" else detail)
+
+    dl = Download([Source(url, dest) for url, dest, _ in plan], pause_event=pause, state=state)
     tick = _download_progress_hook(job)
     saved_total = None
 
@@ -542,7 +574,7 @@ def _download_owned_plan(job: dict[str, Any], plan, pause) -> None:
         download_plans.remove_plan(job["plan_key"])
 
 
-def _plan_job(target: str, model_id: str, plan) -> tuple[dict, bool]:
+def _plan_job(target: str, model_id: str, plan, *, kind: str = "model-download") -> tuple[dict, bool]:
     key = download_plans.plan_key(plan)
     with _DOWNLOAD_START_LOCK:
         with _JOBS_LOCK:
@@ -550,7 +582,7 @@ def _plan_job(target: str, model_id: str, plan) -> tuple[dict, bool]:
                              and job["status"] in {"running", "paused"}), None)
         if existing is not None:
             return existing, False
-        job = _job("model-download", target, model_id=model_id)
+        job = _job(kind, target, model_id=model_id)
         job["plan_key"] = key
         return job, True
 
@@ -573,7 +605,7 @@ def _restore_download_plans() -> None:
             _spawn_job(job, "lr-model-recovery",
                        lambda job=job, plan=plan: _run_download_plan(job, plan, job["target"]),
                        download_label=job["target"], resumable=True, start_paused=True)
-        # GC or another process can remove a recipe after this process parked it.
+        # GC or another process can remove a plan after this process parked it.
         with _JOBS_LOCK:
             parked = [job for job in _JOBS.values() if job["status"] == "paused"]
         for job in parked:
@@ -975,7 +1007,7 @@ def _quickstart_job(entry, plan) -> dict:
     if not plan:
         return _job("quickstart", entry.display_name, model_id=entry.id)
     with _DOWNLOAD_START_LOCK:
-        job, created = _plan_job(entry.display_name, entry.id, plan)
+        job, created = _plan_job(entry.display_name, entry.id, plan, kind="quickstart")
         if not created:
             retire = _RUNNING.get(job["job_id"], {}).get("retire")
             if job["kind"] != "model-download" or not retire or not retire():
@@ -986,7 +1018,6 @@ def _quickstart_job(entry, plan) -> dict:
             job = _job("quickstart", entry.display_name, model_id=entry.id)
             job.update({key: previous[key] for key in ("phase", "detail", "done_bytes", "total_bytes", "ranges", "plan_saved") if key in previous})
             job["plan_key"] = download_plans.plan_key(plan)
-        job["kind"] = "quickstart"
         return job
 
 
@@ -1127,7 +1158,6 @@ async def local_models_activate(body: ModelActivateBody, profile: Optional[str] 
 @router.get("/api/local-models/jobs")
 async def local_models_jobs():
     """All recent jobs, running first — the pane and app-level poller rediscover in-flight work here after a remount."""
-    await run_in_threadpool(_restore_download_plans)
     with _JOBS_LOCK:
         jobs = sorted(_JOBS.values(), key=lambda job: -job["started_at"])
         active = [job for job in jobs if job["status"] in ("running", "paused")]

@@ -99,7 +99,8 @@ def retry_network(
     Downloads supply ``progress``: durable forward progress renews their
     budget. Metadata and non-resumable requests still get four attempts.
     """
-    attempt = 1
+    failures_since_progress = 0
+    backoff = 0
     saved = progress() if progress is not None else 0
     while True:
         try:
@@ -111,11 +112,14 @@ def retry_network(
                 raise
             current = progress() if progress is not None else saved
             if current > saved:
-                attempt = 0
+                failures_since_progress = 0
+                backoff = 0
                 saved = current
-            if attempt >= _ATTEMPTS:
+            else:
+                failures_since_progress += 1
+            if failures_since_progress >= _ATTEMPTS:
                 raise
-            delay = _delay(exc, max(0, attempt - 1))
+            delay = _delay(exc, backoff)
             if progress is not None:
                 # Do not retry a resumable transfer before Retry-After. A
                 # longer server embargo parks it instead of blocking for hours.
@@ -123,9 +127,9 @@ def retry_network(
                 if requested > _MAX_RECOVERY_DELAY:
                     raise
                 delay = max(delay, requested)
-            attempt += 1
+            backoff += 1
             logging.getLogger(__name__).warning(
-                "network request failed (%s); retrying in %gs (attempt %d/%d)",
-                exc, delay, attempt, _ATTEMPTS,
+                "network request failed (%s); retrying in %gs (%d/%d failures without progress)",
+                exc, delay, failures_since_progress, _ATTEMPTS,
             )
             (wait or time.sleep)(delay)

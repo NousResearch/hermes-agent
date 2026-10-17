@@ -1,14 +1,19 @@
 """Normal download routes recover a multi-file model after outage and restart."""
 from __future__ import annotations
 
+import socket
+import urllib.error
+
 import pytest
 
 from tests.hermes_cli.test_local_download_jobs import client as client, poll  # noqa: PLC0414 -- pytest fixture re-export
 from tests.pm._range_server import RangeHandler, dl_server as dl_server, url  # noqa: PLC0414 -- pytest fixture re-export
 
 
-def test_interrupted_plan_survives_backend_restart_and_resumes_all_assets(client, monkeypatch, dl_server):
+@pytest.mark.parametrize("outage_kind", ["http", "dns"])
+def test_interrupted_plan_survives_backend_restart_and_resumes_all_assets(client, monkeypatch, dl_server, outage_kind):
     from hermes_cli.web_routers import local_models as lm
+    from pm import downloader
 
     block = 1 << 20
     payload = b"weights!" * (4 * block // 8)
@@ -30,6 +35,16 @@ def test_interrupted_plan_survives_backend_restart_and_resumes_all_assets(client
     original_get = RangeHandler.do_GET
     attempts = []
     outage = True
+    dns_requests = []
+    original_open = downloader._OPENER.open
+
+    def open_request(request, **kwargs):
+        if outage_kind == "dns" and outage and attempts:
+            dns_requests.append(request.full_url)
+            raise urllib.error.URLError(socket.gaierror(socket.EAI_NONAME, "nodename nor servname provided"))
+        return original_open(request, **kwargs)
+
+    monkeypatch.setattr(downloader._OPENER, "open", open_request)
 
     def respond(handler):
         bounds = handler.headers.get("Range")
@@ -61,7 +76,9 @@ def test_interrupted_plan_survives_backend_restart_and_resumes_all_assets(client
     started = client.post("/api/local-models/download", json={"model_id": entry.id}).json()
     parked = poll(client, started["job_id"])
     assert parked["status"] == "paused" and parked["can_resume"], parked
-    assert parked["phase"] == "interrupted" and "503" in parked["error"]
+    assert parked["phase"] == "interrupted"
+    assert ("503" if outage_kind == "http" else "nodename") in parked["error"]
+    assert len(dns_requests) == (1 if outage_kind == "dns" else 0)
     assert parked["done_bytes"] == first.stat().st_size + block
     assert not second.exists() and not asset.exists()
     duplicate = client.post("/api/local-models/download", json={"model_id": entry.id}).json()
@@ -69,6 +86,7 @@ def test_interrupted_plan_survives_backend_restart_and_resumes_all_assets(client
 
     monkeypatch.setattr(lm, "_JOBS", {})
     monkeypatch.setattr(lm, "_RUNNING", {})
+    lm._restore_download_plans()
     restored = client.get("/api/local-models/jobs").json()["jobs"]
     assert len(restored) == 1
     recovered = restored[0]

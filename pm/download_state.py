@@ -35,41 +35,76 @@ def partial_lock(root: Path, key: str, *, cancelled=None, wait: bool = True, on_
         os.close(fd)
 
 
-# A large model can run for hours and be resumed after an overnight outage.
-GC_GRACE_SECONDS = 7 * 24 * 60 * 60
+GC_GRACE_SECONDS = 6 * 60 * 60
+MODEL_PLAN_GRACE_SECONDS = 7 * 24 * 60 * 60
 
 
-def collect_download_plans(root: Path, *, grace_seconds: float = GC_GRACE_SECONDS) -> None:
-    """Expire abandoned recipes against their latest durable checkpoint."""
+def partial_key(url: str) -> str:
+    return hashlib.sha256(url.encode("utf-8")).hexdigest()
+
+
+def is_state_key(key: str) -> bool:
+    return len(key) == 64 and all(char in "0123456789abcdef" for char in key)
+
+
+def _referenced_by_plan(root: Path, url: str, excluding_plan: str | None) -> bool:
+    for path in (root / ".model-plans").glob("*.json"):
+        if path.stem == excluding_plan:
+            continue
+        try:
+            if any(item[0] == url for item in json.loads(path.read_bytes())["files"]):
+                return True
+        except (OSError, ValueError, KeyError, TypeError, IndexError):
+            return True  # An unreadable plan cannot establish safe deletion.
+    return False
+
+
+def discard_partial(root: Path, url: str, *, excluding_plan: str | None = None) -> bool:
+    key = partial_key(url)
+    with partial_lock(root, key, wait=False) as acquired:
+        if not acquired or _referenced_by_plan(root, url, excluding_plan):
+            return False
+        for suffix in (".part", ".ranges"):
+            (root / f"{key}{suffix}").unlink(missing_ok=True)
+        return True
+
+
+def collect_download_plans(root: Path, *, grace_seconds: float = MODEL_PLAN_GRACE_SECONDS) -> set[str]:
+    """Expire model plans and return partial keys their retention still protects."""
     plans = root / ".model-plans"
     now = time.time()
+    retained = set()
     for path in plans.glob("*.json"):
-        if len(path.stem) != 64 or any(char not in "0123456789abcdef" for char in path.stem):
+        if not is_state_key(path.stem):
             continue
         with partial_lock(plans, path.stem, wait=False) as acquired:
-            if not acquired:
-                continue
             try:
-                record = json.loads(path.read_text(encoding="utf-8-sig"))
+                record = json.loads(path.read_bytes())
                 checkpoints = [path]
+                keys = set()
                 for url, _, _ in record["files"]:
-                    key = hashlib.sha256(url.encode()).hexdigest()
+                    key = partial_key(url)
+                    keys.add(key)
                     checkpoints.extend(root / f"{key}{suffix}" for suffix in (".part", ".ranges"))
-                if any(item.exists() and now - item.stat().st_mtime < grace_seconds for item in checkpoints):
+                if not acquired or any(item.exists() and now - item.stat().st_mtime < grace_seconds for item in checkpoints):
+                    retained.update(keys)
                     continue
                 path.unlink(missing_ok=True)
             except (OSError, ValueError, TypeError, KeyError, AttributeError):
                 continue  # Unreadable metadata cannot establish safe expiry.
+    return retained
 
 
 def collect_partials(root: Path, *, grace_seconds: float = GC_GRACE_SECONDS) -> None:
     """Do not let a GC snapshot race a downloader acquiring ownership."""
     if not root.is_dir():
         return
-    collect_download_plans(root, grace_seconds=grace_seconds)
+    retained = collect_download_plans(root)
     keys = {path.stem for path in root.iterdir() if path.suffix in {".part", ".ranges"}}
     now = time.time()
     for key in sorted(keys):
+        if key in retained:
+            continue
         with partial_lock(root, key, wait=False) as acquired:
             if not acquired:
                 continue

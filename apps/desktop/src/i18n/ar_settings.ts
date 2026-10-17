@@ -13,8 +13,17 @@ export const arSettings = {
   },
   settings: {
     localModels: {
+      downloadPausedLabel: 'متوقف مؤقتًا',
+      downloadPauseAction: 'إيقاف مؤقت',
+      downloadResumeAction: 'استئناف',
       downloadDiscardAction: 'تجاهل',
-      downloadDiscardDetail: 'إزالة هذا التنزيل غير المكتمل. ستبقى الملفات المكتملة.',
+      downloadRetryingLabel: 'انقطع الاتصال. تجري إعادة المحاولة تلقائيًا.',
+      downloadWaitingLabel: 'في انتظار اكتمال تنزيل آخر لهذا الملف.',
+      downloadVerifyingLabel: 'جارٍ التحقق من الملف المكتمل وحفظه.',
+      downloadInterruptedLabel: 'انقطع التنزيل. استأنف للمتابعة من التقدم المحفوظ.',
+      downloadInterruptedEmptyLabel: 'انقطع التنزيل. لا توجد بيانات محفوظة. استأنف للبدء من جديد.',
+
+      downloadDiscardDetail: 'إزالة هذا التنزيل وملفاته المؤقتة غير المستخدمة. ستبقى الملفات المكتملة.',
       downloadDiscardFailed: model => `تعذر تجاهل تنزيل ${model}`
     },
     subpages: {

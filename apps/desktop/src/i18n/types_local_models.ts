@@ -39,6 +39,11 @@ export interface LocalModelsTranslations {
   downloadPauseAction: string
   downloadResumeAction: string
   downloadDiscardAction: string
+  downloadRetryingLabel: string
+  downloadWaitingLabel: string
+  downloadVerifyingLabel: string
+  downloadInterruptedLabel: string
+  downloadInterruptedEmptyLabel: string
   downloadDiscardDetail: string
   downloadDiscardFailed: (model: string) => string
   downloadDoneToast: (model: string) => string

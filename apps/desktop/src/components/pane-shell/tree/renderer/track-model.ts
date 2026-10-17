@@ -294,7 +294,12 @@ export function fixedTrackSize(node: LayoutNode, axis: 'row' | 'column', ctx: Tr
   }
 
   // Across the axis a flex child just stretches; the fixed ones set the size.
-  return cssMax(sizes) ?? null
+  // A minimized zone is a strip only along ITS split's axis: a bottom rail is
+  // 1.75rem tall, not wide. Counting it here pinned the main column to a
+  // 1.75rem track, and an uncapped right-rail pane then absorbed the window.
+  const across = visible.flatMap((child, i) => (child.type === 'group' && child.minimized ? [] : [sizes[i]]))
+
+  return cssMax(across) ?? null
 }
 
 /**

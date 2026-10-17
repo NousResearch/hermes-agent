@@ -1,7 +1,4 @@
-import { execFile } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { resolve } from 'node:path'
-import { promisify } from 'node:util'
 
 import type { GatewayEvent } from '@hermes/shared/gateway-events'
 import {
@@ -26,6 +23,7 @@ import type { AnyGatewayEvent } from './gatewayTypes.js'
 import { t } from './i18n/runtime.js'
 import { CircularBuffer } from './lib/circularBuffer.js'
 import { recordParentLifecycle } from './lib/parentLog.js'
+import { bootstrapLocalGateway, isTerminalBootstrapFailure, type LocalGatewayGrant } from './localGatewayBootstrap.js'
 
 const MAX_GATEWAY_LOG_LINES = 200
 const MAX_LOG_LINE_BYTES = 4096
@@ -67,26 +65,6 @@ const resolveSidecarUrl = () => {
   return raw ? raw : null
 }
 
-const resolvePython = () => {
-  // Trust HERMES_PYTHON only. The launcher guarantees it: hermes_cli/main.py
-  // validates it and falls back to its own sys.executable, and the Nix
-  // wrapper sets it too. So a TUI started the normal way already knows its
-  // interpreter, and scanning VIRTUAL_ENV / .venv here can only find a
-  // DIFFERENT python than the parent process runs on — with the pm store,
-  // a stale venv path is actively dangerous (the interpreter a gateway
-  // child gets must match the one that spawned it).
-  const configured = process.env.HERMES_PYTHON?.trim()
-
-  if (configured) {
-    return configured
-  }
-
-  // The one case with no launcher above it: `npm run dev` / `npm start`
-  // straight out of ui-tui/. A developer doing that runs inside their own
-  // activated environment, so PATH is the right question there.
-  return process.platform === 'win32' ? 'python' : 'python3'
-}
-
 // Matches `<scheme>://user:pass@host…` style user-info segments in
 // otherwise-malformed URLs that the WHATWG `URL` parser can't accept.
 // Used by the `redactUrl` fallback so embedded credentials are
@@ -119,8 +97,6 @@ const redactUrl = (raw: string): string => {
   }
 }
 
-export interface LocalGatewayGrant { url: string; protocols: string[]; profile_id: string; instance_id: string }
-
 // Reconnects after the first launch are discovery-only, except that a bounded number per window
 // re-ensure an owner that is not ready (gateway_bootstrap.py --recover): crashed, idle-exited,
 // stopped with `hermes gateway stop` while this TUI is open, or an older Hermes's gateway. Main's
@@ -128,16 +104,6 @@ export interface LocalGatewayGrant { url: string; protocols: string[]; profile_i
 // owner from being respawned without pause.
 export const OWNER_RECOVERY_LIMIT = 3
 export const OWNER_RECOVERY_WINDOW_MS = 60_000
-
-const bootstrapLocalGateway = async (start: boolean, recover = false): Promise<LocalGatewayGrant> => {
-  const root = process.env.HERMES_PYTHON_SRC_ROOT ?? resolve(import.meta.dirname, '../../')
-
-  const { stdout } = await promisify(execFile)(resolvePython(),
-    [resolve(root, 'ui-tui/scripts/gateway_bootstrap.py'), ...(start ? ['--start'] : recover ? ['--recover'] : [])],
-    { cwd: root, env: { ...process.env, PYTHONPATH: root }, timeout: 40_000, maxBuffer: 1024 * 1024 })
-
-  return JSON.parse(stdout) as LocalGatewayGrant
-}
 
 
 export interface AttachHold { sid: string; frames: AnyGatewayEvent[] }
@@ -605,6 +571,15 @@ export class GatewayClient extends EventEmitter {
         python: 'gateway ensure', cwd: '', stderr_tail: this.bootstrapError.message
       } })
       this.channel.detach(this.bootstrapError)
+
+      // The helper's interpreter cannot load Hermes (gateway_bootstrap.py `gateway unavailable:`):
+      // no reconnect fixes that, so report it once instead of retrying every 30 s forever (#138878).
+      if (isTerminalBootstrapFailure(this.bootstrapError.message)) {
+        this.lifecycle(`[lifecycle] gateway bootstrap cannot start; not retrying: ${this.bootstrapError.message.match(/^gateway unavailable: .*$/m)?.[0]}`)
+
+        return
+      }
+
       this.scheduleReconnect()
     })
   }

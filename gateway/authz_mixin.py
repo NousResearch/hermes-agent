@@ -276,7 +276,12 @@ class GatewayAuthorizationMixin:
         platform = getattr(source, "platform", None)
         from gateway.session_identity import identity_of
         identity = identity_of(source)
-        if identity is not None and identity.multiplexed:
+        # A LOCAL session has no receiving bot.  Its default transport is inferred as the
+        # primary profile, but the policy and delivery adapter belong to the session authority.
+        # Let the delivery fallback resolve that profile instead of treating a lazily-created
+        # primary LocalSessionAdapter as the receiver (#139060).
+        if (identity is not None and identity.multiplexed
+                and not (platform == Platform.LOCAL and identity.transport_inferred)):
             return self._adapters_for_profile(identity.transport_profile).get(platform) if platform else None
         if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
             return self._primary_adapters().get(platform) if platform else None

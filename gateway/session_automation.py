@@ -110,6 +110,18 @@ def _route_identity(source):
     return {key: value for key, value in source.to_dict().items() if key != 'message_id'}
 
 
+def committed_route_envelope(authority, entry):
+    """The route's last committed native envelope with connector provenance (what a producer turn
+    borrows), or ``None`` while no human message was admitted there."""
+    from hermes_state_runtime import list_session_admissions
+    # Admissions belong to the logical root; ``entry.session_id`` is only the transcript tip.
+    prior = list_session_admissions(authority.db, session_id=authority.logical_owner(entry.session_id),
+                                    pending_only=False)
+    envelope = next((r['payload']['native_text_v1'] for r in reversed(prior)
+                     if 'native_text_v1' in r['payload']), None)
+    return envelope if envelope is not None and 'provenance' in envelope else None
+
+
 def snapshot_automation(authority, adapter, event, identity):
     runner = authority.runner
     if (not event.internal or event.message_type != MessageType.TEXT or event.is_command()
@@ -122,13 +134,9 @@ def snapshot_automation(authority, adapter, event, identity):
     if event.source.platform == Platform.LOCAL:
         return snapshot_local_automation(authority, adapter, event, identity, entry)
     from gateway.session_envelope import restore_native
-    from hermes_state_runtime import list_session_admissions
-    # Admissions belong to the logical root; ``entry.session_id`` is only the transcript tip.
     owner = authority.logical_owner(entry.session_id)
-    prior = list_session_admissions(authority.db, session_id=owner, pending_only=False)
-    envelope = next((r['payload']['native_text_v1'] for r in reversed(prior)
-                     if 'native_text_v1' in r['payload']), None)
-    if envelope is None or 'provenance' not in envelope:
+    envelope = committed_route_envelope(authority, entry)
+    if envelope is None:
         raise RuntimeStoreError('not_found')
     # Persisted origins deliberately omit relay trust. Borrow only an exact
     # committed source's private proof, revalidated against the live connector.
@@ -296,6 +304,86 @@ async def move_route_wakes(runner, session_key, old_session_id):
             ordered=True, after=partial(authority._schedule_admitted, new))
 
 
+async def reset_and_rehome_messages(runner, session_key, old_session_id):
+    """The compression-exhaustion auto-reset: rotate the route to a fresh session and move the old
+    owner's still-queued native ``messaging:*`` rows onto it, same order and request ids. Left
+    behind they pause the old FIFO (``admission_conflict``) and never run, while a later message
+    runs ahead of them. /new and /stop cancel these rows instead (the user asked for a clean break);
+    the exhausted turn itself is started, so it is never moved.
+
+    The rotation (sessions.json) and the move (one SQLite transaction) run in one worker step
+    ordered with native admissions, not atomically across the two stores: a redelivery that
+    resolves the route to the fresh session commits after the move and dedupes onto the moved row,
+    and one that reserved the old route before the rotation is retargeted at commit
+    (``_admit_native_write``). Returns ``(entry, release)``. Until the caller runs ``release()``
+    (once, after its conversation cleanup and topic binding sync, also on failure) the fresh
+    session's ``claim_gate`` is held, so no scheduler (a redelivery, a moved route wake, this
+    move) starts a turn there against stale state; ``release()`` then schedules its FIFO."""
+    from gateway.session_authorities import active_authority
+    authority = active_authority(runner)
+    old = SessionRef(authority.profile_id, authority.logical_owner(old_session_id)) if authority else None
+    live = authority.sessions.get(old.session_id) if old and old_session_id else None
+    if live is None:
+        return await runner.async_session_store.reset_session(session_key), lambda: None
+    import asyncio
+    from gateway.session_authority import LiveSession
+    from gateway.session_runtime_workers import tracked_write
+    from hermes_state_runtime import rehome_queued_inputs
+
+    def rotate_and_move():
+        entry = runner.session_store.reset_session(session_key)
+        if entry is None:
+            return None, None, []
+        new = SessionRef(authority.profile_id, authority.logical_owner(entry.session_id))
+        if new == old:
+            return entry, None, []
+        if authority.db.get_session(new.session_id) is None:
+            authority.db.create_session(new.session_id, source=live.source.platform.value)
+        # An admission that reserved the old route before this rotation commits after it.
+        authority.rotated_owners[old.session_id] = session_key
+        return entry, new, rehome_queued_inputs(
+            authority.db, epoch=authority.epoch, old_session_id=old.session_id,
+            new_session_id=new.session_id, principal_prefix='messaging:')
+
+    async def fence(result):
+        # In the write's own task step, before any later ordered admission schedules the fresh FIFO.
+        new = result[1]
+        if new is None:
+            return result, None
+        fresh = authority.sessions.setdefault(new.session_id, LiveSession(live.source, session_key))
+        await fresh.claim_gate.acquire()
+        return result, fresh
+
+    async with live.mutation_lock:
+        write = asyncio.ensure_future(tracked_write(authority, rotate_and_move, fence, ordered=True))
+        try:
+            (entry, new, moved), fresh = await asyncio.shield(write)
+        except asyncio.CancelledError:
+            # The rotation still commits and takes the fence: lift it, or the fresh FIFO never runs.
+            def lift(done):
+                gate = None if done.cancelled() or done.exception() else done.result()[1]
+                if gate is not None:
+                    gate.claim_gate.release()
+                    authority._schedule(done.result()[0][1])
+            write.add_done_callback(lift)
+            raise
+    if fresh is None:
+        return entry, lambda: None
+    if moved:
+        authority._publish_pending(old)
+        authority._publish_pending(new)
+
+    released = []
+
+    def release():  # once: a second call must not lift a claim the drain took meanwhile
+        if not released:
+            released.append(True)
+            fresh.claim_gate.release()
+            if authority.sessions.get(new.session_id) is fresh:
+                authority._schedule(new)
+    return entry, release
+
+
 async def admit_route_wake(runner, adapter, source, text, producer, metadata=None):
     """Commit a producer wake (Kanban push wake, /loop tick) for ``source``'s route into the
     authority FIFO, like heartbeats and process completions, instead of a classic turn that
@@ -323,12 +411,8 @@ async def admit_route_wake(runner, adapter, source, text, producer, metadata=Non
         await authority.admit_automation(adapter, event, identity)
         return True
     from gateway.session_envelope import restore_native
-    from hermes_state_runtime import list_session_admissions
-    prior = list_session_admissions(authority.db, session_id=authority.logical_owner(entry.session_id),
-                                    pending_only=False)
-    envelope = next((r['payload']['native_text_v1'] for r in reversed(prior)
-                     if 'native_text_v1' in r['payload']), None)
-    if envelope is None or 'provenance' not in envelope:
+    envelope = committed_route_envelope(authority, entry)
+    if envelope is None:
         return False
     # The route's committed source, which ``snapshot_automation`` re-derives and compares.
     restored = restore_native({'text': text, 'native_text_v1': {

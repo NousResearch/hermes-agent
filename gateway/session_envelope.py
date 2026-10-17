@@ -128,6 +128,14 @@ def _validate_native(runner, event, provenance=None, fresh_roles=False):
         from gateway.session_ingress_context import restore_provenance
         restore_provenance(runner, source, provenance)
     delegated = fresh_roles or bool(provenance and 'relay' in provenance)
+    if not delegated:
+        # An adapter declaring ``authorization_is_upstream`` (A2A peers: bearer-token
+        # authenticated in do_POST) owns the whole authorization, so its fresh native inputs
+        # carry no relay seal to derive delegation from. Without this they fell to the
+        # principal allowlist and — with no {PLATFORM}_ALLOWED_USERS — the admission
+        # re-check denied what the inbound filter had just accepted (#139199).
+        delegated = runner._adapter_flag(
+            source.platform, "authorization_is_upstream", runner._adapter_profile_for_source(source))
     if not runner._is_user_authorized_for_source(source, allow_adapter_delegation=delegated):
         _refuse(event, 'permission_denied', 'user_not_authorized')
     for name in ('channel_prompt', 'channel_context'):
@@ -197,6 +205,8 @@ def _snapshot_native(runner, event, provenance, fresh_roles=False, encoded_sourc
     # its fingerprint. Explicit context (including an empty skill list) is exact.
     envelope['event'].update({name: deepcopy(getattr(event, name)) for name in _CONTEXT_FIELDS
                               if getattr(event, name) is not None})
+    if event.inherit_channel_pin is True:  # synthetic goal/resume turn reuses the session's pins (#126109)
+        envelope['event']['inherit_channel_pin'] = True
     if metadata := _native_metadata(event):
         envelope['event']['metadata'] = metadata
     if event.message_type != MessageType.TEXT:

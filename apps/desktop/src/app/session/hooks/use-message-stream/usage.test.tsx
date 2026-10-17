@@ -52,6 +52,96 @@ describe('useMessageStream status-bar usage scoping', () => {
     })
   })
 
+  it('normalizes a canonical top-level session.usage tick for the status bar', () => {
+    mountStream()
+
+    act(() =>
+      stream.handleEvent({
+        payload: {
+          api_calls: 3,
+          cache_read_tokens: 800,
+          input_tokens: 1_200,
+          output_tokens: 80,
+          prompt_tokens: 1_000,
+          tokens_per_s: 41.64,
+          total_tokens: 1_280
+        },
+        session_id: SID,
+        type: 'session.usage'
+      })
+    )
+
+    expect($currentUsage.get()).toEqual({
+      ...BASELINE,
+      avg_tps: 41.6,
+      cache_hit_pct: 80,
+      calls: 3,
+      input: 1_200,
+      output: 80,
+      prompt: 1_000,
+      total: 1_280
+    })
+    expect(sessionStates.get(SID)?.usage).toEqual($currentUsage.get())
+  })
+
+  it('maps latency and active subagents from a canonical tick the same way Ink does', () => {
+    mountStream()
+
+    act(() =>
+      stream.handleEvent({
+        payload: { active_subagents: 2, api_calls: 1, avg_latency_s: 0.84, total_tokens: 10 },
+        session_id: SID,
+        type: 'session.usage'
+      })
+    )
+
+    expect($currentUsage.get()).toMatchObject({ active_subagents: 2, avg_latency_s: 0.8, calls: 1, total: 10 })
+  })
+
+  it('merges a partial canonical tick without zeroing counters it does not carry', () => {
+    mountStream()
+
+    act(() => stream.handleEvent({ payload: { api_calls: 3 }, session_id: SID, type: 'session.usage' }))
+    act(() =>
+      stream.handleEvent({
+        payload: { context_length: 10_000, last_prompt_tokens: 4_200 },
+        session_id: SID,
+        type: 'session.usage'
+      })
+    )
+
+    expect($currentUsage.get()).toMatchObject({ ...BASELINE, calls: 3, context_percent: 42, context_used: 4_200 })
+  })
+
+  it('falls back to prompt_tokens and completion_tokens when input_tokens and output_tokens are zero', () => {
+    mountStream()
+
+    act(() =>
+      stream.handleEvent({
+        payload: {
+          api_calls: 3,
+          completion_tokens: 80,
+          input_tokens: 0,
+          output_tokens: 0,
+          prompt_tokens: 1_000,
+          total_tokens: 1_080
+        },
+        session_id: SID,
+        type: 'session.usage'
+      })
+    )
+
+    expect($currentUsage.get()).toEqual({
+      ...BASELINE,
+      calls: 3,
+      completion: 80,
+      input: 1_000,
+      output: 80,
+      prompt: 1_000,
+      total: 1_080
+    })
+  })
+
   it('caches a background session.usage tick without overwriting the primary status bar', () => {
     mountStream()
 

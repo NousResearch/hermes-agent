@@ -386,7 +386,7 @@ def _resolve_name_collisions(name: str, candidates: list[_Candidate]) -> list[_C
 
 
 def _register_candidates(name: str, candidates: list[_Candidate], *, check_fn: Callable,
-                         scope: Callable[[], Optional[str]], lazy: bool, key=None) -> list[str]:
+                         scope: Callable[[], Optional[str]], lazy: bool, key=None, execution_timeout=None) -> list[str]:
     """Register candidates under toolset ``mcp-{name}``; returns the names that landed. The
     ownership pre-check is advisory (servers connect in parallel): ``registry.register()`` is
     the atomic gate and its verdict is re-read after every call. *key* is the connection whose
@@ -413,7 +413,8 @@ def _register_candidates(name: str, candidates: list[_Candidate], *, check_fn: C
             continue
         registry.register(
             name=c.registry_name, toolset=toolset_name, schema=c.schema, handler=c.handler, check_fn=check_fn,
-            is_async=False, description=c.schema.get("description") or "", scope=scope_value)
+            is_async=False, description=c.schema.get("description") or "", scope=scope_value,
+            execution_timeout=execution_timeout)
         if registry.get_toolset_for_tool(c.registry_name) == toolset_name:
             _track_mcp_tool_server(c.registry_name, name)
             if scope_value is not None:
@@ -467,10 +468,21 @@ def _register_server_tools(name: str, server: "MCPServerTask", config: dict) -> 
     _record_tool_trust_metadata(name, config, server._tools, key)
     candidates = _tool_candidates(name, server._tools, should_register, server.tool_timeout)
     candidates += _utility_candidates(name, _select_utility_schemas(name, server, config), server.tool_timeout)
+    # Judged by the connection's owner scope (the ``(scope, name)`` key the registration below
+    # publishes into), never by the bare name resolved in the caller's context.
+    if (_core._server_registry_scope(key) or '').startswith('editor-session:'):
+        import json
+        from hermes_state_runtime import RuntimeStoreError
+        manifest = json.dumps({c.registry_name: c.schema for c in candidates}, sort_keys=True)
+        frozen = getattr(server, '_editor_frozen_manifest', manifest)
+        if manifest != frozen:
+            raise RuntimeStoreError('acp_mcp_schema_changed')
+        server._editor_frozen_manifest = frozen
     registered = _register_candidates(
         name, _resolve_name_collisions(name, candidates),
-        check_fn=_make_check_fn(name), scope=lambda: _core._server_registry_scope(key), lazy=False, key=key)
-    if registered:
+        check_fn=_make_check_fn(name), scope=lambda: _core._server_registry_scope(key), lazy=False, key=key,
+        execution_timeout=config.get("timeout"))
+    if registered and not (_core._server_registry_scope(key) or '').startswith('editor-session:'):
         _write_schema_cache(name, server, config, should_register)
     return registered
 
@@ -634,7 +646,8 @@ def _register_connected_into_current_scope(servers: dict) -> int:
             name, _select_utility_schemas(name, server, config), server.tool_timeout)
         names = _register_candidates(
             name, _resolve_name_collisions(name, candidates),
-            check_fn=_make_check_fn(name), scope=lambda: scope, lazy=False, key=key)
+            check_fn=_make_check_fn(name), scope=lambda: scope, lazy=False, key=key,
+            execution_timeout=config.get("timeout"))
         if names:
             registered_servers += 1
             with _core._lock:
@@ -658,7 +671,8 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> list[str]
     candidates = _tool_candidates(name, cached_tools, _make_tool_filter(name, config), tool_timeout)
     candidates += _utility_candidates(name, utility_tools_from_cache_entry(entry), tool_timeout)
     registered = _register_candidates(
-        name, candidates, check_fn=_make_check_fn(name), scope=_core._mcp_registry_scope, lazy=True)
+        name, candidates, check_fn=_make_check_fn(name), scope=_core._mcp_registry_scope, lazy=True,
+        execution_timeout=config.get("timeout"))
     if registered:
         with _core._lock:
             key = _server_key(name)

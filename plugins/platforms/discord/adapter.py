@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- platform-tables refactor: core's PLATFORM_HINTS/_PLATFORM_DEFAULTS rows for this platform moved onto its register() call (hint text lives in adapter_hint.py); the growth is only those kwargs
 from __future__ import annotations
 
 """
@@ -319,7 +320,6 @@ from gateway.platforms._shared import (
     extra_or_secret as _extra_or_secret, platform_gate_env as _scoped_gate_env, send_error,
     yaml_env_setter as _yaml_env_setter
 )
-
 
 
 def _unauthorized() -> str:
@@ -1200,30 +1200,8 @@ class VoiceReceiver:
         )
 
 
-def _read_dm_role_auth_guild() -> Optional[int]:
-    """Return the guild ID opted-in for DM role-based auth, or None (secure default). Read from
-    config.yaml ``discord.dm_role_auth_guild`` only (behavioral, not a secret); int or numeric string."""
-    try:
-        from hermes_cli.config import read_raw_config
-        cfg = read_raw_config() or {}
-        discord_cfg = cfg.get("discord", {}) or {}
-        raw = discord_cfg.get("dm_role_auth_guild")
-    except Exception:
-        return None
-    if raw is None or raw == "":
-        return None
-    try:
-        guild_id = int(raw)
-    except (TypeError, ValueError):
-        return None
-    return guild_id if guild_id > 0 else None
-
-
-# Default timeout for Discord button views when ``approvals.discord_prompt_timeout`` is unset;
-# Discord interaction tokens expire at ~15 minutes, so 900s is the practical ceiling.
-_DISCORD_PROMPT_TIMEOUT_DEFAULT = 300
-_DISCORD_PROMPT_TIMEOUT_MIN = 30
-_DISCORD_PROMPT_TIMEOUT_MAX = 900
+from plugins.platforms.discord.adapter_config_readers import (
+    _DISCORD_PROMPT_TIMEOUT_DEFAULT, _DISCORD_PROMPT_TIMEOUT_MIN, _read_discord_prompt_timeout, _read_dm_role_auth_guild)
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -1233,38 +1211,15 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw in {"true", "1", "yes", "on"}
 
 
-def _read_discord_prompt_timeout() -> int:
-    """Timeout (seconds) for Discord button views from ``approvals.discord_prompt_timeout``
-    (default 300), clamped to [MIN, MAX] so a typo can't make prompts vanish or outlive tokens."""
-    raw: Any = None
-    try:
-        from hermes_cli.config import read_raw_config
-        cfg = read_raw_config() or {}
-        approvals_cfg = cfg.get("approvals", {}) or {}
-        raw = approvals_cfg.get("discord_prompt_timeout")
-    except Exception:
-        return _DISCORD_PROMPT_TIMEOUT_DEFAULT
-    if raw is None or raw == "":
-        return _DISCORD_PROMPT_TIMEOUT_DEFAULT
-    try:
-        seconds = int(raw)
-    except (TypeError, ValueError):
-        return _DISCORD_PROMPT_TIMEOUT_DEFAULT
-    if seconds < _DISCORD_PROMPT_TIMEOUT_MIN:
-        return _DISCORD_PROMPT_TIMEOUT_MIN
-    if seconds > _DISCORD_PROMPT_TIMEOUT_MAX:
-        return _DISCORD_PROMPT_TIMEOUT_MAX
-    return seconds
-
-
 from plugins.platforms.discord.adapter_media import DiscordMediaMixin
+from plugins.platforms.discord.adapter_authorization import DiscordAuthorizationMixin
 from plugins.platforms.discord.adapter_slash_auth import DiscordSlashAuthMixin
 from plugins.platforms.discord.adapter_thread_titles import DiscordThreadTitlesMixin, SemanticThreadRenames
 from plugins.platforms.discord.adapter_voice_info import DiscordVoiceInfoMixin
 
 
-class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin, DiscordSlashAuthMixin,
-                     BasePlatformAdapter):
+class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin,
+                     DiscordSlashAuthMixin, BasePlatformAdapter):
     """Discord bot adapter: guild/DM messages, threads, slash commands, button approvals, reactions."""
 
     MAX_MESSAGE_LENGTH = 2000
@@ -4373,13 +4328,6 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
             except Exception as e:
                 logger.debug("[Discord] Admin notify via %s failed: %s", target, e)
 
-
-
-
-
-
-
-
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Start a persistent typing loop (POST typing every 12s; indicator lasts ~10s).
         TYPING_START is unreliable for bots in DMs; 429 sleeps ``retry_after``; CancelledError ends it."""
@@ -5043,12 +4991,12 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
             return snap[name] or default
         return _scoped_gate_env(name, default)
 
-    def _gate_raw(self, extra_key: str, env_key: str):
-        """Resolve one gate value: env/snapshot first (legacy precedence), then extra."""
-        val = self._gate_env(env_key)
+    def _gate_raw(self, extra_key: str, env_key: str, config=None):
+        """Resolve one gate value: env/snapshot first (legacy precedence), then extra; *config* = re-read extra."""
+        val = self._gate_env(env_key) if config is None else _scoped_gate_env(env_key)
         if val:
             return val
-        extra = getattr(getattr(self, "config", None), "extra", None)
+        extra = getattr(getattr(self, "config", None) if config is None else config, "extra", None)
         if isinstance(extra, dict):
             return extra.get(extra_key)
         return None
@@ -7418,13 +7366,18 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
 _is_connected = _env_is_connected("DISCORD_BOT_TOKEN")
 
 
-
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
+    from .adapter_hint import PLATFORM_HINT
+    from .send_targets import SEND_ENTRY_KWARGS
     from plugins.platforms.discord.onboarding import interactive_setup
 
+    from .dashboard_card import DASHBOARD_CARD
+    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
     ctx.register_platform(
+        **SEND_ENTRY_KWARGS,  # send_message target syntax + routing
         name="discord",
+        **DASHBOARD_CARD,
         label="Discord",
         adapter_factory=DiscordAdapter,
         check_fn=discord_deps_present,
@@ -7433,7 +7386,6 @@ def register(ctx) -> None:
         required_env=["DISCORD_BOT_TOKEN"],
         install_hint="Run `hermes setup` to install Discord support.",
         setup_fn=interactive_setup,
-        # YAML→env bridge: ``discord:`` config keys → ``DISCORD_*`` env vars read via os.getenv().
         # YAML→env config bridge — owns the translation of ``config.yaml`` ``discord:`` keys
         # (require_mention, free_response_channels, auto_thread, free_response_auto_thread,
         # reactions, ignored_channels, allowed_channels, no_thread_channels, allow_mentions.*,
@@ -7441,12 +7393,16 @@ def register(ctx) -> None:
         # into ``DISCORD_*`` env vars that the adapter reads via ``os.getenv()``. Replaces the hardcoded
         # block that used to live in ``gateway/config.py``. Hook contract: #24836.
         apply_yaml_config_fn=_apply_yaml_config,
-        allowed_users_env="DISCORD_ALLOWED_USERS",
-        allow_all_env="DISCORD_ALLOW_ALL_USERS",
         cron_deliver_env_var="DISCORD_HOME_CHANNEL",
         # Out-of-process cron delivery via REST, else ``deliver=discord`` jobs fail with "No live adapter".
         standalone_sender_fn=_standalone_send,
         max_message_length=2000,
         emoji="🎮",
         allow_update_command=True,
+        platform_hint=PLATFORM_HINT,
+        display_tier="high",
+        # "-# " subtext reads as metadata.
+        display_overrides={"reasoning_style": "subtext"},
+        env_overrides=gateway_env.ENV_OVERRIDES,
+        env_enable_credentials=gateway_env.ENV_ENABLE_CREDENTIALS, **gateway_env.AUTHZ,
     )

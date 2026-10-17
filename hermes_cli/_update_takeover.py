@@ -110,14 +110,24 @@ def _head_sha(root: Path) -> str:
     return head if _SHA.fullmatch(head) else ""
 
 
+def _publish_gateway_exit_code(code: int) -> None:
+    """Temp + rename with the stdlib only (the takeover runs before app imports are safe): the
+    gateway watcher polls ``.update_exit_code`` and reads an empty file as exit 1."""
+    from hermes_constants import get_hermes_home
+
+    marker = get_hermes_home() / ".update_exit_code"
+    temporary = marker.with_name(marker.name + ".tmp")
+    temporary.write_text(f"{code}\n", encoding="utf-8")
+    os.replace(temporary, marker)
+
+
 def _record_failure(request: dict, result: Path, code: int, detail: str) -> None:
     from hermes_cli import update_receipt
-    from hermes_constants import get_hermes_home
 
     update_receipt.record_step("historical_takeover", False, detail)
     saved = update_receipt.finalize_pending_update_receipt(code, detail)
     if request.get("gateway_mode"):
-        (get_hermes_home() / ".update_exit_code").write_text(f"{code}\n", encoding="utf-8")
+        _publish_gateway_exit_code(code)
     result.write_text(json.dumps({"receipt_handled": saved is not None, "resume_handled": False}), encoding="utf-8")
 
 
@@ -207,9 +217,7 @@ def _record_owed_finish(request: dict, result: Path, detail: str) -> None:
         saved = update_receipt.finalize_pending_update_receipt(0, f"committed; finishing steps owed: {detail}")
     if request.get("gateway_mode"):
         with suppress(Exception):  # health: allow BLE001 -- post-commit boundary: see above
-            from hermes_constants import get_hermes_home
-
-            (get_hermes_home() / ".update_exit_code").write_text("0\n", encoding="utf-8")
+            _publish_gateway_exit_code(0)
     with suppress(OSError):  # no result file: the old updater keeps its own receipt and resumes
         result.write_text(json.dumps({"receipt_handled": saved is not None, "resume_handled": False}),
                           encoding="utf-8")

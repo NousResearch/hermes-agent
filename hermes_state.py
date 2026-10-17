@@ -73,7 +73,6 @@ from hermes_state_wal import (
 )
 from hermes_state_repair import _claim_repair_attempt, preflight_db_writability, repair_state_db_schema
 from hermes_state_titles import SessionTitlesMixin
-from hermes_state_tool_retries import SessionToolRetriesMixin
 from hermes_state_usage import SessionUsageMixin
 from hermes_state_maintenance import SessionMaintenanceMixin
 from hermes_state_gateway import SessionGatewayMixin
@@ -462,7 +461,7 @@ class SessionDB(
     SessionSessionsMixin, SessionFtsSetupMixin, SessionSearchMixin, SessionSchemaMixin,
     SessionPortabilityMixin, SessionTelegramTopicsMixin, SessionCompressionMixin,
     SessionGatewayMixin, SessionMaintenanceMixin, SessionUsageMixin, SessionTitlesMixin,
-    SessionMessagesMixin, SessionCoverageMixin, SessionRewindMixin, SessionProfileRepairMixin, SessionToolRetriesMixin,
+    SessionMessagesMixin, SessionCoverageMixin, SessionRewindMixin, SessionProfileRepairMixin,
 ):
     """SQLite-backed session storage with FTS5 search; many reader threads, one writer (WAL)."""
 
@@ -919,11 +918,13 @@ class SessionDB(
             return self._get_read_conn()
 
     @contextmanager
-    def _read_ctx(self) -> Iterator[sqlite3.Connection]:
+    def _read_ctx(self, *, reopen: bool = True) -> Iterator[sqlite3.Connection]:
         """Yield a connection for read-only statements: a pooled read-only
         connection with NO lock under WAL; otherwise (non-WAL, open failure,
         ceiling reached) the writer connection under self._lock — deliberate
-        degradation: slower beats EMFILE, which the supervisor cannot see."""
+        degradation: slower beats EMFILE, which the supervisor cannot see.
+        ``reopen=False``: a read after ``close()`` raises instead of reopening the
+        writer (an optional reader must not hold a home that is being deleted)."""
         conn = self._checkout_read_conn()
         if conn is not None:
             try:
@@ -944,6 +945,8 @@ class SessionDB(
             return
         with self._lock:
             if self._conn is None:  # close() raced a still-unwinding reader
+                if not reopen:
+                    raise sqlite3.ProgrammingError(f"SessionDB for {self.db_path} is closed")
                 self._reopen_after_close_locked(context="read")
             conn = cast(sqlite3.Connection, self._conn)
             if self._wal_active or self.read_only:  # WAL: no SHARED-lock wait; ro: opened with the read budget

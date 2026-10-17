@@ -6,6 +6,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import {
   EMPTY_OVERRIDE,
   isInherited,
+  ModelOverrideField,
   overrideCreateFields,
   overrideLabel,
   overridePatch,
@@ -24,6 +25,10 @@ const getGlobalModelOptions = vi.fn()
 vi.mock('@/hermes', () => ({
   getGlobalModelOptions: (...args: unknown[]) => getGlobalModelOptions(...args),
   setApiRequestProfile: vi.fn()
+}))
+
+vi.mock('./ui', () => ({
+  useKanban: () => ({ modelClear: 'Clear', modelInherit: 'Profile default' })
 }))
 
 beforeEach(() => {
@@ -54,6 +59,31 @@ describe('override label', () => {
 // The override drives the SHARED composer menu through a controller. This is
 // the seam that keeps the two surfaces identical, so exercise the real
 // component rather than a stand-in.
+describe('ModelOverrideField menu width', () => {
+  it('uses the same content-driven width with a compact minimum and viewport cap', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+    render(
+      <QueryClientProvider client={client}>
+        <ModelOverrideField onChange={vi.fn()} value={EMPTY_OVERRIDE} />
+      </QueryClientProvider>
+    )
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Profile default' }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: 'mouse'
+    })
+
+    const menu = await screen.findByRole('menu')
+    const className = menu.className
+
+    expect(className).toContain('w-max')
+    expect(className).toContain('min-w-72')
+    expect(className).toContain('max-w-[calc(100vw-1rem)]')
+  })
+})
+
 describe('the shared catalog menu, driven by an override controller', () => {
   function renderMenu(value: TaskModelOverride = EMPTY_OVERRIDE) {
     const onChange = vi.fn()

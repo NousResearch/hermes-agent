@@ -94,15 +94,15 @@ function MenuChoice() {
 }
 
 it('returns to the exact caret or backward selection after the model menu closes', async () => {
-  const surface = document.createElement('div')
+  const surface = globalThis.document.createElement('div')
   surface.dataset.composerTarget = 'main'
-  const editor = document.createElement('div')
+  const editor = globalThis.document.createElement('div')
   editor.dataset.slot = RICH_INPUT_SLOT
   editor.contentEditable = 'true'
   editor.tabIndex = 0
   editor.textContent = 'before and after'
   surface.append(editor)
-  document.body.append(surface)
+  globalThis.document.body.append(surface)
 
   try {
     render(<ModelPill disabled={false} model={modelState({ modelMenuContent: <MenuChoice /> })} />)
@@ -121,7 +121,7 @@ it('returns to the exact caret or backward selection after the model menu closes
       choice.focus()
       window.getSelection()!.removeAllRanges()
       fireEvent.click(choice)
-      await waitFor(() => expect(document.activeElement).toBe(editor))
+      await waitFor(() => expect(globalThis.document.activeElement).toBe(editor))
       expect(window.getSelection()!.anchorOffset).toBe(anchor)
       expect(window.getSelection()!.focusOffset).toBe(focus)
     }
@@ -186,6 +186,44 @@ describe('ModelPill width', () => {
     // yielding width, not overflow the composer row.
     expect(pill.className).toMatch(/\bmin-w-0\b/)
     expect(pill.className).toMatch(/\bshrink\b/)
+  })
+})
+
+describe('ModelPill menu width', () => {
+  async function openMenuClass() {
+    const surface = globalThis.document.createElement('div')
+    surface.dataset.composerTarget = 'main'
+    const editor = globalThis.document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.contentEditable = 'true'
+    editor.tabIndex = 0
+    surface.append(editor)
+    globalThis.document.body.append(surface)
+
+    try {
+      render(<ModelPill disabled={false} model={modelState({ modelMenuContent: <MenuChoice /> })} />)
+      editor.focus()
+      await act(async () => {
+        requestModelMenuToggle()
+        await new Promise(resolve => setTimeout(resolve, 0))
+      })
+
+      const choice = await screen.findByText('Choose model')
+
+      return choice.closest('[role="menu"]')?.className ?? ''
+    } finally {
+      surface.remove()
+    }
+  }
+
+  it('uses a content-driven width with a compact minimum and viewport cap', async () => {
+    const className = await openMenuClass()
+
+    expect(className).toContain('w-max')
+    expect(className).toContain('min-w-72')
+    expect(className).toContain('max-w-[calc(100vw-1rem)]')
+    expect(className.split(/\s+/)).not.toContain('w-72')
+    expect(className.split(/\s+/)).not.toContain('w-96')
   })
 })
 

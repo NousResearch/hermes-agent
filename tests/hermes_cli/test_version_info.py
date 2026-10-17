@@ -219,6 +219,57 @@ def test_get_version_info_takes_the_version_a_calver_only_release_shipped(tmp_pa
     assert info.derived_version == f"0.21.4+1.g{git('rev-parse', '--short=7', 'HEAD')}"
 
 
+def test_get_version_info_reports_the_tag_a_detached_head_sits_on(tmp_path, monkeypatch):
+    """An exact release checkout (`git checkout v0.22.2`) reports that release even
+    when the --merged tag walk fails and only the CalVer describe still answers —
+    the failure mode that used to print 0.21.5+12940.g<sha> (#140329)."""
+    from hermes_cli import version_info
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args: str) -> str:
+        result = subprocess.run(
+            ["git", *args], cwd=repo, text=True, capture_output=True, check=True,
+            env={"HOME": str(tmp_path), "PATH": os.environ["PATH"]},
+        )
+        return result.stdout.strip()
+
+    git("init", "-q")
+    git("config", "user.name", "Hermes Test")
+    git("config", "user.email", "hermes@example.invalid")
+    (repo / "pyproject.toml").write_text(
+        '[project]\nname = "hermes-agent"\nversion = "0.21.5"\n', encoding="utf-8"
+    )
+    git("add", "pyproject.toml")
+    git("commit", "-qm", "release")
+    git("tag", "v2026.9.24")
+    git("tag", "v0.21.5")
+    (repo / "pyproject.toml").write_text(
+        '[project]\nname = "hermes-agent"\nversion = "0.22.2"\n', encoding="utf-8"
+    )
+    git("commit", "-qam", "next release")
+    git("tag", "v0.22.2")
+    git("checkout", "-q", "--detach", "v0.22.2")
+
+    real_run_git = version_info._run_git
+
+    def failing_merged_walk(repo_dir, *args):
+        if args[:2] == ("tag", "--merged"):
+            return None
+        return real_run_git(repo_dir, *args)
+
+    monkeypatch.setattr(version_info, "_run_git", failing_merged_walk)
+    monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: None)
+    monkeypatch.setattr("hermes_cli.version_info._resolve_repo_dir", lambda: repo)
+
+    info = get_version_info()
+
+    assert info.base_version == "0.22.2"
+    assert info.distance == 0
+    assert info.derived_version == "0.22.2"
+
+
 def test_resolve_stamp_file_honors_install_root(tmp_path, monkeypatch):
     """Sealed installs (the Nix wrapper) point HERMES_INSTALL_ROOT at the stamp dir."""
     stamp = {"commit": "e" * 40, "source": "nix", "distribution": "nix", "updateMechanism": "external"}

@@ -162,11 +162,17 @@ def _touch_turn_progress(sid: str) -> None:
         key = session.get("_active_turn_marker_key")
         if not key:
             return
+        # Scope the refresh to this turn's immutable marker token: a superseded runtime's turn is still
+        # emitting progress events, but it must not refresh (or revive) the NEWER owner's marker for the
+        # same stored session key. Falling back to the process identity (no token) can only refresh a
+        # marker this very process wrote.
+        token = session.get("_active_turn_marker_token")
         # ``_session_home`` lives in a module whose bodies are rebound onto server's globals, so it
         # is not callable from here; resolve the same value explicitly (profile home first).
         from hermes_constants import get_hermes_home
         from tui_gateway.turn_marker import touch_turn_marker
-        touch_turn_marker(session.get("profile_home") or get_hermes_home(), str(key))
+        touch_turn_marker(session.get("profile_home") or get_hermes_home(), str(key),
+                          identity={"turn_token": str(token)} if token else None)
     except Exception:
         import logging
         logging.getLogger(__name__).debug("turn progress heartbeat failed sid=%s", sid, exc_info=True)

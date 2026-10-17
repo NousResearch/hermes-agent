@@ -192,7 +192,11 @@ def test_interrupt_ack_retires_marker_before_run_thread_exits(monkeypatch, marke
     session["session_key"] = "rotated-key"
     session_home = marker_home / "remote-profile"
     session["profile_home"] = str(session_home)
-    record_turn_start(session_home, "original-key", "do not resume me")
+    # The marker carries the turn's immutable identity; the session holds the same token (the real
+    # _record_turn_marker publishes it for the turn's heartbeat and retirement).
+    session["_active_turn_marker_token"] = "turn-token-original"
+    record_turn_start(session_home, "original-key", "do not resume me",
+                      turn_token=session["_active_turn_marker_token"])
 
     _patch_local_interrupt(monkeypatch, session)
 
@@ -220,12 +224,15 @@ def test_interrupt_racing_marker_write_cannot_leave_recovery_state(
     session = _session(agent=agent, running=True)
     _patch_local_interrupt(monkeypatch, session)
 
-    def write_after_stop(home, key, prompt, *, attempts=0, auto_continue=True):
+    def write_after_stop(home, key, prompt, *, attempts=0, auto_continue=True, **identity):
         response = server._methods["session.interrupt"](
             "stop-during-write", {"session_id": "runtime-race"}
         )
         assert response["result"]["status"] == "interrupted"
-        record_turn_start(home, key, prompt, attempts=attempts, auto_continue=auto_continue)
+        # Forward the turn identity exactly as the real writer does (the marker records it and the
+        # writer returns it), so the post-write cancel check can retire this turn's own marker.
+        return record_turn_start(home, key, prompt, attempts=attempts,
+                                 auto_continue=auto_continue, **identity)
 
     monkeypatch.setattr(server, "record_turn_start", write_after_stop)
 

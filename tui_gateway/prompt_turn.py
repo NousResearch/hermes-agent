@@ -196,14 +196,17 @@ def _record_turn_marker(session: dict, text: Any, *, auto_continue: bool = True,
         marker_text = ""  # structured content the client sent instead of text: record a blank marker
     with session["history_lock"]:
         session["_active_turn_marker_key"] = marker_key
-    record_turn_start(marker_home, marker_key, marker_text, attempts=marker_attempt,
-                      auto_continue=auto_continue,
-                      **({"notification_category": "diagnostic"}
-                         if notification_category == "diagnostic" else {}))
+    marker_token = record_turn_start(
+        marker_home, marker_key, marker_text, attempts=marker_attempt, auto_continue=auto_continue,
+        **({"notification_category": "diagnostic"}
+           if notification_category == "diagnostic" else {}))
     with session["history_lock"]:
+        # Publish the immutable token this turn's heartbeat and retirement are scoped to. It is the
+        # identity the marker file now carries, so only THIS turn can clear it.
+        session["_active_turn_marker_token"] = marker_token
         marker_cancelled = bool(session.get("_turn_cancel_requested"))
     if marker_cancelled:
-        clear_turn_marker(marker_home, marker_key)
+        clear_turn_marker(marker_home, marker_key, identity={"turn_token": marker_token})
     return marker_key
 
 
@@ -512,6 +515,7 @@ class _TurnRun:
     error_detail: str = ""
     prompt_text: str = ""
     marker_key: str = ""
+    marker_token: str = ""  # immutable identity of this turn's durable marker (see turn_marker.py)
     receipt_attempted: bool = False
 
 
@@ -983,7 +987,7 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
             **({"error": str(error_value or raw)} if status == "error" else {})})
         st.receipt_committed = True
     if st.receipt_committed:
-        _retire_turn_marker(session, st.marker_key)
+        _retire_turn_marker(session, st.marker_key, turn_token=st.marker_token)
     return payload, raw, status
 
 
@@ -1152,6 +1156,8 @@ def _run_prompt_submit(
             receipt_committed=terminal_callback is None)
         st.marker_key = _record_turn_marker(session, text, auto_continue=terminal_callback is None,
             notification_category=(display_metadata or {}).get("notification_category"))
+        with session["history_lock"]:
+            st.marker_token = str(session.get("_active_turn_marker_token") or "")
         goal_followup = None
         try:
             prepared = _prepare_turn_input(sid, session, st, text, images)
@@ -1211,10 +1217,11 @@ def _run_prompt_submit(
                     st.error_detail)
                 # Backstop for turns that never reached a terminal frame.
                 if st.receipt_committed:
-                    _retire_turn_marker(session, st.marker_key)
+                    _retire_turn_marker(session, st.marker_key, turn_token=st.marker_token)
                     with session["history_lock"]:
                         if session.get("_active_turn_marker_key") == st.marker_key:
                             session.pop("_active_turn_marker_key", None)
+                            session.pop("_active_turn_marker_token", None)
                         session.pop("_hosted_room_task", None)
                 session.pop("_auto_continue_scheduled", None)
                 _emit_settled_session_info(sid, session, st.agent)

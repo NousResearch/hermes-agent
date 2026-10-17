@@ -7,6 +7,12 @@ function is best-effort — marker bookkeeping must never break a turn — so I/
 marker" instead of raising. A marker also carries its writer's pid + start time (``marker_writer_state``): "a
 marker exists" only implies the writer died when no live sibling backend wrote it (#94778).
 
+A marker additionally records the immutable identity of the turn that created it — a per-turn
+``turn_token`` plus the writer's pid + start time. ``clear_turn_marker`` / ``touch_turn_marker`` are
+scoped to that identity, so a SUPERSEDED runtime's turn end, Stop, or heartbeat can never delete,
+refresh or revive a NEWER owner's marker for the same stored session key (they share one HERMES_HOME
+and one session key across processes); only the turn that wrote a marker may mutate it.
+
 Two DIFFERENT questions are asked of this file, so there are two readers:
 
 * ``read_turn_marker`` — the crash auto-continue contract. A marker with no prompt TEXT is nothing to
@@ -24,6 +30,7 @@ import logging
 import os
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 from utils import atomic_json_write
@@ -118,6 +125,41 @@ def marker_writer_state(entry: dict) -> str:
     return "unknown" if live is None else ("alive" if live else "dead")
 
 
+# The immutable identity a marker records about the turn that created it. ``turn_token`` is the
+# precise anchor (unique per turn, minted at creation); the writer pid + create time is the
+# process-level fallback, and the only identity an older build's marker can carry.
+_IDENTITY_FIELDS = ("turn_token", "writer_pid", "writer_start_time")
+
+
+def marker_identity(entry: dict[str, Any] | None) -> dict[str, Any]:
+    """The immutable writer/turn identity ``entry`` carries, or ``{}`` when it records none.
+
+    Feed it back to ``clear_turn_marker`` / ``touch_turn_marker`` as ``identity`` (to mutate exactly
+    the entry a reader just saw), or build the same shape from the ``turn_token`` that
+    ``record_turn_start`` returned (to mutate the caller's own turn).
+    """
+    if not isinstance(entry, dict):
+        return {}
+    return {field: entry[field] for field in _IDENTITY_FIELDS if entry.get(field) is not None}
+
+
+def _entry_matches_identity(entry: dict[str, Any] | None, identity: dict[str, Any] | None) -> bool:
+    """True only when ``entry`` is provably the turn ``identity`` names.
+
+    Every field the caller pins must match. An absent or differently-valued field on the stored entry
+    is a MISMATCH, never a wildcard: a marker written by a build that recorded no writer/turn identity
+    (a legacy marker) must not be claimed by a caller that has one, or "no identity" would read as
+    proof of ownership and a superseded runtime could clear a newer owner's marker. An empty caller
+    identity claims nothing, and so does a missing marker.
+    """
+    if not isinstance(entry, dict) or not identity:
+        return False
+    pinned = [(field, identity.get(field)) for field in _IDENTITY_FIELDS if identity.get(field) is not None]
+    if not pinned:
+        return False
+    return all(entry.get(field) == value for field, value in pinned)
+
+
 def _load_strict(path: Path) -> dict[str, dict] | None:
     """Markers keyed by session id; ``None`` when the FILE could not be read or parsed as an object.
 
@@ -169,9 +211,15 @@ def _update(home: Path | str, session_key: str, mutate, what: str) -> None:
 
 
 def record_turn_start(home: Path | str, session_key: str, prompt: str, *, attempts: int = 0,
-                      auto_continue: bool = True, notification_category: str | None = None) -> None:
+                      auto_continue: bool = True, notification_category: str | None = None,
+                      turn_token: str | None = None) -> str:
     """Persist the marker for a turn that is about to run. ``attempts`` = how many auto-continues led to
     this run (0 for a user-initiated turn); the crash-loop breaker reads it back on the next resume.
+
+    Returns the turn's immutable identity token, recorded as ``turn_token``. It is minted here (or
+    adopted from ``turn_token``) and every later mutation of this marker — clear, retirement, heartbeat
+    — is scoped to it, so a superseded writer's turn end cannot touch a newer owner's marker for the
+    same session key.
 
     The prompt may be BLANK — an attachment-only or programmatic turn still runs, and it must still
     leave cross-process proof that "a turn is in flight" for this chat (see ``turn_in_flight``). A
@@ -180,27 +228,46 @@ def record_turn_start(home: Path | str, session_key: str, prompt: str, *, attemp
     auto-continued.
     """
     if not session_key:
-        return
+        return ""
     text = prompt if isinstance(prompt, str) else ""
+    token = str(turn_token) if turn_token else uuid.uuid4().hex
     now = time.time()
     entry = {"attempts": max(0, int(attempts)), "prompt": text[:_MAX_PROMPT_CHARS], "started_at": now,
-             "progress_at": now,
+             "progress_at": now, "turn_token": token,
              "auto_continue": bool(auto_continue), **_writer_identity()}
     if notification_category == "diagnostic":
         entry["notification_category"] = notification_category
     # Identity only — never the prompt: this log is read on crash triage and must not carry turn content.
     logger.debug("turn marker recorded for session %s by writer pid %s", session_key, entry["writer_pid"])
     _update(home, session_key, lambda entries: {**_prune(entries, now), session_key: entry}, "record")
+    return token
 
 
-def clear_turn_marker(home: Path | str, session_key: str) -> None:
-    """Remove the marker once its turn concluded (any outcome the client saw)."""
-    if session_key:
-        _update(home, session_key, lambda e: {k: v for k, v in e.items() if k != session_key} if session_key in e else None, "clear")
+def clear_turn_marker(home: Path | str, session_key: str, *,
+                      identity: dict[str, Any] | None = None) -> None:
+    """Remove the marker once its turn concluded (any outcome the client saw).
+
+    Scoped to ``identity`` — the immutable writer/turn identity captured when the marker was created
+    (``marker_identity``, or ``{"turn_token": token}`` from ``record_turn_start``). A superseded
+    runtime's turn end / Stop therefore cannot delete a NEWER owner's marker for the same stored
+    session key. ``identity`` defaults to THIS process's own writer identity, so a caller that has no
+    turn identity can still retire a marker it wrote itself, but never a peer's.
+    """
+    if not session_key:
+        return
+    ident = _writer_identity() if identity is None else identity
+
+    def mutate(entries: dict[str, dict]) -> dict[str, dict] | None:
+        if not _entry_matches_identity(entries.get(session_key), ident):
+            return None
+        return {k: v for k, v in entries.items() if k != session_key}
+
+    _update(home, session_key, mutate, "clear")
 
 
 def touch_turn_marker(home: Path | str, session_key: str, *, now: float | None = None,
-                      min_interval: float = _PROGRESS_MIN_INTERVAL_SECS) -> bool:
+                      min_interval: float = _PROGRESS_MIN_INTERVAL_SECS,
+                      identity: dict[str, Any] | None = None) -> bool:
     """Record that the turn this chat already has in flight is still making progress.
 
     Called from the turn's own progress events (tool steps, streamed deltas), never from a timer:
@@ -209,12 +276,15 @@ def touch_turn_marker(home: Path | str, session_key: str, *, now: float | None =
 
     Throttled in process BEFORE any file access: a chatty turn emits dozens of events per second and
     every real touch needs the cross-process file lock, so only a genuinely due touch pays for it.
-    Only an EXISTING marker for this chat is refreshed — a touch never creates or revives one.
-    Best effort: every failure answers False.
+    Only an EXISTING marker OWNED BY ``identity`` is refreshed — a touch never creates or revives one,
+    and a foreign/stale heartbeat cannot refresh a NEWER owner's marker for the same session key.
+    ``identity`` defaults to this process's own writer identity. Best effort: every failure answers
+    False.
     """
     if not session_key:
         return False
     stamp = time.time() if now is None else float(now)
+    ident = _writer_identity() if identity is None else identity
     slot = (str(home), session_key)
     with _last_touch_lock:
         if stamp - _last_touch.get(slot, 0.0) < min_interval:
@@ -224,7 +294,7 @@ def touch_turn_marker(home: Path | str, session_key: str, *, now: float | None =
     def mutate(entries: dict[str, dict]) -> dict[str, dict] | None:
         nonlocal wrote
         entry = entries.get(session_key)
-        if not isinstance(entry, dict):
+        if not isinstance(entry, dict) or not _entry_matches_identity(entry, ident):
             return None
         if stamp - _progress_at(entry) < min_interval:
             return None
@@ -314,8 +384,10 @@ def read_turn_marker(home: Path | str, session_key: str) -> dict[str, Any] | Non
             return None
         return {"attempts": max(0, int(entry.get("attempts") or 0)), "prompt": prompt, "started_at": _started_at(entry),
                 "auto_continue": bool(entry.get("auto_continue", True)),
-                # Writer identity when present: extra keys only, so a marker written by an older build still reads.
-                **{k: entry[k] for k in ("writer_pid", "writer_start_time") if entry.get(k) is not None},
+                # Writer/turn identity when present: extra keys only, so a marker written by an older
+                # build still reads. The turn token lets a crash-recovery reader retire exactly the
+                # marker it judged (and a newer owner's marker is left alone).
+                **{k: entry[k] for k in ("turn_token", "writer_pid", "writer_start_time") if entry.get(k) is not None},
                 **({"notification_category": "diagnostic"}
                    if entry.get("notification_category") == "diagnostic" else {})}
     except Exception:

@@ -1,4 +1,4 @@
-import { type MutableRefObject, useEffect } from 'react'
+import { type MutableRefObject, useEffect, useRef } from 'react'
 
 import {
   hydrateStoredSessionTranscript,
@@ -31,8 +31,20 @@ export function useTranscriptPeerSync({
   selectedStoredSessionIdRef,
   updateSessionState
 }: TranscriptPeerSyncOptions): void {
+  // Multiple completed-turn broadcasts can arrive before the first persisted
+  // transcript read returns. Keep only the newest snapshot per runtime: an
+  // earlier response would otherwise overwrite the later one on arrival.
+  const refreshSequenceByRuntimeRef = useRef(new Map<string, number>())
+
   useEffect(() => {
     let cancelled = false
+
+    const latestRefresh = (runtimeId: string) => {
+      const sequence = (refreshSequenceByRuntimeRef.current.get(runtimeId) ?? 0) + 1
+      refreshSequenceByRuntimeRef.current.set(runtimeId, sequence)
+
+      return () => !cancelled && refreshSequenceByRuntimeRef.current.get(runtimeId) === sequence
+    }
 
     const unsubscribe = onTranscriptChanged(payload => {
       const storedSessionId = payload.sessionId
@@ -47,6 +59,7 @@ export function useTranscriptPeerSync({
         if (!cancelled && selected === storedSessionId && runtimeId && !busyRef.current) {
           await hydrateStoredSessionTranscript({
             attempts: 1,
+            isCurrent: latestRefresh(runtimeId),
             runtimeSessionId: runtimeId,
             storedProfile: profileScopeForTranscriptSession(resolveActiveTranscriptSession(storedSessionId, runtimeId)),
             storedSessionId,
@@ -71,6 +84,7 @@ export function useTranscriptPeerSync({
 
           await hydrateStoredSessionTranscript({
             attempts: 1,
+            isCurrent: latestRefresh(tile.runtimeId),
             runtimeSessionId: tile.runtimeId,
             storedProfile: profileScopeForTranscriptSession(owner),
             storedSessionId,

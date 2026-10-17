@@ -411,12 +411,15 @@ export async function reconcileTileTranscripts({
 /** Best-effort post-turn fallback when the live stream did not carry an answer. */
 export async function hydrateStoredSessionTranscript({
   attempts,
+  isCurrent,
   storedSessionId,
   runtimeSessionId,
   storedProfile,
   updateSessionState
 }: {
   attempts: number
+  /** Optional caller-owned latest-wins fence for overlapping refreshes. */
+  isCurrent?: () => boolean
   storedSessionId: string
   runtimeSessionId: string
   storedProfile: ProfileScope
@@ -431,6 +434,7 @@ export async function hydrateStoredSessionTranscript({
   const messagesAtRequest = $sessionStates.get()[runtimeSessionId]?.messages
 
   const superseded = () =>
+    isCurrent?.() === false ||
     tileRuntimeOwnsLiveState(runtimeSessionId) ||
     transcriptChangedDuringRead(messagesAtRequest, $sessionStates.get()[runtimeSessionId]?.messages)
 

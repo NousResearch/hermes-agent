@@ -44,6 +44,12 @@ FAL_FAMILIES: dict[str, dict[str, Any]] = {
                        "lightricks/ltx-2.5/text-to-video/fast", "lightricks/ltx-2.5/image-to-video/fast", duration_int=True, aspect_ratios=("16:9", "9:16"),
                        resolutions=("720p", "1080p", "1440p", "2160p"), resolution_aliases={"2k": "1440p", "4k": "2160p"},
                        durations=(6, 20), duration_enum=tuple(range(6, 21, 2)), duration_cap_by_resolution={"1440p": 10, "2160p": 10}, audio=True),
+    # Kandinsky 6.0 (Kandinsky Lab, Oct 2026, MIT open weights; Lite 3B / Pro 29B): fixed-length 480p clips (no duration or
+    # resolution key; 1080p is the separate `upscale_factor`, left to the endpoint default = off), generate_audio toggle,
+    # seed on both endpoints, i2v adds "auto" to the same aspect enum. Pro alone declares negative_prompt.
+    "kandinsky-6-lite": _family("Kandinsky 6.0 Lite", "~30-60s", "cheap", "Kandinsky Lab open 3B audio-video model. Synced sound, 480p, ~$0.16 per clip.",
+                                "fal-ai/kandinsky6-lite/text-to-video", "fal-ai/kandinsky6-lite/image-to-video",
+                                aspect_ratios=("16:9", "9:16", "1:1", "4:3", "3:4"), audio=True, seed=True),
     "pixverse-v6": _family("Pixverse v6", "~30-90s", "cheap", "Affordable. Negative prompts. 1-15s durations.", "fal-ai/pixverse/v6/text-to-video",
                            "fal-ai/pixverse/v6/image-to-video", resolutions=("360p", "540p", "720p", "1080p"), durations=(1, 15), audio=True, negative=True, seed=True),
     "seedance-2.0-mini": _family("Seedance 2.0 Mini", "~30-90s", "cheap", "ByteDance. Faster/cheaper Seedance tier, audio + lip-sync, 4-15s.",
@@ -59,6 +65,9 @@ FAL_FAMILIES: dict[str, dict[str, Any]] = {
     "seedance-2.5": _family("Seedance 2.5", "~60-180s", "premium", "ByteDance flagship. Native 30s single-pass, audio in the same latent space, lip-sync.",
                             "bytedance/seedance-2.5/text-to-video", "bytedance/seedance-2.5/image-to-video", aspect_ratios=_SIX_ASPECTS,
                             image_drop_keys=("aspect_ratio",), resolutions=("480p", "720p"), durations=(4, 30), audio=True),  # i2v aspect is "auto" only
+    "kandinsky-6-pro": _family("Kandinsky 6.0 Pro", "~60-180s", "premium", "Kandinsky Lab open 29B flagship. Cinematic motion with synced audio and speech, 480p.",
+                               "fal-ai/kandinsky6-pro/text-to-video", "fal-ai/kandinsky6-pro/image-to-video",
+                               aspect_ratios=("16:9", "9:16", "1:1", "4:3", "3:4"), audio=True, negative=True, seed=True),
     "minimax-h3": _family("MiniMax H3", "~60-180s", "premium", "MiniMax frontier. Native 2K (up to 4K), 5-15s, seven aspect ratios.",
                           "minimax/h3/text-to-video", "minimax/h3/image-to-video", duration_int=True, image_drop_keys=("aspect_ratio",),  # i2v follows image
                           aspect_ratios=_SIX_ASPECTS, resolutions=("768P", "2K", "4K"), resolution_aliases=_H3_ALIASES, durations=(5, 15), audio_native=True),
@@ -354,7 +363,7 @@ class FALVideoGenProvider(VideoGenProvider):
 
     def get_setup_schema(self) -> dict[str, Any]:
         return {"name": "FAL", "badge": "paid", "env_vars": [{"key": "FAL_KEY", "prompt": "FAL.ai API key", "url": "https://fal.ai/dashboard/keys"}],
-                "tag": "LTX 2.3/2.5, Pixverse, Seedance 2.0/2.5/Mini, Veo 3.1, MiniMax H3, FLUX 3, Kling 3.0/4K/O3, Wan 3.0, Happy Horse, Grok Imagine, "
+                "tag": "LTX 2.3/2.5, Kandinsky 6.0, Pixverse, Seedance 2.0/2.5/Mini, Veo 3.1, MiniMax H3, FLUX 3, Kling 3.0/4K/O3, Wan 3.0, Happy Horse, Grok Imagine, "
                        "Gemini Omni — text-to-video & image-to-video"}
 
     def capabilities(self) -> dict[str, Any]:

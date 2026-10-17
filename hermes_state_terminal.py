@@ -81,6 +81,8 @@ def load_result(text):
     """Decode a stored result row. Only a row carrying ``encode_result``'s exact envelope is
     decoded (to the dict it encoded, key order included); every other row, including all rows
     written before it, is returned as stored."""
+    # Decodes in place: safe only because each call parses its own copy. A cache in front of this
+    # must hand out copies, never the decoded dict itself.
     result = json.loads(text)
     if not isinstance(result, dict) or not isinstance(envelope := result.get(_STORED), dict):
         return result

@@ -6,6 +6,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
+import { gunzipSync } from 'node:zlib'
 
 import { test } from 'vitest'
 
@@ -136,11 +137,11 @@ type SshExecOptions = { stdinData?: string | Buffer }
 function scriptFromInvocation(command: string, options: SshExecOptions = {}) {
   const encoded = command.match(/-EncodedCommand\s+([^\s]+)$/)?.[1]
 
-  if (encoded) {
+  if (encoded && !options.stdinData) {
     return Buffer.from(encoded, 'base64').toString('utf16le')
   }
 
-  return Buffer.from(String(options.stdinData || '').trim(), 'base64').toString('utf16le')
+  return gunzipSync(Buffer.from(String(options.stdinData || '').trim(), 'base64')).toString('utf8')
 }
 
 test('PowerShell transport uses UTF-16LE encoded commands and literal escaping', () => {
@@ -482,15 +483,15 @@ test('Windows platform probe streams long PowerShell scripts over stdin', async 
   })
 
   assert.equal(result.os, 'Windows')
-  assert.match(command, /-Command \[ScriptBlock\]::Create/)
-  assert.doesNotMatch(command, /-EncodedCommand/)
-  assert.ok(command.length < 1024)
+  assert.match(command, /-EncodedCommand\s+[A-Za-z0-9+/=]+$/)
+  assert.doesNotMatch(command, /-Command\s+\[/)
+  assert.ok(command.length < 8191)
   assert.match(stdinData, /^[A-Za-z0-9+/=\r\n]+$/)
-  const decodedScript = Buffer.from(stdinData.trim(), 'base64').toString('utf16le')
+  const decodedScript = gunzipSync(Buffer.from(stdinData.trim(), 'base64')).toString('utf8')
   assert.match(decodedScript, /Assert-NoReparse/)
 })
 
-test('Windows platform probe preserves Unicode paths in its UTF-16LE stdin payload', async () => {
+test('Windows platform probe preserves Unicode paths in its compressed UTF-8 stdin payload', async () => {
   let stdinData = ''
 
   await probeWindowsRemote(
@@ -510,7 +511,7 @@ test('Windows platform probe preserves Unicode paths in its UTF-16LE stdin paylo
     'C:\\Users\\한글\\hermes.exe'
   )
 
-  const decodedScript = Buffer.from(stdinData.trim(), 'base64').toString('utf16le')
+  const decodedScript = gunzipSync(Buffer.from(stdinData.trim(), 'base64')).toString('utf8')
   assert.ok(decodedScript.includes('C:\\Users\\한글\\hermes.exe'))
 })
 
@@ -633,7 +634,7 @@ test('platform detection preserves POSIX and falls back to Windows PowerShell', 
   )
 
   assert.equal(result.os, 'Windows')
-  assert.match(calls[1], /-Command \[ScriptBlock\]::Create/)
+  assert.match(calls[1], /-EncodedCommand\s+[A-Za-z0-9+/=]+$/)
 })
 
 test('platform detection surfaces transport failures as themselves, not unsupported-platform', async () => {
@@ -849,4 +850,27 @@ test('managed update drain rechecks Windows PID/create-time ownership before exa
     operations.some(operation => operation.includes("'remove-lock'")),
     false
   )
+})
+
+test('stdin transport probes send the wrapper as one EncodedCommand token, never a bare expression (#134629)', async () => {
+  const commands: string[] = []
+
+  const ssh = sshWith(async (command, options) => {
+    commands.push(command)
+    const script = scriptFromInvocation(command, options)
+
+    return script.includes('Get-Command hermes.exe') ? CLEAN_PROBE_RESULT : 'CLEAR'
+  })
+
+  await probeWindowsRemote(ssh)
+  await assertWindowsRemoteInstallUpdateClear(ssh, 'C:\\h')
+  assert.equal(commands.length, 2)
+
+  for (const command of commands) {
+    assert.match(command, /-EncodedCommand\s+[A-Za-z0-9+/=]+$/)
+    assert.doesNotMatch(command, /-Command\s+\[/)
+    const wrapper = Buffer.from(command.split(' ').at(-1)!, 'base64').toString('utf16le')
+    assert.match(wrapper, /\[Console\]::In.ReadToEnd\(\)/)
+    assert.match(wrapper, /scriptblock\]::Create/i)
+  }
 })

@@ -22,6 +22,7 @@ import time as _time_mod
 from pathlib import Path
 from typing import Callable, Optional
 from hermes_cli.desktop_console import desktop_console_output, desktop_launch_notice
+from hermes_cli.gui_uninstall import prune_legacy_desktop_build_stamp as _prune_legacy_desktop_build_stamp
 from hermes_platform.host import facts
 
 # Log-record parity with the origin module.
@@ -104,6 +105,7 @@ def _packaged_node_pty_missing(dist_dir: Path) -> bool:
 
 def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode: bool) -> bool:
     """True when the desktop build output is stale, missing, torn, or built in the other mode."""
+    _prune_legacy_desktop_build_stamp()
     if source_mode:
         if not _desktop_dist_exists(desktop_dir):
             return True
@@ -1429,6 +1431,7 @@ def _diagnose_esbuild_ignore_scripts(output: Optional[str]) -> None:
 def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, env: dict,
                            icons: Path | None = None) -> Optional[Path]:
     """Build prepared desktop sources, then publish the verified staged app."""
+    _prune_legacy_desktop_build_stamp()
     from hermes_cli.source_build import run_in_custody  # npm writes the checkout: update custody
 
     if not source_mode and sys.platform == "win32" and (ancestor := _desktop_ancestor_in(desktop_dir)):
@@ -1484,8 +1487,7 @@ _WSL_DXG_DEVICE = Path("/dev/dxg")
 _WSL_D3D12_DRIVERS = (
     Path("/usr/lib/x86_64-linux-gnu/dri/d3d12_dri.so"),
     Path("/usr/lib/aarch64-linux-gnu/dri/d3d12_dri.so"),
-    Path("/usr/lib64/dri/d3d12_dri.so"),
-    Path("/usr/lib/dri/d3d12_dri.so"),
+    Path("/usr/lib64/dri/d3d12_dri.so"), Path("/usr/lib/dri/d3d12_dri.so"),
 )
 _MESA_DRIVER_OVERRIDES = ("GALLIUM_DRIVER", "MESA_LOADER_DRIVER_OVERRIDE", "LIBGL_ALWAYS_SOFTWARE", "LIBGL_DRIVERS_PATH")
 
@@ -1546,18 +1548,16 @@ def _desktop_launch_env(args: argparse.Namespace) -> tuple[dict, list[str]]:
     # Without --password-store safeStorage.isEncryptionAvailable() is often
     # false and the desktop app refuses to persist remote gateway tokens.
     if sys.platform == "linux" and "HERMES_DESKTOP_PASSWORD_STORE" not in os.environ:
-        password_store = (
-            config_password_store if config_password_store != "auto" else _detect_linux_password_store()
-        )
+        password_store = config_password_store if config_password_store != "auto" else _detect_linux_password_store()
         if password_store:
             env["HERMES_DESKTOP_PASSWORD_STORE"] = password_store
     return env, config_electron_flags
 
 
-def _check_desktop_skip_build(
-    desktop_dir: Path, project_root: Path, *, source_mode: bool, packaged_executable: Optional[Path]
-) -> None:
+def _check_desktop_skip_build(desktop_dir: Path, project_root: Path, *, source_mode: bool,
+                             packaged_executable: Optional[Path]) -> None:
     """Validate the pre-built artifact ``--skip-build`` promised; exit with a hint when it's missing."""
+    _prune_legacy_desktop_build_stamp()
     if source_mode:
         if not _desktop_dist_exists(desktop_dir):
             print(f"✗ --skip-build --source was passed but no desktop dist found at: {desktop_dir / 'dist'}")

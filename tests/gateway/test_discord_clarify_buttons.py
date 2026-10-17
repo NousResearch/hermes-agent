@@ -294,3 +294,34 @@ class TestDiscordSendClarify:
         for label in choice_labels:
             assert "only_name_here" not in label, f"name leaked: {label!r}"
             assert "only_value_here" not in label, f"value leaked: {label!r}"
+
+
+class TestClarifyExpiredTextFallback:
+    def setup_method(self):
+        _clear_clarify_state()
+
+    @pytest.mark.asyncio
+    async def test_expired_buttons_accept_a_typed_answer_without_resolving_early(self):
+        from tools import clarify_gateway as cm
+
+        entry = cm.register("expired-text", "session-text", "Pick a color", ["red", "blue"])
+        view = ClarifyChoiceView(["red", "blue"], "expired-text", set())
+        await view.on_timeout()
+
+        assert not entry.event.is_set()
+        assert cm.resolve_text_response_for_session("session-text", "a custom color")
+        assert cm.wait_for_response("expired-text", timeout=1) == "a custom color"
+        assert all(child.disabled for child in view.children)
+
+    @pytest.mark.asyncio
+    async def test_expiry_cannot_replace_an_answer_that_already_won(self):
+        from tools import clarify_gateway as cm
+
+        entry = cm.register("answered-before-expiry", "session-answered", "Pick", ["red"])
+        view = ClarifyChoiceView(["red"], "answered-before-expiry", set())
+        assert cm.resolve_gateway_clarify(entry.clarify_id, "red")
+        await view.on_timeout()
+
+        assert not cm.resolve_gateway_clarify(entry.clarify_id, "late answer")
+        assert cm.wait_for_response(entry.clarify_id, timeout=1) == "red"
+        assert all(child.disabled for child in view.children)

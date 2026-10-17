@@ -999,6 +999,35 @@ class TestSkillsEndpoint:
                 for entry in data["data"]:
                     assert set(entry.keys()) >= {"name", "description", "category"}
 
+    @pytest.mark.asyncio
+    async def test_skills_endpoint_reaches_real_skill_discovery(self, adapter, monkeypatch):
+        # Regression: _handle_skills passed an include_editorial kwarg that the
+        # Collective Wisdom revert removed from _find_all_skills, so GET /v1/skills
+        # 500'd on every request. Tests that MagicMock _find_all_skills accept any
+        # kwargs and hide that TypeError, so this drives the REAL discovery against
+        # a skill written into the isolated HERMES_HOME skills dir.
+        import tools.skills_tool
+        skills_dir = tools.skills_tool.get_hermes_home() / "skills"
+        skill_md = skills_dir / "regression-probe" / "SKILL.md"
+        skill_md.parent.mkdir(parents=True, exist_ok=True)
+        skill_md.write_text(
+            "---\n"
+            "name: regression-probe\n"
+            "description: Proves GET /v1/skills reaches real skill discovery.\n"
+            "---\n"
+            "\n"
+            "Probe body.\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(tools.skills_tool, "_SKILLS_CACHE", {})
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/skills")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["object"] == "list"
+            assert "regression-probe" in {s["name"] for s in data["data"]}
+
 
 class TestToolsetsEndpoint:
     @pytest.mark.asyncio

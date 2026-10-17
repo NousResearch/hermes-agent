@@ -16,7 +16,7 @@ import queue
 import threading
 import time
 
-from hermes_cli.gateway_client import DEFAULT_RPC_TIMEOUT, GatewayClientError
+from hermes_cli.gateway_client import DEFAULT_RPC_TIMEOUT, GatewayClientError, GatewayRPCError
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +116,9 @@ class GatewayConnection:
         self._side_lock = threading.Lock()
         # The wake events of :meth:`call_until` commands in flight, each on its own socket.
         self._commands: set[threading.Event] = set()
+        # This CLI's launch-only key (``--api-key`` or a keyed startup alias), set by the session store:
+        # an owner restart revokes it, so every resume re-supplies it (the owner's ``rebind_launch_key``).
+        self.launch_api_key = None
 
     @classmethod
     def shared(cls):
@@ -227,12 +230,23 @@ class GatewayConnection:
             if state.subscription_id is None:
                 continue
             try:
-                state.adopt_snapshot(await client.rpc("session.resume", session_id=session_id))
+                state.adopt_snapshot(await self._resume(client, session_id))
             except GatewayClientError as exc:
                 if str(exc) not in _GONE:
                     raise
                 logger.debug("session.resume %s after reconnect: %s", session_id, exc)
                 state.subscription_id = None
+
+    async def _resume(self, client, session_id):
+        """``session.resume`` carrying :attr:`launch_api_key`. An owner refusal of the keyed resume (a session
+        launched without that key: a keyed startup alias on a Desktop/TUI session) resumes it as is."""
+        key = self.launch_api_key
+        try:
+            return await client.rpc("session.resume", session_id=session_id, **({"api_key": key} if key else {}))
+        except GatewayRPCError:
+            if not key:
+                raise
+            return await client.rpc("session.resume", session_id=session_id)
 
     async def _pump(self, client):
         while True:

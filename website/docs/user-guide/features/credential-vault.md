@@ -52,6 +52,16 @@ Sites that ask for a code after the password are handled the same way:
 
 ## Already using 1Password or Bitwarden?
 
+> **`bw` here, `bws` elsewhere — two different integrations.** This page is
+> about the Bitwarden **password manager** (`bw`, your human vault, filled into
+> websites). [Bitwarden Secrets Manager](../secrets/bitwarden.md) is a separate
+> integration that uses the `bws` CLI with a machine-account token to inject
+> API keys into the Hermes process at startup. The two authenticate separately:
+> a working Secrets Manager setup never installs or signs in `bw`, and a signed-in
+> `bw` says nothing about Secrets Manager. If Desktop reports Bitwarden
+> unavailable while your BWS setup works, that is the password-manager side
+> asking for `bw` — this section is the path from there.
+
 Nothing to enable. If the `op` or `bw` command-line tool is installed and signed
 in, Hermes picks it up automatically and its website logins become fillable
 alongside the local ones. The first time the agent needs one of those logins it
@@ -63,6 +73,20 @@ memory. The agent never sees the master password, the token, or any login.
 A manager item that lists several websites (say `amazon.co.uk`,
 `www.amazon.co.uk` and `eu.account.amazon.com`) fills on each of those exact
 origins; nothing is inferred beyond the URLs saved on the item.
+
+Installing the CLI is the only setup involved. For Bitwarden that is the `bw`
+binary from Bitwarden's [CLI downloads](https://bitwarden.com/help/cli/): on
+Windows, the native executable (put its folder on `PATH`) or
+`choco install bitwarden-cli` or `npm install -g @bitwarden/cli`; on macOS and
+Linux the same native download or npm. If `bw` lives somewhere Hermes will not
+find on `PATH`, set `vault.bitwarden.binary_path` in `config.yaml` to the
+absolute path (`vault.onepassword.binary_path` is the same knob for `op`). Run
+`bw login` once in a terminal; Hermes never signs the CLI in for you.
+
+Detection needs no vault unlock: `hermes vault sources` (or **Settings →
+Passwords & Logins**) lists which managers were found whether or not they are
+signed in — the master-password prompt appears only when a fill actually needs
+that manager.
 
 Prefer not to use a detected manager? `hermes vault sources --disable bitwarden`,
 or the switch in **Settings → Passwords & Logins**.
@@ -102,9 +126,11 @@ vault:
   onepassword:
     enabled: false          # opt OUT of a detected manager (default: on when installed)
     account: ""             # `op --account` shorthand; empty = default
+    binary_path: ""         # absolute path to op; empty = PATH
     service_account_token_env: OP_SERVICE_ACCOUNT_TOKEN
   bitwarden:
-    enabled: false
+    enabled: false          # same opt-out for bw; detected managers default to on
+    binary_path: ""         # absolute path to bw; empty = PATH
 ```
 
 ## What this does and does not guarantee

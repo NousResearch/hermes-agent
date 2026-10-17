@@ -124,10 +124,11 @@ def reinstall_runtime_snapshot(agent: Any, rt: dict[str, Any]) -> None:
     if getattr(agent, "_compression_feasibility_checked", False) is True:
         from agent.conversation_compression import revalidate_compression_feasibility
         revalidate_compression_feasibility(agent)
-    # Older snapshots have no reasoning_config; keep the current value.
-    saved_reasoning = rt.get("reasoning_config")
-    if saved_reasoning is not None:
-        agent.reasoning_config = dict(saved_reasoning)
+    # Older snapshots have no reasoning_config key; keep the current value. A recorded None is the
+    # route's own default and must replace a fallback's per-model override.
+    if "reasoning_config" in rt:
+        saved_reasoning = rt["reasoning_config"]
+        agent.reasoning_config = dict(saved_reasoning) if saved_reasoning else None
     # Reset the stale-call circuit breaker: its streak measured the route being left.
     from agent.chat_completion_helpers import _reset_stale_streak, rewrite_prompt_model_identity
     _reset_stale_streak(agent)

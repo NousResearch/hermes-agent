@@ -450,6 +450,8 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         # fleet-condensed-default.spec.ts: the profile rail's doors per gateway.
         "apps/desktop/src/app/chat/sidebar/profile-switcher",
         "apps/desktop/src/app/chat/sidebar/fleet-",
+        # reconnect-turn-state.spec.ts: the lost-turn card and Discard live in the queue panel.
+        "apps/desktop/src/app/chat/composer/queue-",
     ),
     "e2e_desktop_update": (
         *_DESKTOP_E2E_SHARED,

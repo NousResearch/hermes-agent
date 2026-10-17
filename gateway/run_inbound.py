@@ -205,6 +205,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
 
         if is_internal:
             return event, source, True
+        if getattr(event, "_fifo_only", False):  # a slash command's queued turn: its command passed ingress
+            return event, source, False
 
         # scale-to-zero: only real user-originated inbound stamps the last-inbound clock;
         # counting internal/system events would keep a genuinely idle gateway awake.
@@ -613,6 +615,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         ``messaging:*`` rows of this route's logical owner first (automation wakes, LOCAL/API input
         and ``unknown`` rows are untouched; settled silently, no pause notice), then interrupts the
         claimed generation: a turn still constructing its agent latches the Stop for adopt_agent."""
+        self._bump_route_stop_epoch(_quick_key)  # a command's turn not committed yet never commits
         from gateway.session_authorities import active_authority
         authority = active_authority(self)
         sid = authority.logical_owner(self.session_store.peek_session_id(_quick_key)) if authority else None
@@ -738,6 +741,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
             self._queue_or_replace_pending_event(_quick_key, event)
             return None
         _handled, _result = await self._hm_busy_slash_or_photo(event, source, _quick_key)
+        if not _handled:
+            _handled, _result = await self._busy_skill_turn(event, source, _quick_key)
         if _handled:
             return _result
 
@@ -1117,8 +1122,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         self, event: MessageEvent, source: SessionSource, _quick_key: str
     ) -> Optional[str]:
         """Replies owned by in-flight work: pending /update prompt, clarify, slash-confirm.
-        Only events that may control the gateway (``allow_gateway_control``) can answer them."""
-        if not event.allow_gateway_control:
+        Only events that may control the gateway (``allow_gateway_control``) can answer them, never
+        an admitted turn: it was offered here before its commit, or a slash command queued it."""
+        from gateway.session_ingress import executing_admission
+        if not event.allow_gateway_control or getattr(event, "_fifo_only", False) or executing_admission.get():
             return None
         _reply = self._hm_update_prompt_reply(event, _quick_key)
         if _reply is None:
@@ -1144,6 +1151,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
             _result = await self._run_in_executor_with_context(
                 self._hm_skill_slash_rewrite, event, source, _quick_key, command)
             _handled = _result is not None
+        if not _handled and command:  # rewritten into a turn: the authority's FIFO, like text
+            _handled, _result = await self._admit_command_turn(event, source, _quick_key)
         return _handled, _result
 
     def _hm_rescue_orphaned_fifo(
@@ -1198,13 +1207,16 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
                 # its whole request timeout.
                 # A bare "yes"/"no" to a blocking dangerous-command approval answers it (#46866):
                 # never an interrupt (read as deny) nor a queued turn (auto-deny deadlock).
-                if self._is_session_running(_quick_key) and (
+                # A turn a slash command produced (``/queue yes``) is never live typing.
+                if self._is_session_running(_quick_key) and not getattr(event, "_fifo_only", False) and (
                         await self._route_plaintext_approval_while_busy(event, _quick_key)
                         or await self._hm_busy_preempt(event, source, _quick_key)):
                     return True, None
                 _consumed, _consumer_reply = await self._hm_post_admission_consume(event, source, _quick_key)
                 if _consumed:
                     return True, _consumer_reply
+                if getattr(event, "_fifo_only", False) and event._stop_epoch != self._route_stop_epoch(_quick_key):
+                    return True, None  # a /stop or /new came after its command, as it clears the slot
                 return True, await admit_message(authority, event)
         if (authority is None and not is_internal and not event.get_command()
                 and getattr(self, 'session_authority', None) is not None):

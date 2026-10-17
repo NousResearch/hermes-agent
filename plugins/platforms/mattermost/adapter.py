@@ -122,6 +122,11 @@ class MattermostAdapter(BasePlatformAdapter):
         self._last_post_status: Optional[int] = None  # POST-only, read by the broken-thread-root fallback
         self._last_post_error: str = ""
         self._dedup = MessageDeduplicator()
+        # Bot-author ingress filter (#136946): other bots' posts are dropped unless opted in.
+        self._bot_author_cache: dict[str, bool] = {}
+        self._accept_bot_messages = str(_extra_or_secret(
+            self.config.extra, "accept_bot_messages", "MATTERMOST_ACCEPT_BOT_MESSAGES", "false",
+            blank_is_unset=False)).lower() in {"1", "true", "yes"}
 
     # --- HTTP helpers ---
 
@@ -547,6 +552,25 @@ class MattermostAdapter(BasePlatformAdapter):
                 logger.warning("Mattermost: error downloading file %s: %s", fid, exc)
         return media_urls, media_types
 
+    async def _is_bot_author(self, post: dict[str, Any], sender_id: str) -> bool:
+        """True when the post was authored by a bot account — dropped at ingress (#136946).
+
+        Fast path: bot-authored posts carry ``props.from_bot == "true"``. Fallback (not every
+        bot-posting path sets it): a cached ``GET /users/{id}`` ``is_bot`` lookup. Lookup failures
+        fail open (treated as human) so a flaky API call never drops a real user's message.
+        """
+        props = post.get("props")
+        if isinstance(props, dict) and str(props.get("from_bot", "")).lower() == "true":
+            return True
+        if sender_id in self._bot_author_cache:
+            return self._bot_author_cache[sender_id]
+        user = await self._api_get(f"users/{sender_id}")
+        if not user:
+            return False
+        is_bot = bool(user.get("is_bot"))
+        self._bot_author_cache[sender_id] = is_bot
+        return is_bot
+
     async def _handle_ws_event(self, event: dict[str, Any]) -> None:
         if event.get("event") != "posted":
             return
@@ -558,6 +582,11 @@ class MattermostAdapter(BasePlatformAdapter):
         # Ignore own messages, system posts and redeliveries.
         sender_id, post_id = post.get("user_id", ""), post.get("id", "")
         if sender_id == self._bot_user_id or post.get("type") or self._dedup.is_duplicate(post_id):
+            return
+        if not self._accept_bot_messages and await self._is_bot_author(post, sender_id):
+            # Another bot's post reaches here ungated in a DM and would ignite a bot-to-bot
+            # reply loop, so drop it before any session/turn work (#136946).
+            logger.debug("Mattermost: dropping bot-authored post %s from %s", post_id, sender_id)
             return
         channel_id, is_dm = post.get("channel_id", ""), data.get("channel_type", "O") == "D"
         message_text = post.get("message", "")
@@ -701,7 +730,8 @@ def interactive_setup() -> None:
 _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge; allowed_channels is a whitelist
     ("require_mention", "MATTERMOST_REQUIRE_MENTION", "lower"),
     ("free_response_channels", "MATTERMOST_FREE_RESPONSE_CHANNELS", "csv"),
-    ("allowed_channels", "MATTERMOST_ALLOWED_CHANNELS", "csv"))
+    ("allowed_channels", "MATTERMOST_ALLOWED_CHANNELS", "csv"),
+    ("accept_bot_messages", "MATTERMOST_ACCEPT_BOT_MESSAGES", "lower"))
 
 
 def _apply_yaml_config(yaml_cfg: dict, mattermost_cfg: dict) -> dict | None:

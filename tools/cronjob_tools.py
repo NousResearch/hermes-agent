@@ -63,7 +63,8 @@ from tools.cronjob_job_args import (
     _validate_bot_chat_deliver,
     _validate_context_from_refs,
     _validate_cron_base_url,
-    _validate_cron_script_path)
+    _validate_cron_script_path,
+    _validate_platform_deliver_targets)
 from tools.registry import registry, tool_error
 
 
@@ -667,8 +668,12 @@ def _action_create(a: dict[str, Any]) -> str:
         or _validate_cron_base_url(a["provider"], a["base_url"])
         # bot-chat targets are machine-local: fail the CREATE, not the run.
         or _validate_bot_chat_deliver(deliver)
+        # Explicit platform targets must resolve through the send path's resolver now,
+        # or the first fired run loses its output to a delivery failure (#135942).
+        or _validate_platform_deliver_targets(deliver)
         # failure_deliver shares deliver's grammar and validators.
         or _validate_bot_chat_deliver(_normalize_deliver_param(a["failure_deliver"]))
+        or _validate_platform_deliver_targets(_normalize_deliver_param(a["failure_deliver"]))
         or (a["context_from"] and _validate_context_from_refs(
             [a["context_from"]] if isinstance(a["context_from"], str) else a["context_from"])))
     if error:
@@ -825,9 +830,11 @@ def _update_core_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[st
         # type-default empties must not wipe untouched fields.
         updates["name"] = a["name"]
     if deliver is not None:
-        bot_chat_error = _validate_bot_chat_deliver(_normalize_deliver_param(deliver))
-        if bot_chat_error:
-            return bot_chat_error
+        error = (
+            _validate_bot_chat_deliver(_normalize_deliver_param(deliver))
+            or _validate_platform_deliver_targets(_normalize_deliver_param(deliver)))
+        if error:
+            return error
         updates["deliver"] = _resolve_cron_context_deliver(_normalize_deliver_param(deliver))
     if a["failure_deliver"] is not None:
         # '' clears the override (failures fall back to deliver); non-empty values share
@@ -835,9 +842,11 @@ def _update_core_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[st
         # inside a cron run must never store literal 'origin').
         _norm_fd = _normalize_deliver_param(a["failure_deliver"])
         if _norm_fd:
-            bot_chat_error = _validate_bot_chat_deliver(_norm_fd)
-            if bot_chat_error:
-                return bot_chat_error
+            fd_error = (
+                _validate_bot_chat_deliver(_norm_fd)
+                or _validate_platform_deliver_targets(_norm_fd))
+            if fd_error:
+                return fd_error
             _norm_fd = _resolve_cron_context_deliver(_norm_fd)
         updates["failure_deliver"] = _norm_fd
     if skills is not None or skill is not None:

@@ -271,7 +271,8 @@ MEMORY_OP_ORIGINS = frozenset({"background_review", "foreground"})
 MEMORY_OP_FAILURE_CLASSES = frozenset({
     "ambiguous", "disabled", "drift", "exception", "gate_refused", "invalid_args", "missing_content",
     "missing_old_text", "no_match", "none", "other", "over_budget", "provider_error", "read_failed",
-    "retry_cap", "scan_blocked", "staged", "stale_entry", "unknown", "would_empty",
+    "retry_cap", "scan_blocked", "staged", "stale_entry", "unknown", "write_gated", "would_empty",
+    "date_currency", "readback_failed",
 })
 CURATOR_OUTCOMES = frozenset({"failed", "skipped", "success"})
 CURATOR_TRIGGERS = frozenset({"manual", "scheduled"})

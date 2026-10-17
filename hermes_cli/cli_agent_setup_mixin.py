@@ -611,7 +611,7 @@ class CLIAgentSetupMixin:
     def _init_agent(self, *, model_override: str | None = None, runtime_override: dict | None = None, request_overrides: dict | None = None) -> bool:
         """Build the agent on first use; when resuming, restore history from SQLite.
         Returns True on success."""
-        from cli import ChatConsole, _cprint, _prepare_deferred_agent_startup, logger
+        from cli import ChatConsole, _cprint, logger
         from hermes_cli.gateway_agent import GatewayAgent as AIAgent  # the gateway runs the turn
         if self.agent is not None:
             return True
@@ -619,7 +619,7 @@ class CLIAgentSetupMixin:
         # Join the background preloaded-skills load (--skills/-s) BEFORE the agent
         # snapshots self.system_prompt below. No-op when nothing was requested.
         self.finalize_preloaded_skills()
-        _prepare_deferred_agent_startup()
+        # No deferred plugin discovery either: the gateway that runs the turn loads the plugins (PLG-7).
         self._install_tool_callbacks()
         if not self._ensure_runtime_credentials():
             return False

@@ -20,6 +20,10 @@ export const enNotices = {
   promptNotices: {
     legacySendUnconfirmed:
       'This server could not confirm the earlier send of this message, so it may already have run. Check the conversation before sending it again.',
+    mcpReloadDeferred:
+      'This chat is busy: the MCP change applies once its turn finishes and MCP reloads again, or when you reopen the chat',
+    mcpReloadNotInChat: server => `${server} is not enabled in this chat`,
+    mcpReloadUnavailable: servers => `Did not connect: ${servers}`,
     sessionCommands: enSessionCommands
   },
   keepAwakeOffer: {

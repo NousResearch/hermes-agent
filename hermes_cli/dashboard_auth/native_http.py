@@ -121,23 +121,22 @@ def _redeem_http_ticket(store, ticket, request):
     return grant
 
 
-async def authenticate_native_http(request):
-    """Return a rejection or stamp a one-request principal; absent header is inert."""
-    tickets = request.headers.getlist(HEADER)
-    if not tickets:
-        return None
+def _native_store(conn, tickets):
+    """The runner's ticket store when *conn* may redeem a private grant here, else None."""
     from gateway.drain_control import restart_wait_read
-    from gateway.session_authorities import all_authorities, authority_for_profile_id
-    runner = getattr(request.app.state, 'gateway_runner', None)
+    from gateway.session_authorities import all_authorities
+    runner = getattr(conn.app.state, 'gateway_runner', None)
     descriptor = getattr(runner, 'session_runtime_descriptor', {})
     authorities = all_authorities(runner)
     store = getattr(runner, 'session_ticket_store', None)
-    peer = request.scope.get('hermes.gateway_socket_peer')
-    if (len(tickets) != 1 or 'origin' in request.headers or not peer
+    peer = conn.scope.get('hermes.gateway_socket_peer')
+    if (len(tickets) != 1 or 'origin' in conn.headers or not peer
             or peer[0] not in {'127.0.0.1', '::1'}
             or descriptor.get('state') != 'ready'
             # A restart's after-turn wait still serves the reads that open a parked prompt (#139041).
-            or (getattr(runner, '_draining', True) and not restart_wait_read(runner, request.method, request.url.path))
+            # A websocket scope has no method, so a socket upgrade never matches that GET allowlist.
+            or (getattr(runner, '_draining', True)
+                and not restart_wait_read(runner, conn.scope.get('method'), conn.url.path))
             or not authorities or store is None
             or store.instance_id != descriptor.get('instance_id')
             or any(a is not None and a.instance_id != store.instance_id for a in authorities)
@@ -147,7 +146,59 @@ async def authenticate_native_http(request):
             or descriptor.get('served_profiles') != [
                 {'profile_id': a.profile_id, 'home': a.profile_id} for a in authorities
                 if a is not None and not getattr(a, 'retiring', False) and a.profile_id in store.profile_ids]):
+        return None
+    return runner, store
+
+
+def redeem_native_ws(conn):
+    """Redeem the ``native-http`` grant a Desktop plugin socket upgrade presents; None when refused.
+
+    Same issuer, header, peer/Origin and served-profile rules as HTTP: a plugin socket is the
+    live twin of the plugin REST call that already rides this grant on a local gateway. The
+    upgrade's ``profile`` selectors must name the grant's home. Plugin sockets only: ``/api/ws``
+    and other core streams keep their own purpose-bound credentials. Called once per upgrade, by
+    ``PluginApiWebSocketGate`` ahead of routing, so the grant's profile decides consent and scope
+    before any route dependency or plugin code runs.
+    """
+    tickets = conn.headers.getlist(HEADER)
+    gate = _native_store(conn, tickets) if conn.url.path.startswith('/api/plugins/') else None
+    if gate is None:
+        return None
+    runner, store = gate
+    from gateway.session_authorities import authority_for_profile_id
+    try:
+        grant = store.redeem(tickets[0], profile_id=None, purpose='native-http')
+        if (grant['capabilities'] != frozenset({'http:owner'})
+                or authority_for_profile_id(runner, grant['profile_id']) is None):
+            return None
+        for value in conn.query_params.getlist('profile'):
+            _own_profile(value, grant['profile_id'])
+    except PermissionError:
+        return None
+    return grant
+
+
+def authenticate_native_ws(ws):
+    """The grant :func:`redeem_native_ws` admitted for this plugin socket, or None (refused).
+
+    Never redeems: the gate already did, once, and bound the grant's home and secret scope for
+    the whole connection.
+    """
+    if not ws.url.path.startswith('/api/plugins/'):
+        return None
+    return getattr(ws.state, 'native_http_principal', None)
+
+
+async def authenticate_native_http(request):
+    """Return a rejection or stamp a one-request principal; absent header is inert."""
+    tickets = request.headers.getlist(HEADER)
+    if not tickets:
+        return None
+    from gateway.session_authorities import authority_for_profile_id
+    gate = _native_store(request, tickets)
+    if gate is None:
         return JSONResponse({'detail': 'Unauthorized'}, status_code=401)
+    runner, store = gate
     try:
         # The ticket names the served profile it was minted for; that home's authority owns it.
         grant = _redeem_http_ticket(store, tickets[0], request)

@@ -77,6 +77,10 @@ export const arBoot = {
   promptNotices: {
     legacySendUnconfirmed:
       'تعذّر على هذا الخادم تأكيد الإرسال السابق لهذه الرسالة، لذا ربما تم تنفيذها بالفعل. راجع المحادثة قبل إرسالها مرة أخرى.',
+    mcpReloadDeferred:
+      'هذه المحادثة مشغولة: يُطبَّق تغيير MCP بعد انتهاء دورها وإعادة تحميل MCP مجددًا، أو عند إعادة فتح المحادثة',
+    mcpReloadNotInChat: server => `${server} غير مفعّل في هذه المحادثة`,
+    mcpReloadUnavailable: servers => `تعذّر الاتصال: ${servers}`,
     sessionCommands: arSessionCommands
   },
   updates: {

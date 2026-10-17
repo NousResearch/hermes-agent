@@ -538,6 +538,15 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
     # Writes through _session_db (profile sessions own their state.db).
     fields = {}
     with _session_db(session) as db:
+        if db is None and session.get("profile_home"):
+            # A profile session's transcript lives only in its own state.db: skipping the write
+            # would cut memory while that db keeps the old tail, and resume brings the edited-away
+            # turns back. Launch-profile sessions keep the skip: a missing launch db is the
+            # backend-wide degraded mode (``_get_db`` continues without state.db features).
+            logger.error(
+                "prompt.submit: profile state.db unavailable for session %s (ordinal=%d); "
+                "refusing truncation", sid, ordinal)
+            return _err(rid, 5008, "failed to persist history truncation: session database is unavailable"), {}
         if db is not None:
             try:
                 # NULL session_key (old CLI-origin sessions) would trip an FK violation.

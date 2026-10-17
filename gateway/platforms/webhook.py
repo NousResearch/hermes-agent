@@ -635,19 +635,24 @@ class WebhookAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _apply_skills(prompt: str, skills: list) -> str:
-        """Inject the first matching skill via build_skill_invocation_message() directly — /skill-name slash
-        commands would be intercepted by the command parser."""
+        """Inject every listed skill via the skill builders directly — /skill-name slash commands would be
+        intercepted by the command parser. One skill keeps the single-skill message; several are stacked,
+        the same bundle a chat ``/skill-a /skill-b`` invocation builds."""
         try:
-            from agent.skill_commands import build_skill_invocation_message, get_skill_commands
+            from agent.skill_commands import (build_skill_invocation_message, build_stacked_skill_invocation_message,
+                                              get_skill_commands)
             skill_cmds = get_skill_commands()
+            cmd_keys = []
             for skill_name in skills:
                 cmd_key = f"/{skill_name}"
-                if cmd_key in skill_cmds:
-                    skill_content = build_skill_invocation_message(cmd_key, user_instruction=prompt)
-                    if skill_content:
-                        return skill_content
-                else:
+                if cmd_key not in skill_cmds:
                     logger.warning("[webhook] Skill '%s' not found", skill_name)
+                elif cmd_key not in cmd_keys:
+                    cmd_keys.append(cmd_key)
+            if len(cmd_keys) == 1:
+                return build_skill_invocation_message(cmd_keys[0], user_instruction=prompt) or prompt
+            if cmd_keys and (stacked := build_stacked_skill_invocation_message(cmd_keys, user_instruction=prompt)):
+                return stacked[0]
         except Exception as e:
             logger.warning("[webhook] Skill loading failed: %s", e)
         return prompt

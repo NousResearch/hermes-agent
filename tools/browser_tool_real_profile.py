@@ -46,6 +46,10 @@ def _real_profile_daemon_env() -> tuple:
     socket_dir = _session._prepare_session_socket_dir(_bt._REAL_PROFILE_SESSION)
     env = _session._agent_browser_command_env(socket_dir)
     env.pop("AGENT_BROWSER_IDLE_TIMEOUT_MS", None)
+    # #135904: this daemon launches its own Chromium for the session probe before the --cdp attach,
+    # so it needs the same sandbox bypass as every other agent-browser lane (AppArmor userns hosts
+    # otherwise die with "No usable sandbox", the failure this session then reports as a start failure).
+    _session._apply_chromium_sandbox_args(env)
     return env, socket_dir
 
 
@@ -204,6 +208,10 @@ def _launch_real_profile_chrome(real_binary: str, copy_dir: str) -> tuple[Option
     chrome_argv = [real_binary, f"--user-data-dir={copy_dir}", *_REAL_PROFILE_CHROME_FLAGS]
     _session._ensure_screen_for_headed_chromium()
     browser_env = _bt._build_browser_env()  # carries the Bot Desktop DISPLAY when one is running
+    # #135904: this lane starts the real binary itself, so the bypass has to reach the ARGV —
+    # AGENT_BROWSER_ARGS is agent-browser's variable and is inert on this Popen.
+    if _session.chromium_sandbox_bypass_enabled(browser_env):
+        chrome_argv.extend(_session.CHROMIUM_SANDBOX_BYPASS_ARGS)
     _has_display = bool(browser_env.get("DISPLAY") or browser_env.get("WAYLAND_DISPLAY"))
     if not (_cloud._is_headed_mode() and (_has_display or not sys.platform.startswith("linux"))):
         chrome_argv.append("--headless=new")

@@ -1,14 +1,15 @@
 name: magi
 repo: https://github.com/MarcosAlves90/magi
-sha: f849295b63a8af55b7130467167b3b6dcc19be8a
+sha: 65e94bd5ddb4f9635baf9b6c996900e47748e76b
 description: Review pending Hermes memory writes and inspect, add, edit, delete, or AI-compact stored memory from Desktop.
 maintainer: MarcosAlves90
 tier: community
 category: desktop
 requires_hermes: ">=0.21.5"
-version: "1.7.3"
+version: "1.7.8"
 screenshots:
-  - https://raw.githubusercontent.com/MarcosAlves90/magi/f849295b63a8af55b7130467167b3b6dcc19be8a/docs/screenshots/magi-dashboard.png
+  - https://raw.githubusercontent.com/MarcosAlves90/magi/65e94bd5ddb4f9635baf9b6c996900e47748e76b/docs/screenshots/pending-writes.png
+  - https://raw.githubusercontent.com/MarcosAlves90/magi/65e94bd5ddb4f9635baf9b6c996900e47748e76b/docs/screenshots/stored-memory.png
 readme: true
 capabilities:
   provides_tools: []

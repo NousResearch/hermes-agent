@@ -80,30 +80,35 @@ def _read_text_with_timeout(
     raise value  # type: ignore[misc]
 
 
-def _scan_context_content(content: str, filename: str, *, user_authored: bool = False) -> str:
+def _scan_context_content(
+    content: str, filename: str, *, user_authored: bool = False, admin_authored: bool = False,
+) -> str:
     """Scan a context file (AGENTS.md, .cursorrules, SOUL.md) for injection; matches are BLOCKED.
 
     "context" scope only (strict-scope SSH-backdoor/persistence/exfil patterns are too aggressive for a
     cloned repo's docs); blocking, not warning, because the file would otherwise enter the prompt verbatim.
 
-    *user_authored* (SOUL.md in the user's own HERMES_HOME): a hit is WARNED and the file still loads.
-    SOUL.md sits in the same trust class as config.yaml — file-tool writes to it go through the
-    protected-instruction approval gate (``tools/file_tools_write_guards.py``) and project checkouts never
-    supply it — so a user who *documents* "ignore previous instructions" in their security guidance
-    must not lose their whole identity file to a one-line log entry (#112570). Project-dir files
-    (repo AGENTS.md / .cursorrules / .hermes.md) arrive with the checkout and keep blocking, and so does
-    a SOUL.md owned by a profile distribution (``hermes profile install <git-url>`` copies it in unscanned;
-    ``load_soul_md`` passes ``user_authored=False`` when ``distribution.yaml`` owns the file).
+    *user_authored* (SOUL.md in the user's own HERMES_HOME) and *admin_authored* (SOUL.md pinned in the
+    managed scope): a hit is WARNED and the file still loads. Both sit in the same trust class as
+    config.yaml — file-tool writes to the user's SOUL.md go through the protected-instruction approval
+    gate (``tools/file_tools_write_guards.py``), and the managed file is an administrator pin — so a
+    persona that *documents* "ignore previous instructions" must not be dropped to a one-line log entry
+    (#112570). Project-dir files (repo AGENTS.md / .cursorrules / .hermes.md) arrive with the checkout
+    and keep blocking, and so does a SOUL.md owned by a profile distribution (``hermes profile install
+    <git-url>`` copies it in unscanned; ``load_soul_md`` passes ``user_authored=False`` when
+    ``distribution.yaml`` owns the file).
     """
     # A leading UTF-8 BOM is a Windows-editor artifact, not an injection.
     content = content.removeprefix("\ufeff")
     findings = _scan_for_threats(content, scope="context")
     if not findings:
         return content
-    if user_authored:
-        logger.warning("Context file %s matched injection pattern(s) %s; loaded anyway because it is the "
-                       "user's own file in HERMES_HOME — review it if you did not write that text",
-                       filename, ", ".join(findings))
+    if user_authored or admin_authored:
+        whose = ("an administrator-pinned file in the managed scope" if admin_authored
+                 else "the user's own file in HERMES_HOME")
+        logger.warning("Context file %s matched injection pattern(s) %s; loaded anyway because it is %s "
+                       "— review it if you did not write that text",
+                       filename, ", ".join(findings), whose)
         return content
     logger.warning("Context file %s blocked: %s", filename, ", ".join(findings))
     return f"[BLOCKED: {filename} contained potential prompt injection ({', '.join(findings)}). Content not loaded.]"
@@ -1538,16 +1543,66 @@ def _omitted_headings(content: str, start: int, end: int, limit: int = 15) -> li
     return headings[:limit] + (["..."] if len(headings) > limit else [])
 
 
+def _soul_md_candidates(home: Path) -> list[tuple[Path, str]]:
+    """``(path, origin)`` in load order. ``origin`` is ``"managed"`` or ``"user"``.
+
+    A non-empty managed ``SOUL.md`` wins over ``home / "SOUL.md"`` — the same
+    "administrator pin, user cannot override" rule as managed config.yaml / .env.
+    ``get_managed_dir()`` is None when no scope is present (under pytest, unless
+    ``HERMES_MANAGED_DIR`` points at a real directory).
+    """
+    from hermes_cli.managed_scope import get_managed_dir
+
+    managed = get_managed_dir()
+    candidates: list[tuple[Path, str]] = []
+    if managed is not None:
+        candidates.append((managed / "SOUL.md", "managed"))
+    candidates.append((home / "SOUL.md", "user"))
+    return candidates
+
+
+def _read_soul_body(soul_path: Path) -> str:
+    """Stripped SOUL text, or "" when missing or empty. Read errors propagate."""
+    if not _exists_or_denied(soul_path):
+        return ""
+    content = (_read_text_with_timeout(soul_path) or "").strip()
+    if not content:
+        return ""
+    # Plugin-era desktop builds appended a frozen Bot Mode roster to SOUL.md; the server
+    # now injects the live section in Bot Chat only, so the copy is dead weight everywhere.
+    from tools.bot_mode_probe import strip_legacy_protocol
+    return strip_legacy_protocol(content).strip()
+
+
+def _log_soul_read_failure(soul_path: Path, origin: str, exc: BaseException) -> None:
+    if origin == "managed":
+        logger.warning(
+            "managed scope: failed to read %s: %s — ignoring this managed SOUL.md. "
+            "Admin persona from this file is NOT being applied.",
+            soul_path, exc, exc_info=True)
+        return
+    logger.debug("Could not read SOUL.md from %s: %s", soul_path, exc)
+
+
 def load_soul_md(context_length: Optional[int] = None, home_override: Path | None = None) -> Optional[str]:
-    """SOUL.md from HERMES_HOME (identity slot #1), or None.
+    """Identity-slot SOUL.md, or None when no persona file has content.
+
+    Precedence (first non-empty file wins):
+
+    1. Managed scope — ``$HERMES_MANAGED_DIR/SOUL.md`` when that directory exists,
+       otherwise ``/etc/hermes/SOUL.md``. An administrator pin wins over the profile
+       file for every profile, same as managed config.yaml / .env. Missing, empty,
+       or unreadable falls through (fail-open).
+    2. Profile home — ``home_override / "SOUL.md"`` when given, else
+       ``get_hermes_home() / "SOUL.md"``.
 
     Callers must pass ``skip_soul=True`` to ``build_context_files_prompt`` so it isn't injected twice.
-    ``home_override`` pins the profile home (a thread that lost the HERMES_HOME ContextVar reads the wrong one).
 
-    ``home_override`` scopes the read to an explicit profile home (the agent knows its own home from its
+    ``home_override`` scopes the profile read to an explicit home (the agent knows its own home from its
     session_db path). Without it, resolution is ambient — which on a thread that lost the HERMES_HOME
     ContextVar falls back to the launch home and reads the wrong profile's SOUL.md (#50233, same class as
-    the skills-index leak fixed in #86313).
+    the skills-index leak fixed in #86313). The managed file is process-wide and still wins when
+    ``home_override`` is set.
     """
     from agent.safe_worker_policy import safe_worker_enabled
 
@@ -1558,35 +1613,35 @@ def load_soul_md(context_length: Optional[int] = None, home_override: Path | Non
         ensure_hermes_home()
     except Exception as e:
         logger.debug("Could not ensure HERMES_HOME before loading SOUL.md: %s", e)
-    soul_path = (Path(home_override) if home_override is not None else get_hermes_home()) / "SOUL.md"
-    if not soul_path.exists():
-        return None
-    try:
-        content = (_read_text_with_timeout(soul_path) or "").strip()
-        if content:
-            # Plugin-era desktop builds appended a frozen Bot Mode roster to SOUL.md; the server
-            # now injects the live section in Bot Chat only, so the copy is dead weight everywhere.
-            from tools.bot_mode_probe import strip_legacy_protocol
-            content = strip_legacy_protocol(content).strip()
-        if not content:
-            return None
-        # `hermes profile install <git-url>` / `profile update` plant a third-party SOUL.md into a
-        # distribution profile (hermes_cli/profile_distribution.py, DEFAULT_DIST_OWNED) with no scan and no
-        # approval gate, so it is NOT the user's own file: when distribution.yaml owns SOUL.md (a manifest
-        # with no `distribution_owned` list owns the whole payload) a scanner hit keeps BLOCKING.
-        from hermes_cli.profile_distribution import read_manifest
+    home = Path(home_override) if home_override is not None else get_hermes_home()
+    for soul_path, origin in _soul_md_candidates(home):
         try:
-            manifest = read_manifest(soul_path.parent)
-            user_authored = manifest is None or (bool(manifest.distribution_owned)
-                                                 and "SOUL.md" not in manifest.distribution_owned)
-        except Exception as e:  # unparseable manifest is still a distribution: fail closed
-            logger.debug("Could not read distribution manifest next to %s: %s", soul_path, e)
+            content = _read_soul_body(soul_path)
+            if not content:
+                continue
+            # `hermes profile install <git-url>` / `profile update` plant a third-party SOUL.md into a
+            # distribution profile (hermes_cli/profile_distribution.py, DEFAULT_DIST_OWNED) with no scan and no
+            # approval gate, so it is NOT the user's own file: when distribution.yaml owns SOUL.md (a manifest
+            # with no `distribution_owned` list owns the whole payload) a scanner hit keeps BLOCKING.
+            # A managed SOUL.md is an administrator pin, not a distribution payload.
+            admin_authored = origin == "managed"
             user_authored = False
-        return _truncate_content(_scan_context_content(content, "SOUL.md", user_authored=user_authored), "SOUL.md",
-                                 context_length=context_length, read_path=str(soul_path))
-    except Exception as e:
-        logger.debug("Could not read SOUL.md from %s: %s", soul_path, e)
-        return None
+            if not admin_authored:
+                from hermes_cli.profile_distribution import read_manifest
+                try:
+                    manifest = read_manifest(soul_path.parent)
+                    user_authored = manifest is None or (bool(manifest.distribution_owned)
+                                                         and "SOUL.md" not in manifest.distribution_owned)
+                except Exception as e:  # unparseable manifest is still a distribution: fail closed
+                    logger.debug("Could not read distribution manifest next to %s: %s", soul_path, e)
+                    user_authored = False
+            return _truncate_content(
+                _scan_context_content(content, "SOUL.md", user_authored=user_authored, admin_authored=admin_authored),
+                "SOUL.md", context_length=context_length, read_path=str(soul_path))
+        except Exception as e:
+            _log_soul_read_failure(soul_path, origin, e)
+            continue
+    return None
 
 
 def _read_context_file(path: Path) -> str:
@@ -1754,7 +1809,8 @@ def build_context_files_prompt(
 
     Only ONE project context type loads, first found wins: .hermes.md/HERMES.md (walk to git root) →
     AGENTS.md chain (git root → cwd) → CLAUDE.md (cwd) → .cursorrules + .cursor/rules/*.mdc (cwd). SOUL.md
-    from HERMES_HOME is independent and always included unless *skip_soul* (already the identity slot).
+    (managed scope, else HERMES_HOME — see ``load_soul_md``) is independent and always included unless
+    *skip_soul* (already the identity slot).
     """
     from agent.safe_worker_policy import safe_worker_enabled
 

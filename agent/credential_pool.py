@@ -520,26 +520,11 @@ def custom_provider_pool_key_candidates(
     skipped for the ``no-key-required`` placeholder. ``config`` is a frozen route's config: ITS
     entry owns the endpoint, so a live edit of that entry's URL neither drops nor redirects the pool.
     """
-    if not base_url:
-        return []
-    normalized_url = _norm_url(base_url)
-    requested_aliases = _requested_custom_name_aliases(provider_name) if provider_name else set()
-
-    if requested_aliases:
-        for norm_name, entry in _iter_custom_providers(config):
-            if requested_aliases & _custom_entry_name_aliases(norm_name, entry):
-                # A named pool holds credentials for its configured endpoint only: a launch-
-                # overridden base_url must not inherit them (R2-M1), nor borrow a sibling's by URL.
-                entry_url = _norm_url(entry.get("base_url"))
-                if entry_url and entry_url != normalized_url:
-                    return []
-                return _pool_keys_for_custom_entry(norm_name, entry)
-
-    for norm_name, entry in _iter_custom_providers(config):
-        entry_url = _norm_url(entry.get("base_url"))
-        if entry_url and entry_url == normalized_url:
-            return _pool_keys_for_custom_entry(norm_name, entry)
-    return []
+    # A named pool holds credentials for its configured endpoint only: a launch-overridden base_url
+    # must not inherit them (R2-M1), nor borrow a sibling's by URL.
+    from agent.custom_entry_pool import custom_entry_for_endpoint
+    match = custom_entry_for_endpoint(base_url, provider_name, config)
+    return _pool_keys_for_custom_entry(*match) if match else []
 
 
 def get_custom_provider_pool_key(base_url: Optional[str], provider_name: Optional[str] = None) -> Optional[str]:

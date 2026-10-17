@@ -811,14 +811,21 @@ export function rehydrateLiveSessionStatuses(
     // here a poll lands between submit and first token and darkens the row.
     const busy = working || Boolean(existing?.awaitingResponse && !existing.sawAssistantPayload)
 
+    // An idle runtime this renderer holds no state for has nothing to mirror,
+    // and an empty state reads as a draft: an archived session's runtime stays
+    // in the snapshot until the gateway reaps it, so seeding one resurrected
+    // the row as "Draft" once its tombstone was pruned (#137768).
+    const unknownIdle = !existing && !busy && !needsInput
+
     // Avoid re-arming the watchdog on every poll. Publish only when the
     // authoritative live snapshot differs from the renderer mirror; normal
     // gateway events continue to own subsequent transitions.
     if (
-      !existing ||
-      existing.storedSessionId !== storedSessionId ||
-      existing.busy !== busy ||
-      existing.needsInput !== needsInput
+      !unknownIdle &&
+      (!existing ||
+        existing.storedSessionId !== storedSessionId ||
+        existing.busy !== busy ||
+        existing.needsInput !== needsInput)
     ) {
       publishSessionState(runtimeSessionId, {
         ...(existing ?? createClientSessionState(storedSessionId)),

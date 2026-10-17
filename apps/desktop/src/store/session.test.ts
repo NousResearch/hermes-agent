@@ -79,9 +79,12 @@ import {
 import { tombstoneSessions, untombstoneSessions } from './session-removal'
 import {
   $attentionSessionIds,
+  $draftSessionIds,
   clearAllSessionStates,
+  dropSessionStatesForStoredIds,
   getRecentlySettledSessionIds,
-  publishSessionState
+  publishSessionState,
+  releaseSessionTranscript
 } from './session-states'
 
 const session = (over: Partial<SessionInfo>): SessionInfo => makeSessionInfo({ id: 'live', ...over })
@@ -374,6 +377,40 @@ describe('computed $attentionSessionIds', () => {
   it('falls back to the runtime id for a session with no storedSessionId', () => {
     publishSessionState('rt1', { ...createClientSessionState(null), needsInput: true })
     expect($attentionSessionIds.get()).toEqual(['rt1'])
+  })
+})
+
+describe('computed $draftSessionIds', () => {
+  afterEach(() => {
+    untombstoneSessions(['s1'])
+    clearAllSessionStates()
+  })
+
+  it('does not claim an archived session whose row was evicted', () => {
+    publishSessionState('rt1', createClientSessionState('s1'))
+    expect($draftSessionIds.get()).toEqual(['s1'])
+
+    tombstoneSessions(['s1'])
+    expect($draftSessionIds.get()).toEqual([])
+  })
+
+  it('stays out of drafts after the tombstone is pruned once its released state is dropped', () => {
+    publishSessionState('rt1', { ...createClientSessionState('s1') })
+    releaseSessionTranscript('rt1')
+    tombstoneSessions(['s1'])
+    dropSessionStatesForStoredIds(['s1'])
+    untombstoneSessions(['s1'])
+
+    expect($draftSessionIds.get()).toEqual([])
+  })
+
+  it('reads a retained released state as a draft after pruning when never dropped', () => {
+    publishSessionState('rt1', { ...createClientSessionState('s1') })
+    releaseSessionTranscript('rt1')
+    tombstoneSessions(['s1'])
+    untombstoneSessions(['s1'])
+
+    expect($draftSessionIds.get()).toEqual(['s1'])
   })
 })
 

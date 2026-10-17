@@ -114,7 +114,9 @@ def _live_endpoint(server_name: str) -> Optional[tuple[str, dict]]:
 
 def _http_endpoint(server_name: str, config: dict) -> tuple[str, dict]:
     """URL + configured headers, overlaid by a ``server_json`` live endpoint's URL and bearer."""
-    url, headers = config["url"], dict(config.get("headers") or {})
+    # Headers are kept raw in the stored config (see _load_mcp_config / #97107) so a rotated
+    # ${ENV} token is re-resolved on every (re)connect instead of being frozen at config-load.
+    url, headers = config["url"], dict(_config._resolve_headers_with_env(config))
     live = _live_endpoint(server_name)
     if live is not None:
         url, live_headers = live

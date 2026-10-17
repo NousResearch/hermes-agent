@@ -245,8 +245,10 @@ mkdir -p "$WHEELHOUSE"
 rm -f "$OUT_ABS/index.json" "$OUT_ABS/SHA256SUMS" "$WORK/resolved.txt" "$WORK/build_set.txt"
 # [d] Resolve the real graph from the tag's own lock.
 log "Resolving dependency graph from the tag's uv.lock"
+# The payload carries the acp adapter and the MCP client SDK so configured
+# HTTP MCP servers register tools (rpds-py joins the native build set).
 ( cd "$REPO_ROOT" && python3 -m pm.build_env --source "$WORK/tree" \
-    --extra acp --export-requirements "$WORK/req.txt" ) \
+    --extra acp --extra mcp --export-requirements "$WORK/req.txt" ) \
     || fail "PM requirements export failed (frozen lock at $REF)"
 # Host parsing needs packaging too. Use the release lock, not runner packages.
 PACKAGING_SPEC="$(python3 - "$WORK/tree/uv.lock" <<'PY'

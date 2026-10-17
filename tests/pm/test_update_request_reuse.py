@@ -66,6 +66,8 @@ def test_resolution_reuses_successful_responses_but_refreshes_next_operation(ups
         if name == "npm":
             payloads["/-/package/npm/dist-tags"] = {"latest": version}
         elif name == "node":
+            # The termux .deb is a manual pin (#134029): bionic resolves nothing.
+            expected_targets = [t for t in targets if t != "linux-arm64-bionic"]
             payloads["/dist/index.json"] = [{"version": f"v{version}"}, {"version": "nightly"}]
         elif name == "uv":
             # Three populated pages exercise the real pagination loop.

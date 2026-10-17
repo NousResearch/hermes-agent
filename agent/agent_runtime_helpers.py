@@ -3669,6 +3669,11 @@ _VENDOR_RESET_HEADERS = (
     "x-ratelimit-reset-requests", "x-ratelimit-reset-tokens",
     "anthropic-ratelimit-requests-reset", "anthropic-ratelimit-tokens-reset",
 )
+# Anthropic's unified headers describe the account-level 5h/7d windows and whether they are
+# actually blocking the account. They rank below every other reset source, and only the
+# unified-status carries their meaning: the resets of an "allowed" window are not binding.
+_UNIFIED_STATUS_HEADER = "anthropic-ratelimit-unified-status"
+_UNIFIED_RESET_HEADERS = ("anthropic-ratelimit-unified-5h-reset", "anthropic-ratelimit-unified-7d-reset")
 
 
 def _duration_string_seconds(text: str) -> Optional[float]:
@@ -3685,18 +3690,53 @@ def _duration_string_seconds(text: str) -> Optional[float]:
     return sum(float(n) * _DURATION_UNIT_SECONDS[u] for n, u in parts)
 
 
+def _header_reset_seconds(value: str) -> Optional[float]:
+    """Seconds until a vendor reset header's instant, or None when absent/past/unparseable."""
+    seconds = _duration_string_seconds(value)
+    if seconds is None:
+        absolute = _parse_absolute_timestamp(value)
+        seconds = None if absolute is None else absolute - time.time()
+    return seconds if seconds is not None and seconds > 0 else None
+
+
 def _set_reset_from_vendor_headers(context: dict[str, Any], headers: Any) -> None:
     for name in _VENDOR_RESET_HEADERS:
         value = headers.get(name)
         if not isinstance(value, str) or not value.strip():
             continue
-        seconds = _duration_string_seconds(value)
-        if seconds is None:
-            absolute = _parse_absolute_timestamp(value)
-            seconds = None if absolute is None else absolute - time.time()
-        if seconds is not None and seconds > 0:
+        seconds = _header_reset_seconds(value)
+        if seconds is not None:
             context["reset_at"] = time.time() + seconds
             return
+
+
+def _set_reset_from_unified_headers(context: dict[str, Any], headers: Any) -> None:
+    """Read Anthropic's account-level 5h/7d windows.
+
+    Two separate jobs. The status flag is read whatever else the response said: a 429 body
+    claiming the *request* would exceed the account's limit arrives even while the unified
+    windows stand open — a 1-token probe of such an account succeeds within seconds
+    (#131360), so the pool must hear "window open" even when a bucket header named a window.
+
+    The resets are adopted only when the status says ``blocked`` and nothing more specific
+    (retry-after, a body window, a per-bucket reset) already named one. Of the two, the
+    earliest future instant wins: over-benching idles an account that has a window back,
+    while a too-short bench just re-fails once and re-benches.
+    """
+    status = headers.get(_UNIFIED_STATUS_HEADER)
+    normalized_status = status.strip().lower() if isinstance(status, str) else ""
+    if normalized_status == "allowed":
+        context["account_window_open"] = True
+    if normalized_status != "blocked" or "reset_at" in context:
+        return
+    resets = [
+        seconds
+        for name in _UNIFIED_RESET_HEADERS
+        if isinstance(headers.get(name), str) and headers[name].strip()
+        and (seconds := _header_reset_seconds(headers[name])) is not None
+    ]
+    if resets:
+        context["reset_at"] = time.time() + min(resets)
 
 
 def extract_api_error_context(error: Exception) -> dict[str, Any]:
@@ -3729,6 +3769,9 @@ def extract_api_error_context(error: Exception) -> dict[str, Any]:
             context["reset_at"] = ratelimit_reset
         if "reset_at" not in context:
             _set_reset_from_vendor_headers(context, headers)
+        # Unconditional: the unified status says whether the account windows are even
+        # blocking, which matters to the pool whatever window another header named.
+        _set_reset_from_unified_headers(context, headers)
     if "message" not in context and str(error).strip():
         context["message"] = str(error).strip()[:500]
     if "reset_at" not in context and isinstance(context.get("message") or "", str):

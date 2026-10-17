@@ -91,3 +91,47 @@ def test_vendor_reset_headers_feed_reset_at(headers, expected_seconds):
     past = Exception("HTTP 429")
     past.response = MagicMock(headers={"anthropic-ratelimit-tokens-reset": "2020-01-01T00:00:00Z"})
     assert "reset_at" not in extract_api_error_context(past)
+
+
+def _unified_headers(status, five_hours, seven_days=None):
+    from datetime import UTC, datetime, timedelta
+
+    def iso(seconds):
+        return (datetime.now(UTC) + timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    headers = {"anthropic-ratelimit-unified-status": status}
+    headers["anthropic-ratelimit-unified-5h-reset"] = five_hours if isinstance(five_hours, str) else iso(five_hours)
+    if seven_days is not None:
+        headers["anthropic-ratelimit-unified-7d-reset"] = seven_days if isinstance(seven_days, str) else iso(seven_days)
+    return headers
+
+
+def _account_429(headers):
+    """Anthropic's account-level 429 carrying the reporter's exact body (#131360)."""
+    err = Exception(
+        "Error code: 429 - {\"error\": {\"type\": \"rate_limit_error\", "
+        "\"message\": \"This request would exceed your account's rate limit.\"}}"
+    )
+    err.response = MagicMock(headers=headers)
+    return err
+
+
+def test_unified_reset_headers_feed_reset_at_only_when_the_account_is_blocked():
+    """The status gate is the contract: a reporter's watcher probed an account whose
+    unified status said ``allowed`` (0.35 five-hour utilisation) and it served requests
+    within seconds — so the resets only size a bench when the status says blocked.
+    """
+    # Both windows carry a reset; the bench follows the earliest one that is still ahead.
+    blocked = _account_429(_unified_headers("blocked", 600, 86400))
+    assert abs(extract_api_error_context(blocked)["reset_at"] - (time.time() + 600)) < 5
+
+    seven_day_only = _account_429(_unified_headers("blocked", "2020-01-01T00:00:00Z", 86400))
+    assert abs(extract_api_error_context(seven_day_only)["reset_at"] - (time.time() + 86400)) < 5
+
+    # Allowed means the 429 was some other limit; the unified windows say nothing about it.
+    allowed = _account_429(_unified_headers("allowed", 600))
+    assert "reset_at" not in extract_api_error_context(allowed)
+
+    # Retry-After outranks the unified pair, same as it outranks every other header.
+    with_retry_after = _account_429({**_unified_headers("blocked", 600), "retry-after": "30"})
+    assert abs(extract_api_error_context(with_retry_after)["reset_at"] - (time.time() + 30)) < 5

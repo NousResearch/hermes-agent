@@ -120,7 +120,8 @@ class TestCommandTimeoutRecovery:
         bt_session._run_browser_command(task_id, "click", ["@e1"], timeout=1)
 
         assert task_id not in bt._last_active_session_key
-        assert not (tmp_path / "agent-browser-stuck-session").exists()
+        socket_dir = tmp_path / "agent-browser-stuck-session"
+        assert socket_dir.is_dir() and not (socket_dir / "stuck-session.pid").exists()
         if not cloud:
             assert task_id not in bt._active_sessions and task_id not in bt._session_last_activity
             return

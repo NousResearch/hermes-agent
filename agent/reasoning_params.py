@@ -157,28 +157,69 @@ class ReasoningParamsMixin:
     def _reasoning_replay_route(self):
         """Reasoning replay decision for the active route (``message_sanitization.reasoning_replay_route``).
 
-        Cached per (api_mode, provider, model, base_url, opt-in, rejected keys) — called many times
-        per turn — and recomputed after ``switch_model()`` / fallback activation or a recorded
-        field rejection, the only events allowed to change the replayed bytes mid-session.
+        Cached per route, opt-in, rejected keys and effective reasoning toggle — called many
+        times per turn — and recomputed after ``switch_model()`` / fallback activation, a
+        recorded field rejection, or a NIM reasoning-config change.
         """
         from agent.message_sanitization import reasoning_replay_route, rejected_reasoning_carriers
 
         rejected = rejected_reasoning_carriers(self)
-        key = (getattr(self, "api_mode", None), self.provider, self.model, getattr(self, "_base_url_lower", self.base_url),
-               self._reasoning_echo_opt_in(), rejected)
+        reasoning_config = getattr(self, "reasoning_config", None)
+        if not isinstance(reasoning_config, dict):
+            reasoning_config = {}
+        enabled = reasoning_config.get("enabled", True)
+        effort = str(reasoning_config.get("effort") or "").strip().lower()
+        key = (
+            getattr(self, "api_mode", None), self.provider, self.model,
+            getattr(self, "_base_url_lower", self.base_url),
+            self._reasoning_echo_opt_in(), rejected, enabled, effort,
+        )
         cached = getattr(self, "_reasoning_route_cache", None)
         if cached is not None and cached[0] == key:
             return cached[1]
-        route = reasoning_replay_route(key[0], self.provider, self.model, self.base_url,
-                                       echo_opt_in=key[4], rejected=rejected)
+        route = reasoning_replay_route(
+            key[0], self.provider, self.model, self.base_url,
+            echo_opt_in=key[4], rejected=rejected,
+        )
+        if isinstance(getattr(self, "reasoning_config", None), dict) and self._is_nim_thinking_route():
+            # NIM thinking families require a non-empty reasoning_content on
+            # assistant tool-call replay. Respect the current carrier route:
+            # once that field has been rejected, do not force it back onto the wire.
+            carriers = route.carriers
+            if carriers is None or "reasoning_content" in carriers:
+                # A disabled NIM template also overrides a generic family match
+                # (for example DeepSeek V4), unless the user explicitly opts in.
+                route = route._replace(pad=self._needs_nim_tool_reasoning() or key[4])
         self._reasoning_route_cache = (key, route)
         return route
 
     def _needs_thinking_reasoning_pad(self) -> bool:
-        """True for the must-echo tier: DeepSeek / Kimi / MiMo thinking 400 on a replayed tool-call turn
-        without a non-empty ``reasoning_content`` (#15250, #17400), plus a ``model.reasoning_echo`` opt-in
-        for gateways proxying them. Never true on a route that does not read the field."""
+        """True for the must-echo tier: DeepSeek / Kimi / MiMo / NIM thinking 400 on a replayed tool-call turn
+        without a non-empty ``reasoning_content``, plus a ``model.reasoning_echo`` opt-in for gateways
+        proxying them. Never true on a route that does not read the field."""
         return self._reasoning_replay_route().pad
+
+    def _needs_nim_tool_reasoning(self) -> bool:
+        """True for enabled thinking families on NVIDIA NIM."""
+        reasoning_config = getattr(self, "reasoning_config", None)
+        if not isinstance(reasoning_config, dict):
+            return False
+        if reasoning_config.get("enabled", True) is False:
+            return False
+        if str(reasoning_config.get("effort") or "").strip().lower() == "none":
+            return False
+        return self._is_nim_thinking_route()
+
+    def _is_nim_thinking_route(self) -> bool:
+        from agent.nim_reasoning import is_nim_thinking_model
+
+        return bool(
+            (
+                (getattr(self, "provider", None) or "").strip().lower() == "nvidia"
+                or base_url_host_matches(getattr(self, "base_url", None) or "", "integrate.api.nvidia.com")
+            )
+            and is_nim_thinking_model(getattr(self, "model", None))
+        )
 
     def _reasoning_echo_opt_in(self) -> bool:
         """``model.reasoning_echo``: treat the *current* provider as must-echo (pad tool-call turns) — for

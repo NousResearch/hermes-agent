@@ -2146,11 +2146,11 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             entry = min(available, key=lambda e: e.request_count)
         else:
             entry = available[0]
-        # Count the selection under every strategy. The counter is ``least_used``'s
-        # baseline and reaches auth.json on the next persist (exhaustion, rotation,
-        # refresh); it used to move only while ``least_used`` was active.
+        # Persist counts so least-used works across fresh runtime pool loads.
         if count:
-            entry = self._adopt(entry, persist=False, request_count=entry.request_count + 1)
+            persist = self._strategy == STRATEGY_LEAST_USED
+            next_count = entry.request_count + 1
+            entry = self._adopt(entry, persist=persist, request_count=next_count)
         if self._strategy == STRATEGY_ROUND_ROBIN and len(available) > 1:
             rotated = [candidate for candidate in self._entries if candidate.id != entry.id]
             rotated.append(replace(entry, priority=len(self._entries) - 1))

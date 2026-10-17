@@ -457,8 +457,8 @@ class GatewayTurnPrepareMixin:
         # was_auto_reset was consumed in _hmwa_open_session; only the reason needs clearing.
         session_entry.auto_reset_reason = None
 
-    def _hmwa_auto_load_skills(self, event, _auto, _quick_key, session_key):
-        """Prepend topic/channel-bound skill payload(s) to ``event.text`` on a new session."""
+    def _hmwa_auto_load_skills(self, _auto, _quick_key):
+        """Build bound-skill payloads in the context-preserving executor; never mutate a turn."""
         _skill_names = [_auto] if isinstance(_auto, str) else list(_auto)
         try:
             from agent.skill_commands import _load_skill_payload, _build_skill_message
@@ -478,12 +478,10 @@ class GatewayTurnPrepareMixin:
                 if _part:
                     _combined_parts.append(_part)
                     _loaded_names.append(_sname)
-            if _combined_parts:
-                _combined_parts.append(event.text)  # user's original text after the payloads
-                event.text = "\n\n".join(_combined_parts)
-                logger.info("[Gateway] Auto-loaded skill(s) %s for session %s", _loaded_names, session_key)
+            return _combined_parts, _loaded_names
         except Exception as e:
-            logger.warning("[Gateway] Failed to auto-load skill(s) %s: %s", _skill_names, e)
+            logger.warning("[Gateway] Failed to auto-load skill(s) %s: %s", _skill_names, e, exc_info=True)
+            return [], []
 
     async def _hmwa_acquire_turn_lease(self, _quick_key, run_generation, session_entry, _session_env_tokens):
         """Serialize [load history → run → flush] per resolved SESSION_ID so another routing key on
@@ -657,7 +655,22 @@ class GatewayTurnPrepareMixin:
         # Auto-load bound skill(s) only on NEW sessions; ongoing ones carry the content in history.
         _auto = getattr(event, "auto_skill", None)
         if _is_new_session and _auto:
-            self._hmwa_auto_load_skills(event, _auto, _quick_key, session_key)
+            try:
+                _skill_parts, _loaded_names = await self._run_in_executor_with_context(
+                    self._hmwa_auto_load_skills, _auto, _quick_key,
+                )
+            except BaseException:
+                # Preparation has not entered the agent handler's cleanup finally yet.
+                self._clear_session_env(_session_env_tokens)
+                raise
+            # /stop, /new or eviction can replace the turn while its loader finishes. Only
+            # the loop may apply the payload, after checking the generation that requested it.
+            if not self._is_session_run_current(_quick_key, run_generation):
+                self._clear_session_env(_session_env_tokens)
+                return None, _session_env_tokens
+            if _skill_parts:
+                event.text = "\n\n".join([*_skill_parts, event.text])
+                logger.info("[Gateway] Auto-loaded skill(s) %s for session %s", _loaded_names, session_key)
 
         await self._hmwa_acquire_turn_lease(_quick_key, run_generation, session_entry, _session_env_tokens)
 

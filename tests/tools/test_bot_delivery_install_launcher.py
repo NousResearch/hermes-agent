@@ -143,14 +143,19 @@ def test_launcher_shape_preserves_profile_and_lock(tmp_path, monkeypatch, name):
     monkeypatch.setattr(bot_mode_probe, "_hermes_root", lambda path: home)
     monkeypatch.setattr(bot_mode_probe, "_roster", lambda root: [("researcher", target)])
     locked = []
+    budget = []
     @contextlib.contextmanager
-    def lock(root, profile):
+    def lock(root, profile, timeout_seconds=None):
         locked.append((root, profile))
+        budget.append(timeout_seconds)
         yield
     monkeypatch.setattr(bot_relay, "acquire_turn_lock", lock)
     argv = [str(tmp_path / name), "-p", "researcher", "chat"]
     assert bot_mode_dm._local_delivery_home(argv) == target
     with bot_mode_dm._delivery_lock(argv, stdin_file=False):
         assert locked == [(home, "researcher")]
+        # §2.5 step 1 / P10: the delivery path probes the turn lock with no budget — a held slot
+        # queues the delivery instead of parking the sender behind the running turn.
+        assert budget == [0]
     with bot_mode_dm._delivery_lock(argv, stdin_file=True):
         assert locked == [(home, "researcher")]

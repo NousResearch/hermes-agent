@@ -1595,6 +1595,15 @@ class _CodexCompletionsAdapter:
                 guard.release_stream(event_stream)
             if final is None:
                 raise RuntimeError("Codex auxiliary Responses stream did not return a final response")
+            # Preserve the legacy empty turn only for compatible hosts that return
+            # a completed object directly instead of an event stream.
+            if (
+                hasattr(event_stream, "output")
+                and str(getattr(final, "status", "") or "").strip().lower() == "completed"
+                and getattr(final, "output", None) is None
+                and not str(getattr(final, "output_text", "") or "").strip()
+            ):
+                final.output = [SimpleNamespace(type="message", role="assistant", status="completed", content=[])]
             from agent.auxiliary_codex_response import _parse_codex_final_response
 
             text_parts, tool_calls_raw, usage, finish_reason = _parse_codex_final_response(

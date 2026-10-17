@@ -945,7 +945,6 @@ class TestFetchEndpointModelMetadata:
             mm.fetch_endpoint_model_metadata("https://custom.example/v1")
         mock_stream.assert_called_once()
 
-
 # =========================================================================
 # Nous Portal context-window resolution (provider="nous")
 # =========================================================================
@@ -1628,7 +1627,6 @@ class TestParseContextLimitFromError:
         assert parse_context_limit_from_error(
             "This model's maximum context length is 32768 tokens"
         ) == 32768
-
 
 # =========================================================================
 # Persistent context length cache

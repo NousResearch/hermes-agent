@@ -109,7 +109,10 @@ def test_metadata_auth_failure_closes_without_reading_body(servers, monkeypatch,
     result = model_metadata.fetch_endpoint_model_metadata(url, force_refresh=True)
     if status == 404:
         assert result["test/model"]["context_length"] == 32768
-        assert requests == ["/v1/models", "/models"]
+        # Local endpoints always take one /props read for the window the loader actually
+        # allocated (the models payload only carries the model's native length); a server that
+        # isn't llama.cpp just 404s it here.
+        assert requests == ["/v1/models", "/models", "/v1/props"]
         assert responses[1].is_stream_consumed
     else:
         assert result == {}

@@ -5,7 +5,7 @@ encrypted CDN; ``qr_login`` backs the gateway setup wizard."""
 from __future__ import annotations
 
 import asyncio, base64, contextlib, hashlib, json, logging, mimetypes, os, re, secrets, tempfile, textwrap, time, uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
@@ -56,6 +56,7 @@ EP_GET_BOT_QR, EP_GET_QR_STATUS = "ilink/bot/get_bot_qrcode", "ilink/bot/get_qrc
 LONG_POLL_TIMEOUT_MS, API_TIMEOUT_MS, CONFIG_TIMEOUT_MS, QR_TIMEOUT_MS = 35_000, 15_000, 10_000, 35_000
 MAX_CONSECUTIVE_FAILURES, RETRY_DELAY_SECONDS, BACKOFF_DELAY_SECONDS = 3, 2, 30
 SESSION_EXPIRED_ERRCODE, RATE_LIMIT_ERRCODE = -14, -2  # -2: iLink frequency limit — backoff and retry
+SESSION_EXPIRED_PAUSE_SECONDS = 600  # long-poll parks this long between probes of an expired iLink session
 MESSAGE_DEDUP_TTL_SECONDS = 300
 MEDIA_IMAGE, MEDIA_VIDEO, MEDIA_FILE, MEDIA_VOICE = 1, 2, 3, 4  # getuploadurl media_type
 ITEM_TEXT, ITEM_IMAGE, ITEM_VOICE, ITEM_FILE, ITEM_VIDEO = 1, 2, 3, 4, 5  # item_list entry types
@@ -697,6 +698,11 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     MAX_MESSAGE_LENGTH = 2000
     SUPPORTS_MESSAGE_EDITING = False  # WeChat cannot edit; streaming must send-final-only so the cursor (▉) is never left visible
     _SPLIT_THRESHOLD = 1800  # iLink chunks at ~2048 chars
+    #: Published while the long-poll parks on iLink's expired-session code: the process is alive but
+    #: nothing is delivered until the account is paired again (QR login), so readers must not see "connected".
+    SESSION_EXPIRED_STATUS_MESSAGE = (
+        "iLink session expired; not delivering — the long-poll re-probes every 10 minutes, "
+        "re-pair the account (QR login) if it does not recover")
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WEIXIN)
@@ -795,11 +801,24 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._mark_disconnected()
         logger.info("[%s] Disconnected", self.name)
 
+    def _mark_session_expired(self) -> None:
+        """Publish ``retrying`` + NEEDS_ATTENTION for the expired-session parking (#140409).
+
+        ``connect()`` stamped "connected" once and nothing else in this loop ever writes the health
+        map, so a dead session kept reading "connected" for days. Same ``retrying`` the runner uses
+        for queued reconnects (#101391); ``_mark_connected`` clears it when getupdates answers again.
+        """
+        self._write_runtime_status_safe(
+            "session_expired", platform_state="retrying", error_code="weixin_session_expired",
+            error_message=self.SESSION_EXPIRED_STATUS_MESSAGE, needs_attention=True,
+            retrying_since=datetime.now(UTC).isoformat())
+
     async def _poll_loop(self) -> None:
         assert self._poll_session is not None
         sync_buf = _load_sync_buf(self._hermes_home, self._account_id)
         timeout_ms = LONG_POLL_TIMEOUT_MS
         consecutive_failures = 0
+        session_expired = False
 
         async def backoff() -> int:
             """Sleep for the failure streak; returns the new streak count (0 after a full streak)."""
@@ -816,8 +835,11 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 ret, errcode = response.get("ret", 0), response.get("errcode", 0)
                 if ret not in {0, None} or errcode not in {0, None}:
                     if _is_session_expired(response, ret, errcode):
-                        logger.error("[%s] Session expired; pausing for 10 minutes", self.name)
-                        await asyncio.sleep(600)
+                        if not session_expired:
+                            session_expired = True
+                            self._mark_session_expired()
+                        logger.error("[%s] Session expired; pausing for %d minutes", self.name, SESSION_EXPIRED_PAUSE_SECONDS // 60)
+                        await asyncio.sleep(SESSION_EXPIRED_PAUSE_SECONDS)
                         consecutive_failures = 0
                         continue
                     consecutive_failures += 1
@@ -826,6 +848,9 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                     consecutive_failures = await backoff()
                     continue
                 consecutive_failures = 0
+                if session_expired:
+                    session_expired = False
+                    self._mark_connected()
                 # Dispatch before persisting: the off-loop write is an await, and a disconnect that
                 # cancels it must not leave the advanced cursor on disk with this batch undelivered.
                 for message in response.get("msgs") or []:

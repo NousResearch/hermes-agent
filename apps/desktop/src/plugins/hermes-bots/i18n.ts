@@ -145,6 +145,7 @@ const en: BotsMessages = {
     statusUnknown: 'Status unknown',
     unavailable: 'Unavailable',
     retryNow: 'Retry now',
+    loadingGatewayBots: 'Loading gateway bots',
     rosterUnavailable: reason =>
       `Roster unavailable: ${reason}. If your gateway predates profiles.list, update Hermes and restart the gateway.`,
     waitingForGateway:
@@ -587,6 +588,7 @@ const ja: BotsMessages = {
     statusUnknown: '状態不明',
     unavailable: '利用できません',
     retryNow: '今すぐ再試行',
+    loadingGatewayBots: 'ゲートウェイのボットを読み込み中',
     rosterUnavailable: reason =>
       `名簿を取得できません: ${reason}。ゲートウェイが profiles.list より前の場合は、Hermes を更新してゲートウェイを再起動してください。`,
     waitingForGateway: 'ゲートウェイ接続を待っています…（リモートは数秒かかることがあります。自動で再試行します）'
@@ -1025,6 +1027,7 @@ const zh: BotsMessages = {
     statusUnknown: '状态未知',
     unavailable: '不可用',
     retryNow: '立即重试',
+    loadingGatewayBots: '正在加载网关机器人',
     rosterUnavailable: reason => `无法获取名单：${reason}。如果网关早于 profiles.list，请更新 Hermes 并重启网关。`,
     waitingForGateway: '正在等待网关连接…（远程网关可能需要几秒；会自动重试）'
   },
@@ -1452,6 +1455,7 @@ const zhHant: BotsMessages = {
     statusUnknown: '狀態未知',
     unavailable: '不可用',
     retryNow: '立即重試',
+    loadingGatewayBots: '正在載入閘道機器人',
     rosterUnavailable: reason => `無法取得名單：${reason}。如果閘道早於 profiles.list，請更新 Hermes 並重新啟動閘道。`,
     waitingForGateway: '正在等待閘道連線…（遠端閘道可能需要幾秒；會自動重試）'
   },
@@ -1781,11 +1785,11 @@ export const BOTS_LOCALES: PluginLocaleBundles = {
   ja,
   zh,
   'zh-hant': zhHant,
-  ar: { canonical: CANONICAL_GROUP_LOCALES.ar },
-  ru: { canonical: CANONICAL_GROUP_LOCALES.ru },
-  fr: { canonical: CANONICAL_GROUP_LOCALES.fr },
-  de: { canonical: CANONICAL_GROUP_LOCALES.de },
-  es: { canonical: CANONICAL_GROUP_LOCALES.es }
+  ar: { canonical: CANONICAL_GROUP_LOCALES.ar, roster: { loadingGatewayBots: 'جار تحميل روبوتات البوابة' } },
+  ru: { canonical: CANONICAL_GROUP_LOCALES.ru, roster: { loadingGatewayBots: 'Загрузка ботов шлюза' } },
+  fr: { canonical: CANONICAL_GROUP_LOCALES.fr, roster: { loadingGatewayBots: 'Chargement des bots de la passerelle' } },
+  de: { canonical: CANONICAL_GROUP_LOCALES.de, roster: { loadingGatewayBots: 'Gateway-Bots werden geladen' } },
+  es: { canonical: CANONICAL_GROUP_LOCALES.es, roster: { loadingGatewayBots: 'Cargando bots de la pasarela' } }
 }
 
 export type BotsText = Bound<BotsMessages>

@@ -22,7 +22,7 @@
 
 import { queryClient } from '@hermes/plugin-sdk'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { renderHook, waitFor } from '@testing-library/react'
+import { act, renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -35,7 +35,7 @@ const { hostMock } = vi.hoisted(() => ({
     profileRoutes: undefined as unknown,
     request: vi.fn(),
     requestProfile: vi.fn(),
-    state: { connectionId: { get: vi.fn(() => 'local') }, profile: { get: () => 'default' } }
+    state: { connectionId: { get: vi.fn(() => 'local') }, profile: { get: vi.fn(() => 'default') } }
   }
 }))
 
@@ -107,6 +107,7 @@ const identities = (rows: RowFixture[]) => rows.map(row => `${row.connectionId}:
 
 beforeEach(() => {
   vi.clearAllMocks()
+  hostMock.state.profile.get.mockReturnValue('default')
   $lastRoster.set([])
 })
 
@@ -691,12 +692,143 @@ describe('the roster only caches rows from the connection it is keyed under', ()
     const { client } = renderRoster()
     const localKey = [...ROSTER_KEY, 'local']
 
-    // The fetch and its bounded retries (1s, 2s) all refuse: none may send a
-    // request, so the VPS answer is never cached as this device's roster.
-    await waitFor(() => expect(client.getQueryState(localKey)?.status).toBe('error'), { timeout: 6000 })
+    // Consuming the query signal also lets an abandoned owner cancel its
+    // read. Whether cancelled or refused, it cannot cache a VPS answer here.
+    await waitFor(() => expect(client.getQueryState(localKey)?.fetchStatus).toBe('idle'), { timeout: 6000 })
     expect(client.getQueryData(localKey)).toBeUndefined()
     expect(hostMock.request).not.toHaveBeenCalled()
     expect(hostMock.requestProfile.mock.calls.every(([route]) => route.connectionId === 'vps')).toBe(true)
+  })
+})
+
+describe('progressive active-source roster', () => {
+  afterEach(() => {
+    hostMock.profileRoutes = undefined
+  })
+
+  it.each(['default', 'desktop-alias'])(
+    'paints correctly scoped Bot Chats for %s while another connection is pending',
+    async profile => {
+      let finishUnion!: (value: Union) => void
+      hostMock.state.connectionId.get.mockReturnValue('local')
+      hostMock.state.profile.get.mockReturnValue(profile)
+      hostMock.profileRoutes = vi.fn(async () => [
+        { connectionId: 'local', mode: 'local', profile, targetProfile: 'default' }
+      ])
+      hostMock.requestProfile.mockResolvedValue({
+        profiles: [{ name: 'default', canonical_session: { id: 'canonical-local' } }]
+      })
+      hostMock.agents.mockReturnValue(
+        new Promise<Union>(resolve => {
+          finishUnion = resolve
+        })
+      )
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+      const wrapper = ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      )
+
+      const { result, unmount } = renderHook(() => useRoster(), { wrapper })
+
+      await waitFor(
+        () =>
+          expect(result.current.data?.profiles?.[0]).toMatchObject({
+            connectionId: 'local',
+            route: { connectionId: 'local', profile, targetProfile: 'default' },
+            canonical_session: { id: 'canonical-local' }
+          }),
+        { timeout: 5000 }
+      )
+      expect(result.current.isFetching).toBe(true)
+      expect(result.current.data?.fleetPending).toBe(true)
+      expect(hostMock.profileRoutes).toHaveBeenCalledWith('local')
+      expect(hostMock.request).not.toHaveBeenCalled()
+      await act(async () =>
+        finishUnion({
+          agents: [
+            { connectionId: 'local', connectionKind: 'local', profile: 'default', handle: 'default-device' },
+            { connectionId: 'vps', connectionKind: 'remote', profile: 'default', handle: 'default-vps' }
+          ]
+        })
+      )
+      await waitFor(() => expect(result.current.isFetching).toBe(false), { timeout: 5000 })
+      expect(result.current.data?.fleetPending).not.toBe(true)
+      expect(result.current.data?.profiles?.map(row => row.connectionId)).toEqual(['local', 'vps'])
+      expect(result.current.data?.profiles?.[0].canonical_session).toMatchObject({ id: 'canonical-local' })
+      unmount()
+      client.clear()
+    }
+  )
+
+  it('refuses late fleet enrichment after the window changes connections', async () => {
+    let finishUnion!: (value: Union) => void
+    hostMock.state.connectionId.get.mockReturnValue('local')
+    hostMock.request.mockResolvedValue({ profiles: [{ name: 'default', display_name: 'Local bot' }] })
+    hostMock.agents.mockReturnValue(
+      new Promise<Union>(resolve => {
+        finishUnion = resolve
+      })
+    )
+    queryClient.clear()
+    const pending = primeRoster()
+    const localKey = [...ROSTER_KEY, 'local']
+    await waitFor(
+      () => expect(queryClient.getQueryData<{ profiles: RosterRow[] }>(localKey)?.profiles).toHaveLength(1),
+      {
+        timeout: 5000
+      }
+    )
+    hostMock.state.connectionId.get.mockReturnValue('vps')
+    await act(async () =>
+      finishUnion({
+        agents: [{ connectionId: 'vps', connectionKind: 'remote', profile: 'default', handle: 'default' }]
+      })
+    )
+    await pending
+    expect(queryClient.getQueryData<{ profiles: RosterRow[] }>(localKey)?.profiles).toEqual([
+      { name: 'default', display_name: 'Local bot' }
+    ])
+    queryClient.clear()
+  })
+
+  it.each(['failure', 'cancellation'])('handles fleet %s after publishing active bots', async outcome => {
+    let finish!: (value: Union) => void
+    let fail!: (error: Error) => void
+    hostMock.state.connectionId.get.mockReturnValue('local')
+    hostMock.request.mockResolvedValue({ profiles: [{ name: 'default', display_name: 'Local bot' }] })
+    hostMock.agents.mockReturnValue(
+      new Promise<Union>((resolve, reject) => {
+        finish = resolve
+        fail = reject
+      })
+    )
+    queryClient.clear()
+    const key = [...ROSTER_KEY, 'local']
+    const pending = primeRoster()
+    await waitFor(() => expect(queryClient.getQueryData<{ fleetPending?: boolean }>(key)?.fleetPending).toBe(true), {
+      timeout: 5000
+    })
+
+    if (outcome === 'cancellation') {
+      await queryClient.cancelQueries({ queryKey: key })
+      await act(async () =>
+        finish({ agents: [{ connectionId: 'vps', connectionKind: 'remote', profile: 'default', handle: 'remote' }] })
+      )
+    } else {
+      await act(async () => fail(new Error('fleet unavailable')))
+    }
+
+    await pending
+    const snapshot = queryClient.getQueryData<{ fleetPending?: boolean; profiles?: RosterRow[] }>(key)
+    expect(snapshot?.profiles?.some(row => row.connectionId === 'vps')).not.toBe(true)
+
+    if (outcome === 'failure') {
+      expect(snapshot?.fleetPending).not.toBe(true)
+      expect(snapshot?.profiles?.[0].display_name).toBe('Local bot')
+    }
+
+    queryClient.clear()
   })
 })
 

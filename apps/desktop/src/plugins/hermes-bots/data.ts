@@ -707,6 +707,7 @@ interface RosterSnapshot {
   bot_mode_protocol?: boolean
   /** Time the request was ISSUED, the conservative bound mergeServerMeta wants. */
   fetchedAt?: number
+  fleetPending?: boolean
   primaryConnectionId?: string
   profiles?: RosterRow[]
   sources?: GatewaySource[]
@@ -757,16 +758,11 @@ function traceRosterSnapshot(
   )
 }
 
-/** One roster snapshot for `activeConnectionId` — the pane's query and the
- *  composer's cold-cache prime (`primeRoster`) share it, so both see the same
- *  cross-connection rows. */
-async function fetchRosterSnapshot(activeConnectionId: null | string | undefined): Promise<RosterSnapshot> {
-  // Stamp the ISSUE time on the snapshot: mergeServerMeta compares it
-  // against each bot's last local meta write, and a fetch issued before
-  // a write can only carry pre-write ui_meta. (Issue time is the
-  // conservative bound — the server answered no earlier than this.)
-  const issuedAt = Date.now()
-
+/** Read rich profiles only through the captured connection's verified routes. */
+async function readActiveRoster(
+  activeConnectionId: null | string | undefined,
+  checkOwner: () => void
+): Promise<RosterSnapshot> {
   // Rich rows (last_session, canonical_session, ui_meta, has_avatar)
   // come from the ACTIVE gateway's profiles.list — the canonical Bot
   // Chat is resolved server-side by NAME (the "Bot Chat" registry row),
@@ -782,8 +778,9 @@ async function fetchRosterSnapshot(activeConnectionId: null | string | undefined
     const epoch = beginAliasRouteIndex()
 
     try {
-      routes = await host.profileRoutes()
-      indexAliasRoutes(routes, epoch)
+      routes = await host.profileRoutes(activeConnectionId || undefined)
+      checkOwner()
+      indexAliasRoutes(routes, epoch, activeConnectionId || undefined)
     } catch {
       /* keep the previous alias index */
     }
@@ -794,9 +791,7 @@ async function fetchRosterSnapshot(activeConnectionId: null | string | undefined
   // the window just switched away from would otherwise be answered by the
   // one it switched to and cached under the old key — the cross-machine
   // swap that relabelled a VPS bot with the local bot's title.
-  if ((host.state.connectionId?.get?.() || null) !== (activeConnectionId || null)) {
-    throw new Error('Bot roster query outlived its connection')
-  }
+  checkOwner()
 
   const activeBot = {
     name: String(host.state.profile?.get?.() || 'default').trim() || 'default'
@@ -809,14 +804,101 @@ async function fetchRosterSnapshot(activeConnectionId: null | string | undefined
     ? routes.find(r => r?.connectionId === activeConnectionId && r?.profile === activeBot.name)
     : undefined
 
-  const local = route
+  const response = route
     ? await host.requestProfile<RosterSnapshot>(route, 'profiles.list', {})
     : await requestForBot<RosterSnapshot>(activeBot, 'profiles.list', {})
 
-  // Newer backends inject the teammate-messaging protocol into every
-  // session's system prompt (agent.bot_mode_protocol) — SOUL.md must not
-  // carry a second copy. Older gateways lack the flag: keep appending.
+  checkOwner()
+
+  // Publish only server-read rows, with the same keyed routes used for the
+  // authoritative read. Cached presentation never chooses a canonical chat.
+  const local: RosterSnapshot = {
+    ...response,
+    profiles: (Array.isArray(response?.profiles) ? response.profiles : []).map(row => {
+      const exact = routes.find(
+        candidate => candidate.connectionId === activeConnectionId && candidate.profile === row.name
+      )
+
+      const targets = routes.filter(
+        candidate => candidate.connectionId === activeConnectionId && candidate.targetProfile === row.name
+      )
+
+      const owner = exact || (targets.length === 1 ? targets[0] : undefined)
+
+      return owner
+        ? {
+            ...row,
+            connectionId: owner.connectionId,
+            connectionKind: owner.mode,
+            targetProfile: owner.targetProfile || row.name,
+            route: owner,
+            sourceScoped: true
+          }
+        : row
+    })
+  }
+
+  return local
+}
+
+async function fetchRosterSnapshot(
+  activeConnectionId: null | string | undefined,
+  publish?: (snapshot: RosterSnapshot) => void,
+  signal?: AbortSignal
+): Promise<RosterSnapshot> {
+  // Stamp the ISSUE time on the snapshot: mergeServerMeta compares it
+  // against each bot's last local meta write, and a fetch issued before
+  // a write can only carry pre-write ui_meta. (Issue time is the
+  // conservative bound — the server answered no earlier than this.)
+  const issuedAt = Date.now()
+
+  const checkOwner = () => {
+    if (signal?.aborted || (host.state.connectionId?.get?.() || null) !== (activeConnectionId || null)) {
+      throw new Error('Bot roster query outlived its connection')
+    }
+  }
+
+  checkOwner()
+
+  // Discover the wider fleet alongside the active source. A dead remote may
+  // delay enrichment, but cannot hold the active source's rows off screen.
+  let unionSettled = typeof host.agents !== 'function'
+
+  const unionRead =
+    typeof host.agents === 'function'
+      ? Promise.resolve()
+          .then(() => host.agents())
+          .then(
+            union => {
+              unionSettled = true
+
+              return union as UnionRoster
+            },
+            () => {
+              unionSettled = true
+
+              return null
+            }
+          )
+      : null
+
+  const local = await readActiveRoster(activeConnectionId, checkOwner)
+  // A backend-owned teammate protocol must be known before early rows can
+  // trigger the pane's SOUL.md backfill.
   serverInjectsProtocol = Boolean(local?.bot_mode_protocol)
+
+  if (publish && !unionSettled) {
+    const previous = $lastRoster.get().filter(row => !row?.ghost)
+
+    const verified = (local.profiles || []).filter(
+      row => typeof host.profileRoutes !== 'function' || row.connectionId === activeConnectionId
+    )
+
+    const early = mergeMultiSourceRoster({ ...local, profiles: verified }, null, activeConnectionId, previous)
+    await reconcileBotMeta(verified, issuedAt, checkOwner)
+    checkOwner()
+    publish({ ...early, fetchedAt: issuedAt, fleetPending: true })
+  }
 
   // Multi-source desktops (hermes-agent #86875) also expose the union
   // agent roster across every registered connection. Merge agents from
@@ -825,13 +907,19 @@ async function fetchRosterSnapshot(activeConnectionId: null | string | undefined
   // the local list exactly as it was.
   if (typeof host.agents === 'function') {
     try {
-      const union = await host.agents()
+      const union = await unionRead
+      checkOwner()
+
+      if (!union) {
+        throw new Error('Bot roster inventory unavailable')
+      }
+
       const previous: RosterRow[] = $lastRoster.get().filter(row => !row?.ghost)
       const merged = mergeMultiSourceRoster(local, union, activeConnectionId, previous)
       const sources = Array.isArray(union?.sources) ? union.sources : []
       traceRosterSnapshot(local, sources, activeConnectionId, merged?.profiles || [])
       const profiles = (merged?.profiles || []).map(row => annotateBotSource(row, sources))
-      await reconcileBotMeta(profiles, issuedAt)
+      await reconcileBotMeta(profiles, issuedAt, checkOwner)
 
       return {
         ...merged,
@@ -840,6 +928,7 @@ async function fetchRosterSnapshot(activeConnectionId: null | string | undefined
         fetchedAt: issuedAt
       }
     } catch {
+      checkOwner()
       /* Aggregate-roster failure, not a registry change: keep the
        * previously painted remote rows on the roster as unreachable
        * instead of repainting Bot Mode local-only (#98844). `sources`
@@ -852,7 +941,7 @@ async function fetchRosterSnapshot(activeConnectionId: null | string | undefined
         row?.remoteSource ? { ...row, sourceReachable: false } : row
       )
 
-      await reconcileBotMeta(profiles, issuedAt)
+      await reconcileBotMeta(profiles, issuedAt, checkOwner)
 
       return {
         ...merged,
@@ -862,7 +951,7 @@ async function fetchRosterSnapshot(activeConnectionId: null | string | undefined
     }
   }
 
-  await reconcileBotMeta(Array.isArray(local?.profiles) ? local.profiles : [], issuedAt)
+  await reconcileBotMeta(Array.isArray(local?.profiles) ? local.profiles : [], issuedAt, checkOwner)
 
   return {
     ...(local && typeof local === 'object' ? local : {}),
@@ -870,14 +959,12 @@ async function fetchRosterSnapshot(activeConnectionId: null | string | undefined
   }
 }
 
-/** Every fresh snapshot corrects the cached names before anyone reads them —
- *  the Bots pane's query and the composer's cold `primeRoster` alike. Run only
- *  from the pane's effect, a launch that never opened Bots kept a stale cached
- *  title ahead of the backend's own in mentions and group prompts. Late import:
- *  profile-ops imports this module. */
-async function reconcileBotMeta(rows: RosterRow[], fetchedAt: number): Promise<void> {
+/** Reconcile server names before query publication, including cold composer
+ *  reads. Recheck ownership after the late import, which avoids a module cycle. */
+async function reconcileBotMeta(rows: RosterRow[], fetchedAt: number, checkOwner: () => void): Promise<void> {
   const { mergeServerMeta } = await import('./profile-ops')
 
+  checkOwner()
   mergeServerMeta(
     rows.filter(row => !row?.ghost),
     fetchedAt
@@ -889,7 +976,21 @@ export function useRoster() {
 
   return useQuery({
     queryKey: [...ROSTER_KEY, activeConnectionId],
-    queryFn: () => fetchRosterSnapshot(activeConnectionId),
+    queryFn: ({ client, queryKey, signal }) =>
+      fetchRosterSnapshot(
+        activeConnectionId,
+        snapshot => {
+          if (!signal.aborted && !client.getQueryData<RosterSnapshot>(queryKey)?.profiles?.length) {
+            client.setQueryData(queryKey, snapshot)
+            host.traceIdentityChange?.(
+              'bot-roster',
+              'active-ready',
+              `connection=${activeConnectionId || 'local'} rows=${snapshot.profiles?.length || 0} duration_ms=${Date.now() - (snapshot.fetchedAt || Date.now())}`
+            )
+          }
+        },
+        signal
+      ),
     refetchInterval: 5000,
     staleTime: 5000,
     retry: ROSTER_QUERY_RETRY,
@@ -909,7 +1010,16 @@ export async function primeRoster(): Promise<void> {
   try {
     await queryClient.fetchQuery({
       queryKey: [...ROSTER_KEY, connectionId],
-      queryFn: () => fetchRosterSnapshot(connectionId),
+      queryFn: ({ client, queryKey, signal }) =>
+        fetchRosterSnapshot(
+          connectionId,
+          snapshot => {
+            if (!signal.aborted && !client.getQueryData<RosterSnapshot>(queryKey)?.profiles?.length) {
+              client.setQueryData(queryKey, snapshot)
+            }
+          },
+          signal
+        ),
       staleTime: 5000
     })
   } catch {

@@ -65,7 +65,6 @@ import {
   $activeGatewayProfile,
   $gatewaySwapTarget,
   $hydrationSyncProfile,
-  $profiles,
   ensureGatewayAgent,
   ensureGatewayProfile,
   newSessionInAgent,
@@ -115,6 +114,7 @@ import { planPluginOpenSession } from './plugin-open-session-plan'
 import {
   type PluginProfileRequestOptions,
   type PluginProfileRoute,
+  pluginProfileRoutes,
   pluginRouteStillRegistered,
   requestPluginProfile
 } from './profile-request'
@@ -1380,27 +1380,9 @@ export const host = {
   /** One-shot system status snapshot (platforms, versions, …). */
   status: async () => getStatus(),
 
-  /** Credential-free routes across every current registry source. Identity is
-   *  the (connectionId, profile) pair; endpoint/auth details stay in Electron. */
-  profileRoutes: async () => {
-    const desktop = window.hermesDesktop
-    const getProfileRoutes = desktop?.getProfileRoutes
-
-    if (!getProfileRoutes) {
-      throw new Error('Hermes Desktop connection routing unavailable')
-    }
-
-    let profiles = $profiles.get()
-
-    try {
-      profiles = await refreshProfiles()
-    } catch {
-      // Route inventory is a read: a transient backend failure falls back to
-      // the last cache. Electron always adds the primary Desktop profile.
-    }
-
-    return getProfileRoutes(profiles.map(profile => profile.name))
-  },
+  /** Credential-free routes, optionally limited to one captured connection.
+   *  Identity is (connectionId, profile); endpoint/auth details stay in Electron. */
+  profileRoutes: pluginProfileRoutes,
 
   /** Gateway JSON-RPC through a credential-free route descriptor without
    *  foregrounding it. Passing a bare profile is the v1/local compatibility

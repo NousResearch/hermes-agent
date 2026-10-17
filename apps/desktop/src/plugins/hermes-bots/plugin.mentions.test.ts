@@ -19,6 +19,7 @@
  * composes no CLI handoff and delivers nothing itself.
  */
 
+import { queryClient } from '@hermes/plugin-sdk'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { RosterRow } from './types'
@@ -60,11 +61,10 @@ const ROSTER = {
   ]
 }
 
-const { cache, hostMock, live } = vi.hoisted(() => {
+const { hostMock, live } = vi.hoisted(() => {
   const live = { focused: 'default', profile: 'default', stored: null as string | null }
 
   return {
-    cache: new Map<string, { key: unknown[]; value: unknown }>(),
     hostMock: {
       notify: vi.fn(),
       request: vi.fn(async () => ({})),
@@ -89,31 +89,15 @@ const { cache, hostMock, live } = vi.hoisted(() => {
 
 vi.mock('@hermes/plugin-sdk', async () => {
   const { atom } = await import('nanostores')
+  const { QueryClient } = await import('@tanstack/react-query')
 
   const stub: unknown = new Proxy(function stubbed() {}, {
     apply: () => stub,
     get: (_target, key) => (key === 'then' ? undefined : stub)
   })
 
-  // A faithful-enough TanStack Query v5 cache: getQueryData matches ONLY the
-  // exact key; getQueriesData prefix-matches a key family.
-  const keyOf = (key: unknown[]) => JSON.stringify(key)
-
-  const queryClient = {
-    getQueriesData: ({ queryKey }: { queryKey: unknown[] }) =>
-      [...cache.values()]
-        .filter(entry => queryKey.every((part, index) => entry.key[index] === part))
-        .map(entry => [entry.key, entry.value]),
-    fetchQuery: async ({ queryFn, queryKey }: { queryFn: () => Promise<unknown>; queryKey: unknown[] }) => {
-      const value = await queryFn()
-      cache.set(keyOf(queryKey), { key: queryKey, value })
-
-      return value
-    },
-    getQueryData: (key: unknown[]) => cache.get(keyOf(key))?.value,
-    invalidateQueries: () => undefined,
-    setQueryData: (key: unknown[], value: unknown) => cache.set(keyOf(key), { key, value })
-  }
+  // Exercise the same key matching, query context and cancellation contract as production.
+  const queryClient = new QueryClient({ defaultOptions: { queries: { gcTime: Infinity, retry: false } } })
 
   const known: Record<string, unknown> = {
     atom,
@@ -146,17 +130,14 @@ async function contributions({
   profiles = ROSTER.profiles
 }: Fixture = {}) {
   vi.resetModules()
-  cache.clear()
+  queryClient.clear()
   live.focused = focused
 
   // Exactly where useRoster writes it: suffixed with the connection id. A
   // null `profiles` leaves the cache COLD, as a launch that never mounted the
   // Bots pane does.
   if (profiles) {
-    cache.set(JSON.stringify(['hermes-bots', 'roster', cacheKeyConnection]), {
-      key: ['hermes-bots', 'roster', cacheKeyConnection],
-      value: { profiles }
-    })
+    queryClient.setQueryData(['hermes-bots', 'roster', cacheKeyConnection], { profiles })
   }
 
   const plugin = (await import('./plugin')).default

@@ -154,6 +154,15 @@ def _warn_unroutable_sub_once(sub: dict, platform: Any, message: str, *extra_arg
                    sub.get("chat_id"), *extra_args)
 
 
+# Surfaces this gateway never holds an adapter for and that are delivered elsewhere:
+# the TUI polls its own board's subscriptions (tui_gateway/session_notifications.py), so the
+# claim-time platform pre-filter skipping them is the designed path, not a dead route.
+_NON_ADAPTER_PLATFORMS = frozenset({"tui"})
+
+# One dead-route report per (task, platform, chat, thread) row.
+_UNSERVED_PLATFORM_WARNED: set[tuple] = set()
+
+
 def _platform_names(mapping: Any) -> set[str]:
     """Lower-cased platform names of an adapters mapping (Platform enums or strings)."""
     return {getattr(platform, "value", str(platform)).lower() for platform in mapping}
@@ -306,6 +315,7 @@ class _Collector:
         if platform not in self.active_platforms:
             logger.debug("kanban notifier: subscription for %s on %s skipped; adapter not connected",
                          sub.get("task_id"), platform or "<missing>")
+            self._warn_unserved_sub_once(sub, platform, owner_profile)
             return None
         from gateway.config import Platform
         if _adapter_for_subscription(self.runner, Platform(platform), sub, owner_profile or self.notifier_profile) is None:
@@ -321,6 +331,26 @@ class _Collector:
         logger.debug("kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
                      len(events), sub["task_id"], slug, old_cursor, cursor)
         return {"sub": sub, "old_cursor": old_cursor, "cursor": cursor, "events": events, "task": task, "board": slug}
+
+    def _warn_unserved_sub_once(self, sub: dict, platform: str, owner_profile: Optional[str]) -> None:
+        """A subscription whose platform has no adapter on this gateway can never be claimed:
+        the row keeps looking healthy in ``notify-list`` while the originating chat is never woken,
+        and nothing else reports it (#140268). Say so ONCE per row at WARNING, mirroring
+        ``_warn_unroutable_sub_once`` (#115460) and ``_warn_anchorless_thread_sub_once`` (#110919).
+        """
+        if platform in _NON_ADAPTER_PLATFORMS:
+            return
+        key = (sub.get("task_id"), platform, sub.get("chat_id"), sub.get("thread_id") or "")
+        if key in _UNSERVED_PLATFORM_WARNED:
+            return
+        _UNSERVED_PLATFORM_WARNED.add(key)
+        logger.warning(
+            "kanban notifier: subscription for %s on %s chat %s has no connected adapter for that "
+            "platform on this gateway; it will not be delivered. Re-subscribe from a chat on a "
+            "platform this gateway serves, or serve that platform where profile %s runs.",
+            sub.get("task_id"), platform or "<missing>", sub.get("chat_id"),
+            owner_profile or self.notifier_profile,
+        )
 
     def collect_board(self, slug: str) -> None:
         """Claim events on one board, appending delivery dicts to ``deliveries``."""

@@ -735,37 +735,8 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
               else f"  {_t('snapshot.nothing_to_snapshot')}")
 
     def _snapshot_restore(self, parts) -> None:
-        from hermes_cli.backup import list_quick_snapshots, restore_quick_snapshot
-        if len(parts) < 3:
-            print(f"  {_t('snapshot.usage_restore')}")
-            snaps = list_quick_snapshots(limit=1)
-            if snaps:
-                print(f"  {_t('snapshot.most_recent', snapshot_id=snaps[0]['id'])}")
-            return
-        snap_id = parts[2]
-        try:
-            idx = int(snap_id)  # restore by number (1-indexed)
-        except ValueError:
-            idx = None
-        if idx is not None:
-            snaps = list_quick_snapshots()
-            if not 1 <= idx <= len(snaps):
-                return print(f"  {_t('snapshot.invalid_number', max=len(snaps))}")
-            snap_id = snaps[idx - 1]["id"]
-        # Close our own SessionDB first (restore contention); an open gateway session's store must stay.
-        local_session_db = getattr(self, "_session_db", None)
-        if local_session_db is not None and not getattr(self, "_gateway_session_open", False):
-            with suppress(Exception):
-                local_session_db.close()
-                self._session_db = None
-        if restore_quick_snapshot(snap_id):
-            _pr(f"  {_t('snapshot.restored', snapshot_id=snap_id)}",
-                f"  {_t('snapshot.restart_recommended')}")
-        elif snap_id in {s.get("id") for s in list_quick_snapshots(limit=10**6)}:
-            # False also means the auth.json merge was refused; don't call an existing snapshot missing.
-            print(f"  {_t('snapshot.restore_incomplete', snapshot_id=snap_id)}")
-        else:
-            print(f"  {_t('snapshot.not_found', snapshot_id=snap_id)}")
+        from hermes_cli.cli_snapshot import restore_snapshot_command
+        restore_snapshot_command(self, parts)
 
     def _snapshot_prune(self, parts) -> None:
         from hermes_cli.backup import prune_quick_snapshots

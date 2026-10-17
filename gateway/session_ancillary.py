@@ -280,7 +280,8 @@ async def reload_mcp(connection, ref, params):
     if 'session:control' not in connection.actor.capabilities:
         raise RuntimeStoreError('permission_denied')
     always = params.get('always') is True
-    if params.get('confirm') is not True and not always and _mcp_reload_confirm_required(connection):
+    if (params.get('confirm') is not True and not always
+            and await asyncio.to_thread(_mcp_reload_confirm_required, connection)):
         return {'status': 'confirm_required', 'message': (
             "Reloading reconciles this profile's MCP servers and applies this chat's new tools as its next "
             'policy generation. The next message re-sends the full prompt, which costs prompt-cache tokens. '
@@ -326,10 +327,15 @@ def _mcp_reload_confirm_required(connection):
 
     from gateway.run import _profile_runtime_scope
     from hermes_cli.config import load_config
+    from hermes_cli.config_read_errors import FailedConfigRead
 
     try:
         with _profile_runtime_scope(Path(connection.authority.profile_id), hydrate_secrets=False):
             config = load_config()
+        # A failed read serves last-known-good values behind this marker: a stale `false` is not
+        # consent from the current config.
+        if isinstance(config, FailedConfigRead):
+            return True
         approvals = config.get('approvals') if isinstance(config, dict) else None
         return bool(approvals.get('mcp_reload_confirm', True)) if isinstance(approvals, dict) else True
     except Exception:  # health: allow BLE001 -- an unreadable config must keep the consent gate closed

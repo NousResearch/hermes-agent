@@ -422,3 +422,122 @@ def test_aux_named_entry_skips_an_unusable_inline_key_for_the_declared_key_env(t
     from hermes_cli.runtime_provider import _get_named_custom_provider
 
     assert _named_custom_api_key(_get_named_custom_provider("custom:mydeep"), "mydeep", ENDPOINT) == ENTRY_KEY
+
+
+# ── review round 3: restore reads the snapshot's owner, never live config ───────────────────────
+
+def _init_snapshot(agent):
+    from agent.agent_init import _snapshot_primary_runtime
+    _snapshot_primary_runtime(agent)
+    return agent._primary_runtime
+
+
+def _switch_snapshot(agent):
+    from agent.agent_runtime_helpers import _build_primary_runtime_snapshot
+    return _build_primary_runtime_snapshot(agent, agent.api_mode)
+
+
+SNAPSHOT_BUILDERS = [pytest.param(_init_snapshot, id="agent_init"), pytest.param(_switch_snapshot, id="model_switch")]
+
+
+def _snapshotted_agent(builder, initial, requested, api_key=ENTRY_KEY):
+    """An agent built on the resolved primary ``initial``, snapshotted by a real builder, now on a fallback."""
+    from unittest.mock import MagicMock
+
+    from run_agent import AIAgent
+
+    built = AIAgent.__new__(AIAgent)
+    built.model, built.provider, built.requested_provider = "m", initial["provider"], requested
+    built.base_url, built.api_mode, built.api_key = initial["base_url"], "chat_completions", api_key
+    built._client_kwargs = {"api_key": api_key, "base_url": initial["base_url"]}
+    built._use_prompt_caching = built._use_native_cache_layout = False
+    built.context_compressor = MagicMock(context_length=128000, threshold_tokens=100000)
+    snapshot = builder(built)
+    agent = _restorable_agent({"provider": initial["provider"], "requested_provider": requested,
+                               "base_url": initial["base_url"], "api_key": api_key})
+    agent._primary_runtime = snapshot
+    return agent
+
+
+def _move_beta_endpoint(home):
+    cfg = yaml.safe_load((home / "config.yaml").read_text())
+    cfg["providers"]["beta"]["api"] = "http://127.0.0.1:18081/v1"
+    (home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
+
+
+def _drop_declaration(home, key):
+    cfg = yaml.safe_load((home / "config.yaml").read_text())
+    del cfg["providers"]["deepseek"][key]
+    (home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
+
+
+@pytest.mark.parametrize("builder", SNAPSHOT_BUILDERS)
+def test_restore_keeps_the_frozen_owner_after_its_endpoint_moves(tmp_path, monkeypatch, builder):
+    """beta's live endpoint moves off the shared URL: the named lookup misses, and the URL-only
+    fallback used to hand the session alpha's ``hermes auth add`` key."""
+    home = _two_entries_on_one_url(tmp_path, monkeypatch)
+    from hermes_cli import runtime_provider as rp
+
+    initial = rp.resolve_runtime_provider(requested="custom:beta")
+    assert initial["api_key"] == ENTRY_KEY
+    agent = _snapshotted_agent(builder, initial, "custom:beta")
+    _move_beta_endpoint(home)
+    assert agent._restore_primary_runtime() is True
+    assert (agent.api_key, agent.base_url) == (ENTRY_KEY, ENDPOINT)
+
+
+@pytest.mark.parametrize("builder", SNAPSHOT_BUILDERS)
+@pytest.mark.parametrize("declared", [{"key_env": "ENTRY_KEY_VAR"}, {"api_key": ENTRY_KEY}], ids=["key_env", "api_key"])
+def test_restore_keeps_the_frozen_declaration_after_it_is_removed(tmp_path, monkeypatch, builder, declared):
+    """The live entry stops declaring a credential: the built-in's env row used to win, moving the
+    session onto DEEPSEEK_API_KEY and api.deepseek.com."""
+    home = _home(tmp_path, monkeypatch, "deepseek", "DEEPSEEK_API_KEY", entry_extra=declared)
+    from hermes_cli import runtime_provider as rp
+
+    initial = rp.resolve_runtime_provider(requested="custom:deepseek")
+    assert initial["api_key"] == ENTRY_KEY
+    agent = _snapshotted_agent(builder, initial, "custom:deepseek")
+    # The snapshot already holds the session's key; ownership adds no other copy of a secret.
+    rest = {k: v for k, v in agent._primary_runtime.items() if k not in {"api_key", "client_kwargs", "compressor_api_key"}}
+    assert ENTRY_KEY not in json.dumps(rest, default=str)
+    _drop_declaration(home, next(iter(declared)))
+    assert agent._restore_primary_runtime() is True
+    assert (agent.api_key, agent.base_url) == (ENTRY_KEY, ENDPOINT)
+
+
+@pytest.mark.parametrize("edit", ["endpoint", "declaration"])
+def test_a_snapshot_without_recorded_ownership_keeps_its_own_credential(tmp_path, monkeypatch, edit):
+    """A snapshot from before ownership was recorded (the reviewer's probe shape): a named identity
+    can't prove its owner from live config, so it keeps the snapshot's key rather than another's."""
+    if edit == "endpoint":
+        home, name = _two_entries_on_one_url(tmp_path, monkeypatch), "beta"
+    else:
+        home, name = _home(tmp_path, monkeypatch, "deepseek", "DEEPSEEK_API_KEY"), "deepseek"
+    from hermes_cli import runtime_provider as rp
+
+    initial = rp.resolve_runtime_provider(requested=f"custom:{name}")
+    agent = _restorable_agent({"provider": initial["provider"], "requested_provider": f"custom:{name}",
+                               "base_url": ENDPOINT, "api_key": ENTRY_KEY})
+    if edit == "endpoint":
+        _move_beta_endpoint(home)
+    else:
+        _drop_declaration(home, "key_env")
+    assert agent._restore_primary_runtime() is True
+    assert (agent.api_key, agent.base_url) == (ENTRY_KEY, ENDPOINT)
+
+
+@pytest.mark.parametrize("builder", SNAPSHOT_BUILDERS)
+def test_restore_still_reselects_the_owners_own_pool_row(tmp_path, monkeypatch, builder):
+    """Recorded ownership scopes the pool, it doesn't drop it: the entry's ``hermes auth add`` row
+    replaces a stale snapshot key on restore, and the built-in's row stays out."""
+    manual = {"id": "m1", "label": "manual", "auth_type": "api_key", "priority": 0, "source": "manual",
+              "access_token": MANUAL_KEY}
+    _home(tmp_path, monkeypatch, "deepseek", "DEEPSEEK_API_KEY", pool={"deepseek": [manual]})
+    from hermes_cli import runtime_provider as rp
+
+    initial = rp.resolve_runtime_provider(requested="custom:deepseek")
+    agent = _snapshotted_agent(builder, initial, "custom:deepseek", api_key="stale-snapshot-key-0123")
+    agent._swap_credential = lambda entry: setattr(agent, "api_key", entry.runtime_api_key)
+    assert agent._restore_primary_runtime() is True
+    assert agent.api_key == MANUAL_KEY
+    assert {e.access_token for e in agent._credential_pool.entries()} == {MANUAL_KEY}

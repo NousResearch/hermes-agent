@@ -13,10 +13,15 @@ from __future__ import annotations
 from typing import Any, Callable, Optional
 
 _DECLARED_CREDENTIAL_KEYS = ("api_key", "key_env", "api_key_env", "key_cmd")
+# The ``_primary_runtime`` field holding the owning entry's provenance (``runtime_entry_owner``).
+SNAPSHOT_OWNER_KEY = "custom_entry"
 
 
 def entry_declares_credential(entry: Any) -> bool:
-    """Whether a custom entry names its own credential (``api_key`` / ``key_env`` / ``key_cmd``)."""
+    """Whether a custom entry names its own credential (``api_key`` / ``key_env`` / ``key_cmd``). A
+    snapshot's provenance carries the verdict itself, since it never copies an inline secret."""
+    if isinstance(entry, dict) and "declares_credential" in entry:
+        return bool(entry["declares_credential"])
     return isinstance(entry, dict) and any(str(entry.get(k) or "").strip() for k in _DECLARED_CREDENTIAL_KEYS)
 
 
@@ -85,17 +90,46 @@ def pool_for_aux_provider(provider: Optional[str], pool_key: str, load: Callable
     return entry_scoped_pool(pool, pool_key, match[1] if match else None)
 
 
-def load_runtime_pool(provider: Optional[str], base_url: Optional[str], requested_provider: Optional[str] = None) -> Any:
+def _custom_identity(provider: Optional[str], requested_provider: Optional[str]) -> tuple[bool, Optional[str]]:
+    """``(is_custom, custom:<name> or None)`` for a runtime's provider / requested_provider pair."""
+    from agent.credential_pool import CUSTOM_POOL_PREFIX
+    identities = [str(v or "").strip().lower() for v in (provider, requested_provider)]
+    custom = any(v == "custom" or v.startswith(CUSTOM_POOL_PREFIX) for v in identities)
+    return custom, next((v for v in identities if v.startswith(CUSTOM_POOL_PREFIX)), None)
+
+
+def runtime_entry_owner(provider: Optional[str], requested_provider: Optional[str], base_url: Optional[str]) -> Optional[dict[str, Any]]:
+    """Credential provenance of the entry that owns a custom runtime, for its ``_primary_runtime``
+    snapshot: matched in the config the route runs on (the frozen scope, else the profile's), the way
+    resolution matched it. Names only, never a secret. None for a built-in or an unowned endpoint."""
+    custom, name = _custom_identity(provider, requested_provider)
+    if not custom or (match := custom_entry_for_endpoint(base_url, name)) is None:
+        return None
+    norm_name, entry = match
+    provenance = {k: entry.get(k) for k in ("provider_key", "base_url", "key_env", "api_key_env")}
+    return {"name": norm_name, **provenance, "declares_credential": entry_declares_credential(entry)}
+
+
+def load_runtime_pool(
+    provider: Optional[str], base_url: Optional[str], requested_provider: Optional[str] = None,
+    snapshot: Optional[dict[str, Any]] = None,
+) -> Any:
     """The pool for a runtime snapshot's identity. A custom runtime (``custom`` or ``custom:<name>``)
     is the entry's, so it gets the entry-scoped view; a built-in identity loads its whole pool.
     Ownership and the pool key come from the runtime identity, never from the pool slug, which both
-    share: a ``custom:<name>`` identity keys on its own entry, not the first entry on its URL."""
-    from agent.credential_pool import CUSTOM_POOL_PREFIX, _pool_keys_for_custom_entry, load_pool, resolve_runtime_pool_key
-    identities = [str(v or "").strip().lower() for v in (provider, requested_provider)]
-    if not any(v == "custom" or v.startswith(CUSTOM_POOL_PREFIX) for v in identities):
+    share: a ``custom:<name>`` identity keys on its own entry, not the first entry on its URL.
+
+    ``snapshot`` is the ``_primary_runtime`` being restored: the owner it recorded wins over live
+    config, so an edit can't reassign the endpoint or drop the entry's declared credential. A named
+    identity whose snapshot recorded no owner gets None and keeps the snapshot's own credential."""
+    from agent.credential_pool import _pool_keys_for_custom_entry, load_pool, resolve_runtime_pool_key
+    custom, name = _custom_identity(provider, requested_provider)
+    if not custom:
         key = resolve_runtime_pool_key(provider, base_url)
         return load_pool(key) if key else None
-    name = next((v for v in identities if v.startswith(CUSTOM_POOL_PREFIX)), None)
-    match = custom_entry_for_endpoint(base_url, name)
-    key = (_pool_keys_for_custom_entry(*match) or [""])[0] if name and match else resolve_runtime_pool_key(provider, base_url)
+    owner = (snapshot or {}).get(SNAPSHOT_OWNER_KEY)
+    if snapshot is not None and name and not owner:
+        return None
+    match = (owner["name"], owner) if owner else custom_entry_for_endpoint(base_url, name)
+    key = (_pool_keys_for_custom_entry(*match) or [""])[0] if match and (name or owner) else resolve_runtime_pool_key(provider, base_url)
     return entry_scoped_pool(load_pool(key), key, match[1] if match else None) if key else None

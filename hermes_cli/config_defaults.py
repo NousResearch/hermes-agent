@@ -1170,6 +1170,12 @@ DEFAULT_CONFIG = {
             "model": "base",  # tiny, base, small, medium, large-v3, turbo
             "language": "",  # auto-detect; set "en", "es", ... to force
             "initial_prompt": "",
+            # Voice interaction mode (local STT path / stt_server_wrapper):
+            # "transcribe" = keep the transcript in the detected language;
+            # "translate" = transcribe then translate to target_language
+            # (two-stage: ASR backend → m2m100 text translation).
+            "mode": "transcribe",
+            "target_language": "en",  # translation target (translate mode only)
             # Anti-hallucination (faster-whisper decodes junk from silence). vad: Silero filter
             # (false = raw audio, for music/ambient). A segment is dropped only if no_speech_prob
             # ABOVE no_speech_prob_threshold AND avg_logprob BELOW logprob_threshold.

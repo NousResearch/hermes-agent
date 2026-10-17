@@ -14,7 +14,8 @@ import {
   providerGroup,
   sectionFieldEntries,
   setNested,
-  stripToolsetLabel
+  stripToolsetLabel,
+  voiceFieldVisible
 } from './helpers'
 
 describe('settings helpers', () => {
@@ -449,6 +450,57 @@ describe('settings helpers', () => {
       const draft: HermesConfigRecord = { toolsets: ['memory'] }
 
       expect(diffConfig(baseline, draft)).toEqual({ toolsets: ['memory'] })
+    })
+  })
+
+  describe('voiceFieldVisible', () => {
+    it('shows stt.local.* fields for the local_command provider (same runtime family as local)', () => {
+      // local_command is the active STT provider for a user-supplied command
+      // (HERMES_LOCAL_STT_COMMAND); the runtime reads the same stt.local.*
+      // section for it, so its fields must render too.
+      const config: HermesConfigRecord = { stt: { enabled: true, provider: 'local_command' } }
+
+      expect(voiceFieldVisible('stt.local.mode', config)).toBe(true)
+      expect(voiceFieldVisible('stt.local.target_language', config)).toBe(true)
+      expect(voiceFieldVisible('stt.local.model', config)).toBe(true)
+      expect(voiceFieldVisible('stt.local.language', config)).toBe(true)
+    })
+
+    it('shows stt.local.* fields for the built-in local provider', () => {
+      const config: HermesConfigRecord = { stt: { enabled: true, provider: 'local' } }
+
+      expect(voiceFieldVisible('stt.local.model', config)).toBe(true)
+    })
+
+    it('hides stt.local.* fields when a cloud STT provider is active', () => {
+      const config: HermesConfigRecord = { stt: { enabled: true, provider: 'groq' } }
+
+      expect(voiceFieldVisible('stt.local.mode', config)).toBe(false)
+      expect(voiceFieldVisible('stt.groq.model', config)).toBe(true)
+    })
+
+    it('still gates on stt.enabled', () => {
+      const config: HermesConfigRecord = { stt: { enabled: false, provider: 'local_command' } }
+
+      expect(voiceFieldVisible('stt.local.mode', config)).toBe(false)
+    })
+
+    it('leaves non-voice tts/stt gating unchanged', () => {
+      const config: HermesConfigRecord = { tts: { provider: 'edge' } }
+
+      expect(voiceFieldVisible('tts.edge.voice', config)).toBe(true)
+      expect(voiceFieldVisible('tts.openai.model', config)).toBe(false)
+      expect(voiceFieldVisible('voice.silence_duration', config)).toBe(true)
+    })
+
+    it('falls back to the backend default provider when the key is unset', () => {
+      // Upstream: an unset stt.provider means 'local' (unset tts.provider → 'edge'),
+      // so nested fields must not be hidden just because the key is absent.
+      const config: HermesConfigRecord = { stt: { enabled: true } }
+
+      expect(voiceFieldVisible('stt.local.model', config)).toBe(true)
+      expect(voiceFieldVisible('stt.openai.model', config)).toBe(false)
+      expect(voiceFieldVisible('tts.edge.voice', config)).toBe(true)
     })
   })
 })

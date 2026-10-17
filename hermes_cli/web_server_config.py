@@ -127,6 +127,19 @@ _SCHEMA_OVERRIDES: dict[str, dict[str, Any]] = {
     "stt.provider": _select(
         "Speech-to-text provider", "local", "groq", "openai", "mistral", "xai", "elevenlabs", "deepinfra"),
     "stt.local.model": _select("Local faster-whisper model size", *STT_MODEL_CATALOG["local"]),
+    # Voice interaction mode for the local STT path. transcribe = keep the
+    # transcript in the detected language; translate = transcribe then translate
+    # to stt.local.target_language. Exposed to local_command templates as the
+    # {mode} / {target_language} placeholders.
+    "stt.local.mode": _select(
+        "Voice interaction mode (local STT)", "transcribe", "translate"
+    ),
+    "stt.local.target_language": _select(
+        "Translation target language (translate mode; 25 European languages)",
+        "en", "it", "de", "fr", "es", "pt", "nl", "pl", "ru", "uk", "cs",
+        "sk", "sl", "hr", "bg", "ro", "hu", "el", "da", "sv", "fi", "et",
+        "lt", "lv", "mt",
+    ),
     "stt.groq.model": _select("Groq Whisper model", *STT_MODEL_CATALOG["groq"]),
     "stt.openai.model": _select("OpenAI transcription model", *STT_MODEL_CATALOG["openai"]),
     "stt.openai.streaming_model": _select("OpenAI live transcription model (stt.streaming)", "gpt-live-transcribe",

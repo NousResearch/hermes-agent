@@ -66,6 +66,34 @@ def test_termux_docker_row_pins_digest(lock):
     assert row["url"] == f"docker://termux/termux-docker@{version}"
 
 
+def test_identity_reads_digestless_artifacts_as_unpinned(tmp_path):
+    """A docker-reference artifact carries no sha256 field (its digest lives
+    in the version, checked by the version compare). _identity must read it
+    as "nothing digest-bound to compare" — returning None, not raising —
+    or `pm doctor` crashes on the only target termux-docker resolves on."""
+    from pm.install import _identity
+    from pm.lock import Lockfile
+
+    digest = "sha256:" + "a" * 64
+    lock_path = tmp_path / "lock.json"
+    lock_path.write_text(json.dumps({"schema": 1, "packages": {
+        "termux-docker": {"version": digest, "artifacts": {
+            "linux-arm64-bionic": {"url": f"docker://termux/termux-docker@{digest}"}}},
+        "tool": {"version": "1.0", "artifacts": {
+            "linux-arm64-bionic": [
+                {"url": "https://example.test/a.tgz", "sha256": "b" * 64},
+                {"url": "https://example.test/b.tgz", "sha256": "c" * 64}]}},
+    }}))
+    lockfile = Lockfile(lock_path)
+    assert _identity(lockfile, "termux-docker", "linux-arm64-bionic") is None
+    assert _identity(lockfile, "missing", "linux-arm64-bionic") is None
+    assert _identity(lockfile, "tool", "linux-arm64-bionic") == (
+        "linux-arm64-bionic", ("b" * 64, "c" * 64))
+    # The shipped row itself must read back unpinned, not KeyError.
+    assert _identity(Lockfile(REPO_ROOT / "pm" / "lock.json"),
+                     "termux-docker", "linux-arm64-bionic") is None
+
+
 def test_python_bionic_pin_is_independent_of_desktop_build_version(lock):
     from pm.registry import get_package
 

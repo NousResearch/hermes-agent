@@ -31,6 +31,15 @@ def owning_install_root(project_root: Path) -> Path | None:
     root = Path(project_root).resolve()
     if venv.name not in ("venv", ".venv"):
         return None
+    # Under pytest the interpreter legitimately runs from the checkout's venv while the
+    # code under test operates on a fixture clone in tmp: that is isolation, not a
+    # mis-pointed install, and "retargeting" re-ran the whole test invocation as a
+    # `hermes` command (SystemExit 2 on every machine with a real install —
+    # 2026-10-08 field incident). The marker is the conftest-exported one from
+    # hermes_state_guard, chosen because children inherit it by default.
+    if (os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("PYTEST_VERSION")
+            or os.environ.get("HERMES_TEST_ISOLATION")):
+        return None
     owner = venv.parent if (venv.parent / "hermes_cli" / "main.py").is_file() else _pm_environment_owner(venv)
     if owner is None or owner == root:
         return None

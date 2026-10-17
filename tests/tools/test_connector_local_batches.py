@@ -32,6 +32,18 @@ def test_local_batches_rejected_before_any_entry_executes(monkeypatch, mixed):
     assert invoked == []
 
 
+def test_directly_listed_tool_unwraps_with_session_scope():
+    """Agent execution keeps the bridge call on terminal's normal scoped path."""
+    from agent.tool_executor import _unwrap_tool_search_call
+
+    agent = SimpleNamespace(enabled_toolsets=["terminal"], disabled_toolsets=[])
+    name, args, error = _unwrap_tool_search_call(
+        agent, "tool_call", {"name": "terminal", "arguments": {"command": "echo hi"}},
+    )
+
+    assert (name, args, error) == ("terminal", {"command": "echo hi"}, None)
+
+
 @pytest.mark.parametrize("flatten_probe", [False, True])
 def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_path, flatten_probe):
     from agent.tool_executor import _unwrap_tool_search_call

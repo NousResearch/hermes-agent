@@ -488,15 +488,23 @@ class TestRegression_OpenClawCron84141:
     """
 
 
-    def test_unwrap_rejects_core_tool_attempt(self):
-        """Even if the model tries to invoke a core tool through tool_call,
-        we reject the call and tell the model to use it directly."""
-        from tools.tool_search import resolve_underlying_call
-        _, _, err = resolve_underlying_call({
-            "name": "terminal",
-            "arguments": {"command": "echo hi"},
-        })
-        assert err is not None
+    def test_tool_call_dispatches_directly_listed_core_tool(self, monkeypatch):
+        """The bridge retries a directly-listed core tool through its normal dispatch path."""
+        import model_tools
+
+        dispatched = []
+        monkeypatch.setattr(
+            model_tools.registry,
+            "dispatch",
+            lambda name, args, **kwargs: dispatched.append((name, args)) or '{"ok": true}',
+        )
+
+        result = model_tools.handle_function_call(
+            "tool_call", {"name": "terminal", "arguments": {"command": "echo hi"}},
+        )
+
+        assert json.loads(result) == {"ok": True}
+        assert dispatched == [("terminal", {"command": "echo hi"})]
 
 
 class TestRegression_ToolsetScoping:

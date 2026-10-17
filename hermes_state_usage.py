@@ -400,19 +400,18 @@ class SessionUsageMixin:
         # the creator upsert later replaces. An existing row keeps source and created_source,
         # including a NULL surface update_token_counts can still fill. The upsert's profile_name backfill
         # still runs: a NULL owner is filled without writing ``unknown`` anywhere.
-        own_profile = None
-        if self._read_one("SELECT 1 FROM sessions WHERE id=?", (session_id,)) is None:
-            self._insert_session_row(session_id, "unknown")
-        else:
-            own_profile = self._own_profile_name()
+        from hermes_state_worker_lifecycle import insert_session_row_in_transaction
+        own_profile = self._own_profile_name()
 
         def _write(conn):
-            if own_profile:
+            if conn.execute("SELECT 1 FROM sessions WHERE id=?", (session_id,)).fetchone() is None:
+                insert_session_row_in_transaction(self, conn, session_id, "unknown")
+            elif own_profile:
                 conn.execute(
                     "UPDATE sessions SET profile_name=? WHERE id=? AND profile_name IS NULL",
                     (own_profile, session_id))
             self._record_model_usage(conn, session_id, task=task, **usage)
-        self._execute_write(_write)
+        self._execute_write(_write, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 
     def auxiliary_usage_by_task(self, session_id: str) -> dict[str, dict[str, float]]:
         """Per-task auxiliary usage (``task != ''``: vision, compression, title_generation, ...) summed

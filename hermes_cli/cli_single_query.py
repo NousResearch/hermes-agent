@@ -187,7 +187,7 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
     Nested Bot Mode notifies bind this session's key (not the dispatcher's) and resume in-process
     before stdout is printed, so a teammate reply is the quiet run's final answer rather than a
     stranded receipt."""
-    from cli import _emit_interrupted_session_end, _run_kanban_goal_loop_q, _single_query_exit_code, _sync_cli_session_id_from_agent
+    from cli import _interrupt_single_query_agent, _run_kanban_goal_loop_q, _single_query_exit_code, _sync_cli_session_id_from_agent
     from agent.interrupt_compat import _accepts_keyword
     from agent.turn_author import take_turn_author_from_env
     from hermes_cli.quiet_single_query import (
@@ -205,7 +205,7 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
                 user_message=effective_query, conversation_history=cli.conversation_history, **author_kwargs,
             )
         except KeyboardInterrupt:
-            _emit_interrupted_session_end(cli, reason="keyboard_interrupt")
+            _interrupt_single_query_agent(cli, reason="keyboard_interrupt")
             if emitter is not None:
                 exit_single_query(emitter.emit_result({"failed": True, "error": "Interrupted"}, session_id=cli.session_id or "", exit_code=130))
             print(f"\nsession_id: {cli.session_id}", file=sys.stderr)

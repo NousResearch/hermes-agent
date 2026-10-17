@@ -537,8 +537,8 @@ class CLITuiRuntimeMixin:
                         _cprint(f"  {_DIM}{t('cli.tui.session_delete_missing', session_id=_escape(_sid))}{_RST}")
                 except (Exception, KeyboardInterrupt) as e:
                     logger.debug("Could not delete session on exit: %s", e)
-        # run_conversation() fires on_session_end on normal completion; only fire here mid-turn. A gateway
-        # turn fires it in the gateway when the interrupted turn finalizes.
+        # run_conversation() ends every run itself; the daemon agent thread may die with the process first,
+        # so claim the end here mid-turn. A gateway turn fires it in the gateway when it finalizes.
         if self.agent and self._agent_running and not _gateway_owns_session_end(self.agent):
             _invoke_interrupted_session_end(self.agent, self.agent.session_id, "shutdown")
         _run_cleanup()

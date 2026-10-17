@@ -192,20 +192,22 @@ def _oneshot_agent_and_session(cli):
     return agent, getattr(agent, "session_id", None) or getattr(cli, "session_id", None)
 
 
-def _invoke_interrupted_session_end(agent, session_id, reason: str, **extra) -> None:
-    """Best-effort ``on_session_end`` hook for a turn cut short (never raises)."""
+def _invoke_interrupted_session_end(agent, session_id, reason: str) -> None:
+    """``on_session_end`` for a run this exit cut off before its own boundary ended it (never raises)."""
     with suppress(Exception):
+        from agent.turn_finalizer import claim_session_end
         from hermes_cli.lifecycle import invoke_hook as _invoke_hook
-        _invoke_hook(
-            "on_session_end", session_id=session_id, completed=False, interrupted=True,
-            model=getattr(agent, "model", None), platform=getattr(agent, "platform", None) or "cli",
-            reason=reason, **extra,
-        )
+        if claim_session_end(agent):
+            _invoke_hook(
+                "on_session_end", session_id=session_id, completed=False, interrupted=True,
+                model=getattr(agent, "model", None), platform=getattr(agent, "platform", None) or "cli",
+                reason=reason,
+            )
 
 
-def _emit_interrupted_session_end(cli, *, reason: str = "keyboard_interrupt") -> None:
-    """Best-effort on_session_end hook for interrupted non-interactive runs."""
-    from cli import _invoke_interrupted_session_end, _oneshot_agent_and_session
+def _interrupt_single_query_agent(cli, *, reason: str = "keyboard_interrupt") -> None:
+    """Interrupt a one-shot run cut short by Ctrl-C; its ``run_conversation`` fired ``on_session_end``."""
+    from cli import _oneshot_agent_and_session
     agent, session_id = _oneshot_agent_and_session(cli)
     if agent is None:
         return
@@ -213,19 +215,10 @@ def _emit_interrupted_session_end(cli, *, reason: str = "keyboard_interrupt") ->
     with suppress(Exception):
         agent.interrupt(reason.replace("_", " "))
 
-    # The gateway owns the lifecycle now; a gateway turn fires on_session_end itself when interrupted.
-    if session_id in _cli()._handed_off_session_ids or _gateway_owns_session_end(agent):
-        return
-    if session_id:
+    # The gateway owns a handed-off or gateway session's id now.
+    if session_id and session_id not in _cli()._handed_off_session_ids and not _gateway_owns_session_end(agent):
         with suppress(Exception):
             cli.session_id = session_id
-
-    _invoke_interrupted_session_end(
-        agent, session_id, reason,
-        task_id=getattr(agent, "_current_task_id", "") or "",
-        turn_id=getattr(agent, "_current_turn_id", "") or "",
-        api_request_id=getattr(agent, "_current_api_request_id", "") or "",
-    )
 
 
 def _notify_single_query_session_finalize(cli, *, reason: str = "shutdown") -> None:

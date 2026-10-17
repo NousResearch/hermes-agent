@@ -84,13 +84,6 @@ def test_one_shot_ends_a_gateway_session_through_the_gateway_only(mock_finalize,
     assert released == [True]
 
 
-@patch("hermes_cli.lifecycle.invoke_hook")
-def test_interrupted_one_shot_leaves_on_session_end_to_the_gateway_turn(mock_invoke_hook, cli_mod):
-    one_shot = SimpleNamespace(agent=_gateway_agent("gw-session"), session_id="gw-session")
-    cli_mod._emit_interrupted_session_end(one_shot)
-    assert not [c for c in mock_invoke_hook.call_args_list if c.args == ("on_session_end",)]
-
-
 def _ctrl_d(cli):
     buf = SimpleNamespace(text="")
     event = SimpleNamespace(app=SimpleNamespace(current_buffer=buf, exit=MagicMock()))

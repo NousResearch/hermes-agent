@@ -367,6 +367,49 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     assert "cmd.exe" not in xml_seen["text"]
 
 
+@pytest.mark.windows_only
+def test_generated_vbs_launchers_carry_utf16_bom(monkeypatch, tmp_path):
+    """Generated .vbs launchers must be utf-16 with BOM, not UTF-8.
+
+    wscript/cscript decode .vbs as ANSI (cp1252 on Western locales) unless a
+    UTF-16 BOM is present. With a non-ASCII HERMES_HOME the embedded path
+    literal mojibakes under the old utf-8-no-BOM writer, so the startup
+    launcher's own FileExists guard quits silently at every logon. Verified
+    with a live cscript probe: utf-8-noBOM -> QUIT-MISS, utf-16 -> FOUND.
+    """
+    project = tmp_path / "project"
+    scripts = project / "venv" / "Scripts"
+    base = tmp_path / "uv" / "py"
+    scripts.mkdir(parents=True)
+    base.mkdir(parents=True)
+    venv_python = scripts / "python.exe"
+    venv_python.write_text("", encoding="utf-8")
+    (project / "venv" / "pyvenv.cfg").write_text(f"home = {base}\n", encoding="utf-8")
+
+    home = tmp_path / "hömè-höme"
+    home.mkdir()
+    monkeypatch.setattr(gateway, "PROJECT_ROOT", project)
+    monkeypatch.setattr(gateway, "get_python_path", lambda: str(venv_python))
+    monkeypatch.setattr(gateway, "_profile_arg", lambda hermes_home: "")
+    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(home))
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway_alice")
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+
+    script = gateway_windows._write_task_script()
+    task_raw = script.with_suffix(".vbs").read_bytes()
+    assert task_raw.startswith(b"\xff\xfe"), "task .vbs must carry a UTF-16 BOM"
+    task_text = task_raw.decode("utf-16")
+    assert str(script.with_suffix(".vbs")) in gateway_windows._build_startup_launcher(script)
+
+    entry = gateway_windows._install_startup_entry(script)
+    entry_raw = entry.read_bytes()
+    assert entry_raw.startswith(b"\xff\xfe"), "startup .vbs must carry a UTF-16 BOM"
+    entry_text = entry_raw.decode("utf-16")
+    assert 'target = "' in entry_text
+    assert str(script.with_suffix(".vbs")) in entry_text
+    assert task_text  # decoded cleanly
+
+
 def test_gateway_vbs_script_is_console_less(monkeypatch):
     """The .vbs launcher must avoid cmd.exe entirely and Run pythonw hidden
     (issue #45599 fix A: no console -> no logon CTRL_CLOSE_EVENT / 0xC000013A)."""

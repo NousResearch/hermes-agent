@@ -488,7 +488,9 @@ def _atomic_write(path: Path, content: str, tmp: Path) -> None:
     ``Hermes_Gateway.tmp`` pops up in Notepad after every sign-in (#114093).
     """
     try:
-        tmp.write_text(content, encoding="utf-8", newline="")
+        # WSH needs a UTF-16 BOM to preserve non-ASCII paths regardless of the system code page.
+        encoding = "utf-16" if path.suffix.lower() == ".vbs" else "utf-8"
+        tmp.write_text(content, encoding=encoding, newline="")
         tmp.replace(path)
     finally:
         try:

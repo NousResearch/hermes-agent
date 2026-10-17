@@ -164,6 +164,19 @@ FEISHU_HOME_CHANNEL=oc_xxx
 - `feishu` for Feishu China
 - `lark` for Lark international
 
+### Reply placement in group topics
+
+Replies stay in the originating Feishu topic by default. To send both replies and no-reply fallbacks to the parent chat instead, configure the adapter setting in `~/.hermes/config.yaml`:
+
+```yaml
+platforms:
+  feishu:
+    extra:
+      reply_in_thread: false
+```
+
+The default is `true`. This setting applies to reply API calls and to the fallback path used when Hermes has a topic ID but no reply target. It is read when the Feishu gateway adapter starts, so restart `hermes gateway` after changing it. There is no `FEISHU_REPLY_IN_THREAD` environment-variable override.
+
 ## Step 4: Start the Gateway
 
 ```bash

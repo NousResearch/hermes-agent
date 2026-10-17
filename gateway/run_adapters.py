@@ -763,6 +763,21 @@ class GatewayAdapterLifecycleMixin:
             error_message=adapter.fatal_error_message,
         )
 
+    def _mark_platform_retrying(
+        self, status_key: str, adapter=None, *, error_code=None, error_message=None
+    ) -> None:
+        """Publish ``retrying`` for an adapter this runner is actively reconnecting under ``status_key``.
+
+        The primary ladder does this at the fatal and per failed attempt; the profile path wrote nothing,
+        so a retrying secondary kept the terminal ``fatal`` row its own ``_set_fatal_error`` left (#140451).
+        """
+        if adapter is not None:
+            error_code = getattr(adapter, "fatal_error_code", None) or error_code
+            error_message = getattr(adapter, "fatal_error_message", None) or error_message
+        self._update_platform_runtime_status(
+            status_key, platform_state="retrying", error_code=error_code, error_message=error_message,
+        )
+
     def _bump_reconnect_backoff(
         self, platform, info: dict, attempt: int, error_code, error_message: str
     ) -> int:
@@ -1520,6 +1535,12 @@ class GatewayAdapterLifecycleMixin:
                     return
                 attempts += 1
                 queue_info["attempts"] = attempts
+                # Per failed attempt, as the primary ladder's _bump_reconnect_backoff does: the row carries
+                # THIS failure's reason and reads ``retrying``, not the first fatal with its stale stamp (#140451).
+                self._mark_platform_retrying(
+                    f"{profile_name}:{platform.value}", adapter,
+                    error_message=f"{platform.value} reconnect failed (profile: {profile_name})",
+                )
                 profile_home = self._routed_profile_home(profile_name)
                 # The attempt above already hydrated this profile's secret sources off-loop.
                 with self._scope_or_null(
@@ -1621,6 +1642,10 @@ class GatewayAdapterLifecycleMixin:
             )
             return
         profile_map.pop(platform, None)
+        # Parity with the primary handler's retryable-fatal write: without it the row keeps the adapter's
+        # own terminal ``fatal`` while the runner retries it in the background (#140451).
+        if adapter.fatal_error_retryable:
+            self._mark_platform_retrying(f"{profile_name}:{platform.value}", adapter)
         # The notification may arrive outside the profile's scope: the row is that profile's.
         if (profile_home := self._routed_profile_home(profile_name)) is not UNRESOLVED_PROFILE_HOME:
             record_platform_disconnect(adapter, hermes_home=profile_home)

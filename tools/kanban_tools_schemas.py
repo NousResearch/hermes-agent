@@ -294,6 +294,23 @@ KANBAN_REQUEST_CHANGES_SCHEMA = _schema(
     ["reason"],
 )
 
+KANBAN_PAUSE_SCHEMA = _schema(
+    "kanban_pause",
+    (
+        "End this worker run after safely checkpointing unfinished work. The card is returned "
+        "to its runnable phase for another worker; it is neither complete nor blocked. Include a "
+        "concise resume summary naming the checkpoint and the next step."
+    ),
+    {
+        "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
+        "summary": _prop("string", (
+            "Checkpoint and resume hint for the next worker, including any commit, file, "
+            "or command needed to continue."
+        )),
+    },
+    ["summary"],
+)
+
 KANBAN_HEARTBEAT_SCHEMA = _schema(
     "kanban_heartbeat",
     (

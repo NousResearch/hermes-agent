@@ -2272,6 +2272,7 @@ _RUN_OUTCOME_TERMINAL_STATUS = {
     "completed": "done",
     "review_requested": "review",
     "changes_requested": "changes_requested",
+    "paused": "paused",
     "blocked": "blocked",
     "dependency_wait": "blocked",
 }
@@ -3492,6 +3493,47 @@ def request_changes(
             run_id=run_id,
         )
     return True, implementer
+
+
+def pause_task(
+    conn: sqlite3.Connection, task_id: str, *, summary: str, expected_run_id: Optional[int] = None,
+) -> bool:
+    """End the current worker run without completing its task.
+
+    The card returns to the source phase (normally ``ready``), retaining the
+    summary on its ended run so the replacement worker gets a checkpoint hint.
+    Ownership proof is required for running tasks, just like other worker
+    handoffs, so a stale process cannot release a newer worker's claim.
+    """
+    summary = str(summary).strip()
+    if not summary:
+        return False
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, current_run_id FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if row is None or row["status"] != "running" or row["current_run_id"] is None:
+            return False
+        run_id = int(row["current_run_id"])
+        if expected_run_id is not None and run_id != int(expected_run_id):
+            return False
+        new_status = _retry_status_for_run(conn, task_id)
+        cur = conn.execute(
+            """
+            UPDATE tasks
+               SET status = ?, claim_lock = NULL, claim_expires = NULL,
+                   worker_pid = NULL, worker_started_at = NULL, last_heartbeat_at = NULL
+             WHERE id = ? AND status = 'running' AND current_run_id = ?
+            """,
+            (new_status, task_id, run_id),
+        )
+        if cur.rowcount != 1:
+            return False
+        ended_run_id = _end_run(conn, task_id, outcome="paused", status=new_status, summary=summary)
+        _append_event(
+            conn, task_id, "paused", {"summary": summary, "status": new_status}, run_id=ended_run_id,
+        )
+    return True
 
 
 def promote_task(

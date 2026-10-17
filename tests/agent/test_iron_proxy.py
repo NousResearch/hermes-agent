@@ -118,6 +118,17 @@ def test_build_proxy_config_custom_allowed_hosts(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+def test_openai_data_residency_hosts_are_allowed_and_swapped(tmp_path):
+    """us./eu.api.openai.com take the same key as api.openai.com; a base_url pointed at one must
+    reach the upstream with the real key swapped in, not 403 at CONNECT (centaur#1960)."""
+    (m,) = ip.discover_provider_mappings(available_env_names=["OPENAI_API_KEY"])
+    cfg = ip.build_proxy_config(mappings=[m], ca_cert=tmp_path / "ca.crt", ca_key=tmp_path / "ca.key")
+    allow = next(t for t in cfg["transforms"] if t["name"] == "allowlist")["config"]["domains"]
+    rules = next(t for t in cfg["transforms"] if t["name"] == "secrets")["config"]["secrets"][0]["rules"]
+    assert {"api.openai.com", "*.api.openai.com"} <= set(allow)
+    assert [r["host"] for r in rules] == ["api.openai.com", "*.api.openai.com"]
+
+
 def test_audit_log_kwarg_does_not_inject_audit_path_v039(tmp_path):
     """v0.39 of iron-proxy rejects ``log.audit_path`` (not a struct
     field).  build_proxy_config still accepts the audit_log kwarg for

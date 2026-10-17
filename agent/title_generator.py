@@ -58,6 +58,12 @@ MAX_DERIVED_TITLE_CHARS = 48
 # answer-shaped output guard in generate_title; port of can1357/oh-my-pi#7306). 12 leaves headroom for
 # legitimate wordy titles while excluding full-sentence answers.
 _MAX_TITLE_WORDS = 12
+# Count whitespace-delimited words as units, but count each CJK, kana, and Hangul character individually.
+# Those scripts do not require spaces between words, so ``str.split()`` treats a full answer as one word.
+_TITLE_WORD_RE = re.compile(
+    r"[0-9A-Za-z][0-9A-Za-z'’\-_./]*"
+    r"|[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]"
+)
 # Output budget for the title call: room for a fenced/prefixed JSON reply and for a reasoning model that
 # thinks despite the thinking-disabled request, without letting a runaway reply burn minutes.
 TITLE_MAX_TOKENS = 512
@@ -536,9 +542,10 @@ def generate_title(
         # something I recognize..."). Truncating would store half an assistant blob as the session title,
         # which is still an assistant blob — reject instead so the caller retries on the next exchange
         # (maybe_auto_title retries a placeholder title through the third exchange). Port of can1357/oh-my-pi#7306.
-        if title is not None and len(title.split()) > _MAX_TITLE_WORDS:
+        title_word_count = len(_TITLE_WORD_RE.findall(title)) if title is not None else 0
+        if title is not None and title_word_count > _MAX_TITLE_WORDS:
             # Answer-shaped output: reject (not truncate) so the caller retries next exchange.
-            logger.debug("Rejecting answer-shaped title output (%d words > %d)", len(title.split()), _MAX_TITLE_WORDS)
+            logger.debug("Rejecting answer-shaped title output (%d words > %d)", title_word_count, _MAX_TITLE_WORDS)
             return None
         # Example-echo guard: a title that parrots one of the prompt's own
         # examples back verbatim says nothing about the session — reject it so

@@ -729,11 +729,11 @@ def _setup_logging(agent):
 
 
 def _print_key_banner(key, label: str, warn_missing: bool = False) -> None:
-    """Masked credential line. ``key`` may be a callable Entra ID bearer provider (Azure
-    Foundry) — never invoke or inspect it. Keys ≤ 12 chars (incl. "dummy-key") are not shown."""
-    from agent.azure_identity_adapter import is_token_provider
-    if is_token_provider(key):
-        print("🔑 Using credentials: Microsoft Entra ID")
+    """Masked credential line. A callable ``key`` (Entra ID, Vertex OAuth, key_cmd, ...) is labelled
+    by its tagged source and never invoked. Keys ≤ 12 chars (incl. "dummy-key") are not shown."""
+    from agent.credential_source import credential_label
+    if source_label := credential_label(key):
+        print(f"🔑 Using credentials: {source_label}")
     elif isinstance(key, str) and len(key) > 12:
         print(f"🔑 Using {label}: {key[:8]}...{key[-4:]}")
     elif warn_missing:
@@ -2036,7 +2036,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
         if hasattr(_cc, _attr):
             setattr(_cc, _attr, _value)
     agent.compression_checkpoint_required = cs.checkpoint_required
-    from agent.conversation_compression import _warn_checkpoint_required_without_capable_provider
+    from agent.conversation_compression_checkpoint import _warn_checkpoint_required_without_capable_provider
     _warn_checkpoint_required_without_capable_provider(agent)
     agent.codex_app_server_auto_compaction = cs.codex_app_server_auto
     agent.codex_responses_native_compaction = cs.codex_responses_native

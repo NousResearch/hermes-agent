@@ -2594,8 +2594,6 @@ export const frOverrides = {
       pinnedProvenance: (sha: string) =>
         `Épinglé au commit ${sha}. Les mises à jour sont refusées tant qu’il n’est pas réinstallé avec un nouvel épinglage.`,
       pinnedBadge: (sha: string) => `épinglé @ ${sha}`,
-      tierOfficial: 'officiel',
-      tierCommunity: 'communauté',
       updateToPin: (sha: string) => `Mettre à jour vers ${sha}`,
       updateFailed: (name: string) => `Impossible de mettre à jour ${name}`,
       updated: (name: string) =>
@@ -4165,7 +4163,7 @@ export const frOverrides = {
       heartbeatEveryHours: hours => `toutes les ${hours} h`,
       heartbeatEverySeconds: seconds => `toutes les ${seconds} s`,
       heartbeatNext: time => `prochain : ${time}`,
-      heartbeatDueWaitingForIdle: 'échu — en attente de disponibilité',
+      dueWaitingForIdle: 'échu — en attente de disponibilité',
       heartbeatActions: 'Actions du suivi périodique',
       pauseHeartbeat: 'Mettre le suivi en pause',
       resumeHeartbeat: 'Reprendre le suivi',
@@ -5269,10 +5267,7 @@ export const frOverrides = {
         plugin: 'plugin',
         skill: 'skill'
       },
-      tier: {
-        official: 'officiel',
-        community: 'communauté'
-      },
+      tier: { official: 'officiel', verified: 'vérifié', community: 'communauté' },
       targetProfile: (profile: string) => `S’installe dans votre profil ${profile}`,
       sendFailed: 'Impossible d’envoyer votre réponse. Réessayez.',
       commitLabel: 'Commit',

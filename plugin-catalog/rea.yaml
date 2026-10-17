@@ -1,6 +1,6 @@
 name: rea
 repo: https://github.com/NousResearch/hermes-official-plugins
-sha: 3a102d9a387983e9c95bf84379d08fa2492b1de8
+sha: 6dacaaddbfd8e98dfc524096c44f712f743246b8
 subdir: rea
 description: 'Reverse engineer programs with REA (rea.tools): native binaries, .NET assemblies,
   Electron/JavaScript apps, Android packages, firmware and browser/process activity, through
@@ -13,9 +13,9 @@ description: 'Reverse engineer programs with REA (rea.tools): native binaries, .
 maintainer: NousResearch
 tier: official
 category: tools
-requires_hermes: ">=0.22.1"
+requires_hermes: ">=0.22.0"
 docs_url: https://github.com/NousResearch/hermes-official-plugins/tree/main/rea
-image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/3a102d9a387983e9c95bf84379d08fa2492b1de8/assets/rea.jpg
+image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/6dacaaddbfd8e98dfc524096c44f712f743246b8/assets/rea.jpg
 platforms: []
 capabilities:
   provides_tools: []

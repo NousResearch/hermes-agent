@@ -162,6 +162,12 @@ extends the wait budget, not the cancellation or permission policy. Configure
 any server-internal analysis deadline separately and leave time for its result
 to reach the client. Other harnesses ignore this extension.
 
+A server entry key this Hermes does not know (one a newer release added) is
+ignored with a warning, which `hermes plugins validate` lists, and the package
+still installs. Releases from before this rule reject the package instead, and a
+release that ignores a key may behave less safely than intended, so declare a new
+key together with a catalog `requires_hermes` floor.
+
 An explicit per-server MCP call budget also reaches Hermes' outer tool executor. A call
 whose budget exceeds the shared concurrent-batch deadline becomes a sequential
 barrier, whether called directly or through tool search. It gets its own budget
@@ -1561,6 +1567,20 @@ async def _handle_check(raw_args: str) -> str:
 
 def register(ctx):
     ctx.register_command("check", handler=_handle_check, description="Run async check")
+```
+
+**Where handlers run:** a slash command handler runs in the gateway process that owns the session, also when the user types the command in the classic `hermes chat` CLI. The handler is not running in the user's terminal or directory, so:
+
+- Return the text to show. `print()` writes to the gateway's stdout, and the user never sees it.
+- Take the session's working directory from `agent.runtime_cwd.resolve_agent_cwd()`, not `os.getcwd()`, which is the gateway's own directory. Resolve relative paths against it.
+- Read session identity with `gateway.session_context.get_session_env("HERMES_SESSION_PLATFORM")` and the other `HERMES_SESSION_*` names, not `os.environ`.
+
+```python
+from agent.runtime_cwd import resolve_agent_cwd
+
+def _handle_todo(raw_args: str) -> str:
+    todo = resolve_agent_cwd() / "TODO.md"  # the session's folder, not the gateway's
+    return todo.read_text() if todo.exists() else "No TODO.md here."
 ```
 
 ### Dispatch tools from slash commands

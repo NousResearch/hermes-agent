@@ -1,4 +1,5 @@
 import { getQueuedPrompts, type QueuedPromptEntry, writeSessionQueue } from './composer-queue'
+import { $sessions, resolveComposerSessionKey } from './session'
 
 // One localStorage key per (session, admission). Every Desktop window of the origin shares this
 // storage with last-writer-wins per KEY, so a single journal blob let one window's
@@ -51,6 +52,12 @@ export function readPendingSubmissions(session: string): Record<string, PendingS
   return entries
 }
 
+/** One admission's record without enumerating the journal: its v2 key, else the legacy blob. */
+function readPendingSubmission(session: string, id: string): PendingSubmission | undefined {
+  return parse<null | PendingSubmission>(window.localStorage.getItem(entryKey(session, id)), null) ??
+    parse(window.localStorage.getItem(LEGACY_KEY), {} as Record<string, Record<string, PendingSubmission>>)[session]?.[id]
+}
+
 function writeEntries(session: string, before: Record<string, PendingSubmission>, after: Record<string, PendingSubmission>): void {
   for (const id of Object.keys(before)) {
     if (!(id in after)) { window.localStorage.removeItem(entryKey(session, id)) }
@@ -72,19 +79,88 @@ function writeEntries(session: string, before: Record<string, PendingSubmission>
   }
 }
 
-// Not an outbox: an uncertain accepted input must never be replayed automatically.
-export function trackPendingSubmission(key: string, entry: PendingSubmission): void {
-  window.localStorage.setItem(entryKey(key, entry.id), JSON.stringify(entry))
-}
-
-// Array.isArray narrows `unknown` to `any[]`; the helpers keep that wire shape.
-type RawReceipts = any[]
-
 // An admission only moves forward: queued -> started -> (unknown after an owner restart) ->
 // retired (gone from the pending set: terminal). Snapshots can arrive out of order (a resume
 // result racing the live fanout, a replayed session.info), so a receipt weaker than the strongest
 // state already observed for its admission is stale and never repaints the queue.
 const STATUS_RANK: Record<string, number> = { queued: 0, started: 1, unknown: 2, retired: 3 }
+
+// The one journal identity for tracking and reconciliation: the key the queue panel reads. After
+// compression that is the lineage root, not the tip a submit targets or the runtime reports.
+const journalKey = (storedId: string) => resolveComposerSessionKey(storedId, $sessions.get()) ?? storedId
+
+const rank = (entry: PendingSubmission) => STATUS_RANK[entry.status ?? ''] ?? -1
+
+// Within one numbering the later sequence; across epochs they cannot be compared, keep the first.
+const laterFence = (a?: PendingSnapshotFence, b?: PendingSnapshotFence) =>
+  a && b && a.epoch === b.epoch && b.sequence > a.sequence ? b : (a ?? b)
+
+/** Two records of one admission as one: the stronger status (the newer on a tie), the text and
+ *  display text either knows, and the later fence. A retirement stays bare. */
+function mergeReceipt(held: PendingSubmission | undefined, next: PendingSubmission): PendingSubmission {
+  if (!held) {
+    return next
+  }
+
+  const [strong, weak] = rank(next) >= rank(held) ? [next, held] : [held, next]
+
+  if (strong.status === 'retired') {
+    return strong
+  }
+
+  const seen = laterFence(strong.seen, weak.seen)
+
+  return {
+    ...weak,
+    ...strong,
+    text: strong.text || weak.text,
+    displayText: strong.displayText ?? weak.displayText,
+    ...(seen ? { seen } : {})
+  }
+}
+
+/** Fold a journal kept under `from` into `to` once `from` resolves there (a tip journaled before
+ *  its lineage row loaded), so its status, display text and fences keep guarding the card. */
+function adoptJournal(from: string, to: string): void {
+  const stray = from === to ? {} : readPendingSubmissions(from)
+
+  if (!Object.keys(stray).length) {
+    return
+  }
+
+  const before = readPendingSubmissions(to)
+  const merged = { ...before }
+
+  for (const [id, entry] of Object.entries(stray)) {
+    merged[id] = mergeReceipt(merged[id], entry)
+  }
+
+  writeEntries(to, before, merged)
+  writeEntries(from, stray, {})
+}
+
+// Tip->root lineages whose tip journal tracking already folded. Adoption enumerates the journal,
+// so a send pays for it only when it first observes the lineage; reconciliation still adopts
+// whatever another window journals under the tip afterwards.
+const adoptedLineages = new Set<string>()
+
+// Not an outbox: an uncertain accepted input must never be replayed automatically.
+export function trackPendingSubmission(storedId: string, entry: PendingSubmission): void {
+  const key = journalKey(storedId)
+  const lineage = JSON.stringify([storedId, key])
+
+  if (storedId !== key && !adoptedLineages.has(lineage)) {
+    adoptJournal(storedId, key)
+    adoptedLineages.add(lineage)
+  }
+
+  const held = readPendingSubmission(key, entry.id)
+  window.localStorage.setItem(entryKey(key, entry.id), JSON.stringify(mergeReceipt(held, entry)))
+}
+
+// Array.isArray narrows `unknown` to `any[]`; the helpers keep that wire shape.
+type RawReceipts = any[]
+
 // Retired identities are remembered per session only as long as a late snapshot can matter.
 const RETIRED_MEMORY = 200
 
@@ -203,10 +279,15 @@ function updateKnownReceipts(known: Record<string, PendingSubmission>, value: Ra
 
 /** Project one pending snapshot onto the session's queue. `fence` orders canonical snapshots so a
  *  delayed older one cannot retire an admission a newer one still listed. */
-export function reconcilePendingSubmissions(key: string, value: unknown, fence?: PendingSnapshotFence): void {
+export function reconcilePendingSubmissions(storedId: string, value: unknown, fence?: PendingSnapshotFence): void {
   if (!Array.isArray(value)) {
     return
   }
+
+  // Project onto the key the queue panel reads: only snapshots projected there can retire a card
+  // shown there. Receipts journaled under the tip before the lineage was known move along.
+  const key = journalKey(storedId)
+  adoptJournal(storedId, key)
 
   const before = readPendingSubmissions(key)
   const known = { ...before }

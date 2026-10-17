@@ -13,5 +13,10 @@ export const arSessionCommands = {
   queued: (preview: string) => `في قائمة الانتظار: "${preview}"`,
   queueFailed: 'تعذّرت إضافة الرسالة إلى قائمة الانتظار',
   countOne: (count: string) => `${count} رسالة في قائمة الانتظار`,
-  countOther: (count: string) => `${count} رسائل في قائمة الانتظار`
+  countOther: (count: string) => `${count} رسائل في قائمة الانتظار`,
+  queueEditKeptTitle: 'لم تتغير الرسالة في قائمة الانتظار',
+  queueEditKept: 'بدأت أو رُفضت قبل حفظ تعديلك. نصك المعدّل موجود في مربع الكتابة.',
+  queueEditUnconfirmedTitle: 'لم يتم تأكيد التعديل',
+  queueEditUnconfirmed:
+    'تعذّر على Hermes تأكيد تعديلك. احفظ مرة أخرى لإعادة محاولة التعديل نفسه؛ لن يُضاف إلى قائمة الانتظار مرتين.'
 }

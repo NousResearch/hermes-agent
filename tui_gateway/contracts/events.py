@@ -272,9 +272,13 @@ event("status.update", StatusUpdatePayload, doc="Transient status line (kind: st
 
 
 class SessionUsagePayload(Payload):
-    """``server._start_usage_ticker`` (``usage``), or a canonical local viewer's session-cumulative
-    counters (``gateway/session_usage.py::usage_stats``, the ``session.stats`` dict) at the top level:
-    published after every API call and at turn end, what main's classic CLI read off its agent."""
+    """``usage``: the status-bar view (``server._get_usage``), sent by the embedded backend's ticker
+    (``server._start_usage_ticker``) and by a canonical local viewer's gateway after every API call
+    and at turn end (``gateway/session_usage.py::usage_frame``). Read this.
+
+    Deprecated: the top-level session-cumulative counters (``usage_stats``, the ``session.stats``
+    dict) that the gateway frame also carries. They are kept for existing readers; new readers use
+    ``usage``, or ``session.stats`` for the raw counters. The embedded ticker never sends them."""
 
     usage: Usage | None = None
     input_tokens: int | None = None

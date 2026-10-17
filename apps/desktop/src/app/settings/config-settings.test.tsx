@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { createRef } from 'react'
 import { MemoryRouter } from 'react-router'
@@ -151,5 +151,28 @@ describe('ConfigSettings autosave', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('ConfigSettings voice providers', () => {
+  // Radix Select calls scrollIntoView / pointer-capture APIs jsdom lacks.
+  beforeAll(() => {
+    Element.prototype.scrollIntoView = vi.fn()
+    Element.prototype.hasPointerCapture = vi.fn(() => false)
+    Element.prototype.releasePointerCapture = vi.fn()
+  })
+
+  it('offers a plugin-registered TTS provider from the backend schema (#136485)', async () => {
+    getHermesConfigRecord.mockResolvedValue({ tts: { provider: 'edge' } })
+    getHermesConfigSchema.mockResolvedValue({
+      fields: { 'tts.provider': { type: 'select', options: ['edge', 'openai', 'fish-audio'] } }
+    })
+
+    renderConfigSettings('voice')
+
+    fireEvent.pointerDown(await screen.findByRole('combobox'), { button: 0, ctrlKey: false, pointerType: 'mouse' })
+
+    expect(await screen.findByRole('option', { name: 'Fish-Audio' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: 'Edge' })).toBeTruthy()
   })
 })

@@ -446,8 +446,37 @@ class TestStartLogin:
         assert params["redirect_uri"] == "https://hermes.example/auth/callback"
         assert params["scope"] == "openid profile email"
         assert params["code_challenge_method"] == "S256"
+        assert "access_type" not in params
+        assert "prompt" not in params
         assert "state" in params
         assert "code_challenge" in params
+
+    @pytest.mark.parametrize("discovered_issuer", ["https://accounts.google.com", "https://accounts.google.com/", "", None])
+    def test_google_authorize_url_requests_refresh_token(self, discovered_issuer):
+        provider = oidc_plugin.SelfHostedOIDCProvider(
+            issuer="https://accounts.google.com", client_id=_CLIENT_ID
+        )
+        provider._discovery = {
+            **_DISCOVERY_DOC,
+            "issuer": discovered_issuer,
+            "authorization_endpoint": "https://accounts.google.com/o/oauth2/v2/auth",
+        }
+        provider._discovery_fetched_at = time.time()
+
+        result = provider.start_login(
+            redirect_uri="https://hermes.example/auth/callback"
+        )
+        params = dict(
+            urllib.parse.parse_qsl(
+                urllib.parse.urlparse(result.redirect_url).query
+            )
+        )
+
+        assert params["access_type"] == "offline"
+        assert params["prompt"] == "consent"
+        assert params["client_id"] == _CLIENT_ID
+        assert params["code_challenge_method"] == "S256"
+        assert f"state={params['state']};verifier=" in result.cookie_payload["hermes_session_pkce"]
 
 
     def test_state_in_cookie_matches_url(self, provider):

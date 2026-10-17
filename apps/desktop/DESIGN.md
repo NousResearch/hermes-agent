@@ -387,6 +387,8 @@ from their root base tokens; do not multiply the global tokens or nest CSS zoom.
   composer caret. The inline chip uses the shared reference styling; its text
   round-trips through send, draft restore, and undo. Restore never inserts
   another reference, and attachment completion never edits a different session.
+  Bracketed references remain literal text after attachment removal; a filename
+  containing `@terminal:` must never become a terminal-selection directive.
 - Composer status groups start collapsed except todos. Progress updates and queue
   pause/resume preserve the user's disclosure choice. Error banners meet the
   stack's top edge without a blank padding strip. File and preview links remain

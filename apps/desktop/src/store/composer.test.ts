@@ -467,9 +467,19 @@ describe('literal attachment references at transport boundaries', () => {
       ok: true,
       transportText: text
     })
-    const mixed = `${text} and @terminal:selection`
+    // Removing the attachment leaves its plain reference text in the editor.
+    expect(freezeComposerTransportPayload(text, {})).toEqual({
+      transportText: text,
+      displayText: text,
+      missingLabels: []
+    })
+    expect(resolveQueuedPromptTransport({ id: 'removed', text, attachments: [], queuedAt: 1 })).toEqual({
+      ok: true,
+      transportText: text
+    })
+    const mixed = `${text} and @terminal:selection [another.txt]`
     expect(freezeComposerTransportPayload(mixed, { selection: 'real output' }, attachments)).toEqual({
-      transportText: '```terminal\nreal output\n```\n\nRead [@terminal:log.txt] and',
+      transportText: '```terminal\nreal output\n```\n\nRead [@terminal:log.txt] and [another.txt]',
       displayText: mixed,
       missingLabels: []
     })

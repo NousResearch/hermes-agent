@@ -781,7 +781,22 @@ function unquoteRefValue(raw: string) {
 
 function terminalRefMatches(draft: string, attachments: readonly ComposerAttachment[] = []) {
   const names = attachments.map(attachmentReferenceName).filter((name): name is string => name !== null)
-  const references = attachmentReferenceMatches(draft, names)
+  const references: { start: number; end: number }[] = attachmentReferenceMatches(draft, names)
+  // References remain ordinary bracketed text after an attachment is removed.
+  // Their literal meaning must not depend on the current attachment list.
+  const openings: number[] = []
+
+  for (let index = 0; index < draft.length; index++) {
+    if (draft[index] === '[') {
+      openings.push(index)
+    } else if (draft[index] === ']') {
+      const start = openings.pop()
+
+      if (start !== undefined) {
+        references.push({ start, end: index + 1 })
+      }
+    }
+  }
 
   return [...draft.matchAll(TERMINAL_REF_RE)].filter(
     match => !references.some(reference => match.index >= reference.start && match.index < reference.end)

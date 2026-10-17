@@ -14,6 +14,7 @@ from typing import Dict, Any, List, Optional, Tuple
 
 from utils import is_truthy_value
 from tools.registry import no_cache_check_fn
+from tools.memory_review_policy import MEMORY_SELECTION_GUIDANCE
 
 # fcntl is Unix-only; Windows uses msvcrt. MemoryStore reads both lazily from
 # this module (tests patch ``memory_tool.fcntl``).
@@ -41,7 +42,7 @@ def get_memory_dir() -> Path:
 
 
 from tools.memory_tool_store import (
-    ENTRY_DELIMITER, FAILURE_CLASS, MEMORY_BLOCK_HEADERS, PATCH_DROP_HINT, MemoryStore, _scan_memory_content)
+    ENTRY_DELIMITER, FAILURE_CLASS, MEMORY_BLOCK_HEADERS, PATCH_DROP_HINT, MemoryStore, _patch_entry, _scan_memory_content)
 
 
 def load_on_disk_store() -> MemoryStore:
@@ -78,7 +79,21 @@ def _pin_matched_entries(store: MemoryStore, payload: dict[str, Any]) -> Optiona
             payload["matched_entry"] = result["matched_entry"]
     else:
         return None
-    return None if result.get("success") else json.dumps(result, ensure_ascii=False)
+    if not result.get("success"):
+        return json.dumps(result, ensure_ascii=False)
+    # Review cards edit complete entries. Resolve the upstream patch span once,
+    # then pin the full before/after pair so approval cannot touch sibling facts.
+    ops = payload["operations"] if payload.get("action") == "batch" else [payload]
+    for op in ops:
+        if op.get("action") != "patch":
+            continue
+        after, error, failure_class = _patch_entry(
+            op["matched_entry"], op.get("old_text") or "", op.get("content") or op.get("new_text") or "")
+        if after is None:
+            FAILURE_CLASS.set(failure_class)
+            return tool_error(error, success=False)
+        op.update(action="replace", content=after, old_text=op["matched_entry"], source_action="patch")
+    return None
 
 
 def _gate_or_stage(store: MemoryStore, summary: str, detail: str, payload: dict[str, Any]) -> Optional[str]:
@@ -88,7 +103,9 @@ def _gate_or_stage(store: MemoryStore, summary: str, detail: str, payload: dict[
         from tools import write_approval as wa
     except Exception:
         return None
-    decision = wa.evaluate_gate(wa.MEMORY, inline_summary=summary, inline_detail=detail)
+    decision = (wa.GateDecision(stage=True, message="Each operation is staged for independent review.")
+                if payload.get("action") == "batch" and wa.write_approval_enabled(wa.MEMORY)
+                else wa.evaluate_gate(wa.MEMORY, inline_summary=summary, inline_detail=detail))
     if decision.allow:
         return None
     if decision.blocked:
@@ -97,9 +114,24 @@ def _gate_or_stage(store: MemoryStore, summary: str, detail: str, payload: dict[
     if (unmatched := _pin_matched_entries(store, payload)) is not None:
         return unmatched
     FAILURE_CLASS.set("staged")
-    record = wa.stage_write(wa.MEMORY, payload, summary=f"{summary}: {detail[:120]}", origin=wa.current_origin())
-    return json.dumps({"success": True, "staged": True, "pending_id": record["id"], "message": decision.message},
-                      ensure_ascii=False)
+    try:
+        record = wa.stage_write(wa.MEMORY, payload, summary=f"{summary}: {detail[:120]}", origin=wa.current_origin())
+    except Exception as exc:
+        logger.warning("Could not stage memory review", exc_info=True)
+        return tool_error(f"Could not stage memory review: {exc}", success=False)
+    if record.get("skipped"):
+        return _suppressed_proposal()
+    from tools.memory_review_records import stage_result
+    return json.dumps(stage_result(record, decision.message), ensure_ascii=False)
+
+
+
+def _suppressed_proposal() -> str:
+    return json.dumps({
+        "success": True, "suppressed": True,
+        "message": ("This proposal was already disapproved. Nothing was saved or staged. "
+                    "Use /memory forget-rejections to allow it again."),
+    })
 
 
 # action -> (store call, gate (summary, detail) text) for the live tool path and staged replay
@@ -130,7 +162,7 @@ def _batch_op_line(op: dict[str, Any]) -> str:
 
 def _apply_write_gate(store: MemoryStore, action: str, target: str, content: Optional[str],
                       old_text: Optional[str], operations: Optional[list[dict[str, Any]]] = None) -> Optional[str]:
-    """Gate one mutating op, or (``operations`` set) a whole batch as a single unit."""
+    """Gate a write; staged batches become separate human decisions."""
     label = "user profile" if target == "user" else "memory"
     if operations is not None:
         return _gate_or_stage(store, f"apply {len(operations)} op(s) to {label}",
@@ -205,12 +237,14 @@ def _background_delete_gate(store, action, operations, target="memory", content=
             summary=(f"background review consolidation ({'batch' if operations is not None else action} "
                      f"on {target}): {detail}")[:200],
             origin=wa.current_origin())
-        return json.dumps({
-            "success": True, "staged": True, "proposal_staged": True, "pending_id": record["id"],
-            "message": ("Background review may not delete memory entries unattended. The proposed "
-                        f"{'batch' if operations is not None else action} was staged for your approval — "
-                        "review it with /memory pending (approve to apply, discard to drop)."),
-        }, ensure_ascii=False)
+        if record.get("skipped"):
+            return _suppressed_proposal()
+        from tools.memory_review_records import stage_result
+        result = stage_result(record, "Changes staged for your approval. Each operation has its own memory review. Nothing has been applied.")
+        if result.get("staged"):
+            result["proposal_staged"] = True
+        return json.dumps(result, ensure_ascii=False)
+
     except Exception:
         logger.warning("Failed to stage background-review consolidation; denying", exc_info=True)
         FAILURE_CLASS.set("gate_refused")
@@ -221,15 +255,34 @@ def _background_delete_gate(store, action, operations, target="memory", content=
 
 def memory_tool(action: str | None = None, target: str = "memory", content: str | None = None, old_text: str | None = None,
                 new_text: str | None = None, operations: Optional[list[dict[str, Any]]] = None,
-                store: Optional[MemoryStore] = None) -> str:
+                store: Optional[MemoryStore] = None, pending_id: str | None = None, expected_revision: int | None = None,
+                query: str | None = None, source_context: dict | None = None, session_db=None,
+                remove_entry: bool = False, explanation: str | None = None) -> str:
     """Tool entry point; returns a JSON string. Single op (action + content/old_text)
     or batch (``operations``, atomic against the final budget). ``new_text``
     aliases ``content``."""
     if store is None:
         return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
+    if action in {'review', 'revise', 'suggest'}:
+        from tools.memory_review_discussion import discussion_tool
+        result = discussion_tool(action, pending_id, expected_revision,
+            content=content if content is not None else new_text, query=query, remove_entry=remove_entry,
+            explanation=explanation, context=source_context, session_db=session_db)
+        if action == "suggest" and result.get("success"):
+            from tools.memory_discussion_draft import send_draft
+            result = send_draft(result)
+        return json.dumps(result, ensure_ascii=False)
+    from tools.memory_review_discussion import active_discussion
+    from tools.skill_provenance import is_unattended_review
+    if not is_unattended_review() and active_discussion(source_context):
+        return json.dumps({'success': False, 'error': 'A memory review discussion is active. '
+            'Use action=review for its context or action=revise to publish a revised pending draft; '
+            'do not apply memory or stage duplicate proposals during this discussion.'})
+    from tools.memory_review_context import memory_source
     token = FAILURE_CLASS.set("other")
     try:
-        outcome, result = _memory_tool(action, target, content, old_text, new_text, operations, store)
+        with memory_source(source_context):
+            outcome, result = _memory_tool(action, target, content, old_text, new_text, operations, store)
         failure_class = "none" if outcome == "success" else FAILURE_CLASS.get()
     finally:
         FAILURE_CLASS.reset(token)
@@ -356,6 +409,8 @@ def apply_memory_pending(payload: dict[str, Any], store: MemoryStore) -> dict[st
     staged before pinning has no verifiable target, so it is refused rather than replayed by
     old_text (which could hit a newer entry the approver never saw)."""
     action, target = payload.get("action"), payload.get("target")
+    if action == "replace" and payload.get("source_action") == "patch":
+        action = "patch"
     target_error = _memory_target_error(store, target, payload.get("operations"))
     if target_error is not None:
         return target_error
@@ -375,8 +430,9 @@ MEMORY_SCHEMA = {
     "description": (
         "Save durable facts to persistent memory that survive across sessions. Memory is "
         "injected into every future turn, so keep entries compact and high-signal.\n\n"
-        "HOW: make ALL your changes to one target in ONE call via an 'operations' array (each "
-        "item: {action, content?, old_text?}). The batch applies atomically and the char limit is "
+        "HOW: make ALL your changes to one target in ONE call via an 'operations' array (each item: "
+        "{action, content?, old_text?}). Without approval the batch applies atomically; when staged, "
+        "each operation receives its own independent review and pending ID. The char limit is "
         "checked only on the FINAL result — so a single call can remove/patch stale entries "
         "to free room AND add new ones, even when an add alone would overflow. The response "
         "reports current/limit chars and confirms completion; one batch call finishes the "
@@ -388,6 +444,16 @@ MEMORY_SCHEMA = {
         "corrections for that kind of work) belongs in the task's skill via skill_manage, "
         "where it loads only when relevant; memory is injected into every turn and must "
         "stay small.\n\n"
+        + MEMORY_SELECTION_GUIDANCE + "\n\n"
+        "REVIEW DISCUSSION: after Chat about it, use action=review with pending_id and expected_revision "
+        "to retrieve history, full current memory files and the exact draft budget. Evaluate future value, "
+        "duplication and placement; recommend a concrete concise fix rather than narrating the investigation. "
+        "query can refine historical search. Use action=suggest with full content (or remove_entry=true) and a short explanation "
+        "to present your recommendation with a Use this draft button; this leaves the pending review unchanged. When the user explicitly asks to publish a revised review, use action=revise "
+        "with the same pending_id, latest expected_revision and complete content. It revises the pending "
+        "review only, never saves memory. remove_entry=true instead of content proposes deleting only "
+        "that existing entry; reject an unwanted addition with Disapprove. Do not use add/patch/remove "
+        "or edit skills in that discussion.\n\n"
         "IF FULL: an add is rejected with the current entries shown. Reissue as ONE batch that "
         "removes or shortens enough stale entries and adds the new one together.\n\n"
         "TARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your "
@@ -401,8 +467,8 @@ MEMORY_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "patch", "remove"],
-                "description": "The action to perform (single-op shape). Omit when using 'operations'."
+                "enum": ["add", "patch", "remove", "review", "revise", "suggest"],
+                "description": "The action: review retrieves discussion context; suggest presents an exact draft with a Use this draft button without changing the pending review; revise stages a replacement draft without saving memory. Other actions mutate entries. Omit when using operations."
             },
             "target": {
                 "type": "string",
@@ -421,6 +487,11 @@ MEMORY_SCHEMA = {
                 "type": "string",
                 "description": "Alias for 'content'. If both are set, 'content' wins."
             },
+            "pending_id": {"type": "string", "description": "Pending memory ID from Chat about it; required for review/revise/suggest."},
+            "expected_revision": {"type": "integer", "description": "Displayed revision of that pending memory; required for review/revise/suggest."},
+            "explanation": {"type": "string", "description": "For suggest: one or two short sentences recommending the draft and explaining why. Displayed above the full content and Use this draft button."},
+            "query": {"type": "string", "description": "Optional distinctive phrase to refine historical context lookup for action=review."},
+            "remove_entry": {"type": "boolean", "description": "For suggest/revise: propose removing the pinned existing entry instead of replacing it. Omit content. Requires review first and a new explicit approval; cannot remove a new addition or sibling entries."},
             "operations": {
                 "type": "array",
                 "description": (

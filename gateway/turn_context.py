@@ -28,6 +28,7 @@ class TurnContext:
     progress_mode: str = "off"
     progress_grouping: str = "grouped"
     tool_progress_enabled: bool = False
+    feishu_progress_card_enabled: bool = False
     progress_queue: Any = None
     log_queue: Any = None
     # mutable single-element containers (shared with the outer body)
@@ -44,6 +45,9 @@ class TurnContext:
     _cleanup_msg_ids: list[str] = field(default_factory=list)
     _progress_metadata: Optional[dict] = None
     _progress_reply_to: Optional[Any] = None
+    # Terminal outcome is set by the gateway before the progress task is cancelled.
+    # Keeping it on the context avoids treating cleanup cancellation as success.
+    progress_final_status: Optional[str] = None
     message: Optional[str] = None  # the only rebindable field
     # turn parameters / config snapshots (read-only in run_sync)
     history: Any = None

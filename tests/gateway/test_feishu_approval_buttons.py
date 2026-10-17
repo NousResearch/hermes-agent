@@ -331,6 +331,36 @@ class TestCardActionCallbackResponse:
         assert "Bob" in card["elements"][0]["content"]
 
 
+    def test_returns_explicit_replacement_card(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        replacement = {
+            "header": {"title": {"tag": "plain_text", "content": "Selection confirmed"}},
+            "elements": [{"tag": "markdown", "content": "The original choices are gone."}],
+        }
+        data = _make_card_action_data({"hermes_replace_card": replacement})
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is not None
+        assert response.card.type == "raw"
+        assert response.card.data == replacement
+
+    def test_ignores_non_mapping_replacement_card(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        data = _make_card_action_data({"hermes_replace_card": "not-a-card"})
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is None
+
     def test_ignores_expired_cached_name(self, _patch_callback_card_types):
         adapter = _make_adapter()
         adapter._loop = MagicMock()

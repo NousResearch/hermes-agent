@@ -27,9 +27,27 @@ logger = logging.getLogger("cron.jobs")
 PROBE_INTERVAL_SECONDS = 60.0
 # Store-write failures that degrade the store (the tick keeps running) instead of failing the tick.
 UNWRITABLE_ERRNOS = frozenset({errno.EROFS, errno.EACCES, errno.EPERM, errno.ENOSPC, errno.EDQUOT})
-# `hermes doctor` warns below this, before the store actually starts failing.
+# `hermes doctor` used this legacy low-watermark constant; keep it importable for callers.
 LOW_FREE_BYTES = 100 << 20
 FIX_HINT = "free disk space, remount it read-write, or fix permissions on {store}"
+_DISK_WARNING_FREE_BYTES = 10 << 30
+_DISK_WARNING_FREE_FRACTION = 0.15
+_DISK_CRITICAL_FREE_BYTES = 3 << 30
+_DISK_CRITICAL_FREE_FRACTION = 0.05
+
+
+def classify_disk_watermark(free_bytes: Optional[int], total_bytes: Optional[int]) -> str:
+    """Read-only filesystem watermark; unknown samples are never reported healthy."""
+    if (not isinstance(free_bytes, int) or isinstance(free_bytes, bool) or free_bytes < 0
+            or not isinstance(total_bytes, int) or isinstance(total_bytes, bool) or total_bytes <= 0
+            or free_bytes > total_bytes):
+        return "unknown"
+    free_fraction = free_bytes / total_bytes
+    if free_bytes < _DISK_CRITICAL_FREE_BYTES or free_fraction < _DISK_CRITICAL_FREE_FRACTION:
+        return "critical"
+    if free_bytes < _DISK_WARNING_FREE_BYTES or free_fraction < _DISK_WARNING_FREE_FRACTION:
+        return "warning"
+    return "healthy"
 
 
 def describe_error(exc: OSError) -> str:

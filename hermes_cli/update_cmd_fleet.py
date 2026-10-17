@@ -41,13 +41,15 @@ _LIST_GATEWAY_UNITS = [
 def _write_gateway_update_exit_code(ok: bool) -> None:
     from hermes_cli.update_cmd import get_hermes_home
     from hermes_cli.update_receipt import committed_success
+    from pm.filesystem import durable_write_bytes
 
     # A run whose receipt already closed as a success is never reported failed (C3, review
     # regression 3): the command boundary's catch-alls call this with False.
     ok = ok or committed_success()
     path = get_hermes_home() / ".update_exit_code"
     with suppress(OSError):
-        path.write_text("0" if ok else "1", encoding="utf-8")
+        # Atomic: the gateway watcher polls this file and reads an empty one as exit 1.
+        durable_write_bytes(path, b"0" if ok else b"1")
 
 
 def _fleet_restart_pending_marker_path() -> Path:

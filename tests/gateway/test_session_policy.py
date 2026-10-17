@@ -143,6 +143,145 @@ def test_launch_options_are_frozen_and_validated(tmp_path):
             build_policy(dict(cwd=str(tmp_path), **bad), cfg)
 
 
+def test_provider_override_drops_the_previous_providers_route(tmp_path):
+    """A provider pick is a whole-route change: folding it must not keep the profile's
+    endpoint/wire-protocol/credential pointers, else the new provider's key is sent to the old
+    host (#138843). An explicit base_url is applied after the drop, and a same-provider
+    re-pick keeps what it carried."""
+    from gateway.session_policy import build_policy
+    cfg = {'model': {'default': 'deepseek-chat', 'provider': 'deepseek',
+                     'base_url': 'https://api.deepseek.com/v1', 'api_mode': 'chat_completions',
+                     'key_env': 'HERMES_CUSTOM_QWENAI_API_KEY'}}
+    policy = build_policy(dict(cwd=str(tmp_path), model='mimo-v2.6-flash', provider='xiaomi'), cfg)
+    assert policy.config()['model'] == {'default': 'deepseek-chat', 'provider': 'xiaomi'}
+    # A provider change plus an explicit URL still drops the replaced provider's wire protocol
+    # and credential pointer — only the pinned endpoint comes back.
+    explicit = build_policy(dict(cwd=str(tmp_path), model='m', provider='xiaomi',
+                                 base_url='https://proxy.example/v1'), cfg)
+    assert explicit.config()['model'] == {'default': 'deepseek-chat', 'provider': 'xiaomi',
+                                          'base_url': 'https://proxy.example/v1'}
+    same = build_policy(dict(cwd=str(tmp_path), model='deepseek-r2', provider='deepseek'), cfg)
+    assert same.config()['model']['base_url'] == 'https://api.deepseek.com/v1'
+    # A profile without a recorded provider still leaves its endpoint behind for the pick to replace.
+    unrecorded = build_policy(dict(cwd=str(tmp_path), provider='xiaomi'),
+                              {'model': {'default': 'm', 'base_url': 'https://api.deepseek.com/v1',
+                                         'api_key': 'sk-inline'}})
+    assert unrecorded.config()['model'] == {'default': 'm', 'provider': 'xiaomi'}
+
+
+def test_provider_change_drops_the_old_providers_context_window(tmp_path):
+    """The profile's context_length was sized for its own model: a pick to another provider must
+    not pin that window on the new model, while a same-route alias pick keeps it."""
+    from gateway.session_policy import build_policy
+    cfg = {'model': {'default': 'qwen', 'provider': 'custom', 'base_url': 'http://localhost:1234/v1',
+                     'context_length': 8192}}
+    moved = build_policy(dict(cwd=str(tmp_path), model='claude-opus-4.6', provider='anthropic'), cfg)
+    assert 'context_length' not in moved.config()['model']
+    alias = build_policy(dict(cwd=str(tmp_path), model='qwen', provider='vllm'), cfg)
+    assert alias.config()['model']['context_length'] == 8192
+
+def test_provider_pick_over_auto_template_sends_its_key_to_its_own_endpoint(tmp_path, monkeypatch):
+    """#139018: the install template (`provider: auto` + OpenRouter base_url) plus a Desktop
+    Google AI Studio pick resolved provider=gemini against openrouter.ai, so the Google key went
+    to OpenRouter (401). The frozen route must resolve to Google's own endpoint."""
+    from gateway.session_policy import build_policy
+    from hermes_cli.runtime_provider import frozen_runtime_config, resolve_runtime_provider
+    monkeypatch.setenv('GOOGLE_API_KEY', 'sk-google')
+    monkeypatch.setenv('OPENROUTER_API_KEY', 'sk-openrouter')
+    cfg = {'model': {'default': 'anthropic/claude-opus-4.6', 'provider': 'auto',
+                     'base_url': 'https://openrouter.ai/api/v1'}}
+    policy = build_policy(dict(cwd=str(tmp_path), source='gui', model='gemini-flash-latest', provider='gemini'), cfg)
+    with frozen_runtime_config(policy.config()):
+        runtime = resolve_runtime_provider(requested='gemini', target_model='gemini-flash-latest')
+    assert (runtime['provider'], runtime['api_key']) == ('gemini', 'sk-google')
+    assert 'openrouter.ai' not in runtime['base_url']
+    assert runtime['base_url'].startswith('https://generativelanguage.googleapis.com/')
+
+
+def test_provider_alias_pick_keeps_the_profiles_endpoint(tmp_path, monkeypatch):
+    """`--provider vllm` over `provider: custom` + a local base_url is the same provider under an
+    alias: the pick must keep the configured endpoint and key, not fail with no endpoint."""
+    from gateway.session_policy import build_policy
+    from hermes_cli.runtime_provider import frozen_runtime_config, resolve_runtime_provider
+    for var in ('CUSTOM_BASE_URL', 'OPENAI_BASE_URL'):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv('LOCAL_LLM_KEY', 'sk-local')
+    cfg = {'model': {'default': 'qwen', 'provider': 'custom',
+                     'base_url': 'http://localhost:1234/v1', 'key_env': 'LOCAL_LLM_KEY'}}
+    policy = build_policy(dict(cwd=str(tmp_path), model='qwen', provider='vllm'), cfg)
+    with frozen_runtime_config(policy.config()):
+        runtime = resolve_runtime_provider(requested='vllm', target_model='qwen')
+    assert (runtime['base_url'], runtime['api_key']) == ('http://localhost:1234/v1', 'sk-local')
+
+
+
+def test_custom_pick_over_unrecorded_or_auto_profile_keeps_its_endpoint(tmp_path, monkeypatch):
+    """A profile block with a base_url and no provider (or `provider: auto`) already routes to
+    `custom` at that URL, so a `custom` pick is the same route: it must keep the endpoint and
+    key pointer instead of dropping them and failing with no endpoint configured."""
+    from gateway.session_policy import build_policy
+    from hermes_cli.runtime_provider import frozen_runtime_config, resolve_runtime_provider
+    for var in ('CUSTOM_BASE_URL', 'OPENAI_BASE_URL'):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv('LOCAL_KEY', 'sk-local')
+    for held in ({}, {'provider': 'auto'}):
+        cfg = {'model': {'default': 'qwen', 'base_url': 'http://localhost:1234/v1', 'key_env': 'LOCAL_KEY', **held}}
+        policy = build_policy(dict(cwd=str(tmp_path), model='qwen', provider='custom'), cfg)
+        assert policy.config()['model']['key_env'] == 'LOCAL_KEY', held
+        with frozen_runtime_config(policy.config()):
+            runtime = resolve_runtime_provider(requested='custom', target_model='qwen')
+        assert (runtime['provider'], runtime['base_url'], runtime['api_key']) == \
+            ('custom', 'http://localhost:1234/v1', 'sk-local'), held
+
+
+def test_provider_alias_spelling_and_auto_pick_keep_the_profiles_route(tmp_path, monkeypatch):
+    """`deepinfra` and `deep-infra` are one provider, and an explicit `auto` pick (the thin-client
+    sentinel) means "the profile's route": neither drops the configured proxy and wire mode."""
+    from gateway.session_policy import build_policy
+    from hermes_cli.runtime_provider import frozen_runtime_config, resolve_runtime_provider
+    for var in ('CUSTOM_BASE_URL', 'OPENAI_BASE_URL'):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv('DEEPINFRA_API_KEY', 'sk-deepinfra')
+    for held, picked in (('deepinfra', 'deep-infra'), ('deep-infra', 'deepinfra')):
+        cfg = {'model': {'default': 'm', 'provider': held, 'base_url': 'http://localhost:4321/v1',
+                         'api_mode': 'chat_completions'}}
+        model = build_policy(dict(cwd=str(tmp_path), model='m', provider=picked), cfg).config()['model']
+        assert (model['base_url'], model['api_mode']) == ('http://localhost:4321/v1', 'chat_completions'), picked
+    monkeypatch.setenv('LOCAL_KEY', 'sk-local')
+    cfg = {'model': {'default': 'qwen', 'provider': 'custom', 'base_url': 'http://localhost:1234/v1',
+                     'key_env': 'LOCAL_KEY'}}
+    monkeypatch.delenv('DEEPINFRA_API_KEY')
+    policy = build_policy(dict(cwd=str(tmp_path), model='qwen', provider='auto'), cfg)
+    assert policy.config()['model']['provider'] == 'custom'
+    with frozen_runtime_config(policy.config()):
+        runtime = resolve_runtime_provider(target_model='qwen')
+    assert (runtime['provider'], runtime['base_url'], runtime['api_key']) == \
+        ('custom', 'http://localhost:1234/v1', 'sk-local')
+
+
+def test_bare_pick_of_a_shadowed_custom_entry_keeps_the_profiles_route(tmp_path, monkeypatch):
+    """#140107: an entry named like a canonical built-in (`providers: deepseek`, or the legacy
+    list) is shadowed by the built-in in raw provider resolution, so a Desktop pick of its row
+    arrives as the entry's bare key. Freezing that spelling pins the session to the built-in —
+    a different provider than the row the user picked — and drops the entry's endpoint and key
+    pointer with it. The entry's own alias set is what says the pick is the same route."""
+    from gateway.session_policy import build_policy
+    for var in ('DEEPSEEK_API_KEY', 'OPENAI_API_KEY'):
+        monkeypatch.delenv(var, raising=False)
+    new_style = {'providers': {'deepseek': {'name': 'deepseek', 'api': 'https://api.deepseek.com',
+                                            'key_env': 'DEEPSEEK_ENTRY_KEY', 'transport': 'chat_completions',
+                                            'default_model': 'deepseek-flash'}}}
+    legacy = {'custom_providers': [{'name': 'deepseek', 'base_url': 'https://api.deepseek.com',
+                                    'key_env': 'DEEPSEEK_ENTRY_KEY', 'model': 'deepseek-flash'}]}
+    for extra in (new_style, legacy):
+        cfg = {**extra, 'model': {'default': 'deepseek-flash', 'provider': 'custom:deepseek',
+                                  'base_url': 'https://api.deepseek.com', 'key_env': 'DEEPSEEK_ENTRY_KEY'}}
+        model = build_policy(dict(cwd=str(tmp_path), model='deepseek-flash', provider='deepseek'), cfg).config()['model']
+        assert model['provider'] == 'custom:deepseek', extra
+        assert model['base_url'] == 'https://api.deepseek.com', extra
+        assert model['key_env'] == 'DEEPSEEK_ENTRY_KEY', extra
+
+
 def test_unlimited_max_turns_spellings_create_an_uncapped_session(tmp_path):
     """`--max-turns 0` / -1 / none / unlimited meant "no cap" before the gateway cutover: session.create
     freezes them as the unlimited budget, and `hermes chat` sends 0 instead of dropping it as falsy."""

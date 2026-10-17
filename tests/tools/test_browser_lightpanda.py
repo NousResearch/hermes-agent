@@ -716,3 +716,18 @@ class TestLightpandaSessionLifecycle:
         dead_owner.write_text(json.dumps({"owner_pid": 2**22 + 7}), encoding="utf-8")
         assert browser_lightpanda.reap_orphaned_lightpanda() == 0
         assert not bad.exists() and not dead_owner.exists()
+
+    def test_orphan_sweep_mid_record_write_keeps_the_live_record(self, tmp_path, monkeypatch):
+        """A sweep running while the owner writes its record must not see a torn (empty) file:
+        it would unlink it as corrupt and the live server would never be reaped after a crash."""
+        from tests.file_write_observer import observe_file_writes
+        from tools import browser_lightpanda
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        server = browser_lightpanda.LightpandaServer("live", 9222, MagicMock(pid=os.getpid()), "x.log")
+        monkeypatch.setitem(browser_lightpanda._servers, "live", server)
+        with observe_file_writes(browser_lightpanda.reap_orphaned_lightpanda):
+            browser_lightpanda._write_record(server)
+        record = browser_lightpanda._state_dir() / "live.json"
+        assert record.exists()
+        assert json.loads(record.read_text(encoding="utf-8"))["port"] == 9222

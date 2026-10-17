@@ -19,7 +19,7 @@ from agent.context_compressor import (
     user_originated_turn_view,
 )
 from agent.lazy_forward import forward as _forward, forward_static as _forward_static
-from agent.memory_manager import sanitize_context
+from agent.memory_context import sanitize_context
 from agent.session_identity import SessionIdentityMixin, identity_transaction
 
 from agent.tool_dispatch_helpers import _is_multimodal_tool_result, _multimodal_text_summary
@@ -127,11 +127,19 @@ def _durable_content(content: Any) -> Any:
     if not isinstance(content, list):
         return content
     txt = [
-        str(p.get("text", "")) if p.get("type") == "text" else "[screenshot]"
+        str(p.get("text", "")) if p.get("type") == "text" else _image_marker(p)
         for p in content
         if isinstance(p, dict) and (p.get("type") == "text" or p.get("type") in _IMAGE_PART_TYPES)
     ]
     return "\n".join(txt) if txt else None
+
+
+def _image_marker(part: dict) -> str:
+    """``[screenshot]`` at the image's position; a caller-chosen ``detail`` rides along so a replay
+    (``agent.image_replay``) rebuilds the part the live turn sent."""
+    url = part.get("image_url")
+    detail = part.get("detail") or (url.get("detail") if isinstance(url, dict) else None)
+    return f"[screenshot detail={detail}]" if detail in ("low", "high", "auto") else "[screenshot]"
 
 
 def _persist_lock(agent):

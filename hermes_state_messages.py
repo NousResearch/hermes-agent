@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from agent.context_compressor import (
     _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY, MODEL_ONLY_DISPLAY_METADATA_KEY, _is_checkpoint_item,
     _newest_checkpoint_carrier, split_user_originated_turn)
-from agent.memory_manager import sanitize_context
+from agent.memory_context import sanitize_context
 from agent.message_metadata import (
     CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID, TOOL_CALL_UID, TOOL_CALL_UIDS,
     index_tool_call_uids, message_uid_or_none, resolve_tool_call_uid, mint_uid, stamp_message_uid)
@@ -22,6 +22,7 @@ from hermes_cli.timefmt import coerce_epoch
 from hermes_state_common import (
     _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _ended_by_compression,
     _json_or, _legacy_reset_child_sql, _placeholders, _sql_json_extract)
+from hermes_state_detached_results import SessionDetachedResultsMixin
 from hermes_state_identity import (
     _absorbed_uids_json, _restore_identity_columns, _stable_tool_key, _tool_call_uid_map, _tool_call_uid_or_none, _tool_call_uids_json)
 
@@ -117,8 +118,8 @@ def _stale_holder(row, now: float) -> bool:
     return float(row["expires_at"]) <= now or _compression_lock_holder_process_is_dead(row["holder"])
 
 
-class SessionMessagesMixin:
-    """Message append/replace/rewind, reactions, resume conversations, replay dedupe."""
+class SessionMessagesMixin(SessionDetachedResultsMixin):
+    """Message append/replace/rewind, reactions, resume conversations, replay dedupe (detached results: the base)."""
 
     def _bump_conversation_generation(self, conn, session_id: str, end_reason: str) -> None:
         """Advance the peer's conversation generation past a boundary, in the txn that writes it. Only
@@ -418,41 +419,6 @@ class SessionMessagesMixin:
             return msg_id
         # THE critical write (failure aborts the turn): long patience so a sibling legitimately
         # holding the lock for seconds (VACUUM, checkpoint) can't kill it.
-        return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
-
-    def append_delegation_delivery(self, session_id: str, content: str, metadata: dict[str, Any]) -> int:
-        """Record a detached API result once, between client turns, including replay after rotation.
-
-        The event's unit id, not its text or active flag, is the identity. Check and insert
-        share the writer transaction, so independent gateway processes cannot duplicate it.
-        """
-        delegation_id = metadata.get("delegation_id")
-        if not delegation_id:
-            raise ValueError("Delegation delivery requires a stable delegation_id")
-        msg = {"content": content,
-               "display_kind": "hidden" if metadata.get("presentation_suppressed") else "async_delegation_complete",
-               "display_metadata": metadata}
-        stamp_message_uid(msg)  # a fresh occurrence: mint its durable id
-        params = self._message_row_params(session_id, "user", msg, None, time.time(), keep_reasoning=True)
-
-        def _do(conn):
-            existing = conn.execute(
-                """WITH RECURSIVE lineage(id) AS (
-                    SELECT ? UNION
-                    SELECT s.parent_session_id FROM sessions s JOIN lineage l ON s.id = l.id
-                    JOIN sessions p ON p.id = s.parent_session_id WHERE p.end_reason = 'compression'
-                ) SELECT m.id FROM messages m JOIN lineage l ON m.session_id = l.id
-                WHERE m.display_kind IN ('async_delegation_complete', 'hidden')
-                AND json_extract(m.display_metadata, '$.delegation_id') = ?
-                AND coalesce(json_extract(m.display_metadata, '$.delivery_notice'), '') = ? LIMIT 1""",
-                (session_id, delegation_id, metadata.get("delivery_notice", ""))).fetchone()
-            if existing is not None:
-                return existing[0]
-            self._check_transcript_write_guards(conn, session_id, None, reject_active_turn_lease=True)
-            msg_id = conn.execute(_INSERT_MESSAGE_SQL, params).lastrowid
-            self._bump_session_counters(conn, session_id, 1, 0, unit=True)
-            return msg_id
-
         return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 
     def append_messages_batch(
@@ -838,30 +804,44 @@ class SessionMessagesMixin:
         the whole transcript on every rewind). The live view is identical either way; only the durability
         of the dropped turns differs.
         """
-        from hermes_state_errors import CompressionSessionClosedError
         def _do(conn):
-            if reject_active_turn_lease:
-                self._check_transcript_write_guards(
-                    conn, session_id, None, reject_active_turn_lease=True, reject_active_compression_lock=True)
-            elif _ended_by_compression(conn.execute(_ENDED_ROW_SQL, (session_id,)).fetchone()):
-                raise CompressionSessionClosedError(session_id)
-            kept = kept_tool_calls = 0
-            if archive_dropped:
-                # Only the first len(messages)+1 live rows matter: the prefix to match plus the row whose
-                # id anchors the archive UPDATE (which itself covers every later row via `id >= ?`).
-                live = conn.execute(_LIVE_IDENTITY_SQL, (session_id, len(messages) + 1)).fetchall()
-                kept = self._stamp_kept_live_prefix(live, messages)
-                kept_tool_calls = sum(_tool_calls_len(row[4], scalar=1) for row in live[:kept])
-                if kept < len(live):
-                    # FTS triggers don't fire on `active`: replaced turns stay searchable (include_inactive=True).
-                    conn.execute("UPDATE messages SET active = 0 WHERE session_id = ? AND active = 1 AND id >= ?",
-                                 (session_id, live[kept][0]))
-            else:
-                conn.execute(f"DELETE FROM messages WHERE session_id = ?{' AND active = 1' if active_only else ''}", (session_id,))
-            inserted, inserted_tool_calls = self._insert_message_rows(conn, session_id, messages[kept:])
-            conn.execute(f"{_SET_COUNTERS_SQL} WHERE id = ?",
-                         (kept + inserted, kept_tool_calls + inserted_tool_calls, session_id))
+            self.replace_messages_in_transaction(
+                conn, session_id, messages, active_only=active_only, archive_dropped=archive_dropped,
+                reject_active_turn_lease=reject_active_turn_lease)
         self._execute_transcript_write(_do, messages)
+
+    def replace_messages_in_transaction(self, conn, session_id: str, messages: list[dict[str, Any]], *,
+                                        active_only: bool = False, archive_dropped: bool = False,
+                                        reject_active_turn_lease: bool = False,
+                                        expected_active_ids: Optional[list[int]] = None) -> None:
+        """:meth:`replace_messages` inside the caller's write transaction (the gateway ``/retry``
+        rewrite commits in its re-send's own admission). ``expected_active_ids`` pins the active set
+        the replacement was computed from: a row committed since refuses (``RuntimeError``)."""
+        from hermes_state_errors import CompressionSessionClosedError
+        if reject_active_turn_lease:
+            self._check_transcript_write_guards(
+                conn, session_id, None, reject_active_turn_lease=True, reject_active_compression_lock=True)
+        elif _ended_by_compression(conn.execute(_ENDED_ROW_SQL, (session_id,)).fetchone()):
+            raise CompressionSessionClosedError(session_id)
+        if expected_active_ids is not None and [
+                int(row[0]) for row in conn.execute(_ACTIVE_IDS_SQL, (session_id,))] != expected_active_ids:
+            raise RuntimeError("active transcript changed before the rewrite could be persisted")
+        kept = kept_tool_calls = 0
+        if archive_dropped:
+            # Only the first len(messages)+1 live rows matter: the prefix to match plus the row whose
+            # id anchors the archive UPDATE (which itself covers every later row via `id >= ?`).
+            live = conn.execute(_LIVE_IDENTITY_SQL, (session_id, len(messages) + 1)).fetchall()
+            kept = self._stamp_kept_live_prefix(live, messages)
+            kept_tool_calls = sum(_tool_calls_len(row[4], scalar=1) for row in live[:kept])
+            if kept < len(live):
+                # FTS triggers don't fire on `active`: replaced turns stay searchable (include_inactive=True).
+                conn.execute("UPDATE messages SET active = 0 WHERE session_id = ? AND active = 1 AND id >= ?",
+                             (session_id, live[kept][0]))
+        else:
+            conn.execute(f"DELETE FROM messages WHERE session_id = ?{' AND active = 1' if active_only else ''}", (session_id,))
+        inserted, inserted_tool_calls = self._insert_message_rows(conn, session_id, messages[kept:])
+        conn.execute(f"{_SET_COUNTERS_SQL} WHERE id = ?",
+                     (kept + inserted, kept_tool_calls + inserted_tool_calls, session_id))
 
     @classmethod
     def _row_identity(cls, role: str, content: Any, tool_call_id: Any, tool_calls: Any) -> tuple:

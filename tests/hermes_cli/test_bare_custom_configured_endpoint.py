@@ -21,7 +21,10 @@ def configured_route():
 
 
 @pytest.mark.parametrize("cloud_key", [False, True])
-def test_bare_custom_uses_named_main_endpoint_and_credential(configured_route, monkeypatch, cloud_key):
+@pytest.mark.parametrize("app_server", [False, True])
+def test_bare_custom_uses_named_main_endpoint_and_credential(configured_route, monkeypatch, cloud_key, app_server):
+    if app_server:
+        configured_route["model"]["openai_runtime"] = "codex_app_server"
     if cloud_key:
         monkeypatch.setenv("OPENROUTER_API_KEY", "synthetic-cloud-key")
     with rp.frozen_runtime_config(configured_route):

@@ -57,6 +57,10 @@ from tools.delegate_tool_toolsets import (
     DELEGATE_BLOCKED_TOOLS, _expand_parent_toolsets, _resolve_child_toolsets, _strip_blocked_tools,
 )
 from tools.delegate_tool_routes import TaskRouteCatalog, resolve_task_model
+from tools.delegate_tool_tuning import (
+    apply_task_tuning as _apply_task_tuning, pin_child_service_tier as _pin_child_service_tier,
+    task_route_pin as _task_route_pin,
+)
 from tools.delegate_tool_results import (
     _apply_summary_budget, _build_child_preserving_parent_tools, _run_child_lifecycle, _summarize_tool_arguments,
 )
@@ -416,14 +420,6 @@ def _run_single_child(
         run.cleanup(heartbeat=heartbeat, child_pool=child_pool, leased_cred_id=leased_cred_id, close_deferred=_child_close_deferred)
 
 
-def _task_route_pin(value: Any) -> Optional[str]:
-    """Non-empty string pin after strip. Non-strings and blanks inherit the batch route."""
-    if not isinstance(value, str):
-        return None
-    stripped = value.strip()
-    return stripped or None
-
-
 def _credential_overrides(creds: dict[str, Any], routing_cfg: dict[str, Any]) -> dict[str, Any]:
     """``_build_child_agent`` override kwargs for a resolved credential bundle (delegate_task and the lifecycle API)."""
     return {
@@ -439,8 +435,11 @@ def _credential_overrides(creds: dict[str, Any], routing_cfg: dict[str, Any]) ->
 
 
 def _route_catalog(routing_cfg: dict[str, Any], parent_agent) -> TaskRouteCatalog:
-    """Provider catalog for model pins; the inherited provider (config route, else the parent's) comes first."""
-    return TaskRouteCatalog((str(routing_cfg.get("provider") or "").strip(), str(getattr(parent_agent, "provider", "") or "")))
+    """Provider catalog for model pins; the inherited provider (config route, else the parent's) comes first. A
+    ``delegation.base_url`` is a direct endpoint: no listed provider's models are known to run there."""
+    return TaskRouteCatalog(
+        (str(routing_cfg.get("provider") or "").strip(), str(getattr(parent_agent, "provider", "") or "")),
+        direct_endpoint=bool(str(routing_cfg.get("base_url") or "").strip()))
 
 
 def _resolve_task_credentials(
@@ -491,59 +490,6 @@ def _attach_live_transcript(child, i: int, live_deleg_id: Optional[str], live_wr
             identity["delegation_id"] = live_deleg_id
 
 
-def _task_service_tier(word: str, creds: dict[str, Any], parent_agent) -> dict[str, Any]:
-    """``request_overrides``/``service_tier`` for a per-task speed tier on the child's resolved route. The tier goes
-    through the same ``resolve_fast_mode_overrides`` gate as ``/fast``; a tier the route can't serve raises."""
-    import copy as _copy
-    from agent.fast_mode import STATIC_TIERS, parse_exact_service_tier
-    from hermes_cli.models import resolve_fast_mode_overrides
-    try:
-        tier = parse_exact_service_tier(word)
-    except ValueError:
-        tier = None
-    if tier is None or (tier and tier not in STATIC_TIERS):
-        raise ValueError(f"Unknown service_tier '{word}' on a delegate_task task. Use normal, fast, or ultrafast.")
-    # Same bundle rule as _resolve_child_runtime: a pinned provider/endpoint owns the route, else the parent's.
-    pinned = bool(creds.get("provider") or creds.get("base_url"))
-    provider = creds.get("provider") or getattr(parent_agent, "provider", None)
-    model = creds.get("model") or getattr(parent_agent, "model", None)
-    base_url = creds.get("base_url") if pinned else getattr(parent_agent, "base_url", None)
-    base = creds.get("request_overrides")
-    if base is None and not creds.get("provider"):
-        base = getattr(parent_agent, "request_overrides", None)
-    overrides = {k: v for k, v in _copy.deepcopy(base if isinstance(base, dict) else {}).items()
-                 if k not in ("service_tier", "speed")}
-    if tier:
-        fast = resolve_fast_mode_overrides(model, provider=provider, base_url=base_url, tier=tier)
-        if not fast:
-            raise ValueError(
-                f"service_tier '{word}' is not available for model '{model}' on provider '{provider}'. "
-                f"Omit service_tier or choose a model/provider that offers it."
-            )
-        overrides.update(fast)
-    return {"request_overrides": overrides, "service_tier": tier or None}
-
-
-def _apply_task_tuning(task: dict[str, Any], creds: dict[str, Any], parent_agent) -> dict[str, Any]:
-    """Copy of *creds* carrying the task's ``reasoning_effort`` / ``service_tier``; unknown words raise ValueError."""
-    effort, tier_word = _task_route_pin(task.get("reasoning_effort")), _task_route_pin(task.get("service_tier"))
-    if not effort and not tier_word:
-        return creds
-    creds = dict(creds)
-    if effort:
-        from hermes_constants import parse_reasoning_effort
-        parsed = parse_reasoning_effort(effort)
-        if parsed is None:
-            raise ValueError(
-                f"Unknown reasoning_effort '{effort}' on a delegate_task task. "
-                f"Use none or one of: {', '.join(VALID_REASONING_EFFORTS)}."
-            )
-        creds["reasoning_config"] = parsed
-    if tier_word:
-        creds.update(_task_service_tier(tier_word, creds, parent_agent))
-    return creds
-
-
 def _resolve_task_routes(task_list, creds, routing_cfg, parent_agent) -> tuple[list, Optional[str]]:
     resolved_routes = []
     route_catalog = _route_catalog(routing_cfg, parent_agent)
@@ -586,6 +532,7 @@ def _build_children(
                 **_credential_overrides(creds_i, routing_i),
             )
             children.append((i, t, child))
+            _pin_child_service_tier(child, creds_i)
             if _task_schema is not None:
                 with _quiet("Could not attach output schema to child %d", i):
                     child._delegate_output_schema = _task_schema

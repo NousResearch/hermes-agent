@@ -27,6 +27,8 @@ ROWS = [
                                                  "claude-haiku-5-5"]},
 ]
 PLUGINS = {"claude-native-bridge"}
+# Captured before tests/tools/conftest.py stubs it out for every test.
+_REAL_LOAD_ROWS = routes._load_rows
 
 
 @pytest.fixture(autouse=True)
@@ -221,6 +223,40 @@ def test_provider_missing_from_picker_fails():
 def test_unreadable_picker_lets_the_spawn_proceed():
     with patch.object(routes, "_load_rows", lambda current: []):
         assert _resolve("openai-codex", "anything") == ("openai-codex", "anything", None)
+
+
+def test_distinct_custom_endpoints_keep_their_own_route():
+    """Every saved endpoint shares the generic custom profile; the requested one must still be the one used."""
+    rows = [{"slug": "custom:reviewer-a", "models": ["qwen-a"]}, {"slug": "custom:reviewer-b", "models": ["qwen-b"]}]
+    with patch.object(routes, "_load_rows", lambda current: rows):
+        assert _resolve("custom:reviewer-b", "qwen-b") == ("custom:reviewer-b", "qwen-b", None)
+        assert _resolve(None, "qwen-b", inherited="custom:reviewer-a")[:2] == ("custom:reviewer-b", "qwen-b")
+
+
+def test_direct_endpoint_never_keeps_a_model_found_on_the_inherited_provider():
+    """delegation.base_url points elsewhere: a model found on the inherited provider is pinned there explicitly."""
+    catalog = TaskRouteCatalog(("openai-codex",), direct_endpoint=True)
+    assert resolve_task_model(None, "gpt-6-sol", catalog)[:2] == ("openai-codex", "gpt-6-sol")
+    from tools.delegate_tool import _route_catalog
+    assert _route_catalog({"base_url": "http://127.0.0.1:8080/v1"}, _make_mock_parent()).direct_endpoint
+    assert not _route_catalog({}, _make_mock_parent()).direct_endpoint
+
+
+def test_listing_is_cache_only_and_includes_saved_custom_endpoints(monkeypatch):
+    from agent import models_dev
+    from hermes_cli import config
+    import hermes_cli.model_switch_providers as picker
+
+    fetches = []
+    monkeypatch.setattr(models_dev, "fetch_models_dev", lambda **kw: fetches.append(kw) or {"openai": {}})
+    saved = {"name": "reviewer", "base_url": "http://127.0.0.1:9000/v1", "model": "qwen-r"}
+    monkeypatch.setattr(config, "load_config_readonly", lambda: {"custom_providers": [saved]})
+    monkeypatch.setattr(picker, "list_authenticated_providers", lambda **kw: [kw])
+    (call,) = _REAL_LOAD_ROWS("openrouter")
+    assert fetches == [{"allow_network": False}]
+    assert [cp.get("name") for cp in call["custom_providers"]] == ["reviewer"]
+    monkeypatch.setattr(models_dev, "fetch_models_dev", lambda **kw: {})  # nothing cached: skip, never download
+    assert _REAL_LOAD_ROWS("openrouter") == []
 
 
 def _make_mock_parent():

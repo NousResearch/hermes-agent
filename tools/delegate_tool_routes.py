@@ -12,8 +12,8 @@ nothing, and every rewrite is reported back to the caller (``route_note``):
 A model named without a provider runs on the first provider that matches at the earliest step: provider plugins,
 then first-party / subscription providers, then aggregators; the inherited provider wins ties within a tier.
 Anything else fails the spawn with similar ids and the logged-in providers' families. Listed means available:
-auth/permission errors are reported by the child's own call. Catalogs come from the cache-only provider listing
-the model picker reads, loaded once per call.
+auth/permission errors are reported by the child's own call. Catalogs come from the provider listing the model
+picker reads, loaded once per call from cached catalogs; with no cached provider registry the check is skipped.
 """
 
 from __future__ import annotations
@@ -42,8 +42,10 @@ class TaskRouteCatalog:
     """Logged-in providers and their model lists for one ``delegate_task`` call. ``configured`` is the inherited
     provider first (it wins ties within a tier and is kept unpinned when chosen)."""
 
-    def __init__(self, configured: tuple[str, ...]):
+    def __init__(self, configured: tuple[str, ...], *, direct_endpoint: bool = False):
         self.configured = tuple(p for p in configured if p and p.strip().lower() != "auto")
+        # The inherited route is a direct endpoint (delegation.base_url): a chosen provider is always pinned.
+        self.direct_endpoint = direct_endpoint
         self._rows: Optional[list[dict[str, Any]]] = None
 
     def rows(self) -> list[dict[str, Any]]:
@@ -53,13 +55,19 @@ class TaskRouteCatalog:
 
 
 def _load_rows(current_provider: str) -> list[dict[str, Any]]:
-    from hermes_cli.config import load_config_readonly
+    from agent.models_dev import fetch_models_dev
+    from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
     from hermes_cli.model_switch_providers import list_authenticated_providers
+    # Cache only: a profile that never fetched the provider registry skips the check rather than waiting on a
+    # download before any child is built. A cached copy (even a stale one) is served without blocking.
+    if not fetch_models_dev(allow_network=False):
+        return []
     cfg = load_config_readonly() or {}
     user_providers = cfg.get("providers")
     try:
         return list_authenticated_providers(
             current_provider=current_provider, user_providers=user_providers if isinstance(user_providers, dict) else None,
+            custom_providers=get_compatible_custom_providers(cfg),
             max_models=None, non_blocking_catalogs=True, probe_custom_providers=False,
             # A provider whose credentials are all in a (per-model) cooldown is rate-limited, not signed out.
             for_picker=True, fast_custom_probe=False)
@@ -80,7 +88,10 @@ def _provider_id(name: str) -> str:
     except Exception:
         logger.debug("Could not look up provider profile %s for delegate_task model routing", key, exc_info=True)
         profile = None
-    return str(getattr(profile, "name", None) or key)
+    # Only an alias the profile itself declares maps to it: every saved custom endpoint shares the generic
+    # ``custom`` profile, and two endpoints are never the same route.
+    names = {str(getattr(profile, "name", "") or "").lower(), *(str(a).lower() for a in getattr(profile, "aliases", ()) or ())}
+    return str(profile.name) if profile is not None and key.lower() in names else key
 
 
 def _same_provider(a: Optional[str], b: Optional[str]) -> bool:
@@ -369,7 +380,7 @@ def resolve_task_model(
             if hit is None:
                 continue
             slug = str(row["slug"])
-            if _same_provider(slug, inherited):
+            if _same_provider(slug, inherited) and not catalog.direct_endpoint:
                 if hit != model:
                     notes.append(f"Model '{model}' -> '{hit}' on provider '{slug}' ({how}).")
                 return None, hit, _join(notes)

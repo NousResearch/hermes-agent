@@ -125,6 +125,44 @@ def test_tier_the_route_cannot_serve_fails_the_spawn():
     assert built == []
 
 
+def test_normal_tier_drops_a_tier_nested_in_extra_body():
+    parent = _make_mock_parent(request_overrides={"extra_body": {"service_tier": "priority", "keep": 1}})
+    _, (child,) = _spawn([{"goal": "Cheap background task", "service_tier": "normal"}], parent=parent)
+    assert child["request_overrides"] == {"extra_body": {"keep": 1}}
+
+
+def test_task_tier_survives_a_provider_extra_body_merged_at_construction():
+    """Child setup can merge a custom provider's extra_body (with its own tier) after our overrides."""
+    built = []
+
+    def construct(**kwargs):
+        child = MagicMock()
+        child.request_overrides = {**kwargs["request_overrides"], "extra_body": {"service_tier": "priority", "x": 1}}
+        built.append(child)
+        return child
+
+    with (
+        patch("tools.delegate_tool._load_config", return_value={}),
+        patch("tools.delegate_tool._resolve_delegation_credentials", side_effect=_resolve),
+        patch("run_agent.AIAgent", side_effect=construct),
+        patch("tools.delegate_tool._run_batch", return_value='{"status":"built"}'),
+    ):
+        delegate_task(tasks=[{"goal": "Cheap background task", "service_tier": "normal"}], parent_agent=_make_mock_parent())
+    assert built[0].request_overrides == {"extra_body": {"x": 1}}
+
+
+@pytest.mark.parametrize("account_offers,expected", [(False, None), (True, "ultrafast"), (None, "ultrafast")])
+def test_ultrafast_follows_the_codex_account_like_fast_command(account_offers, expected):
+    """The Codex backend serves another tier to a plan without ultrafast; refuse unless the account lists it."""
+    with patch("agent.codex_service_tiers.codex_account_offers_tier", return_value=account_offers):
+        result, built = _spawn([{"goal": "Review the PR diff for regressions", "provider": "openai-codex",
+                                 "model": "gpt-6.1-sol", "service_tier": "ultrafast"}])
+    if expected is None:
+        assert "not available" in result["error"] and built == []
+    else:
+        assert built[0]["request_overrides"]["service_tier"] == expected
+
+
 def test_schema_advertises_task_tuning_fields(monkeypatch):
     from tools import delegate_tool_config
     from tools.registry import registry

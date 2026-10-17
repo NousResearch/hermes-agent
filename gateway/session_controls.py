@@ -10,6 +10,7 @@ import uuid
 
 from gateway.config import Platform
 from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL, Principal, SessionRef, Submission
+from gateway.session_llm_oneshot import DeferredReply
 from hermes_constants import profile_name_for_home
 from hermes_state_runtime import RuntimeStoreError
 
@@ -256,7 +257,6 @@ class AuthorityConnection:
                         'data': {'reason': 'unknown_method'}}}
                 else:
                     result = await handlers[method](ref, params)
-                    from gateway.session_llm_oneshot import DeferredReply
                     if isinstance(result, DeferredReply):  # answered off the serial dispatch
                         check_params_accepted(contract, original_params)
                         return result.start(self, rid, partial(check_result, contract))

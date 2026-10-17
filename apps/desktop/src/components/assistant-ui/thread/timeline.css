@@ -1,5 +1,9 @@
+/* No wider than the transcript's inline padding (`px-6` on
+   aui_thread-content): a wider rail sits over the first glyphs of RTL lines
+   and right-aligned bubbles. The widest bar (1rem) plus the tick's right
+   padding still fits. */
 .thread-timeline-ticks {
-  width: 3rem;
+  width: 1.5rem;
   height: 100%;
   overflow-x: hidden;
   overflow-y: auto;

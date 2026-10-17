@@ -463,7 +463,7 @@ def unauthorized_action_notice(platform: Any) -> str:
     return t("gateway.unauthorized.action_notice", platform=str(name or "<platform>"))
 
 
-async def _ssrf_redirect_guard(response):
+async def ssrf_redirect_guard(response):
     """Re-validate each redirect target (a public URL 302-ing to http://169.254.169.254/ would
     bypass the pre-flight is_safe_url()). Async because httpx awaits response event hooks."""
     from tools.url_safety import is_safe_url, redirect_target_from_response
@@ -642,7 +642,7 @@ async def _cache_media_from_url(url: str, ext: str, retries: int, *, media_type:
         raise ValueError(f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(url)}")
     headers = {"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)", "Accept": accept}
     async with create_ssrf_safe_async_client(
-        timeout=30.0, follow_redirects=True, event_hooks={"response": [_ssrf_redirect_guard]},
+        timeout=30.0, follow_redirects=True, event_hooks={"response": [ssrf_redirect_guard]},
     ) as client:
         for attempt in range(retries + 1):
             try:
@@ -2901,9 +2901,8 @@ class BasePlatformAdapter(ABC):
         if choices:
             # Multi-select flag lives on the pending entry (signature stays adapter-compatible).
             try:
-                from tools import clarify_gateway as _cg
-                with _cg._lock:
-                    _is_multi = bool(getattr(_cg._entries.get(clarify_id), "multi_select", False))
+                from tools.clarify_gateway import get_pending
+                _is_multi = bool(getattr(get_pending(clarify_id), "multi_select", False))
             except Exception:
                 _is_multi = False
             hint = t("gateway.clarify.hint_multi") if _is_multi else t("gateway.clarify.hint_single")

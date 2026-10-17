@@ -385,6 +385,16 @@ def _units_of(batch: _Batch) -> list[_Batch]:
         members.setdefault(key, []).append((i, t, c))
     return [replace(batch, children=ch, group=(key[1] if key[0] == "g" else None)) for key, ch in members.items()]
 
+def _effective_role(unit: _Batch) -> str:
+    """Role the unit's children actually run as. ``_build_child_agent`` derives it from depth
+    (the requested ``role`` arg is wire-compat legacy, ignored), and the registry record's role
+    feeds the completion banner's "Role:" line — so report the effective one (#138032)."""
+    for _, _, child in unit.children:
+        role = getattr(child, "_delegate_role", None)
+        if role:
+            return role
+    return unit.top_role
+
 def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str], routing: dict) -> dict:
     """Hand ONE unit to the async registry; the runner joins on that unit's children only."""
     from tools.async_delegation import dispatch_async_delegation_batch
@@ -398,7 +408,7 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
         # Call-wide goals: completion formatting indexes them by task_index.
         goals=[t["goal"] for t in unit.task_list], context=unit.context,
         toolsets=None,  # metadata for the completion block only; subagents inherit the parent's toolsets
-        role=unit.top_role, model=unit.creds["model"],
+        role=_effective_role(unit), model=unit.creds["model"],
         runner=lambda: _execute_and_aggregate(unit, honor_parent_interrupt=False),
         interrupt_fn=_interrupt, delegation_id=unit_id, slot_key=slot_key,
         task_indexes=[i for (i, _, _) in unit.children] if len(unit.children) < len(unit.task_list) else None,

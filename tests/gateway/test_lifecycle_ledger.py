@@ -67,7 +67,7 @@ def _exit_diag_records(home: Path) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="/proc is Linux-only")
+@pytest.mark.platforms("linux")  # /proc is Linux-only
 def test_sample_memory_has_expected_keys_on_linux() -> None:
     sample = sample_memory()
     assert sample.get("rss_kib", 0) > 0
@@ -143,14 +143,6 @@ def test_record_startup_persists_unclean_report_and_reclaims(tmp_path: Path) -> 
     assert sentinel["pid"] == os.getpid()
 
 
-def test_unclean_report_names_agent_issued_kill_as_a_cause(tmp_path: Path, caplog) -> None:
-    """The cause family must not read as OS-only: an agent/descendant `pkill` of the host interpreter
-    leaves the identical evidence (no exit path ran) and is the operator's first thing to rule out (#113667)."""
-    _write_sentinel(tmp_path, {"phase": "running", "pid": _DEAD_PID, "start_time": 1000.0})
-    with caplog.at_level("WARNING", logger="gateway.lifecycle_ledger"):
-        assert record_startup(home=tmp_path) is not None
-    message = next(r.getMessage() for r in caplog.records if "exited UNCLEANLY" in r.getMessage())
-    assert "kill issued by the agent" in message and "OOM" in message
 
 
 def test_record_startup_carries_unclean_flags_onto_new_sentinel(

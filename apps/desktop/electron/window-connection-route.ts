@@ -1,4 +1,4 @@
-import { backendScopeKey, type ConnectionRegistry } from './connection-registry'
+import { backendScopeKey, type ConnectionRegistry, LOCAL_CONNECTION_ID } from './connection-registry'
 
 export interface WindowConnectionRoute {
   connectionId: null | string
@@ -38,6 +38,32 @@ export function registrySshScopeForWindowRoute(
   }
 
   return backendScopeKey(route.connectionId, route.profile)
+}
+
+/**
+ * The route a window must re-dial after a PRIMARY connection apply (#92352).
+ *
+ * An apply re-homes the primary, but the window's recorded route still names
+ * the source it just LEFT. `resolveDesktopConnectionRequest` answers the
+ * renderer's profile-less apply re-dial from that record, so the renderer kept
+ * dialing the stale registry-scoped gateway — and every later reconnect, plus
+ * any window launched from that route, re-asked the same stale question until a
+ * restart dropped the in-memory record. Re-point the record at the newly
+ * applied primary, keeping the profile the window was viewing: an applied
+ * registry source (remote/cloud/ssh) stays registry-scoped to that exact
+ * identity, while a This-device apply stays unscoped so the dial follows the
+ * freshly written v1 config.
+ */
+export function appliedPrimaryWindowRoute(
+  registry: ConnectionRegistry,
+  profile: null | string | undefined
+): WindowConnectionRoute {
+  const key = String(profile ?? '').trim() || 'default'
+  const primary = String(registry?.primary ?? '').trim()
+
+  return primary && primary !== LOCAL_CONNECTION_ID
+    ? { connectionId: primary, profile: key, registryScoped: true }
+    : { connectionId: null, profile: key, registryScoped: false }
 }
 
 export interface RegistrySshPoolEntry {

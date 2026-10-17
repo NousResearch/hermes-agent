@@ -3,14 +3,16 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 import httpx
 
 from agent.anthropic_credentials import _is_oauth_token, resolve_anthropic_token
 from hermes_cli.auth import AuthError, _read_codex_tokens, resolve_codex_runtime_credentials
+from hermes_cli.auth_codex import _codex_pool_route_base_url
 from hermes_cli.runtime_provider import resolve_runtime_provider
+from hermes_time import safe_strftime
 
 if TYPE_CHECKING:
     from typing import TypeGuard
@@ -21,7 +23,7 @@ _DEPLETED_LINE = "Status: access depleted — top up to restore"
 
 
 def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 @dataclass(frozen=True)
@@ -30,6 +32,10 @@ class AccountUsageWindow:
     used_percent: Optional[float] = None
     reset_at: Optional[datetime] = None
     detail: Optional[str] = None
+    # ``account``: exhausting this window exhausts the whole login (Codex session/weekly).
+    # ``model``: the window caps only one model family (Anthropic Opus/Sonnet weekly) and can
+    # never imply the account itself is out of quota.
+    scope: str = "account"
 
 
 @dataclass(frozen=True)
@@ -42,6 +48,10 @@ class AccountUsageSnapshot:
     windows: tuple[AccountUsageWindow, ...] = ()
     details: tuple[str, ...] = ()
     unavailable_reason: Optional[str] = None
+    # Stable account identity of the credential the snapshot was fetched with (e.g. a decoded
+    # Codex JWT principal), when the provider supports one. Never a secret; ``None`` = the
+    # fetcher cannot tell accounts apart, so the snapshot belongs to the provider's legacy slot.
+    identity: Optional[str] = None
     # Exact decoded provider response body (no headers/credentials) for integrations that need
     # fields Hermes does not normalize yet. Only populated by providers that fetch a JSON body.
     raw: Optional[dict] = None
@@ -64,13 +74,13 @@ def _parse_dt(value: Any) -> Optional[datetime]:
     if value in {None, ""}:
         return None
     if isinstance(value, (int, float)):
-        return datetime.fromtimestamp(float(value), tz=timezone.utc)
+        return datetime.fromtimestamp(float(value), tz=UTC)
     if not isinstance(value, str) or not (text := value.strip()):
         return None
     text = text[:-1] + "+00:00" if text.endswith("Z") else text
     try:
         dt = datetime.fromisoformat(text)
-        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
     except ValueError:
         return None
 
@@ -78,7 +88,7 @@ def _parse_dt(value: Any) -> Optional[datetime]:
 def _format_reset(dt: Optional[datetime]) -> str:
     if not dt:
         return "unknown"
-    stamp = dt.astimezone().strftime("%Y-%m-%d %H:%M %Z")
+    stamp = safe_strftime(dt.astimezone(), "%Y-%m-%d %H:%M %Z")
     total_seconds = int((dt - _utc_now()).total_seconds())
     if total_seconds <= 0:
         return f"now ({stamp})"
@@ -332,7 +342,7 @@ def _resolve_codex_usage_credentials(
             entry = load_pool("openai-codex").try_refresh_matching(api_key_hint=explicit_key)
             if entry is None:
                 raise RuntimeError("Could not refresh the Codex credential this session runs on")
-            return entry.runtime_api_key, str(entry.runtime_base_url or base_url or "").strip(), None
+            return entry.runtime_api_key, _codex_pool_route_base_url(entry.runtime_base_url or base_url), None
     # Only AuthError is caught so tier 3 can run: a broad except would mask a transient refresh/network failure
     # and hand back a DIFFERENT pool account's usage; such errors must propagate to the fail-open outer guard.
     # account_id is best-effort: a partial singleton store must not sink a usable credential.
@@ -361,7 +371,8 @@ def _resolve_codex_usage_credentials(
     entry = load_pool("openai-codex").select()
     if entry is None:
         raise RuntimeError("No available openai-codex credential in credential pool")
-    return entry.runtime_api_key, str(entry.runtime_base_url or base_url or "").strip(), None
+    # Pool rows keep the canonical URL; a gateway key must go to its route host, not chatgpt.com (#121486).
+    return entry.runtime_api_key, _codex_pool_route_base_url(entry.runtime_base_url or base_url), None
 
 
 def _codex_banked_resets(payload: dict) -> int:
@@ -384,9 +395,11 @@ def _get_json(url: str, headers: dict[str, str], *, timeout: float) -> dict:
 
 
 def _usage_windows(
-    source: dict, mapping: tuple[tuple[str, str], ...], used_key: str, reset_key: str, *, fraction: bool = False
+    source: dict, mapping: tuple[tuple[str, str], ...], used_key: str, reset_key: str, *, fraction: bool = False,
+    model_scoped: frozenset[str] | set[str] = frozenset(),
 ) -> list[AccountUsageWindow]:
-    """Build windows from ``source[key][used_key]``; ``fraction`` scales values <= 1 to percent."""
+    """Build windows from ``source[key][used_key]``; ``fraction`` scales values <= 1 to percent.
+    ``model_scoped`` keys build windows that cap only a model family, never the account."""
     windows: list[AccountUsageWindow] = []
     for key, label in mapping:
         window = source.get(key) or {}
@@ -396,7 +409,10 @@ def _usage_windows(
         used = float(used)
         if fraction and used <= 1:
             used *= 100
-        windows.append(AccountUsageWindow(label=label, used_percent=used, reset_at=_parse_dt(window.get(reset_key))))
+        windows.append(AccountUsageWindow(
+            label=label, used_percent=used, reset_at=_parse_dt(window.get(reset_key)),
+            scope="model" if key in model_scoped else "account",
+        ))
     return windows
 
 
@@ -429,6 +445,22 @@ def _plural(count: int) -> str:
 def _fetch_codex_account_usage(
     base_url: Optional[str] = None, api_key: Optional[str] = None,
 ) -> Optional[AccountUsageSnapshot]:
+    return _fetch_codex_account_usage_impl(base_url, api_key, read_only=False)
+
+
+def _fetch_codex_account_usage_read_only(
+    base_url: Optional[str] = None, api_key: Optional[str] = None,
+) -> Optional[AccountUsageSnapshot]:
+    """Picker-cache variant: a 401 is reported, never repaired. The live-agent path
+    (``_fetch_codex_account_usage``) retries via a forced credential refresh because the
+    session it serves owns that credential; a per-credential read of the pool must NOT
+    rotate, refresh or mutate anything — it just marks that account unknown."""
+    return _fetch_codex_account_usage_impl(base_url, api_key, read_only=True)
+
+
+def _fetch_codex_account_usage_impl(
+    base_url: Optional[str] = None, api_key: Optional[str] = None, *, read_only: bool = False,
+) -> Optional[AccountUsageSnapshot]:
     token, resolved_base_url, account_id = _resolve_codex_usage_credentials(base_url, api_key)
     try:
         payload = _get_json(
@@ -436,6 +468,9 @@ def _fetch_codex_account_usage(
         )
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code != 401:
+            raise
+        if read_only:
+            # Never refresh/rotate on the picker's read-only path — surface the failure.
             raise
         token, resolved_base_url, account_id = _resolve_codex_usage_credentials(
             base_url, api_key, force_refresh=True,
@@ -455,7 +490,17 @@ def _fetch_codex_account_usage(
     elif credits.get("has_credits") and credits.get("unlimited"):
         details.append("Credits balance: unlimited")
     return _snapshot("openai-codex", "usage_api", windows, details, plan=_title_case_slug(payload.get("plan_type")),
-                     raw=payload)
+                     identity=_codex_snapshot_identity(token), raw=payload)
+
+
+def _codex_snapshot_identity(token: str) -> Optional[str]:
+    """Trusted per-account identity of a Codex credential: the decoded JWT principal
+    (``chatgpt_account_id`` + ``sub``), never the token itself. Two credentials for one
+    workspace member share it, so pool accounts are counted once, honestly."""
+    from agent.credential_pool import _codex_principal_identity
+
+    principal = _codex_principal_identity(token)
+    return f"codex:{principal[0]}:{principal[1]}" if principal else None
 
 
 @dataclass(frozen=True)
@@ -586,7 +631,12 @@ def redeem_codex_reset_credit(
 def _fetch_anthropic_account_usage(
     base_url: Optional[str] = None, api_key: Optional[str] = None
 ) -> Optional[AccountUsageSnapshot]:
-    token = (resolve_anthropic_token() or "").strip()
+    # An explicit api_key (live agent / per-credential pool read) must not be shadowed by
+    # the ambient OAuth singleton: fetch_account_usage(base_url, api_key) promises to
+    # report THAT credential's usage. An API key answers the OAuth usage endpoint with
+    # 401, so only an OAuth-shaped token reaches the fetch.
+    explicit = str(api_key or "").strip()
+    token = explicit or (resolve_anthropic_token() or "").strip()
     if not token:
         return None
     if not _is_oauth_token(token):
@@ -598,6 +648,7 @@ def _fetch_anthropic_account_usage(
     windows = _usage_windows(
         payload, (("five_hour", "Current session"), ("seven_day", "Current week"), ("seven_day_opus", "Opus week"),
                   ("seven_day_sonnet", "Sonnet week")), "utilization", "resets_at", fraction=True,
+        model_scoped={"seven_day_opus", "seven_day_sonnet"},
     )
     details: list[str] = []
     extra = payload.get("extra_usage") or {}
@@ -649,6 +700,12 @@ _USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[Acc
     "openrouter": _fetch_openrouter_account_usage,
 }
 
+# Picker per-credential variants: same parsers/fetch shape, but a failure is never repaired by
+# rotating/refreshing a credential (see ``fetch_account_usage(read_only=True)``).
+_READ_ONLY_USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[AccountUsageSnapshot]]] = {
+    "openai-codex": _fetch_codex_account_usage_read_only,
+}
+
 
 # Wall-clock bound on a plugin profile's ``fetch_account_usage`` hook. The built-in fetchers above carry
 # their own httpx timeouts; a plugin hook is arbitrary code, and the gateway/TUI ``/usage`` paths await
@@ -673,14 +730,33 @@ def _call_plugin_usage_hook(profile, base_url: Optional[str], api_key: Optional[
 
 def fetch_account_usage(
     provider: Optional[str], *, base_url: Optional[str] = None, api_key: Optional[str] = None,
+    read_only: bool = False, identity_id: Optional[str] = None,
 ) -> Optional[AccountUsageSnapshot]:
-    fetcher = _USAGE_FETCHERS.get(str(provider or "").strip().lower())
+    from agent.account_usage_cache import remember_account_usage
+
+    slug = str(provider or "").strip().lower()
+    # The picker's per-credential path resolves variants that never rotate/refresh a credential
+    # on failure (Codex 401), so a read cannot repair or bench a pool entry it does not own.
+    fetcher = _READ_ONLY_USAGE_FETCHERS.get(slug) if read_only else None
+    if fetcher is None:
+        fetcher = _USAGE_FETCHERS.get(slug)
+    import time as _time
+
+    started = _time.monotonic()
     try:
         if fetcher:
-            return fetcher(base_url, api_key)
-        from providers import get_provider_profile
+            snapshot = fetcher(base_url, api_key)
+        else:
+            from providers import get_provider_profile
 
-        profile = get_provider_profile(str(provider or "").strip().lower())
-        return _call_plugin_usage_hook(profile, base_url, api_key) if profile else None
+            profile = get_provider_profile(slug)
+            snapshot = _call_plugin_usage_hook(profile, base_url, api_key) if profile else None
     except Exception:
         return None
+    # Every fetch (``/usage``, the per-turn ``session.usage``) keeps the picker's cache current.
+    # A per-credential fetch is remembered under its account slot only; the provider-wide fetch
+    # keeps both the legacy gauge slot and (when the fetcher identifies the account) that
+    # account's slot current.
+    remember_account_usage(provider, snapshot, identity_id=identity_id, base_url=base_url,
+                           started_monotonic=started)
+    return snapshot

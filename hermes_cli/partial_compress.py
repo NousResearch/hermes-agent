@@ -18,7 +18,7 @@ DEFAULT_KEEP_LAST = 2
 MAX_KEEP_LAST = 100
 
 
-def parse_partial_compress_args(raw_args: str) -> Tuple[bool, int, Optional[str]]:
+def parse_partial_compress_args(raw_args: str) -> tuple[bool, int, Optional[str]]:
     """Parse the argument string after ``/compress`` into ``(partial, keep_last, focus_topic)``.
 
     ``here [N]`` / ``up to here [N]`` / ``--keep N`` / ``-k N`` / ``--keep=N`` select the
@@ -47,7 +47,7 @@ def parse_partial_compress_args(raw_args: str) -> Tuple[bool, int, Optional[str]
     return False, DEFAULT_KEEP_LAST, text or None
 
 
-def extract_compress_flags(raw_args: str) -> Tuple[str, bool, bool]:
+def extract_compress_flags(raw_args: str) -> tuple[str, bool, bool]:
     """Strip ``--preview``/``--dry-run``/``--aggressive`` (anywhere in the string) and return
     ``(remaining_args, preview, aggressive_requested)``.
 
@@ -57,7 +57,7 @@ def extract_compress_flags(raw_args: str) -> Tuple[str, bool, bool]:
     """
     preview = False
     aggressive = False
-    kept: List[str] = []
+    kept: list[str] = []
     for tok in (raw_args or "").split():
         low = tok.lower()
         if low in ("--preview", "--dry-run", "--dryrun"):
@@ -70,12 +70,12 @@ def extract_compress_flags(raw_args: str) -> Tuple[str, bool, bool]:
 
 
 def summarize_compress_preview(
-    history: List[Dict[str, Any]],
+    history: list[dict[str, Any]],
     partial: bool,
     keep_last: int,
     focus_topic: Optional[str],
     approx_tokens: int,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Build the ``/compress --preview`` report — pure, no side effects.
 
     Shared by the CLI and the gateway slash handler so both report the numbers the real run would
@@ -124,9 +124,9 @@ def _coerce_keep(value: str) -> int:
 
 
 def split_history_for_partial_compress(
-    history: List[Dict[str, Any]],
+    history: list[dict[str, Any]],
     keep_last: int,
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Split ``history`` into ``(head, tail)``: head is summarized, tail is the last ``keep_last``
     exchanges kept verbatim.
 
@@ -155,9 +155,9 @@ def split_history_for_partial_compress(
 
 
 def rejoin_compressed_head_and_tail(
-    compressed_head: List[Dict[str, Any]],
-    tail: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
+    compressed_head: list[dict[str, Any]],
+    tail: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     """Concatenate a compressed head with the verbatim tail, defending the seam's role alternation.
 
     The head compressor's output shape isn't contractually guaranteed (a plugin engine could end on

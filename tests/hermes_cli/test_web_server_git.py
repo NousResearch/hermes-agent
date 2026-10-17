@@ -265,5 +265,158 @@ def test_worktree_add_from_origin_base_does_not_track(client, repo_with_remote):
     probe = subprocess.run(
         ["git", "rev-parse", "--abbrev-ref", "fresh@{upstream}"],
         cwd=repo_with_remote, capture_output=True, text=True,
+        check=False,
     )
     assert probe.returncode != 0
+
+
+def _out(cwd, *args):
+    return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+
+
+_IDENT = ("-c", "user.email=t@example.com", "-c", "user.name=Test")
+
+
+def _seed_origin(tmp_path):
+    """A bare origin whose `main` and `feature` sit one commit past tag `v0`, plus the work
+    repo that pushed it."""
+    origin = tmp_path / "origin.git"
+    origin.mkdir()
+    _git(origin, "init", "-q", "-b", "main", "--bare")
+    work = tmp_path / "seed"
+    work.mkdir()
+    _git(work, "init", "-q", "-b", "main")
+    _git(work, *_IDENT, "commit", "-q", "--allow-empty", "-m", "c1")
+    _git(work, "tag", "v0")
+    _git(work, *_IDENT, "commit", "-q", "--allow-empty", "-m", "c2")
+    _git(work, "branch", "feature")
+    _git(work, "push", "-q", str(origin), "main", "feature", "v0")
+    return origin, work, _out(work, "rev-parse", "HEAD")
+
+
+def _narrow_clone(tmp_path, *, seed_tracking_ref=False):
+    """A tag-pinned narrow clone (--single-branch --branch <tag>) whose remote.origin.fetch
+    maps only the tag, the shape older installers made (#125686)."""
+    origin, _, tip = _seed_origin(tmp_path)
+    clone = tmp_path / "clone"
+    _git(tmp_path, "clone", "-q", "--single-branch", "--branch", "v0", str(origin), str(clone))
+    if seed_tracking_ref:
+        _git(clone, "fetch", "-q", "origin", "+refs/heads/feature:refs/remotes/origin/feature")
+    return clone, tip
+
+
+def _normal_clone(tmp_path):
+    origin, _, tip = _seed_origin(tmp_path)
+    clone = tmp_path / "normal"
+    _git(tmp_path, "clone", "-q", str(origin), str(clone))
+    return clone, tip
+
+
+def _fetch_config(clone):
+    return _out(clone, "config", "--get-all", "remote.origin.fetch")
+
+
+def test_worktree_add_from_origin_base_on_tag_pinned_clone(tmp_path):
+    """``git fetch origin main`` on a tag-only refspec writes FETCH_HEAD and leaves
+    ``origin/main`` missing, so ``worktree add`` died with invalid reference."""
+    clone, tip = _narrow_clone(tmp_path)
+    from hermes_cli.web_git import worktree_add
+
+    added = worktree_add(str(clone), {"base": "origin/main", "name": "x"})
+
+    assert _out(added["path"], "rev-parse", "HEAD") == tip
+    upstream = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", f"{added['branch']}@{{upstream}}"],
+        cwd=clone, capture_output=True, text=True,
+        check=False,
+    )
+    assert upstream.returncode != 0
+
+
+@pytest.mark.parametrize(
+    "seed_tracking_ref", [False, True], ids=["tracking-ref-missing", "tracking-ref-present"],
+)
+def test_worktree_add_existing_branch_on_tag_pinned_clone_tracks_remote(client, tmp_path, seed_tracking_ref):
+    """Missing ref: "origin/feature" used to be read as a local branch name. Present ref:
+    `--track` still cannot wire upstream through a tag-only fetch refspec."""
+    clone, tip = _narrow_clone(tmp_path, seed_tracking_ref=seed_tracking_ref)
+
+    added = client.post(
+        "/api/git/worktree/add", json={"path": str(clone), "existingBranch": "origin/feature"},
+    ).json()
+
+    assert added["branch"] == "feature"
+    assert _out(added["path"], "rev-parse", "HEAD") == tip  # the remote feature, not tag v0
+    assert _out(added["path"], "rev-parse", "--abbrev-ref", "feature@{upstream}") == "origin/feature"
+
+
+@pytest.mark.parametrize("clone_of", [_narrow_clone, _normal_clone], ids=["narrow", "normal"])
+def test_worktree_add_missing_remote_branch_leaves_fetch_config_alone(client, tmp_path, clone_of):
+    """A configured refspec whose source is missing makes every later plain `git fetch`
+    fail, so a typo'd "origin/<branch>" must never be registered on the remote."""
+    clone, _ = clone_of(tmp_path)
+    before = _fetch_config(clone)
+
+    resp = client.post(
+        "/api/git/worktree/add", json={"path": str(clone), "existingBranch": "origin/typo"},
+    )
+
+    assert resp.status_code != 200
+    assert _fetch_config(clone) == before
+    _git(clone, "fetch", "-q")
+
+
+def test_worktree_add_existing_branch_on_normal_clone_adds_no_fetch_refspec(client, tmp_path):
+    clone, _ = _normal_clone(tmp_path)
+    before = _fetch_config(clone)
+
+    added = client.post(
+        "/api/git/worktree/add", json={"path": str(clone), "existingBranch": "origin/feature"},
+    ).json()
+
+    assert added["branch"] == "feature"
+    assert _fetch_config(clone) == before
+
+
+def test_worktree_add_local_slash_branch_named_like_a_remote_stays_local(client, tmp_path):
+    """A local "origin/feature" branch must be checked out as itself, not swapped for a
+    new `feature` tracking the remote branch of the same name."""
+    clone, tip = _narrow_clone(tmp_path)
+    _git(clone, "branch", "origin/feature")
+    local = _out(clone, "rev-parse", "origin/feature")
+    assert local != tip
+
+    added = client.post(
+        "/api/git/worktree/add", json={"path": str(clone), "existingBranch": "origin/feature"},
+    ).json()
+
+    assert added["branch"] == "origin/feature"
+    assert _out(added["path"], "rev-parse", "HEAD") == local
+    assert _out(clone, "for-each-ref", "refs/remotes") == ""  # never went to the network
+
+
+def test_worktree_add_glob_base_is_not_fetched(tmp_path):
+    """`base` comes from the API; inside a refspec "origin/*" would fetch every branch."""
+    clone, _ = _narrow_clone(tmp_path)
+    from hermes_cli.web_git import worktree_add
+
+    with pytest.raises(RuntimeError):
+        worktree_add(str(clone), {"base": "origin/*", "name": "glob"})
+
+    assert _out(clone, "for-each-ref", "refs/remotes") == ""
+
+
+def test_worktree_add_base_refreshes_valid_branch_names_the_sanitizer_would_rewrite(tmp_path):
+    """"fix+1" is a valid branch the sanitizer rewrites; its base must still be fetched."""
+    origin, seed, _ = _seed_origin(tmp_path)
+    _git(seed, "branch", "fix+1")
+    _git(seed, "push", "-q", str(origin), "fix+1")
+    clone = tmp_path / "normal"
+    _git(tmp_path, "clone", "-q", str(origin), str(clone))
+    _git(seed, *_IDENT, "commit", "-q", "--allow-empty", "-m", "moved after the clone")
+    _git(seed, "push", "-q", str(origin), "HEAD:fix+1")
+    from hermes_cli.web_git import worktree_add
+
+    added = worktree_add(str(clone), {"base": "origin/fix+1", "name": "x"})
+
+    assert _out(added["path"], "rev-parse", "HEAD") == _out(seed, "rev-parse", "HEAD")

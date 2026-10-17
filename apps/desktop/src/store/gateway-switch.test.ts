@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $apiRequestScope, setApiRequestConnection } from '@/api/client'
 import { $sessionsLimit, resetSessionsLimit, SIDEBAR_SESSIONS_PAGE_SIZE } from '@/store/layout'
+import { $projectScope, ALL_PROJECTS } from '@/store/project-scope'
 import {
   $activeSessionId,
   $cronSessions,
@@ -22,12 +24,15 @@ import {
   setSessionsLoading
 } from '@/store/session'
 import { $stalledSessionIds } from '@/store/session-states'
+import { $starmapGraph, watchStarmapGraph } from '@/store/starmap'
+import { $retainedTodosBySession, restoreSessionTodosFromSnapshot } from '@/store/todos'
 import {
   $transcriptTailBySessionId,
   clearTranscriptTailPaging,
   recordTranscriptTail,
   transcriptTailState
 } from '@/store/transcript-tail'
+import type { StarmapGraph } from '@/types/hermes'
 
 import {
   $gatewaySwitching,
@@ -37,6 +42,18 @@ import {
   registerGatewaySwitchLifecycle,
   wipeSessionListsForGatewaySwitch
 } from './gateway-switch'
+
+// Each star map fetch records the connection requests route to when it is issued.
+const { starmapFetchScopes } = vi.hoisted(() => ({ starmapFetchScopes: [] as Array<null | string> }))
+
+vi.mock(import('@/hermes'), async importOriginal => ({
+  ...(await importOriginal()),
+  getStarmapGraph: () => {
+    starmapFetchScopes.push($apiRequestScope.get().connectionId)
+
+    return new Promise(() => undefined)
+  }
+}))
 
 vi.mock('@/lib/query-client', () => ({
   invalidateProfileScopedQueries: vi.fn()
@@ -78,7 +95,17 @@ describe('wipeSessionListsForGatewaySwitch', () => {
   })
 
   it('clears lists and arms loading so sidebar skeletons retrigger', () => {
+    restoreSessionTodosFromSnapshot(
+      's1',
+      {
+        revision: 2,
+        todos: [{ id: 'task', content: 'Old gateway task', status: 'in_progress' }]
+      },
+      false
+    )
     wipeSessionListsForGatewaySwitch()
+
+    expect($retainedTodosBySession.get().s1).toBeUndefined()
 
     expect($sessions.get()).toEqual([])
     expect($sessionProfilesTruncated.get()).toEqual({})
@@ -98,6 +125,14 @@ describe('wipeSessionListsForGatewaySwitch', () => {
 
     expect($currentCwd.get()).toBe('')
     expect($currentBranch.get()).toBe('')
+  })
+
+  it("leaves the outgoing backend's project scope so the next draft cannot start in it (#54990)", () => {
+    $projectScope.set('p_old_backend')
+
+    wipeSessionListsForGatewaySwitch()
+
+    expect($projectScope.get()).toBe(ALL_PROJECTS)
   })
 
   it("forgets the previous backend's in-memory paging state", () => {
@@ -128,6 +163,42 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     wipeSessionListsForGatewaySwitch()
 
     expect(invalidateProfileListFetches).toHaveBeenCalled()
+  })
+
+  it("drops the outgoing backend's star map so the next open (or an open view) scans the new one", () => {
+    $starmapGraph.set({ edges: [], nodes: [{ id: 'old-backend-skill' }] } as unknown as StarmapGraph)
+
+    wipeSessionListsForGatewaySwitch()
+
+    expect($starmapGraph.get()).toBeNull()
+  })
+})
+
+describe('star map across a connection switch', () => {
+  afterEach(() => {
+    $gatewaySwitching.set(false)
+    setApiRequestConnection(null)
+  })
+
+  // A -> B with the same profile name: no profile change follows to reload it, so the switch
+  // itself must, and only once requests route to B.
+  it('reloads an open star map from the new connection only after the switch ends', async () => {
+    setApiRequestConnection('conn-a')
+    const unwatch = watchStarmapGraph()
+
+    try {
+      await vi.waitFor(() => expect(starmapFetchScopes).toEqual(['conn-a']))
+
+      const token = beginGatewaySwitch()
+      expect(starmapFetchScopes).toEqual(['conn-a'])
+
+      setApiRequestConnection('conn-b')
+      endGatewaySwitch(token)
+
+      expect(starmapFetchScopes).toEqual(['conn-a', 'conn-b'])
+    } finally {
+      unwatch()
+    }
   })
 })
 

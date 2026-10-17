@@ -27,13 +27,13 @@ def denied_dir(tmp_path):
     d.chmod(0o755)  # so pytest can clean up
 
 
-needs_posix_perms = pytest.mark.skipif(
-    sys.platform == "win32" or os.geteuid() == 0,
-    reason="chmod-based access denial needs POSIX + non-root",
+needs_non_root = pytest.mark.skipif(
+    getattr(os, "geteuid", lambda: 1)() == 0, reason="chmod-based access denial needs non-root"
 )
 
 
-@needs_posix_perms
+@pytest.mark.platforms("posix")  # chmod-based access denial needs POSIX
+@needs_non_root
 class TestInaccessibleCwdFallback:
     def test_cwd_usable_rejects_unenterable_directory(self, denied_dir):
         assert os.path.isdir(denied_dir)  # the trap: stat succeeds

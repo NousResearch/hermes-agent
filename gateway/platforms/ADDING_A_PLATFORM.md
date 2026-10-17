@@ -64,8 +64,8 @@ orphans) and the developer-guide page for the prose walkthrough.
 two transport modes the user picks between — unofficial vs official
 APIs, polling vs websocket, library A vs library B — the right
 structure is two adapters that share a behavior mixin. WhatsApp does
-this: `gateway/platforms/whatsapp.py` (Baileys bridge) and
-`gateway/platforms/whatsapp_cloud.py` (Meta Cloud API) both inherit
+this: `plugins/platforms/whatsapp/adapter.py` (Baileys bridge) and
+`plugins/platforms/whatsapp_cloud/adapter.py` (Meta Cloud API) both inherit
 from `WhatsAppBehaviorMixin` in `gateway/platforms/whatsapp_common.py`.
 The mixin owns gating, allow-lists, mention parsing, broadcast
 filters, and the WhatsApp-flavored markdown conversion — everything
@@ -82,6 +82,13 @@ See `plugins/platforms/irc/`, `plugins/platforms/teams/`, and
 plugin guide with code examples and hook documentation.
 
 ---
+
+Plugin-registered native handlers (`ctx.register_platform_handler(<platform>, factory)`): call
+`self._wire_plugin_handlers(native_client)` once in `connect()` before your own catch-all handlers. The base
+class then handles plugins that load mid-run — the runner calls `rewire_plugin_handlers()` on every
+plugin-loaded event and only factories not yet wired on that native client run. Override it only when your
+adapter keeps a second plugin registry (Slack action handlers) or dispatches by registration order with a
+catch-all last (Telegram hoists late handlers ahead of core); see `gateway/run_plugin_rewire.py`.
 
 ## Built-in Path (Core Contributors Only)
 
@@ -130,7 +137,7 @@ If your platform supports interactive button/menu messages, implement these for 
 | `send_model_picker(...)` | Interactive `/model` picker. Used by Telegram, Discord, and Slack (Socket Mode). |
 | `send_choice_picker(...)` | Flat single-level picker for finite-choice commands (`/reasoning`, `/fast`). Implemented by Telegram (inline keyboard), Discord (select menu), and Matrix (reactions). Platforms without it fall back to the text status card automatically. |
 
-See `gateway/platforms/telegram.py`, `discord.py`, and `whatsapp_cloud.py` for reference implementations. The button-callback id convention (`cl:<id>:<idx>`, `appr:<id>:<choice>`, `sc:<choice>:<id>`) is shared across adapters — match it so the gateway-side resolvers work without modification.
+See `plugins/platforms/telegram/adapter.py`, `plugins/platforms/discord/adapter.py`, and `plugins/platforms/whatsapp_cloud/adapter.py` for reference implementations. The button-callback id convention (`cl:<id>:<idx>`, `appr:<id>:<choice>`, `sc:<choice>:<id>`) is shared across adapters — match it so the gateway-side resolvers work without modification.
 
 ### Required function
 
@@ -151,6 +158,8 @@ def check_<platform>_requirements() -> bool:
 - Use `MessageEvent`, `MessageType` from `gateway.platforms.event` and `SendResult` from base
 - Use `cache_image_from_bytes`, `cache_audio_from_bytes`, `cache_document_from_bytes` for attachments
 - Filter self-messages (prevent reply loops)
+- Drop redelivered inbound IDs with `MessageDeduplicator` (`gateway/platforms/helpers.py`) held as an adapter
+  attribute; the runner's reconnect copies its live IDs into the rebuilt adapter, a hand-rolled cache starts empty
 - Filter sync/echo messages if the platform has them
 - Redact sensitive identifiers (phone numbers, tokens) in all log output
 - Implement reconnection with exponential backoff + jitter for streaming connections

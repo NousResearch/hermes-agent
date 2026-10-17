@@ -105,3 +105,55 @@ describe('cron helpers are profile-scoped', () => {
     expect(api.mock.calls.at(-1)?.[0].path).toBe('/api/cron/jobs')
   })
 })
+
+// Contract (#82527): the run rows a cron job returns are sessions like any
+// other backend page, so they must carry the same ownership tag the session
+// lists do — the registry connection that served them. Clicking a run then
+// hands the open path a row whose (connection, profile) names the backend
+// that actually holds it, instead of the ambient one a bare id resolves to.
+describe('cron run rows carry their owning connection', () => {
+  const run: { connection_id?: string; id: string; profile: string; source: string } = {
+    id: 'cron-nightly-1',
+    profile: 'research',
+    source: 'cron'
+  }
+
+  const api = vi.fn(async () => ({ runs: [{ ...run }] }))
+
+  beforeEach(() => {
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = { api }
+    api.mockClear()
+  })
+
+  afterEach(() => {
+    setApiRequestProfile(null)
+    setApiRequestConnection(null)
+    delete (window as { hermesDesktop?: unknown }).hermesDesktop
+  })
+
+  it('stamps the active registry connection onto every run row', async () => {
+    setApiRequestProfile('research')
+    setApiRequestConnection('gw-tailscale')
+
+    const rows = await getCronJobRuns('job-1')
+
+    expect(rows[0].connection_id).toBe('gw-tailscale')
+    // The backend's owning profile is preserved, not overwritten.
+    expect(rows[0].profile).toBe('research')
+  })
+
+  it('leaves run rows untagged on a local/single-source window', async () => {
+    const rows = await getCronJobRuns('job-1')
+
+    expect(rows[0].connection_id).toBeUndefined()
+  })
+
+  it('never clobbers an owner a row already names', async () => {
+    setApiRequestConnection('gw-tailscale')
+    api.mockResolvedValueOnce({ runs: [{ ...run, connection_id: 'gw-homelab' }] })
+
+    const rows = await getCronJobRuns('job-1')
+
+    expect(rows[0].connection_id).toBe('gw-homelab')
+  })
+})

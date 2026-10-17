@@ -1,23 +1,21 @@
 import { CAPABILITIES_ROUTE } from '../routes'
 
-// Settings tabs that now live in Capabilities → the row-selector param each
-// carries (`?server=` for MCP, `?plugin=` for Plugins). Old bookmarks and
-// palette links keep resolving to the same row on the new page.
-const MOVED_TO_CAPABILITIES: Record<string, string> = { mcp: 'server', plugins: 'plugin' }
+// `plugins` used to redirect here too; it is a live Settings view again
+// (Settings ▸ Plugins = each plugin's own settings pages).
+const MOVED_TO_CAPABILITIES: Record<string, { param: string; tab: string }> = {
+  mcp: { param: 'server', tab: 'connectors' }
+}
 
-/** The Capabilities URL an old `/settings?tab=<moved>` query should land on,
- *  or null when the tab still belongs to Settings. */
 export function movedSettingsTabRedirect(search: string): null | string {
   const params = new URLSearchParams(search)
-  const tab = params.get('tab')
-  const rowParam = tab ? MOVED_TO_CAPABILITIES[tab] : undefined
+  const moved = MOVED_TO_CAPABILITIES[params.get('tab') ?? '']
 
-  if (!tab || rowParam === undefined) {
+  if (moved === undefined) {
     return null
   }
 
-  const row = params.get(rowParam)
-  const suffix = row ? `&${rowParam}=${encodeURIComponent(row)}` : ''
+  const row = params.get(moved.param)
+  const suffix = row ? `&${moved.param}=${encodeURIComponent(row)}` : ''
 
-  return `${CAPABILITIES_ROUTE}?tab=${tab}${suffix}`
+  return `${CAPABILITIES_ROUTE}?tab=${moved.tab}${suffix}`
 }

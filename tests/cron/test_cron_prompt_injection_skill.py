@@ -94,7 +94,7 @@ def _plant_bundle(hermes_home: Path, name: str, skills: list[str], instruction: 
 class TestScanAssembledCronPrompt:
     def test_clean_prompt_passes_through(self, cron_env):
         from cron import scheduler_prompt
-        _, scheduler = cron_env
+        _, _scheduler = cron_env
         result = scheduler_prompt._scan_assembled_cron_prompt(
             "fetch the weather and summarize it",
             {"id": "abc123", "name": "weather"},

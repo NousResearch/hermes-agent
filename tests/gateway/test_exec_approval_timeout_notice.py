@@ -28,23 +28,33 @@ class _ButtonAdapter:
     typed_command_prefix = "/"
 
     def __init__(self, *, editable: bool = True) -> None:
-        self.sends: List[str] = []
-        self.edits: List[tuple] = []
+        self.sends: list[str] = []
+        self.edits: list[tuple] = []
+        self.card_metadata: list[Any] = []
+        self.send_metadata: list[Any] = []
         self._editable = editable
 
     def pause_typing_for_chat(self, chat_id: str) -> None:
         return None
 
     async def send_exec_approval(self, *a: Any, **k: Any) -> SendResult:
+        self.card_metadata.append(k.get("metadata"))
         return SendResult(success=True, message_id="card-1")
 
     async def send(self, chat_id: str, message: str, **k: Any) -> SendResult:
         self.sends.append(message)
+        self.send_metadata.append(k.get("metadata"))
         return SendResult(success=True, message_id="m2")
 
     async def edit_message(self, chat_id: str, message_id: str, content: str, **k: Any) -> SendResult:
         self.edits.append((message_id, content))
         return SendResult(success=self._editable, error=None if self._editable else "cannot edit")
+
+
+class _PlainAdapter(_ButtonAdapter):
+    """No native buttons (``send_exec_approval is None`` per-class): plain-text fallback."""
+
+    send_exec_approval = None
 
 
 def _runner(adapter):
@@ -93,16 +103,23 @@ def test_timeout_edits_the_card_to_say_the_command_did_not_run(pending_entry, tm
     assert message_id == "card-1"
     assert "NOT run" in content and "5 minutes" in content
     assert adapter.sends == [], "an editable card needs no extra message"
+    # ``notify`` is A2A's turn-final marker; an approval card must not carry it (#132516).
+    assert adapter.card_metadata == [{"thread_id": "t1"}]  # no notify: A2A's turn-final marker
 
 
-def test_timeout_falls_back_to_a_new_message_when_the_card_cannot_be_edited(pending_entry):
-    adapter = _ButtonAdapter(editable=False)
+@pytest.mark.parametrize("text_fallback", [False, True])
+def test_timeout_falls_back_to_a_new_message_when_the_card_cannot_be_edited(pending_entry, text_fallback):
+    adapter = _PlainAdapter() if text_fallback else _ButtonAdapter(editable=False)
     _runner(adapter)._approval_notify_sync(dict(pending_entry.data))  # what notify_cb receives
+    if text_fallback:
+        # The plain-text prompt is an interim approval prompt (Telegram pushes it, WeCom routes it
+        # via the control lane), never ``notify``: A2A resolves the caller's task on that marker.
+        assert adapter.send_metadata == [{"thread_id": "t1", "is_approval_prompt": True, "_interim_send": True}]
 
     pending_entry.settle("timeout")
 
-    assert len(adapter.sends) == 1
-    assert "NOT run" in adapter.sends[0]
+    assert len(adapter.sends) == 1 + text_fallback
+    assert "NOT run" in adapter.sends[-1]
 
 
 @pytest.mark.parametrize("reason", ["answered", "interrupted", "notify_failed"])

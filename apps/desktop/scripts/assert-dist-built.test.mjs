@@ -162,3 +162,36 @@ test('checkDistBuilt fails when the QueryClient context invariant is in multiple
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
 })
+
+test('checkDistBuilt fails when a chunk is not valid ES module syntax', () => {
+  const { tempRoot, distDir } = makeDist(d => {
+    fs.writeFileSync(path.join(d, 'index.html'), '<!doctype html>', 'utf8')
+    fs.mkdirSync(path.join(d, 'assets'))
+    // Invalid: destructuring pattern with a hole, like a bundle that lost an
+    // identifier token mid-minification (`{categories:n}` minus `categories`).
+    fs.writeFileSync(path.join(d, 'assets', 'index-abc123.js'), 'let {,:n}=x', 'utf8')
+    fs.writeFileSync(path.join(d, 'assets', 'vendor-def456.js'), 'export const ok = 1', 'utf8')
+  })
+  try {
+    const result = checkDistBuilt(distDir)
+    assert.equal(result.ok, false)
+    assert.match(result.error, /not valid ES module syntax/)
+    assert.match(result.error, /index-abc123\.js/)
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('checkDistBuilt passes when every chunk parses as an ES module', () => {
+  const { tempRoot, distDir } = makeDist(d => {
+    fs.writeFileSync(path.join(d, 'index.html'), '<!doctype html>', 'utf8')
+    fs.mkdirSync(path.join(d, 'assets'))
+    fs.writeFileSync(path.join(d, 'assets', 'index-abc123.js'), 'export const a = `x`', 'utf8')
+    fs.writeFileSync(path.join(d, 'assets', 'vendor-def456.js'), 'import.meta.url', 'utf8')
+  })
+  try {
+    assert.deepEqual(checkDistBuilt(distDir), { ok: true })
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})

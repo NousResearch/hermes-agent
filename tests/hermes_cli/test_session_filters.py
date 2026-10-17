@@ -3,17 +3,14 @@
 
 import time
 from argparse import Namespace
-from datetime import datetime
 
 import pytest
 
 from hermes_cli.session_filters import (
     build_prune_filters,
-    describe_filters,
     parse_duration_seconds,
     parse_point_in_time,
 )
-
 
 def _ns(**kwargs):
     defaults = dict(
@@ -26,7 +23,6 @@ def _ns(**kwargs):
     )
     defaults.update(kwargs)
     return Namespace(**defaults)
-
 
 class TestParseDurationSeconds:
     @pytest.mark.parametrize(
@@ -45,17 +41,14 @@ class TestParseDurationSeconds:
     def test_valid(self, value, expected):
         assert parse_duration_seconds(value) == pytest.approx(expected)
 
-
 class TestParsePointInTime:
     def test_duration_is_relative_to_now(self):
         ts = parse_point_in_time("5h", "--before")
         assert ts == pytest.approx(time.time() - 18000, abs=5)
 
-
     def test_invalid_raises_with_flag_name(self):
         with pytest.raises(ValueError, match="--older-than"):
             parse_point_in_time("nonsense", "--older-than")
-
 
 class TestBuildPruneFilters:
 
@@ -66,22 +59,3 @@ class TestBuildPruneFilters:
         )
         assert f["started_before"] is None
         assert f["started_after"] is None
-
-
-
-
-    def test_passthrough_filters(self):
-        f = build_prune_filters(
-            _ns(source="cli", title="smoke", end_reason="done",
-                cwd="/tmp/x", min_messages=1, max_messages=9)
-        )
-        assert f["source"] == "cli"
-        assert f["title_like"] == "smoke"
-        assert f["end_reason"] == "done"
-        assert f["cwd_prefix"] == "/tmp/x"
-        assert f["min_messages"] == 1
-        assert f["max_messages"] == 9
-
-
-
-

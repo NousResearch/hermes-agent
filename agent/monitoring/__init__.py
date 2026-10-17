@@ -14,4 +14,4 @@ from . import emitter, events
 emit = emitter.emit
 get_emitter = emitter.get_emitter
 
-__all__ = ["emitter", "events", "emit", "get_emitter"]
+__all__ = ["emit", "emitter", "events", "get_emitter"]

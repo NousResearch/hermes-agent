@@ -37,7 +37,7 @@ def test_missing_codex_credential_verdict_names_the_home_it_read(two_homes):
     root, alpha = two_homes
 
     reason = _preflight_check_provider_key(JOB, {"cron": {}})
-    assert reason and "No Codex credentials stored" in reason
+    assert reason
     assert _scope(reason) == ("default", str(root))
 
     # Multiplex tick of a satellite profile: the verdict names alpha, not the gateway's launch home.

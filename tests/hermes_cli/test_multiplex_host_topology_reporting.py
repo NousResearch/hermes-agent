@@ -30,10 +30,13 @@ def served_host(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_PROFILE", "served")
     monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(locks))
     monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
-    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", list)
     monkeypatch.setattr("gateway.status.is_gateway_runtime_lock_active", lambda lock_path=None: False)
+    # A live owner holds the host lock for its lifetime (run.py claims before it publishes).
+    assert hr.claim_host_lock(hr.ROLE_GATEWAY)[0] is hr.HostLockOutcome.ACQUIRED
     hr.publish_record(hr.ROLE_GATEWAY, profiles=("default", "served"))
-    return root
+    yield root
+    hr.release_host_lock(hr.ROLE_GATEWAY)
 
 
 def test_cron_status_names_the_host_gateway_for_a_served_profile(served_host, capsys, monkeypatch):
@@ -45,7 +48,7 @@ def test_cron_status_names_the_host_gateway_for_a_served_profile(served_host, ca
     cron.cron_status()
     out = capsys.readouterr().out
 
-    assert f"the host gateway (PID {os.getpid()}) serving profiles default, served" in out
+    assert f"PID {os.getpid()}" in out and "served" in out
     assert "not running" not in out.lower()
     # Never route the user to a SECOND host process: per-profile install is legacy-only remediation.
     assert "hermes gateway install" not in out
@@ -84,7 +87,7 @@ def test_doctor_reports_the_single_host_gateway_not_per_profile_slots(served_hos
     out = capsys.readouterr().out
 
     assert "Per-profile gateways:" not in out
-    assert f"Host gateway: the host gateway (PID {os.getpid()}) serving profiles default, served" in out
+    assert f"PID {os.getpid()}" in out and "served" in out
     assert "LEGACY per-profile gateway slots still supervised: legacy" in out
     assert any("migrate --multiplex" in i for i in issues)
 

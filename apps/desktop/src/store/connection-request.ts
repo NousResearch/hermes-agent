@@ -1,4 +1,10 @@
+import type { ToolCallMessagePart } from '@assistant-ui/react'
 import type {
+  CatalogApproved,
+  CatalogAppState,
+  CatalogScan,
+  CatalogServerError,
+  CatalogTier,
   ConnectionAnswer,
   ConnectionOperationStatus,
   ConnectionOperationTarget,
@@ -8,14 +14,17 @@ import type {
   ConnectionTargetEnvField,
   ConnectionTargetKind,
   ConnectionTargetState,
-  ConnectionUpdatePayload
+  ConnectionUpdatePayload,
+  InstallPhase
 } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
 import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
 import type { SetupField } from '@/components/ui/setup-field-list'
+import { connectorText } from '@/lib/connector-tools'
 
 import { $gateway, requestGatewayForAgent } from './gateway'
+import { registerParkedCardAnswer } from './parked-card-answers'
 import { $activeGatewayProfile } from './profile'
 import { assertSessionOwnerResolved } from './session-owner-resolution'
 import { isSessionOwnerRoute } from './session-request-router'
@@ -38,6 +47,39 @@ export type {
   ConnectionTargetState
 }
 
+/** What the catalog says about a `plugin` / `skill` row (CATALOG-ROW-CONTRACT.md). The host resolved all of
+ *  it; the model supplied only the id. */
+export interface CatalogEntry {
+  display: string
+  description: string
+  tier: CatalogTier | null
+  /** Empty when the entry runs everywhere; the card shows a platform only when it is restricted. */
+  platforms: string[]
+  repo: string | null
+  sha: string | null
+  subdir: string | null
+  scan: CatalogScan | null
+  /** The Hermes version range the plugin needs; its env vars are the target's `requiredEnv`. */
+  requiresHermes: string | null
+  hasDesktopHalf: boolean
+  /** The profile the row installs into; null when the chat's home is no named profile. */
+  targetProfile: string | null
+  appState: CatalogAppState | null
+  /** On an installed skill row: the qualified name the model can now load. */
+  skill: string | null
+  /** The install step while the row is installing; the card words it. */
+  phase: InstallPhase | null
+  /** The non-secret choices the user approved; a Try again after the card settled repeats them. */
+  approved: CatalogApproved | null
+  /** Facts on an installed row: whether it was turned on, what it still needs, what did not connect. */
+  enabled: boolean | null
+  missingEnv: string[]
+  serverErrors: CatalogServerError[]
+  alreadyInstalled: boolean
+  /** The backend's word that the row needs nothing more from the user: installed, skipped or failed. */
+  resolved: boolean
+}
+
 /** One target of the operation as the renderer knows it. State comes only from the backend
  *  (`connection.request`, `connectors.operation.status`, `connection.update`); the card never sets it. */
 export interface ConnectionTarget {
@@ -49,12 +91,16 @@ export interface ConnectionTarget {
   connectUrl: null | string
   /** The vendor account of a managed target once a mint named one; empty before that and on MCP targets. */
   connectionId: string
+  /** The account name a managed target connects under; absent when the account has none. */
+  alias?: null | string
   /** Toolkit metadata on connector targets; empty on an MCP target. */
   tools: string[]
   /** Credentials an MCP install is still waiting for; empty on every other target. */
   requiredEnv: SetupField[]
   instructions: string | null
   discoveryError: string | null
+  /** Present on `plugin` and `skill` rows only. */
+  catalog?: CatalogEntry
 }
 
 /** The session's connection operation. `deadlineAt`, `opId`, `targets[].state`, `settled` and
@@ -65,7 +111,8 @@ export interface ConnectionOwner {
 }
 
 export interface ConnectionRequest {
-  /** The model's tool call that opened the operation. The card lives on that row and no other. */
+  /** The model's tool call that opened the operation. Call ids repeat across turns, so the row names its
+   *  card by op id (`CONNECTION_OP_ARG`); the call id is only the fallback for a row without one. */
   toolCallId: string
   opId: string
   /** The sequence of the newest frame this cache holds; an older frame for the same op is dropped. */
@@ -78,14 +125,57 @@ export interface ConnectionRequest {
   /** Local receipt time (Unix seconds), used to reject stale resume cleanup. */
   receivedAt?: number
   sessionId: string | null
+  /** A `manage_connections` display card: no targets, the directory with these slugs pinned. */
+  display?: ConnectorDisplay | null
+}
+
+export interface ConnectorDisplay {
+  suggested: string[]
 }
 
 const keyFor = (sessionId: string | null | undefined): string => sessionId ?? ''
 
 export const $connectionRequests = atom<Record<string, ConnectionRequest>>({})
 
-export const sessionConnectionRequest = (sessionId: string | null) =>
-  computed($connectionRequests, requests => requests[keyFor(sessionId)] ?? null)
+/** Settled operations the session's current one replaced, oldest first. Their cards stay drawn on the
+ *  rows that opened them: every settled install card, and the last settled connect card when the current
+ *  operation is an install one. A later connect operation still replaces the connect card, so consecutive
+ *  connect calls show one card. */
+const $keptConnectionRequests = atom<Record<string, ConnectionRequest[]>>({})
+
+/** The key a tool row's args carry its operation id under, written when `connection.request` arrives.
+ *  Models reuse call ids (`call_0` on every turn), so the op id, not the call id, names a row's card. */
+export const CONNECTION_OP_ARG = 'hermes_connection_op'
+
+export const connectionOpOf = (args: ToolCallMessagePart['args']): null | string =>
+  connectorText(args[CONNECTION_OP_ARG]) || null
+
+/** The operation a tool row draws. A row that carries an op id draws that operation and no other. A row
+ *  without one (history loaded from disk, or a call whose request has not arrived yet) falls back to its
+ *  call id, but only when a single known operation has that id, and a running row never takes a settled
+ *  one: that is an earlier call's card. */
+export const toolConnectionRequest = (
+  sessionId: string | null,
+  toolCallId: string,
+  opId: null | string,
+  running: boolean
+) =>
+  computed([$connectionRequests, $keptConnectionRequests], (requests, kept) => {
+    const key = keyFor(sessionId)
+
+    const known = [requests[key], ...(kept[key] ?? [])].filter((request): request is ConnectionRequest =>
+      Boolean(request)
+    )
+
+    if (opId) {
+      return known.find(request => request.opId === opId) ?? null
+    }
+
+    const matches = known.filter(request => request.toolCallId === toolCallId)
+    const only = matches.length === 1 ? matches[0] : null
+
+    return only && !(running && only.settled) ? only : null
+  })
 
 const TARGET_STATES: readonly ConnectionTargetState[] = [
   'connected',
@@ -97,6 +187,7 @@ const TARGET_STATES: readonly ConnectionTargetState[] = [
   'skipped'
 ]
 
+const KINDS: readonly ConnectionTargetKind[] = ['connector', 'mcp', 'plugin', 'skill']
 const ACTIONS: readonly ConnectionTargetAction[] = ['authorize', 'connect', 'enable', 'install', 'reconnect']
 const SETTLE_REASONS: readonly ConnectionSettleReason[] = ['all_resolved', 'continue', 'deadline', 'interrupt']
 
@@ -106,26 +197,74 @@ const oneOf =
   (value: null | string | undefined): T | undefined =>
     allowed.find(candidate => candidate === value)
 
+const targetKind = oneOf(KINDS)
 const targetState = oneOf(TARGET_STATES)
 const targetAction = oneOf(ACTIONS)
 const settleReason = oneOf(SETTLE_REASONS)
 
-function parseTarget(entry: ConnectionOperationTarget): ConnectionTarget | null {
+export const isCatalogKind = (kind: ConnectionTargetKind): kind is 'plugin' | 'skill' =>
+  kind === 'plugin' || kind === 'skill'
+
+/** A `manage_catalog` install operation, as opposed to a `manage_connections` one. */
+export const isCatalogRequest = (request: ConnectionRequest): boolean =>
+  request.targets.some(target => isCatalogKind(target.kind))
+
+type InstalledFacts = Pick<CatalogEntry, 'alreadyInstalled' | 'enabled' | 'missingEnv' | 'serverErrors'>
+
+const installedFacts = (entry: ConnectionOperationTarget): InstalledFacts => ({
+  alreadyInstalled: entry.already_installed ?? false,
+  enabled: entry.enabled ?? null,
+  missingEnv: entry.missing_env ?? [],
+  serverErrors: entry.server_errors ?? []
+})
+
+function catalogEntry(entry: ConnectionOperationTarget, name: string): CatalogEntry {
+  return {
+    ...installedFacts(entry),
+    appState: entry.app_state ?? null,
+    approved: entry.approved ?? null,
+    description: entry.description ?? '',
+    display: entry.display?.trim() || name,
+    hasDesktopHalf: entry.has_desktop_half ?? false,
+    phase: entry.phase ?? null,
+    platforms: entry.platforms ?? [],
+    repo: entry.repo ?? null,
+    requiresHermes: entry.requires_hermes ?? null,
+    resolved: entry.resolved ?? false,
+    scan: entry.scan ?? null,
+    sha: entry.sha ?? null,
+    skill: entry.skill ?? null,
+    subdir: entry.subdir ?? null,
+    targetProfile: entry.target_profile?.trim() || null,
+    tier: entry.tier ?? null
+  }
+}
+
+// Every frame carries a fresh object; a field-equal entry keeps the old reference so the row does not churn.
+const sameCatalog = (next: CatalogEntry | undefined, previous: CatalogEntry | undefined): boolean =>
+  next === previous || JSON.stringify(next) === JSON.stringify(previous)
+
+export function parseConnectionTarget(entry: ConnectionOperationTarget): ConnectionTarget | null {
   const name = entry.name.trim()
 
   if (!name) {
     return null
   }
 
+  // An unknown kind from a backend a version ahead renders as the generic MCP row.
+  const kind = targetKind(entry.kind) ?? 'mcp'
+
   return {
     action: targetAction(entry.action) ?? 'install',
+    catalog: isCatalogKind(kind) ? catalogEntry(entry, name) : undefined,
     connectUrl: entry.connect_url ?? null,
     detail: entry.detail ?? '',
-    kind: entry.kind === 'connector' ? 'connector' : 'mcp',
+    kind,
     name,
     state: targetState(entry.state) ?? 'pending',
     tools: entry.tools ?? [],
     connectionId: entry.connection_id ?? '',
+    alias: entry.alias ?? null,
     requiredEnv: envFields(entry.required_env),
     instructions: entry.instructions ?? null,
     discoveryError: entry.discovery_error ?? null
@@ -142,14 +281,19 @@ export function normalizeConnectionRequest(
     return null
   }
 
-  const targets = payload.targets.map(parseTarget).filter((target): target is ConnectionTarget => target !== null)
+  const targets = payload.targets
+    .map(parseConnectionTarget)
+    .filter((target): target is ConnectionTarget => target !== null)
 
-  if (!payload.op_id || !payload.tool_call_id || !(payload.deadline_at > 0) || targets.length === 0) {
+  const display = payload.display ? { suggested: payload.display.suggested } : null
+
+  if (!payload.op_id || !payload.tool_call_id || !(payload.deadline_at > 0) || (targets.length === 0 && !display)) {
     return null
   }
 
   return {
     deadlineAt: payload.deadline_at,
+    display,
     opId: payload.op_id,
     receivedAt: Date.now() / 1000,
     seq: payload.seq,
@@ -193,31 +337,37 @@ export function applyOperationStatus(request: ConnectionRequest, status: Connect
 }
 
 function mergeLiveTarget(target: ConnectionTarget, live: ConnectionOperationTarget): ConnectionTarget {
+  const liveCatalog = target.catalog ? catalogEntry(live, target.name) : undefined
+
   const next: ConnectionTarget = {
     ...target,
+    catalog: sameCatalog(liveCatalog, target.catalog) ? target.catalog : liveCatalog,
     connectUrl: live.connect_url ?? target.connectUrl,
     detail: live.detail ?? target.detail,
     state: live.state,
     tools: live.tools ?? target.tools,
     connectionId: live.connection_id ?? target.connectionId,
+    alias: live.alias === undefined ? target.alias : live.alias,
     requiredEnv: live.required_env ? envFields(live.required_env) : target.requiredEnv,
     instructions: live.instructions === undefined ? target.instructions : live.instructions,
     discoveryError: live.discovery_error === undefined ? target.discoveryError : live.discovery_error
   }
 
-  const same =
-    next.connectUrl === target.connectUrl &&
-    next.connectionId === target.connectionId &&
-    next.detail === target.detail &&
-    next.instructions === target.instructions &&
-    next.discoveryError === target.discoveryError &&
-    next.state === target.state &&
-    next.tools.length === target.tools.length &&
-    next.tools.every((tool, index) => tool === target.tools[index]) &&
-    sameEnvFields(next.requiredEnv, target.requiredEnv)
-
-  return same ? target : next
+  return sameTarget(next, target) ? target : next
 }
+
+const sameTarget = (next: ConnectionTarget, target: ConnectionTarget): boolean =>
+  next.catalog === target.catalog &&
+  next.connectUrl === target.connectUrl &&
+  next.connectionId === target.connectionId &&
+  next.alias === target.alias &&
+  next.detail === target.detail &&
+  next.instructions === target.instructions &&
+  next.discoveryError === target.discoveryError &&
+  next.state === target.state &&
+  next.tools.length === target.tools.length &&
+  next.tools.every((tool, index) => tool === target.tools[index]) &&
+  sameEnvFields(next.requiredEnv, target.requiredEnv)
 
 // Every frame carries a fresh array, so identity would churn the row and remount its open inputs.
 const sameEnvFields = (next: SetupField[], previous: SetupField[]): boolean =>
@@ -242,7 +392,22 @@ export function applyConnectionUpdate(request: ConnectionRequest, update: Connec
 }
 
 export function setConnectionRequest(request: ConnectionRequest): void {
-  $connectionRequests.set({ ...$connectionRequests.get(), [keyFor(request.sessionId)]: request })
+  const key = keyFor(request.sessionId)
+  const requests = $connectionRequests.get()
+  const previous = requests[key]
+
+  if (previous && previous.opId !== request.opId) {
+    const catalog = isCatalogRequest(request)
+    const stays = (entry: ConnectionRequest) => isCatalogRequest(entry) || isCatalogRequest(entry) !== catalog
+    const kept = ($keptConnectionRequests.get()[key] ?? []).filter(entry => entry.opId !== request.opId && stays(entry))
+
+    $keptConnectionRequests.set({
+      ...$keptConnectionRequests.get(),
+      [key]: previous.settled && stays(previous) ? [...kept, previous] : kept
+    })
+  }
+
+  $connectionRequests.set({ ...requests, [key]: request })
 }
 
 export function updateConnectionRequest(sessionId: string | null, update: ConnectionUpdatePayload): void {
@@ -259,28 +424,27 @@ export function updateConnectionRequest(sessionId: string | null, update: Connec
   }
 }
 
+/** Drop the session's operation (or, with no session, every one) whose op id matches, from the current
+ *  and the replaced caches alike. */
 export function clearConnectionRequest(opId?: string, sessionId?: string | null): void {
-  const requests = $connectionRequests.get()
+  const cleared = ([key, value]: [string, ConnectionRequest]) =>
+    (sessionId === undefined || key === keyFor(sessionId)) && (!opId || value.opId === opId)
 
-  if (sessionId !== undefined) {
-    const key = keyFor(sessionId)
-    const current = requests[key]
+  const entries = Object.entries($connectionRequests.get())
+  const current = entries.filter(entry => !cleared(entry))
 
-    if (!current || (opId && current.opId !== opId)) {
-      return
-    }
-
-    const next = { ...requests }
-    delete next[key]
-    $connectionRequests.set(next)
-
-    return
+  if (current.length !== entries.length) {
+    $connectionRequests.set(Object.fromEntries(current))
   }
 
-  const kept = Object.entries(requests).filter(([, value]) => opId && value.opId !== opId)
+  const keptBefore = $keptConnectionRequests.get()
 
-  if (kept.length !== Object.keys(requests).length) {
-    $connectionRequests.set(Object.fromEntries(kept))
+  const keptAfter = Object.fromEntries(
+    Object.entries(keptBefore).map(([key, list]) => [key, list.filter(request => !cleared([key, request]))])
+  )
+
+  if (Object.keys(keptBefore).some(key => keptAfter[key].length !== keptBefore[key].length)) {
+    $keptConnectionRequests.set(keptAfter)
   }
 }
 
@@ -349,6 +513,28 @@ export const skipConnectionTarget = (request: ConnectionRequest, name: string): 
 /** Continue: end the operation now with whatever is unresolved. */
 export const continueConnectionRequest = (request: ConnectionRequest): Promise<boolean> =>
   respondToConnectionRequest(request, { settled_by: 'continue' })
+
+/** The composer's words answer an open connector directory card; the tool returns them as `said`. */
+export function answerConnectorDirectory(sessionId: string, text: string): null | Promise<boolean> {
+  const request = $connectionRequests.get()[keyFor(sessionId)]
+
+  if (!request?.display || request.settled || !text.trim()) {
+    return null
+  }
+
+  return respondToConnectionRequest(request, { said: text.trim(), settled_by: 'continue' })
+}
+
+registerParkedCardAnswer('connector-directory', {
+  onboardingOnly: true,
+  $requests: $connectionRequests,
+  answer: answerConnectorDirectory,
+  waiting: sessionId => {
+    const request = $connectionRequests.get()[keyFor(sessionId)]
+
+    return Boolean(request?.display && !request.settled)
+  }
+})
 
 // Typing a message while the card is open ends the operation, otherwise the typed message waits behind
 // the blocked tool until the deadline.

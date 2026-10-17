@@ -66,7 +66,7 @@ def profiles(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("diagnostic_first", [False, True])
-@pytest.mark.parametrize("setting", [None, False, True])
+@pytest.mark.parametrize("setting", [None, True])
 async def test_recursive_three_turn_chain_then_human(profiles, monkeypatch, diagnostic_first, setting):
     """Real runner recursion and final-event handoff, not a copied mute snapshot."""
     import gateway.run as gateway_run

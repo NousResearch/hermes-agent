@@ -184,7 +184,7 @@ def test_reconnect_cannot_cross_orphan_interrupt_claim(monkeypatch, path, claim)
             self.held = False
 
     monkeypatch.setattr(server, "_session_resume_lock", ResumeLock())
-    ctx = SimpleNamespace(rid=1, owns_db=False, db=None, cols=80, omit_messages=True,
+    ctx = SimpleNamespace(rid=1, params={}, owns_db=False, db=None, cols=80, omit_messages=True,
                           defer_history=False, target="stored", profile=None,
                           profile_home=None, profile_resume_cwd=None, found={},
                           messages=lambda history: [], mint=lambda: ("unused", "tui", "."),
@@ -249,7 +249,7 @@ def test_late_rpc_from_closed_socket_keeps_orphan_reap_armed(monkeypatch, path, 
     monkeypatch.setattr(server, "_load_dashboard_process_isolation_config", dict)
     monkeypatch.setattr(server, "_handle_busy_submit", lambda *a, **kw: {"result": {"status": "queued"}})
     monkeypatch.setattr(server, "_sess", lambda *a: (session, None))
-    ctx = SimpleNamespace(rid=1, owns_db=False, db=None, cols=80, omit_messages=True,
+    ctx = SimpleNamespace(rid=1, params={}, owns_db=False, db=None, cols=80, omit_messages=True,
                           defer_history=False, target="stored", profile=None,
                           profile_home=None, profile_resume_cwd=None, found={},
                           messages=lambda history: [], mint=lambda: ("unused", "tui", "."),

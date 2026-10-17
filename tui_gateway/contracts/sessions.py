@@ -5,6 +5,7 @@ listing/browsing stored rows, spawn-tree snapshots, event replay and the statele
 
 from __future__ import annotations
 
+from typing import Literal
 from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
@@ -12,6 +13,13 @@ from .common import (OpenModel, PendingApproval, ProfileParams, SessionLiveInfo,
                      Usage)
 from .connectors_operation import ConnectionRequestPayload
 from .registry import method
+
+# What happens to a live session when its last WS client disconnects. Contracts the
+# runtime's detached transport: ``grace`` is the historical default (sentinel-park with the
+# orphan-reap grace window), ``park`` keeps the session resumable for a later reattach with
+# no orphan-reap timer at all (bounded only by the idle TTL / LRU cap), ``close`` is
+# today's ``close_on_disconnect`` (immediate reap on the disconnect).
+DetachPolicy = Literal["grace", "park", "close"]
 
 
 # ── shared live-session snapshot ──────────────────────────────────────────────────────────────
@@ -131,6 +139,10 @@ class SessionCreateParams(ProfileParams):
     fast: bool | None = None  # presence is the contract: omitted inherits, true pins priority, false pins normal
     service_tier: str | None = None
     close_on_disconnect: bool = False
+    # Disconnect policy: "park" keeps this session resumable with no orphan-reap timer,
+    # "close" (== close_on_disconnect=true) reaps immediately, default "grace" is the
+    # historical sentinel-park + grace-window reap.
+    detach_policy: DetachPolicy | None = None
     hidden: bool = False
     room_plumbing: bool = False
     follow_profile_config: bool = False
@@ -189,6 +201,9 @@ class SessionResumeParams(SessionParams):
     omit_messages: bool = False
     eager_build: bool = False
     close_on_disconnect: bool = False
+    # Reattach-time override of the session's disconnect policy (same values as
+    # session.create; None keeps what the session already has).
+    detach_policy: DetachPolicy | None = None
     # False: render image parts as "[image]" instead of their data URIs — a remote client reads a
     # transcript in kilobytes instead of re-transmitting every stored attachment (#116511).
     inline_images: bool = True
@@ -205,6 +220,9 @@ method("session.resume", params=SessionResumeParams, result=SessionResumeResult,
 class SessionActivateParams(SessionParams):
     cols: int | None = None  # sent by the desktop; the handler keeps the session's current width
     omit_messages: bool = False
+    # Reattach-time override of the session's disconnect policy (same values as
+    # session.create; None keeps what the session already has).
+    detach_policy: DetachPolicy | None = None
 
 
 class SessionActivateResult(LiveSessionSnapshot):

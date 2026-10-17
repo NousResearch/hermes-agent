@@ -18522,6 +18522,18 @@
             ],
             "default": null,
             "title": "Session Authority"
+          },
+          "detach_policy": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Detach Policy"
           }
         },
         "required": [
@@ -34138,6 +34150,23 @@
             "default": false,
             "title": "Omit Messages",
             "type": "boolean"
+          },
+          "detach_policy": {
+            "anyOf": [
+              {
+                "enum": [
+                  "grace",
+                  "park",
+                  "close"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Detach Policy"
           }
         },
         "required": [
@@ -35821,6 +35850,23 @@
             "title": "Close On Disconnect",
             "type": "boolean"
           },
+          "detach_policy": {
+            "anyOf": [
+              {
+                "enum": [
+                  "grace",
+                  "park",
+                  "close"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Detach Policy"
+          },
           "hidden": {
             "default": false,
             "title": "Hidden",
@@ -37460,6 +37506,23 @@
             "default": false,
             "title": "Close On Disconnect",
             "type": "boolean"
+          },
+          "detach_policy": {
+            "anyOf": [
+              {
+                "enum": [
+                  "grace",
+                  "park",
+                  "close"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Detach Policy"
           },
           "inline_images": {
             "default": true,

@@ -17,7 +17,7 @@ function mountLifecycle(request: (method: string, params: unknown) => Promise<un
     const lifecycle = useSessionLifecycle({
       colsRef: { current: 80 },
       composerActions: { setComposerTokens: vi.fn() } as any,
-      gw: { request } as any,
+      gw: { request, detachPolicyParams: () => ({}) } as any,
       panel: vi.fn(),
       rpc: vi.fn(async () => null),
       scrollRef: { current: null },

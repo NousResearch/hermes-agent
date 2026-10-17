@@ -22,7 +22,7 @@ it('only the newest attachment request may replace session authority', async () 
 
   function Harness() {
     lifecycle = useSessionLifecycle({ colsRef: { current: 80 }, composerActions: { setComposerTokens: vi.fn() },
-      gw: { request }, rpc: request, scrollRef: { current: null }, panel: vi.fn(), sys: vi.fn(),
+      gw: { request, detachPolicyParams: () => ({}) }, rpc: request, scrollRef: { current: null }, panel: vi.fn(), sys: vi.fn(),
       setHistoryItems: vi.fn(), setLastUserMsg: vi.fn(), setSessionStartedAt: vi.fn(), setStickyPrompt: vi.fn(),
       setVoiceProcessing: vi.fn(), setVoiceRecording: vi.fn() } as any)
 
@@ -77,7 +77,7 @@ it('resumes a successor with a reset epoch while retaining original attempted ad
   function Harness() {
     queue = useQueue()
     lifecycle = useSessionLifecycle({ colsRef: { current: 80 }, composerActions: { setComposerTokens: vi.fn() },
-      gw: { request }, rpc: async () => ({}), scrollRef: { current: null }, panel: vi.fn(), sys: vi.fn(),
+      gw: { request, detachPolicyParams: () => ({}) }, rpc: async () => ({}), scrollRef: { current: null }, panel: vi.fn(), sys: vi.fn(),
       setHistoryItems: vi.fn(), setLastUserMsg: vi.fn(), setSessionStartedAt: vi.fn(), setStickyPrompt: vi.fn(),
       setVoiceProcessing: vi.fn(), setVoiceRecording: vi.fn() } as any)
 
@@ -124,7 +124,7 @@ it('detaches the prior canonical subscription only after the replacement attache
 
   function Harness() {
     lifecycle = useSessionLifecycle({ colsRef: { current: 80 }, composerActions: { setComposerTokens: vi.fn() },
-      gw: { isCanonical: true, request }, rpc: request, scrollRef: { current: null }, panel: vi.fn(), sys: vi.fn(),
+      gw: { isCanonical: true, request, detachPolicyParams: () => ({}) }, rpc: request, scrollRef: { current: null }, panel: vi.fn(), sys: vi.fn(),
       setHistoryItems: vi.fn(), setLastUserMsg: vi.fn(), setSessionStartedAt: vi.fn(), setStickyPrompt: vi.fn(),
       setVoiceProcessing: vi.fn(), setVoiceRecording: vi.fn() } as any)
 
@@ -247,7 +247,7 @@ it('waits for a delayed detach before reattaching the same canonical session', a
 
   function Harness() {
     lifecycle = useSessionLifecycle({ colsRef: { current: 80 }, composerActions: { setComposerTokens: vi.fn() },
-      gw: { isCanonical: true, request }, rpc: request, scrollRef: { current: null }, panel: vi.fn(), sys: vi.fn(),
+      gw: { isCanonical: true, request, detachPolicyParams: () => ({}) }, rpc: request, scrollRef: { current: null }, panel: vi.fn(), sys: vi.fn(),
       setHistoryItems: vi.fn(), setLastUserMsg: vi.fn(), setSessionStartedAt: vi.fn(), setStickyPrompt: vi.fn(),
       setVoiceProcessing: vi.fn(), setVoiceRecording: vi.fn() } as any)
 

@@ -42,7 +42,7 @@ async function coldResume(legacy: boolean) {
   function Harness() {
     queue = useQueue()
     lifecycle = useSessionLifecycle({ colsRef: { current: 80 }, composerActions: { setComposerTokens: vi.fn() },
-      gw: { request }, rpc: async () => ({}), scrollRef: { current: null }, panel: vi.fn(), sys: vi.fn(),
+      gw: { request, detachPolicyParams: () => ({}) }, rpc: async () => ({}), scrollRef: { current: null }, panel: vi.fn(), sys: vi.fn(),
       setHistoryItems: vi.fn(), setLastUserMsg: vi.fn(), setSessionStartedAt: vi.fn(), setStickyPrompt: vi.fn(),
       setVoiceProcessing: vi.fn(), setVoiceRecording: vi.fn() } as any)
 

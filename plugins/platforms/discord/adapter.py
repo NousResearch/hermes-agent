@@ -5127,12 +5127,21 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         return {match.group(1) for match in re.finditer(r"<@!?(\d+)>", content)}
 
     def _self_is_explicitly_mentioned(self, message: Any) -> bool:
-        """True when the bot is in ``message.mentions`` or raw-mentioned in the content."""
+        """True when the bot is user- or role-mentioned in the content."""
         if not self._client or not self._client.user:
             return False
         if self._client.user in getattr(message, "mentions", []):
             return True
-        return str(self._client.user.id) in self._raw_mentioned_user_ids(message)
+        if str(self._client.user.id) in self._raw_mentioned_user_ids(message):
+            return True
+        mentioned_roles = {str(role_id) for role_id in getattr(message, "mention_roles", []) or []}
+        guild_me = getattr(getattr(message, "guild", None), "me", None)
+        bot_role_ids = {
+            str(role.id)
+            for member in (guild_me, self._client.user)
+            for role in (getattr(member, "roles", None) or [])
+        }
+        return bool(mentioned_roles & bot_role_ids)
 
     def _self_is_raw_mentioned(self, message: Any) -> bool:
         """True only for a literal ``<@bot>`` token: reply-pings add us to ``message.mentions``

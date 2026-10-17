@@ -4,6 +4,7 @@ Split out of ``hermes_cli/doctor.py``, which re-exports every name so ``hermes_c
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from hermes_cli.doctor_report import (
@@ -494,18 +495,29 @@ def _check_state_db(should_fix: bool, f: Finding) -> None:
 
 @doctor_check()
 def _check_cron_store(should_fix: bool, f: Finding) -> None:
-    """The cron store accepts writes and its filesystem is not nearly full (jobs skip otherwise)."""
+    """The cron store accepts writes and its filesystem has healthy free-space headroom."""
     from hermes_cli.doctor import HERMES_HOME, _DHH
-    from cron.store_health import LOW_FREE_BYTES, free_bytes, probe_report
+    from cron.store_health import classify_disk_watermark, free_bytes, probe_report
     cron_dir = HERMES_HOME / "cron"
     if (report := probe_report(cron_dir)) is not None:
         check_warn(f"{_DHH}/cron/ is NOT writable ({report['error']}) — scheduled cron jobs are being skipped")
         return f.issues.append(f"Cron store {report['store']} is not writable: {report['fix']}")
-    free = free_bytes(cron_dir) if cron_dir.is_dir() else None
-    if free is not None and free < LOW_FREE_BYTES:
-        check_warn(f"{_DHH}/cron/ filesystem has only {_human_bytes(free)} free — cron jobs stop when it fills")
-        return f.issues.append(f"Free disk space on the filesystem holding {cron_dir}")
-    check_ok(f"{_DHH}/cron/ store is writable")
+    probe_path = cron_dir if cron_dir.is_dir() else HERMES_HOME
+    free = free_bytes(probe_path)
+    try:
+        total = shutil.disk_usage(probe_path).total
+    except OSError:
+        total = None
+    watermark = classify_disk_watermark(free, total)
+    if watermark == "unknown":
+        check_warn(f"{_DHH} filesystem free-space status is unknown — disk pressure could not be measured")
+        return f.issues.append(f"Verify free disk space on the filesystem holding {probe_path}")
+    if watermark != "healthy":
+        level = "CRITICAL" if watermark == "critical" else "WARNING"
+        detail = f"{_human_bytes(free)} free of {_human_bytes(total)}"
+        check_warn(f"{level}: {detail} on the filesystem holding {_DHH}")
+        return f.issues.append(f"Free disk space on the filesystem holding {probe_path}")
+    check_ok(f"{_DHH}/cron/ store is writable; filesystem has {_human_bytes(free)} free")
 
 
 @doctor_check()

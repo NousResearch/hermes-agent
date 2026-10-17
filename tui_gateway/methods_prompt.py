@@ -384,8 +384,8 @@ def _resolve_truncation_ordinal(rid, sid, session, params, history):
                  or history[h_idx].get("message_id") == msg_id_str), None)
             not_found = "target message_id %s not found in history for session %s"
         if found_match is None:
-            logger.warning(
-                "prompt.submit: " + not_found + "; refusing truncation without fallback",
+            logger.debug(
+                "prompt.submit: " + not_found + "; no active-history truncation target",
                 target_repr, sid)
             return _stale()
         ordinal = found_match[0]
@@ -436,6 +436,74 @@ def _row_ids_of(messages) -> set:
     return {row_id for message in messages if isinstance((row_id := _message_row_id(message)), int)}
 
 
+def _restore_compacted_checkpoint(rid, sid, session, params, requested_rebind_ids, stale_error):
+    """Restore an archived same-session checkpoint without guessing from live history."""
+    from hermes_state_errors import CheckpointRestoreRejected
+
+    target, ordinal, err = _parse_truncation_params(
+        rid, sid, session, params, session.get("history", [])
+    )
+    if err is not None or target is None:
+        return err or stale_error, {}
+
+    prefix_count = len(_history_user_indices(session.get("display_history_prefix") or []))
+    try:
+        with _session_db(session) as db:
+            restore = getattr(db, "restore_compacted_prefix", None)
+            if not callable(restore):
+                return stale_error, {}
+            result = restore(
+                session.get("session_key") or sid,
+                target,
+                user_ordinal=None if ordinal is None else ordinal - prefix_count,
+                confirm_empty=is_truthy_value(params.get("confirm_empty_truncate")),
+                confirm_deep=is_truthy_value(params.get("confirm_deep_truncate")),
+                enforce_deep=DEEP_TRUNCATE_ENFORCED,
+            )
+    except CheckpointRestoreRejected as exc:
+        code = {"ordinal": 4030, "empty": 4028, "deep": 4033}[exc.reason]
+        data = None
+        if exc.reason == "deep":
+            data = {"checkpoint_restore": True}
+        return _err(rid, code, str(exc), data=data), {}
+    except Exception as exc:
+        logger.error(
+            "prompt.submit: compacted checkpoint restore failed for %s",
+            sid,
+            exc_info=True,
+        )
+        return _err(rid, 5008, f"failed to persist history truncation: {exc}"), {}
+
+    if result is None:
+        return stale_error, {}
+
+    history, row_ids, archived_user_turns, archived_messages = result
+    if archived_user_turns > 1 and not is_truthy_value(params.get("confirm_deep_truncate")):
+        logger.warning(
+            "prompt.submit: ALLOWED (warn-only release) compacted checkpoint truncation "
+            "of session %s (%d messages / %d user turns).",
+            sid, archived_messages, archived_user_turns,
+        )
+
+    session["history"] = history
+    session["history_version"] = int(session.get("history_version", 0)) + 1
+    if requested_rebind_ids is None:
+        fields = {
+            "survivor_user_row_ids": [
+                _message_row_id(history[i]) for i in _history_user_indices(history)
+            ]
+        }
+    else:
+        fields = {
+            "survivor_row_id_map": {
+                key: value
+                for key, value in row_ids.items()
+                if int(key) in requested_rebind_ids
+            }
+        }
+    return None, fields
+
+
 # Rollout (#133716, maintainer decision G15-B): one release warn-only, so an older Desktop or a
 # third-party client that predates confirm_deep_truncate keeps working while upgraded clients ask
 # before a deep cut on their own. The next release flips this to refuse with 4033.
@@ -478,6 +546,10 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
     resolved = _resolve_truncation_ordinal(rid, sid, session, params, history)
     ordinal, cut_index, err = resolved[0], resolved[1], resolved[2]
     if err is not None:
+        if err.get("error", {}).get("code") == 4018:
+            return _restore_compacted_checkpoint(
+                rid, sid, session, params, requested_rebind_ids, err
+            )
         return err, {}
     durable_prefix = resolved[3] if len(resolved) > 3 else None
     from agent.context_compressor import history_before_user_originated_turn

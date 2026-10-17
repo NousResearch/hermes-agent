@@ -239,6 +239,56 @@ class TestMcpAdd:
         }
 
 
+    def test_add_stdio_server_drops_empty_arg_placeholder(self, tmp_path, capsys, monkeypatch):
+        """#26886: `--args ""` must not persist as args: [""]."""
+        fake_tools = [FakeTool("search", "Search repos")]
+
+        def mock_probe(name, config, **kw):
+            assert config.get("args") is None
+            return [(t.name, t.description) for t in fake_tools]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        cmd_mcp_add(_make_args(name="plain", mcp_command="npx", args=[""]))
+        assert "Saved" in capsys.readouterr().out
+
+        from hermes_cli.config import load_config
+
+        srv = load_config()["mcp_servers"]["plain"]
+        assert srv.get("args") is None, f"empty placeholder leaked through: {srv!r}"
+
+    def test_add_stdio_server_preserves_whitespace_only_arg(self, tmp_path, capsys, monkeypatch):
+        """A whitespace-only arg is legitimate and must survive verbatim.
+
+        Guards the exact-empty filter: a `strip()`-based filter would silently
+        delete this real argument.
+        """
+        fake_tools = [FakeTool("search", "Search repos")]
+
+        def mock_probe(name, config, **kw):
+            assert config.get("args") == [" "]
+            return [(t.name, t.description) for t in fake_tools]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        cmd_mcp_add(_make_args(name="ws", mcp_command="npx", args=[" "]))
+        capsys.readouterr()
+
+        from hermes_cli.config import load_config
+
+        srv = load_config()["mcp_servers"]["ws"]
+        assert srv["args"] == [" "], f"whitespace arg was not preserved: {srv!r}"
+
     def test_add_preset_fills_transport(self, tmp_path, capsys, monkeypatch):
         """A preset fills in command/args when no explicit transport given."""
         monkeypatch.setattr(

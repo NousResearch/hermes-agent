@@ -32,6 +32,9 @@ getenv = _getenv_str
 # env": config reloads every turn, so the notice is one-time per platform per process.
 _EXPLICIT_DISABLE_WARNED: set = set()
 
+# Same one-time rule for a platform denied by ``plugins.disabled`` (its plugin, not its YAML block).
+_PLUGIN_DISABLE_WARNED: set = set()
+
 # Env var(s) whose presence drives a CORE platform's env-enable branch, named in the explicit-disable
 # WARNING. Plugin platforms declare theirs as ``PlatformEntry.env_enable_credentials``.
 _ENV_ENABLE_CREDENTIALS: dict = {
@@ -180,11 +183,25 @@ def _plugin_is_configured(entry, existing_extra: dict, seed: Optional[dict]) -> 
     return configured
 
 
-def _enable_plugin_platform(config: GatewayConfig, entry) -> None:
+def _enable_plugin_platform(config: GatewayConfig, entry, *, disabled: Optional[set] = None) -> None:
     try:
         platform = Platform(entry.name)
     except Exception as e:
         logger.debug("unknown platform name %r: %s", entry.name, e)
+        return
+    # ``plugins.disabled`` beats env-presence auto-enable (#68367): the deny-list used to be
+    # consulted only while discovering plugins, so a registered adapter was re-enabled from
+    # inherited credentials on every reload and the "disabled" platform kept connecting.
+    from gateway.platform_registry import plugin_platform_disabled
+    denied = plugin_platform_disabled(entry, disabled=disabled)
+    if denied is not None:
+        if entry.name not in _PLUGIN_DISABLE_WARNED:
+            _PLUGIN_DISABLE_WARNED.add(entry.name)
+            logger.warning(
+                "Platform '%s' is in plugins.disabled (as %s), so the credentials found in the "
+                "environment will NOT start its adapter. Run `hermes plugins enable %s` to turn "
+                "it back on.", entry.name, denied, denied,
+            )
         return
     existing_cfg = config.platforms.get(platform)
     already_enabled = existing_cfg is not None and existing_cfg.enabled
@@ -290,9 +307,19 @@ def _enable_plugin_platforms_from_env(config: GatewayConfig, entries: list) -> N
     enable unconfigured platforms that retry-connect forever) and deps are present (``check_fn``) or
     installable later by ``create_adapter()`` — never here: installing in this sweep boot-looped the app.
     """
+    # #68367: read the deny-list once for the whole pass -- config reloads every turn, and
+    # ``plugins.disabled`` must reach _enable_plugin_platform even on the narrowed entry
+    # source, otherwise an adapter with activation evidence is re-enabled from inherited
+    # credentials on every reload.
+    try:
+        from hermes_cli.plugins_discovery import _get_disabled_plugins
+        disabled = _get_disabled_plugins()
+    except Exception as e:  # health: allow BLE001 -- a deny-list read must not break config load
+        logger.debug("plugins.disabled read failed, treating as empty: %s", e)
+        disabled = set()
     for entry in entries:
         try:
-            _enable_plugin_platform(config, entry)
+            _enable_plugin_platform(config, entry, disabled=disabled)
         except Exception as e:
             logger.debug("Plugin platform enable pass failed for %s: %s", entry.name, e)
 

@@ -592,8 +592,7 @@ def _rule_running_with_open_parents(task, events, runs, now, cfg) -> list[Diagno
 
 
 def _rule_stuck_in_blocked(task, events, runs, now, cfg) -> list[Diagnostic]:
-    """Blocked for >= cfg["blocked_stale_hours"] (default 24) with no comment
-    or unblock since the last ``blocked`` event."""
+    """Blocked past the threshold with no relevant comment or unblock since the last block."""
     hours = float(cfg.get("blocked_stale_hours", 24))
     if _task_field(task, "status") != "blocked":
         return []
@@ -603,15 +602,24 @@ def _rule_stuck_in_blocked(task, events, runs, now, cfg) -> list[Diagnostic]:
     age_hours = (now - last_blocked_ts) / 3600.0
     if age_hours < hours:
         return []
-    # Any comment / unblock after the block breaks the "stale" signal.
-    if any(_event_kind(ev) in {"commented", "unblocked"} and _event_ts(ev) > last_blocked_ts
-           for ev in events):
-        return []
+    configured = cfg.get("blocked_ignore_comment_authors", [])
+    ignored = {name.strip() for name in configured if isinstance(name, str) and name.strip()} if isinstance(configured, list) else set()
+    for ev in events:
+        kind = _event_kind(ev)
+        if _event_ts(ev) <= last_blocked_ts or kind not in {"commented", "unblocked"}:
+            continue
+        payload = _parse_payload(ev)
+        author = payload.get("author") if isinstance(payload, dict) else None
+        # Unblocking is a state change regardless of author. Unknown authors retain the
+        # historical behavior; only explicitly named automation comments are ignored.
+        if kind == "unblocked" or not isinstance(author, str) or author.strip() not in ignored:
+            return []
     return [Diagnostic(
         kind="stuck_in_blocked", severity="warning",
         title=f"Task has been blocked for {int(age_hours)}h",
-        detail=f"This task transitioned to blocked {int(age_hours)}h ago and has had no comments or "
-               f"unblock attempts since. Blocked tasks are waiting for human input — check the block "
+        detail=f"This task transitioned to blocked {int(age_hours)}h ago and has had no relevant comments or "
+               f"unblock attempts since (configured automation authors do not count). "
+               f"Blocked tasks are waiting for human input — check the block "
                f"reason and either unblock with feedback or answer with a comment.",
         actions=[DiagnosticAction(kind="comment", label="Add a comment / unblock the task",
                                   suggested=True)],
@@ -759,6 +767,7 @@ DEFAULT_CONFIG = {
     "spawn_failure_threshold": 2,
     "crash_threshold": 2,
     "blocked_stale_hours": 24,
+    "blocked_ignore_comment_authors": [],
     # Below 30 min the signal is dominated by tasks about to be claimed on
     # the next dispatcher tick.
     "stranded_threshold_seconds": 30 * 60,

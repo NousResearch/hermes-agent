@@ -1023,6 +1023,25 @@ kanban:
   default_workdir: ~/work/active-project
 ```
 
+### Blocked-task reminders
+
+The `stuck_in_blocked` diagnostic flags a task blocked for at least
+`kanban.diagnostics.blocked_stale_hours` (default: 24 hours) with no later
+comment or unblock. Periodic automation comments can hide this signal. To keep
+those comments from counting as human attention, list their authors:
+
+```yaml
+kanban:
+  diagnostics:
+    blocked_ignore_comment_authors: [cron-bot, board-watchdog]
+```
+
+The default is an empty list, preserving existing behavior. Names are matched
+exactly and case-sensitively after trimming surrounding whitespace. Comments
+from other or unknown authors still clear the diagnostic, and an unblock always
+counts regardless of its author. This setting only filters the diagnostic: it
+does not delete comments, alter task state, or change dispatcher retry limits.
+
 ### Scheduled task starts (`scheduled_at`)
 
 Set `scheduled_at` on a task to delay dispatch until a specific time. The dispatcher skips ready tasks whose `scheduled_at` is in the future and picks them up on the first tick after that timestamp.

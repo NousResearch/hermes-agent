@@ -180,9 +180,16 @@ def test_safe_worker_bypasses_rule_readers_even_without_cli_flags(tmp_path, mode
         (mem / "MEMORY.md").write_text("MEMORY_SENTINEL")
         skill = home / "skills" / "probe"; skill.mkdir(parents=True)
         (skill / "SKILL.md").write_text("---\nname: probe\ndescription: SKILL_SENTINEL\n---\nSKILL_SENTINEL\n")
-        if mode != "ordinary":
+        # This test covers the RULE READERS, so it pins the flat skills index back ON: the index is
+        # retired by default (tests/agent/test_skills_index_deprecated.py), and the hatch is the
+        # config setting `skills.index: flat` — the same seam tests/conftest.py::flat_skills_index
+        # uses in-process, reached here through the probe's own home / frozen worker config.
+        if mode == "ordinary":
+            (home / "config.yaml").write_text("skills:\n  index: flat\n")
+        else:
             from agent.safe_worker_policy import _bind_safe_worker_policy
-            _bind_safe_worker_policy(safe_mode=mode == "safe", ignore_user_config=True, config={})
+            _bind_safe_worker_policy(safe_mode=mode == "safe", ignore_user_config=True,
+                config={} if mode == "safe" else {"skills": {"index": "flat"}})
         reads = []
         selected = {"SOUL.md", "AGENTS.md", "MEMORY.md", "USER.md", "SKILL.md"}
         def audit(event, args):

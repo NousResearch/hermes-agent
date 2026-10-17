@@ -12,7 +12,7 @@ import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
 import type { HermesConfigRecord } from '@/types/hermes'
 
-import { hermesConfigCacheWriter, useHermesConfigRecord } from '../hooks/use-config-record'
+import { useHermesConfigRecord } from '../hooks/use-config-record'
 
 import { ConfigField } from './config-field'
 import { SECTIONS } from './constants'
@@ -53,14 +53,10 @@ export function VoiceProviderFields({
 }) {
   const { t } = useI18n()
   const keys = useMemo(() => voiceProviderKeys(section, providerKey), [section, providerKey])
-  const { data: loadedConfig, writeScope } = useHermesConfigRecord(profile)
-  // Parents pass `profile` as a fresh object literal each render; keying the
-  // writer and the autosave effect on its identity would re-arm the 550ms
-  // timer on every unrelated re-render. Key on the scope string instead
-  // (null when unscoped, which maps to the bare cache row).
+  const { data: loadedConfig, refetch: refetchConfig, writeScope } = useHermesConfigRecord(profile)
+  // Parents pass a fresh profile object each render; key the autosave timer
+  // on its scope string so unrelated renders do not re-arm it.
   const scopeKey = profile == null ? null : profileScopeKey(profile)
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- scopeKey is the identity of `profile`
-  const writeConfigCache = useMemo(() => hermesConfigCacheWriter(profile), [scopeKey])
 
   const { data: schemaResponse } = useQuery({
     queryKey: ['hermes-config-schema'],
@@ -98,16 +94,16 @@ export function VoiceProviderFields({
 
     const timeout = window.setTimeout(() => {
       void saveHermesConfigRecord(diffConfig(baseline ?? {}, config), writeScope ?? profile)
-        .then(() => {
+        .then(async () => {
           setBaseline(config)
-          writeConfigCache(config)
+          await refetchConfig()
         })
         .catch(err => notifyError(err, t.settings.config.autosaveFailed))
     }, 550)
 
     return () => window.clearTimeout(timeout)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- copy is stable; `profile`/`baseline` are keyed by scopeKey; avoid re-scheduling autosave on locale change
-  }, [config, scopeKey, saveVersion, writeConfigCache, writeScope])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- read-origin identity changes on refetch, not edits; profile/baseline use scopeKey; copy is stable
+  }, [config, scopeKey, saveVersion, refetchConfig])
 
   // ElevenLabs cloned/library voices from the live account, when available —
   // mirrors the Settings → Voice dynamic voice list.

@@ -121,6 +121,10 @@ describe('inlineErrorMessage', () => {
     expect(inlineErrorMessage(new Error("Error invoking remote method 'x': Error: boom"), 'fallback')).toBe('boom')
   })
 
+  it.each(['DesktopBridgeError', 'TypeError'])('unwraps a typed IPC %s', name => {
+    expect(inlineErrorMessage(new Error(`Error invoking remote method 'x': ${name}: boom`), 'fallback')).toBe('boom')
+  })
+
   it('strips a leading Error: prefix', () => {
     expect(inlineErrorMessage(new Error('Error: nope'), 'fallback')).toBe('nope')
   })

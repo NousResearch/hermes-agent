@@ -2,7 +2,7 @@ import { beforeEach, expect, test, vi } from 'vitest'
 
 import { en } from '@/i18n/en'
 
-import { $notifications, clearNotifications, isDiskFullErrorMessage, notifyError } from './notifications'
+import { $notifications, clearNotifications, isDiskFullErrorMessage, notifyError, readableError } from './notifications'
 import { $backendRestartRequest, $routeRequest } from './recovery-requests'
 
 beforeEach(() => {
@@ -140,4 +140,13 @@ test('code-skew 503 unwraps to a restart-required summary, not raw IPC JSON', ()
   expect($notifications.get()[0]?.action?.label).toBe(en.notifications.actions.restartHermes)
   $notifications.get()[0]?.action?.onClick()
   expect($backendRestartRequest.get()).toBe(before + 1)
+})
+
+test('custom IPC errors preserve the actionable message without the wrapper', () => {
+  expect(
+    readableError(
+      new Error("Error invoking remote method 'x': DesktopBridgeError: The backend is unavailable."),
+      'fallback'
+    ).message
+  ).toBe('The backend is unavailable.')
 })

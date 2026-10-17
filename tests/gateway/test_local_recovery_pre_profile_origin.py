@@ -1,4 +1,8 @@
-"""A served profile's receipts from before origin composition still resume (#140099)."""
+"""A served profile's refused local receipt names its failing check in gateway.log (#140099).
+
+The restore cases themselves (an absent origin ``profile`` restores; a null or foreign one, or a
+mismatched route, home or user, refuses) live in ``test_local_receipt_missing_profile.py``.
+"""
 import json
 from types import SimpleNamespace
 
@@ -74,46 +78,6 @@ def _age_receipt_origins(db, sid, mutate):
         row = conn.execute('SELECT origin_json FROM sessions WHERE id=?', (sid,)).fetchone()
     db._write_sql('UPDATE sessions SET origin_json=? WHERE id=?', (json.dumps(mutate(json.loads(row[0]))), sid))
     return receipt
-
-
-@pytest.mark.asyncio
-async def test_served_receipt_without_origin_profile_resumes(tmp_path, monkeypatch):
-    """Receipts a served profile wrote before ``local_source`` composed ``profile`` into the
-    origin (every persisted copy missing the key) must still cold-resume once the recomputed
-    source carries the profile; the route, row identity and lineage never changed."""
-    from gateway.session_contract import Principal
-    from gateway.session_local import create_local_session
-
-    served, db, secondary = await _served_authority(tmp_path, monkeypatch, 'first')
-    actor = Principal('owner', str(secondary), frozenset({'session:create', 'session:read'}), 'socket')
-    ref = create_local_session(served, actor, {'request_id': 'legacy', 'source': 'gui',
-                                               'cwd': str(tmp_path), 'model': 'frozen', 'toolsets': []})
-    _age_receipt_origins(db, ref.session_id, lambda origin: {k: v for k, v in origin.items() if k != 'profile'})
-
-    cold, _, _ = await _served_authority(tmp_path, monkeypatch, 'second', db=db)
-    assert ref.session_id in cold.sessions, 'pre-profile receipt failed to cold-resume'
-    assert cold.sessions[ref.session_id].source.profile == 'secondary'
-
-
-@pytest.mark.asyncio
-async def test_pre_profile_tolerance_rejects_a_foreign_profile(tmp_path, monkeypatch):
-    """The tolerance is for the missing key only: an origin that names a DIFFERENT profile is a
-    different session's receipt and must keep failing closed, not borrow this authority."""
-    from gateway.session_contract import Principal
-    from gateway.session_local import create_local_session
-    from gateway.session_local_recovery import restore_local_session
-    from hermes_state_runtime import RuntimeStoreError
-
-    served, db, secondary = await _served_authority(tmp_path, monkeypatch, 'first')
-    actor = Principal('owner', str(secondary), frozenset({'session:create', 'session:read'}), 'socket')
-    ref = create_local_session(served, actor, {'request_id': 'foreign', 'source': 'gui',
-                                               'cwd': str(tmp_path), 'model': 'frozen', 'toolsets': []})
-    _age_receipt_origins(db, ref.session_id, lambda origin: {**origin, 'profile': 'other-profile'})
-
-    cold, _, _ = await _served_authority(tmp_path, monkeypatch, 'second', db=db)
-    assert ref.session_id not in cold.sessions
-    with pytest.raises(RuntimeStoreError, match='storage_unavailable'):
-        restore_local_session(cold, ref.session_id)
 
 
 def _store_receipt(db, sid, mutate):

@@ -90,7 +90,8 @@ async def test_a_non_admin_is_refused_when_gating_is_on(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("args, expected", [
     ("", mcp_cmd.MCP_USAGE),
-    ("remove notes", mcp_cmd.MCP_USAGE),
+    ("delete notes", mcp_cmd.MCP_USAGE),
+    ("remove", mcp_cmd.MCP_USAGE),
     ("add notes", mcp_cmd.MCP_USAGE),
     ("add bad/name https://mcp.example/mcp", mcp_cmd.MCP_BAD_NAME),
     ("add notes http://mcp.example/mcp", mcp_cmd.MCP_BAD_URL),
@@ -265,3 +266,51 @@ async def test_mcp_dispatches_mid_turn():
     event = _event("install knowsme")
     assert await runner._dispatch_busy_slash_command(event, command, "", event.source) == "started"
     runner._handle_mcp_command.assert_awaited_once_with(event)
+
+
+@pytest.mark.asyncio
+async def test_remove_drops_the_server_and_its_tokens_then_reloads(monkeypatch):
+    removed, forgot = [], []
+    runner, _ = _runner(monkeypatch, servers={"notes": {"url": "https://mcp.example/mcp", "auth": "oauth"}})
+    from hermes_cli import mcp_config
+    monkeypatch.setattr(mcp_config, "_remove_mcp_server", lambda name: removed.append(name) or True)
+    import tools.mcp_oauth_manager as manager
+    monkeypatch.setattr(manager, "get_manager", lambda: SimpleNamespace(remove=forgot.append))
+
+    reply = await runner._handle_mcp_command(_event("remove notes"))
+
+    assert reply.startswith(mcp_cmd.MCP_REMOVED.format(name="notes")) and "MCP Servers Reloaded" in reply
+    assert removed == ["notes"] and forgot == ["notes"]
+    runner._execute_mcp_reload.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_remove_refuses_an_unknown_server_and_outside_a_dm(monkeypatch):
+    runner, _ = _runner(monkeypatch)
+    from hermes_cli import mcp_config
+    monkeypatch.setattr(mcp_config, "_remove_mcp_server", lambda name: pytest.fail("removed"))
+    assert "nothing to remove" in await runner._handle_mcp_command(_event("remove notes"))
+    assert await runner._handle_mcp_command(_event("remove notes", chat_type="group")) == mcp_cmd.MCP_DM_ONLY
+    runner._execute_mcp_reload.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_remove_cancels_a_sign_in_still_waiting_for_that_server(monkeypatch):
+    gate = asyncio.Event()
+
+    async def waiting(name, url, oauth, on_code=None):
+        await gate.wait()
+
+    runner, saved = _runner(monkeypatch, login=waiting)
+    from hermes_cli import mcp_config
+    monkeypatch.setattr(mcp_config, "_remove_mcp_server", lambda name: True)
+    await runner._handle_mcp_command(_event("add notes https://mcp.example/mcp"))
+    await asyncio.sleep(0)
+    pending = runner._mcp_attempts["mcp"][1]
+    monkeypatch.setattr(mcp_cmd, "_configured_servers", lambda: {"notes": {"url": "https://mcp.example/mcp"}})
+    await runner._handle_mcp_command(_event("remove notes"))
+    await asyncio.sleep(0)
+    assert pending.cancelled()
+    gate.set()
+    await _finish(runner)
+    assert not saved

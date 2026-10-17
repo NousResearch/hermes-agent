@@ -25,7 +25,8 @@ logger = logging.getLogger("gateway.run")
 MCP_USAGE = ("Connect an MCP server from chat:\n"
              "• `/mcp install <name>` — a server from the MCP catalog\n"
              "• `/mcp add <name> <https-url>` — any remote server with OAuth sign-in\n"
-             "• `/mcp login <name>` — sign in again to a configured server")
+             "• `/mcp login <name>` — sign in again to a configured server\n"
+             "• `/mcp remove <name>` — disconnect a server and forget its sign-in")
 MCP_DM_ONLY = "Connect MCP servers from a direct message with Hermes, so the sign-in link reaches only you."
 MCP_NOT_ALLOWED = "Only an admin can connect MCP servers."
 MCP_BUSY_ELSEWHERE = "Another MCP sign-in is in progress. Try again when it has finished."
@@ -37,6 +38,7 @@ MCP_CODE = ("To connect {name}, open this link, sign in and approve:\n{link}\n\n
 MCP_CONNECTED = "Connected {name}."
 MCP_FAILED = "{name} was not connected: {error}"
 MCP_REJECTED = "{name} was not saved: its configuration looks unsafe."
+MCP_REMOVED = "Removed {name} and forgot its sign-in."
 
 
 def _unknown(name: str) -> str:
@@ -105,7 +107,7 @@ class GatewayMcpCommandsMixin:
 
         get_args = getattr(event, "get_command_args", None)
         parts = (get_args() if callable(get_args) else "").split()
-        if not parts or parts[0].lower() not in {"install", "add", "login"}:
+        if not parts or parts[0].lower() not in {"install", "add", "login", "remove"}:
             return MCP_USAGE
         sub, rest = parts[0].lower(), parts[1:]
         if len(rest) != (2 if sub == "add" else 1):
@@ -113,6 +115,8 @@ class GatewayMcpCommandsMixin:
         name = rest[0]
         if not _NAME_RE.match(name):
             return MCP_BAD_NAME
+        if sub == "remove":
+            return await self._mcp_remove(src, name, event)
 
         with self._mcp_profile_scope(src):
             built = self._mcp_attempt_config(sub, name, rest)
@@ -135,6 +139,22 @@ class GatewayMcpCommandsMixin:
         attempts[_MCP_SINGLE] = (attempt, task)
         self._retain_background_task(task)
         return MCP_STARTING.format(name=name)
+
+    async def _mcp_remove(self, src, name: str, event) -> str:
+        """Drop the server block and its stored tokens, as ``hermes mcp remove``, then reload."""
+        live = (getattr(self, "_mcp_attempts", None) or {}).get(_MCP_SINGLE)
+        if live is not None and not live[1].done() and live[0].name == name:
+            live[1].cancel()  # a sign-in still waiting for this server would save it back
+        with self._mcp_profile_scope(src):
+            if name not in _configured_servers():
+                return f"`{name}` is not configured, so there is nothing to remove."
+            from hermes_cli.mcp_config import _remove_mcp_server
+            _remove_mcp_server(name)
+            with contextlib.suppress(Exception):
+                from tools.mcp_oauth_manager import get_manager
+                get_manager().remove(name)
+        summary = await self._execute_mcp_reload(event)
+        return MCP_REMOVED.format(name=name) + "\n\n" + summary
 
     def _mcp_attempt_config(self, sub: str, name: str, rest: list):
         """(url, cfg, save, catalog, fresh) for the attempt, or the reply that refuses it."""

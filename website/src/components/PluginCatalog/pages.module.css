@@ -55,7 +55,7 @@
 .heroImage {
   display: block;
   width: 100%;
-  max-height: 360px;
+  aspect-ratio: 2 / 1;
   object-fit: cover;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   background: rgba(255, 255, 255, 0.02);

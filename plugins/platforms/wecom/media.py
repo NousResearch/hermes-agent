@@ -35,6 +35,10 @@ VOICE_SUPPORTED_MIMES = {"audio/amr"}
 
 _IMAGE_MAGIC = ((b"\x89PNG\r\n\x1a\n", ".png"), (b"\xff\xd8\xff", ".jpg"), ((b"GIF87a", b"GIF89a"), ".gif"))
 _MIME_PREFIX_KINDS = (("image/", "image"), ("video/", "video"), ("audio/", "voice"))
+
+# WeCom rejects these as native images (846697 invalid image format) even though they carry an
+# image/* type — send them as files instead.
+_NON_NATIVE_IMAGE_MIMES = ("image/svg+xml", "image/vnd.adobe.photoshop")
 # type -> (max bytes, catalog key of the kind label, human cap) for the "downgrade to file" notice;
 # the label resolves through ``t()`` at verdict time. Notices shipped in Chinese before i18n
 # (zh.yaml keeps that text).
@@ -92,12 +96,13 @@ class WeComMediaMixin:
             try:
                 raw = self._decode_base64(media["base64"])
             except Exception as exc:
-                logger.debug("[%s] Failed to decode %s base64 media: %s", self.name, kind, exc)
+                logger.warning("[%s] Failed to decode %s base64 media: %s", self.name, kind, exc)
                 return None
             filename = str(media.get("filename") or media.get("name") or "wecom_file")
             return await self._store_media(kind, raw, self._detect_image_ext(raw), "", filename, mimetypes.guess_type(filename)[0] or "application/octet-stream", "")
         url = str(media.get("url") or "").strip()
         if not url:
+            logger.warning("[%s] Inbound %s has no url (payload keys=%s)", self.name, kind, sorted(media.keys()))
             return None
         # The key arrives URL-encoded in some payloads (%2F, %3D); base64-decode the real value.
         aes_key = unquote(str(media.get("aeskey") or "").strip())
@@ -107,7 +112,7 @@ class WeComMediaMixin:
             step = "decrypt"
             raw = self._decrypt_file_bytes(raw, aes_key) if aes_key else raw
         except Exception as exc:
-            logger.debug("[%s] Failed to %s %s from %s: %s", self.name, step, kind, url, exc)
+            logger.warning("[%s] Failed to %s %s from %s: %s", self.name, step, kind, url, exc)
             return None
         content_type = str(headers.get("content-type") or "").split(";", 1)[0].strip() or "application/octet-stream"
         ext = self._guess_extension(url, content_type, fallback=self._detect_image_ext(raw))
@@ -216,6 +221,8 @@ class WeComMediaMixin:
     @staticmethod
     def _detect_wecom_media_type(content_type: str) -> str:
         mime_type = str(content_type or "").strip().lower()
+        if mime_type in _NON_NATIVE_IMAGE_MIMES:
+            return "file"
         return "voice" if mime_type == "application/ogg" else next((kind for prefix, kind in _MIME_PREFIX_KINDS if mime_type.startswith(prefix)), "file")
 
     @staticmethod
@@ -297,6 +304,9 @@ class WeComMediaMixin:
         return result
 
     async def _send_media_source(self, chat_id: str, media_source: str, caption: Optional[str] = None, file_name: Optional[str] = None, reply_to: Optional[str] = None) -> SendResult:
+        # Scoped chat ids reach this path as "group:<id>" (the card path strips the prefix, the media
+        # path did not) and WeCom rejects them with 93006 invalid chatid.
+        chat_id = str(chat_id or "").removeprefix("group:")
         if not chat_id:
             return SendResult(success=False, error="chat_id is required")
         try:

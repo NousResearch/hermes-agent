@@ -482,7 +482,10 @@ class XAIStreamer(StreamingTTSProvider):
 
         import websockets
 
-        from tools.tts_tool_providers import DEFAULT_XAI_LANGUAGE, DEFAULT_XAI_VOICE_ID
+        from tools.tts_tool_providers import (
+            DEFAULT_XAI_LANGUAGE, DEFAULT_XAI_VOICE_ID, DEFAULT_XAI_SPEED_DEFAULT,
+            DEFAULT_XAI_SPEED_MIN, DEFAULT_XAI_SPEED_MAX, _clamped_number,
+        )
         from tools.xai_http import resolve_xai_http_credentials
         api_key = str(resolve_xai_http_credentials(prefer_api_key=True).get("api_key") or "").strip()
         if not api_key:
@@ -492,12 +495,18 @@ class XAIStreamer(StreamingTTSProvider):
         base = str(
             self.section.get("streaming_url") or "wss://api.x.ai/v1/tts"
         ).strip()
-        params = urlencode({
+        query = {
             "voice": voice,
             "language": language,
             "codec": "pcm",
             "sample_rate": self.sample_rate,
-        })
+        }
+        # Match the sync xAI path's precedence, clamping and default omission.
+        speed = _clamped_number(self.section.get("speed", self.tts_config.get("speed")), float,
+                                DEFAULT_XAI_SPEED_MIN, DEFAULT_XAI_SPEED_MAX)
+        if speed is not None and speed != DEFAULT_XAI_SPEED_DEFAULT:
+            query["speed"] = speed
+        params = urlencode(query)
         sep = "&" if "?" in base else "?"
         ws_url = f"{base}{sep}{params}"
 

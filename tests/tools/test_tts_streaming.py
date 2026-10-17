@@ -393,7 +393,56 @@ def test_xai_stream_preserves_profile_and_delivers_before_completion(monkeypatch
         server.shutdown()
 
 
-@pytest.mark.parametrize("outcome", ["error", "byte-cap"])
+@pytest.mark.parametrize("config,expected", [
+    ({}, None),
+    ({"speed": 1.3}, "1.3"),
+    ({"speed": 1.3, "xai": {"speed": 0.8}}, "0.8"),
+    ({"speed": 1.3, "xai": {"speed": 1.0}}, None),
+    ({"xai": {"speed": 0.1}}, "0.7"),
+    ({"xai": {"speed": 4}}, "1.5"),
+    ({"xai": {"speed": "1.2"}}, "1.2"),
+    ({"xai": {"speed": "bad"}}, None),
+    ({"speed": 1.3, "xai": {"speed": None}}, None),
+])
+def test_xai_stream_speed_reaches_websocket(monkeypatch, config, expected):
+    """Configured speed reaches the real handshake without changing audio or URL options."""
+    import base64
+    import copy
+    import json
+    from urllib.parse import parse_qs, urlsplit
+
+    import tools.xai_http
+
+    monkeypatch.setattr(tools.xai_http, "resolve_xai_http_credentials", lambda **kw: {"api_key": "test-key"})
+    seen = {}
+    pcm = b"\x01\x00" * 10
+
+    def handler(ws):
+        seen.update(parse_qs(urlsplit(ws.request.path).query))
+        ws.recv()
+        ws.recv()
+        ws.send(json.dumps({"type": "audio.delta", "delta": base64.b64encode(pcm).decode()}))
+        ws.send(json.dumps({"type": "audio.done"}))
+
+    url, server = _fake_xai_server(handler)
+    config = copy.deepcopy(config)
+    config["provider"] = "xai"
+    config.setdefault("xai", {}).update({"streaming_url": url + "?custom=keep", "voice_id": "test-voice"})
+    original = copy.deepcopy(config)
+    try:
+        streamer = ts.resolve_streaming_provider(config)
+        assert isinstance(streamer, ts.XAIStreamer)
+        assert list(streamer.stream("A sentence.")) == [pcm]
+        assert seen.get("speed") == ([expected] if expected is not None else None)
+        assert seen["custom"] == ["keep"]
+        assert seen["voice"] == ["test-voice"]
+        assert seen["codec"] == ["pcm"]
+        assert config == original
+    finally:
+        server.shutdown()
+
+
+@pytest.mark.parametrize("outcome", ["error", "byte-cap", "empty"])
 def test_xai_stream_reports_errors_and_bounds_received_audio(monkeypatch, outcome):
     import base64
     import json
@@ -407,6 +456,9 @@ def test_xai_stream_reports_errors_and_bounds_received_audio(monkeypatch, outcom
     def handler(ws):
         ws.recv()
         ws.recv()
+        if outcome == "empty":
+            ws.send(json.dumps({"type": "audio.done"}))
+            return
         if outcome == "error":
             ws.send(json.dumps({"type": "error", "message": "example failure"}))
             return
@@ -418,8 +470,10 @@ def test_xai_stream_reports_errors_and_bounds_received_audio(monkeypatch, outcom
 
     url, server = _fake_xai_server(handler)
     try:
-        streamer = ts.XAIStreamer({}, {"streaming_url": url})
-        if outcome == "error":
+        streamer = ts.XAIStreamer({}, {"streaming_url": url, "speed": 1.3})
+        if outcome == "empty":
+            assert list(streamer.stream("A sentence.")) == []
+        elif outcome == "error":
             with pytest.raises(RuntimeError, match="example failure"):
                 list(streamer.stream("A sentence."))
         else:

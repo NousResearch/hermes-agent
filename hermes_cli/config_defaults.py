@@ -801,8 +801,8 @@ DEFAULT_CONFIG = {
         # the full conversation (warm cache); other models replay a compact digest (~3-5x cheaper).
         # enabled=false skips auto spawns (/refine still works). An explicit max_input_tokens caps
         # the SUM of replayed input tokens over the review loop (iterations capped at 16); the loop
-        # stops before crossing it. When unset, the runtime derives a budget from the active model
-        # context window. <= 0 = unlimited.
+        # stops before crossing it. When unset, that SUM is derived from the active model's context
+        # window ×5 — one request alone replays a large share of a single window. <= 0 = unlimited.
         # reasoning_effort is IGNORED while the review stays on the main model: the fork inherits the
         # conversation's reasoning config verbatim so its request bytes keep the parent's warm
         # prompt-cache prefix (#30532). Set provider/model below to route the review to another model

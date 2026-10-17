@@ -34,18 +34,18 @@ def _canonical(name: str) -> str:
         return canonical
 
 
-def configured_entry_aliases(identity: str, config: dict) -> frozenset[str]:
-    """Every spelling the configured entry behind a route identity accepts, empty when it names none.
+def configured_entry_key(identity: str, config: dict) -> str:
+    """The bare config key of the configured entry behind a ``custom:<key>`` identity, else ``''``.
 
     Raw provider resolution defers a bare name that is a canonical built-in to the built-in, so a
-    ``providers:`` entry named ``deepseek`` is reachable only through its ``custom:`` spelling —
-    the entry's own alias set is what tells its keys apart from the built-in's head-on name.
+    ``providers:`` entry keyed ``deepseek`` is reachable only through its ``custom:`` spelling. Only
+    that key names the entry: its display name may be a real built-in's slug (``name: OpenRouter``
+    on ``providers.work``), and a pick of that built-in is not this endpoint (#140107).
     """
-    entry = _named_entry(str(identity or '').strip().lower(), config)
-    if not entry:
-        return frozenset()
-    from hermes_cli.providers import custom_provider_aliases
-    return custom_provider_aliases(str(entry.get('name') or ''), str(entry.get('provider_key') or ''))
+    identity = str(identity or '').strip().lower()
+    if not identity.startswith('custom:') or not _named_entry(identity, config):
+        return ''
+    return identity.split(':', 1)[1].strip()
 
 
 def profile_route_identity(config: dict) -> str:

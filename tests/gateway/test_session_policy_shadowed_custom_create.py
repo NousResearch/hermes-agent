@@ -49,3 +49,48 @@ async def test_session_create_with_the_entrys_bare_pick_freezes_its_custom_route
     finally:
         await connection.close()
         authority.db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('key, name, pick, frozen', [
+    # A display name that is a built-in's slug is not the entry's key: the pick is that built-in.
+    ('work', 'OpenRouter', 'openrouter', ('openrouter', None, None)),
+    ('mydeep', 'DeepSeek', 'deepseek', ('deepseek', None, None)),
+    # The held entry's own bare key is that entry, whatever its display name.
+    ('mydeep', 'DeepSeek', 'mydeep', ('custom:mydeep', 'https://private.example/v1', 'PRIVATE_ENTRY_KEY')),
+])
+async def test_only_the_held_entrys_own_key_keeps_its_route(tmp_path, monkeypatch, key, name, pick, frozen):
+    """Desktop supersedes a bare pick only when it is the default ``custom:<key>``'s own key
+    (``customDefaultSupersedesPick``). A pick that merely matches the entry's display name names a
+    real built-in, and freezing the private endpoint and its key pointer for it would send that
+    credential where the user did not pick."""
+    from gateway import run
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import initialize_session_authority
+    from hermes_state_local import local_receipt
+
+    for var in ('DEEPSEEK_API_KEY', 'OPENROUTER_API_KEY', 'OPENAI_API_KEY'):
+        monkeypatch.delenv(var, raising=False)
+    entry = {'name': name, 'api': 'https://private.example/v1', 'key_env': 'PRIVATE_ENTRY_KEY',
+             'transport': 'chat_completions', 'default_model': 'private-model'}
+    config = {'platform_toolsets': {'cli': []}, 'providers': {key: entry},
+              'model': {'default': 'private-model', 'provider': f'custom:{key}',
+                        'base_url': 'https://private.example/v1', 'key_env': 'PRIVATE_ENTRY_KEY'}}
+    monkeypatch.setattr(run, '_load_gateway_config', lambda: json.loads(json.dumps(config)))
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+                             _cached_agent_for=lambda route: None, _adapter_for_source=lambda source: None)
+    authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='first')
+    connection = AuthorityConnection(authority, object(), {'user_id': 'owner'})
+    try:
+        reply = await connection.dispatch({'id': 1, 'method': 'session.create', 'params': {
+            'request_id': 'desktop-pick', 'source': 'gui', 'cwd': str(tmp_path),
+            'model': 'picked-model', 'provider': pick}})
+        assert 'error' not in reply, reply
+        policy = local_receipt(authority.db, reply['result']['session_id'])['policy']
+        model = json.loads(policy['config_json'])['model']
+        assert (model.get('provider'), model.get('base_url'), model.get('key_env')) == frozen, model
+    finally:
+        await connection.close()
+        authority.db.close()

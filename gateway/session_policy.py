@@ -420,32 +420,30 @@ def _keeps_profile_route(picked, config):
     `deepinfra`, `custom:<name>` for a named entry) is the same route. A block with an endpoint
     and no provider (or `auto`) already routes to `custom` there.
     """
-    from gateway.session_route_identity import configured_entry_aliases, profile_route_identity, resolved_route
+    from gateway.session_route_identity import profile_route_identity, resolved_route
     held_id = profile_route_identity(config)
     if held_id == 'auto' or not isinstance(picked, str) or not picked.strip():
         return False
-    if resolved_route({'provider': picked}, config)[0] == held_id:
-        return True
-    # A configured entry named like a canonical built-in (`providers: deepseek`) is shadowed by
-    # the built-in in raw provider resolution, so the resolver cannot see the pick as the entry
-    # (#140107). The entry's own alias set can: a pick spelled with the held entry's key is that
-    # entry's route, and freezing it verbatim would pin the session to the built-in instead.
-    return picked.strip().lower() in configured_entry_aliases(held_id, config)
+    return resolved_route({'provider': picked}, config)[0] == held_id
 
 
-def _frozen_provider_pick(picked, config):
-    """The spelling a provider pick is frozen under when it names the profile entry's own endpoint.
+def _with_entry_pick(params, config):
+    """*params* with a provider pick of the held entry's bare config key spelled as its ``custom:<key>``.
 
-    A pick that is one of the held entry's aliases keeps that entry's ``custom:<key>`` identity:
-    the raw resolver defers the bare spelling to the canonical built-in, so freezing it as-is
-    would pin the session to a different provider than the entry the profile runs (#140107). Any
-    other pick is frozen as it came, which is the spelling the caller asked for.
+    A configured entry keyed like a canonical built-in (`providers: deepseek`) is shadowed by the
+    built-in in raw provider resolution, so the bare spelling would route, and be frozen, as a
+    different provider than the entry the profile runs (#140107). Only the held entry's bare key
+    is that entry (Desktop's guard); its display name may be a real built-in, and a pick of that
+    built-in keeps the built-in. Every other pick stays as it came.
     """
-    from gateway.session_route_identity import configured_entry_aliases, profile_route_identity
+    from gateway.session_route_identity import configured_entry_key, profile_route_identity
+    picked = params.get('provider')
+    if not isinstance(picked, str):
+        return params
     identity = profile_route_identity(config)
-    if identity == 'auto' or picked.strip().lower() not in configured_entry_aliases(identity, config):
-        return picked
-    return identity
+    if identity == 'auto' or picked.strip().lower() != (configured_entry_key(identity, config) or None):
+        return params
+    return {**params, 'provider': identity}
 
 
 def _apply_launch_overrides(params, config):
@@ -453,7 +451,7 @@ def _apply_launch_overrides(params, config):
     from urllib.parse import urlsplit
     from hermes_cli.config import resolve_turn_limit
     from hermes_constants import parse_reasoning_effort
-    params = _without_auto_pick(params)
+    params = _with_entry_pick(_without_auto_pick(params), config)
     picks_profile_entry = 'provider' in params and _keeps_profile_route(params['provider'], config)
     if 'provider' in params and not picks_profile_entry:
         model = config.setdefault('model', {})
@@ -478,10 +476,6 @@ def _apply_launch_overrides(params, config):
                 if (url.scheme not in {'http', 'https'} or not url.hostname
                         or url.username or url.password or url.query or url.fragment):
                     _refuse('base_url', 'must be an http(s) URL without credentials, query or fragment')
-            elif picks_profile_entry:
-                # The pick is the profile entry's own endpoint under another spelling: freeze the
-                # entry's identity, never a spelling the runtime resolves elsewhere (#140107).
-                value = _frozen_provider_pick(value, config)
             config.setdefault('model', {})[key] = value
     bad_flag = next((flag for flag in ('ignore_rules', 'yolo', 'checkpoints', 'accept_hooks', 'pass_session_id',
                                       'follow_profile_config', 'cwd_explicit', 'verbose')

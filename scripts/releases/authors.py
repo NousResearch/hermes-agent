@@ -47,11 +47,21 @@ def _load_contributor_dir(directory: Path | None = None) -> dict:
 # Effective map: frozen legacy dict + directory entries (directory wins).
 AUTHOR_MAP = {**LEGACY_AUTHOR_MAP, **_load_contributor_dir()}
 
+# Emails are case-insensitive, and the one-file-per-email directory cannot hold two case
+# variants (add_contributor refuses them), so a commit stamped `Jane@` must resolve through
+# a `jane@` mapping. Reads AUTHOR_MAP live: callers and tests extend it in place.
+def mapped_login(email: str) -> str | None:
+    """The GitHub login mapped to ``email``, ignoring case."""
+    if login := AUTHOR_MAP.get(email):
+        return login
+    folded = email.casefold()
+    return next((login for key, login in AUTHOR_MAP.items() if key.casefold() == folded), None)
+
 
 def resolve_author(name: str, email: str) -> str:
     """Resolve a git author to a GitHub @mention."""
     # Try email lookup first
-    gh_user = AUTHOR_MAP.get(email)
+    gh_user = mapped_login(email)
     if gh_user:
         return f"@{gh_user}"
 

@@ -43,6 +43,29 @@ def test_effective_map_merges_legacy_and_directory():
         assert authors.AUTHOR_MAP[email] == login
 
 
+def test_every_mapping_resolves_whatever_case_the_commit_uses():
+    # A commit stamped `Finn763@...` and one stamped `finn763@...` are the same
+    # author; the directory can hold only one of those filenames.
+    for email, login in authors.AUTHOR_MAP.items():
+        for variant in (email.upper(), email.lower(), email.swapcase()):
+            assert authors.resolve_author("someone", variant) == f"@{login}"
+
+
+def test_attribution_audit_treats_a_case_variant_as_mapped(tmp_path, monkeypatch):
+    import audit_pr_attribution
+
+    emails = tmp_path / "contributors" / "emails"
+    emails.mkdir(parents=True)
+    (emails / "Jane.Doe@example.com").write_text("janedoe\n")
+    (tmp_path / "scripts" / "releases").mkdir(parents=True)
+    (tmp_path / "scripts" / "releases" / "authors_legacy.py").write_text('M = {"Legacy@Example.com": "leg"}\n')
+    monkeypatch.setattr(audit_pr_attribution, "REPO_ROOT", tmp_path)
+
+    assert audit_pr_attribution.is_mapped("jane.doe@example.com")
+    assert audit_pr_attribution.is_mapped("legacy@example.com")
+    assert not audit_pr_attribution.is_mapped("someone-else@example.com")
+
+
 # ── add_contributor.py CLI behavior ───────────────────────────────────
 
 

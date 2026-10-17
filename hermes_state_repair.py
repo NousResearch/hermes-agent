@@ -729,6 +729,12 @@ def integrity_damage_is_structural(integrity_lines, master_rows) -> bool:
     return False
 
 
+def _raise_names_only_fts_vtable(exc: sqlite3.DatabaseError) -> bool:
+    """True when the error is a vtable constructor failure for a ``messages_fts*`` table."""
+    match = re.search(r"vtable constructor failed: (\w+)", str(exc))
+    return bool(match) and match.group(1).startswith("messages_fts")
+
+
 def state_db_has_structural_damage(db_path: Path) -> bool:
     """Read-only ``integrity_check`` + ``sqlite_master`` rootpage map on a fresh connection;
     ``integrity_damage_is_structural`` over the result. A check that RAISES instead of
@@ -745,8 +751,11 @@ def state_db_has_structural_damage(db_path: Path) -> bool:
         lines = [str(r[0]) for r in conn.execute("PRAGMA integrity_check").fetchall()]
     except sqlite3.OperationalError:
         return False
-    except sqlite3.DatabaseError:
-        return True
+    except sqlite3.DatabaseError as exc:
+        # Some SQLite builds (3.45.3, Windows CPython 3.12) RAISE on an FTS-only stomp
+        # instead of reporting it: "vtable constructor failed: messages_fts". The FTS
+        # ladder is the right repair for that; any other raise stays structural.
+        return not _raise_names_only_fts_vtable(exc)
     finally:
         conn.close()
     return integrity_damage_is_structural(

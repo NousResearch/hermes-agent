@@ -46,6 +46,10 @@ jobs:
   pinned-source-validate:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
+    env:
+      # Fork syncs inherit catalog entries alongside the upstream code that
+      # validates them. A maintainer must mark that exceptional PR explicitly.
+      UPSTREAM_SYNC: ${{ contains(github.event.pull_request.labels.*.name, 'upstream-sync') }}
     steps:
       - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
@@ -79,7 +83,7 @@ jobs:
           # failure still fails the step instead of looking like "no changes".
           CHANGED=$(printf '%s' "$CHANGED" | grep -v '/removed\.yaml$' || true)
 
-          if [ -n "$CHANGED" ]; then
+          if [ -n "$CHANGED" ] && [ "$UPSTREAM_SYNC" != "true" ]; then
             # Admission PRs must be data-only: the gate's own enforcement code
             # (this workflow, the validator, the composite actions, the built
             # hermes) resolves from the PR checkout, so an entry PR that also
@@ -96,6 +100,8 @@ jobs:
               echo
               exit 1
             fi
+          elif [ -n "$CHANGED" ]; then
+            echo "::notice::upstream-sync label present; skipping the data-only scope check"
           fi
 
           echo "Changed catalog entries:"

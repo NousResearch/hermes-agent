@@ -45,10 +45,18 @@ def _relay_operation_name(provider_name: str, metadata: dict[str, Any] | None) -
     return protocol[0] if protocol is not None else provider_name
 
 
-def _relay_metadata(provider_name: str, metadata: dict[str, Any] | None) -> dict[str, Any]:
-    """Preserve the physical provider when the operation name is canonicalized."""
+def _relay_metadata(
+    provider_name: str, metadata: dict[str, Any] | None, session: Any = None, runtime: Any = None,
+) -> dict[str, Any]:
+    """Preserve the physical provider when the operation name is canonicalized, and carry the
+    session identity Relay projects on LLM spans (``gen_ai.conversation.id``)."""
     relay_metadata = _jsonable_dict(metadata or {})
     relay_metadata.setdefault("hermes.provider", provider_name)
+    identity = relay_runtime.session_identity_metadata(
+        getattr(session, "session_id", ""), getattr(runtime, "profile_key", None)
+    )
+    for key, value in identity.items():
+        relay_metadata.setdefault(key, value)
     return relay_metadata
 
 
@@ -84,7 +92,8 @@ class _ManagedAttempt:
         )
         self.operation = _relay_operation_name(name, metadata)
         self.relay_kwargs = {
-            "handle": self.parent, "metadata": _relay_metadata(name, metadata), "model_name": model_name,
+            "handle": self.parent, "metadata": _relay_metadata(name, metadata, session, runtime),
+            "model_name": model_name,
             "codec": _codec(runtime.relay, metadata), "response_codec": _codec(runtime.relay, metadata),
         }
         # Provider callback bookkeeping: "value"/"json" once it returned, "error" if it raised.

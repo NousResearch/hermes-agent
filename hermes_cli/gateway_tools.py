@@ -40,6 +40,7 @@ class _Proc:
         self.output_buffer = row.get("output_tail") or ""
         self.completion_reason = row.get("completion_reason") or "exited"
         self.exited = row.get("status") == "exited"
+        self.watch_patterns = list(row.get("watch_patterns") or [])
 
 
 class GatewayProcessView:
@@ -51,6 +52,10 @@ class GatewayProcessView:
         self.delegations = 0
         self._polled = 0.0
         self._lock = threading.Lock()
+        self.subagents: list = []
+        self.delegating = 0  # delegate_task calls in flight (tool.start minus tool.complete)
+        self._subagents_polled = 0.0
+        self._subagents_lock = threading.Lock()
 
     @property
     def session_id(self):
@@ -128,6 +133,65 @@ class GatewayProcessView:
         value = usage.get("active_subagents")
         return value if isinstance(value, int) else 0
 
+    # -- live subagents (the dock's rows; the children run in the gateway, not here) ---------------
+    def subagent_rows(self, now):
+        """The session's live children as dock rows, from ``subagent.list``: polled once a second
+        while a ``delegate_task`` call is in flight (a synchronous delegation lives inside it), a
+        background delegation is live, or children were listed last time; never otherwise."""
+        wanted = self.delegating > 0 or bool(self.subagents) or self.active_delegations() > 0
+        if wanted and time.time() - self._subagents_polled >= _POLL_SECONDS:
+            self._poll_subagents()
+        elif not wanted:
+            self.subagents = []
+        return [{**row, "key": row["subagent_id"],
+                 "elapsed": max(0, int(now - float(row.get("started_at") or now))),
+                 "last_tool": row.get("last_tool") or ""} for row in self.subagents]
+
+    def _poll_subagents(self):
+        if not self._subagents_lock.acquire(blocking=False):
+            return
+        try:
+            self._subagents_polled = time.time()
+            result = self.connection.call("subagent.list", session_id=self.session_id, timeout=5)
+            self.subagents = [row for row in (result or {}).get("subagents") or [] if row.get("subagent_id")]
+        except (GatewayClientError, RuntimeError) as exc:
+            # Before the first turn the session has no live agent; that reads as "no children".
+            logger.debug("subagent.list failed: %s", exc)
+            self.subagents = []
+        finally:
+            self._subagents_lock.release()
+
+    def subagent_tail(self, subagent_id):
+        """The live child's transcript tail (``subagent.tail``), or None when it is gone."""
+        try:
+            result = self.connection.call("subagent.tail", session_id=self.session_id,
+                                          subagent_id=subagent_id, timeout=5) or {}
+        except (GatewayClientError, RuntimeError) as exc:
+            logger.debug("subagent.tail failed: %s", exc)
+            return None
+        return result.get("text") if result.get("available") else None
+
+    def control_subagent(self, action, subagent_id, message=None):
+        """The monitor's steer / stop for a gateway child (``subagent.steer`` / ``subagent.interrupt``),
+        answered in the in-process ``delegate_task`` control shape the monitor already renders."""
+        from tools.delegate_tool_registry import _CONTROL_OUTCOMES
+        status, note, failure = _CONTROL_OUTCOMES[action]
+        try:
+            if action == "steer":
+                result = self.connection.call("subagent.steer", session_id=self.session_id,
+                                              subagent_id=subagent_id, text=message or "") or {}
+                ok = result.get("status") == "queued"
+            else:
+                result = self.connection.call("subagent.interrupt", session_id=self.session_id,
+                                              subagent_id=subagent_id) or {}
+                ok = bool(result.get("found"))
+        except (GatewayClientError, RuntimeError) as exc:
+            return {"error": str(exc)}
+        self._subagents_polled = 0.0  # repaint the row's new state on the next tick
+        if not ok:
+            return {"error": failure.format(sid=subagent_id)}
+        return {"action": action, "subagent_id": subagent_id, "status": status, "note": note}
+
 
 class _OpenedSession:
     """The CLI's open gateway session before any chat agent exists (``_init_agent`` builds that on the
@@ -157,6 +221,15 @@ def bind_session(cli, connection):
 def mark_dirty():
     if _view is not None:
         _view.mark_dirty()
+
+
+def note_tool(name, started):
+    """Tool start/complete from the session's event stream: a ``delegate_task`` in flight makes the
+    dock poll ``subagent.list`` (provider adapters may prefix tool names, e.g. ``mcp__``)."""
+    view = _view
+    if view is not None and str(name or "").endswith("delegate_task"):
+        view.delegating = max(0, view.delegating + (1 if started else -1))
+        view._subagents_polled = 0.0
 
 
 def process_view():

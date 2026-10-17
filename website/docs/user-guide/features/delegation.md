@@ -309,7 +309,7 @@ What happens:
 
 The canonical flow: your main agent opens a PR, you type `/review`, and a second pair of eyes investigates it while you keep working; the review lands back in the chat addressed to the agent that created the PR.
 
-Dispatch prints only “Review started. Results will return here.” The live subagent viewer identifies the worker as **Review: your focus** (or **Review recent work** for bare `/review`), with a shortened single-line label; the reviewer still receives your full instructions. In the classic CLI, the dock above the composer shows elapsed time and latest activity; **Ctrl+T** (or **F6**) opens the roster with its model, transcript, steering, and stop controls. The same review label appears in the TUI and Desktop subagent viewers.
+Dispatch prints only “Review started. Results will return here.” The live subagent viewer identifies the worker as **Review: your focus** (or **Review recent work** for bare `/review`), with a shortened single-line label; the reviewer still receives your full instructions. In the classic CLI, the live-work footer under the composer shows elapsed time and latest activity; **Ctrl+T** (or **F6**) opens the roster with its model, transcript, steering, and stop controls. The same review label appears in the TUI and Desktop subagent viewers.
 
 ### Review model
 
@@ -441,11 +441,11 @@ The TUI ships a `/agents` overlay (alias `/tasks`) that turns recursive `delegat
 
 ### Live activity above the composer
 
-The classic CLI, TUI, and Desktop automatically show live subagents above the composer. You can keep writing while watching the live count, task names, elapsed time, and latest activity. The terminal dock limits visible rows according to screen height and shows how many additional workers are hidden; Desktop previews up to three workers.
+The TUI and Desktop automatically show live subagents above the composer; the classic CLI shows them in a live-work footer under it, next to background shells and watched processes. You can keep writing while watching the live count, task names, elapsed time, and latest activity. The terminal dock limits visible rows according to screen height and shows how many additional workers are hidden; Desktop previews up to three workers.
 
 | Surface | Expand and inspect | Control a selected worker |
 |---|---|---|
-| Classic CLI | **Ctrl+T** (or **F6**) opens the full-screen live roster; arrows select, **Enter** opens the transcript tail, **PgUp/PgDn** scroll | **s** opens a separate steering input; **x**, then **y** requests stop |
+| Classic CLI | **↓** on an empty prompt selects a footer row and **Enter** opens its live transcript (**Esc** returns to the prompt); **Ctrl+T** (or **F6**) opens the full-screen roster; **PgUp/PgDn** scroll. With `display.cli_mouse: true`, click a row | In the footer, **x** twice stops the selected row; in the roster, **s** opens a separate steering input and **x**, then **y** requests stop |
 | TUI | **Ctrl+T** or `/agents` opens the full-height tree; **Enter/t** opens the live transcript tail; **d** opens rich detail (archived/replay Enter still opens detail) | **e** opens steering; **x** stops the selected worker; **X** stops its subtree |
 | Desktop | Expand **Subagents** above the composer, then select a worker to inspect its activity and details | **Steer** queues guidance; **Stop** requests interruption for that worker |
 

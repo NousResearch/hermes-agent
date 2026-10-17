@@ -522,4 +522,5 @@ def process_snapshot(authority, ref, agent, records):
                  # The classic CLI dock's elapsed / exit-age / verdict and its 32k tail view.
                  'started_epoch': p.started_at, 'exited_at': p.exited_at or None,
                  'completion_reason': p.completion_reason if p.exited else None,
+                 'watch_patterns': list(p.watch_patterns or []),  # the dock draws these as monitors
                  'output_tail': p.output_buffer[-_PROCESS_TAIL_CHARS:]} for p in _owned_locked(registry, keys, owners)]

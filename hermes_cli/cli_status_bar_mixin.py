@@ -1015,6 +1015,7 @@ class CLIStatusBarMixin:
         ``(style, text)`` fragments. Shared by the plain-text and prompt_toolkit renderers so
         the two can never drift; ``styled`` selects the graphical context bar."""
         from cli import format_token_count_compact
+        from hermes_cli.cli_status_bar_legend import footer_covered_fields
         model_short = snapshot["model_short"]
         duration_label = snapshot["duration"]
         goal_segment = self._status_bar_goal_segment(snapshot)
@@ -1029,9 +1030,12 @@ class CLIStatusBarMixin:
             if _ok(name):
                 segs.append([(style, text)])
 
+        # Shell / agent counters the live-work footer is already listing are not repeated here.
+        covered = footer_covered_fields(self)
+
         def add_count(name, key, glyph, style=_STRONG):
             count = snapshot.get(key, 0)
-            if count:
+            if count and name not in covered:
                 add(name, style(count) if callable(style) else style, f"{glyph} {count}")
 
         if _ok("model"):

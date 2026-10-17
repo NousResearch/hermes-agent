@@ -286,6 +286,45 @@ def test_routing_delegation_provider_bundle(routing_lifecycle):
 
 
 @pytest.mark.parametrize("wire", [False, True])
+def test_reasoning_effort_is_a_launch_local_override(routing_lifecycle, wire):
+    from hermes_cli.plugin_host_wire import decode, encode
+
+    service, build, config, _resolve = routing_lifecycle
+    config.return_value = {"reasoning_effort": "low"}
+    request = {"goal": "route", "reasoning_effort": "high"}
+    request = decode(encode(request)) if wire else request
+
+    handle = service.launch(request)
+    assert service.wait(handle, timeout_seconds=2).state is SubagentState.SUCCEEDED
+    assert build.call_args.kwargs["reasoning_config_override"] == {"enabled": True, "effort": "high"}
+
+    # A subsequent omitted override keeps the configured default. The value
+    # must not leak through shared config or another launch's state.
+    handle = service.launch({"goal": "route"})
+    assert service.wait(handle, timeout_seconds=2).state is SubagentState.SUCCEEDED
+    assert build.call_args.kwargs["reasoning_config_override"] is None
+
+
+@pytest.mark.parametrize("value", [False, "none"])
+def test_reasoning_effort_explicit_disable_is_not_omission(routing_lifecycle, value):
+    service, build, config, _resolve = routing_lifecycle
+    config.return_value = {"reasoning_effort": "high"}
+
+    handle = service.launch({"goal": "route", "reasoning_effort": value})
+    assert service.wait(handle, timeout_seconds=2).state is SubagentState.SUCCEEDED
+    assert build.call_args.kwargs["reasoning_config_override"] == {"enabled": False}
+
+
+def test_invalid_reasoning_effort_fails_before_child_build(routing_lifecycle):
+    service, build, _config, _resolve = routing_lifecycle
+
+    with pytest.raises(SubagentLifecycleError, match="reasoning_effort"):
+        service.launch({"goal": "route", "reasoning_effort": "not-a-real-effort"})
+
+    build.assert_not_called()
+
+
+@pytest.mark.parametrize("wire", [False, True])
 def test_routing_request_provider_wins_without_mixing_bundles(routing_lifecycle, wire):
     from hermes_cli.plugin_host_wire import decode, encode
 

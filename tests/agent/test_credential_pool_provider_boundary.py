@@ -198,6 +198,7 @@ def test_runtime_pool_key_preserves_non_custom_identity():
 
 
 def test_runtime_ignores_pool_loaded_for_different_provider(monkeypatch):
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda **kw: {})
     entry = SimpleNamespace(
         provider="openai-codex",
         access_token="wrong-token",

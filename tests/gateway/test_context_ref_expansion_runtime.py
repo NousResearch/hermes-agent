@@ -65,7 +65,7 @@ def _patch_runtime_resolution(monkeypatch) -> None:
     monkeypatch.setattr(
         gateway_run,
         "_resolve_runtime_agent_kwargs",
-        lambda: {
+        lambda target_model=None: {
             "provider": "openai",
             "api_key": "test-key",
             "base_url": "https://api.openai.com/v1",

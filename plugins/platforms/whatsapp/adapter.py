@@ -315,9 +315,25 @@ _BRIDGE_PASSTHROUGH_ENV = (
     "WHATSAPP_ALLOWED_USERS", "WHATSAPP_ALLOW_FROM", "WHATSAPP_DM_POLICY", "WHATSAPP_GROUP_POLICY",
     "WHATSAPP_GROUP_ALLOWED_USERS", "WHATSAPP_GROUP_ALLOW_FROM", "WHATSAPP_REQUIRE_MENTION",
     "WHATSAPP_MENTION_PATTERNS", "WHATSAPP_FREE_RESPONSE_CHATS", "WHATSAPP_DEBUG",
-    "WHATSAPP_FORWARD_OWNER_MESSAGES", "WHATSAPP_MAX_MESSAGE_LENGTH",
+    "WHATSAPP_FORWARD_OWNER_MESSAGES", "WHATSAPP_PROCESS_FROM_ME_GROUPS", "WHATSAPP_MAX_MESSAGE_LENGTH",
     "WHATSAPP_CHUNK_DELAY_MS", "WHATSAPP_SEND_TIMEOUT_MS",
 )
+_BRIDGE_RUNTIME_ENV_KEYS = (
+    *_BRIDGE_PASSTHROUGH_ENV,
+    "WHATSAPP_REPLY_PREFIX", "WHATSAPP_SEND_READ_RECEIPTS",
+    "HERMES_IMAGE_CACHE_DIR", "HERMES_AUDIO_CACHE_DIR", "HERMES_DOCUMENT_CACHE_DIR",
+)
+
+
+def _bridge_runtime_config_hash(*, mode: str, port: int, session_path: Path, env: dict) -> str:
+    """Fingerprint process-start settings without exposing their values in /health."""
+    import hashlib
+
+    parts = [f"mode={mode}", f"port={port}", f"session={session_path}"]
+    parts.extend(f"{key}={env.get(key, '<unset>')}" for key in _BRIDGE_RUNTIME_ENV_KEYS)
+    return hashlib.sha256("\0".join(parts).encode()).hexdigest()[:16]
+
+
 _TEXT_INJECT_EXTS = {".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".log", ".py", ".js", ".ts", ".html", ".css"}
 _MAX_TEXT_INJECT_BYTES = 100 * 1024  # matches Telegram/Discord/Slack
 _NATIVE_MEDIA_TYPES = {"location": MessageType.LOCATION, "live_location": MessageType.LOCATION, "sticker": MessageType.STICKER}
@@ -459,7 +475,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._poll_task = asyncio.create_task(self._poll_messages())
 
     async def _reuse_running_bridge(self, bridge_path: Path) -> bool:
-        """Adopt a connected bridge serving the on-disk bridge.js + same read-receipt config; else say why it restarts."""
+        """Adopt a connected bridge only when its session, source and process-start config match."""
         self._foreign_bridge_session = None
         self._bridge_probe_timed_out = False
         try:
@@ -479,13 +495,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 print(f"[{self.name}] Bridge found but not connected (status: {bridge_status}), restarting")
                 return False
             running_hash, disk_hash = data.get("scriptHash", ""), _file_content_hash(bridge_path)
-            if running_hash and disk_hash and running_hash == disk_hash and bool(data.get("sendReadReceipts", False)) == self._send_read_receipts:
+            expected_runtime_hash = self._bridge_env()["HERMES_BRIDGE_RUNTIME_HASH"]
+            if (running_hash and disk_hash and running_hash == disk_hash
+                    and data.get("runtimeConfigHash") == expected_runtime_hash
+                    and bool(data.get("sendReadReceipts", False)) == self._send_read_receipts):
                 print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
                 self._mark_connected()
                 self._attach_to_bridge(None)  # Not managed by us
                 self._wire_plugin_handlers(None)
                 return True
-            stale_reason = f"running={running_hash or 'unversioned'}, disk={disk_hash}" if running_hash != disk_hash else "send_read_receipts config changed"
+            stale_reason = f"running={running_hash or 'unversioned'}, disk={disk_hash}" if running_hash != disk_hash else "process-start config changed"
             print(f"[{self.name}] Running bridge is stale ({stale_reason}), restarting")
         except TimeoutError:
             self._bridge_probe_timed_out = True  # something holds the port but gave no identity; connect() leaves it
@@ -512,6 +531,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 bridge_env[_key] = _v
             else:
                 bridge_env.pop(_key, None)
+        bridge_env["WHATSAPP_PROCESS_FROM_ME_GROUPS"] = str(_extra_or_secret(
+            self.config.extra, "process_from_me_groups", "WHATSAPP_PROCESS_FROM_ME_GROUPS", False)).strip().lower()
         # bridge.js gates DMs BEFORE Python sees them: it must run the same dm_policy / allow_from the
         # adapter resolved (scoped env → this profile's YAML → default), or a secondary's YAML
         # ``dm_policy: pairing`` runs under the default profile's allowlist and drops valid pairing DMs.
@@ -525,6 +546,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # Without these the bridge hardcodes ~/.hermes/{image,audio,document}_cache (wrong under HERMES_HOME/profiles/cache layout).
         img_dir, audio_dir, _video_dir, doc_dir = _cache_dirs()
         bridge_env.update(HERMES_IMAGE_CACHE_DIR=str(img_dir), HERMES_AUDIO_CACHE_DIR=str(audio_dir), HERMES_DOCUMENT_CACHE_DIR=str(doc_dir))
+        bridge_env["HERMES_BRIDGE_RUNTIME_HASH"] = _bridge_runtime_config_hash(
+            mode=bridge_env["WHATSAPP_MODE"], port=self._bridge_port, session_path=self._session_path, env=bridge_env)
         return bridge_env
 
     def _bridge_died(self, detail: str, code: str = "whatsapp_bridge_exited") -> bool:
@@ -1212,6 +1235,7 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
     ("group_policy", "WHATSAPP_GROUP_POLICY", "lower"), ("mention_patterns", "WHATSAPP_MENTION_PATTERNS", "json"),
     ("free_response_chats", "WHATSAPP_FREE_RESPONSE_CHATS", "csv"), ("allow_from", "WHATSAPP_ALLOWED_USERS", "csv"),
     ("group_allow_from", "WHATSAPP_GROUP_ALLOWED_USERS", "csv"),
+    ("process_from_me_groups", "WHATSAPP_PROCESS_FROM_ME_GROUPS", "lower"),
 )
 
 

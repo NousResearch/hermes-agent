@@ -342,7 +342,7 @@ def test_tombstones_past_the_retry_horizon_are_reclaimed_by_the_prune_pass(tmp_p
 
         def settle_and_delete(sid, at):
             db.create_session(sid, source='api_server')
-            args = dict(principal_id='api', session_id=sid, request_id='r', payload={'text': 'ask ' + sid})
+            args = dict(principal_id='api', session_id=sid, request_id='r-' + sid, payload={'text': 'ask ' + sid})
             rt.admit_session_input(db, epoch=epoch, **args)
             row = rt.claim_session_input(db, epoch=epoch, session_id=sid)
             retain_result(db, epoch=epoch, row=row, result={'result': {'final_response': 'reply ' + sid, 'messages': []}})
@@ -358,16 +358,90 @@ def test_tombstones_past_the_retry_horizon_are_reclaimed_by_the_prune_pass(tmp_p
         young, young_id = settle_and_delete('young', now - 6 * 86400)
 
         def rows_naming(sid, admission_id):
-            from hermes_state_terminal import ADMISSION_PREFIX, RESULT_PREFIX, identity_key
+            from hermes_state_terminal import ADMISSION_PREFIX, RESULT_PREFIX, api_request_key, identity_key
             keys = (ADMISSION_PREFIX + admission_id, RESULT_PREFIX + admission_id,
-                    identity_key('api', sid, 'r'), retirement.RETIRED_PREFIX + sid)
+                    identity_key('api', sid, 'r-' + sid), api_request_key('r-' + sid),
+                    retirement.RETIRED_PREFIX + sid)
             return [k for k in keys if db.get_meta(k) is not None]
-        assert len(rows_naming('old', old_id)) == 4
+        assert len(rows_naming('old', old_id)) == 5
         db.prune_sessions(older_than_days=90)
-        assert len(rows_naming('young', young_id)) == 4
+        assert len(rows_naming('young', young_id)) == 5
         assert rows_naming('old', old_id) == [], 'tombstones past the horizon were not reclaimed'
         with pytest.raises(rt.RuntimeStoreError, match='not_found'):
             rt.admit_session_input(db, epoch=epoch, **old)
         replay = rt.admit_session_input(db, epoch=epoch, **young)
         assert replay['admission_id'] == young_id and replay['status'] == 'terminal'
         assert admission_result(db, young_id)['result']['final_response'] == 'reply young'
+
+
+def test_expired_duplicate_tombstones_do_not_abort_prune(tmp_path):
+    """Two expired pre-upgrade tombstones for one key must not roll back unrelated pruning.
+
+    Backfill skips them and still sets its marker. Prune used to ask the admit-time lookup,
+    which raises ``admission_conflict`` on two targets, so the ancient session stayed and
+    auto-prune never recorded its throttle.
+    """
+    import json
+    import time
+    from hermes_state_terminal import ADMISSION_PREFIX, API_REQUEST_BACKFILL_KEY, API_REQUEST_PREFIX
+    with SessionDB(tmp_path / 'state.db') as db:
+        epoch = rt.begin_runtime_epoch(db, instance_id='owner')
+
+        def settle_and_delete(sid):
+            db.create_session(sid, source='api_server')
+            rt.admit_session_input(db, epoch=epoch, principal_id='api', session_id=sid,
+                                   request_id='shared-key', payload={'text': 'ask ' + sid})
+            row = rt.claim_session_input(db, epoch=epoch, session_id=sid)
+            retain_result(db, epoch=epoch, row=row, result={'result': {'final_response': 'reply ' + sid, 'messages': []}})
+            snap = db.get_session(sid)
+            rt.mutate_runtime_session(db, epoch=epoch, principal_id='human', session_id=sid, request_id='del-' + sid,
+                                      operation='delete', payload={}, expected_revision=snap['runtime_revision'],
+                                      expected_generation=snap['runtime_generation'])
+
+        def hide_consumption():
+            saved = []
+            def write(conn):
+                saved.extend(conn.execute(
+                    'SELECT key, value FROM state_meta WHERE key GLOB ?', (ADMISSION_PREFIX + '*',)).fetchall())
+                conn.execute('DELETE FROM state_meta WHERE key GLOB ? OR key GLOB ? OR key=?',
+                             (ADMISSION_PREFIX + '*', API_REQUEST_PREFIX + '*', API_REQUEST_BACKFILL_KEY))
+            db._execute_write(write)
+            return saved
+
+        settle_and_delete('one')
+        saved = hide_consumption()
+        settle_and_delete('two')
+        db._execute_write(lambda conn: conn.executemany(
+            'INSERT OR REPLACE INTO state_meta(key, value) VALUES(?, ?)', saved))
+        db._execute_write(lambda conn: conn.execute(
+            'DELETE FROM state_meta WHERE key GLOB ? OR key=?',
+            (API_REQUEST_PREFIX + '*', API_REQUEST_BACKFILL_KEY)))
+        aged = time.time() - 8 * 86400
+        def age(conn):
+            for key, raw in conn.execute(
+                    'SELECT key, value FROM state_meta WHERE key GLOB ?', (ADMISSION_PREFIX + '*',)):
+                value = json.loads(raw)
+                value['retired_at'] = aged
+                conn.execute('UPDATE state_meta SET value=? WHERE key=?', (json.dumps(value), key))
+        db._execute_write(age)
+        old = time.time() - 100 * 86400
+        db.create_session('ancient', source='cli')
+        db._execute_write(lambda conn: conn.execute(
+            'UPDATE sessions SET started_at=?, ended_at=? WHERE id=?', (old, old, 'ancient')))
+        db.create_session('third', source='api_server')
+        with pytest.raises(rt.RuntimeStoreError, match='admission_conflict'):
+            rt.admit_session_input(db, epoch=epoch, principal_id='api', session_id='third',
+                                   request_id='shared-key', payload={'text': 'ask third'})
+        assert db.prune_sessions(older_than_days=30) == 1
+        assert db.get_session('ancient') is None
+        with db._read_ctx() as conn:
+            assert conn.execute(
+                'SELECT 1 FROM state_meta WHERE key GLOB ?', (ADMISSION_PREFIX + '*',)).fetchone() is None
+        fresh = rt.admit_session_input(db, epoch=epoch, principal_id='api', session_id='third',
+                                       request_id='shared-key', payload={'text': 'ask third'})
+        assert fresh['status'] == 'queued'
+        first = db.maybe_auto_prune_and_vacuum(retention_days=30, min_interval_hours=0, vacuum=False)
+        assert first.get('error') is None
+        assert db.get_meta('last_auto_prune') is not None
+        second = db.maybe_auto_prune_and_vacuum(retention_days=30, min_interval_hours=0, vacuum=False)
+        assert second.get('error') is None

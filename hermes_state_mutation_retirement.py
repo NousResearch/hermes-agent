@@ -39,6 +39,18 @@ def _compact_result(conn, admission_id):
     conn.execute('UPDATE state_meta SET value=? WHERE key=?', (_json(value), RESULT_PREFIX + admission_id))
 
 
+def _remember_consumed_api_request(conn, row, session_id):
+    """Point at the retired admission so the same API request id cannot run again."""
+    if row['principal_id'] != 'api':
+        return
+    from hermes_state_terminal import api_request_key
+    conn.execute(
+        'INSERT INTO state_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+        (api_request_key(row['request_id']), _json({
+            'target_session_id': session_id, 'admission_id': row['admission_id'],
+            'retired_at': row['retired_at']})))
+
+
 def retire_terminal_receipts(conn, session_ids):
     from hermes_state_terminal import ADMISSION_PREFIX, WORKER_PREFIX, identity_key
     for sid in session_ids:
@@ -60,6 +72,7 @@ def retire_terminal_receipts(conn, session_ids):
                          (ADMISSION_PREFIX + row['admission_id'], _json(row)))
             conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
                          (identity_key(row['principal_id'], sid, row['request_id']), json.dumps(row['admission_id'])))
+            _remember_consumed_api_request(conn, row, sid)
         for raw in workers:
             row = dict(raw)
             receipts = [dict(r) for r in conn.execute(
@@ -213,11 +226,15 @@ _EXPIRED = "json_valid(value) AND json_extract(value, '$.retired_at') < ?"
 
 def prune_retired_tombstones(conn, older_than=RETRY_HORIZON_S):
     """Reclaim deletion tombstones retired more than *older_than* seconds ago: the terminal admission
-    with its identity pointer and compacted result, terminal workers and the retired-session marker.
-    Tombstones written before ``retired_at`` existed are stamped now and age from this pass."""
-    from hermes_state_terminal import ADMISSION_PREFIX, RESULT_PREFIX, WORKER_PREFIX, identity_key
-    prefixes = (ADMISSION_PREFIX, WORKER_PREFIX, RETIRED_PREFIX)
+    with its identity pointer, consumed API request id and compacted result, terminal workers and
+    the retired-session marker. Tombstones written before ``retired_at`` existed are stamped now
+    and age from this pass."""
+    from hermes_state_terminal import (
+        ADMISSION_PREFIX, API_REQUEST_PREFIX, RESULT_PREFIX, WORKER_PREFIX, _backfill_consumed_api_requests,
+        api_request_key, identity_key)
+    prefixes = (ADMISSION_PREFIX, WORKER_PREFIX, RETIRED_PREFIX, API_REQUEST_PREFIX)
     now = time.time()
+    _backfill_consumed_api_requests(conn)
     for prefix in prefixes:
         conn.execute("UPDATE state_meta SET value=json_set(value, '$.retired_at', ?) WHERE key GLOB ? "
                      "AND json_valid(value) AND json_extract(value, '$.retired_at') IS NULL", (now, prefix + '*'))
@@ -225,7 +242,17 @@ def prune_retired_tombstones(conn, older_than=RETRY_HORIZON_S):
     for key, raw in conn.execute(f'SELECT key,value FROM state_meta WHERE key GLOB ? AND {_EXPIRED}',
                                  (ADMISSION_PREFIX + '*', cutoff)).fetchall():
         row = json.loads(raw)
-        conn.execute('DELETE FROM state_meta WHERE key IN (?,?,?)', (key, RESULT_PREFIX + row['admission_id'],
-                     identity_key(row['principal_id'], row['target_session_id'], row['request_id'])))
+        keys = [key, RESULT_PREFIX + row['admission_id'],
+                identity_key(row['principal_id'], row['target_session_id'], row['request_id'])]
+        if row.get('principal_id') == 'api':
+            # Point-read only. The admit-time lookup raises when several expired tombstones
+            # share a request id and no pointer was written; that must not abort this sweep.
+            pointer_key = api_request_key(row['request_id'])
+            saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (pointer_key,)).fetchone()
+            if saved is not None:
+                pointer = json.loads(saved[0])
+                if isinstance(pointer, dict) and pointer.get('admission_id') == row['admission_id']:
+                    keys.append(pointer_key)
+        conn.execute(f"DELETE FROM state_meta WHERE key IN ({','.join('?' * len(keys))})", tuple(keys))
     for prefix in prefixes[1:]:
         conn.execute(f'DELETE FROM state_meta WHERE key GLOB ? AND {_EXPIRED}', (prefix + '*', cutoff))

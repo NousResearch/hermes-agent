@@ -250,7 +250,13 @@ def admit_api_steps(adapter, **kwargs):
 
 
 def _admit_api_payload(authority, adapter, sid, request_id, payload, settings, declared_key, kwargs):
-    from hermes_state_terminal import retry_terminal_admission
+    from hermes_state_terminal import (
+        backfill_consumed_api_requests, consumed_api_requests_backfilled, retry_terminal_admission)
+    # Project terminal admissions left by deletes from before the request-id pointer, once,
+    # so this read and later ones see the same consumed key. The projection is a write, so it
+    # is a yielded step like the admission itself: a held writer must not stall the owner loop.
+    if not consumed_api_requests_backfilled(authority.db):
+        yield partial(backfill_consumed_api_requests, authority.db)
     row = retry_terminal_admission(authority.db, epoch=authority.epoch, principal_id='api',
         session_id=sid, request_id=request_id, payload=payload)
     if row is not None:
@@ -277,9 +283,14 @@ def _admit_target(session_id, request_id, settings, conn):
 
 def _one_target(session_id, request_id, conn):
     """One API request id (an Idempotency-Key) names one admission. The ledger keys identity by
-    target too, so the same key aimed at another session would otherwise run the work again."""
+    target too, so the same key aimed at another session would otherwise run the work again.
+    Deleting the session removes the admission row; the consumed-request tombstone, written in
+    that same transaction, keeps the refusal for the exact-retry horizon."""
     if conn.execute("SELECT 1 FROM session_admissions WHERE principal_id='api' AND request_id=? "
                     'AND target_session_id!=? LIMIT 1', (request_id, session_id)).fetchone():
+        raise RuntimeStoreError('admission_conflict')
+    from hermes_state_terminal import consumed_api_request
+    if consumed_api_request(conn, request_id) is not None:
         raise RuntimeStoreError('admission_conflict')
 
 

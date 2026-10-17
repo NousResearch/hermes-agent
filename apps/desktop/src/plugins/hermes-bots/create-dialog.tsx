@@ -1180,84 +1180,90 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
   const creating = useRef(false)
 
   const create = async () => {
-    if (creating.current) {return}
+    if (creating.current) {
+      return
+    }
     creating.current = true
 
     try {
-    const base = (name.trim() || placeholder).slice(0, 64)
+      const base = (name.trim() || placeholder).slice(0, 64)
 
-    if (selected.length < 2 || !base) {
-      return
-    }
+      if (selected.length < 2 || !base) {
+        return
+      }
 
-    const route = captureCanonicalGroupRoute()
-    const sourceCurrent = groupCreationSource(route)
+      const route = captureCanonicalGroupRoute()
+      const sourceCurrent = groupCreationSource(route)
 
-    const capabilities = await canonicalGroupRequest<unknown>(route, 'groups.capabilities')
-    const mode = groupExecutionMode(capabilities)
+      const capabilities = await canonicalGroupRequest<unknown>(route, 'groups.capabilities')
+      const mode = groupExecutionMode(capabilities)
 
-    if (!sourceCurrent() || mode === 'unavailable') {
-      throw new Error(b.canonical.driverUnavailable)
-    }
+      if (!sourceCurrent() || mode === 'unavailable') {
+        throw new Error(b.canonical.driverUnavailable)
+      }
 
-    if (mode === 'canonical') {
-      const created = await createCanonicalGroup(route, base, durableGroupChatMembers(selected))
+      if (mode === 'canonical') {
+        const created = await createCanonicalGroup(route, base, durableGroupChatMembers(selected))
 
-      // Creation already succeeded; leave it on its owner without adopting a stale result.
-      if (!sourceCurrent()) {return}
-      const key = registerCanonicalGroup(route, created.room)
+        // Creation already succeeded; leave it on its owner without adopting a stale result.
+        if (!sourceCurrent()) {
+          return
+        }
+        const key = registerCanonicalGroup(route, created.room)
+        onClose()
+        onCreated?.(key)
+
+        return
+      }
+
+      // Creating a group is always a FRESH room. Without this, re-creating a
+      // group under an existing name (easy — the default name is just the
+      // member names) silently reopens the old room with its full log, which
+      // reads as "not a fresh group" (db's Aug 2026 report). Uniquify against
+      // both live rooms and any bot's current grouping, then mint a fresh
+      // roomId: member sessions are titled by that roomId, so a
+      // disbanded-and-recreated group with the SAME display name still gets
+      // new sessions instead of resuming the old room's by title.
+      const taken = new Set(liveGroupChatNames())
+
+      for (const meta of Object.values($botMeta.get() || {})) {
+        for (const existing of botGroups(meta)) {
+          taken.add(existing)
+        }
+      }
+
+      const groupName = uniqueGroupChatName(base, taken)
+      const roomId = mintGroupRoomId()
+
+      for (const bot of selected) {
+        void saveBotMeta(bot, groupMembershipPatch(botRosterMeta(bot, allMeta), groupName, true))
+      }
+
+      // Persist every machine identity, including today's active source. That
+      // member becomes remote after a source switch and cannot rely on the new
+      // gateway's name-keyed bot metadata to remain seated in this room.
+      const roomMembers = durableGroupChatMembers(selected)
+      updateGroupChat(groupName, (room: GroupChatRoom) => {
+        room.members = roomMembers
+        room.roomId = roomId
+
+        if (image) {
+          room.image = image
+        }
+
+        return room
+      })
+      host.notify({
+        kind: 'info',
+        message: `“${groupName}” created with ${selected.length} bots`
+      })
       onClose()
-      onCreated?.(key)
-
-      return
-    }
-
-    // Creating a group is always a FRESH room. Without this, re-creating a
-    // group under an existing name (easy — the default name is just the
-    // member names) silently reopens the old room with its full log, which
-    // reads as "not a fresh group" (db's Aug 2026 report). Uniquify against
-    // both live rooms and any bot's current grouping, then mint a fresh
-    // roomId: member sessions are titled by that roomId, so a
-    // disbanded-and-recreated group with the SAME display name still gets
-    // new sessions instead of resuming the old room's by title.
-    const taken = new Set(liveGroupChatNames())
-
-    for (const meta of Object.values($botMeta.get() || {})) {
-      for (const existing of botGroups(meta)) {
-        taken.add(existing)
-      }
-    }
-
-    const groupName = uniqueGroupChatName(base, taken)
-    const roomId = mintGroupRoomId()
-
-    for (const bot of selected) {
-      void saveBotMeta(bot, groupMembershipPatch(botRosterMeta(bot, allMeta), groupName, true))
-    }
-
-    // Persist every machine identity, including today's active source. That
-    // member becomes remote after a source switch and cannot rely on the new
-    // gateway's name-keyed bot metadata to remain seated in this room.
-    const roomMembers = durableGroupChatMembers(selected)
-    updateGroupChat(groupName, (room: GroupChatRoom) => {
-      room.members = roomMembers
-      room.roomId = roomId
-
-      if (image) {
-        room.image = image
-      }
-
-      return room
-    })
-    host.notify({
-      kind: 'info',
-      message: `“${groupName}” created with ${selected.length} bots`
-    })
-    onClose()
-    onCreated?.(groupName)
+      onCreated?.(groupName)
     } catch (error) {
       host.notify({ kind: 'error', message: error instanceof Error ? error.message : String(error) })
-    } finally { creating.current = false }
+    } finally {
+      creating.current = false
+    }
   }
 
   return (

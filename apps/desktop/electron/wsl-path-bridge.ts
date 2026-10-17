@@ -191,7 +191,10 @@ export function resolvePickerDefaultPath(
  * `\\wsl.localhost\<distro>\c\...`. The existence check keeps a real
  * single-letter WSL directory (`/e/projects`) on the WSL bridge.
  */
-export function shellDriveToNativePath(value: string, exists: (path: string) => boolean = fs.existsSync): null | string {
+export function shellDriveToNativePath(
+  value: string,
+  exists: (path: string) => boolean = fs.existsSync
+): null | string {
   const drive = value.match(SHELL_DRIVE_RE)
 
   if (!drive) {

@@ -260,7 +260,10 @@ export function canonicalTools(ctx: SlashRunCtx) {
         return
       }
 
-      ctx.transcript.page(renderToolsListing(asRpcResult<ToolsShowResult>(raw) ?? {}), t('slashCmd.ops.slashWorker.toolsTitle'))
+      ctx.transcript.page(
+        renderToolsListing(asRpcResult<ToolsShowResult>(raw) ?? {}),
+        t('slashCmd.ops.slashWorker.toolsTitle')
+      )
     })
     .catch(ctx.guardedErr)
 }

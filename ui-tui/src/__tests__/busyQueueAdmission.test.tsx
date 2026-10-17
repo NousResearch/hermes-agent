@@ -20,19 +20,37 @@ import { loadPendingInputs } from '../lib/pendingInputs.js'
 // Canonical authority rows: `pending` carries the server-issued admission_id,
 // the client's input_id and the public text under `ref` destination fields.
 const row = (admission_id: string, input_id: string, text: string, status = 'queued') => ({
-  admission_id, input_id, text, status, sequence: 1, outcome: null, authority_epoch: 1, execution_generation: null,
+  admission_id,
+  input_id,
+  text,
+  status,
+  sequence: 1,
+  outcome: null,
+  authority_epoch: 1,
+  execution_generation: null,
   ref: { profile_id: '/tmp/profile', session_id: 'stored-owner' }
 })
 
-function mount(busyInputMode: 'queue' | 'interrupt' | 'steer' = 'queue', cancel: () => Promise<unknown> = () => Promise.resolve({ status: 'terminal', outcome: 'cancelled' })) {
+function mount(
+  busyInputMode: 'queue' | 'interrupt' | 'steer' = 'queue',
+  cancel: () => Promise<unknown> = () => Promise.resolve({ status: 'terminal', outcome: 'cancelled' })
+) {
   // macOS: tmpdir() is /var/..., a symlink to /private/var; captureDestination() realpaths
   // HERMES_HOME, so receipts must carry the canonical home or target_profile_home never matches.
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'ink-busy-admit-')))
   vi.stubEnv('HERMES_HOME', home)
   resetUiState()
 
-  const info = { model: 'test', skills: {}, tools: {}, profile_name: 'default',
-    stored_session_id: 'stored-owner', execution_epoch: '1', execution_generation: 1, running: true }
+  const info = {
+    model: 'test',
+    skills: {},
+    tools: {},
+    profile_name: 'default',
+    stored_session_id: 'stored-owner',
+    execution_epoch: '1',
+    execution_generation: 1,
+    running: true
+  }
 
   patchUiState({ sid: 'owner', info, busy: true, status: 'running…', busyInputMode })
   const calls: Array<{ method: string; params: any }> = []
@@ -40,14 +58,23 @@ function mount(busyInputMode: 'queue' | 'interrupt' | 'steer' = 'queue', cancel:
   const request = vi.fn((method: string, params: any) => {
     calls.push({ method, params })
 
-    if (method === 'input.detect_drop') { return Promise.resolve({ matched: false }) }
-
-    if (method === 'prompt.submit') {
-      return Promise.resolve({ admission_id: `adm-${params.submission_id}`, input_id: params.submission_id,
-        target_session_id: 'stored-owner', target_profile_home: home, status: 'queued' })
+    if (method === 'input.detect_drop') {
+      return Promise.resolve({ matched: false })
     }
 
-    if (method === 'prompt.cancel') { return cancel() }
+    if (method === 'prompt.submit') {
+      return Promise.resolve({
+        admission_id: `adm-${params.submission_id}`,
+        input_id: params.submission_id,
+        target_session_id: 'stored-owner',
+        target_profile_home: home,
+        status: 'queued'
+      })
+    }
+
+    if (method === 'prompt.cancel') {
+      return cancel()
+    }
     throw new Error(`unexpected RPC: ${method}`)
   })
 
@@ -60,43 +87,90 @@ function mount(busyInputMode: 'queue' | 'interrupt' | 'steer' = 'queue', cancel:
   const onEvent = createGatewayEventHandler({
     composer: { dequeue: () => undefined, queueEditRef: { current: null }, sendQueued: noop, setInput: noop },
     gateway: { gw, rpc: async () => null },
-    session: { STARTUP_RESUME_ID: '', colsRef: { current: 80 }, newSession: noop, resetSession: noop, resumeById: noop, setCatalog: noop },
-    submission: { submitRef: { current: noop } }, system: { bellOnComplete: false, sys: noop },
+    session: {
+      STARTUP_RESUME_ID: '',
+      colsRef: { current: 80 },
+      newSession: noop,
+      resetSession: noop,
+      resumeById: noop,
+      setCatalog: noop
+    },
+    submission: { submitRef: { current: noop } },
+    system: { bellOnComplete: false, sys: noop },
     transcript: { appendMessage: noop, panel: noop, setHistoryItems: noop },
     voice: { setProcessing: noop, setRecording: noop, setVoiceEnabled: noop }
   } as any)
 
   // The wire shape the gateway fans out; the client translates it exactly once.
-  const fanout = (pending: any[]) => onEvent(canonicalEvent({ type: 'session.info', session_id: 'owner',
-    payload: { stored_session_id: 'stored-owner', pending, running: true, execution_generation: 1, revision: 3,
-      execution_epoch: '1' } } as any) as any)
+  const fanout = (pending: any[]) =>
+    onEvent(
+      canonicalEvent({
+        type: 'session.info',
+        session_id: 'owner',
+        payload: {
+          stored_session_id: 'stored-owner',
+          pending,
+          running: true,
+          execution_generation: 1,
+          revision: 3,
+          execution_epoch: '1'
+        }
+      } as any) as any
+    )
 
   function Harness() {
     const ui = useStore($uiState)
     queue = useQueue(gw)
     submission = useSubmission({
       appendMessage: noop,
-      composerActions: { ...queue, prependQueue: queue.prependQ, takeQueue: queue.takeQ, removeQueue: queue.removeQ,
-        pushHistory: noop, clearIn: noop } as any,
+      composerActions: {
+        ...queue,
+        prependQueue: queue.prependQ,
+        takeQueue: queue.takeQ,
+        removeQueue: queue.removeQ,
+        pushHistory: noop,
+        clearIn: noop
+      } as any,
       composerRefs: { queueRef: queue.queueRef, queueEditRef: queue.queueEditRef, tokensRef: { current: [] } } as any,
       composerState: { input: '', inputBuf: [], completions: [] } as any,
-      gw, setLastUserMsg: noop, slashRef: { current: () => true },
-      submitRef: { current: noop }, sys: noop
+      gw,
+      setLastUserMsg: noop,
+      slashRef: { current: () => true },
+      submitRef: { current: noop },
+      sys: noop
     })
 
-    return <Text>{ui.status} {queue.queuedDisplay.join('|')}</Text>
+    return (
+      <Text>
+        {ui.status} {queue.queuedDisplay.join('|')}
+      </Text>
+    )
   }
 
   const instance = renderSync(<Harness />, {
     stdin: new PassThrough() as any,
     stdout: Object.assign(new PassThrough(), { columns: 80, rows: 20, isTTY: false }) as any,
-    stderr: new PassThrough() as any, patchConsole: false
+    stderr: new PassThrough() as any,
+    patchConsole: false
   })
 
   return {
-    calls, request, fanout,
-    get queue() { return queue }, get submission() { return submission },
-    cleanup() { instance.unmount(); turnController.fullReset(); resetUiState(); vi.unstubAllEnvs(); rmSync(home, { recursive: true, force: true }) }
+    calls,
+    request,
+    fanout,
+    get queue() {
+      return queue
+    },
+    get submission() {
+      return submission
+    },
+    cleanup() {
+      instance.unmount()
+      turnController.fullReset()
+      resetUiState()
+      vi.unstubAllEnvs()
+      rmSync(home, { recursive: true, force: true })
+    }
   }
 }
 
@@ -114,7 +188,9 @@ it('admits busy queue-mode input to the authority immediately with a stable inpu
     await expect.poll(() => h.queue.queueRef.current.length).toBe(0)
     // The in-flight turn's streaming buffer and busy latch are untouched.
     expect($uiState.get()).toMatchObject({ busy: true, status: 'running…' })
-  } finally { h.cleanup() }
+  } finally {
+    h.cleanup()
+  }
 })
 
 it('renders the queue from the session.info pending fanout, excluding the started row, and clears it when the fanout empties', async () => {
@@ -125,7 +201,9 @@ it('renders the queue from the session.info pending fanout, excluding the starte
     await expect.poll(() => h.queue.queuedDisplay).toEqual(['second in line'])
     h.fanout([row('adm-1', 'in-1', 'currently running', 'started')])
     await expect.poll(() => h.queue.queuedDisplay).toEqual([])
-  } finally { h.cleanup() }
+  } finally {
+    h.cleanup()
+  }
 })
 
 it('deletes a server-queued row through prompt.cancel rather than local removal', async () => {
@@ -136,12 +214,17 @@ it('deletes a server-queued row through prompt.cancel rather than local removal'
     await expect.poll(() => h.queue.queuedDisplay).toEqual(['cancel me'])
     h.queue.removeQ(0)
     await expect.poll(() => h.calls.filter(c => c.method === 'prompt.cancel').length).toBe(1)
-    expect(h.calls.find(c => c.method === 'prompt.cancel')!.params).toEqual({ session_id: 'owner', admission_id: 'adm-9' })
+    expect(h.calls.find(c => c.method === 'prompt.cancel')!.params).toEqual({
+      session_id: 'owner',
+      admission_id: 'adm-9'
+    })
     // Only the authority's next fanout retires the row.
     expect(h.queue.queuedDisplay).toEqual(['cancel me'])
     h.fanout([])
     await expect.poll(() => h.queue.queuedDisplay).toEqual([])
-  } finally { h.cleanup() }
+  } finally {
+    h.cleanup()
+  }
 })
 
 it('retains disconnected input durably on its old destination without dispatching or draining', async () => {
@@ -153,9 +236,13 @@ it('retains disconnected input durably on its old destination without dispatchin
     h.submission.dispatchSubmission('DISCONNECTED_LOSS_SENTINEL')
     await new Promise(resolve => setImmediate(resolve))
     expect(h.calls).toEqual([])
-    expect(loadPendingInputs(destination)).toEqual([expect.objectContaining({ text: 'DISCONNECTED_LOSS_SENTINEL', destination })])
+    expect(loadPendingInputs(destination)).toEqual([
+      expect.objectContaining({ text: 'DISCONNECTED_LOSS_SENTINEL', destination })
+    ])
     expect(h.queue.dequeue()).toBeUndefined()
-  } finally { h.cleanup() }
+  } finally {
+    h.cleanup()
+  }
 })
 
 it('queues an unbound Enter locally without claiming a gateway admission', () => {
@@ -166,32 +253,50 @@ it('queues an unbound Enter locally without claiming a gateway admission', () =>
     h.submission.dispatchSubmission('unbound draft')
     expect(h.queue.queueRef.current.map(item => item.text)).toEqual(['unbound draft'])
     expect(h.calls).toEqual([])
-  } finally { h.cleanup() }
+  } finally {
+    h.cleanup()
+  }
 })
 
 it('discards unknown execution with its generation, retaining the row on refusal', async () => {
   const h = mount()
 
   try {
-    h.request.mockImplementation(async (method, params) => { h.calls.push({method, params}); throw new Error('stale_generation') })
-    h.fanout([{ ...row('unknown-admission', 'unknown-input', 'interrupted input', 'unknown'), execution_generation: 7 }])
+    h.request.mockImplementation(async (method, params) => {
+      h.calls.push({ method, params })
+      throw new Error('stale_generation')
+    })
+    h.fanout([
+      { ...row('unknown-admission', 'unknown-input', 'interrupted input', 'unknown'), execution_generation: 7 }
+    ])
     await expect.poll(() => h.queue.queuedDisplay).toEqual(['[unknown] interrupted input'])
     h.queue.removeQ(0)
     await expect.poll(() => h.calls.length).toBe(1)
-    expect(h.calls[0]).toEqual({ method: 'prompt.resolve_unknown', params: { session_id: 'owner', admission_id: 'unknown-admission', execution_generation: 7 } })
+    expect(h.calls[0]).toEqual({
+      method: 'prompt.resolve_unknown',
+      params: { session_id: 'owner', admission_id: 'unknown-admission', execution_generation: 7 }
+    })
     await expect.poll(() => $uiState.get().status).toContain('stale_generation')
     expect(h.queue.queuedDisplay).toEqual(['[unknown] interrupted input'])
-  } finally { h.cleanup() }
+  } finally {
+    h.cleanup()
+  }
 })
 
 it('never replays an ambiguous non-idempotent busy correction or falls back to queue', async () => {
   const h = mount('steer')
 
   try {
-    h.request.mockImplementation(async (method, params) => { h.calls.push({ method, params }); throw new Error('invalid_params') })
+    h.request.mockImplementation(async (method, params) => {
+      h.calls.push({ method, params })
+      throw new Error('invalid_params')
+    })
     h.submission.dispatchSubmission('correction')
     await expect.poll(() => h.calls.length).toBe(1)
-    expect(h.calls[0]).toMatchObject({ method: 'session.steer', params: { session_id: 'owner', text: 'correction', execution_generation: 1 } })
+    expect(h.calls[0]).toMatchObject({
+      method: 'session.steer',
+      params: { session_id: 'owner', text: 'correction', execution_generation: 1 }
+    })
     const first = h.calls[0]!.params
     await expect.poll(() => h.queue.queueRef.current[0]?.failed).toBe(true)
     patchUiState({ busyInputMode: 'interrupt', info: { ...$uiState.get().info!, execution_generation: 2 } })
@@ -199,8 +304,13 @@ it('never replays an ambiguous non-idempotent busy correction or falls back to q
     await new Promise(resolve => setImmediate(resolve))
     expect(h.calls).toEqual([{ method: 'session.steer', params: first }])
     expect(first).not.toHaveProperty('submission_id')
-    expect(loadPendingInputs(captureDestination())[0]).toMatchObject({ controlMethod: 'session.steer', executionGeneration: 1 })
-  } finally { h.cleanup() }
+    expect(loadPendingInputs(captureDestination())[0]).toMatchObject({
+      controlMethod: 'session.steer',
+      executionGeneration: 1
+    })
+  } finally {
+    h.cleanup()
+  }
 })
 
 it('retires a generation-matched redirect acknowledgement without resetting the live turn', async () => {
@@ -208,34 +318,64 @@ it('retires a generation-matched redirect acknowledgement without resetting the 
 
   try {
     h.request.mockImplementation(async (method, params) => {
-      h.calls.push({method, params});
+      h.calls.push({ method, params })
 
- return { status: 'redirected', execution_generation: params.execution_generation } as any
+      return { status: 'redirected', execution_generation: params.execution_generation } as any
     })
     h.submission.dispatchSubmission('redirect correction')
     await expect.poll(() => h.calls.length).toBe(1)
-    expect(h.calls[0]).toEqual({ method: 'session.redirect', params: { session_id: 'owner', text: 'redirect correction', execution_generation: 1 } })
+    expect(h.calls[0]).toEqual({
+      method: 'session.redirect',
+      params: { session_id: 'owner', text: 'redirect correction', execution_generation: 1 }
+    })
     await expect.poll(() => h.queue.queueRef.current.length).toBe(0)
     expect(loadPendingInputs(captureDestination())).toEqual([])
     expect($uiState.get()).toMatchObject({ busy: true, status: 'running…' })
-  } finally { h.cleanup() }
+  } finally {
+    h.cleanup()
+  }
 })
 
 it('projects canonical pending rows onto the legacy pending_submissions shape for resume snapshots and fanout', () => {
   const pending = [row('adm-3', 'in-3', 'hello')]
 
-  const snapshot = canonicalResult('session.resume', { session_id: 'sid', stored_session_id: 'sid', authority_epoch: 1,
-    execution_generation: 2, running: true, messages: [], pending }, {})
+  const snapshot = canonicalResult(
+    'session.resume',
+    {
+      session_id: 'sid',
+      stored_session_id: 'sid',
+      authority_epoch: 1,
+      execution_generation: 2,
+      running: true,
+      messages: [],
+      pending
+    },
+    {}
+  )
 
-  expect(snapshot.info.pending_submissions).toEqual([expect.objectContaining({ admission_id: 'adm-3', input_id: 'in-3', user: 'hello',
-    status: 'queued', target_session_id: 'stored-owner', target_profile_home: '/tmp/profile' })])
+  expect(snapshot.info.pending_submissions).toEqual([
+    expect.objectContaining({
+      admission_id: 'adm-3',
+      input_id: 'in-3',
+      user: 'hello',
+      status: 'queued',
+      target_session_id: 'stored-owner',
+      target_profile_home: '/tmp/profile'
+    })
+  ])
   const ev = canonicalEvent({ type: 'session.info', session_id: 'sid', payload: { pending } } as any)
   expect((ev.payload as any).pending_submissions[0]).toMatchObject({ admission_id: 'adm-3', user: 'hello' })
 })
 
 it('does not admit an edited replacement while the original row is still being retired, and keeps it as a retryable draft when retirement is refused', async () => {
   let release!: (value: unknown) => void
-  const h = mount('queue', () => new Promise(resolve => { release = resolve }))
+  const h = mount(
+    'queue',
+    () =>
+      new Promise(resolve => {
+        release = resolve
+      })
+  )
 
   try {
     h.fanout([row('adm-orig', 'in-orig', 'ORIGINAL_EFFECT')])
@@ -248,8 +388,13 @@ it('does not admit an edited replacement while the original row is still being r
     expect(h.calls.filter(c => c.method === 'prompt.submit')).toEqual([])
     release({ admission_id: 'adm-orig', status: 'terminal', outcome: 'cancelled' })
     await expect.poll(() => h.calls.filter(c => c.method === 'prompt.submit').length).toBe(1)
-    expect(h.calls.find(c => c.method === 'prompt.submit')!.params).toMatchObject({ text: 'EDITED_EFFECT', queued: true })
-  } finally { h.cleanup() }
+    expect(h.calls.find(c => c.method === 'prompt.submit')!.params).toMatchObject({
+      text: 'EDITED_EFFECT',
+      queued: true
+    })
+  } finally {
+    h.cleanup()
+  }
 })
 
 it('keeps the edited text as an unconfirmed durable draft when the store refuses to cancel the original', async () => {
@@ -265,13 +410,23 @@ it('keeps the edited text as an unconfirmed durable draft when the store refuses
     await new Promise(resolve => setTimeout(resolve, 20))
     expect(h.calls.filter(c => c.method === 'prompt.submit')).toEqual([])
     expect(h.queue.queuedDisplay).toEqual(['[unconfirmed · Alt+K retry] EDITED_EFFECT', 'ORIGINAL_EFFECT'])
-    expect(loadPendingInputs(captureDestination()).map(item => [item.text, item.failed])).toEqual([['EDITED_EFFECT', true]])
-  } finally { h.cleanup() }
+    expect(loadPendingInputs(captureDestination()).map(item => [item.text, item.failed])).toEqual([
+      ['EDITED_EFFECT', true]
+    ])
+  } finally {
+    h.cleanup()
+  }
 })
 
 it('re-admits an edited row to the session it was edited in, even when the user has switched to another busy session before retirement', async () => {
   let release!: (value: unknown) => void
-  const h = mount('queue', () => new Promise(resolve => { release = resolve }))
+  const h = mount(
+    'queue',
+    () =>
+      new Promise(resolve => {
+        release = resolve
+      })
+  )
 
   try {
     h.fanout([row('adm-orig', 'in-orig', 'ORIGINAL_A')])
@@ -280,11 +435,19 @@ it('re-admits an edited row to the session it was edited in, even when the user 
     h.submission.dispatchSubmission('EDITED_A')
     await expect.poll(() => h.calls.filter(c => c.method === 'prompt.cancel').length).toBe(1)
     // Focus moves to a different busy session while A's retirement is pending.
-    patchUiState({ sid: 'session-B', busy: true,
-      info: { ...$uiState.get().info!, stored_session_id: 'stored-B', execution_generation: 9 } })
+    patchUiState({
+      sid: 'session-B',
+      busy: true,
+      info: { ...$uiState.get().info!, stored_session_id: 'stored-B', execution_generation: 9 }
+    })
     await new Promise(resolve => setImmediate(resolve))
     release({ admission_id: 'adm-orig', status: 'terminal', outcome: 'cancelled' })
     await expect.poll(() => h.calls.filter(c => c.method === 'prompt.submit').length).toBe(1)
-    expect(h.calls.find(c => c.method === 'prompt.submit')!.params).toMatchObject({ session_id: 'owner', text: 'EDITED_A' })
-  } finally { h.cleanup() }
+    expect(h.calls.find(c => c.method === 'prompt.submit')!.params).toMatchObject({
+      session_id: 'owner',
+      text: 'EDITED_A'
+    })
+  } finally {
+    h.cleanup()
+  }
 })

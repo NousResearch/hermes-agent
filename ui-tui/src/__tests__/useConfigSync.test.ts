@@ -454,7 +454,9 @@ describe('hydrateFullConfig', () => {
     expect(request).toHaveBeenCalledWith('config.get', { key: 'busy', session_id: 'owner' })
     expect($uiState.get().busyInputMode).toBe('steer')
     request.mockImplementation(async (_method, params) => {
-      if (params.key === 'busy') {throw new Error('disconnected')}
+      if (params.key === 'busy') {
+        throw new Error('disconnected')
+      }
 
       return { config: { display: { busy_input_mode: 'interrupt' } } }
     })
@@ -477,7 +479,9 @@ describe('hydrateFullConfig', () => {
     current = false
     patchUiState({ sid: 'new', busyInputMode: 'interrupt' })
 
-    for (const reply of replies) {reply({ config: { display: { busy_input_mode: 'steer' } }, value: 'steer' })}
+    for (const reply of replies) {
+      reply({ config: { display: { busy_input_mode: 'steer' } }, value: 'steer' })
+    }
     await pending
     expect(setBell).not.toHaveBeenCalled()
     expect($uiState.get().busyInputMode).toBe('interrupt')

@@ -28,9 +28,23 @@ test.each([
 
   const wire = vi.spyOn(JsonRpcGatewayClient.prototype, 'request').mockImplementation(async name => {
     if (name === 'session.resume') {
-      return { session_id: 'waiting', stored_session_id: 'waiting', revision: 1, execution_generation: 3,
-        running: true, messages: [], prompts: [{ kind: 'clarify', prompt_id: 'question-1',
-          execution_generation: 3, question: 'Which target?', choices: ['staging', 'production'] }] } as never
+      return {
+        session_id: 'waiting',
+        stored_session_id: 'waiting',
+        revision: 1,
+        execution_generation: 3,
+        running: true,
+        messages: [],
+        prompts: [
+          {
+            kind: 'clarify',
+            prompt_id: 'question-1',
+            execution_generation: 3,
+            question: 'Which target?',
+            choices: ['staging', 'production']
+          }
+        ]
+      } as never
     }
 
     return { status: 'resolved' } as never
@@ -40,13 +54,19 @@ test.each([
   const previousGateway = $gateway.get()
   $gateway.set(client)
 
-  const shown = vi.fn((request: ServerRequest) => handleServerRequest({ ...request, profile: 'default' }, {
-    activeSessionIdRef: { current: 'waiting' },
-    sessionInterrupted: () => false,
-    sessionStateByRuntimeIdRef: { current: new Map() },
-    updateSessionState: vi.fn(),
-    upsertToolCall: vi.fn()
-  }, 'waiting'))
+  const shown = vi.fn((request: ServerRequest) =>
+    handleServerRequest(
+      { ...request, profile: 'default' },
+      {
+        activeSessionIdRef: { current: 'waiting' },
+        sessionInterrupted: () => false,
+        sessionStateByRuntimeIdRef: { current: new Map() },
+        updateSessionState: vi.fn(),
+        upsertToolCall: vi.fn()
+      },
+      'waiting'
+    )
+  )
 
   client.onRequest(shown)
 
@@ -76,9 +96,18 @@ test.each([
     expect(shown).toHaveBeenCalledTimes(1)
     await vi.waitFor(() => expect(wire.mock.calls.filter(([name]) => name === 'clarify.respond')).toHaveLength(1))
     expect(wire.mock.calls.some(([name]) => name === 'prompt.submit')).toBe(false)
-    expect(wire.mock.calls.find(([name]) => name === 'clarify.respond')).toEqual(['clarify.respond', {
-      session_id: 'waiting', profile: 'default', execution_generation: 3, prompt_id: 'question-1', answer: 'staging'
-    }, expect.any(Number), undefined])
+    expect(wire.mock.calls.find(([name]) => name === 'clarify.respond')).toEqual([
+      'clarify.respond',
+      {
+        session_id: 'waiting',
+        profile: 'default',
+        execution_generation: 3,
+        prompt_id: 'question-1',
+        answer: 'staging'
+      },
+      expect.any(Number),
+      undefined
+    ])
   } finally {
     $gateway.set(previousGateway)
     client.close()
@@ -88,12 +117,22 @@ test.each([
 test.each([false, true])('an empty snapshot clears only questions predating it (newer=$newer)', newer => {
   const startedAt = Date.now() / 1000
 
-  const snapshot = new CanonicalDesktopProtocol().result('session.resume', { session_id: 'waiting' }, {
-    session_id: 'waiting', revision: 1, execution_generation: 3, running: false, prompts: []
-  })
+  const snapshot = new CanonicalDesktopProtocol().result(
+    'session.resume',
+    { session_id: 'waiting' },
+    {
+      session_id: 'waiting',
+      revision: 1,
+      execution_generation: 3,
+      running: false,
+      prompts: []
+    }
+  )
 
   const request = {
-    sessionId: 'waiting', requestId: 'question-1', receivedAt: startedAt + (newer ? 1 : -1),
+    sessionId: 'waiting',
+    requestId: 'question-1',
+    receivedAt: startedAt + (newer ? 1 : -1),
     questions: [{ qid: 'question-1', question: 'Which target?', choices: ['staging'], multiSelect: false }]
   }
 
@@ -114,13 +153,22 @@ test('snapshots expose batch question params without losing already locked answe
 
   const answers = { q1: 'staging' }
 
-  const snapshot = new CanonicalDesktopProtocol().result('session.resume', { session_id: 'waiting' }, {
-    session_id: 'waiting', revision: 1, execution_generation: 3, prompts: [
-      { kind: 'clarify', prompt_id: 'question-1', questions, answers, execution_generation: 3 }
-    ]
-  })
+  const snapshot = new CanonicalDesktopProtocol().result(
+    'session.resume',
+    { session_id: 'waiting' },
+    {
+      session_id: 'waiting',
+      revision: 1,
+      execution_generation: 3,
+      prompts: [{ kind: 'clarify', prompt_id: 'question-1', questions, answers, execution_generation: 3 }]
+    }
+  )
 
-  expect(snapshot.open_requests).toEqual([{
-    id: 'question-1', method: 'clarify', params: { session_id: 'waiting', questions, answers }
-  }])
+  expect(snapshot.open_requests).toEqual([
+    {
+      id: 'question-1',
+      method: 'clarify',
+      params: { session_id: 'waiting', questions, answers }
+    }
+  ])
 })

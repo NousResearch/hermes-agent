@@ -399,9 +399,19 @@ export interface ComposerActions {
   /** Attach an image by path in as a token. */
   attachImagePath: (path: string) => void
   clearIn: () => void
-  stage?: (text: string, display?: string, destination?: SubmissionDestination, attachments?: QueueItem['attachments']) => QueueItem
+  stage?: (
+    text: string,
+    display?: string,
+    destination?: SubmissionDestination,
+    attachments?: QueueItem['attachments']
+  ) => QueueItem
   dequeue: (retry?: boolean) => QueueItem | undefined
-  enqueue: (text: string, display?: string, destination?: SubmissionDestination, attachments?: QueueItem['attachments']) => QueueItem | void
+  enqueue: (
+    text: string,
+    display?: string,
+    destination?: SubmissionDestination,
+    attachments?: QueueItem['attachments']
+  ) => QueueItem | void
   handleTextPaste: (event: PasteEvent) => MaybePromise<ComposerPasteResult | null>
   openEditor: () => Promise<void>
   prependQueue: (item: QueueItem, destination?: SubmissionDestination) => void
@@ -585,8 +595,13 @@ export interface SlashHandlerContext {
   transcript: {
     page: (text: string, title?: string) => void
     panel: (title: string, sections: PanelSection[]) => void
-    send: (text: string, showUserMessage?: boolean, displayText?: string, expandOverride?: (value: string) => string,
-      submitOpts?: { attachments?: Array<{ path: string; mime: string }> }) => void
+    send: (
+      text: string,
+      showUserMessage?: boolean,
+      displayText?: string,
+      expandOverride?: (value: string) => string,
+      submitOpts?: { attachments?: Array<{ path: string; mime: string }> }
+    ) => void
     setHistoryItems: StateSetter<Msg[]>
     sys: (text: string) => void
     trimLastExchange: (items: Msg[]) => Msg[]

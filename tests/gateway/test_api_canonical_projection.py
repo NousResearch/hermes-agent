@@ -117,6 +117,39 @@ async def test_run_sse_carries_controls_tool_payloads_and_authoritative_cancella
     assert 'run.cancelled' in names and 'run.completed' not in names
 
 
+@pytest.mark.asyncio
+async def test_run_sse_wires_reasoning_into_the_canonical_turn(api, owner, monkeypatch):
+    """A run under the authority hands its own ``reasoning_callback`` to the canonical turn's
+    observer set, so reasoning reaches ``/v1/runs/{id}/events`` as ``reasoning.delta`` and never
+    as the completion-time ``reasoning.available`` preview (#99552)."""
+    import contextlib
+
+    admitted = admit_api_turn(api, session_id='run-reasoning', user_message='hello',
+                              conversation_history=[])
+    launch, queue = _launch(api, admitted, run_id='run_reasoning')
+    captured = {}
+
+    async def fake_observe_turn(_admitted, **kwargs):
+        captured.update(kwargs)
+        return {'final_response': 'ANSWER'}, {}
+
+    @contextlib.contextmanager
+    def fake_observe_controls(_admitted, _sink):
+        yield
+
+    monkeypatch.setattr('gateway.session_api_turn.observe_api_turn', fake_observe_turn)
+    monkeypatch.setattr('gateway.session_api_turn.observe_api_controls', fake_observe_controls)
+    await _execute_run(api, launch, _api_server=_api_server)
+    assert callable(captured.get('reasoning_callback')), captured
+    captured['reasoning_callback']('THINKING')
+    captured['reasoning_callback']('')
+    captured['reasoning_callback'](None)
+    await asyncio.sleep(0)  # call_soon_threadsafe projections land on the loop
+    events = _events(queue)
+    assert [e['delta'] for e in events if e['event'] == 'reasoning.delta'] == ['THINKING'], events
+    assert not [e for e in events if e['event'] == 'tool.progress'], events
+
+
 def _wrap(api, run_id, loop, sink):
     from gateway.platforms.api_server_runs import _make_run_event_callback
     inner = _make_run_event_callback(api, run_id, loop, _api_server=_api_server)

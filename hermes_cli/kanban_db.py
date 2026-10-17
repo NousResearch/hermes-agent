@@ -1995,31 +1995,30 @@ def _synthesize_ended_run(
 # --- Dependency resolution (todo -> ready) ---
 
 def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
-    """True when the newest ``blocked``/``unblocked``/``gave_up`` event says the
-    block must wait for an operator: an explicit ``kanban_block`` (#28712), or a
-    breaker trip ``_record_task_failure`` stamped ``sticky`` — the clean-exit
-    protocol-violation budget or a systemic same-error wave. Those trip on a
-    policy independent of ``consecutive_failures``, so ``recompute_ready``'s
-    counter check cannot see them — without this the trip is promoted back to
-    ``ready`` in the same tick and the card respawns forever. A plain
-    (unified-budget) ``gave_up`` carries no marker and is judged by the counter,
-    so raising ``failure_limit`` or ``assign_task`` to a fresh profile still
-    releases it; a task with no such event at all (direct DB edit) auto-recovers.
+    """True when the newest terminal lifecycle event requires an operator.
+
+    Explicit ``kanban_block``, sticky breaker ``gave_up``, and a clean worker
+    exit recorded as ``protocol_violation`` all remain blocked until
+    :func:`unblock_task` records an ``unblocked`` event.  Their policy is
+    independent of ``consecutive_failures``, so the normal breaker check alone
+    cannot prevent same-tick auto-promotion.
     """
-    row = conn.execute(
-        "SELECT kind FROM task_events "
-        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
-        "ORDER BY id DESC LIMIT 1", (task_id,),
-    ).fetchone()
-    if row and row["kind"] == "blocked":
-        return True
-    trip = conn.execute(
-        "SELECT payload FROM task_events "
-        "WHERE task_id = ? AND kind = 'gave_up' AND id > COALESCE("
-        "  (SELECT MAX(id) FROM task_events WHERE task_id = ? AND kind = 'unblocked'), 0) "
-        "ORDER BY id DESC LIMIT 1", (task_id, task_id),
-    ).fetchone()
-    return bool(trip) and bool(_json_dict(trip["payload"]).get("sticky"))
+    unblocked = conn.execute(
+        "SELECT COALESCE(MAX(id), 0) FROM task_events "
+        "WHERE task_id = ? AND kind = 'unblocked'", (task_id,),
+    ).fetchone()[0]
+    rows = conn.execute(
+        "SELECT kind, payload FROM task_events "
+        "WHERE task_id = ? AND id > ? "
+        "  AND kind IN ('blocked', 'gave_up', 'protocol_violation')",
+        (task_id, unblocked),
+    ).fetchall()
+    for row in rows:
+        if row["kind"] == "blocked":
+            return True
+        if row["kind"] in ("gave_up", "protocol_violation") and _json_dict(row["payload"]).get("sticky"):
+            return True
+    return False
 
 
 def _latest_event(

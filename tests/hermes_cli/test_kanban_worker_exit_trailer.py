@@ -49,13 +49,12 @@ def _dead_worker_with_log(conn, tid: str, pid: int, rc: int) -> None:
 
 
 @pytest.mark.parametrize(
-    "rc, event, failure_counted",
-    [(0, "protocol_violation", False), (kb.KANBAN_RATE_LIMIT_EXIT_CODE, "rate_limited", False)],
+    "rc, event",
+    [(0, "protocol_violation"), (kb.KANBAN_RATE_LIMIT_EXIT_CODE, "rate_limited")],
 )
-def test_fresh_process_sweep_books_the_logged_exit_code(kanban_home, rc, event, failure_counted):
-    """Empty reap registry + exit trailer in the log: a clean exit is the protocol violation
-    (marker, streak, no unified-budget hit) and a 75 is a rate-limit requeue — not a bare
-    ``pid N not alive`` crash that counts a failure."""
+def test_fresh_process_sweep_books_the_logged_exit_code(kanban_home, rc, event):
+    """A logged rc=0 is terminal protocol failure on its first occurrence;
+    rc=75 keeps its rate-limit requeue behavior."""
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="t", assignee="a")
         _dead_worker_with_log(conn, tid, 70001, rc)
@@ -63,39 +62,46 @@ def test_fresh_process_sweep_books_the_logged_exit_code(kanban_home, rc, event, 
         kbd.detect_crashed_workers(conn)
 
         ev = conn.execute(
-            "SELECT kind FROM task_events WHERE task_id=? ORDER BY id DESC LIMIT 1", (tid,)).fetchone()
+            "SELECT kind, payload FROM task_events WHERE task_id=? ORDER BY id DESC LIMIT 1", (tid,)
+        ).fetchone()
         run = conn.execute(
             "SELECT outcome, error, metadata FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1",
-            (tid,)).fetchone()
+            (tid,),
+        ).fetchone()
         task = kb.get_task(conn, tid)
         assert ev["kind"] == event
         assert "not alive" not in (run["error"] or "")
-        assert task.status == "ready"
-        assert task.consecutive_failures == (1 if failure_counted else 0)
-        # The decoded rc lands in the run row so quota (75) vs crash stays tellable after
-        # the fact even though the worker_output tail is trimmed (#113611).
+        assert task.consecutive_failures == 0
+        # The decoded rc lands in the run row so quota (75) vs protocol violation
+        # stays tellable after worker output trimming.
         assert kb._json_dict(run["metadata"]).get("exit_code") == rc
         if rc == 0:
+            assert task.status == "blocked"
+            assert run["outcome"] == "protocol_violation"
             assert kb._json_dict(run["metadata"]).get("protocol_violation") is True
-            assert kbd._protocol_violation_streak(conn, tid) == 1
+            assert kb._json_dict(ev["payload"]).get("sticky") is True
             assert KANBAN_WORKER_EXIT_TRAILER not in (run["error"] or "")
+            assert kb.recompute_ready(conn, failure_limit=10) == 0
+            assert kb.get_task(conn, tid).status == "blocked"
         else:
+            assert task.status == "ready"
             assert run["outcome"] == "rate_limited"
 
 
-def test_violation_budget_trip_holds_until_operator_unblock(kanban_home):
-    """The third consecutive clean exit trips the violation budget and ``recompute_ready``
-    must not promote the card back the same tick (``consecutive_failures`` is still below
-    ``failure_limit``); ``unblock_task`` lifts the hold."""
+def test_clean_exit_protocol_violation_has_one_terminal_winner(kanban_home):
+    """A repeated sweep cannot re-block, re-close, or re-emit an already CAS-reclaimed run."""
     with kbc.connect() as conn:
-        tid = kb.create_task(conn, title="loop", assignee="a")
-        for i in range(kbd._PROTOCOL_VIOLATION_FAILURE_LIMIT):
-            _dead_worker_with_log(conn, tid, 71000 + i, 0)
-            kbd.detect_crashed_workers(conn)
-            kb.recompute_ready(conn, failure_limit=10)
-        task = kb.get_task(conn, tid)
-        assert task.status == "blocked"
-        assert task.consecutive_failures < 10
+        tid = kb.create_task(conn, title="single winner", assignee="a")
+        _dead_worker_with_log(conn, tid, 71000, 0)
+
+        assert kbd.detect_crashed_workers(conn) == [tid]
+        assert kbd.detect_crashed_workers(conn) == []
+
+        assert kb.get_task(conn, tid).status == "blocked"
+        assert conn.execute("SELECT COUNT(*) FROM task_runs WHERE task_id=?", (tid,)).fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_events WHERE task_id=? AND kind='protocol_violation'", (tid,)
+        ).fetchone()[0] == 1
 
         kb.unblock_task(conn, tid)
         assert kb.get_task(conn, tid).status == "ready"

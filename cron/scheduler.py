@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import random
 import subprocess
 import sys
 import threading
@@ -4214,8 +4215,30 @@ def _sweep_mcp_orphans() -> None:
         logger.debug("Post-tick MCP orphan cleanup failed: %s", _e)
 
 
+def _apply_job_jitter(job: dict) -> int:
+    """Sleep a random 0–jitter_seconds interval before a job fires, to break catch-up stampedes.
+
+    Returns the actual seconds slept (0 when the job has no jitter configured). This runs
+    inside the worker thread (``_process_due_job``), so sleeping here delays only this
+    job's execution — the scheduler tick loop and other due jobs are unaffected.
+    """
+    jitter = job.get("jitter_seconds")
+    if not jitter or jitter <= 0:
+        return 0
+    delay = random.randint(0, int(jitter))
+    if delay > 0:
+        job_id = job.get("id", "?")
+        job_name = job.get("name", job_id)
+        logger.info("Job '%s': jitter sleep %ds (jitter_seconds=%d)", job_name, delay, jitter)
+        time.sleep(delay)
+    return delay
+
+
 def _process_due_job(job: dict, adapters, loop, verbose: bool) -> bool:
     """Run one due job via the shared ``run_one_job`` body."""
+    # Per-job jitter: random 0–N s delay to break catch-up stampedes. Runs in the worker
+    # thread, so it only delays this job — other due jobs fire independently.
+    _apply_job_jitter(job)
     # Claim only when the worker actually starts, so a queued lease can't expire first.
     try:
         claimed = claim_job_for_fire(job["id"], return_job=True)

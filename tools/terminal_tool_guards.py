@@ -145,6 +145,43 @@ def _foreground_background_guidance(command: str) -> str | None:
 # `<&3`) and the stderr pipe `|&`.
 _NON_BACKGROUND_AMP_RE = re.compile(r"&&|\d*[<>]&(?:\d+|-)?|&>>?|\|&")
 _TRAILING_AMP_ONLY_RE = re.compile(r"\s&\s*$")
+# Executable substitutions run code the quote-masking cannot see into (`"$(sleep 9 & echo $!)"`
+# hides a second, untracked background job), so any spelling of one refuses the conversion. Raw
+# substring match on purpose: a false refusal is today's behaviour, a false conversion is not.
+_EXECUTABLE_SUBSTITUTION_MARKERS = ("$(", "`", "<(", ">(")
+
+
+def _strip_trailing_amp(command: str) -> str:
+    """*command* minus its final `&` and the UNESCAPED whitespace right before it.
+
+    A backslash-escaped space is part of the last argument (`trailing\\ ` is the word `trailing `),
+    so trimming stops at the first whitespace byte preceded by an odd run of backslashes.
+    """
+    body = command.rstrip()[:-1]
+    end = len(body)
+    while end and body[end - 1].isspace():
+        backslashes = len(body[:end - 1]) - len(body[:end - 1].rstrip("\\"))
+        if backslashes % 2:
+            break
+        end -= 1
+    return body[:end]
+
+
+def _approval_identity(command: str) -> tuple:
+    """Everything the approval path keys a decision on for *command*: hardline verdict, the
+    dangerous pattern key/description (what session/permanent approvals are stored under), the
+    sudo-stdin floor, runtime self-delete, the user's deny rules and the permanent allowlist."""
+    from agent.runtime_self_protection import command_deletes_runtime
+    from tools.approval import _command_matches_permanent_allowlist, _match_user_deny_rule
+    from tools.approval_detection import _check_sudo_stdin_guard, detect_dangerous_command, detect_hardline_command
+    return (
+        tuple(detect_hardline_command(command)),
+        tuple(detect_dangerous_command(command)),
+        tuple(_check_sudo_stdin_guard(command)),
+        command_deletes_runtime(command),
+        _match_user_deny_rule(command),
+        bool(_command_matches_permanent_allowlist(command)),
+    )
 
 
 def trailing_amp_background_command(command: str) -> str | None:
@@ -152,11 +189,15 @@ def trailing_amp_background_command(command: str) -> str | None:
 
     Only the unambiguous shape converts: one line, one and-or list or pipeline (`a && b | c &`
     backgrounds the whole list in bash, exactly what background=true runs), nothing after the
-    `&`. Inline `a & b`, `;` sequences, multi-line scripts/heredocs and nohup/disown/setsid keep
-    the refusal: there the caller may expect later commands to run after a readiness check, so
-    the tool cannot rewrite them safely. Quoted `&` (and inert heredoc bodies) never count.
+    `&`. Inline `a & b`, `;` sequences, multi-line scripts/heredocs, nohup/disown/setsid and any
+    executable substitution (`$(...)`, backticks, `<(...)`/`>(...)`) keep the refusal: the tool
+    cannot prove there is no other background job or that later commands don't depend on a
+    readiness check. Quoted `&` (and inert heredoc bodies) never count. Conversion must leave
+    the approval identity untouched, otherwise the refusal stands.
     """
     if not isinstance(command, str) or _looks_like_help_or_version_command(command):
+        return None
+    if any(marker in command for marker in _EXECUTABLE_SUBSTITUTION_MARKERS):
         return None
     unquoted = _strip_quotes(command)
     if not _TRAILING_AMP_ONLY_RE.search(unquoted) or not command.rstrip().endswith("&"):
@@ -166,15 +207,13 @@ def trailing_amp_background_command(command: str) -> str | None:
         return None
     if "&" in _NON_BACKGROUND_AMP_RE.sub("", body):
         return None
-    stripped = command.rstrip()[:-1].rstrip()
-    if not stripped:
+    stripped = _strip_trailing_amp(command)
+    if not stripped.strip():
         return None
-    # Approval runs on what executes (the stripped command). Some dangerous patterns key on the
-    # `&` itself (`hermes gateway run &` = gateway outside its service manager), so convert only
-    # when both spellings get the same verdict; otherwise the old refusal stands.
-    from tools.approval_detection import detect_dangerous_command, detect_hardline_command
-    if (detect_hardline_command(command)[0] != detect_hardline_command(stripped)[0]
-            or detect_dangerous_command(command)[0] != detect_dangerous_command(stripped)[0]):
+    # Approval runs on what executes (the stripped command). Some patterns key on the `&` itself
+    # (`hermes gateway run &` = gateway outside its service manager), and approvals are stored per
+    # pattern key, so a different key would let a pre-approval for another category pass.
+    if _approval_identity(command) != _approval_identity(stripped):
         return None
     return stripped
 

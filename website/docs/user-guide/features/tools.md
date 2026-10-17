@@ -240,9 +240,10 @@ A foreground command whose only backgrounding is a trailing `&` (for example
 as `background=true` with the `&` removed, and the result carries an
 `auto_backgrounded` note with the `session_id`. It goes through the same
 approval checks as any background command. Shapes that mix in other commands
-(`server & curl ...`, `a; b &`, multi-line scripts) and `nohup`/`disown`/`setsid`
-wrappers are still refused with guidance, because Hermes cannot safely tell
-which part should keep running.
+(`server & curl ...`, `a; b &`, multi-line scripts), `nohup`/`disown`/`setsid`
+wrappers, command substitutions (`$(...)`, backticks, `<(...)`) and commands
+whose approval category would change without the `&` are still refused with
+guidance, because Hermes cannot safely tell which part should keep running.
 
 Completed background commands retain their exit status and captured output in the
 active profile. Resume the conversation that launched the command (or its

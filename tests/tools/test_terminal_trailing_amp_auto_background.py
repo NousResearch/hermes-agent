@@ -5,6 +5,8 @@ Refusing it cost a full model turn to resend the same command with background=tr
 servers without `&`) keep the refusal: the caller may expect later commands to run after a check.
 """
 import json
+import shutil
+import subprocess
 import time
 from unittest.mock import patch
 
@@ -84,3 +86,29 @@ def test_converted_command_never_gets_relaunch_hint_even_with_another_hint(tmp_p
     assert "trailing & was converted to background=true" in result["auto_backgrounded"]
     assert _HOMEBREW_CI_POLLER_HINT in result["hint"]
     assert _SILENT_BACKGROUND_HINT not in result["hint"]
+
+
+@pytest.mark.parametrize("command", [
+    # A second background job hidden in an executable substitution would escape tracking.
+    'pid="$(sleep 60 >/dev/null 2>&1 & echo $!)" && printf "%s" "$pid" &',
+    'pid="`sleep 60 >/dev/null 2>&1 & echo $!`" && printf "%s" "$pid" &',
+    # Same danger, different approval key: a pre-approval of the stripped key must not apply.
+    "hermes gateway run && cp src .env &",
+    # The escaped space belongs to the argument.
+    "printf '<%s>' trailing\\ &",
+])
+def test_conversion_never_changes_what_runs_or_how_it_is_approved(command):
+    """Either the old refusal stands, or the converted command is the same shell program with
+    the same approval identity, minus only the background operator."""
+    from tools.approval_detection import detect_dangerous_command
+    from tools.terminal_tool_guards import trailing_amp_background_command
+
+    stripped = trailing_amp_background_command(command)
+    if stripped is None:
+        return
+    assert "$(" not in stripped and "`" not in stripped
+    assert detect_dangerous_command(stripped) == detect_dangerous_command(command)
+    if shutil.which("bash"):
+        def out(script):
+            return subprocess.run(["bash", "-c", script], check=False, capture_output=True, timeout=10).stdout
+        assert out(stripped) == out(command + " wait")

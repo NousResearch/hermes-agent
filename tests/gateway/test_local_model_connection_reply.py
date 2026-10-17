@@ -254,7 +254,7 @@ class TestQuotaExhaustedIsNotAnAuthFailure:
 def test_turn_runner_host_side_resolution_failure_does_not_send_user_to_login(monkeypatch):
     """A local OSError under resolution (the CA bundle deleted by an install-environment rotation)
     is not a credential verdict: messaging users get the gateway-log reply, never /login (#140344).
-    The same chain with an AuthError in it keeps the sign-in reply (control)."""
+    An AuthError in the chain keeps the sign-in reply, also when it wraps a network OSError."""
     from types import SimpleNamespace
     import gateway.run as gateway_run
     from gateway.run_turn_runner import TurnRunner
@@ -272,8 +272,21 @@ def test_turn_runner_host_side_resolution_failure_does_not_send_user_to_login(mo
 
     monkeypatch.setattr(gateway_run, "_current_max_iterations", lambda: 30)
     replies = {}
+    def _auth_over_oserror():
+        try:
+            raise ConnectionError("refresh endpoint unreachable")
+        except ConnectionError as net:
+            raise AuthError("Nous refresh failed; sign in again.") from net
+
+    def _mixed_cause():
+        try:
+            _auth_over_oserror()
+        except AuthError as exc:
+            return exc
+
     for label, cause in (("oserror", FileNotFoundError(2, "No such file or directory")),
-                         ("auth", AuthError("No usable credentials found for provider 'nous'."))):
+                         ("auth", AuthError("No usable credentials found for provider 'nous'.")),
+                         ("mixed", _mixed_cause())):
         runner = SimpleNamespace(_resolve_session_agent_runtime=_raising(cause),
                                  _get_system_prompt_for_channel=lambda *a, **k: "",
                                  _ephemeral_system_prompt="", _adapter_for_source=lambda _s: None)
@@ -284,4 +297,5 @@ def test_turn_runner_host_side_resolution_failure_does_not_send_user_to_login(mo
         replies[label] = (result["final_response"], result["failure_reason"])
     assert "/login" not in replies["oserror"][0] and "hermes logs" in replies["oserror"][0]
     assert replies["oserror"][1] == "unknown"
-    assert "/login" in replies["auth"][0] and replies["auth"][1] == "auth_permanent"
+    for label in ("auth", "mixed"):  # an AuthError anywhere in the chain is a credential verdict
+        assert "/login" in replies[label][0] and replies[label][1] == "auth_permanent", label

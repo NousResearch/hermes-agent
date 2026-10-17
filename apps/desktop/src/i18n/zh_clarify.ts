@@ -13,6 +13,7 @@ export const zhClarify: Partial<ClarifyCopy> = {
   confirmAndContinueLabel: '确认并继续',
   singleSelectHint: '选一个',
   multiSelectHint: '可多选',
+  recommended: '（推荐）',
   oneQuestion: '1 个问题',
   questionProgress: (answered, total) => `已回答 ${answered}/${total}`,
   notDelivered: '此问题未送达应用，无法在此回答。请按停止结束本轮，然后在聊天中回复。'

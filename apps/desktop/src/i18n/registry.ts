@@ -56,7 +56,15 @@ interface Entry extends RegisteredLocaleMeta {
   id: Locale
   /** Nested, already unflattened; adapted against the base at resolve time. */
   translations?: Record<string, unknown>
+  /** Strings addressed to a plugin's own bundle, by plugin id (nested). */
+  plugins?: Record<string, Record<string, unknown>>
 }
+
+/** Top-level key under which a pack addresses plugin bundles:
+ *  `plugins.<pluginId>.<path>` (`plugins.kanban.newTask`). Plugins keep their
+ *  strings out of the app catalog (`ctx.i18n.register`), so without this a
+ *  pack could translate every surface except plugin-owned ones. */
+export const PLUGIN_PACK_KEY = 'plugins'
 
 const entries = new Map<Locale, Entry[]>()
 const resolved = new Map<Locale, { version: number; value: Translations }>()
@@ -100,6 +108,26 @@ function toTree(translations: AppLocaleRegistration['translations'], base: Trans
   return unflattenMessages(leaves, base)
 }
 
+/** Split the `plugins` branch off a registration's tree: it is routed to the
+ *  plugin translator, never merged into the app catalog. */
+function splitPluginStrings(tree: Record<string, unknown>): Pick<Entry, 'plugins' | 'translations'> {
+  const { [PLUGIN_PACK_KEY]: branch, ...translations } = tree
+
+  if (!isRecord(branch)) {
+    return { translations: tree }
+  }
+
+  const plugins: Record<string, Record<string, unknown>> = {}
+
+  for (const [pluginId, messages] of Object.entries(branch)) {
+    if (isRecord(messages)) {
+      plugins[pluginId] = messages
+    }
+  }
+
+  return { translations, plugins }
+}
+
 function makeEntry(id: Locale, registration: AppLocaleRegistration, source: AppLocaleSource): Entry {
   return {
     id,
@@ -107,7 +135,7 @@ function makeEntry(id: Locale, registration: AppLocaleRegistration, source: AppL
     endonym: registration.endonym?.trim() || undefined,
     englishName: registration.englishName?.trim() || undefined,
     rtl: registration.rtl,
-    translations: registration.translations ? toTree(registration.translations, baseCatalog(id)) : undefined
+    ...(registration.translations ? splitPluginStrings(toTree(registration.translations, baseCatalog(id))) : {})
   }
 }
 
@@ -246,6 +274,23 @@ export function resolveTranslations(locale: Locale): Translations {
   resolved.set(locale, { version, value })
 
   return value
+}
+
+/** Pack strings registered for one plugin in `locale`, in registration order
+ *  (last wins). Nested; still raw strings — the plugin translator adapts them
+ *  against the plugin's own bundle shape. */
+export function registeredPluginMessages(locale: Locale, pluginId: string): Record<string, unknown>[] {
+  const layers: Record<string, unknown>[] = []
+
+  for (const entry of entries.get(locale) ?? []) {
+    const messages = entry.plugins?.[pluginId]
+
+    if (messages) {
+      layers.push(messages)
+    }
+  }
+
+  return layers
 }
 
 /** Test seam: forget every registration. */

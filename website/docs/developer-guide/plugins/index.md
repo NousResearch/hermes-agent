@@ -1470,7 +1470,7 @@ The canonical list of kinds is `VALID_MIDDLEWARE` in `hermes_cli/middleware.py`:
 | `llm_request` | `request`, `original_request`, context kwargs | Return `{"request": {...}}` to replace the effective provider kwargs before Hermes sends them. |
 | `tool_execution` | the payload plus `next_call` | Wraps tool execution. Call `next_call(payload)` exactly once to run the downstream chain (or skip it to short-circuit) and return the result. |
 | `llm_execution` | the payload plus `next_call` | Same shape, wrapping the provider call. |
-| `auxiliary_execution` | `request`, `original_request`, `next_call`, `aux_task`, `provider`, `model`, `api_mode`, `api_request_id`, `retry_count`, parent-turn ids | Wraps one non-streaming auxiliary provider attempt (titles, compression, vision, MoA, goal judge, ...). Return a replacement response instead of calling `next_call` to refuse the attempt; the request cannot be rewritten, and streaming attempts are not gated. |
+| `auxiliary_execution` | `request`, `original_request`, `next_call`, `aux_task`, `provider`, `model`, `api_mode`, `api_request_id`, `retry_count`, parent-turn ids | Wraps one non-streaming auxiliary provider attempt (titles, compression, vision, MoA, goal judge, ...). Return a replacement response instead of calling `next_call` to answer it; set `auxiliary_refused` on that response to refuse it (raises `AuxiliaryCallRefused`); the request cannot be rewritten, and streaming attempts are not gated. |
 
 **Rules that matter in practice:**
 

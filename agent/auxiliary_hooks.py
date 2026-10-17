@@ -11,8 +11,9 @@ callback is logged and the auxiliary call proceeds untouched.
 
 ``auxiliary_execution`` middleware (``hermes_cli.middleware``) is the one place a plugin can gate an
 auxiliary attempt: it wraps the provider call of a non-streaming attempt and may return a
-replacement response instead of calling ``next_call``. It cannot rewrite the request, and
-streaming attempts are not gated. Like every middleware kind it is fail-open on exceptions.
+replacement response instead of calling ``next_call``; a response carrying a truthy
+``auxiliary_refused`` attribute is a refusal and surfaces as ``AuxiliaryCallRefused`` (an error,
+never a result). It cannot rewrite the request, and streaming attempts are not gated. Like every middleware kind it is fail-open on exceptions.
 """
 
 from __future__ import annotations
@@ -227,6 +228,29 @@ def _post_safely(hooks: Optional[_AuxCallHooks], response: Any = None, error: An
         logger.warning("post_auxiliary_call payload build failed; continuing", exc_info=True)
 
 
+class AuxiliaryCallRefused(RuntimeError):
+    """An ``auxiliary_execution`` middleware refused the attempt.
+
+    A refusal is an error, never a result: handing refusal text back as a compression summary,
+    a title or a vision answer would write it into the conversation. Raising it lets the
+    caller's existing error handling (fallback chain, "no summary" paths) run instead.
+    """
+
+
+# A middleware refuses by returning a response object carrying this truthy attribute.
+AUXILIARY_REFUSED_ATTR = "auxiliary_refused"
+
+
+def _raise_if_refused(response: Any) -> None:
+    if getattr(response, AUXILIARY_REFUSED_ATTR, False) is True:
+        text = ""
+        try:
+            text = str(response.choices[0].message.content or "")
+        except (AttributeError, IndexError, TypeError):
+            pass
+        raise AuxiliaryCallRefused(text or "auxiliary call refused by a plugin")
+
+
 def _execution_context(
     aux_task: str, metadata: dict[str, Any], kwargs: dict[str, Any], provider: str, model: str, api_mode: str,
 ) -> dict[str, Any]:
@@ -269,6 +293,7 @@ def run_with_aux_hooks(
             response = run_auxiliary_execution_middleware(
                 kwargs, lambda _request: call(),
                 **_execution_context(aux_task, metadata, kwargs, provider, model, api_mode))
+            _raise_if_refused(response)
     except BaseException as exc:
         _post_safely(hooks, error=exc)
         raise
@@ -298,6 +323,7 @@ async def arun_with_aux_hooks(
                 **_execution_context(aux_task, metadata, kwargs, provider, model, api_mode))
             if inspect.isawaitable(response):
                 response = await response
+            _raise_if_refused(response)
     except BaseException as exc:
         _post_safely(hooks, error=exc)
         raise

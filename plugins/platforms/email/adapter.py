@@ -363,6 +363,13 @@ def _domains_aligned(a: str, b: str) -> bool:
     return bool(a and b) and (a == b or a.endswith("." + b) or b.endswith("." + a))
 
 
+_SMTP_AUTH_RE = re.compile(
+    r'auth\s*=\s*pass\s+smtp\.auth=("[^"\\\s;()]+"|[^\s;"()\\]+)'
+    r'(?:\s+smtp\.mailfrom=("[^"\\\s;()]*"|[^\s;"()\\]+))?',
+    re.IGNORECASE,
+)
+
+
 def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str, *, authserv_id: str) -> tuple[bool, str]:
     """Verify the ``From:`` domain is authenticated; returns ``(authenticated, reason)``.
     ``From:`` is attacker-controlled (GHSA-rxqh-5572-8m77); the only trustworthy signal is the
@@ -371,6 +378,9 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
     pin, not proof of provenance: the receiving MTA must strip inbound results claiming its id (RFC 8601).
     True on DMARC pass, aligned SPF pass, or aligned DKIM (``header.d``) pass. No header or no pin → fail-closed
     (opt out via ``EmailAdapter._require_authenticated_sender``)."""
+    if len(msg.get_all("From", [])) != 1 or len(email_lib.utils.getaddresses(msg.get_all("From", []))) != 1:
+        return False, "ambiguous From header"
+
     from_domain = _domain_of(from_addr)
     if not from_domain:
         return False, "missing From domain"
@@ -385,6 +395,14 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
         return False, _MISSING_AUTHSERV_REASON
     if clauses[0].strip().lower() != authserv_id:
         return False, _UNTRUSTED_AUTHSERV_REASON
+    auth_clauses = [clause.strip() for clause in trusted.split(';')[1:] if re.match(r"\s*auth\s*=", clause, re.IGNORECASE)]
+    if auth_clauses:
+        if len(auth_clauses) != 1:
+            return False, "SMTP AUTH requires one result"
+        match = _SMTP_AUTH_RE.fullmatch(auth_clauses[0])
+        if match and match.group(1).strip('"').lower() == from_addr.lower():
+            return True, "auth=pass smtp.auth matches From"
+        return False, "SMTP AUTH identity does not match From"
     # Each verdict comes from the head of its own clause (split outside quotes/comments) and its domains only from that
     # clause: a quoted local part or comment can otherwise smuggle ``spf=pass``/``header.d=`` (GHSA-rxqh-5572-8m77).
     results: dict[str, list[tuple[str, list[tuple[str, str]]]]] = {"dmarc": [], "spf": [], "dkim": []}

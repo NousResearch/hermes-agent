@@ -98,6 +98,45 @@ class TestGatewayOwnedSessionTeardown:
         assert agent._end_session_on_close is False
         assert agent._owns_session_db is False  # close() reached _finalize_owned_session_row
 
+    @pytest.mark.parametrize("failure", ["open", "read"])
+    def test_unprovable_profile_ownership_leaves_gateway_owned_row_open(self, tmp_path, monkeypatch, failure):
+        """The profile row is the only proof of gateway ownership. When the backend cannot
+        open or read that state.db, ownership is unknown and the TUI acts as a viewer: the
+        agent's own still-open handle must not end the gateway's row on close (#60609), and
+        its delegations are not interrupted by durable key."""
+        import sqlite3
+        import types
+        from unittest.mock import patch
+
+        import hermes_state_registry
+
+        session_id = "gateway-owned-unprovable"
+        db_path, session, agent = _make_real_session(
+            tmp_path, monkeypatch, source="telegram", session_id=session_id
+        )
+        interrupted = []
+
+        def _raise(*_args, **_kwargs):
+            raise sqlite3.OperationalError("unable to open database file")
+
+        def _acquire(*_args, **_kwargs):
+            if failure == "open":
+                _raise()
+            return types.SimpleNamespace(get_session=_raise, end_session=MagicMock())
+
+        def _capture(session_key="", **_kwargs):
+            interrupted.append(session_key)
+
+        with patch.object(hermes_state_registry, "acquire", _acquire), \
+                patch.object(hermes_state_registry, "release_or_close", lambda _db: None), \
+                patch("tools.async_delegation.interrupt_for_session", _capture):
+            _teardown_session(session, end_reason="ws_orphan_reap")
+
+        row = _read_real_row(db_path, session_id)
+        assert (row["ended_at"], row["end_reason"]) == (None, None)
+        assert agent._end_session_on_close is False
+        assert interrupted == [""]
+
 
 class TestDesktopAutomaticReclaimTeardown:
     """#105588: automatic Desktop cleanup reclaims runtime but leaves the durable row open THROUGH the full

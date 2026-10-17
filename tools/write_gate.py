@@ -169,11 +169,16 @@ def _append_change_log_line(entry: dict[str, Any]) -> None:
 # --- Store-scoped primitives (INTEG-1 / INTEG-2) ----------------------------
 
 def _is_doc(store, target: str) -> bool:
-    """True when *target* addresses a chain doc (uncapped, doc-resident entries)."""
-    _doc = getattr(store, "_doc", None)
-    if not callable(_doc):
-        return False
-    return _doc(target) is not None
+    """True when *target* addresses a chain doc (uncapped, doc-resident entries).
+
+    Guarded so a two-way store (one without the doc-chain arm from #116673)
+    falls back to ``False`` instead of raising ``AttributeError``.  The gate is
+    fail-closed on a missing arm — it never raises through into the caller's
+    ``try/except`` fail-open, and a target without a doc arm is simply not a doc.
+    (E1: this is the guard that removes the 31 ``AttributeError`` failures the
+    lane measured on plain main, where ``store._doc`` does not exist.)"""
+    doc = getattr(store, "_doc", None)
+    return callable(doc) and doc(target) is not None
 
 
 def _store_char_count(store, target: str) -> int:
@@ -437,80 +442,6 @@ def _stage6_stale_entry(entries: list[str], old_text: str) -> Optional[GateRefus
 
 # --- Public entry point ------------------------------------------------------
 
-def _run_prewrite_stages(
-    store,
-    action: str,
-    target: str,
-    content: Optional[str],
-    old_text: Optional[str],
-    operations: Optional[list[dict[str, Any]]],
-    caller: str,
-    entries: list[str],
-    is_doc: bool,
-    scan_texts: list[str],
-    add_contents: list[str],
-) -> tuple[Optional[GateRefusal], Optional[dict[str, Any]]]:
-    """Run stages 1-6 (pre-write). Returns (first_refusal, date_flag).
-
-    Extracted from ``acceptance_pipeline`` so the pipeline's complexity stays
-    under the code-health cap; the stage order and semantics are unchanged.
-    """
-    # --- Stage 1: char-cap soft check (85%), per-target scoped ------------
-    for c in add_contents:
-        if refusal := _stage1_char_cap(store, c, target):
-            return refusal, None
-    # Also enforce the hard cap (store limit) as the ceiling.
-    for c in add_contents:
-        if refusal := _stage1_char_cap(store, c, target, hard_cap=True):
-            return refusal, None
-
-    # --- Stage 1 (hard-cap arm): growing replace/patch projection (T1-7) --
-    if not operations:
-        if refusal := _stage1_projected_hard_cap(store, target, action, content, old_text):
-            return refusal, None
-
-    # --- Stage 2: date-currency ADVISORY (never blocks) ------------------
-    # Skipped for doc targets: a new dated note written into a chain doc
-    # belongs in the chain (the chain is the long tail of dated notes), so the
-    # "route to session-log" advisory does not apply there (T2-2c).
-    date_flag: Optional[dict[str, Any]] = None
-    if not is_doc:
-        for c in add_contents:
-            if c and (flag := _stage2_date_currency(c)):
-                date_flag = flag
-                break  # one flag is enough
-
-    # --- Stage 3: provenance lens -----------------------------------------
-    for c in scan_texts:
-        if c and (refusal := _stage3_provenance(caller, c)):
-            refusal.detail["write_caller"] = caller
-            return refusal, None
-
-    # --- Stage 4: procedure-shape semantic check --------------------------
-    for c in scan_texts:
-        if c and (refusal := _stage4_procedure_shape(c)):
-            return refusal, None
-
-    # --- Stage 5: grammar / threat check ----------------------------------
-    # Reuse the store's _scan_memory_content for new content only.
-    # old_text is NOT scanned here — the store's own _scan_memory_content already
-    # guards new writes; scanning old_text would double-gate and break existing
-    # fixtures that patch entries containing previously-scanned (pre-threat) text.
-    for c in scan_texts:
-        if c and (refusal := _stage5_grammar_threat(c)):
-            return refusal, None
-
-    # --- Stage 6: stale-entry refusal (whole-entry exact match) -----------
-    # Only for single operations (not batches — the store's _pin_matched_entries
-    # handles per-op matching in the batch path).  Searched against the TARGET's
-    # entries, so a doc-resident span anchors against the doc (INTEG-2).
-    if not operations and old_text and entries:
-        if refusal := _stage6_stale_entry(entries, old_text):
-            return refusal, None
-
-    return None, date_flag
-
-
 def acceptance_pipeline(
     store,
     action: str,
@@ -521,7 +452,7 @@ def acceptance_pipeline(
     caller: str = "user",
     entries: Optional[list[str]] = None,
 ) -> Optional[GateRefusal]:
-    """Run the 7-stage acceptance gate (stages 1-6 pre-write).
+    """Run the 7-stage acceptance gate (stages 1-6 pre-write, stage 7 post-write).
 
     Returns ``None`` to proceed (admit), or a :class:`GateRefusal` (refuse).
     On admit, exactly ONE Door-B ADMIT line is appended (T1-1).  On refusal,
@@ -530,18 +461,67 @@ def acceptance_pipeline(
     Size / limit / stale-entry resolution is SCOPED PER TARGET through the
     store's doc-aware arms, so a chain-doc write is charged against the doc
     (uncapped) and anchored against the doc's entries (INTEG-1 / INTEG-2).
+
+    Stages 1-6 are delegated to :func:`_run_prewrite_stages` (E4: extracted so
+    this orchestrator's cyclomatic complexity stays under the CC cap, where the
+    inlined version tripped ``C901 21 > 20``).
     """
     is_doc = _is_doc(store, target)
     # Resolve the TARGET's own entries when not provided (INTEG-2).
     if entries is None:
         entries = _store_entries(store, target)
 
+    refusal, date_flag = _run_prewrite_stages(
+        store, action, target, content, old_text, operations, caller, entries, is_doc
+    )
+    if refusal is not None:
+        # On refusal: exactly one Door-B line naming the violating stage (T1-1).
+        _append_change_log_line(refusal.to_log_dict() | {"target": target})
+        FAILURE_CLASS.set(refusal.failure_class)
+        return refusal
+
+    # --- ADMIT: exactly one Door-B line per admitted write (T1-1) ---------
+    _append_change_log_line(
+        GateRefusal(
+            action="ADMIT",
+            rationale="accepted",
+            reroute_target=None,
+            failure_class="none",
+            detail={"target": target, **(date_flag or {})},
+        ).to_log_dict()
+    )
+    return None  # proceed to write
+
+
+def _run_prewrite_stages(
+    store,
+    action: str,
+    target: str,
+    content: Optional[str],
+    old_text: Optional[str],
+    operations: Optional[list[dict[str, Any]]],
+    caller: str,
+    entries: list[str],
+    is_doc: bool,
+) -> tuple[Optional[GateRefusal], Optional[dict[str, Any]]]:
+    """Run the pre-write stages (1-6) and return ``(refusal, date_flag)``.
+
+    A refusal short-circuits the gate (the caller appends the Door-B log line and
+    sets the failure class).  A clear run returns the Stage-2 date-currency
+    advisory (carried into the single ADMIT line) or ``None``.
+
+    Stage ordering and per-target scoping are unchanged: char-cap (soft then
+    hard, plus the growing-replace projection), date-currency advisory,
+    provenance lens, procedure-shape, grammar/threat, stale-entry.  The batch
+    path skips Stage 6 (the store's ``_pin_matched_entries`` anchors each op
+    individually) — the dead ``batch_old_texts`` accumulator from the inlined
+    version is gone (E3): nothing read it.
+    """
     # Collect the new content strings to scan (all operations' content/new_text).
     if operations:
         scan_texts = [op.get("content") or op.get("new_text") or "" for op in operations]
-        # For char-cap we check only new entries being ADDED (not replace/patch,
-        # which may shrink the store).  Growing replaces are caught by the
-        # projected hard-cap arm (T1-7).
+        # Char-cap checks only new ADDED entries — replace/patch/remove may shrink
+        # the store; growing replaces are caught by the projected hard-cap arm.
         add_contents = [op.get("content") or op.get("new_text") or ""
                         for op in operations if op.get("action") == "add"]
         # For batches, Stage 6 (stale-entry) is handled by the store's own
@@ -549,34 +529,81 @@ def acceptance_pipeline(
         # concatenated old_text.
     else:
         scan_texts = [content or ""] if content else []
-        # Char-cap only applies to ``add`` actions — replace/patch/remove may
-        # shrink the store, so their content is not subject to the soft-cap
-        # check (the projected hard-cap arm covers the growing case).
         add_contents = [content or ""] if (action == "add" and content) else []
 
-    def _refuse(refusal: GateRefusal) -> GateRefusal:
-        _append_change_log_line(refusal.to_log_dict() | {"target": target})
-        FAILURE_CLASS.set(refusal.failure_class)
-        return refusal
-
-    refusal, date_flag = _run_prewrite_stages(
-        store, action, target, content, old_text, operations, caller,
-        entries, is_doc, scan_texts, add_contents,
-    )
+    # --- Stage 1: char-cap soft check (85%) then the hard limit ------------
+    refusal = _stage1_caps(store, add_contents, target)
+    # --- Stage 1 (hard-cap arm): growing replace/patch projection (T1-7) ---
+    if refusal is None and not operations:
+        refusal = _stage1_projected_hard_cap(store, target, action, content, old_text)
     if refusal is not None:
-        return _refuse(refusal)
+        return refusal, None
 
-    # --- ADMIT: exactly one Door-B line per admitted write (T1-1) ---------
-    admit = GateRefusal(
-        action="ADMIT",
-        rationale="accepted",
-        reroute_target=None,
-        failure_class="none",
-        detail={"target": target, **(date_flag or {})},
-    )
-    _append_change_log_line(admit.to_log_dict())
-    FAILURE_CLASS.set("none")  # mirror the refusal/readback paths; the drain reads this per call
-    return None  # proceed to write
+    # --- Stage 2: date-currency ADVISORY (never blocks) -------------------
+    date_flag = _stage2_date_flag(add_contents, is_doc)
+
+    # --- Stage 3: provenance lens -----------------------------------------
+    for c in scan_texts:
+        if c and (refusal := _stage3_provenance(caller, c)):
+            refusal.detail["write_caller"] = caller
+            return refusal, None
+
+    # --- Stage 4: procedure-shape semantic check ------------------------
+    for c in scan_texts:
+        if c and (refusal := _stage4_procedure_shape(c)):
+            return refusal, None
+
+    # --- Stage 5: grammar / threat check --------------------------------
+    # Reuse the store's _scan_memory_content for new content only.
+    # old_text is NOT scanned here — the store's own _scan_memory_content already
+    # guards new writes; scanning old_text would double-gate and break existing
+    # fixtures that patch entries containing previously-scanned (pre-threat) text.
+    for c in scan_texts:
+        if c and (refusal := _stage5_grammar_threat(c)):
+            return refusal, None
+
+    # --- Stage 6: stale-entry refusal (whole-entry exact match) ---------
+    # Only for single operations (not batches — the store's _pin_matched_entries
+    # handles per-op matching in the batch path).  Searched against the TARGET's
+    # entries, so a doc-resident span anchors against the doc (INTEG-2).
+    if not operations and old_text and entries:
+        if refusal := _stage6_stale_entry(entries, old_text):
+            return refusal, None
+
+    return None, date_flag
+
+
+def _stage1_caps(store, add_contents: list[str], target: str) -> Optional[GateRefusal]:
+    """Stage 1 — char-cap checks (soft at 85%, then the hard limit), per target.
+
+    Iterates the new ``add`` contents only; both the soft and the hard ceiling are
+    checked before returning, so a batch add that trips either is refused.  Docs
+    are uncapped (``_char_limit`` is ``None``): both arms skip the check, so a
+    chain-doc write is never charged against the anchor's budget (INTEG-1).
+    """
+    for c in add_contents:
+        if refusal := _stage1_char_cap(store, c, target):
+            return refusal
+    # Also enforce the hard cap (store limit) as the ceiling.
+    for c in add_contents:
+        if refusal := _stage1_char_cap(store, c, target, hard_cap=True):
+            return refusal
+    return None
+
+
+def _stage2_date_flag(add_contents: list[str], is_doc: bool) -> Optional[dict[str, Any]]:
+    """Stage 2 — date-currency ADVISORY flag (never blocks).
+
+    Skipped for doc targets: a dated note written into a chain doc belongs in
+    the chain (the long tail of dated notes), so the "route to session-log"
+    advisory does not apply there (T2-2c).  Returns the first fresh-date flag.
+    """
+    if is_doc:
+        return None
+    for c in add_contents:
+        if c and (flag := _stage2_date_currency(c)):
+            return flag
+    return None
 
 
 # --- Stage 7: post-write read-back (writer path) ----------------------------

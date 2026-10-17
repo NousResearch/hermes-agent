@@ -64,7 +64,7 @@ def load_on_disk_store() -> MemoryStore:
         memory_enabled, user_profile_enabled = get_builtin_memory_store_flags(config)
         store = MemoryStore(int(mem_cfg.get("memory_char_limit", 2200)), int(mem_cfg.get("user_char_limit", 1375)),
                             memory_enabled=memory_enabled, user_profile_enabled=user_profile_enabled)
-    except Exception:  # health: allow BLE001 -- config load is best-effort; fall back to defaults
+    except Exception:  # health: allow BLE001 -- config may be absent/invalid in contexts with no live config (gateway/Desktop/`/memory`); fall back to MemoryStore defaults rather than break the memory tooling
         logger.debug("Could not load memory config; using defaults", exc_info=True)
         store = MemoryStore()  # config optional — fall back to defaults rather than break /memory
     store.load_from_disk()
@@ -108,7 +108,7 @@ def _gate_or_stage(store: MemoryStore, summary: str, detail: str, payload: dict[
             from tools.write_approval import current_origin
             origin = current_origin()
             caller = "user" if origin == "foreground" else origin
-        except Exception:  # health: allow BLE001 -- provenance resolution is best-effort; `unknown` caller is intentional (T2-1)
+        except Exception:  # health: allow BLE001 -- origin resolution is best-effort; an unresolvable caller degrades to the "unknown" sentinel, never promoting agent-inferred content to user-trusted (T2-1)
             caller = "unknown"
         # Build the entries snapshot for the stale-entry stage via the store's
         # doc-aware arm, so a doc: target anchors against the DOC's entries,
@@ -131,11 +131,11 @@ def _gate_or_stage(store: MemoryStore, summary: str, detail: str, payload: dict[
                               failure_class=refusal.failure_class,
                               reroute_target=refusal.reroute_target,
                               action=refusal.action)
-    except Exception:  # health: allow BLE001 -- fail-open gate boundary; store guards remain
+    except Exception:  # health: allow BLE001 -- deliberate fail-open gate boundary: origin/_entries_for/acceptance_pipeline faults must not block a memory write (documented lazy-gate fail-open precedent)
         logger.warning("acceptance_pipeline failed; degrading open to store guards", exc_info=True)
     try:
         from tools import write_approval as wa
-    except Exception:  # health: allow BLE001 -- approval gate import is best-effort; degrade to store guards
+    except Exception:  # health: allow BLE001 -- write_approval import is optional; if it can't load, proceed to the store's own gate (wa.evaluate_gate only ADDS an approval layer, so a missing module degrades to store-guarded behavior, not a hard failure)
         logger.debug("write_approval unavailable; proceeding without approval gate", exc_info=True)
         return None
     decision = wa.evaluate_gate(wa.MEMORY, inline_summary=summary, inline_detail=detail)
@@ -261,7 +261,7 @@ def _background_delete_gate(store, action, operations, target="memory", content=
                         f"{'batch' if operations is not None else action} was staged for your approval — "
                         "review it with /memory pending (approve to apply, discard to drop)."),
         }, ensure_ascii=False)
-    except Exception:
+    except Exception:  # health: allow BLE001 -- staging/verify boundary already logs the traceback (exc_info=True); on failure it DENIES the destructive op rather than silently proceeding
         logger.warning("Failed to stage background-review consolidation; denying", exc_info=True)
         FAILURE_CLASS.set("gate_refused")
         return tool_error(

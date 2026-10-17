@@ -200,6 +200,20 @@ export default defineConfig(({ command }) => ({
             // One chunk per heavyweight, lazy-only library family.
             // @streamdown/code lives WITH shiki because it statically imports
             // the full shiki bundle.
+            // xterm/codemirror are terminal/editor stacks loaded through
+            // React.lazy boundaries (terminal/persistent.tsx,
+            // chat/code-editor-lazy.tsx) — never on the boot path. Without
+            // their own groups, rolldown's merge heuristics can fold their
+            // shared deps back into the entry, putting the heavy chunk right
+            // back on cold start (see the vendor-react note above).
+            {
+              name: 'xterm',
+              test: /node_modules[\\/](@xterm[^\\/]*|xterm)[\\/]/
+            },
+            {
+              name: 'codemirror',
+              test: /node_modules[\\/](@codemirror[^\\/]*|@lezer[^\\/]*)[\\/]/
+            },
             {
               name: 'mermaid',
               test: /node_modules[\\/](mermaid|cytoscape|dagre|khroma|elkjs|d3|d3-[^\\/]+|@mermaid-js)[\\/]/

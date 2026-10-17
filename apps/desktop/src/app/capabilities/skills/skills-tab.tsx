@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { type ReactNode, useCallback, useMemo, useState } from 'react'
 
 import { ArchiveSkillConfirmDialog } from '@/app/learning/archive-skill-confirm-dialog'
-import { CodeEditor } from '@/components/chat/code-editor'
+import { LazyCodeEditor as CodeEditor } from '@/components/chat/code-editor-lazy'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {

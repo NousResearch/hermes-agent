@@ -110,7 +110,7 @@ vi.mock('@/store/session-removal', async importActual => ({
 // dynamically-imported copy (or a temporary object) never reaches it.
 const settled = vi.hoisted(() => ({ ids: [] as string[] }))
 
-vi.mock('@/store/session-states', async importActual => ({
+vi.mock('@/store/session-states-expiry', async importActual => ({
   ...(await importActual<Record<string, unknown>>()),
   getRecentlySettledSessionIds: () => settled.ids
 }))

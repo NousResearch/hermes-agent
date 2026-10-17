@@ -219,6 +219,33 @@ function readDashboardReadyFile(readyFile: fs.PathOrFileDescriptor) {
   }
 }
 
+async function readDashboardReadyFileAsync(readyFile: fs.PathOrFileDescriptor) {
+  if (!readyFile) {
+    return null
+  }
+
+  try {
+    // fs.promises.readFile has no fd overload here; fds (never used for the
+    // ready file in practice) fall back to the sync read.
+    const text =
+      typeof readyFile === 'number' ? fs.readFileSync(readyFile, 'utf8') : await fs.promises.readFile(readyFile, 'utf8')
+
+    const parsed = JSON.parse(text)
+    const port = Number(parsed?.port)
+
+    return Number.isInteger(port) && port > 0 ? port : null
+  } catch {
+    return null
+  }
+}
+
+// Poll cadence for the ready file: 300ms, not 50ms. This wait runs on the main
+// thread during the most latency-sensitive window (backend spawn), and a sync
+// read+parse 20×/s stalls every other main task whenever the disk is slow
+// (cold install, Windows AV scans). The file appears once; 300ms granularity
+// on a 90s budget is immaterial.
+const READY_FILE_POLL_MS = 300
+
 function waitForDashboardReadyFile(
   readyFile,
   child,
@@ -228,6 +255,8 @@ function waitForDashboardReadyFile(
   return new Promise((resolve, reject) => {
     let done = false
     let interval = null
+    // Slow disks can take longer than one cadence to answer; never stack reads.
+    let checking = false
 
     function cleanup() {
       if (done) {
@@ -245,12 +274,22 @@ function waitForDashboardReadyFile(
       child.off('error', onError)
     }
 
-    function check() {
-      const port = readDashboardReadyFile(readyFile)
+    async function check() {
+      if (checking || done) {
+        return
+      }
 
-      if (port) {
-        cleanup()
-        resolve(port)
+      checking = true
+
+      try {
+        const port = await readDashboardReadyFileAsync(readyFile)
+
+        if (port && !done) {
+          cleanup()
+          resolve(port)
+        }
+      } finally {
+        checking = false
       }
     }
 
@@ -271,13 +310,13 @@ function waitForDashboardReadyFile(
 
     child.on('exit', onExit)
     child.on('error', onError)
-    interval = setInterval(check, 50)
+    interval = setInterval(() => void check(), READY_FILE_POLL_MS)
 
     if (typeof interval.unref === 'function') {
       interval.unref()
     }
 
-    check()
+    void check()
   })
 }
 

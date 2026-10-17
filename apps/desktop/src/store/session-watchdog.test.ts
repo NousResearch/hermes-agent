@@ -10,7 +10,6 @@ import { $activeSessionId, $selectedStoredSessionId, $unreadFinishedSessionIds }
 import {
   $sessionStates,
   $stalledSessionIds,
-  $workingSessionIds,
   clearAllSessionStates,
   LIVE_TURN_EVENT_SILENCE_MS,
   LIVE_TURN_PROBE_TIMEOUT_MS,
@@ -23,6 +22,7 @@ import {
   setLiveTurnBackend,
   setSessionTileDelegate
 } from './session-states'
+import { $workingSessionIds } from './session-states-status-sets'
 
 vi.mock('@/store/gateway', async importActual => ({
   ...(await importActual<Record<string, unknown>>()),

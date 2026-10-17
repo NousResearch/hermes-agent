@@ -764,6 +764,15 @@ async function reviewCreatePr(repoPath, gitBin, ghBin) {
 
 // Compact working-tree status for the composer coding rail: branch, ahead/behind,
 // per-state change counts, +/- vs HEAD, and a capped changed-file list.
+//
+// Two rail-specific bounds keep this cheap on generated workspaces: the tracked
+// +/- summary and the default-branch lookup run concurrently (not serially),
+// and untracked line-counting stops after the first 50 files — `git diff HEAD`
+// ignores untracked files, so the rail folds top-level file insertions into
+// `added` itself, and entries past the cap intentionally contribute 0 rather
+// than triggering up to 500 × 1MB disk reads per refresh.
+const REPO_STATUS_UNTRACKED_COUNT_CAP = 50
+
 async function repoStatus(repoPath, gitBin) {
   let cwd
 
@@ -817,9 +826,17 @@ async function repoStatus(repoPath, gitBin) {
     conflicted: file.index === 'U' || file.working_dir === 'U'
   }))
 
+  // The tracked +/- summary and the default-branch lookup are independent
+  // git invocations — run them together, not back-to-back. No HEAD yet (fresh
+  // repo) leaves the summary null and added/removed at 0.
+  const [summary, defaultBranch] = await Promise.all([
+    git.diffSummary(['HEAD']).catch(() => null),
+    defaultBranchName(git)
+  ])
+
   const result = {
     branch: detached ? null : status.current || null,
-    defaultBranch: await defaultBranchName(git),
+    defaultBranch,
     detached,
     ahead: status.ahead || 0,
     behind: status.behind || 0,
@@ -828,18 +845,9 @@ async function repoStatus(repoPath, gitBin) {
     untracked: status.not_added.length,
     conflicted: status.conflicted.length,
     changed: files.length,
-    added: 0,
-    removed: 0,
+    added: summary ? summary.insertions : 0,
+    removed: summary ? summary.deletions : 0,
     files: files.slice(0, 200)
-  }
-
-  // +/- vs HEAD (staged + unstaged tracked changes). No HEAD yet → leave 0.
-  try {
-    const summary = await git.diffSummary(['HEAD'])
-    result.added = summary.insertions
-    result.removed = summary.deletions
-  } catch {
-    // No commits yet.
   }
 
   // `git diff HEAD` ignores untracked files, so a turn that only creates new
@@ -848,7 +856,7 @@ async function repoStatus(repoPath, gitBin) {
   // `added`; directories reported by the compact `normal` scan intentionally
   // remain at zero rather than recursively walking their contents.
   try {
-    const untracked = status.not_added.slice(0, 500)
+    const untracked = status.not_added.slice(0, REPO_STATUS_UNTRACKED_COUNT_CAP)
 
     for (let i = 0; i < untracked.length; i += UNTRACKED_LINE_COUNT_CONCURRENCY) {
       const batch = await Promise.all(

@@ -4,13 +4,12 @@ import { buildToolView } from '@/components/assistant-ui/tool/fallback-model'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $activeSessionId, $selectedStoredSessionId, $unreadFinishedSessionIds } from '@/store/session'
 import {
-  $attentionSessionIds,
   $sessionStates,
-  $workingSessionIds,
   clearAllSessionStates,
   publishSessionState,
   reconcileBusyStatesOnReconnect
 } from '@/store/session-states'
+import { $attentionSessionIds, $workingSessionIds } from '@/store/session-states-status-sets'
 
 import { rehydrateLiveSessionStatuses } from './use-background-sync'
 

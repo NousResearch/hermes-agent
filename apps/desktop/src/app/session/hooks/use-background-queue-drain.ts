@@ -25,7 +25,7 @@ import {
   idsShareLineage,
   sessionMatchesStoredId
 } from '@/store/session'
-import { $workingSessionIds } from '@/store/session-states'
+import { $workingSessionIds } from '@/store/session-states-status-sets'
 
 import type { SubmitTextOptions } from './use-prompt-actions/utils'
 

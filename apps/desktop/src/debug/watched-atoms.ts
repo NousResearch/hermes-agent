@@ -23,14 +23,13 @@ import {
 } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import {
-  $attentionSessionIds,
   $focusedRuntimeId,
   $focusedSessionState,
   $sessionStates,
   $sessionTiles,
-  $stalledSessionIds,
-  $workingSessionIds
+  $stalledSessionIds
 } from '@/store/session-states'
+import { $attentionSessionIds, $workingSessionIds } from '@/store/session-states-status-sets'
 
 import { watchAtom } from './atom-churn'
 

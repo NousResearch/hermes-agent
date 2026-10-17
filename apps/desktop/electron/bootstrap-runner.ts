@@ -482,7 +482,7 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
     // Stream stdout line-by-line so the renderer sees progress in real time.
     let stdoutBuf = ''
     child.stdout.on('data', chunk => {
-      stdout += chunk
+      stdout = appendBoundedStream(stdout, chunk)
       stdoutBuf += chunk
       let nl
 
@@ -498,7 +498,7 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
 
     let stderrBuf = ''
     child.stderr.on('data', chunk => {
-      stderr += chunk
+      stderr = appendBoundedStream(stderr, chunk)
       stderrBuf += chunk
       let nl
 
@@ -576,7 +576,7 @@ function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome 
 
     let stdoutBuf = ''
     child.stdout.on('data', chunk => {
-      stdout += chunk
+      stdout = appendBoundedStream(stdout, chunk)
       stdoutBuf += chunk
       let nl
 
@@ -592,7 +592,7 @@ function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome 
 
     let stderrBuf = ''
     child.stderr.on('data', chunk => {
-      stderr += chunk
+      stderr = appendBoundedStream(stderr, chunk)
       stderrBuf += chunk
       let nl
 
@@ -840,13 +840,45 @@ async function runStage({
 // Per-run log file
 // ---------------------------------------------------------------------------
 
+// The full-stream transcripts returned on close are for failure diagnostics
+// (tail), not archives: cap them so a verbose repair tail (dependency sync
+// alone runs ~20 min) can't park unbounded text per stage in main memory.
+const BOOTSTRAP_STREAM_MAX_CHARS = 256 * 1024
+
+function appendBoundedStream(current: string, chunk: string): string {
+  const next = current + chunk
+
+  return next.length > BOOTSTRAP_STREAM_MAX_CHARS ? next.slice(-BOOTSTRAP_STREAM_MAX_CHARS) : next
+}
+
 function openRunLog(logRoot) {
   fs.mkdirSync(logRoot, { recursive: true })
   const ts = new Date().toISOString().replace(/[:.]/g, '-')
   const logPath = path.join(logRoot, `bootstrap-${ts}.log`)
   const stream = fs.createWriteStream(logPath, { flags: 'a' })
+  pruneRunLogs(logRoot)
 
   return { path: logPath, stream }
+}
+
+// One log file per run, never pruned, is a slow disk leak (a repair loop
+// writes a file per attempt). Keep the newest few for forensics.
+function pruneRunLogs(logRoot, keep = 5) {
+  let entries
+
+  try {
+    entries = fs.readdirSync(logRoot).filter(name => /^bootstrap-.*\.log$/.test(name)).sort()
+  } catch {
+    return
+  }
+
+  for (const name of entries.slice(0, Math.max(0, entries.length - keep))) {
+    try {
+      fs.rmSync(path.join(logRoot, name), { force: true })
+    } catch {
+      void 0
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1031,6 +1063,7 @@ async function runBootstrap(opts) {
 }
 
 export {
+  appendBoundedStream,
   buildPinArgs,
   buildPosixPinArgs,
   cachedScriptPath,
@@ -1040,6 +1073,7 @@ export {
   isPinnedCommit,
   // Exposed for testability
   parseStageResult,
+  pruneRunLogs,
   resolveCheckoutHead,
   resolveInstallScript,
   resolveLocalInstallScript,

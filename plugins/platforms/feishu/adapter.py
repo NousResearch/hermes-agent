@@ -3362,7 +3362,11 @@ class FeishuAdapter(BasePlatformAdapter):
         if normalized.text_content:
             return normalized.text_content
         placeholder = normalized.metadata.get("placeholder_text") if isinstance(normalized.metadata, dict) else None
-        return str(placeholder).strip() or None
+        # str(None) would produce the literal string "None" — a truthy dead
+        # value that the gateway then injects as [Replying to: "None"] when the
+        # quoted message has no text (e.g. an image). Return None so the
+        # injection is skipped instead of pointing at a quote that does not exist.
+        return (str(placeholder).strip() or None) if placeholder is not None else None
 
     @staticmethod
     def _default_image_media_type(ext: str) -> str:

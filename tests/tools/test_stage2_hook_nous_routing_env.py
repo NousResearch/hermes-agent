@@ -87,6 +87,7 @@ def test_container_values_reach_home_and_every_profile_env(stage2_text: str, tmp
     assert ((home / "profiles" / "work" / ".env").stat().st_mode & 0o777) == 0o600
 
 
+@pytest.mark.platforms("linux")
 def test_container_wins_over_stale_line_then_idempotent_then_removed_when_unset(stage2_text: str, tmp_path: Path) -> None:
     """Boot 1: a stale line is replaced (one assignment). Boot 2 (same value): the volume is not rewritten.
     Boot 3 (variable gone): the stage2-written line is removed while hand-set lines stay. A read-only file

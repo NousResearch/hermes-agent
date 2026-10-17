@@ -1,6 +1,7 @@
 """Slow platform preparation must leave the gateway loop and profile scope intact."""
 
 import asyncio
+import sqlite3
 import threading
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -20,6 +21,7 @@ def _startup_runner(monkeypatch):
     )
     runner._restart_requested = runner._draining = False
     runner._shutdown_event = asyncio.Event()
+    runner._stop_task = None
     # Handler wiring follows construction; no dependency/registry/factory step is replaced.
     runner._wire_adapter_handlers = Mock()
     registry = PlatformRegistry()
@@ -109,3 +111,60 @@ async def test_failed_install_does_not_construct_or_fall_back(monkeypatch, raise
     assert not aborted and enabled == 1 and skipped == [] and pending == []
     factory.assert_not_called()
     builtin.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("interrupt", ["shutdown", "cancel"])
+async def test_preparation_interrupt_closes_unpublished_adapters(tmp_path, monkeypatch, interrupt):
+    runner, registry = _startup_runner(monkeypatch)
+    runner.config.platforms = {
+        Platform.TELEGRAM: PlatformConfig(enabled=True, token="fixture-token"),
+        Platform.FEISHU: PlatformConfig(enabled=True, token="fixture-token"),
+    }
+    loop = asyncio.get_running_loop()
+    released = threading.Event()
+    connections = []
+
+    def factory(config):
+        connection = sqlite3.connect(tmp_path / f"adapter-{len(connections)}.db")
+        connections.append(connection)
+
+        async def disconnect():
+            connection.close()
+
+        async def cancel_background_tasks():
+            pass
+
+        return SimpleNamespace(disconnect=disconnect, cancel_background_tasks=cancel_background_tasks)
+
+    def stop_preparing():
+        if interrupt == "cancel":
+            startup.cancel()
+        else:
+            runner._shutdown_event.set()
+        released.set()
+
+    def install():
+        loop.call_soon_threadsafe(stop_preparing)
+        return released.wait(5)
+
+    registry.register(PlatformEntry(name="telegram", label="Ready", check_fn=lambda: True, adapter_factory=factory))
+    registry.register(PlatformEntry(
+        name="feishu", label="Preparing", check_fn=lambda: False,
+        ensure_deps_fn=install, adapter_factory=factory,
+    ))
+    startup = asyncio.create_task(runner._start_prefilter_platforms())
+    if interrupt == "cancel":
+        with pytest.raises(asyncio.CancelledError):
+            await startup
+    else:
+        aborted, _, _, pending = await startup
+        assert aborted and pending == []
+    try:
+        assert len(connections) == (1 if interrupt == "cancel" else 2)
+        for connection in connections:
+            with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+                connection.execute("SELECT 1")
+    finally:
+        for connection in connections:
+            connection.close()

@@ -1215,53 +1215,65 @@ class GatewayStartupMixin:
         _multiplex_on = self._multiplex_on()
         _multiplex_skipped_platforms: list[Platform] = []
         _pending_connects = []  # (platform, platform_config, adapter); connected concurrently later
-        for platform, platform_config in self.config.platforms.items():
-            if await self._abort_startup_if_shutdown_requested():
-                return True, enabled_platform_count, _multiplex_skipped_platforms, _pending_connects
-            if not platform_config.enabled:
-                continue
-            # Multiplex: a platform enabled in the shared config.yaml may hold its token only in a
-            # secondary profile's .env; an empty primary would queue a reconnect loop that never heals.
-            # Starting that primary adapter with an empty token fails immediately and queues an infinite
-            # reconnect loop that can never heal (#64674). Secondary profiles still start their own adapters
-            # under _profile_runtime_scope with the real token -- skip the empty primary instead of failing
-            # loudly.
-            if _multiplex_on and not _platform_has_bot_credential(platform, platform_config):
-                logger.info(
-                    "Skipping %s on default profile: no bot credential in this "
-                    "profile's secrets. Secondary multiplexed profiles that "
-                    "provide the token will still connect.", platform.value,
-                )
-                _multiplex_skipped_platforms.append(platform)
-                continue
-            enabled_platform_count += 1
-            adapter = await self._create_adapter(platform, platform_config)
-            if not adapter:
-                # Distinguish between missing builtin deps and missing plugin
-                if platform.value in {m.value for m in Platform.__members__.values()}:
-                    logger.warning("No adapter available for %s", platform.value)
-                else:
-                    logger.warning(
-                        "No adapter for '%s' -- is the plugin installed? "
-                        "(platform is enabled in config.yaml but no plugin registered it)", platform.value,
+        prepared = False
+        try:
+            for platform, platform_config in self.config.platforms.items():
+                if await self._abort_startup_if_shutdown_requested():
+                    return True, enabled_platform_count, _multiplex_skipped_platforms, []
+                if not platform_config.enabled:
+                    continue
+                # Multiplex: a platform enabled in the shared config.yaml may hold its token only in a
+                # secondary profile's .env; an empty primary would queue a reconnect loop that never heals.
+                # Starting that primary adapter with an empty token fails immediately and queues an infinite
+                # reconnect loop that can never heal (#64674). Secondary profiles still start their own adapters
+                # under _profile_runtime_scope with the real token -- skip the empty primary instead of failing
+                # loudly.
+                if _multiplex_on and not _platform_has_bot_credential(platform, platform_config):
+                    logger.info(
+                        "Skipping %s on default profile: no bot credential in this "
+                        "profile's secrets. Secondary multiplexed profiles that "
+                        "provide the token will still connect.", platform.value,
                     )
-                # Only a platform that can heal on its own is queued for the reconnect watcher; either way
-                # flag it so the unserved enabled platform is visible.
-                heals = self._adapter_may_heal(platform, platform_config)
-                self._update_platform_runtime_status(
-                    platform.value, platform_state="retrying" if heals else "fatal",
-                    error_code="adapter_unavailable",
-                    error_message=_adapter_unavailable_message(platform, retrying=heals),
-                    needs_attention=True,
-                )
-                if heals:
-                    self._failed_platforms[platform] = self._startup_retry_entry(platform, None, platform_config)
-                continue
-            # Under multiplexing the default profile needs the same whole-handler runtime scope as a
-            # secondary (authorization and prompt rendering run before the agent-turn scope).
-            self._wire_adapter_handlers(adapter)
-            _pending_connects.append((platform, platform_config, adapter))
-        return False, enabled_platform_count, _multiplex_skipped_platforms, _pending_connects
+                    _multiplex_skipped_platforms.append(platform)
+                    continue
+                enabled_platform_count += 1
+                adapter = await self._create_adapter(platform, platform_config)
+                if not adapter:
+                    # Distinguish between missing builtin deps and missing plugin
+                    if platform.value in {m.value for m in Platform.__members__.values()}:
+                        logger.warning("No adapter available for %s", platform.value)
+                    else:
+                        logger.warning(
+                            "No adapter for '%s' -- is the plugin installed? "
+                            "(platform is enabled in config.yaml but no plugin registered it)", platform.value,
+                        )
+                    # Only a platform that can heal on its own is queued for the reconnect watcher; either way
+                    # flag it so the unserved enabled platform is visible.
+                    heals = self._adapter_may_heal(platform, platform_config)
+                    self._update_platform_runtime_status(
+                        platform.value, platform_state="retrying" if heals else "fatal",
+                        error_code="adapter_unavailable",
+                        error_message=_adapter_unavailable_message(platform, retrying=heals),
+                        needs_attention=True,
+                    )
+                    if heals:
+                        self._failed_platforms[platform] = self._startup_retry_entry(platform, None, platform_config)
+                    continue
+                # Under multiplexing the default profile needs the same whole-handler runtime scope as a
+                # secondary (authorization and prompt rendering run before the agent-turn scope).
+                _pending_connects.append((platform, platform_config, adapter))
+                self._wire_adapter_handlers(adapter)
+            prepared = not await self._abort_startup_if_shutdown_requested()
+            return (
+                not prepared, enabled_platform_count, _multiplex_skipped_platforms,
+                _pending_connects if prepared else [],
+            )
+        finally:
+            # Until handed to the connect phase, these adapters are invisible to
+            # shutdown. Preparation can yield during installation or be canceled.
+            if not prepared:
+                for platform, _, adapter in _pending_connects:
+                    await self._startup_teardown_adapter(adapter, platform)
 
     async def _start_connect_pending(self, _pending_connects: list) -> Optional[list]:
         """Connect the pre-filtered adapters concurrently. Returns the raw per-platform results, or

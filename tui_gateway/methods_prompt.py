@@ -43,7 +43,7 @@ def _mem_db_pair_agrees(mem, db_msg) -> bool:
         return False
     if mem.get("role") == "user":
         from agent.context_compressor import user_originated_turn_view
-        from agent.memory_manager import sanitize_context
+        from agent.memory_context import sanitize_context
         mem_view = user_originated_turn_view(mem)
         db_view = user_originated_turn_view(db_msg)
         if (mem_view is None) != (db_view is None):
@@ -174,7 +174,7 @@ def _merge_carrier_holds_target_text(carrier: dict, db_msg: dict) -> bool:
     content or appears in it as a whole ``"\\n\\n"``-delimited part. Both views are
     user-originated by construction (the caller only visits user turns)."""
     from agent.context_compressor import user_originated_turn_view
-    from agent.memory_manager import sanitize_context
+    from agent.memory_context import sanitize_context
     mem_view = user_originated_turn_view(carrier)
     db_view = user_originated_turn_view(db_msg)
     if mem_view is None or db_view is None:

@@ -6,6 +6,7 @@ import { jaAuxTasks } from './ja_aux_tasks'
 import { jaBoot } from './ja_boot'
 import { jaClarify } from './ja_clarify'
 import { jaConnectors } from './ja_connectors'
+import { jaDelegationFieldLabels } from './ja_delegation_fields'
 import { jaFirstRun } from './ja_first_run'
 import { jaLocalModels } from './ja_local_models'
 import { jaModelMenu } from './ja_model_menu'
@@ -820,14 +821,7 @@ export const jaOverrides = {
           timeout: '圧縮モデルのタイムアウト（秒）'
         }
       },
-      delegation: {
-        model: 'サブエージェントモデル',
-        provider: 'サブエージェントプロバイダー',
-        maxIterations: 'サブエージェントターン上限',
-        maxConcurrentChildren: '並列サブエージェント',
-        childTimeoutSeconds: 'サブエージェントタイムアウト',
-        reasoningEffort: 'サブエージェント推論強度'
-      },
+      delegation: jaDelegationFieldLabels,
       updates: {
         nonInteractiveLocalChanges: 'アプリ内更新時のローカル変更'
       }

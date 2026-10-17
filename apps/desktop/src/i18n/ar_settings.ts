@@ -476,6 +476,7 @@ export const arSettings = {
       'delegation.maxConcurrentChildren': 'الوكلاء الفرعيون المتوازيون',
       'delegation.childTimeoutSeconds': 'مهلة الوكيل الفرعي',
       'delegation.reasoningEffort': 'جهد تفكير الوكيل الفرعي',
+      'delegation.allowModelSelection': 'تجريبي: اختيار نماذج الوكلاء الفرعيين في الدردشة',
       'updates.nonInteractiveLocalChanges': 'تغييرات التحديث داخل التطبيق'
     },
     fieldDescriptions: {

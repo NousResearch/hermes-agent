@@ -152,6 +152,13 @@ _SCHEMA_OVERRIDES: dict[str, dict[str, Any]] = {
         "Reasoning effort for delegated subagents",
         "", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
     ),
+    "delegation.allow_model_selection": {
+        "type": "boolean",
+        "description": (
+            "Name a subagent's model, provider, thinking level and speed in chat, like "
+            "\"put a reviewer on this using Codex, medium thinking, fast\". Off by default."
+        ),
+    },
     "updates.non_interactive_local_changes": _select(
         "When the chat app / gateway updates Hermes (no terminal prompt), "
         "what to do with uncommitted local source edits. 'stash' keeps them "

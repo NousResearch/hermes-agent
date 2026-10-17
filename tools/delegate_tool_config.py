@@ -112,6 +112,12 @@ def _get_independent_completions() -> bool:
     completion messages that land as each finishes. Off = one consolidated message when the whole call is done."""
     return is_truthy_value(_cfg().get("independent_completions", False))
 
+def _get_allow_model_selection() -> bool:
+    """delegation.allow_model_selection (bool, default False): advertise per-task provider / model /
+    reasoning_effort / service_tier on delegate_task so a model can route a child named in chat. Off = those fields
+    are absent from the schema and stripped from model-supplied tasks."""
+    return is_truthy_value(_cfg().get("allow_model_selection", False))
+
 def _get_worktree_isolation() -> bool:
     """delegation.worktree_isolation (bool, default False): each child gets its own
     git worktree off the parent's HEAD so parallel children never contend for one

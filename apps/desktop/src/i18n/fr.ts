@@ -6,6 +6,7 @@ import { frBoot } from './fr_boot'
 import { frClarify } from './fr_clarify'
 import { frConnectorAccounts } from './fr_connector_accounts'
 import { frConnectorCard } from './fr_connector_card'
+import { frDelegationFieldLabels } from './fr_delegation_fields'
 import { frFirstRun } from './fr_first_run'
 import { frLocalModels } from './fr_local_models'
 import { frModelMenu } from './fr_model_menu'
@@ -1344,14 +1345,7 @@ export const frOverrides = {
           timeout: 'Délai du modèle de compression (s)'
         }
       },
-      delegation: {
-        model: 'Modèle sous-agent',
-        provider: 'Fournisseur sous-agent',
-        maxIterations: 'Limite de tours sous-agent',
-        maxConcurrentChildren: 'Sous-agents parallèles',
-        childTimeoutSeconds: 'Délai sous-agent',
-        reasoningEffort: 'Intensité du raisonnement sous-agent'
-      },
+      delegation: frDelegationFieldLabels,
       updates: {
         nonInteractiveLocalChanges: 'Modifications locales à la mise à jour intégrée'
       }

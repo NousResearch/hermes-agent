@@ -114,8 +114,9 @@ def _github_compare_behind(current_rev: str, target_rev: str, repository: str = 
 def _request(url: str, accept: str = "application/vnd.github+json") -> str:
     """GET an api.github.com resource with the credential ladder in hermes_cli.github_api.
 
-    A token GitHub rejects (401) drops this request to anonymous rather than
-    failing the check on a stale credential.
+    A token GitHub rejects (401), or one that cannot form a valid header at
+    all, drops this request to anonymous rather than failing the check on a
+    stale credential.
     """
     from hermes_cli.github_api import github_token
 
@@ -127,6 +128,15 @@ def _request(url: str, accept: str = "application/vnd.github+json") -> str:
             exc.hermes_authenticated = token is not None  # which quota a 403/429 spent
             raise
         logger.debug("GitHub rejected the configured token; retrying anonymously")
+    except ValueError:
+        # A malformed token (e.g. one carrying gh-wrapper output) makes
+        # http.client reject the Authorization header before any bytes are
+        # sent, and the ValueError's message quotes that header — so it must
+        # not propagate to the user. Like a 401, drop the request to
+        # anonymous (#138444).
+        if token is None:
+            raise
+        logger.debug("The configured token cannot be sent as a header; retrying anonymously")
     try:
         return _request_with(url, accept, None)
     except urllib.error.HTTPError as exc:

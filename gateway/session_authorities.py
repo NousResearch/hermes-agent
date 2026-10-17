@@ -192,6 +192,17 @@ def all_authorities(runner):
     return [authority] if authority is not None else []
 
 
+def serving_authorities(runner):
+    """The authorities that accept work (``SessionAuthorities.serving``: no reserved-but-unbuilt slot,
+    none retiring): what startup recovery, service creation and cross-ledger reads cover. Shutdown
+    keeps ``all_authorities``, so a retained authority's live writer is still settled."""
+    registry = getattr(runner, 'session_authorities', None)
+    if registry is not None:
+        return registry.serving()
+    authority = getattr(runner, 'session_authority', None)
+    return [authority] if authority is not None and not getattr(authority, 'retiring', False) else []
+
+
 def require_serving(authority):
     """Refuse a verb reached through a stale connection to a retired authority: its ownership is
     released, and until a successor bumps the epoch its own epoch still passes the store fence."""
@@ -209,6 +220,23 @@ def admission_owner(authority, session_id):
         return sid
     with authority.db._read_ctx() as conn:
         return local_lineage_owner(conn, sid)
+
+
+def holds_admission(authority, session_id) -> bool:
+    """Whether *authority*'s store holds a canonical admission for *session_id*. A parked profile's
+    retained (retiring) store that cannot answer counts as holding one: startup auto-resume fails
+    closed for that entry instead of stopping the boot or resuming a turn that FIFO may own."""
+    try:
+        return bool(authority.db._read_one(
+            'SELECT 1 FROM session_admissions WHERE target_session_id IN (?,?) LIMIT 1',
+            (session_id, admission_owner(authority, session_id))))
+    except Exception as exc:
+        if not getattr(authority, 'retiring', False):
+            raise
+        import logging
+        logging.getLogger('gateway.run').warning("Skipping auto-resume of %s: retained store %s cannot answer: %s",
+                                                 session_id, getattr(authority, 'profile_id', '?'), exc)
+        return True
 
 
 def owner_scope(authority, *, hydrate_secrets=False):

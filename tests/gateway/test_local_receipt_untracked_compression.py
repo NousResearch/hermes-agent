@@ -45,6 +45,19 @@ def _compact_like_0_22_2(db, parent_id, child_id, *, route_columns=True):
     db.append_message(child_id, 'user', f'after compression into {child_id}')
 
 
+def _compact_chain_like_0_22_2(db, parent_id, child_ids):
+    """``_compact_like_0_22_2`` over a whole chain of children, in one transaction."""
+    def write(conn):
+        parent = conn.execute('SELECT * FROM sessions WHERE id=?', (parent_id,)).fetchone()
+        route = (parent['user_id'], parent['session_key'], parent['chat_id'], parent['chat_type'], parent['origin_json'])
+        for step_id, child_id in zip([parent_id, *child_ids], child_ids):
+            conn.execute("UPDATE sessions SET ended_at=?, end_reason='compression' WHERE id=?", (time.time(), step_id))
+            conn.execute('''INSERT INTO sessions(id,source,model,parent_session_id,cwd,profile_name,
+                user_id,session_key,chat_id,chat_type,origin_json,started_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)''',
+                (child_id, 'tui', parent['model'], step_id, parent['cwd'], parent['profile_name'], *route, time.time()))
+    db._execute_write(write)
+
+
 def _receipt(db, sid):
     from hermes_state_local import local_receipt
     return local_receipt(db, sid)
@@ -198,6 +211,71 @@ async def test_a_compacted_secondary_receipt_missing_its_origin_profile_restores
                 owner.db.close()
         for _, home in homes:
             process_ownership.release(home)
+
+
+@pytest.mark.asyncio
+async def test_a_compression_chain_longer_than_one_walk_is_adopted_whole(tmp_path, monkeypatch):
+    """The catch-up walks the untracked steps in ``_CHAIN_CAP`` batches: a chain one step longer than a
+    single walk is still complete and valid, so it is adopted to its real tip instead of being refused
+    (and rolled back) on every restore."""
+    from gateway.session_local import create_local_session
+    from hermes_state_compression import _CHAIN_CAP
+
+    first, connection = await _owner(tmp_path, monkeypatch, 'first')
+    ref = create_local_session(first, connection.actor, {'request_id': 'r', 'source': 'tui',
+                                                         'cwd': str(tmp_path), 'model': 'm', 'toolsets': []})
+    db_path = first.db.db_path
+    await connection.close()
+    first.db.close()
+
+    from hermes_state import SessionDB
+    classic = SessionDB(db_path=db_path)
+    children = [f'classic-child-{n}' for n in range(_CHAIN_CAP + 1)]
+    _compact_chain_like_0_22_2(classic, ref.session_id, children)
+    classic.close()
+
+    second, connection = await _owner(tmp_path, monkeypatch, 'second')
+    try:
+        assert ref.session_id in second.sessions, 'the long chain was paused on cold recovery'
+        receipt = _receipt(second.db, ref.session_id)
+        assert receipt['lineage'] == [ref.session_id, *children]
+        assert receipt['entry']['session_id'] == children[-1]
+    finally:
+        await connection.close()
+        second.db.close()
+
+
+@pytest.mark.asyncio
+async def test_a_chain_that_loops_back_past_one_walk_is_not_adopted(tmp_path, monkeypatch):
+    """Cycle detection holds across batches: a chain longer than one walk whose last step leads back
+    into the receipt's lineage is never adopted, and the receipt stays as stored."""
+    from gateway.session_local import create_local_session
+    from hermes_state_compression import _CHAIN_CAP
+
+    first, connection = await _owner(tmp_path, monkeypatch, 'first')
+    ref = create_local_session(first, connection.actor, {'request_id': 'r', 'source': 'tui',
+                                                         'cwd': str(tmp_path), 'model': 'm', 'toolsets': []})
+    before = json.loads(json.dumps(_receipt(first.db, ref.session_id)))
+    db_path = first.db.db_path
+    await connection.close()
+    first.db.close()
+
+    from hermes_state import SessionDB
+    classic = SessionDB(db_path=db_path)
+    children = [f'classic-child-{n}' for n in range(_CHAIN_CAP + 1)]
+    _compact_chain_like_0_22_2(classic, ref.session_id, children)
+    classic._execute_write(lambda conn: (
+        conn.execute("UPDATE sessions SET end_reason='compression' WHERE id=?", (children[-1],)),
+        conn.execute('UPDATE sessions SET parent_session_id=? WHERE id=?', (children[-1], ref.session_id))))
+    classic.close()
+
+    second, connection = await _owner(tmp_path, monkeypatch, 'second')
+    try:
+        assert ref.session_id not in second.sessions
+        assert _receipt(second.db, ref.session_id) == before
+    finally:
+        await connection.close()
+        second.db.close()
 
 
 @pytest.mark.asyncio

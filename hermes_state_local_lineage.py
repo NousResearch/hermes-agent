@@ -99,6 +99,26 @@ def advance_local_target(conn, parent_session_id, child_session_id, *, entry=Non
     _commit_local_target(conn, receipt, candidate)
 
 
+def _untracked_steps(conn, tip, lineage):
+    """Every compression step past *tip*, in order; None when the chain leads back into itself.
+
+    One ``_walk_compression_chain`` stops after ``_CHAIN_CAP`` steps, which is not the end of the
+    chain: walk on from the last step until a walk finds nothing more. Each batch only adds ids never
+    seen, so the walk ends; a step back into the lineage or an earlier batch is a cycle.
+    """
+    from hermes_state_compression import _CHAIN_STEP_SQL, _walk_compression_chain
+    steps, seen, current = [], {*lineage, tip}, tip
+    while True:
+        batch = _walk_compression_chain(current, lambda sid: conn.execute(_CHAIN_STEP_SQL, (sid,)).fetchone())[1:]
+        if not batch:
+            return steps
+        if seen.intersection(batch):
+            return None
+        seen.update(batch)
+        steps.extend(batch)
+        current = batch[-1]
+
+
 def untracked_compression_tip(conn, receipt):
     """The compression child of *receipt*'s tip, when the receipt does not record it yet."""
     from hermes_state_compression import _CHAIN_STEP_SQL
@@ -118,8 +138,6 @@ def adopt_untracked_compression(db, *, epoch, session_id, expected):
     it, nothing else. The stored receipt must still be *expected*, the copy the caller checked
     against its owner. Anything else is left for validation to refuse, unchanged.
     """
-    from hermes_state_compression import _CHAIN_STEP_SQL, _walk_compression_chain
-
     def write(conn):
         _epoch(conn, epoch)
         saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (POLICY_PREFIX + session_id,)).fetchone()
@@ -129,10 +147,10 @@ def adopt_untracked_compression(db, *, epoch, session_id, expected):
         identity = (receipt['route'], receipt['session_id'], receipt['principal_id'])
         lineage = list(receipt.get('lineage', [session_id]))
         tip = receipt['entry']['session_id']
-        children = _walk_compression_chain(tip, lambda current: conn.execute(_CHAIN_STEP_SQL, (current,)).fetchone())[1:]
-        for child_id in children:
+        children = _untracked_steps(conn, tip, lineage)
+        for child_id in children or ():
             child = conn.execute('SELECT session_key,chat_id,user_id FROM sessions WHERE id=?', (child_id,)).fetchone()
-            if child_id in lineage or tuple(child) != identity:
+            if tuple(child) != identity:
                 return
         routed = _routed_entry(conn, receipt['route'], tip)
         if not children or routed is None:

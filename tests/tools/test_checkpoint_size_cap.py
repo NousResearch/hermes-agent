@@ -164,3 +164,134 @@ def test_restore_keeps_its_target_alive_while_taking_the_safety_snapshot(history
     result = manager.restore(str(project), target)
     assert result["success"], result
     assert (project / "old.bin").stat().st_size == 1_300_000
+
+
+def _corrupt_parent_object(store, ref):
+    """Break one ref's parent link the way the reported stores are broken: the ref's
+    history stays readable one commit deep but its full walk hits a missing object."""
+    import subprocess as sp
+
+    chain = sp.run(["git", "--git-dir", str(store), "rev-list", ref],
+                   capture_output=True, text=True, check=True).stdout.split()
+    victim, parent = chain[-2], chain[-1]
+    obj = store / "objects" / parent[:2] / parent[2:]
+    if not obj.is_file():  # packed: repack first so the loose object exists to delete
+        sp.run(["git", "--git-dir", str(store), "repack", "-a", "-d"], check=True,
+               capture_output=True)
+        sp.run(["git", "--git-dir", str(store), "prune-packed"], check=True,
+               capture_output=True)
+        raise AssertionError(f"{parent} stayed packed; fixture needs a loose parent")
+    obj.unlink()
+    return victim, parent
+
+
+def test_one_unwalkable_ref_no_longer_stops_the_size_round_for_every_project(history):
+    """A missing parent object makes one ref's full walk fail (rc=128). That ref must be
+    skipped, not fatal: the other projects' snapshots keep converging under the cap and
+    the periodic prune still reports success."""
+    from tools.checkpoint_pruning import PruneError
+
+    base, project, manager = history
+    store = checkpoints._store_path(base)
+    other = None
+    for name in ("project-a", "project-b"):
+        candidate = base.parent / name
+        if str(candidate) != str(project):
+            candidate.mkdir(parents=True, exist_ok=True)
+            for index in range(3):
+                (candidate / "small.txt").write_text(str(index), encoding="utf-8")
+                manager.new_turn()
+                assert manager.ensure_checkpoint(str(candidate), f"other-{index}")
+            other = candidate
+    assert other is not None
+
+    ref = checkpoints._ref_name(checkpoints._project_hash(str(project)))
+    _corrupt_parent_object(store, ref)
+    import subprocess as sp
+    with pytest.raises(sp.CalledProcessError):
+        sp.run(["git", "--git-dir", str(store), "rev-list", "--reverse", ref],
+               check=True, capture_output=True)
+
+    result = checkpoint_maintenance.prune_checkpoints(
+        retention_days=0, checkpoint_base=base, max_total_size_mb=1)
+    assert result["errors"] == 0
+    # the healthy ref's history still converged: started at 3, the size round must have
+    # dropped at least the oldest (exact depth depends on remeasured object sizes)
+    remaining = [row["reason"] for row in manager.list_checkpoints(str(other))]
+    assert len(remaining) < 3, remaining
+    # and the periodic prune still reclaimed the store under the cap
+    assert checkpoints._dir_size_bytes(store) <= 1024 * 1024
+
+
+def test_take_path_size_round_repairs_the_broken_ref_and_trims_the_healthy_one(history):
+    """The take-path size round must still do its job when a sibling ref is unwalkable:
+    the broken ref gets rebuilt onto a readable root and the healthy ref drops its oldest
+    snapshot — over-cap stores keep converging instead of aborting on the first rc=128."""
+    base, project, manager = history
+    store = checkpoints._store_path(base)
+    other = None
+    for name in ("project-a", "project-b"):
+        candidate = base.parent / name
+        if str(candidate) != str(project):
+            candidate.mkdir(parents=True, exist_ok=True)
+            for index in range(4):
+                (candidate / "small.txt").write_text(str(index), encoding="utf-8")
+                manager.new_turn()
+                assert manager.ensure_checkpoint(str(candidate), f"other-{index}")
+            other = candidate
+    assert other is not None
+
+    other_ref = checkpoints._ref_name(checkpoints._project_hash(str(other)))
+    _corrupt_parent_object(store, other_ref)
+
+    manager.max_total_size_mb = 1
+    (project / "late.txt").write_text("late", encoding="utf-8")
+    manager.new_turn()
+    assert manager.ensure_checkpoint(str(project), "late")
+
+    import subprocess as sp
+    # healthy ref: the size round dropped its oldest snapshot (4 -> newest only under 1MB cap)
+    other_count = sp.run(["git", "--git-dir", str(store), "rev-list", "--count", other_ref],
+                         check=False, capture_output=True, text=True)
+    assert other_count.returncode == 0, other_count.stderr
+    assert int(other_count.stdout) < 5, other_count.stdout
+    # broken ref: repaired onto a fresh readable root
+    walk = sp.run(["git", "--git-dir", str(store), "rev-list", "--reverse", other_ref],
+                  check=False, capture_output=True, text=True)
+    assert walk.returncode == 0, walk.stderr
+
+
+def test_take_path_repairs_its_own_broken_ref_before_the_size_round(history):
+    """The take path must heal THIS project's own unwalkable ref: a single-project store
+    with auto-prune off (the reported configuration) has no sibling take to fix it — if
+    the count trim aborted the round, the ref would stay broken and the store over cap
+    forever (every take just logs the same warning)."""
+    from tools.checkpoint_pruning import GC_PENDING_NAME
+
+    base, project, manager = history
+    store = checkpoints._store_path(base)
+    ref = checkpoints._ref_name(checkpoints._project_hash(str(project)))
+    _corrupt_parent_object(store, ref)
+
+    import subprocess as sp
+    broken = sp.run(["git", "--git-dir", str(store), "rev-list", "--reverse", ref],
+                    check=False, capture_output=True, text=True)
+    assert broken.returncode != 0  # fixture sanity: the own ref really is unwalkable
+
+    manager.max_total_size_mb = 1
+    (project / "late.txt").write_text("late", encoding="utf-8")
+    manager.new_turn()
+    assert manager.ensure_checkpoint(str(project), "late")
+
+    walk = sp.run(["git", "--git-dir", str(store), "rev-list", "--reverse", ref],
+                  check=False, capture_output=True, text=True)
+    assert walk.returncode == 0, walk.stderr  # repaired during the take
+    count = sp.run(["git", "--git-dir", str(store), "rev-list", "--count", ref],
+                   check=False, capture_output=True, text=True)
+    assert count.returncode == 0, count.stderr
+    # repair alone rebuilds the readable prefix (6 incl. the new take); a smaller count
+    # proves the size round landed real drops on top of the repair
+    assert int(count.stdout) < 6, count.stdout
+    assert (store / GC_PENDING_NAME).exists()  # the drop was real and the gc is deferred
+    reasons = [row["reason"] for row in manager.list_checkpoints(str(project))]
+    assert reasons[0] == "late" and all(r.startswith("small-") for r in reasons[1:]), reasons

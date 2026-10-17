@@ -1627,7 +1627,15 @@ class CheckpointManager:
 
         pruner = Pruner(_run_git, store, working_dir, _GIT_TIMEOUT, _dir_size_bytes, _REFS_PREFIX)
         try:
-            pruner.trim(ref, self.max_snapshots)
+            try:
+                pruner.trim(ref, self.max_snapshots)
+            except PruneError:
+                # This project's own ref can be the broken one: rebuild it or the size
+                # round below can never run — a single-project store with auto-prune off
+                # (the reporter's configuration) would never self-heal.
+                if not pruner.repair_unwalkable(ref):
+                    raise
+                pruner.trim(ref, self.max_snapshots)
             if pruner.drop_one_round(self.max_total_size_mb * 1024 * 1024):
                 logger.info("Checkpoint store exceeded %d MB — dropped the oldest snapshot per project; "
                             "space is reclaimed by the next prune", self.max_total_size_mb)

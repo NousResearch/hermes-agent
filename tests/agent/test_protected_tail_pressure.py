@@ -245,8 +245,18 @@ def _image_result(call_id: str) -> dict:
     }
 
 
-@pytest.mark.parametrize("steers", [0, 1, 2], ids=["round_last", "steer_after_round", "two_steers_after_round"])
-def test_mid_turn_compaction_keeps_the_pending_tool_round_verbatim(steers):
+@pytest.mark.parametrize("trailer", [
+    [],
+    [steer_user_row("Also flag any node above 90% cpu.")],
+    [steer_user_row("Also flag any node above 90% cpu."), steer_user_row("And list the racks they sit in.")],
+    [{"role": "user", "content": "[IMPORTANT: Background process proc_x completed (exit code 0).]"}],
+    [{"role": "user", "content": "U" * 160_000}],
+    [{"role": "user", "content": "[IMPORTANT: Background process completed.] " + "N" * 160_000}],
+    [steer_user_row("S" * 160_000)],
+], ids=["round_last", "steer_after_round", "two_steers_after_round", "background_notice_after_round",
+        "large_user_after_round", "large_notice_after_round", "large_steer_after_round"])
+@pytest.mark.parametrize("interleaved", [False, True], ids=["adjacent_results", "interleaved_notice"])
+def test_mid_turn_compaction_keeps_the_pending_tool_round_verbatim(trailer, interleaved):
     """Regression: compaction after a tool round stubbed the output the model had just asked for.
 
     Lean mode's 10K tail budget puts pass 4's soft ceiling at 15K tokens. Long user messages (no pass
@@ -257,7 +267,7 @@ def test_mid_turn_compaction_keeps_the_pending_tool_round_verbatim(steers):
     iteration: one drained when the tool batch ends, another drained before the next request and
     inserted right after the newest tool result, so the round is followed by two steer rows.
     """
-    ctx = 272_000
+    ctx = 200_000
     with patch("agent.context_compressor.get_model_context_length", return_value=ctx):
         c = ContextCompressor(
             model="test/model", threshold_percent=0.50, protect_first_n=3, protect_last_n=8,
@@ -285,8 +295,9 @@ def test_mid_turn_compaction_keeps_the_pending_tool_round_verbatim(steers):
     ]
     pending = {m["tool_call_id"]: m["content"] for m in msgs[-2:]}
     previous = msgs[-6]
-    for text in ["Also flag any node above 90% cpu.", "And list the racks they sit in."][:steers]:
-        msgs.append(steer_user_row(text))
+    if interleaved:
+        msgs.insert(len(msgs) - 1, {"role": "user", "content": "[IMPORTANT: Background notice.] " + "N" * 160_000})
+    msgs.extend(trailer)
     assert previous["tool_call_id"] == "old_12"
 
     out = c.compress(list(msgs), current_tokens=estimate_messages_tokens_rough(msgs))
@@ -320,3 +331,35 @@ def test_compaction_keeps_four_images_in_a_spared_pending_round(compressor_128k)
     results = {m["tool_call_id"]: m for m in out if m.get("role") == "tool"}
     assert [_tool_content_has_images(results[call_id]["content"]) for call_id in pending_ids] == [True] * 4
     assert not _tool_content_has_images(results["old"]["content"])
+
+
+def test_oversized_pending_result_still_yields_to_hard_share(compressor_128k):
+    """Unread output exceeding the hard share must still be reclaimed under pressure."""
+    msgs = _already_compacted_session(n_pairs=4, tool_chars=200_000, user_chars=160_000)
+    pending_call = msgs[-3]["tool_calls"]
+    pending_content = msgs[-2]["content"]
+
+    out = compressor_128k.compress(msgs, current_tokens=estimate_messages_tokens_rough(msgs))
+
+    results = {m["tool_call_id"]: m["content"] for m in out if m.get("role") == "tool"}
+    assert results["call_3"] != pending_content
+    calls = [m["tool_calls"] for m in out if m.get("tool_calls")]
+    assert calls[-1] == pending_call
+
+
+def test_interleaved_pending_results_are_not_stale_lean_rounds(compressor_128k):
+    """One unread batch must not age out as seven rounds when notices separate its results."""
+    msgs = _already_compacted_session(n_pairs=4, tool_chars=20_000, user_chars=160_000)
+    calls = [_terminal_call(f"new_{i}", f"probe {i}") for i in range(7)]
+    msgs.append({"role": "assistant", "content": None, "tool_calls": calls})
+    pending = {}
+    for i in range(7):
+        result = _terminal_result(f"new_{i}", f"n{i}", 15)
+        pending[result["tool_call_id"]] = result["content"]
+        msgs.extend([result, {"role": "user", "content": "[IMPORTANT: Background notice.]"}])
+
+    out = compressor_128k.compress(msgs, current_tokens=estimate_messages_tokens_rough(msgs))
+
+    results = {m["tool_call_id"]: m["content"] for m in out if m.get("role") == "tool"}
+    assert {call_id: results.get(call_id) for call_id in pending} == pending
+    assert next(m["tool_calls"] for m in reversed(out) if m.get("tool_calls")) == calls

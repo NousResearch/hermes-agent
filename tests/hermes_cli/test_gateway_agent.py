@@ -264,6 +264,25 @@ def test_session_usage_event_feeds_mains_status_bar_attributes(make_agent):
     assert agent.get_rate_limit_state() is None
 
 
+def test_gateway_session_usage_frame_feeds_the_status_bar_mid_turn(make_agent):
+    """The frame the gateway really publishes (`usage_frame`: flat counters plus the nested TUI
+    `usage` view) lands the flat counters, not the nested view, on main's attributes mid-turn."""
+    from gateway.session_usage import usage_frame
+    usage = dict(SESSION_USAGE, compression_count=2)
+    seen = []
+    agent, _ = make_agent([frame("session.usage", usage_frame(usage), admission=None),
+                           frame("message.complete", {"text": "x", "outcome": "completed"})])
+    agent.context_compressor.context_length = 0
+    # Runs after the agent's own listener: what the status bar shows right after the mid-turn frame.
+    agent._state().usage_listeners.append(lambda cached: seen.append((
+        dict(cached), agent.session_api_calls, agent.context_compressor.context_length,
+        agent.context_compressor.compression_count, list(agent._api_latency_history))))
+    agent.run_conversation("q")
+    cached, *bar = seen[0]
+    assert bar == [5, 128000, 2, [0.2]]
+    assert cached["api_calls"] == 5 and "context_max" not in cached
+
+
 def test_turn_end_reads_session_stats_cumulative(make_agent):
     """/usage after a turn shows main's session-cumulative totals (session.stats), not the turn's."""
     agent, client = make_agent([frame("message.complete", {"text": "x", "outcome": "completed"})],

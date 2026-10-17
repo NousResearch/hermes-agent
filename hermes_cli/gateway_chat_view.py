@@ -475,8 +475,7 @@ class GatewayChatView:
                                    bottom_toolbar=lambda: f" \u2624 {self.model} \u2502 {self.session_id} ")
             prompt_symbol = get_active_prompt_symbol("❯ ")
             self._composer = prompt if sys.stdin.isatty() else None
-            from hermes_cli.gateway_chat_inject import plugin_inject_slot
-            with patch_stdout(), plugin_inject_slot(self):
+            with patch_stdout():
                 while not self.failure:
                     try:
                         # Empty when the stream failed first: the loop guard then raises it.

@@ -11,6 +11,10 @@ export function buildSourceDesktop({ source = repoRoot, icons, run = execFileSyn
   const app = join(source, 'apps/desktop')
   const step = (script, args = []) => run(process.execPath, [join(source, script), ...args], { cwd: app, stdio: 'inherit' })
   step('apps/desktop/scripts/assert-root-install.mjs')
+  // A merge that keeps an extraction's import and restores the local copy leaves a
+  // duplicate module-scope declaration: a parse error the bundler reports far from
+  // its cause. Checked here, before the build starts deleting its own outputs.
+  step('apps/desktop/scripts/assert-no-shadowed-imports.mjs')
   // Stamp before the flavored icons land: they overwrite committed files, and
   // the stamp's git check would then call the checkout dirty.
   step('apps/desktop/scripts/write-build-stamp.mjs')

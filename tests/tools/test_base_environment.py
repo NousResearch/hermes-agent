@@ -398,3 +398,54 @@ class TestSanitizeTaskIdForPath:
         )
         target.mkdir(parents=True)
         assert target.is_dir()
+
+
+def test_command_wrapper_restores_temp_vars_after_snapshot_source():
+    """Shell startup files must not replace Hermes-managed scratch variables."""
+    env = _TestableEnv()
+    env._snapshot_ready = True
+    env._snapshot_path = "/tmp/hermes-snapshot"
+    script = env._wrap_command("printf '%s\\n' \"$TMPDIR\"", "/tmp")
+    source = script.index("source ")
+    restore = script.index('export TMPDIR=')
+    assert restore > source
+    assert '__hermes_tmpdir_present=' in script
+    assert 'export __hermes_tmpdir=' not in script
+    assert 'if [ "$__hermes_tmpdir_present" = x ]' in script
+
+
+def test_command_wrapper_preserves_temp_vars_without_snapshot():
+    """The fallback wrapper also carries the caller's scratch variables."""
+    env = _TestableEnv()
+    env._snapshot_ready = False
+    script = env._wrap_command("printf '%s\\n' \"$TMPDIR\"", "/tmp")
+    assert "source " not in script
+    assert script.index('__hermes_tmpdir_present=') < script.index('export TMPDIR=')
+
+
+def test_command_wrapper_resaves_each_process_temp_dir_value(tmp_path):
+    """A sourced snapshot must not overwrite a later process's scratch path."""
+    import os
+    import subprocess
+
+    env = _TestableEnv()
+    env._snapshot_ready = True
+    env._snapshot_path = str(tmp_path / "snapshot")
+    (tmp_path / "snapshot").write_text('export TMPDIR="/stale/scratch"\\n', encoding="utf-8")
+    script = env._wrap_command('printf "VALUE=%s\\n" "$TMPDIR"', "/tmp")
+
+    def run(temp_dir):
+        child_env = os.environ.copy()
+        child_env["TMPDIR"] = temp_dir
+        child_env["TMP"] = temp_dir
+        child_env["TEMP"] = temp_dir
+        return subprocess.run(
+            ["bash", "-c", script],
+            env=child_env,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+
+    assert "VALUE=/homeA/scratch" in run("/homeA/scratch")
+    assert "VALUE=/homeB/scratch" in run("/homeB/scratch")

@@ -657,6 +657,9 @@ class WebhookAdapter(BasePlatformAdapter):
         route_name, route_config, profile, error_response = self._resolve_route(request)
         if error_response is None:
             raw_body, error_response = await self._read_authenticated_body(request, route_name, route_config)
+        if error_response is None:  # a parked profile is retried, before any delivery id is recorded
+            from gateway.platforms.webhook_ingress import parked_profile_refusal
+            error_response = parked_profile_refusal(self.gateway_runner, profile)
         if error_response is not None:
             return error_response
         # Rate limiting (after auth)
@@ -735,15 +738,18 @@ class WebhookAdapter(BasePlatformAdapter):
                                   "delivery_id": delivery_id}, status=202)
 
     def _spawn_agent_run(self, payload: Any, prompt: str, delivery_id: str, now: float, *, route_config: dict,
-                         route_name: str, profile, event_type: str) -> asyncio.Task:
+                         route_name: str, profile, event_type: str, superseded=()) -> asyncio.Task:
         """Coalesced-path dispatch (settled timer / disconnect flush): admit the merged event as a task
         so ``WebhookCoalescer.flush`` can await the hand-off. The HTTP ack for these deliveries was
-        already ``coalesced``; an admission failure is logged, never retried by the producer."""
+        already ``coalesced``: an admission failure is logged and gives back the batch's delivery ids
+        (*superseded* too), so a resend of any of them is processed, not answered as a duplicate."""
         async def _admit_or_log():
             outcome = await self._admit_agent_run(payload, prompt, delivery_id, now, route_config=route_config,
                                                   route_name=route_name, profile=profile, event_type=event_type)
             if outcome is None:
                 logger.error("[webhook] Coalesced delivery %s on route %s was not admitted", delivery_id, route_name)
+                for released in (*superseded, delivery_id):
+                    self._seen_deliveries.pop(_WebhookDeliveryIdentity.from_parts(profile, route_name, released), None)
         task = asyncio.create_task(_admit_or_log())
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)

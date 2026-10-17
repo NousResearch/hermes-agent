@@ -318,7 +318,8 @@ class GatewayVoiceMixin:
         from gateway.session_identity import clear_identity
         clear_identity(source)
         if self._canonicalize(source, transport_profile=getattr(adapter, "_owner_profile", None)) is None:
-            logger.warning("Dropping voice input: its profile route targets an unserved profile")
+            from gateway.parked_route_refusal import drop_rejected_route
+            drop_rejected_route(adapter, source)  # a parked target is refused in the voice text channel
             return
         # Validate the session owner against the current allowlist before auto-resuming. A session created
         # before TELEGRAM_ALLOWED_USERS (or equivalent) was configured, or before the owner was removed from

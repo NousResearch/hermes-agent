@@ -276,6 +276,77 @@ def test_provider_request_maps_headers_for_supported_sdk_modes(api_mode):
     }
 
 
+def test_provider_request_drops_trace_header_for_process_transport():
+    # external_process providers (e.g. a CLI subprocess) keep an SDK-shaped api_mode but have no
+    # HTTP hop: a traceparent in extra_headers can only make their client reject the request.
+    original = {"model": "test-model"}
+    relay_request_body = relay_llm._relay_request_body(original, {"api_mode": "chat_completions"})
+
+    provider_request = relay_llm._provider_request(
+        original,
+        SimpleNamespace(
+            content=relay_request_body,
+            headers={"traceparent": "00-11111111111111111111111111111111-2222222222222222-01"},
+        ),
+        relay_request_body=relay_request_body,
+        codec_baseline_body=dict(relay_request_body),
+        metadata={"api_mode": "chat_completions"},
+        process_transport=True,
+    )
+
+    assert "extra_headers" not in provider_request
+
+
+def test_provider_request_process_transport_keeps_caller_headers():
+    original = {"model": "test-model", "extra_headers": {"x-caller": "kept"}}
+    relay_request_body = relay_llm._relay_request_body(original, {"api_mode": "chat_completions"})
+
+    provider_request = relay_llm._provider_request(
+        original,
+        SimpleNamespace(
+            content=relay_request_body,
+            headers={"traceparent": "00-11111111111111111111111111111111-2222222222222222-01"},
+        ),
+        relay_request_body=relay_request_body,
+        codec_baseline_body=dict(relay_request_body),
+        metadata={"api_mode": "chat_completions"},
+        process_transport=True,
+    )
+
+    assert provider_request["extra_headers"]["x-caller"] == "kept"
+
+
+def test_is_process_transport_follows_provider_auth_type():
+    assert relay_llm._is_process_transport("copilot-acp") is True
+    assert relay_llm._is_process_transport("openrouter") is False
+    assert relay_llm._is_process_transport("") is False
+
+
+def test_managed_request_to_process_provider_omits_extra_headers(relay_turn, monkeypatch):
+    del relay_turn
+    monkeypatch.setattr(relay_llm, "_is_process_transport", lambda name: name == "proc-provider")
+    observed = []
+
+    def strict_process_client(**kwargs):
+        # Mirrors a subprocess client that validates kwargs against an allowlist.
+        if "extra_headers" in kwargs:
+            raise ValueError("Unsupported request parameters: extra_headers")
+        observed.append(kwargs)
+        return {"content": "ok"}
+
+    result = relay_llm.execute(
+        {"model": "test-model", "messages": []},
+        lambda request: strict_process_client(**request),
+        session_id="session-1",
+        name="proc-provider",
+        model_name="test-model",
+        metadata={"api_mode": "chat_completions", "api_request_id": "proc-request"},
+    )
+
+    assert result == {"content": "ok"}
+    assert observed and "extra_headers" not in observed[0]
+
+
 def test_provider_request_preserves_custom_headers_for_native_transport():
     original = {"payload": "provider-native"}
 

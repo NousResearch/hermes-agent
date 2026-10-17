@@ -64,6 +64,7 @@ def test_a_secondary_whose_recovery_fails_is_parked_and_the_rest_start(tmp_path,
         assert runner.session_runtime_descriptor["api_origin"] == "http://127.0.0.1:1"
         assert recovered == [str(launch), str(homes["beta"]), str(homes["gamma"])]
         assert "beta" in parked and "leftover receipt" in parked["beta"]
+        assert "rescan" in parked["beta"], "the parked reason does not say how the profile comes back"
         assert runner.session_authorities.for_home(homes["beta"]) is None
         assert not process_ownership.owns(homes["beta"]), "a parked profile keeps its reservation"
         assert [n for n, _ in runner.config._runtime_profile_homes] == ["gamma"]
@@ -91,7 +92,7 @@ def test_a_secondary_whose_retirement_times_out_keeps_its_lock_but_is_never_star
     process_ownership.reserve([homes["beta"]])
     try:
         asyncio.run(run_runtime.start_gateway_runtime_api(runner))
-        assert "ownership retained" in parked["beta"]
+        assert "ownership retained" in parked["beta"] and "rescan" in parked["beta"]
         assert process_ownership.owns(homes["beta"]), "the live writer's home lost its lock"
         assert runner.session_authorities.for_home(homes["beta"]) is beta and beta.retiring
         assert beta in all_authorities(runner), "shutdown must still settle the retained authority"

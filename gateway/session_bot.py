@@ -283,7 +283,14 @@ def _expired_outcome(authority, record):
     if record.get('status') in _TERMINAL:
         return record['status'], record.get('reply', '')
     session_id = record.get('session_id')
-    if session_id and (retired_session(authority.db, session_id) or authority.db.get_session(session_id) is None):
+    if session_id and retired_session(authority.db, session_id):
+        return 'ambiguous', record.get('reply', '')
+    if session_id and authority.db.get_session(session_id) is None:
+        # Never resent either way, but a row gone without its fence is not a plain delete: store damage,
+        # or a marker an older release reclaimed. Logged once: the receipt is final from here on.
+        logging.getLogger(__name__).warning(
+            'Bot delivery %s: session %s is gone with no deletion marker; settled as ambiguous',
+            record.get('delivery_id'), session_id)
         return 'ambiguous', record.get('reply', '')
     raise RuntimeStoreError('storage_unavailable')
 
@@ -560,8 +567,8 @@ async def recover_bot_deliveries(authority):
                 # One receipt the store cannot answer must not stop the owner (and, multiplexed, every
                 # profile with it): log it and recover the rest. The next start reads it again (a
                 # retry already pinned on it is then admitted once).
-                logging.getLogger(__name__).error('Bot delivery %s not recovered: %s',
-                                                  record.get('delivery_id'), exc.reason)
+                logging.getLogger(__name__).error('Bot delivery %s not recovered: %s (%s)',
+                                                  record.get('delivery_id'), exc.reason, path, exc_info=True)
                 continue
             await write_receipt(home, record)
             remember_receipt(authority, home, record)

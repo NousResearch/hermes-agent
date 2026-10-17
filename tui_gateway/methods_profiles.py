@@ -154,7 +154,8 @@ def _live_count_field(db, session_id) -> dict:
     The denormalized ``message_count`` also counts folded rows (orphaned compaction marks, full
     rewinds, model-only rows), which once made the roster wait for history no reader serves."""
     try:
-        return {"live_message_count": db.display_message_count(str(session_id))}
+        from hermes_state_timeline import display_message_count
+        return {"live_message_count": display_message_count(db, str(session_id))}
     except sqlite3.Error:
         return {}
 

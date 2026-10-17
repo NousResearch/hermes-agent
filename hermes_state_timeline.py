@@ -7,7 +7,7 @@ from contextlib import contextmanager
 
 from agent.compaction_display import project_compaction_message_for_display
 from agent.context_compressor import user_originated_turn_view
-from hermes_state_messages import DISPLAY_VISIBLE_SQL
+from hermes_state_messages import DISPLAY_VISIBLE_SQL, _DISPLAY_ACTIVE_CLAUSE
 
 
 _SYNTHETIC_PROMPT = re.compile(
@@ -96,6 +96,16 @@ def _register_functions(db, conn):
     conn.create_function("timeline_preview", 3,
                          lambda content, kind, summary: _prompt_preview(db, content, kind, summary),
                          deterministic=True)
+
+
+def display_message_count(db, session_id: str) -> int:
+    """Rows a display read of this segment paints: one per ``display_order`` group of the messages
+    module's ``_display_rows_from_conn`` set. Unindexed legacy rows count as one group (the read
+    backfills them), so the count is zero exactly when the read paints nothing."""
+    row = db._read_one(
+        "SELECT COUNT(*) FROM (SELECT DISTINCT display_order FROM messages"
+        f" WHERE session_id = ?{_DISPLAY_ACTIVE_CLAUSE}{DISPLAY_VISIBLE_SQL})", (session_id,))
+    return int(row[0])
 
 
 def get_session_messages_around(db, session_id, row_id, *, limit=120):

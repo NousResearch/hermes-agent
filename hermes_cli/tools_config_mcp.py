@@ -246,7 +246,8 @@ def tools_disable_enable_command(args):
     platform = getattr(args, "platform", "cli")
     config = load_config()
 
-    valid_platforms = _known_tool_platforms()
+    from hermes_cli.tools_config import PLATFORMS
+    valid_platforms = PLATFORMS if platform in PLATFORMS else _known_tool_platforms()  # built-ins load no plugin
     if platform not in valid_platforms:
         _print_error(f"Unknown platform '{platform}'. Valid: {', '.join(sorted(valid_platforms))}")
         return

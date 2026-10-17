@@ -46,6 +46,8 @@ from gateway.platforms._shared import (
 )
 from gateway.platforms.base_log_safety import safe_url_for_log
 from gateway.platforms.helpers import MessageDeduplicator
+from plugins.platforms.slack.adapter_config_readers import (
+    _extra_or_env_channel_set_getter, _extra_or_env_flag_getter)
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, SUPPORTED_DOCUMENT_TYPES, SUPPORTED_VIDEO_TYPES, _TEXT_INJECT_EXTENSIONS,
@@ -986,27 +988,6 @@ def _is_transient_transport_error(e: BaseException) -> bool:
         isinstance(connection_error_type, type)
         and isinstance(e, connection_error_type)
         and not is_permanent_tls_error)
-
-
-def _extra_or_env_flag_getter(key: str, env_var: str, *, strip: bool = False) -> Callable[..., bool]:
-    """Method factory: ``self._extra_or_env_flag(key, env_var, strip=strip)``."""
-
-    def getter(self) -> bool:
-        return self._extra_or_env_flag(key, env_var, strip=strip)
-
-    getter.__name__ = f"_slack_{key}"
-    return getter
-
-
-def _extra_or_env_channel_set_getter(
-    key: str, env_var: str, *, coerce_scalar: bool = False) -> Callable[..., set]:
-    """Method factory: ``self._extra_or_env_channel_set(key, env_var, coerce_scalar=...)``."""
-
-    def getter(self) -> set:
-        return self._extra_or_env_channel_set(key, env_var, coerce_scalar=coerce_scalar)
-
-    getter.__name__ = f"_slack_{key}"
-    return getter
 
 
 class SlackAdapter(BasePlatformAdapter):
@@ -4676,6 +4657,7 @@ class SlackAdapter(BasePlatformAdapter):
             media_types=media_types, media_text_inlined=media_text_inlined, channel_context=channel_context,
             reply_expected=self._slack_reply_expected(
                 routing_text, bot_uid, channel_id=channel_id, opens_own_session=thread_ts == ts,
+                channel_thread_followup=is_thread_reply and not is_dm,
                 addressed=is_one_to_one_dm or is_mentioned or is_command_text or force_process))
         # React only when directly addressed; MPIMs are shared, so they need a
         # mention like any channel.
@@ -6377,7 +6359,10 @@ class SlackAdapter(BasePlatformAdapter):
     # Opt-in flags (``config.extra[key]`` else ``SLACK_*`` env). strict_mention: every thread
     # message needs an explicit @-mention (no auto-triggers); ignore_other_user_mentions: silent
     # when the *leading* token @-mentions someone else; thread_require_mention: thread replies
-    # need an @-mention even in free-response channels; disable_dms: incoming DMs are ignored.
+    # need an @-mention even in free-response channels; disable_dms: incoming DMs are ignored;
+    # thread_followup_silence: a bare silence marker may stand on unaddressed channel-thread replies.
+    _slack_thread_followup_silence = _extra_or_env_flag_getter(
+        "thread_followup_silence", "SLACK_THREAD_FOLLOWUP_SILENCE")
     _slack_strict_mention = _extra_or_env_flag_getter("strict_mention", "SLACK_STRICT_MENTION")
     _slack_ignore_other_user_mentions = _extra_or_env_flag_getter(
         "ignore_other_user_mentions", "SLACK_IGNORE_OTHER_USER_MENTIONS")
@@ -6398,17 +6383,20 @@ class SlackAdapter(BasePlatformAdapter):
 
     def _slack_reply_expected(
         self, routing_text: str, bot_uid: Optional[str], *, channel_id: str, addressed: bool,
-        opens_own_session: bool) -> Optional[bool]:
+        opens_own_session: bool, channel_thread_followup: bool = False) -> Optional[bool]:
         """``MessageEvent.reply_expected`` for an admitted message. False (a bare silence marker may
         stand) only when it opens by @mentioning someone else, or is an unaddressed message that a
         free-response channel admitted as the start of its own session (a new top-level thread).
         A plain follow-up in a conversation the bot is part of (a thread, or a flat
         ``reply_in_thread: false`` channel) is None: it is usually meant for the bot, so the
-        gateway keeps its visible fallback (#110952)."""
+        gateway keeps its visible fallback (#110952). With ``thread_followup_silence`` on, an
+        unaddressed reply in a non-DM Slack thread (``channel_thread_followup``) is False instead."""
         self_uids = {u for u in (bot_uid, self._bot_user_id) if u}
         if addressed or self._slack_message_mentions_self(routing_text, self_uids):
             return True
         if self._slack_message_addressed_to_other_user(routing_text, self_uids):
+            return False
+        if channel_thread_followup and self._slack_thread_followup_silence():
             return False
         return False if opens_own_session and self._slack_is_free_channel(channel_id) else None
 
@@ -6892,6 +6880,7 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
     ("require_mention", "SLACK_REQUIRE_MENTION", "lower"), ("strict_mention", "SLACK_STRICT_MENTION", "lower"),
     ("ignore_other_user_mentions", "SLACK_IGNORE_OTHER_USER_MENTIONS", "lower"),
     ("thread_require_mention", "SLACK_THREAD_REQUIRE_MENTION", "lower"), ("allow_bots", "SLACK_ALLOW_BOTS", "lower"),
+    ("thread_followup_silence", "SLACK_THREAD_FOLLOWUP_SILENCE", "lower"),
     ("reactions", "SLACK_REACTIONS", "lower"), ("disable_dms", "SLACK_DISABLE_DMS", "lower"),
     ("free_response_channels", "SLACK_FREE_RESPONSE_CHANNELS", "csv"),
     ("require_mention_channels", "SLACK_REQUIRE_MENTION_CHANNELS", "csv"),

@@ -7,6 +7,41 @@ import { appendAssistantTextPart, chatMessageText, mediaTagValues, renderMediaTa
 const SPACED = '/home/hermes/Morten - Nobly Kickoff - Opening and cue cards EN.docx'
 const CARD = `[File: Morten - Nobly Kickoff - Opening and cue cards EN.docx](#media:${encodeURIComponent(SPACED)})`
 
+describe('Office MEDIA paths with interior spaces', () => {
+  const extensions = ['xlsb', 'xlsm', 'xltx', 'xltm', 'docm', 'dotx', 'pptm', 'potx', 'vsdx']
+  const roots = ['C:/Users/example/scratch/', 'C:\\Users\\example\\scratch\\', '/tmp/', '~/Documents/']
+
+  it('keeps the full Office file target without consuming adjacent prose or tags', () => {
+    for (const extension of extensions) {
+      for (const root of roots) {
+        const name = `My Model v6.${extension}`
+        const path = `${root}${name}`
+        const card = `[File: ${name}](#media:${encodeURIComponent(path)})`
+
+        expect(renderMediaTags(`MEDIA:${path}`)).toBe(card)
+        expect(renderMediaTags(`Ready: MEDIA:${path} — enjoy`)).toBe(`Ready: ${card} — enjoy`)
+        expect(mediaTagValues(`MEDIA:${path}MEDIA:/tmp/next.xlsx`)).toEqual([path, '/tmp/next.xlsx'])
+        expect(renderMediaTags(`MEDIA:"${path}"`)).toBe(card)
+      }
+    }
+  })
+
+  it('settles streamed Office paths on the same complete file target', () => {
+    for (const extension of extensions) {
+      const path = `C:/Users/example/scratch/My Model v6.${extension}`
+      let parts = appendAssistantTextPart([], 'Ready\nMEDIA:C:/Users/example/scratch/My')
+
+      for (const chunk of [' Model v6.', extension, '\nDone']) {
+        parts = appendAssistantTextPart(parts, chunk)
+      }
+
+      expect(chatMessageText({ id: 'office', parts, role: 'assistant' })).toBe(
+        `Ready\n[File: My Model v6.${extension}](#media:${encodeURIComponent(path)})\nDone`
+      )
+    }
+  })
+})
+
 describe('renderMediaTags with interior spaces', () => {
   it('keeps the whole spaced path in one card on every surface that reads MEDIA tags', () => {
     expect(renderMediaTags(`MEDIA:${SPACED}`)).toBe(CARD)

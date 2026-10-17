@@ -12,6 +12,7 @@ import os
 import stat
 from pathlib import Path
 from typing import IO
+from hermes_dir_acl import make_user_dir
 
 __all__ = ["ensure_spill_dir", "open_exclusive", "write_text_exclusive"]
 
@@ -24,7 +25,7 @@ def ensure_spill_dir(path: Path, *, private: bool = True) -> Path:
     creates the leaf ``0o700`` and tightens an existing leaf. Raises ``OSError`` if the leaf
     is not a real directory."""
     path = Path(path)
-    path.mkdir(mode=0o700 if private else 0o777, parents=True, exist_ok=True)
+    make_user_dir(path, mode=0o700 if private else 0o777, parents=True, exist_ok=True)
     st = os.lstat(path)
     if not stat.S_ISDIR(st.st_mode):
         raise OSError(f"spill dir is not a directory (symlink?): {path}")

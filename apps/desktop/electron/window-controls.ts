@@ -6,6 +6,29 @@ interface CustomWindowControlsOptions {
   platform?: NodeJS.Platform
 }
 
+export const RENDERER_WINDOW_CONTROLS_ENV = 'HERMES_DESKTOP_RENDERER_WINDOW_CONTROLS'
+
+const RENDERER_WINDOW_CONTROLS_ON = new Set(['1', 'true', 'yes', 'on'])
+
+/**
+ * Plain-Linux escape hatch for the stuck native overlay Button (#133423,
+ * #124255): Electron paints the overlay min/max/close as views::Buttons, and
+ * their compositor-animation observer can latch "active" forever on some
+ * Chromium/Electron builds ("CompositorAnimationObserver is active for too
+ * long … Button@ui/views/controls/button/button.cc"), pinning 1-5 cores of
+ * frame compositing with the window idle and visible. Setting
+ * HERMES_DESKTOP_RENDERER_WINDOW_CONTROLS=1 swaps every window to the
+ * renderer-painted controls (the WSLg path), so no views Button exists to
+ * stick. WSL already paints its own controls, so the env is a no-op there.
+ */
+export function rendererWindowControlsForced(env: NodeJS.ProcessEnv = process.env): boolean {
+  const override = String(env[RENDERER_WINDOW_CONTROLS_ENV] || '')
+    .trim()
+    .toLowerCase()
+
+  return RENDERER_WINDOW_CONTROLS_ON.has(override)
+}
+
 // WSL detection kept fs-free on purpose: this module is bundled into the
 // sandboxed preload (sandbox: true), where importing node:fs — even
 // transitively via bootstrap-platform — throws when the preload module loads
@@ -23,6 +46,10 @@ export function customWindowControlsEnabled(options: CustomWindowControlsOptions
   }
 
   const env = options.env ?? process.env
+
+  if (rendererWindowControlsForced(env)) {
+    return true
+  }
 
   if (env.WSL_DISTRO_NAME || env.WSL_INTEROP) {
     return true

@@ -1,13 +1,13 @@
 name: hermes-federated-search
 repo: https://github.com/kumaxs/hermes-federated-search
-sha: 7ccc31b2757dcf3b2178f1da37e7a82f58ad7fbb
+sha: 566b3ccc6aeff7e39c19dcfd779ade107827043c
 description: "Federated web search backend (provider name `federated`): fans one query out to multiple configured search backends in parallel and returns merged, deduplicated, relevance-ranked results (keyword scoring; optional LLM re-rank with automatic fallback). Phase 2 — official settings-page exposure (config_schema, six keys) merged with the legacy web.federated block, and per-line multi-card credential pools (environment-variable names only) with automatic failover and host-aligned cooldowns. Phase 3 — a desktop card config page (Settings → Plugins; opt-in via Settings → Skills & Tools → Plugins): one card per line, two-level membership checkboxes (backends / credentials), add/remove lines and keys, a per-line Key rotation strategy (pool_strategy), an LLM ranker model picker (seventh schema key `ranker`), and a current-settings string with paste import; no type picker/badges (`type` round-trips verbatim); every edit serializes back to the settings tree (string ↔ UI parity). The LLM re-rank request pins thinking off (`reasoning_effort=off`) and the card page states it. Disclosure — reads the operator's config.yaml (read-only) for its own settings (web.federated and plugins.entries.hermes-federated-search.settings); sends the query to the operator-configured sub-backends (registered providers or custom HTTP endpoints); no telemetry, no subprocesses, no credential storage (key values stay in the runtime environment)."
 maintainer: kumaxs
 tier: community
 category: web
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/kumaxs/hermes-federated-search#readme
-version: "1.1.1"
+version: "1.1.2"
 readme: true
 capabilities:
   provides_tools: []

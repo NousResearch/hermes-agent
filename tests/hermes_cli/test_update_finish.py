@@ -194,6 +194,7 @@ def completion(tmp_path, monkeypatch):
                     update._run_post_update_maintenance = maintain
                     # Ancillary system changes are not the acceptance target.
                     macos_tcc_anchor.ensure_tcc_anchor = lambda: None
+                    maint._install_default_tools_after_update = lambda: None
                     maint._print_post_update_notices_and_self_heals = lambda: None
                     maint._sync_profiles_after_update = lambda: None
                     maint._print_bundled_skills_sync_report = lambda: None

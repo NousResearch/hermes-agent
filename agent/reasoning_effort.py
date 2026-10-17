@@ -69,14 +69,17 @@ NEBIUS_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
 SOLAR_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
 
 #: GLM-5.2 native knob: exactly ``high`` (its minimum thinking level) and ``max``; GLM-5.3
-#: widens it to a graded scale (live-verified, monotonic). ``xhigh`` requests the top tier.
+#: widens it to a graded scale. ``xhigh`` requests the top tier.
 GLM52_EFFORTS: tuple[str, ...] = ("high", "max")
 GLM52_OVERRIDES: dict[str, str] = {"xhigh": "max"}
-# : GLM-5.3 widens the knob to a graded low/medium/high/max scale — verified : live on
-# api.z.ai/api/coding/paas/v4 (issue #91789, 2026-08-21): every : level accepted with monotonic
-# reasoning-token scaling (low=4, medium=11, : high=98, max=125 on the probe prompt).
-GLM53_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "max")
-GLM53_OVERRIDES: dict[str, str] = {"xhigh": "max"}
+#: GLM-5.3's knob is low/high/max — ``medium`` is NOT accepted: the wire answers HTTP 400
+#: (code 1210, "This model always engages in thinking and cannot be disabled; please use low,
+#: high, or max") on both api/paas/v4 and api/coding/paas/v4, with or without the thinking
+#: marker, for glm-5.3 and glm-5.3-flash alike (live-verified 2026-09-23). An earlier reading
+#: saw ``medium`` accepted with monotonic token scaling; the wire no longer honours it, so it
+#: rounds UP to ``high`` exactly as Kimi K3 does. GLM-5.2 still takes ``medium``.
+GLM53_EFFORTS: tuple[str, ...] = ("low", "high", "max")
+GLM53_OVERRIDES: dict[str, str] = {"medium": "high", "xhigh": "max"}
 
 #: DeepSeek V4 OpenAI-compat endpoint; ``xhigh`` requests the top tier.
 DEEPSEEK_V4_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "max")

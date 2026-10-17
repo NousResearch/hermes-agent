@@ -49,6 +49,7 @@ import {
   type SessionTombstoneGenerationSnapshot,
   tombstoneRowIds
 } from '@/store/session-removal'
+import { $sessionsListRefresh } from '@/store/session-sync'
 import { $sessionTiles, $workingSessionIds, getRecentlySettledSessionIds } from '@/store/session-states'
 
 import { refreshCronJobs as refreshCronJobsStore } from '../../cron/cron-actions'
@@ -551,6 +552,16 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
             void refreshSessions()
           }
         }
+      }),
+    [refreshSessions]
+  )
+
+  // Same-window nudge (a BroadcastChannel never echoes to its poster) —
+  // re-pull so a mutation that only patched the loaded slices is re-read.
+  useEffect(
+    () =>
+      $sessionsListRefresh.listen(() => {
+        void refreshSessions().catch(() => undefined)
       }),
     [refreshSessions]
   )

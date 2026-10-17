@@ -14,6 +14,8 @@ unsubscribe) and ``_format_kanban_event_text``.
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
@@ -248,6 +250,34 @@ class TestFormatKanbanEventText:
         ev = SimpleNamespace(kind="timed_out", payload={"limit_seconds": "not-a-number"})
         text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
         assert "timed out" in text
+
+    def test_gave_up_uses_the_gateway_cause_not_a_spawn_failure(self):
+        """Regression for #80510."""
+        from gateway.kanban_watchers_notifier import _fmt_gave_up, gave_up_cause
+
+        payload = {"failures": 3, "error": "Iteration budget exhausted (80/80)"}
+        ev = SimpleNamespace(kind="gave_up", payload=payload)
+        count, last = gave_up_cause(payload)
+
+        tui = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
+        gateway = _fmt_gave_up(ev, SimpleNamespace(head="H", task_id="t_abc123"))[0]
+
+        assert count + last in tui
+        assert count + last in gateway
+        assert "Iteration budget exhausted" in tui
+        assert "spawn" not in tui
+
+    @pytest.mark.parametrize(
+        "payload",
+        [{}, {"failures": "three", "error": "boom"}, {"failures": 3, "error": "line1\nline2"}],
+    )
+    def test_gave_up_odd_payload_renders_one_line(self, payload):
+        ev = SimpleNamespace(kind="gave_up", payload=payload)
+        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
+        assert "gave up" in text
+        assert "spawn" not in text
+        assert "line2" not in text
+        assert len(text.splitlines()) == 1
 
 
 class TestNotificationPollerLoopKanbanWiring:

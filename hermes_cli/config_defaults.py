@@ -4,6 +4,8 @@ Pure-data leaf module — must not import from hermes_cli.config. Comments are t
 docs of config.yaml.
 """
 
+from hermes_cli.config_defaults_env_entries import _base_url, _env, _msg, _prov, _setting, _skill, _tool
+
 
 #: Image every container terminal backend (docker/modal/daytona/singularity) uses unless the
 #: user pins one. LEGACY_SANDBOX_IMAGES are the plain defaults that preceded the desktop stack
@@ -370,6 +372,22 @@ DEFAULT_CONFIG = {
         "docker_mount_cwd_to_workspace": False,  # mount host cwd at /workspace (weakens isolation)
         "docker_network": True,  # false = --network=none, no network access from commands
         "docker_extra_args": [],        # Extra flags passed verbatim to docker run
+        # Bubblewrap backend (backend: bubblewrap): every command runs inside a
+        # bwrap sandbox on this host. Profile is restricted, workspace or
+        # network (cwd writable from workspace up, host network only under
+        # network). Binds is a list of {"src", "dest", "readonly"} objects;
+        # a source under a sensitive path (~/.ssh, ~/.aws, HERMES_HOME, ...)
+        # is ignored. Limits apply per spawn; 0 disables that limit.
+        # Dot entries of HOME are hidden unless allowed: home_allow adds
+        # entries (".zz-tool", ".config/nvim") to the shipped allowlist, and
+        # hide adds paths ("~/Documents/keys") to the hidden set.
+        "bubblewrap_profile": "network",
+        "bubblewrap_binds": [],
+        "bubblewrap_memory_mb": 256,
+        "bubblewrap_cpu_seconds": 30,
+        "bubblewrap_max_procs": 256,
+        "bubblewrap_home_allow": [],
+        "bubblewrap_hide": [],
         # /dev/shm size for the Docker sandbox. Docker's 64 MB default silently breaks
         # Chromium/Playwright and PyTorch DataLoader workers; tmpfs is lazily allocated so the
         # higher ceiling is free until used. "" or "0" = omit the flag (Docker default).
@@ -2715,46 +2733,6 @@ DEFAULT_CONFIG = {
     },
     "_config_version": 51,  # Config schema version - bump this when adding new required fields
 }
-
-
-def _env(description, prompt, **keys):
-    """One OPTIONAL_ENV_VARS entry; keyword order is preserved as dict key order."""
-    return {"description": description, "prompt": prompt, **keys}
-
-
-_OMIT = object()
-
-
-def _category(category, password, advanced):
-    """Entry factory for one category with its usual password/advanced defaults.
-
-    ``url``/``help``/``tools`` are only written when passed; ``password=None`` omits the key;
-    ``advanced`` is only written when true. Key order matches the plain ``_env`` entries.
-    """
-    def make(description, prompt, url=_OMIT, *, help=_OMIT, tools=_OMIT, password=password,
-             advanced=advanced):
-        d = {"description": description, "prompt": prompt}
-        d.update((k, v) for k, v in (("help", help), ("url", url), ("tools", tools)) if v is not _OMIT)
-        if password is not None:
-            d["password"] = password
-        d["category"] = category
-        if advanced:
-            d["advanced"] = True
-        return d
-    return make
-
-
-_prov = _category("provider", password=True, advanced=True)
-_tool = _category("tool", password=True, advanced=False)
-_msg = _category("messaging", password=False, advanced=False)
-_skill = _category("skill", password=True, advanced=True)
-_setting = _category("setting", password=False, advanced=False)
-
-
-def _base_url(name, prompt_name=None):
-    """Provider ``*_BASE_URL`` override entry (advanced, not a secret)."""
-    prompt = f"{prompt_name or name} base URL (leave empty for default)"
-    return _prov(f"{name} base URL override", prompt, None, password=False)
 
 
 # Optional environment variables that enhance functionality. Feeds the dashboard keys page and setup

@@ -5,7 +5,7 @@ terminal_tool._get_env_config() reads ALL terminal settings from os.environ
 at startup, by THREE separate code paths:
 
   1. cli.py            -> ``env_mappings`` dict (CLI / TUI startup)
-  2. gateway/run.py    -> ``_terminal_env_map`` dict (gateway / messaging
+  2. gateway/run_terminal_env.py -> ``_terminal_env_map`` dict (gateway / messaging
                           platforms)
   3. hermes_cli/config.py:set_config_value
                        -> bridges via the canonical ``TERMINAL_CONFIG_ENV_MAP``
@@ -33,7 +33,7 @@ def _cli_env_map() -> dict[str, str]:
 
 def _gateway_env_map() -> dict[str, str]:
     """terminal config key -> env var actually written by the gateway bridge."""
-    from gateway.run import _bridge_terminal_config_to_env
+    from gateway.run_terminal_env import _bridge_terminal_config_to_env
     from hermes_cli import config as hc_config
 
     class _KeyRecorder(dict):
@@ -123,7 +123,7 @@ def test_cli_and_gateway_env_maps_agree():
     mismatched = {k: (cli_map[k], gw_map[k]) for k in set(cli_map) & set(gw_map) if cli_map[k] != gw_map[k]}
 
     assert not missing_in_gateway, (
-        f"Keys the CLI bridges but gateway/run.py _bridge_terminal_config_to_env "
+        f"Keys the CLI bridges but gateway/run_terminal_env.py _bridge_terminal_config_to_env "
         f"ignores: {missing_in_gateway}.  Add them to both maps (same bug class "
         f"as docker_run_as_host_user shipping wired in cli but not gateway)."
     )
@@ -147,3 +147,33 @@ def test_save_config_set_bridges_every_cli_terminal_key():
         f"{sorted(missing)}.  Add them to TERMINAL_CONFIG_ENV_MAP in "
         f"hermes_cli/config.py (set_config_value bridges through it)."
     )
+
+
+BUBBLEWRAP_KEYS = {
+    "bubblewrap_profile": "TERMINAL_BUBBLEWRAP_PROFILE",
+    "bubblewrap_binds": "TERMINAL_BUBBLEWRAP_BINDS",
+    "bubblewrap_memory_mb": "TERMINAL_BUBBLEWRAP_MEMORY_MB",
+    "bubblewrap_cpu_seconds": "TERMINAL_BUBBLEWRAP_CPU_SECONDS",
+    "bubblewrap_max_procs": "TERMINAL_BUBBLEWRAP_MAX_PROCS",
+    "bubblewrap_home_allow": "TERMINAL_BUBBLEWRAP_HOME_ALLOW",
+    "bubblewrap_hide": "TERMINAL_BUBBLEWRAP_HIDE",
+}
+
+
+def test_bubblewrap_defaults_feed_the_backend_loader():
+    """The bridged env values of the defaults load into the builder's own
+    defaults, JSON-encoded list included."""
+    from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP, _terminal_env_value
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    from tools.environments import bubblewrap
+
+    assert {bubblewrap.ENV_PROFILE, bubblewrap.ENV_BINDS, bubblewrap.ENV_MEMORY_MB,
+            bubblewrap.ENV_CPU_SECONDS, bubblewrap.ENV_MAX_PROCS,
+            bubblewrap.ENV_HOME_ALLOW, bubblewrap.ENV_HIDE} == set(BUBBLEWRAP_KEYS.values())
+
+    env = {
+        TERMINAL_CONFIG_ENV_MAP[key]: _terminal_env_value(DEFAULT_CONFIG["terminal"][key])
+        for key in BUBBLEWRAP_KEYS
+    }
+    assert env[bubblewrap.ENV_BINDS] == "[]"
+    assert bubblewrap.load_bubblewrap_config(env) == bubblewrap.BubblewrapConfig()

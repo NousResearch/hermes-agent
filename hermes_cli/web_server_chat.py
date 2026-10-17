@@ -382,8 +382,8 @@ def _resolve_chat_argv(
     if profile_dir is not None:
         env["HERMES_HOME"] = str(profile_dir)
     try:
-        from hermes_cli.config import (
-            apply_terminal_config_to_env, read_raw_config, terminal_config_owned_env_vars)
+        from hermes_cli.config import apply_terminal_config_to_env, read_raw_config
+        from hermes_cli.config_terminal_env import terminal_config_owned_env_vars
 
         if profile_dir is not None:
             # Drop only the terminal keys the launch profile owns before applying

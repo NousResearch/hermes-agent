@@ -27,7 +27,7 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
   const termRef = useRef<Terminal | null>(null)
   const webglRef = useRef<WebglAddon | null>(null)
   const fitRef = useRef<(() => void) | null>(null)
-  const { latestFontFamilyRef, mountedRef } = useTerminalFontController({ fitRef, termRef, webglRef })
+  const { latestFontFamilyRef, latestFontSizeRef, mountedRef } = useTerminalFontController({ fitRef, termRef, webglRef })
 
   const surfaceTheme = () => {
     const ansi = renderedMode === 'dark' ? (theme.darkTerminal ?? theme.terminal) : theme.terminal
@@ -71,7 +71,7 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
       cursorBlink: false,
       disableStdin: true,
       fontFamily: latestFontFamilyRef.current,
-      fontSize: 11,
+      fontSize: latestFontSizeRef.current,
       fontWeight: 'normal',
       fontWeightBold: 'bold',
       letterSpacing: 0,
@@ -142,6 +142,7 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
         return
       }
 
+      term.options.fontSize = latestFontSizeRef.current
       term.open(host)
       termRef.current = term
       mountedRef.current = true

@@ -1,6 +1,8 @@
 import { act, render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { setTerminalFontSize } from '@/store/terminal-font-size'
+
 import { useAgentTerminal } from './use-agent-terminal'
 
 const xterm = vi.hoisted(() => ({
@@ -133,6 +135,7 @@ describe('useAgentTerminal', () => {
   })
 
   afterEach(() => {
+    setTerminalFontSize(11)
     vi.clearAllMocks()
     vi.unstubAllGlobals()
     Reflect.deleteProperty(globalThis.document, 'fonts')
@@ -156,6 +159,23 @@ describe('useAgentTerminal', () => {
     expect(resizeObserverConstructor).not.toHaveBeenCalled()
     expect(terminalRegistrations.registerWriter).not.toHaveBeenCalled()
     expect(terminalRegistrations.registerReader).not.toHaveBeenCalled()
+  })
+
+  it('opens at the stored font size, including one changed while the mount was pending', async () => {
+    setTerminalFontSize(13)
+    render(<Harness />)
+
+    await waitFor(() => expect(globalThis.document.fonts.load).toHaveBeenCalled())
+
+    act(() => setTerminalFontSize(16))
+
+    await act(async () => {
+      resolveFontLoad([])
+      await Promise.resolve()
+    })
+
+    expect(xterm.open).toHaveBeenCalledOnce()
+    expect((xterm.open.mock.contexts[0] as { options: { fontSize: number } }).options.fontSize).toBe(16)
   })
 
   it('repaints buffered rows through the DOM renderer after a WebGL context loss', async () => {

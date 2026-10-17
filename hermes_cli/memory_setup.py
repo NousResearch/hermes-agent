@@ -431,6 +431,19 @@ def cmd_status(args) -> None:
             else:
                 print(f"  Install the '{provider_name}' memory plugin to ~/.hermes/plugins/")
 
+        # Provider-specific health that is_available() does not cover: holographic
+        # reports available while silently running FTS-only without numpy (#136707).
+        if provider_name == "holographic" and provider is not None:
+            from hermes_cli.memory_provider_health import holographic_hrr_state
+            state = holographic_hrr_state(provider)
+            if state is not None:
+                if state.get("numpy"):
+                    version = state.get("numpy_version")
+                    print(f"  HRR:       semantic recall active ✓ (numpy {version})" if version
+                          else "  HRR:       semantic recall active ✓")
+                else:
+                    print("  HRR:       degraded ✗ (numpy missing — recall is FTS-only)")
+
     if providers:
         print("\n  Installed plugins:")
         for pname, desc, _ in providers:

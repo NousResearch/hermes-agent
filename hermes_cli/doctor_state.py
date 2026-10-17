@@ -598,7 +598,42 @@ def _check_skills_hub(should_fix: bool, f: Finding) -> None:
 
 # provider -> (checker, ImportError row, ImportError issue, label for "check failed"); every provider
 # still bundled or catalog-installed uses the generic check.
-_MEMORY_PROVIDER_CHECKS: dict = {}
+def _check_holographic_provider(f: Finding) -> None:
+    """Holographic reports is_available() while running FTS-only without numpy (#136707).
+
+    The generic row only distinguishes installed/not installed; numpy is an optional
+    dependency whose absence silently degrades recall, so surface the HRR kernel's own
+    state here."""
+    from plugins.memory import load_memory_provider
+    provider = load_memory_provider("holographic")
+    if provider is None:  # keep the generic install hint when the plugin cannot load
+        _memory_provider_generic("holographic")
+        return
+    if provider.is_available():
+        check_ok("holographic provider active")
+    else:
+        check_warn("holographic configured but not available", "run: hermes memory status")
+    from hermes_cli.memory_provider_health import holographic_hrr_state
+    state = holographic_hrr_state(provider)
+    if state is None:
+        return  # plugin build without the HRR kernel flag: availability row already covers it
+    if state.get("numpy"):
+        version = state.get("numpy_version")
+        check_ok("HRR semantic recall active", f"(numpy {version})" if version else "")
+    else:
+        check_warn("holographic HRR recall degraded (numpy missing)",
+                   "(recall is FTS-only; facts have no hrr_vector)")
+        f.manual_issues.append(
+            "Install numpy for the holographic memory plugin (it declares numpy>=1.26,<3) — "
+            "in Docker a venv site-packages .pth bind mount survives the launcher unsetting "
+            "PYTHONPATH — then re-vectorize existing facts so hrr_vector is populated")
+
+
+# name -> (checker(f: Finding), missing row text, missing auto-fix issue, label). A checker replaces
+# the generic installed/available row with provider-specific diagnostics.
+_MEMORY_PROVIDER_CHECKS: dict = {
+    "holographic": (_check_holographic_provider, None, None, "holographic"),
+}
 
 
 def _memory_provider_generic(name: str) -> None:
@@ -626,7 +661,7 @@ def _check_memory_provider(should_fix: bool, f: Finding) -> None:
         return
     checker, missing_row, missing_issue, label = _MEMORY_PROVIDER_CHECKS.get(name, (None, None, None, name))
     try:
-        checker(f.issues) if checker else _memory_provider_generic(name)
+        checker(f) if checker else _memory_provider_generic(name)
     except ImportError as _e:
         if missing_row is None:
             check_warn(f"{label} check failed", str(_e))

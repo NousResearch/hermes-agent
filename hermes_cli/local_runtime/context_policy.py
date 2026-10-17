@@ -13,6 +13,8 @@ from hermes_cli.local_runtime.estimator import (
     HardwareBudget, LayerKind, ModelProfile, PhysicsRefusal, ctx_bytes, footprint_bytes,
     physics_check)
 
+from hermes_cli.local_runtime.gguf import EXPERT_FFN_PATTERN
+
 FLOOR = 64 * 1024                     # = target; one internal constant
 _LADDER_GROWTH = 1.5
 _GROW_AT_OCCUPANCY = 0.85             # of the current window, at turn boundary
@@ -186,14 +188,18 @@ def fit_to_free_memory(plan: LaunchPlan, profile: ModelProfile, live: HardwareBu
                        fixed_overhead: int = RUNTIME_OVERHEAD_BYTES) -> LaunchPlan:
     """Narrow a resident capacity plan to the window the card's free memory holds now.
 
-    Only the window moves, and only down to the floor. A plan that already spills keeps its
-    placement, and so does a card too busy to hold even the floor: moving weights to the CPU on a
+    Only the window moves, and only down to the floor. Spilled placements stay fixed;
+    tensor overrides disable the fitter, so their GPU portion must fit the live launch budget.
+    A resident plan on a card too busy to hold even the floor keeps its placement: moving weights to the CPU on a
     live reading is how a launch once pinned a fitting model to the CPU, because the reading still
     counted memory the outgoing server was about to free.
     """
     decision = plan.decision
-    if not isinstance(decision, WindowDecision) or decision.spilled:
+    if not isinstance(decision, WindowDecision):
         return plan
+    if decision.spilled:
+        refusal = _fixed_spill_refusal(plan, live)
+        return replace(plan, decision=refusal) if refusal else plan
     now = plan_launch(profile, live, mtp_capable=mtp_capable, fixed_overhead=fixed_overhead)
     if isinstance(now.decision, WindowDecision) and not now.decision.spilled:
         if now.decision.window >= decision.window:
@@ -207,6 +213,35 @@ def fit_to_free_memory(plan: LaunchPlan, profile: ModelProfile, live: HardwareBu
     return LaunchPlan(WindowDecision(window=floor, spill_bytes=0, kv_on_gpu=True, reasons=[
         f"floor held at {floor // 1024}K; other programs hold most of the GPU memory"]),
         plan.mtp_prefill, plan.overhead_bytes, plan.profile)
+
+
+def _fixed_spill_refusal(plan: LaunchPlan, live: HardwareBudget) -> PhysicsRefusal | None:
+    """Price the tensors the fixed override actually leaves on the discrete GPU.
+
+    launch_budget credits managed memory that will be released. Dense spill keeps
+    the engine's fitter; unknown tensor sizes retain the existing advisory policy.
+    """
+    profile, decision = plan.profile, plan.decision
+    if live.uma or profile is None or not isinstance(decision, WindowDecision):
+        return None
+    if profile.moe:
+        moved = profile.expert_weight_bytes
+    else:
+        blocks = recurrent_spill_blocks(profile, decision.spill_bytes)
+        if not blocks or any(i not in profile.ffn_block_bytes for i in blocks):
+            return None
+        moved = sum(profile.ffn_block_bytes[i] for i in blocks)
+    if moved <= 0:
+        return None
+    needed = footprint_bytes(profile, decision.window, overhead_bytes=plan.overhead_bytes) - moved
+    available = live.usable_vram_bytes
+    if needed <= available:
+        return None
+    mib = 1 << 20
+    return PhysicsRefusal(needed, available, (
+        f"{profile.name}: fixed GPU residency needs ~{needed / mib:.0f} MiB but the live launch "
+        f"budget is ~{available / mib:.0f} MiB. CPU tensor overrides disable automatic fitting. "
+        "Unload other programs holding GPU memory or choose a smaller quant, then retry."))
 
 
 @dataclass
@@ -283,7 +318,7 @@ def spill_overrides(profile: ModelProfile, spill_bytes: int | None = None) -> li
     blocks to cover ``spill_bytes`` (their n_head_kv==0 layers carry no KV worth protecting, and
     full-attention FFNs stay on the GPU)."""
     if profile.moe:
-        return ["-ot", r"blk\.\d+\.ffn_.*_exps\.weight=CPU"]
+        return ["-ot", EXPERT_FFN_PATTERN + "=CPU"]
     blocks = recurrent_spill_blocks(profile, spill_bytes)
     if blocks:
         return ["-ot", r"blk\.({})\.ffn_.*\.weight=CPU".format("|".join(map(str, blocks)))]

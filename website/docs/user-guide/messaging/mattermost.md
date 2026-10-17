@@ -16,9 +16,9 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 
 | Context | Behavior |
 |---------|----------|
-| **DMs** | Hermes responds to every message. No `@mention` needed. Each DM has its own session. |
+| **DMs** | Hermes responds to every message. No `@mention` needed. With `reply_mode: off` (default), each DM is one session. With `reply_mode: thread`, each top-level DM message starts a new session and replies stay in that thread. |
 | **Public/private channels** | Hermes responds when you `@mention` it. Without a mention, Hermes ignores the message. |
-| **Threads** | If `MATTERMOST_REPLY_MODE=thread`, Hermes replies in a thread under your message. Thread context stays isolated from the parent channel. |
+| **Threads** | If `MATTERMOST_REPLY_MODE=thread`, Hermes replies in a thread under your message. Thread context stays isolated from the parent channel or DM. |
 | **Shared channels with multiple users** | By default, Hermes isolates session history per user inside the channel. Two people talking in the same channel do not share one transcript unless you explicitly disable that. |
 
 :::tip
@@ -29,8 +29,8 @@ If you want Hermes to reply as threaded conversations (nested under your origina
 
 By default:
 
-- each DM gets its own session
-- each thread gets its own session namespace
+- each DM is one session when `reply_mode` is `off` (default)
+- with `reply_mode: thread`, each top-level message (channel or DM) starts a new session; replies under that post share it
 - each user in a shared channel gets their own session inside that channel
 
 This is controlled by `config.yaml`:
@@ -204,7 +204,7 @@ The `MATTERMOST_REPLY_MODE` setting controls how Hermes posts responses:
 | Mode | Behavior |
 |------|----------|
 | `off` (default) | Hermes posts flat messages in the channel, like a normal user. |
-| `thread` | Hermes replies in a thread under your original message. Keeps channels clean when there's lots of back-and-forth. |
+| `thread` | Hermes replies in a thread under your original message. In DMs and channels, each top-level message also starts a new session; replies stay in that session. |
 
 Set it in your `~/.hermes/.env`:
 

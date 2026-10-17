@@ -285,13 +285,20 @@ _HISTORY_ROLES = frozenset({"user", "assistant", "tool", "system"})
 def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: bool = True) -> list[dict]:
     """``image_urls=False`` is the ``inline_images=false`` projection (#116511): image parts render ``[image]``
     so a remote client's history read stays kilobytes instead of re-transmitting every stored attachment."""
+    from agent.compaction_display import inflight_replay_content_for_display
     from agent.history_commentary import project_history_commentary
+    from agent.turn_finish_reasons import finish_reason_ends_turn
 
     messages = []
     tool_call_args = {}
+    # A compaction carrier can restate the unfinished task while the authentic
+    # user row remains in the loaded display lineage. Track only turns that are
+    # still open: global text deduplication would hide legitimate repeated asks.
+    open_user_turns: list[str] = []
     for m in history:
         if not isinstance(m, dict):
             continue
+        replay_content = inflight_replay_content_for_display(m)
         m = project_compaction_message_for_display(m)
         if m is None:
             continue
@@ -306,6 +313,14 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
             continue
         if role == "user":
             content_text = _DISCORD_TRIGGERING_NOTE_RE.sub(r"\1", content_text)
+            if replay_content is not None:
+                replay_text = _coerce_message_text(replay_content, image_urls=image_urls)
+                replay_text = _DISCORD_TRIGGERING_NOTE_RE.sub(r"\1", replay_text).strip()
+                if replay_text in open_user_turns:
+                    continue
+                content_text = replay_text
+            if content_text.strip():
+                open_user_turns.append(content_text.strip())
         if role == "assistant" and m.get("tool_calls"):
             for tc in m["tool_calls"]:
                 fn, tc_id = tc.get("function", {}), tc.get("id", "")
@@ -315,6 +330,16 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
                     except (json.JSONDecodeError, TypeError):
                         args = {}
                     tool_call_args[tc_id] = (fn["name"], args)
+        elif role == "assistant":
+            finish_reason = m.get("finish_reason")
+            # Explicit terminal reasons close the exchange; unknown extension
+            # reasons stay open conservatively. Legacy rows close on a reply.
+            terminal_reply = (
+                finish_reason_ends_turn(finish_reason)
+                or (finish_reason is None and bool(content_text.strip()))
+            )
+            if terminal_reply:
+                open_user_turns.clear()
         if role == "user" and m.get("display_kind") == STEER_DISPLAY_KIND:
             # Mid-turn /steer: show the user's own words, not the model-facing marker wrapper.
             from agent.conversation_compression import _extract_steer_text_from_message

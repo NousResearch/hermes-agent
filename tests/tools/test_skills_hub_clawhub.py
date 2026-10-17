@@ -2,6 +2,7 @@
 
 import time
 import unittest
+from threading import Event
 from unittest.mock import patch
 
 from tools.skills_hub_clawhub import ClawHubSource
@@ -710,6 +711,41 @@ class TestFetchOwnerHandleRetry(unittest.TestCase):
         self.assertLess(enriched, 200)
         self.assertEqual(enriched, sum(1 for s in skills if s.extra.get("owner") == "eve"))
         self.assertLess(mock_get.call_count, 200)
+
+    def test_enrich_owners_budget_does_not_wait_for_blocked_workers(self):
+        """Regression for #139092: budget expiry must not join a stalled request."""
+        started = Event()
+        release = Event()
+        calls = []
+
+        def blocked_owner(identifier, deadline=None):
+            calls.append((identifier, deadline))
+            started.set()
+            release.wait(3)
+            return "eve"
+
+        skills = [SkillMeta(name=f"s{i}", description="", source="clawhub",
+                            identifier=f"s{i}", trust_level="community") for i in range(20)]
+        try:
+            started_at = time.monotonic()
+            with patch.object(self.src, "_fetch_owner_handle", side_effect=blocked_owner):
+                result = self.src.enrich_owners(skills, max_workers=1, budget_seconds=0.05)
+            self.assertTrue(started.is_set())
+            self.assertLess(time.monotonic() - started_at, 2)
+            self.assertEqual(result, 0)
+            self.assertEqual(len(calls), 1)
+        finally:
+            release.set()
+
+    def test_fetch_owner_handle_caps_request_timeout_at_deadline(self):
+        with patch("tools.skills_hub_clawhub.hub") as mock_hub:
+            mock_hub.return_value._skills_hub_http_get.return_value = _MockResponse(status_code=404)
+
+            self.src._fetch_owner_handle("slow", deadline=time.monotonic() + 0.1)
+
+        timeout = mock_hub.return_value._skills_hub_http_get.call_args.kwargs["timeout"]
+        self.assertGreater(timeout, 0)
+        self.assertLessEqual(timeout, 0.1)
 
 
 if __name__ == "__main__":

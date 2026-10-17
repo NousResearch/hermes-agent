@@ -239,7 +239,7 @@ A form-based editor for `config.yaml`. All 150+ configuration fields are auto-di
 - **agent** — max iterations, gateway timeout, service tier
 - **delegation** — subagent limits, reasoning effort
 - **memory** — provider selection, context injection settings
-- **approvals** — dangerous command approval mode (smart/manual/off)
+- **approvals** — dangerous command approval mode (smart/manual/deny/off)
 - And more — every section of config.yaml has corresponding form fields
 
 Fields with known valid values (terminal backend, skin, approval mode, etc.) render as dropdowns. Booleans render as toggles. Everything else is a text input.

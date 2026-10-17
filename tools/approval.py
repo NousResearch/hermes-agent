@@ -674,6 +674,20 @@ def _unattended_deny(command: str, ctx: _Unattended) -> dict | None:
     return None
 
 
+def _chat_deny(command: str) -> dict | None:
+    """Block a detected chat command without opening an approval prompt."""
+    is_dangerous, pattern_key, description = detect_dangerous_command(command)
+    if not is_dangerous:
+        return None
+    return _blocked(
+        "BLOCKED by host policy in this chat: "
+        f"Command flagged as dangerous ({description}). Do NOT retry this command "
+        "in another form. Find an alternative approach that avoids this command.",
+        pattern_key=pattern_key,
+        description=description,
+    )
+
+
 # --- Human-decision engine shared by the three gates ----------------------------------------------------------------
 # Every flagged action reaches a human the same way — selected plugin transport → gateway round-trip → pending
 # fallback → CLI prompt → persist — so the consent contract (silence is not consent, deny is a hard halt, a smart-DENY
@@ -1186,6 +1200,8 @@ def check_all_command_guards(command: str, env_type: str,
     session_key = get_current_session_key()
     if not is_dangerous or is_approved(session_key, pattern_key):
         return _approved()
+    if approval_mode == "deny":
+        return _chat_deny(command) or _approved()
     return _human_decision(
         _COMMAND_GATE, command=command, description=description,
         pattern_key=pattern_key, pattern_keys=[pattern_key],

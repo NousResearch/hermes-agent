@@ -91,7 +91,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/battery [on\|off\|status]` | Toggle a color-coded battery read-out as the first status-bar element (off by default; no-op without a battery). |
 | `/voice [on\|off\|tts\|status]` | Toggle CLI voice mode and spoken playback. Recording uses `voice.record_key` (default: `Ctrl+B`). |
 | `/yolo` | Toggle YOLO mode — skip all dangerous command approval prompts. |
-| `/approvals [manual\|smart\|off]` | Show or set the persistent dangerous-command approval mode. |
+| `/approvals [manual\|smart\|deny\|off]` | Show or set the persistent dangerous-command approval mode. |
 | `/footer [on\|off\|status]` | Toggle the gateway runtime-metadata footer on final replies (shows model, context %, and cwd). |
 | `/busy [queue\|steer\|interrupt\|status]` | Control what happens when you message while Hermes is working — queue the new message, steer mid-turn, or interrupt immediately. Works in the CLI and messaging gateway. |
 | `/autoprune [on\|off\|later\|status]` | Decide automatic pruning of old ended sessions (off by default). Hermes asks once when the disk holding `state.db` runs low; `on`/`off` save `sessions.auto_prune` and end the question, `later` reminds you in a week. Works in the CLI, TUI, Desktop and messaging gateway (on Slack: `/hermes autoprune`). |

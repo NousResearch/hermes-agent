@@ -2880,13 +2880,14 @@ Control how Hermes handles potentially dangerous commands:
 
 ```yaml
 approvals:
-  mode: smart   # smart | manual | off
+  mode: smart   # smart | manual | deny | off
 ```
 
 | Mode | Behavior |
 |------|----------|
 | `smart` (default) | Use an auxiliary LLM to assess whether a flagged command is actually dangerous. Low-risk commands are auto-approved for that command only. Genuinely risky commands are denied; uncertain decisions escalate to the user. |
 | `manual` | Prompt the user before executing any flagged command. In the CLI, shows an interactive approval dialog. In messaging, queues a pending approval request. |
+| `deny` | Block dangerous commands in interactive chats without creating an approval request. Existing permanent allowlist entries still apply. |
 | `off` | Skip all approval checks. Equivalent to `HERMES_YOLO_MODE=true`. **Use with caution.** |
 
 Smart mode is particularly useful for reducing approval fatigue — it lets the agent work more autonomously on safe operations while still catching genuinely destructive commands.

@@ -260,7 +260,7 @@ def catalog_mapping(
     # A RoomLink run is initiated by another installation. Process-wide YOLO mode bypasses the scoped
     # approval ContextVar, so rewriting the advertised policy cannot make it safe: refuse.
     if checked_policy.approval_mode == "off":
-        raise HostedRoomPeerError("remote room execution requires manual or smart approvals")
+        raise HostedRoomPeerError("remote room execution requires approvals to be enabled")
     value = {
         "installation_id": _identifier(installation_id, field="installation_id"),
         "protocol_versions": _protocol_versions(protocol_versions),

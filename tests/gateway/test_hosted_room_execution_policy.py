@@ -22,7 +22,7 @@ from gateway.hosted_room_peer import (
     issue_room_grant,
     verify_room_grant,
 )
-from tools import approval_context
+from tools import approval, approval_context
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
 from tui_gateway.hosted_room_service import _RouteStatusPeerClient
 
@@ -110,8 +110,38 @@ def test_room_policy_overrides_broader_live_approval_config(monkeypatch):
         reset_room_execution_policy(token)
 
 
+def test_room_policy_accepts_and_applies_chat_deny_mode(monkeypatch):
+    policy = _policy(approval_mode="deny")
+
+    checked = RoomExecutionPolicy.from_mapping(policy)
+    catalog = catalog_mapping(
+        installation_id="install-peer",
+        persistent_process=True,
+        target_profile="reviewer",
+        execution_policy=policy,
+    )
+
+    assert checked.approval_mode == "deny"
+    assert catalog["execution_policy"]["approval_mode"] == "deny"
+
+    prompted = []
+    monkeypatch.setattr(approval, "_YOLO_MODE_FROZEN", False)
+    monkeypatch.setattr(approval, "_permanent_approved", set())
+    monkeypatch.setattr(
+        approval, "_presence", lambda _callback: (lambda *_args: prompted.append(True), False, True, False)
+    )
+    token = bind_room_execution_policy(checked)
+    try:
+        result = approval.check_all_command_guards("python -c 'print(1)'", "local")
+    finally:
+        reset_room_execution_policy(token)
+
+    assert result["approved"] is False
+    assert prompted == []
+
+
 def test_room_catalog_fails_closed_when_remote_approvals_are_off():
-    with pytest.raises(ValueError, match="requires manual or smart approvals"):
+    with pytest.raises(ValueError, match="requires approvals to be enabled"):
         catalog_mapping(
             installation_id="install-peer",
             persistent_process=True,

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from io import StringIO
 from typing import Optional
 
-VALID_APPROVAL_MODES = ("manual", "smart", "off")
+VALID_APPROVAL_MODES = ("manual", "smart", "deny", "off")
 
 
 @dataclass(frozen=True)
@@ -38,7 +38,7 @@ def run_approval_mode_command(requested_mode: Optional[str]) -> ApprovalModeResu
     if not requested:
         return ApprovalModeResult(True, current, False, f"Approval mode: {current} (persistent profile setting).")
     if requested not in VALID_APPROVAL_MODES:
-        return ApprovalModeResult(False, current, False, "Usage: /approvals [manual|smart|off]")
+        return ApprovalModeResult(False, current, False, "Usage: /approvals [manual|smart|deny|off]")
 
     # set_config_value is the canonical managed-scope/write-safety chokepoint. It reports managed
     # policy through stderr + SystemExit, and the fail-closed write guard raises RuntimeError on an

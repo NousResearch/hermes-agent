@@ -5,7 +5,7 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch as mock_patch
+from unittest.mock import MagicMock, patch as mock_patch
 
 import pytest
 
@@ -54,6 +54,37 @@ class TestApprovalModeParsing:
     def test_config_bool_false_maps_to_off(self):
         with mock_patch("hermes_cli.config.load_config_readonly", return_value={"approvals": {"mode": False}}):
             assert _get_approval_mode() == "off"
+
+
+class TestChatDenyApprovalMode:
+    """``approvals.mode: deny`` keeps detection but never opens a chat prompt."""
+
+    def test_gateway_deny_blocks_dangerous_command_without_callback(self, monkeypatch):
+        command = "python -c 'print(1)'"
+        callback = MagicMock()
+        monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "deny")
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
+        monkeypatch.setattr(
+            approval_module, "_presence", lambda _callback: (callback, False, True, False)
+        )
+        approval_module._permanent_approved.clear()
+
+        result = approval_module.check_all_command_guards(command, "local", approval_callback=callback)
+
+        assert result["approved"] is False
+        assert "host policy" in result["message"]
+        assert "Do NOT retry" in result["message"]
+        assert not callback.called
+
+    def test_gateway_deny_keeps_existing_permanent_allowlist(self, monkeypatch):
+        command = "python -c 'print(1)'"
+        _, pattern_key, _ = detect_dangerous_command(command)
+        monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "deny")
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
+        monkeypatch.setattr(approval_module, "_presence", lambda _callback: (None, False, True, False))
+        monkeypatch.setattr(approval_module, "_permanent_approved", {pattern_key})
+
+        assert approval_module.check_all_command_guards(command, "local")["approved"] is True
 
 
 class TestSmartApproval:

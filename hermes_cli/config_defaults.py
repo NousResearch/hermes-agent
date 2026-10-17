@@ -1654,7 +1654,7 @@ DEFAULT_CONFIG = {
         "allowed_rooms": "",  # if set, ONLY respond in these room IDs (whitelist)
     },
     # Approvals for dangerous commands.
-    # mode: manual (always prompt) | smart (aux LLM auto-approves low-risk) | off (= --yolo)
+    # mode: manual (always prompt) | smart (aux LLM auto-approves low-risk) | deny (block) | off (= --yolo)
     # cron_mode / single_query_mode / unattended_mode: deny | approve — what to do when a
     #   cron job, a -q session (HERMES_INTERACTIVE=1 but nobody to answer), or an unattended
     #   platform (webhook, msgraph_webhook, api_server; no /approve channel) hits one.

@@ -94,7 +94,7 @@ Chat 标签页是每次 `hermes dashboard` 启动的一部分——内嵌的浏�
 - **agent** — 最大迭代次数、gateway 超时、服务层级
 - **delegation** — 子 agent 限制、推理力度
 - **memory** — 提供商选择、上下文注入设置
-- **approvals** — 危险命令审批模式（smart/manual/off）
+- **approvals** — 危险命令审批模式（smart/manual/deny/off）
 - 更多——config.yaml 的每个部分都有对应的表单字段
 
 具有已知有效值的字段（terminal 后端、皮肤、审批模式等）渲染为下拉菜单。布尔值渲染为开关。其余均为文本输入框。

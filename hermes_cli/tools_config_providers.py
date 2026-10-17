@@ -84,13 +84,14 @@ def _plugin_provider_rows(
 
 # Category -> (registry module, marker keys, _plugin_provider_rows kwargs). ``*_plugin_name`` markers route
 # config writes + model pickers through the registry; ``browser_provider`` is the legacy ``browser.cloud_provider``
-# key; TTS rows write ``tts.provider: <name>``.
+# key; TTS/STT rows write ``tts.provider: <name>`` / ``stt.provider: <name>``.
 _PLUGIN_PROVIDER_ROW_SPECS = {
     "image_gen": ("agent.image_gen_registry", ("image_gen_plugin_name",), {"require_name": False}),
     "video_gen": ("agent.video_gen_registry", ("video_gen_plugin_name",), {"require_name": False}),
     "web": ("agent.web_search_registry", ("web_backend", "web_search_plugin_name"), {"flatten_variants": True}),
     "browser": ("agent.browser_registry", ("browser_provider", "browser_plugin_name"), {}),
-    "tts": ("agent.tts_registry", ("tts_provider", "tts_plugin_name"), {"skip_builtin": True})}
+    "tts": ("agent.tts_registry", ("tts_provider", "tts_plugin_name"), {"skip_builtin": True}),
+    "stt": ("agent.transcription_registry", ("stt_provider", "stt_plugin_name"), {"skip_builtin": True})}
 
 
 def _plugin_rows_for(category: str) -> list[dict]:
@@ -100,8 +101,8 @@ def _plugin_rows_for(category: str) -> list[dict]:
 
 
 _plugin_image_gen_providers, _plugin_video_gen_providers, _plugin_web_search_providers, \
-    _plugin_browser_providers, _plugin_tts_providers = (
-        partial(_plugin_rows_for, cat) for cat in ("image_gen", "video_gen", "web", "browser", "tts"))
+    _plugin_browser_providers, _plugin_tts_providers, _plugin_stt_providers = (
+        partial(_plugin_rows_for, cat) for cat in ("image_gen", "video_gen", "web", "browser", "tts", "stt"))
 
 
 def web_provider_capabilities(backend: str) -> list:
@@ -127,6 +128,7 @@ _PLUGIN_ROW_BUILDERS = {
     "Web Search & Extract": _plugin_web_search_providers,
     "Browser Automation": _plugin_browser_providers,
     "Text-to-Speech": _plugin_tts_providers,
+    "Speech-to-Text": _plugin_stt_providers,
     "Computer Use (macOS/Windows/Linux)": lambda: _computer_use_provider_rows()}
 
 

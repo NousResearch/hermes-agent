@@ -17,9 +17,16 @@ from hermes_cli.tools_config import (
     _checklist_toolset_keys,
     _configure_stt_model,
     _is_provider_active,
+    _visible_providers,
     _write_provider_config,
     apply_provider_selection,
 )
+
+import pytest
+
+from agent import transcription_registry
+from agent.transcription_provider import TranscriptionProvider
+from hermes_cli import tools_config
 
 def _stt_cat():
     return TOOL_CATEGORIES["stt"]
@@ -93,3 +100,138 @@ class TestConfigOnlyExclusion:
         assert "stt" not in _checklist_toolset_keys("cli")
         # sanity: tts (a real toolset) stays in
         assert "tts" in _checklist_toolset_keys("cli")
+
+
+# --- Plugin-registered STT providers in the picker (issue #133223) ---
+#
+# A plugin provider registered via ``PluginContext.register_transcription_provider``
+# is fully functional at runtime (``stt.provider: <name>`` dispatches to it), so the
+# picker owes it the same row a built-in provider gets. Mirrors
+# ``tests/hermes_cli/test_tts_picker.py`` on the transcription side.
+
+
+class _FakeSTTPluginProvider(TranscriptionProvider):
+    def __init__(self, name, schema=None):
+        self._name = name
+        self._schema = schema
+
+    @property
+    def name(self):
+        return self._name
+
+    def transcribe(self, file_path, *, model=None, language=None, **extra):
+        return {"success": True, "transcript": "", "provider": self._name}
+
+    def get_setup_schema(self):
+        if self._schema is not None:
+            return self._schema
+        return super().get_setup_schema()
+
+
+@pytest.fixture(autouse=True)
+def _clean_transcription_registry():
+    transcription_registry._reset_for_tests()
+    yield
+    transcription_registry._reset_for_tests()
+
+
+def _plugin_stt_rows():
+    # Attribute access (not a top-level ``from ... import``) so the pre-fix tree fails
+    # the plugin-row cases per test instead of erroring the whole module at collection.
+    return tools_config._plugin_stt_providers()
+
+
+class TestPluginSTTProviderRows:
+
+    def test_setup_schema_becomes_a_row_with_stt_markers(self):
+        schema = {
+            "name": "Bifrost",
+            "badge": "plugin",
+            "tag": "self-hosted Whisper",
+            "env_vars": [{"key": "BIFROST_API_KEY", "prompt": "Bifrost API key", "url": "https://example.invalid"}],
+        }
+        transcription_registry.register_provider(_FakeSTTPluginProvider(name="bifrost", schema=schema))
+
+        rows = _plugin_stt_rows()
+
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["name"] == "Bifrost"
+        assert row["badge"] == "plugin"
+        assert row["tag"] == "self-hosted Whisper"
+        assert row["env_vars"] == schema["env_vars"]
+        # Both markers: selecting the row writes ``stt.provider: bifrost``, and the
+        # plugin-name marker routes config writes through the registry.
+        assert row["stt_provider"] == "bifrost"
+        assert row["stt_plugin_name"] == "bifrost"
+
+    def test_minimal_schema_uses_display_name(self):
+        """A provider with no setup_schema override gets a row built from
+        ``display_name`` and ``name`` only."""
+        transcription_registry.register_provider(_FakeSTTPluginProvider(name="minimal"))
+
+        rows = _plugin_stt_rows()
+
+        assert len(rows) == 1
+        assert rows[0]["name"] == "Minimal"
+        assert rows[0]["stt_provider"] == "minimal"
+        assert rows[0]["env_vars"] == []
+
+    def test_builtin_names_are_not_offered_as_plugin_rows(self):
+        """Built-in STT names have their own hardcoded rows; a plugin row of the
+        same name would show the provider twice."""
+        transcription_registry._providers["groq"] = _FakeSTTPluginProvider(name="groq")
+        try:
+            assert all(r.get("stt_provider") != "groq" for r in _plugin_stt_rows())
+        finally:
+            transcription_registry._providers.pop("groq", None)
+
+    def test_skips_providers_with_no_name(self):
+        """Defense in depth: a provider with no .name attribute is skipped
+        rather than crashing the picker."""
+
+        class _NoName:
+            display_name = "Bogus"
+
+            def get_setup_schema(self):
+                return {"name": "Bogus"}
+
+        transcription_registry._providers["bogus"] = _NoName()
+        try:
+            assert all(r.get("stt_provider") != "bogus" for r in _plugin_stt_rows())
+        finally:
+            transcription_registry._providers.pop("bogus", None)
+
+
+class TestPluginSTTProvidersInThePicker:
+
+    def test_stt_category_lists_the_plugin_row(self):
+        transcription_registry.register_provider(_FakeSTTPluginProvider(name="bifrost"))
+
+        visible = _visible_stt_providers(config={})
+
+        assert "Bifrost" in [row.get("name") for row in visible]
+        plugin_rows = [r for r in visible if r.get("stt_plugin_name")]
+        assert len(plugin_rows) == 1
+        assert plugin_rows[0]["stt_provider"] == "bifrost"
+
+    def test_plugin_row_is_selectable_and_reported_active(self):
+        """The marker written by the row is the one active detection reads."""
+        transcription_registry.register_provider(_FakeSTTPluginProvider(name="bifrost"))
+
+        config = {"stt": {"provider": "bifrost"}}
+        plugin_rows = [r for r in _visible_stt_providers(config=config) if r.get("stt_plugin_name")]
+
+        assert len(plugin_rows) == 1
+        assert _is_provider_active(plugin_rows[0], config)
+
+    def test_plugin_rows_do_not_leak_into_other_categories(self):
+        transcription_registry.register_provider(_FakeSTTPluginProvider(name="bifrost"))
+
+        for key in ("tts", "image_gen"):
+            names = [row.get("name") for row in _visible_providers(TOOL_CATEGORIES[key], config={})]
+            assert "Bifrost" not in names
+
+
+def _visible_stt_providers(config):
+    return _visible_providers(_stt_cat(), config)

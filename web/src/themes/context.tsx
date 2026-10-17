@@ -159,6 +159,13 @@ function overrideVars(
 const SERIES_KEY_TO_VAR: Record<keyof ThemeSeriesColors, string> = {
   inputTokenAccent: "--series-input-token",
   outputTokenAccent: "--series-output-token",
+  ioRatioAccent: "--series-io-ratio",
+  modelAccent1: "--series-model-1",
+  modelAccent2: "--series-model-2",
+  modelAccent3: "--series-model-3",
+  modelAccent4: "--series-model-4",
+  modelAccent5: "--series-model-5",
+  modelOtherAccent: "--series-model-other",
 };
 
 const ALL_SERIES_VARS = Object.values(SERIES_KEY_TO_VAR);

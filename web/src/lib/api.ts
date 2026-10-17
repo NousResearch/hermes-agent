@@ -2259,6 +2259,14 @@ export interface AnalyticsDailyEntry {
   api_calls: number;
 }
 
+/** One day x model cell; ``model`` is "" for sessions that never recorded one. */
+export interface AnalyticsDailyModelEntry {
+  day: string;
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+}
+
 export interface AnalyticsModelEntry {
   model: string;
   input_tokens: number;
@@ -2286,6 +2294,7 @@ export interface AnalyticsSkillsSummary {
 
 export interface AnalyticsResponse {
   daily: AnalyticsDailyEntry[];
+  daily_by_model: AnalyticsDailyModelEntry[];
   by_model: AnalyticsModelEntry[];
   totals: {
     total_input: number;

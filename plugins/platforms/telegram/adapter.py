@@ -4847,8 +4847,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             return
         resolved_text: Optional[str] = None
         try:
-            from tools.clarify_gateway import _entries as _clarify_entries  # type: ignore
-            entry = _clarify_entries.get(clarify_id)
+            from tools.clarify_gateway import get_pending
+            entry = get_pending(clarify_id)
             if entry and entry.choices and 0 <= idx < len(entry.choices):
                 resolved_text = entry.choices[idx]
         except Exception:
@@ -5418,9 +5418,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             logger.warning(
                 "[%s] URL-based send_photo failed, trying file upload: %s", self.name, _redact_telegram_error_text(e), exc_info=True)
             try:
-                from gateway.platforms.base import _ssrf_redirect_guard
+                from gateway.platforms.base import ssrf_redirect_guard
                 from tools.url_safety import create_ssrf_safe_async_client
-                async with create_ssrf_safe_async_client(timeout=30.0, event_hooks={"response": [_ssrf_redirect_guard]}) as client:
+                async with create_ssrf_safe_async_client(timeout=30.0, event_hooks={"response": [ssrf_redirect_guard]}) as client:
                     resp = await client.get(image_url)
                     resp.raise_for_status()
                     image_data = resp.content

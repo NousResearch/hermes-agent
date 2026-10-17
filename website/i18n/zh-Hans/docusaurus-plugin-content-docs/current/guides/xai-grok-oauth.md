@@ -179,6 +179,12 @@ hermes tools
 
 ## 故障排查
 
+### 订阅额度比 Grok Build 消耗得更快
+
+比较时请使用相同的模型、推理档位、工具和对话长度。Hermes 还会为标题生成、上下文压缩等任务发起辅助请求；当这些请求沿用 OAuth 路由时，也会使用你的订阅额度。
+
+主请求和辅助 Responses 请求均使用按对话隔离的 `prompt_cache_key`，以支持 [xAI 缓存路由](https://docs.x.ai/developers/advanced-api-usage/prompt-caching/maximizing-cache-hits)。辅助请求的缓存键还包含其指令和工具定义，因此不同的辅助提示词前缀不会复用主请求的路由键。缓存路由可以增加复用机会，但不保证缓存命中或特定的额度节省比例。
+
 ### Token 过期——未自动重新登录
 
 Hermes 在每次会话前刷新 token，并在收到 401 时响应式地再次刷新。如果刷新因 `invalid_grant` 失败（刷新 token 被撤销或账号已轮换），Hermes 会显示类型化的重新认证消息，而不是崩溃。

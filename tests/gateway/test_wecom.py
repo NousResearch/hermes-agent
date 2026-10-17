@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import logging
 import os
 import socket
 from types import SimpleNamespace
@@ -244,6 +245,33 @@ class TestCallbackDispatch:
         await adapter._dispatch_payload({"cmd": cmd, "headers": {"req_id": "req-1"}, "body": {}})
 
         adapter._on_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_dispatch_logs_empty_ping_ack_at_debug_not_info(self, caplog):
+        """Regression for #139554: WeCom acks application pings with an empty cmd."""
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        with caplog.at_level(logging.DEBUG, logger="plugins.platforms.wecom.adapter"):
+            await adapter._dispatch_payload({"cmd": "", "headers": {"req_id": "ping-ack-1"}})
+
+        matching = [record for record in caplog.records if "ping heartbeat ack" in record.getMessage()]
+        assert [record.levelno for record in matching] == [logging.DEBUG]
+        assert not [
+            record for record in caplog.records
+            if record.levelno == logging.INFO and "Unrouted websocket payload dropped" in record.getMessage()
+        ]
+
+    @pytest.mark.asyncio
+    async def test_dispatch_keeps_non_ping_empty_cmd_at_info(self, caplog):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        with caplog.at_level(logging.DEBUG, logger="plugins.platforms.wecom.adapter"):
+            await adapter._dispatch_payload({"cmd": "", "headers": {"req_id": "subscribe-ack-1"}})
+
+        drops = [record for record in caplog.records if "Unrouted websocket payload dropped" in record.getMessage()]
+        assert [record.levelno for record in drops] == [logging.INFO]
 
 
 class TestPolicyHelpers:

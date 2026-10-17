@@ -209,6 +209,7 @@ describe('/retry on a canonical session', () => {
 // reply is lost; the user repeats the command.
 function lostRewindReply() {
   const protocol = new CanonicalDesktopProtocol()
+
   const rows = [
     { role: 'user', content: 'first question', row_id: 11, active: true },
     { role: 'assistant', content: 'first answer', row_id: 12, active: true },

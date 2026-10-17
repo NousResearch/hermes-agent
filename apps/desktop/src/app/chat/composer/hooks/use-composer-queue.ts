@@ -91,6 +91,9 @@ interface UseComposerQueueArgs {
   sessionId: string | null | undefined
 }
 
+/** Text kept in the composer, followed by the draft a queued-row edit interrupted (when it differs). */
+const withPreEditDraft = (text: string, draft: string) => (draft.trim() && draft !== text ? `${text}\n\n${draft}` : text)
+
 /**
  * The composer's queue engine — everything about queued turns: the per-session
  * queue store binding, in-place queued-prompt editing (begin/step/exit), the
@@ -159,15 +162,16 @@ export function useComposerQueue({
   // only: the owner's FIFO keeps running (it may claim the row mid-edit), so the composer keeps
   // the edited text until the owner accepts the replacement.
   const serverEditRef = useRef<string | null>(null)
-  const savingServerEditRef = useRef<string | null>(null)
+  // The one save the owner is answering: the exact edit it was made in, its own token and the
+  // composer text at Save. Its answer settles only that save and never overwrites newer text.
+  const serverSaveRef = useRef<{ edit: QueueEditState; text: string; token: symbol } | null>(null)
 
   // The owner refused the replacement or started the row: nothing typed is lost. The edit stays
   // in the composer as an unsent draft (followed by the draft it interrupted), with the reason.
   const keepServerEditAsDraft = (edit: QueueEditState, text: string) => {
     serverEditRef.current = null
     setQueueEditSnapshot(null)
-    const previous = edit.draft.trim() && edit.draft !== text ? edit.draft : ''
-    loadIntoComposer(previous ? `${text}\n\n${previous}` : text, edit.attachments)
+    loadIntoComposer(withPreEditDraft(text, edit.draft), edit.attachments)
     notify({
       kind: 'warning',
       title: t.promptNotices.sessionCommands.queueEditKeptTitle,
@@ -295,36 +299,43 @@ export function useComposerQueue({
         const edited = frozen.frozenTransport ?? frozen.text
         const entryId = editingQueuedPrompt.id
 
-        if (savingServerEditRef.current === entryId) {
+        if (serverSaveRef.current?.edit === queueEdit) {
           return true // its save is already with the owner
         }
 
         if (edited !== editingQueuedPrompt.text) {
           // The edit stays open until the owner answers: only an accepted replacement restores the
           // pre-edit draft; a refusal (started, queue full, transport) keeps the edited text.
-          const edit = queueEdit
-          savingServerEditRef.current = entryId
+          const save = { edit: queueEdit, text, token: Symbol('queued-edit-save') }
+          serverSaveRef.current = save
 
           const settle = (accepted: boolean) => {
-            if (savingServerEditRef.current !== entryId) {
+            if (serverSaveRef.current?.token !== save.token) {
               return
             }
 
-            savingServerEditRef.current = null
+            serverSaveRef.current = null
 
-            if (queueEditRef.current?.entryId !== entryId) {
+            // Cancelled, or cancelled and reopened: that later edit is not this save's to settle.
+            if (queueEditRef.current !== save.edit) {
               return
             }
+
+            // What the composer holds now, typed after Save included.
+            const current = draftRef.current
 
             if (!accepted) {
-              keepServerEditAsDraft(edit, text)
+              keepServerEditAsDraft(save.edit, current)
 
               return
             }
 
             serverEditRef.current = null
             setQueueEditSnapshot(null)
-            loadIntoComposer(edit.draft, edit.attachments)
+            loadIntoComposer(
+              current === save.text ? save.edit.draft : withPreEditDraft(current, save.edit.draft),
+              save.edit.attachments
+            )
             focusInput()
           }
 
@@ -745,7 +756,7 @@ export function useComposerQueue({
         return
       }
 
-      if (savingServerEditRef.current === queueEdit.entryId) {
+      if (serverSaveRef.current?.edit === queueEdit) {
         return // our own replacement retired it: the owner's answer settles the edit
       }
 

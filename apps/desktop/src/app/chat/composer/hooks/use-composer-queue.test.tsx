@@ -32,6 +32,19 @@ import { useComposerQueue } from './use-composer-queue'
 
 const SESSION_KEY = 'stored-session-queue-hook'
 
+/** A reply the test settles by hand. */
+function deferred() {
+  let resolve!: (value: unknown) => void
+  let reject!: (reason: unknown) => void
+
+  const promise = new Promise<unknown>((onResolve, onReject) => {
+    resolve = onResolve
+    reject = onReject
+  })
+
+  return { promise, reject, resolve }
+}
+
 function renderQueueHook(
   overrides: {
     busy?: boolean
@@ -587,6 +600,53 @@ describe('useComposerQueue scope', () => {
     // Nothing typed is lost: the edit, then the draft it interrupted.
     expect(draftRef.current).toBe('new words\n\nmy draft')
     expect($notifications.get().some(n => n.kind === 'warning')).toBe(true)
+  })
+
+  // Review: the composer stays editable while the owner answers a Save. That answer settles only the
+  // save it belongs to and never overwrites text typed since.
+  it.each([
+    ['accepted', true],
+    ['refused', false]
+  ])('a %s Save reply keeps the text typed after Save', async (_label, accepted) => {
+    reconcilePendingSubmissions(SESSION_KEY, [
+      { admission_id: 'adm-1', status: 'queued', user: 'old words', controls: ['steer', 'replace'] }
+    ])
+    const reply = deferred()
+    const { draftRef, hook } = renderQueueHook({ busy: true, draft: 'my draft', replaceServerQueued: () => reply.promise })
+
+    act(() => hook.result.current.beginQueuedEdit(getQueuedPrompts(SESSION_KEY)[0]!))
+    draftRef.current = 'new words'
+    act(() => {
+      hook.result.current.exitQueuedEdit('save')
+    })
+    draftRef.current = 'typed after save'
+    await act(async () => (accepted ? reply.resolve({}) : reply.reject({ data: { reason: 'admission_started' } })))
+
+    expect(hook.result.current.queueEdit).toBeNull()
+    expect(draftRef.current).toBe('typed after save\n\nmy draft')
+  })
+
+  it('a Save reply for an edit that was cancelled and reopened leaves the reopened edit alone', async () => {
+    reconcilePendingSubmissions(SESSION_KEY, [
+      { admission_id: 'adm-1', status: 'queued', user: 'old words', controls: ['steer', 'replace'] }
+    ])
+    const reply = deferred()
+    const { draftRef, hook } = renderQueueHook({ busy: true, draft: 'my draft', replaceServerQueued: () => reply.promise })
+
+    act(() => hook.result.current.beginQueuedEdit(getQueuedPrompts(SESSION_KEY)[0]!))
+    draftRef.current = 'new words'
+    act(() => {
+      hook.result.current.exitQueuedEdit('save')
+    })
+    act(() => {
+      hook.result.current.exitQueuedEdit('cancel')
+    })
+    act(() => hook.result.current.beginQueuedEdit(getQueuedPrompts(SESSION_KEY)[0]!))
+    draftRef.current = 'reopened edit'
+    await act(async () => reply.resolve({}))
+
+    expect(hook.result.current.queueEdit?.entryId).toBe('adm-1')
+    expect(draftRef.current).toBe('reopened edit')
   })
 
   it('a started-row snapshot arriving mid-edit keeps the edit as a draft', () => {

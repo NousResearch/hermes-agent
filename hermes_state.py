@@ -679,9 +679,6 @@ class SessionDB(
         # Never materialize a deleted/archived named profile's home: a multiplexer or Desktop backend
         # still holding the profile's route would otherwise re-scaffold it on the next turn (#94590).
         mkdir_under_hermes_home(self.db_path.parent)
-        # Read-only file/sidecar preflight BEFORE the first connection: an actionable message
-        # instead of an opaque "attempt to write a readonly database" from inside _init_schema.
-        preflight_db_writability(self.db_path, db_label="state.db")
         try:
             # Serialize zero-byte check, quarantine, connect and schema commit so concurrent
             # openers don't race the absent-path -> schema-commit window.
@@ -692,9 +689,16 @@ class SessionDB(
                             "startup quarantine lock for %s not acquired within 5s; proceeding",
                             self.db_path,
                         )
+                    # Preflight under the lock: unlocked, it can list state.db just before a
+                    # concurrent opener renames it aside, and os.access on the vanished path
+                    # then reports a writable DB as "read-only for this user".
+                    preflight_db_writability(self.db_path, db_label="state.db")
                     self._handle_quarantine_if_invalid(already_locked=lock_acquired)
                     self._connect_and_init_with_lock_patience()
             else:
+                # Read-only file/sidecar preflight BEFORE the first connection: an actionable message
+                # instead of an opaque "attempt to write a readonly database" from inside _init_schema.
+                preflight_db_writability(self.db_path, db_label="state.db")
                 self._handle_quarantine_if_invalid(already_locked=False)
                 self._connect_and_init_with_lock_patience()
         except sqlite3.DatabaseError as exc:

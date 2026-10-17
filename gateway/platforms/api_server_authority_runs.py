@@ -32,6 +32,21 @@ def store_error_response(_openai_error, exc):
                              headers={'Retry-After': '1'} if status == 503 else None)
 
 
+async def continued_session(adapter, session_id, request_id=None):
+    """``continued_api_session`` for an HTTP door, before its response starts -> ``(session_id,
+    None)`` or ``(session_id, error response)``: a busy or unreadable store is the retryable 503
+    ``storage_unavailable`` (``store_error_response``), as for the header-less chat lookup."""
+    import asyncio
+    import sqlite3
+    from gateway.platforms.api_server import _openai_error
+    from gateway.session_api import continued_api_session
+    try:
+        return await asyncio.to_thread(
+            continued_api_session, adapter.gateway_runner, session_id, request_id), None
+    except (RuntimeStoreError, sqlite3.Error, OSError) as exc:
+        return session_id, store_error_response(_openai_error, exc)
+
+
 def run_admission(adapter, run_id):
     authority = _authority(adapter)
     if authority is None:

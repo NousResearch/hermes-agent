@@ -19,7 +19,7 @@ from agent.context_compressor import (
     user_originated_turn_view,
 )
 from agent.lazy_forward import forward as _forward, forward_static as _forward_static
-from agent.memory_manager import sanitize_context
+from agent.memory_context import sanitize_context
 
 from agent.tool_dispatch_helpers import _is_multimodal_tool_result, _multimodal_text_summary
 from agent.trajectory import save_trajectory as _save_trajectory_to_file

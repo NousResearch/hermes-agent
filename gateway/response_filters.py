@@ -50,7 +50,9 @@ def _canonical_silence_candidate(text: str) -> str:
 
 def _is_edge_punctuation(ch: str) -> bool:
     # Square brackets stay structural so malformed ``[SILENT`` cannot become ``SILENT``.
-    return ch not in "[]" and unicodedata.category(ch).startswith("P")
+    # The backtick (U+0060) is category Sk, not P: a marker a model rendered as a
+    # markdown code span would otherwise keep its fences and reach the chat as content.
+    return ch not in "[]" and (ch == "`" or unicodedata.category(ch).startswith("P"))
 
 
 def _strip_edge_silence_punctuation(text: str) -> str:

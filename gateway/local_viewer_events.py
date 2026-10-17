@@ -47,19 +47,43 @@ def wire(turn, agent) -> dict:
     if owner is not None:
         from gateway.session_usage import seed_compression_count
         seed_compression_count(owner[0].sessions.get(owner[1]), agent)
-    if show_reasoning(turn):
-        # Only on request: a reasoning sink makes the agent ask the provider for reasoning.
-        agent.reasoning_callback = lambda text: publish("reasoning.delta", {"text": str(text or "")})
+    if show_reasoning(turn) or _config_default_launch():
+        # A reasoning sink makes the agent ask the provider for reasoning; each delta re-checks the
+        # session's display so /reasoning show|hide applies mid-turn.
+        agent.reasoning_callback = lambda text: (
+            publish("reasoning.delta", {"text": str(text or "")}) if show_reasoning(turn) else None)
     # The desktop window bridges (preview/terminal/window reads, preview actions, desktop_ui events).
     previous[_DESKTOP_UI_TOKEN] = local_desktop_ui.wire(turn, agent)
     return previous
 
 
+# Launch sources whose viewer never sets the session flag; main's TUI gateway defaulted it from config.
+_CONFIG_DEFAULT_SOURCES = frozenset({"tui", "gui"})
+
+
 def show_reasoning(turn) -> bool:
-    """The session's ``show_reasoning`` display flag (``config.set``), off until a viewer sets it."""
+    """The session's ``show_reasoning`` display flag (``config.set``, ``/reasoning show|hide``); unset on an
+    Ink or Desktop launch, its ``display.show_reasoning`` (default on), as main's TUI gateway resolved it."""
     owner = getattr(turn, "_approval_owner", None)
     live = owner[0].sessions.get(owner[1]) if owner is not None else None
-    return getattr(live, "show_reasoning", None) is True
+    flag = getattr(live, "show_reasoning", None)
+    if flag is not None or live is None:
+        return flag is True
+    from gateway.session_policy import active_policy
+    return launch_shows_reasoning(active_policy(), owner[0])
+
+
+def _config_default_launch() -> bool:
+    from gateway.session_policy import active_policy
+    return getattr(active_policy(), "source", None) in _CONFIG_DEFAULT_SOURCES
+
+
+def launch_shows_reasoning(policy, authority) -> bool:
+    """An unset session flag: ``display.show_reasoning`` for an Ink or Desktop launch, else off."""
+    if getattr(policy, "source", None) not in _CONFIG_DEFAULT_SOURCES:
+        return False
+    display = policy.config(authority, secrets=False).get("display")
+    return bool((display if isinstance(display, dict) else {}).get("show_reasoning", True))
 
 
 def _is_active_session_subagent(turn, payload: dict, event_type: str = "") -> bool:

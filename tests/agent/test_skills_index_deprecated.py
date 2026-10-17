@@ -73,6 +73,29 @@ def test_config_hatch_is_recognised(monkeypatch):
     assert pb.skills_index_dark() is False
 
 
+def test_config_default_declares_the_hatch_and_the_loader_honours_it(monkeypatch, tmp_path):
+    """The hatch is a REAL setting: declared in DEFAULT_CONFIG, reachable through config.yaml.
+
+    ``skills.index`` was initially read without a ``DEFAULT_CONFIG`` entry — a reader with no
+    registry entry, which keeps the key invisible to `hermes config` and unguarded by the
+    defaults/consumers invariant. This pins both halves: the declared default is dark, and the same
+    value written to a profile's config.yaml reaches ``skills_index_dark`` through the real loader
+    (not the stubbed reader this module otherwise uses).
+    """
+    from hermes_cli.config import DEFAULT_CONFIG, load_config_readonly
+
+    # Declared default: dark, on the same spelling the reader treats as "not flat".
+    assert DEFAULT_CONFIG["skills"]["index"] == "dark"
+    assert not (DEFAULT_CONFIG["skills"]["index"] is True)
+
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    (home / "config.yaml").write_text("skills:\n  index: flat\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(pb, "_config_readonly", lambda what="": load_config_readonly(), raising=False)
+    assert pb.skills_index_dark() is False, "skills.index: flat in config.yaml must reach the reader"
+
+
 def test_assembled_block_for_a_real_tree_shape_is_index_free(tmp_path):
     """Hermetic end-to-end leg: a real skills-tree shape assembles to the banner, not a list.
 

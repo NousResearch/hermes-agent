@@ -63,12 +63,32 @@ export function mediaMime(path: string): string {
 }
 
 export function mediaName(path: string): string {
-  // `C:\Users\…` parses as a URL with scheme `c:`; a drive letter is a path, not a scheme.
-  if (!/^[A-Za-z]:[\\/]/.test(path)) {
+  // Drive letters parse as URL schemes. Native paths also keep literal `%20`,
+  // `#` and `?` characters, so only URL basenames should be decoded.
+  if (!/^[A-Za-z]:[\\/]/.test(path) && !path.startsWith('\\\\')) {
+    let pathname: string | undefined
+
     try {
-      return new URL(path).pathname.split('/').filter(Boolean).pop() || path
+      pathname = new URL(path).pathname
     } catch {
-      // not a URL — fall through to the path split
+      // Not a URL — fall through to the native path split.
+    }
+
+    if (pathname !== undefined) {
+      const name = pathname.split('/').filter(Boolean).pop()
+
+      if (!name) {
+        return path
+      }
+
+      try {
+        // Keep encoded separators inside the basename: decoding them would
+        // introduce path separators into labels and download suggestions.
+        return decodeURIComponent(name.replace(/%2f|%5c/gi, encoded => `%25${encoded.slice(1)}`))
+      } catch {
+        // Malformed percent escapes must not discard the filename.
+        return name
+      }
     }
   }
 
@@ -402,15 +422,7 @@ export async function downloadGatewayMediaFile(
     path,
     ...(owner.profile ? { profile: owner.profile } : {}),
     ...(origin.sessionId ? { sessionId: origin.sessionId } : {}),
-    suggestedName:
-      origin.suggestedName ||
-      mediaName(path).replace(/(?:%[0-9a-f]{2})+/gi, encoded => {
-        try {
-          return decodeURIComponent(encoded)
-        } catch {
-          return encoded
-        }
-      })
+    suggestedName: origin.suggestedName || mediaName(path)
   })
 }
 

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { mediaName } from '@/lib/media'
 import { $connection } from '@/store/session'
 import type { SessionInfo, SessionMessage } from '@/types/hermes'
 
@@ -718,5 +719,55 @@ describe('loadArtifactsForSessions', () => {
     expect(result.failures).toHaveLength(1)
     expect(result.failures[0]?.session.id).toBe('session-2')
     expect(String(result.failures[0]?.error)).toContain('transcript page exceeds the Desktop safe-load limit')
+  })
+})
+
+describe('artifact labels', () => {
+  it('uses readable basenames while preserving artifact values and opening links', () => {
+    const cases = [
+      ['https://example.com/report.xlsx', 'report.xlsx'],
+      ['https://example.com/my%20file.txt', 'my file.txt'],
+      ['https://example.com/a+b.txt', 'a+b.txt'],
+      ['https://example.com/a%2520b.txt', 'a%20b.txt'],
+      ['https://example.com/a%20b%2Fc.txt', 'a b%2Fc.txt'],
+      ['https://example.com/a%20b%5Cc.txt', 'a b%5Cc.txt'],
+      ['file:///tmp/a%20b%2Fc.txt', 'a b%2Fc.txt'],
+      ['file:///tmp/a%20b%5Cc.txt', 'a b%5Cc.txt'],
+      ['file:///C:/example/测试文件.xlsx', '测试文件.xlsx'],
+      ['file:///C:/example/%E6%B5%8B%E8%AF%95%E6%96%87%E4%BB%B6.xlsx', '测试文件.xlsx'],
+      ['https://example.com/测试文件.xlsx', '测试文件.xlsx'],
+      ['https://example.com/%E6%B5%8B%E8%AF%95%E6%96%87%E4%BB%B6.xlsx?download=1#sheet', '测试文件.xlsx'],
+      ['C:/example/report.xlsx', 'report.xlsx', 'file://C:/example/report.xlsx'],
+      ['C:\\example\\report.xlsx', 'report.xlsx', 'file://C:\\example\\report.xlsx'],
+      ['C:/example/测试文件.xlsx', '测试文件.xlsx', 'file://C:/example/测试文件.xlsx'],
+      ['C:\\example\\测试文件.xlsx', '测试文件.xlsx', 'file://C:\\example\\测试文件.xlsx'],
+      ['\\\\server\\share\\季度报告.docx', '季度报告.docx', 'file://\\\\server\\share\\季度报告.docx'],
+      ['/tmp/测试文件.xlsx', '测试文件.xlsx', 'file:///tmp/测试文件.xlsx'],
+      ['/tmp/a%20b.txt', 'a%20b.txt', 'file:///tmp/a%2520b.txt'],
+      ['C:\\example\\a%20b.txt', 'a%20b.txt', 'file://C:\\example\\a%2520b.txt'],
+      ['C:/example/a#b?.txt', 'a#b?.txt', 'file://C:/example/a%23b%3F.txt'],
+      ['https://example.com/bad%ZZname.txt', 'bad%ZZname.txt'],
+      ['https://example.com/100%.txt', '100%.txt'],
+      ['https://example.com/bad%2.txt', 'bad%2.txt'],
+      ['https://example.com/bad%E6%96.txt', 'bad%E6%96.txt'],
+      ['https://example.com/bad%FF.txt', 'bad%FF.txt'],
+      ['https://example.com/', 'https://example.com/']
+    ]
+
+    try {
+      $connection.set(null)
+
+      for (const [value, label, href = value] of cases) {
+        const artifacts = collectArtifactsForSession(makeSession(), [
+          { content: `Delivered. MEDIA:"${value}"`, role: 'assistant' }
+        ])
+
+        expect.soft(artifacts, value).toHaveLength(1)
+        expect.soft(artifacts[0], value).toMatchObject({ href, label, value })
+        expect.soft(mediaName(value), value).toBe(label)
+      }
+    } finally {
+      $connection.set(null)
+    }
   })
 })

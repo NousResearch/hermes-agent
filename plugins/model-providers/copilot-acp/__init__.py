@@ -56,7 +56,14 @@ copilot_acp = CopilotACPProfile(
     # How to launch the CLI; env var names predate this profile (formerly hardcoded in
     # hermes_cli/auth.py), so existing setups keep working.
     process_command="copilot",
-    process_args=("--acp", "--stdio"),
+    # Hermes drives Copilot as a pure model backend through its text tool bridge. Copilot's own tools,
+    # MCP servers and skills would otherwise run instead of emitting <tool_call> blocks, and Hermes denies
+    # their permission requests, so the turn ends with no reply. An allowlist naming no real tool disables
+    # every native tool (user MCP servers and the skill tool included). HERMES_COPILOT_ACP_ARGS overrides this.
+    process_args=(
+        "--acp", "--stdio", "--available-tools=hermes_text_tool_bridge_only",
+        "--disable-builtin-mcps", "--no-custom-instructions",
+    ),
     process_command_env_vars=("HERMES_COPILOT_ACP_COMMAND", "COPILOT_CLI_PATH"),
     process_args_env_var="HERMES_COPILOT_ACP_ARGS",
 )

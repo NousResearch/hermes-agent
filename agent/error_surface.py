@@ -40,6 +40,9 @@ _REASON_TO_LAYER = {
     "gateway_connection": LAYER_GATEWAY, "host_error": LAYER_GATEWAY,
     "truncated": LAYER_PROVIDER, "empty_response": LAYER_PROVIDER, "invalid_response": LAYER_PROVIDER,
     "context_overflow": LAYER_PROVIDER,  # a bigger-window model IS the fix, so Switch provider applies
+    # A local-inference KV-cache/allocation OOM: the provider layer, where the client's copy
+    # names the real fix (shrink the context / lower the engine's memory guard).
+    "local_oom": LAYER_PROVIDER,
 }
 
 # Failures between us and the base_url (not a provider verdict); on a

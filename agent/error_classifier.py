@@ -63,6 +63,13 @@ class FailoverReason(enum.Enum):
     long_context_tier = "long_context_tier"    # Anthropic "extra usage" tier gate
     oauth_long_context_beta_forbidden = "oauth_long_context_beta_forbidden"  # Anthropic OAuth rejects 1M beta — disable beta and retry
     llama_cpp_grammar_pattern = "llama_cpp_grammar_pattern"  # llama.cpp grammar rejects regex `pattern`/`format` — strip from tools and retry
+    # Local inference engine (oMLX / llama.cpp / vLLM / MLX Metal / PyTorch MPS) could not
+    # allocate its KV cache or a device buffer. The wording frequently contains "limit
+    # exceeded", which collides with _USAGE_LIMIT_PATTERNS and gets misread as a billing / quota
+    # wall — so the user is told to "add credits" for a local model that has no billing at all.
+    # Recovery mirrors context_overflow: shrink the context (whose size IS the KV-cache size)
+    # and retry. Never rotate a credential and never fall back to another provider.
+    local_oom = "local_oom"
     unknown = "unknown"                  # Unclassifiable — retry with backoff
 
 
@@ -246,6 +253,19 @@ _MEMORY_CEILING_PATTERNS = (
 _MEMORY_CEILING_ERROR_CODES = frozenset({
     "prefill_memory_exceeded", "prefill_memory_aborted", "omlx_prefill_memory_exceeded",
 })
+
+# Local-inference KV-cache / device-buffer allocation failures that do NOT name a byte ceiling
+# (oMLX, llama.cpp, vLLM, MLX Metal, PyTorch MPS/CUDA). Companion to _MEMORY_CEILING_PATTERNS
+# above: both are local-engine memory rejections and both recover the same way — compress the
+# context (whose size IS the KV-cache size) and retry; this list holds only the wordings absent
+# from the ceiling list. The wording often also contains "limit exceeded", so it must be
+# consulted BEFORE the usage-limit disambiguation in every path (message head, HTTP 402,
+# HTTP 429) — otherwise a local model OOM reads as a billing wall. (#52261)
+_LOCAL_OOM_PATTERNS = (
+    "kv cache allocation failed", "failed to allocate kv cache", "kv cache limit exceeded",
+    "kv cache exceeds limit", "the kv cache is too large", "vram limit exceeded",
+    "memory_guard limit exceeded", "metal: allocation failed", "metal allocation failed",
+)
 
 # Bare "max_tokens" is load-bearing: the output-cap-retry path keys off it;
 # empty-response advisories mentioning it are intercepted earlier. Groups:
@@ -475,6 +495,7 @@ _V_FORMAT_ERROR = _v(_R.format_error, **_ABORT_FALLBACK)
 _V_POLICY_BLOCKED = _v(_R.provider_policy_blocked, **_ABORT_FALLBACK)
 _V_SSL_CERT = _v(_R.ssl_cert_verification, **_ABORT_FALLBACK)
 _V_CONTEXT_OVERFLOW = _v(_R.context_overflow, should_compress=True)
+_V_LOCAL_OOM = _v(_R.local_oom, should_compress=True)
 _V_PAYLOAD_TOO_LARGE = _v(_R.payload_too_large, should_compress=True)
 _V_OVERLOADED, _V_SERVER_ERROR, _V_TIMEOUT, _V_UNKNOWN = map(_v, (_R.overloaded, _R.server_error, _R.timeout, _R.unknown))
 _V_IMAGE_TOO_LARGE, _V_IMAGE_CORRUPT = _v(_R.image_too_large), _v(_R.image_corrupt)
@@ -593,12 +614,17 @@ _IMAGE_TOOL_RULES = (
     (_IMAGE_TOO_LARGE_PATTERNS, _V_IMAGE_TOO_LARGE),
 )
 
-# Overflow signals arriving as 5xx (llama.cpp reports overflow as 500; busy /
-# model-load OOM as 503). Empty-response advisories must not enter compression.
+# Overflow signals arriving as 5xx (llama.cpp reports overflow as 500; a local-engine memory
+# rejection as 503/500). Empty-response advisories must not enter compression.
 _OVERFLOW_AS_5XX_RULES = (
-    (_EMPTY_PROVIDER_RESPONSE_PATTERNS, _V_SERVER_ERROR), (_MEMORY_CEILING_PATTERNS, _V_OVERLOADED),
-    (_CONTEXT_OVERFLOW_PATTERNS, _V_CONTEXT_OVERFLOW),
+    (_EMPTY_PROVIDER_RESPONSE_PATTERNS, _V_SERVER_ERROR), (_MEMORY_CEILING_PATTERNS, _V_LOCAL_OOM),
+    (_LOCAL_OOM_PATTERNS, _V_LOCAL_OOM), (_CONTEXT_OVERFLOW_PATTERNS, _V_CONTEXT_OVERFLOW),
 )
+
+# Ordered memory rules shared by the message head and the 402/429 status paths. Both families
+# (byte-peak ceiling AND KV-cache/allocation) recover by compressing the context and retrying,
+# and both run BEFORE the usage-limit → billing disambiguation below.
+_LOCAL_MEMORY_RULES = ((_MEMORY_CEILING_PATTERNS, _V_LOCAL_OOM), (_LOCAL_OOM_PATTERNS, _V_LOCAL_OOM))
 
 # 404: Nous API surfaces credit depletion as a paid model vanishing from the
 # Free Tier (billing, not missing model); policy block before model_not_found.
@@ -619,7 +645,7 @@ _400_TAIL_RULES = _OVERFLOW_AS_5XX_RULES + (
 _STREAM_RENDER_ERROR_PATTERNS = ("error rendering", "rendering prompt", "jinja template", "jinja render")
 
 # Status-less message path, head (before usage-limit disambiguation).
-_MESSAGE_HEAD_RULES = ((_MEMORY_CEILING_PATTERNS, _V_OVERLOADED),
+_MESSAGE_HEAD_RULES = ((_MEMORY_CEILING_PATTERNS, _V_LOCAL_OOM), (_LOCAL_OOM_PATTERNS, _V_LOCAL_OOM),
                        (_PAYLOAD_TOO_LARGE_PATTERNS, _V_PAYLOAD_TOO_LARGE),
                        (_ROLE_ALTERNATION_PATTERNS, _V_ROLE_ALTERNATION),
                        (_STREAM_RENDER_ERROR_PATTERNS, _V_FORMAT_ERROR)) + _IMAGE_TOOL_RULES
@@ -643,7 +669,7 @@ _ERROR_CODE_VERDICTS: dict[str, Verdict] = {
     **dict.fromkeys(_BILLING_ERROR_CODES, _V_BILLING),
     **dict.fromkeys(("model_not_found", "model_not_available", "invalid_model"), _V_MODEL_NOT_FOUND),
     **dict.fromkeys(("context_length_exceeded", "max_tokens_exceeded"), _V_CONTEXT_OVERFLOW),
-    **dict.fromkeys(_MEMORY_CEILING_ERROR_CODES, _V_OVERLOADED),
+    **dict.fromkeys(_MEMORY_CEILING_ERROR_CODES, _V_LOCAL_OOM),
     "invalid_encrypted_content": _V_INVALID_ENCRYPTED,
 }
 
@@ -770,7 +796,7 @@ _HINT_FLAGS = ("retryable", "should_compress", "should_rotate_credential", "shou
 RETRYABLE_CLIENT_REASONS = frozenset({
     FailoverReason.rate_limit, FailoverReason.upstream_rate_limit, FailoverReason.overloaded,
     FailoverReason.context_overflow, FailoverReason.payload_too_large, FailoverReason.long_context_tier,
-    FailoverReason.thinking_signature,
+    FailoverReason.thinking_signature, FailoverReason.local_oom,
 })
 
 
@@ -1061,6 +1087,12 @@ def _status_429(c: _Ctx) -> Verdict:
     # this handler always returns, so _by_error_code never sees the code.
     if c.code in _BILLING_ERROR_CODES:
         return _V_BILLING
+    # A local-engine memory error wrapped in a 429 must not read as a billing/quota wall:
+    # "kv cache limit exceeded" contains "limit exceeded". Check it before the quota_wall
+    # disambiguation below (mirrors _classify_402 for the 402 path).
+    memory = _first_match(c.msg, _LOCAL_MEMORY_RULES)
+    if memory is not None:
+        return memory
     # Z.AI/Zhipu reuse 429 for server-wide overload: back off on the same
     # key instead of burning the pool (#14038).
     if any(p in c.msg for p in _OVERLOADED_PATTERNS):
@@ -1098,6 +1130,11 @@ def _status_5xx(c: _Ctx) -> Verdict:
 
 def _classify_402(error_msg: str, result_fn: Callable[..., Any]) -> Any:
     """Disambiguate 402: "usage limit, try again in 5 minutes" is a periodic quota, not billing."""
+    # A local-inference memory error wrapped in a 402 must never read as a billing wall —
+    # oMLX raises one for the KV-cache/prefill guard and its wording contains "limit exceeded".
+    memory = _first_match(error_msg, _LOCAL_MEMORY_RULES)
+    if memory is not None:
+        return result_fn(**memory)
     transient = any(p in error_msg for p in _USAGE_LIMIT_PATTERNS) and any(
         p in error_msg for p in _USAGE_LIMIT_TRANSIENT_SIGNALS
     )
@@ -1199,7 +1236,7 @@ def _classify_400(c: _Ctx) -> Verdict:
     # Memory ceiling by code: _by_status runs before _by_error_code, so a
     # 400 whose wording a proxy stripped would fall through to format_error.
     if code in _MEMORY_CEILING_ERROR_CODES:
-        return _V_OVERLOADED
+        return _V_LOCAL_OOM
     verdict = _first_match(msg, _400_TAIL_RULES)
     if verdict is not None:
         return verdict

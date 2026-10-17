@@ -1656,6 +1656,7 @@ class ClassifiedErrorVerdict:
 
 _OVERFLOW_REASONS = frozenset({
     FailoverReason.long_context_tier, FailoverReason.payload_too_large, FailoverReason.context_overflow,
+    FailoverReason.local_oom,
 })
 _RATE_LIMIT_REASONS = frozenset({
     FailoverReason.rate_limit, FailoverReason.billing, FailoverReason.upstream_rate_limit,

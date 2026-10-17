@@ -1318,6 +1318,15 @@ def _run_serve(serve, config, host: str, port: int) -> None:
     runner = asyncio.run
     runner_kwargs: dict = {}
     if sys.platform == "win32":
+        # Both branches below serve on a selector loop, whose sendmsg-less
+        # _write_send drops a chunk on BlockingIOError and then asserts on
+        # every iteration (#140246); the backport must precede any transport.
+        def _install_write_send_backport() -> None:
+            from tui_gateway.selector_write_backport import backport_selector_write_send
+
+            backport_selector_write_send()
+
+        _best_effort("selector _write_send backport", _install_write_send_backport)
         # Resolved FIRST; the serve call is outside this try so genuine
         # serve-time errors (port in use) propagate instead of double-running.
         try:

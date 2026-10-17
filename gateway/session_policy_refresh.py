@@ -51,12 +51,14 @@ def refreshed_policy(policy, live, terminal, *, picked=(), mcp_only=False):
 
 def _settings(policy, config, live, picked):
     """Follow the config-derived settings into *config*; the toolsets they select."""
-    from gateway.session_policy import _resolve_toolsets
+    from gateway.session_policy import _resolve_toolsets, session_pinned
     request = json.loads(policy.request_json)
     live_agent = live.get('agent') or {}
     agent = dict(config.get('agent') or {})
     keys = [] if 'max_turns' in request else ['max_turns']
-    keys += [] if 'reasoning' in request or 'reasoning' in picked else ['reasoning_effort', 'reasoning_overrides']
+    # The session's own record (a pick, or a reset back to the profile) wins over the receipt history.
+    chosen = session_pinned(config, 'reasoning', 'reasoning' in request or 'reasoning' in picked)
+    keys += [] if chosen else ['reasoning_effort', 'reasoning_overrides']
     toolsets = policy.toolsets
     if 'toolsets' not in request and policy.editor_mcp_json is None:
         keys.append('disabled_toolsets')

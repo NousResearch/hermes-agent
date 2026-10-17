@@ -160,7 +160,7 @@ class GatewayAgent:
         # Only a user-picked effort (/reasoning, a model pick's --reasoning) is committed at build; the
         # config-resolved level must never override the session's frozen launch policy on resume.
         if push_reasoning:
-            self.reasoning_config = reasoning_config
+            self.pin_reasoning(reasoning_config)
         else:
             self._reasoning_config = reasoning_config
         # Main's /moa rebuilds its agent on the MoA virtual provider for one turn (the session's info
@@ -198,14 +198,23 @@ class GatewayAgent:
 
     @reasoning_config.setter
     def reasoning_config(self, config):
-        """``/reasoning <level>`` (session scope; main rebuilds its agent with the new config) and /new's
-        re-derived effort: ``session.mutate reasoning`` when it differs from the session's effort."""
+        """/new's re-derived effort and a one-turn restore: ``session.mutate reasoning`` when it differs from
+        the session's effort (an inherited level stays inherited)."""
+        self._set_reasoning(config, explicit=False)
+
+    def pin_reasoning(self, config):
+        """``/reasoning <level>`` (session scope; main rebuilds its agent with the new config) and a model
+        pick's ``--reasoning``: always ``session.mutate reasoning``, even when the session already runs that
+        level by inheritance, so it becomes the session's own choice."""
+        self._set_reasoning(config, explicit=True)
+
+    def _set_reasoning(self, config, *, explicit):
         self._reasoning_config = config
         effort = _effort_word(config)
         if effort is None:
             return
         info = self._state().info or {}
-        if info.get("reasoning_effort") == effort:
+        if not explicit and info.get("reasoning_effort") == effort:
             return
         try:
             snapshot = self.connection.call("session.resume", session_id=self.session_id)

@@ -20,11 +20,40 @@ CREATE_FIELDS = frozenset({'request_id', 'source', 'cwd', 'model', 'toolsets',
 # turn (main's Bot Chat row), credentials included: a frozen key never crosses a profile route change.
 FOLLOW_SECTIONS = ('model', 'providers', 'custom_providers', 'fallback_providers', 'fallback_model', 'model_aliases',
                    'platform_toolsets')
-def pin_reasoning_effort(config, effort):
+# A launch field's state as a committed session edit left it, in the policy's own config: ``True`` the
+# session chose it (``/reasoning <level>``, a model pick carrying one), ``False`` a reset gave it back to
+# the profile. Either wins over the creation request (the launch identity, never rewritten) and the older
+# pick receipts.
+SESSION_PINS = 'session_pins'
+
+
+def session_pinned(config, field, launched):
+    """Whether *field* is the session's own choice: its last committed session edit, else *launched*."""
+    pins = config.get(SESSION_PINS)
+    return pins[field] if isinstance(pins, dict) and isinstance(pins.get(field), bool) else launched
+
+
+def pin_reasoning_effort(config, effort, *, session=False):
     """Write an explicit session reasoning level into *config*: it wins over a per-model default
-    (``reasoning_overrides``), at creation, on ``/reasoning`` and on a model pick that carries one."""
+    (``reasoning_overrides``), at creation, on ``/reasoning`` and on a model pick that carries one.
+    A *session* edit also records the pin."""
     config.setdefault('agent', {})['reasoning_effort'] = effort
     config['agent'].pop('reasoning_overrides', None)
+    if session:
+        config[SESSION_PINS] = {**(config.get(SESSION_PINS) or {}), 'reasoning': True}
+
+
+def unpin_reasoning(config, profile):
+    """``/reasoning reset``: the level is *profile*'s (its current config) again, re-read every turn by a
+    following session and on each resume by any other; a create-time ``reasoning`` included."""
+    followed = profile.get('agent') if isinstance(profile.get('agent'), dict) else {}
+    agent = config.setdefault('agent', {})
+    for key in ('reasoning_effort', 'reasoning_overrides'):
+        if key in followed:
+            agent[key] = followed[key]
+        else:
+            agent.pop(key, None)
+    config[SESSION_PINS] = {**(config.get(SESSION_PINS) or {}), 'reasoning': False}
 
 
 FOLLOW_AGENT_KEYS = ('reasoning_effort', 'reasoning_overrides', 'service_tier', 'disabled_toolsets', 'coding_context')
@@ -100,8 +129,9 @@ class LocalSessionPolicy:
     def effective(self, authority=None, *, secrets=True):
         """``(config, model)`` the next turn runs, both from ONE read of the owning profile when following
         (the turn's policy scope holds that read): a route never pairs one profile's model with another's
-        endpoint. Explicit choices (create-time reasoning / tier / toolsets, a pick that still holds) are
-        applied over the followed defaults; frozen secrets of followed sections are never recovered."""
+        endpoint. Explicit choices (create-time reasoning / tier / toolsets, a session ``/reasoning`` until
+        reset, a pick that still holds) are applied over the followed defaults; frozen secrets of followed
+        sections are never recovered."""
         config = present_sections(json.loads(self.config_json))
         live = self.read_profile(authority)
         if self.config_secret_ref is not None and authority is not None and secrets:
@@ -122,7 +152,8 @@ class LocalSessionPolicy:
             pick = frozen.get('selection_profile')
             held = pick is not None and pick == list(profile_target(live))
             pinned = {'platform_toolsets', 'disabled_toolsets'} if 'toolsets' in request else set()
-            pinned |= {'reasoning_effort', 'reasoning_overrides'} if 'reasoning' in request else set()
+            chosen = session_pinned(config, 'reasoning', 'reasoning' in request)
+            pinned |= {'reasoning_effort', 'reasoning_overrides'} if chosen else set()
             pinned |= {'service_tier'} if 'service_tier' in request else set()
             for key in FOLLOW_SECTIONS:
                 if key in pinned:

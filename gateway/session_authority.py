@@ -60,6 +60,9 @@ class LiveSession:
     settling: dict = field(default_factory=dict)
     # A viewer attached while a guarded deferred pick awaits consent: the next boundary asks again.
     reask_pick: bool = False
+    # (principal, effort) of a ``/reasoning`` command that arrived while a turn ran: applied in memory at
+    # once, committed to the policy at the next boundary (gateway/session_setting_commands.py).
+    pending_reasoning: tuple | None = None
     # A historic messaging row mounted for reading after its lane moved on (``/new``): ``route`` is
     # the lane's CURRENT key, which names another conversation, so nothing route-keyed (agent, Stop,
     # turns, eviction) may act through it (gateway/session_route_recovery.py). The lane publishing
@@ -857,8 +860,11 @@ class SessionAuthority:
             first = next((row for row in pending if row['status'] == 'queued'), None)
             from gateway.config import Platform
             if live.source.platform == Platform.LOCAL:
-                # A model pick made while the previous turn ran lands here, at the turn boundary.
+                # A reasoning command or a model pick made while the previous turn ran lands here, at the
+                # turn boundary.
                 from gateway.session_deferred_pick import apply_deferred_pick
+                from gateway.session_setting_commands import apply_pending_reasoning
+                await apply_pending_reasoning(self, ref, live)
                 await apply_deferred_pick(self, ref, live)
             if first is not None and live.source.platform == Platform.LOCAL:
                 from gateway.session_local_recovery import restore_local_session

@@ -15,7 +15,7 @@ from agent.reasoning_effort import (
     GEMINI4_THINKING_LEVELS, KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, OPENAI_COMPAT_WIRE_EFFORTS, clamp_effort,
     clamp_reasoning_config, kimi_supported_efforts, requested_effort, tokenhub_effort,
 )
-from agent.message_metadata import MESSAGE_UID
+from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS
 from agent.message_sanitization import coalesce_tool_call_id, normalize_finish_reason as _normalize_finish_reason
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
@@ -36,13 +36,18 @@ _XAI_TOOL_SEARCH_ALIAS = "hermes_tool_search"
 
 # Persistence-only / cross-transport message keys that strict OpenAI-compatible
 # providers reject with HTTP 400 ("Extra inputs are not permitted").
-_STRIP_MSG_KEYS = (
-    "codex_reasoning_items", "codex_message_items", "tool_name", "effect_disposition", "timestamp",
-    # ``platform_message_id`` is persisted as-is and comes back from replay as ``message_id``
-    # (JSONL transcript compat); both are delivery bookkeeping, never model input.
-    "platform_message_id", "message_id", "api_content", "anthropic_content_blocks", "bedrock_content_blocks",
-    MESSAGE_UID,
-)
+# Only the transport-only names are listed here; every DB-replay carrier comes from
+# ``PERSISTENCE_ONLY_MESSAGE_FIELDS``, the single source of truth for them. Deriving instead of
+# re-listing is what keeps the two from drifting apart: the auxiliary/MoA wire reaches the wire
+# through ``auxiliary_wire.prepare_chat_messages`` -> this ``convert_messages`` and never passes
+# ``turn_context``'s pop, so a carrier listed in only one of the two places leaks here (#48523:
+# ``observed``/``finish_reason``, plus the ``display_kind``/``display_metadata`` pair).
+# ``platform_message_id`` is persisted as-is and comes back from replay as ``message_id``
+# (JSONL transcript compat); both are delivery bookkeeping, never model input.
+_STRIP_MSG_KEYS = frozenset({
+    "codex_reasoning_items", "codex_message_items", "tool_name", "effect_disposition",
+    "platform_message_id", "api_content", "anthropic_content_blocks", "bedrock_content_blocks",
+}) | PERSISTENCE_ONLY_MESSAGE_FIELDS
 _STRIP_TC_KEYS = ("call_id", "response_item_id")
 _HIGH_EFFORTS = {"high", "xhigh", "max", "ultra"}
 

@@ -802,14 +802,15 @@ _scratch_pruned_once = False
 SOCKET_TMPDIR_MAX_LEN = 50
 
 
-def socket_safe_tmpdir() -> str:
+def socket_safe_tmpdir(base: str | None = None) -> str:
     """Temp root short enough for AF_UNIX sockets. The scratch dir usually fits; macOS
     ``TMPDIR`` never does and a deep profile home may not, so those fall back to the OS
-    default root for sockets only (everything else stays in the scratch dir)."""
+    default root for sockets only (everything else stays in the scratch dir). *base*
+    overrides the ambient root — e.g. the routed profile's scratch for kernel RPC sockets."""
     import tempfile
     if sys.platform == "darwin":
         return "/tmp"  # no-tmp: ok — AF_UNIX 104-byte socket path limit on darwin
-    candidate = tempfile.gettempdir()
+    candidate = base if base is not None else tempfile.gettempdir()
     if len(candidate) <= SOCKET_TMPDIR_MAX_LEN or not os.path.isdir("/tmp"):  # no-tmp: ok — probe, not a write target
         return candidate
     return "/tmp"  # no-tmp: ok — AF_UNIX 108-byte socket path limit on Linux
@@ -1041,6 +1042,30 @@ def export_scratch_tmp_env() -> bool:
         import tempfile
         tempfile.tempdir = None
     return changed
+
+
+def routed_tmpdir() -> str:
+    """Temp root for parent-side staging under the *active* (context-routed) Hermes home.
+
+    ``tempfile``'s process-wide default follows the home the process **booted** under, so a
+    multiplexed gateway/Desktop backend routes profile A's turn while its ambient temp still
+    points at the startup profile's scratch — staging a kernel there misattributes files to a
+    sibling profile (#138501). When the temp vars are Hermes-owned (each equals
+    ``HERMES_SCRATCH_DIR``, as :func:`apply_scratch_tmp_env` leaves them) return the routed
+    home's scratch dir; a user-set temp var is respected and the ambient default is returned
+    unchanged, matching the override policy of :func:`apply_scratch_tmp_env`.
+    """
+    import tempfile
+    ours = os.environ.get(SCRATCH_DIR_MARKER_ENV, "")
+    for key in SCRATCH_TMP_ENV_VARS:
+        value = os.environ.get(key, "").strip()
+        if value and value != ours:
+            return tempfile.gettempdir()
+    try:
+        return str(get_scratch_dir())
+    except (RuntimeError, OSError):
+        # No resolvable home (see apply_scratch_tmp_env): fall back to the OS default.
+        return tempfile.gettempdir()
 
 
 VALID_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh", "max", "ultra")

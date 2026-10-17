@@ -134,6 +134,8 @@ def _make_adapter():
     adapter._polling_network_error_count = 0
     adapter._polling_error_callback_ref = None
     adapter.platform = Platform.TELEGRAM
+    adapter._bot = None
+    adapter._mention_patterns = []
     return adapter
 
 

@@ -37,6 +37,16 @@ class BitwardenLoginBackend(LoginBackend):
 
     def __init__(self, cfg: Optional[dict] = None):
         self.cfg = cfg or {}
+        # Optional headless unlock: a master password kept in the profile's own secret scope
+        # (``.env``, 0600) lets the backend mint its own session token — no prompt, works in cron.
+        # Mirrors 1Password's ``service_account_token_env``. Never read from the launch environment.
+        from agent.secret_scope import get_secret
+        env_name = str(self.cfg.get("master_password_env") or "BW_MASTER_PASSWORD")
+        self._auto_master = get_secret(env_name, "") or ""
+        if self._auto_master:
+            # Belt and braces: if the value ever surfaces in tool output, the redactor masks it.
+            from agent.redact import register_vault_redaction_value
+            register_vault_redaction_value(self._auto_master)
 
     def _bw(self) -> Path:
         explicit = str(self.cfg.get("binary_path") or "")
@@ -53,7 +63,15 @@ class BitwardenLoginBackend(LoginBackend):
         return env
 
     def is_unlocked(self) -> bool:
-        return _unlock.is_unlocked(self.name)
+        if _unlock.is_unlocked(self.name):
+            return True
+        if self._auto_master:
+            try:
+                self.unlock(self._auto_master)
+                return True
+            except Exception as exc:  # wrong/rotated password, bw not logged in, CLI missing
+                logger.warning("Bitwarden auto-unlock failed: %s", exc)
+        return False
 
     def unlock(self, master_password: str) -> None:
         # bw refuses a piped password ("Master password is required"); its non-interactive contract is
@@ -73,6 +91,8 @@ class BitwardenLoginBackend(LoginBackend):
 
     def _run(self, *args: str) -> str:
         token = _unlock.get_session_token(self.name)
+        if not token and self._auto_master and self.is_unlocked():
+            token = _unlock.get_session_token(self.name)
         if not token:
             raise UnlockRequired(self)
         proc = run_cli([str(self._bw()), *args, "--nointeraction"], env=self._env(token), timeout=_TIMEOUT,

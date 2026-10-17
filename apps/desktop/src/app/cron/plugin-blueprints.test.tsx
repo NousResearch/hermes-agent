@@ -113,4 +113,21 @@ describe('plugin-registered automation blueprints', () => {
       )
     )
   })
+
+  it('renders a plugin URL slot as a URL field', async () => {
+    hermes.getAutomationBlueprints.mockResolvedValue({
+      blueprints: [{
+        ...pluginBlueprint,
+        fields: [{
+          default: 'https://example.com', help: 'Page URL', label: 'Page URL', name: 'url',
+          optional: false, options: [], strict: true, type: 'url'
+        }]
+      }]
+    })
+    renderView()
+
+    fireEvent.click(await screen.findByText('Team standup digest'))
+
+    expect((screen.getByLabelText('Page URL') as HTMLInputElement).type).toBe('url')
+  })
 })

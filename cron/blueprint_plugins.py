@@ -15,7 +15,7 @@ import string
 from dataclasses import fields
 from typing import Any, Iterable, List, Mapping
 
-from cron.blueprint_catalog import AutomationBlueprint, BlueprintSlot, fill_blueprint
+from cron.blueprint_catalog import CATALOG, AutomationBlueprint, BlueprintSlot, fill_blueprint
 
 logger = logging.getLogger(__name__)
 
@@ -108,8 +108,9 @@ def build_plugin_blueprint(
     plugin: str, key: str, *, title: str, description: str, schedule_template: str,
     prompt_template: str, category: str = "general", slots: Iterable[Any] = (),
     deliver_default: str = "origin", skills: Iterable[str] = (), tags: Iterable[str] = (),
+    stable_key: bool = False,
 ) -> AutomationBlueprint:
-    """Validated blueprint keyed ``<plugin>:<key>``; raises ``ValueError`` on malformed input."""
+    """Validate a plugin blueprint, optionally retaining a non-conflicting stable key."""
     if not isinstance(plugin, str) or not _NAMESPACE_RE.match(plugin):
         raise ValueError(f"plugin name {plugin!r} cannot namespace a blueprint key")
     if not isinstance(key, str) or not _KEY_RE.match(key):
@@ -119,8 +120,12 @@ def build_plugin_blueprint(
         )
     if isinstance(slots, (str, Mapping)) or not isinstance(slots, Iterable):
         raise ValueError("slots must be a list")
+    if not isinstance(stable_key, bool):
+        raise ValueError("stable_key must be a boolean")
+    if stable_key and any(candidate.key == key for candidate in CATALOG):
+        raise ValueError(f"stable key {key!r} collides with a built-in blueprint")
     blueprint = AutomationBlueprint(
-        key=f"{plugin}:{key}",
+        key=key if stable_key else f"{plugin}:{key}",
         title=_text("title", title),
         description=_text("description", description),
         category=_text("category", category),

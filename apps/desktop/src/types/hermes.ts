@@ -1089,7 +1089,7 @@ export interface CronDeliveryTarget {
 // GET /api/cron/blueprints (blueprint_catalog_entry).
 export interface AutomationBlueprintField {
   name: string
-  type: 'enum' | 'text' | 'time' | 'weekdays'
+  type: 'enum' | 'text' | 'time' | 'url' | 'weekdays'
   label: string
   default: null | string
   options: string[]

@@ -44,8 +44,8 @@ export function blueprintSlotHelp(field: AutomationBlueprintField): string | und
   return field.help && field.type !== 'text' && !isDeliverField(field) ? field.help : undefined
 }
 
-// Renders one blueprint slot's control (enum/weekdays → Select, time → time
-// input, else text). The deliver slot is handled separately by the dialog's
+// Renders one blueprint slot's control (enum/weekdays → Select, time → time,
+// url → URL input, else text). The deliver slot is handled separately by the dialog's
 // shared DeliverSelect, so it's not rendered here.
 export function BlueprintSlotControl({
   field,
@@ -77,6 +77,10 @@ export function BlueprintSlotControl({
 
   if (field.type === 'time') {
     return <Input id={id} onChange={event => onChange(event.target.value)} type="time" value={value} />
+  }
+
+  if (field.type === 'url') {
+    return <Input id={id} onChange={event => onChange(event.target.value)} placeholder={field.help || 'https://'} type="url" value={value} />
   }
 
   return (

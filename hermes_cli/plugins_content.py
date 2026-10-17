@@ -55,8 +55,10 @@ def register_automation_blueprint(
     self, key: str, *, title: str, description: str, schedule_template: str,
     prompt_template: str, category: str = "general", slots: Iterable[Any] = (),
     deliver_default: str = "origin", skills: Iterable[str] = (), tags: Iterable[str] = (),
+    stable_key: bool = False,
 ) -> Optional[PluginRegistration]:
     """Add an Automation Blueprint to this profile's catalog as ``'<plugin_name>:<key>'``
+    unless ``stable_key=True`` keeps a non-conflicting existing key.
     (``/blueprint``, the dashboard/Desktop gallery). Fields mirror
     :class:`cron.blueprint_catalog.AutomationBlueprint`; ``slots`` are ``BlueprintSlot`` field
     mappings. Malformed input or a duplicate key logs a warning and returns ``None``."""
@@ -65,7 +67,7 @@ def register_automation_blueprint(
         blueprint = build_plugin_blueprint(
             self.manifest.name, key, title=title, description=description,
             schedule_template=schedule_template, prompt_template=prompt_template, category=category,
-            slots=slots, deliver_default=deliver_default, skills=skills, tags=tags,
+            slots=slots, deliver_default=deliver_default, skills=skills, tags=tags, stable_key=stable_key,
         )
     except ValueError as exc:
         logger.warning("Plugin '%s' automation blueprint %r rejected: %s", self.manifest.name, key, exc)

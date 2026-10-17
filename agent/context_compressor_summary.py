@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import inspect
+import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.auxiliary_client import AuxiliaryExplicitCancellation
 
 if TYPE_CHECKING:
     from agent.context_compressor import _HandoffScan
+
+logger = logging.getLogger(__name__)
 
 
 def _accepts_keyword_argument(callable_obj: Any, name: str) -> bool:
@@ -37,6 +40,12 @@ class SummaryDispatchMixin:
         main api_key/base_url would ride into the fallback entry's call (to its host, or instead of it).
         The main route is complete even with empty fields: an authoritative task keeps compression
         policy but never fills an unset endpoint/key/wire mode from the failed aux route (#130895).
+
+        When fallen back, pin provider/model/base_url/api_mode but **not** ``api_key``. A stored
+        OAuth snapshot can be revoked while the main loop still works (#138469); omitting the key
+        lets ``call_llm`` resolve a live credential from the pool / refresh holders. The same snapshot
+        is also stripped from ``main_runtime`` (normalization keeps it, so routing/recovery would still
+        treat it as the session key); only custom endpoints keep it, since they cannot pool-resolve.
         """
         if pinned:
             # Clear first: a keyless pin (local server) resolves its own credential, never the main one.
@@ -52,15 +61,32 @@ class SummaryDispatchMixin:
         from agent.auxiliary_task_config import authoritative_auxiliary_task
 
         call_kwargs["task"] = authoritative_auxiliary_task(call_kwargs.get("task") or "compression")
+        # Drop any caller-supplied snapshot so a revoked token cannot win over pool resolution (#138469).
+        call_kwargs.pop("api_key", None)
+        runtime = call_kwargs.get("main_runtime")
+        provider = str(self.provider or "").strip().lower()
+        if isinstance(runtime, dict) and "api_key" in runtime and not (
+            provider == "custom" or provider.startswith("custom:")
+        ):
+            # Copy, never mutate: the caller may share this dict with other attempts.
+            call_kwargs["main_runtime"] = {k: v for k, v in runtime.items() if k != "api_key"}
         for key, value in (
             ("provider", self.provider),
             ("model", self.model),
             ("base_url", self.base_url),
-            ("api_key", self.api_key),
             ("api_mode", getattr(self, "api_mode", "")),
         ):
             if value:
                 call_kwargs[key] = value
+
+    def _clear_fallback_latch_after_access_error(self) -> None:
+        """A 401/403/quota error on the already-pinned main route means the stored snapshot (or the
+        pool entry recovery landed on) is dead. Drop the latch so the next attempt re-reads
+        ``auxiliary.compression`` instead of re-pinning the same broken main route for hours (#138469)."""
+        if getattr(self, "_summary_model_fallen_back", False):
+            self._summary_model_fallen_back = False
+            logger.info("Cleared compression fallback latch after auth/quota failure on main route "
+                        "so auxiliary.compression can apply again")
 
     def _summarize_window(
         self, messages: list[dict[str, Any]], turns_to_summarize: list[dict[str, Any]], scan: _HandoffScan,

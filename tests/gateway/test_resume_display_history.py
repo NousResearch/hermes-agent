@@ -150,3 +150,24 @@ async def test_a_long_archived_history_keeps_the_resume_reply_bounded(tmp_path, 
     assert sorted(r['row_id'] for r in rows if not r.get('archived')) == [m['id'] for m in db.get_messages(tip)]
     archived = [r['content'][:4] for r in rows if r.get('archived') and r['role'] == 'user']
     assert archived and archived[-1] == 'Q39 ' and 'Q0 x' not in archived  # the newest are kept
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['in_place', 'rotated'])
+async def test_rollback_turn_rewind_never_targets_an_archived_turn(tmp_path, monkeypatch, mode):
+    """/rollback's history rewind picks the newest live user turn; with none left (the last one undone after
+    a compression) it rewinds nothing instead of aiming the owner's rewind at an archived row it refuses."""
+    from gateway.session_mutations import mutate_session
+    from gateway.session_tui_ops import _rewind_last_turn
+    authority, actor, ref, physical = await _local_session(tmp_path, monkeypatch)
+    db = authority.db
+    _append(db, physical, 'OLD_Q', 'OLD_A', 'TAIL_Q', 'TAIL_A')
+    tip = _compact(db, physical, mode)
+    handle = authority._handle(ref)
+    await mutate_session(authority, actor, ref, {
+        'session_id': ref.session_id, 'request_id': 'undo', 'operation': 'rewind',
+        'expected_revision': handle.revision, 'expected_generation': handle.execution_generation,
+        'payload': {'target_message_id': next(m['id'] for m in db.get_messages(tip) if m['content'] == 'TAIL_Q')}})
+    live = [m['content'] for m in db.get_messages(tip)]
+    assert await _rewind_last_turn(SimpleNamespace(authority=authority, actor=actor), ref) == 0
+    assert [m['content'] for m in db.get_messages(tip)] == live == [SUMMARY]

@@ -1,0 +1,29 @@
+name: tradersagent-plugin
+repo: https://github.com/godzillacode0000/tradersagent-plugin
+sha: 42a3a1d92fe029a92b96cd4467eb5b8228cce0cb
+subdir: traders-desk
+description: >-
+  A chart-first Trader's Agent for Hermes Desktop: one sidebar row docks a live Vela chart beside your
+  conversation — replay, drawing tools, the LuxAlgo Library, a paper broker and Edge Stats behind it.
+  Disclosure — the pane frames a local console service on 127.0.0.1:8787 that this package does not
+  include or start: clone the repo and run ./console/start.sh (see known_issues). That console is a
+  long-running Python process on your machine that fetches bars from Binance's public klines and
+  Library scripts from LuxAlgo's hosted MCP over the network; it shells nothing, keeps no account, no
+  key and no telemetry. The agent's 56 chart tools come from the repo's traders-chart MCP server,
+  registered separately with ./bin/register-mcp.sh — the plugin itself registers UI only.
+maintainer: godzillacode0000
+tier: community
+category: desktop
+requires_hermes: ">=0.17.0"
+docs_url: https://github.com/godzillacode0000/tradersagent-plugin#readme
+version: "1.3.0"
+image: https://raw.githubusercontent.com/godzillacode0000/tradersagent-plugin/42a3a1d92fe029a92b96cd4467eb5b8228cce0cb/docs/screenshot.png
+platforms: [linux, macos]
+known_issues:
+  - "The chart pane needs the repository's local console (127.0.0.1:8787), which this entry does not install. Clone https://github.com/godzillacode0000/tradersagent-plugin and run ./console/start.sh — the pane says exactly that when the console is unreachable."
+  - "The agent's chart tools are not installed by this entry either: register the traders-chart MCP server with ./bin/register-mcp.sh (install.sh does both)."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

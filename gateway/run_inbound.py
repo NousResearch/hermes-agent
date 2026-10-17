@@ -166,10 +166,11 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         if getattr(_config, "multiplex_profiles", False):
             self._canonicalize(source)
         if getattr(source, "profile_route_rejected", False) is True:
-            logger.warning(
-                "Dropping inbound message because its explicit profile route "
-                "targets an unserved profile"
-            )
+            from gateway.parked_route_refusal import drop_rejected_route
+            _intake = None
+            with suppress(Exception):
+                _intake = self._intake_adapter_for(source)
+            drop_rejected_route(_intake, source)  # a parked target is also refused to the sender
             return None
 
         is_internal = bool(getattr(event, "internal", False))  # e.g. background-process notifications
@@ -1775,7 +1776,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         Description *and* local cache path are injected so the model understands the image without
         a tool call and can re-examine it with vision_analyze."""
         from tools.vision_tools import vision_analyze_tool
-        from agent.memory_manager import sanitize_context
+        from agent.memory_context import sanitize_context
 
         analysis_prompt = (
             "Concisely describe this image in 2-4 sentences "

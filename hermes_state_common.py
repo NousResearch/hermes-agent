@@ -359,64 +359,10 @@ def _placeholders(items) -> str:
     return ",".join("?" for _ in range(items if isinstance(items, int) else len(items)))
 
 
-# Same preferred-child edge as hermes_state_compression._CHAIN_STEP_SQL. A list page
-# hides compression continuations and then shows the root as its tip, so the source
-# filter has to admit the root when that tip's created_source matches.
-_COMPRESSION_STEP_EDGE_SQL = (
-    "parent.end_reason = 'compression'\n"
-    f"                        AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL\n"
-    f"                        AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL\n"
-    f"                        AND NOT ({_RESET_CHILD_SQL.format(a='child')})\n"
-    "                        AND COALESCE(child.source, '') != 'tool'"
-)
-_COMPRESSION_STEP_ORDER_SQL = (
-    "ORDER BY\n"
-    "                          CASE\n"
-    "                            WHEN child.end_reason = 'compression' THEN 0\n"
-    "                            WHEN child.ended_at IS NULL THEN 1\n"
-    "                            ELSE 2\n"
-    "                          END,\n"
-    f"                          {_sql_session_last_active('child')} DESC,\n"
-    "                          child.started_at DESC,\n"
-    "                          child.id DESC\n"
-    "                        LIMIT 1"
-)
-
-
-def _compression_tip_surface_sql(surfaces) -> tuple[str, list]:
-    """``s`` (a list root) whose compression-chain tip is ``source='local'`` with
-    ``created_source`` in *surfaces*. One preferred child per hop, same walk as
-    ``get_compression_chain``."""
-    step = (
-        "SELECT child.id FROM sessions parent "
-        "JOIN sessions child ON child.parent_session_id = parent.id "
-        "WHERE parent.id = {parent} AND "
-        + _COMPRESSION_STEP_EDGE_SQL + "\n                        "
-        + _COMPRESSION_STEP_ORDER_SQL
-    )
-    sql = (
-        "EXISTS (SELECT 1 FROM sessions tip WHERE tip.id = ("
-        "SELECT id FROM ("
-        "WITH RECURSIVE walk(id, n) AS ("
-        f"SELECT ({step.format(parent='s.id')}), 1 "
-        "UNION ALL "
-        f"SELECT ({step.format(parent='walk.id')}), walk.n + 1 "
-        "FROM walk WHERE walk.id IS NOT NULL AND walk.n < 1000"
-        ") SELECT id FROM walk WHERE id IS NOT NULL ORDER BY n DESC LIMIT 1"
-        ")) AND tip.source = 'local' "
-        f"AND tip.created_source IN ({_placeholders(surfaces)}))"
-    )
-    return sql, list(surfaces)
-
-
-def _source_match_clause(sources, local_created_sources=None, *, match_compression_tip=False) -> tuple[str, list]:
+def _source_match_clause(sources, local_created_sources=None) -> tuple[str, list]:
     """``sessions s`` source predicate. With ``local_created_sources``, a ``source='local'`` row
     matches only when ``created_source`` is one of those surfaces; the placeholder ``'unknown'``
-    is not a surface and stays unmatched until an upsert stamps the real creator.
-
-    ``match_compression_tip`` also admits a list root whose chain tip matches. List hides the
-    tip and paints the root as that tip, so a root still NULL must not hide a healed tip.
-    """
+    is not a surface and stays unmatched until an upsert stamps the real creator."""
     labels = list(sources or [])
     if not labels:
         return "", []
@@ -426,17 +372,11 @@ def _source_match_clause(sources, local_created_sources=None, *, match_compressi
     non_local = [item for item in labels if item != "local"]
     local_sql = f"(s.source = 'local' AND s.created_source IN ({_placeholders(surfaces)}))"
     if not non_local:
-        clause, params = local_sql, list(surfaces)
-    else:
-        clause, params = (
-            f"(s.source IN ({_placeholders(non_local)}) OR {local_sql})",
-            [*non_local, *surfaces],
-        )
-    if match_compression_tip:
-        tip_sql, tip_params = _compression_tip_surface_sql(surfaces)
-        clause = f"({clause} OR {tip_sql})"
-        params = [*params, *tip_params]
-    return clause, params
+        return local_sql, list(surfaces)
+    return (
+        f"(s.source IN ({_placeholders(non_local)}) OR {local_sql})",
+        [*non_local, *surfaces],
+    )
 
 
 # Ids per ``IN (?,...)`` list: SQLite caps bound parameters at SQLITE_MAX_VARIABLE_NUMBER (999 on builds

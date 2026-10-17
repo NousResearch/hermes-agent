@@ -58,8 +58,8 @@ def test_stats_counts_cli_segments_while_list_shows_one_conversation(tmp_path, c
 def test_list_includes_a_compression_tip_whose_root_has_no_created_source(tmp_path):
     """Search and stats see a tip healed to cli. List must show that conversation too.
 
-    The page hides compression children and paints the root as the tip, so a root
-    whose created_source is still NULL used to drop the tip from the page.
+    The page hides compression children and paints the root as the tip, so the usage
+    write that heals the tip also stamps the NULL ancestors of that chain.
     """
     from hermes_cli.gateway_session_store import SurfaceLabelReader
 
@@ -77,14 +77,13 @@ def test_list_includes_a_compression_tip_whose_root_has_no_created_source(tmp_pa
         messages=[{"role": "user", "content": "hi"}], require_compression_lease=False)
     db.update_token_counts(
         "chain-tip", input_tokens=2, output_tokens=1, model="m", api_call_count=1, source="cli")
-    assert db.get_session("chain-root")["created_source"] is None
-    assert db.get_session("chain-mid")["created_source"] is None
-    assert db.get_session("chain-tip")["created_source"] == "cli"
+    assert [db.get_session(sid)["created_source"] for sid in ("chain-root", "chain-mid", "chain-tip")] == [
+        "cli", "cli", "cli"]
     reader = SurfaceLabelReader(db)
     listed = [row["id"] for row in reader.list_sessions_rich(source="cli", limit=10)]
     assert listed == ["chain-tip"]
     assert "chain-tip" in [row["id"] for row in reader.search_sessions(source="cli", limit=10)]
-    assert reader.session_count(source="cli") == 1
+    assert reader.session_count(source="cli") == 3  # stats counts every segment
     db.close()
 
 

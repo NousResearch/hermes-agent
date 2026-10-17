@@ -105,6 +105,34 @@ def _walk_compression_chain(session_id: str, step) -> list[str]:
     return chain
 
 
+def stamp_compression_ancestors(conn, session_id: str) -> None:
+    """Copy *session_id*'s ``created_source`` onto compression ancestors that have none.
+
+    A list page shows a compressed conversation as its root, painted as the tip, and filters on
+    the root's ``created_source``. Automatic compression publishes the child before any writer
+    knows the surface, so the turn's usage write stamps only the tip. Stamping the chain here,
+    in that same transaction, keeps the root matchable without a list-time chain walk. Each hop
+    must be the parent's preferred continuation (``_CHAIN_STEP_SQL``); ``unknown`` counts as
+    unset, as in the creator upsert.
+    """
+    row = conn.execute("SELECT parent_session_id, created_source FROM sessions WHERE id = ?",
+                       (session_id,)).fetchone()
+    surface = row["created_source"] if row else None
+    if surface in (None, "unknown"):
+        return
+    current, parent_id = session_id, row["parent_session_id"]
+    for _ in range(_CHAIN_CAP):
+        parent = parent_id and conn.execute(
+            "SELECT parent_session_id, created_source FROM sessions WHERE id = ?", (parent_id,)).fetchone()
+        if not parent or parent["created_source"] not in (None, "unknown"):
+            return
+        step = conn.execute(_CHAIN_STEP_SQL, (parent_id,)).fetchone()
+        if step is None or step["id"] != current:
+            return
+        conn.execute("UPDATE sessions SET created_source = ? WHERE id = ?", (surface, parent_id))
+        current, parent_id = parent_id, parent["parent_session_id"]
+
+
 class SessionCompressionMixin:
     """Compression lineage, cooldown/streak counters, locks and turn leases."""
 

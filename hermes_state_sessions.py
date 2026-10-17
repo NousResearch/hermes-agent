@@ -114,7 +114,6 @@ def _session_filter_where(
     session_key: str | None = None, exclude_sources: list[str] | None = None, cwd_prefix: str | None = None,
     min_message_count: int = 0, archived_only: bool = False, include_archived: bool = False,
     include_subagents: bool = False, local_created_sources: Sequence[str] | None = None,
-    match_compression_tip: bool = False,
 ) -> tuple[list[str], list[Any]]:
     """Shared ``sessions s`` WHERE builder so counts line up with listed rows. ``exclude_children``
     hides sub-agent runs and compression continuations but keeps branch/reset children
@@ -135,8 +134,7 @@ def _session_filter_where(
     # legacy heuristic (parent ended with 'branched' before the child started), covering branch sessions
     # created before the marker existed.
     include_sources = [source] if source else list(sources or [])
-    source_clause, source_params = _source_match_clause(
-        include_sources, local_created_sources, match_compression_tip=match_compression_tip)
+    source_clause, source_params = _source_match_clause(include_sources, local_created_sources)
     for clause, values in (
         (source_clause, source_params),
         ("s.session_key = ?", [session_key] if session_key else []),
@@ -1353,7 +1351,6 @@ class SessionSessionsMixin:
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
             archived_only=archived_only, include_archived=include_archived, include_subagents=include_subagents,
             local_created_sources=local_created_sources,
-            match_compression_tip=bool(local_created_sources) and not include_children,
         )
         # The archived-only view is the recovery surface for rows that dropped out of every
         # default list: a session that is archived AND hidden (Bot Mode marks its sessions
@@ -1438,7 +1435,6 @@ class SessionSessionsMixin:
                 session_key=session_key, exclude_sources=exclude_sources, cwd_prefix=cwd_prefix,
                 min_message_count=min_message_count, archived_only=False, include_archived=True,
                 include_subagents=include_subagents, local_created_sources=local_created_sources,
-                match_compression_tip=bool(local_created_sources) and not include_children,
             )
             if not include_hidden and not archived_only:
                 pinned_clauses.append("s.hidden = 0")

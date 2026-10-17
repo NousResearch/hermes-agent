@@ -901,6 +901,8 @@ def _worker_usage(db, conn, session_id, payload, *, auxiliary=False):
             conn.execute(
                 "UPDATE sessions SET created_source=? WHERE id=? AND created_source IS NULL",
                 (surfaced, session_id))
+            from hermes_state_compression import stamp_compression_ancestors
+            stamp_compression_ancestors(conn, session_id)
     return {'value': None}
 
 

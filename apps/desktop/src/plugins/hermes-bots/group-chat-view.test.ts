@@ -61,6 +61,28 @@ beforeEach(() => {
 })
 
 describe('opening a room', () => {
+  it('uses the canonical room name for the main tab instead of its registry key', async () => {
+    const room = await loadRoom()
+    const { registerCanonicalGroup } = await import('./canonical-group-registry')
+
+    const group = registerCanonicalGroup(
+      { connectionId: 'local', profile: 'default' },
+      { room_id: 'room-id', name: 'Incident response', members: [] }
+    )
+
+    let title = ''
+
+    host.openWorkspace = (_id: string, options: { title: string }) => {
+      title = options.title
+
+      return () => undefined
+    }
+
+    room.view.openGroupChat(group)
+
+    expect(title).toBe('Incident response')
+  })
+
   it('follows the main-window tab open and close', async () => {
     const room = await loadRoom()
     let onClose: () => void = () => undefined

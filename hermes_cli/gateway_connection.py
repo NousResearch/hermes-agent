@@ -25,7 +25,7 @@ DISCONNECTED = ("Gateway disconnected; turn outcome is unknown. Resume the print
 # A request refused before it reached any socket: nothing is in doubt, so never the copy above.
 NOT_SENT = "Gateway disconnected before the request was sent; nothing was sent."
 # ``session.resume`` refusals that mean "this viewer may not open that session": the caller keeps the
-# session it is on instead of adopting the target (startup resume).
+# session it is on instead of adopting the target (startup resume, bare -c fallback).
 RESUME_REFUSALS = frozenset({"not_found", "permission_denied"})
 # Resume refusals meaning the session itself is gone for this viewer (gateway/session_controls): the
 # above plus profile_mismatch, raised for another profile's session (reconnect, /resume switch).

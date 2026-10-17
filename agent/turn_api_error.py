@@ -115,6 +115,16 @@ def handle_api_error(
         base_url=str(getattr(agent, "base_url", "") or ""),
         api_key=getattr(agent, "api_key", None),
     )
+    # Prompt blocks carry real usage despite arriving through the exception path (#121317).
+    if getattr(api_error, "code", None) == "gemini_prompt_blocked":
+        from agent.turn_usage import record_response_usage
+
+        usage_outcome = record_response_usage(
+            agent, api_error, messages=messages, api_call_count=api_call_count,
+            api_duration=time.time() - api_start_time, compression_attempts=compression_attempts,
+            max_compression_attempts=max_compression_attempts,
+        )
+        compression_attempts = usage_outcome.compression_attempts
     logger.debug(
         "Error classified: reason=%s status=%s retryable=%s compress=%s rotate=%s fallback=%s",
         classified.reason.value, classified.status_code,

@@ -622,6 +622,9 @@ def _run_references_parallel(
     futures: dict[Any, int] = {}
     # Propagate the turn's contextvars (approval callbacks, Nous conversation tag).
     from tools.thread_context import propagate_context_to_thread
+    from agent.moa_admission import ReferenceQueue
+    queue = ReferenceQueue(((i, slot) for i, slot in enumerate(reference_models)
+                            if slot.get("provider") != "moa"), _slot_runtime)
     completed = 0
     executor = ThreadPoolExecutor(max_workers=min(_MAX_REFERENCE_WORKERS, total))
     interrupted = False
@@ -645,32 +648,26 @@ def _run_references_parallel(
                 except Exception as exc:  # pragma: no cover - display must never break
                     logger.debug("MoA progress_callback failed: %s", exc)
 
+    def submit(slot):
+        return executor.submit(
+            propagate_context_to_thread(_run_reference), slot, ref_messages,
+            temperature=temperature, max_tokens=max_tokens, reference_timeout=reference_timeout,
+            context_length_cache=ctx_len_cache, cache_disabled=cache_disabled,
+            cache_ttl=cache_ttl, agent=agent,
+        )
+
     try:
         for idx, slot in enumerate(reference_models):
             if slot.get("provider") == "moa":
                 results[idx] = _placeholder_output(slot, "[skipped: MoA presets cannot recursively reference MoA]")
-                continue
-            futures[
-                executor.submit(
-                    propagate_context_to_thread(_run_reference),
-                    slot,
-                    ref_messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    reference_timeout=reference_timeout,
-                    context_length_cache=ctx_len_cache,
-                    cache_disabled=cache_disabled,
-                    cache_ttl=cache_ttl,
-                    agent=agent,
-                )
-            ] = idx
+        futures.update(queue.submit_ready(submit))
 
         # Collect every reference (no early exit except a user interrupt).
         pending = set(futures)
-        while pending:
-            done, pending = _futures_wait(pending, timeout=_REFERENCE_POLL_INTERVAL_S)
+        while pending or queue.waiting:
+            done, pending = queue.wait(pending, _futures_wait, _REFERENCE_POLL_INTERVAL_S)
             collect(done)
-            if pending and agent is not None and getattr(agent, "_interrupt_requested", False):
+            if (pending or queue.waiting) and agent is not None and getattr(agent, "_interrupt_requested", False):
                 # A worker can raise the interrupt immediately before publishing
                 # its own result. Give concurrently-finishing work one scheduler
                 # turn so completed output is not replaced by an interrupt note.
@@ -678,7 +675,11 @@ def _run_references_parallel(
                 collect(done)
                 interrupted = True
                 _settle_interrupted(futures, results, reference_models, late_accounting_sink)
+                queue.interrupt_waiting(results, _placeholder_output, _INTERRUPTED_REFERENCE_NOTE)
                 break
+            added = queue.submit_ready(submit)
+            futures.update(added)
+            pending.update(added)
     finally:
         executor.shutdown(wait=not interrupted, cancel_futures=interrupted)
 

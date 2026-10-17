@@ -70,6 +70,28 @@ def test_pin_is_derived_from_provider_base_url_or_model(overrides, expected):
     assert _spawn_kwargs(_parent(list(PARENT_CHAIN)), {}, **overrides)["fallback_model"] == expected
 
 
+@pytest.mark.parametrize(
+    ("configured", "override", "expected"),
+    [
+        ("low", {"enabled": True, "effort": "high"}, {"enabled": True, "effort": "high"}),
+        ("high", {"enabled": False}, {"enabled": False}),
+        ("low", None, {"enabled": True, "effort": "low"}),
+    ],
+)
+def test_launch_reasoning_override_reaches_aia_agent(configured, override, expected):
+    """The production child builder applies launch-local reasoning or retains config fallback."""
+    kwargs = {}
+    if override is not None:
+        kwargs["reasoning_config_override"] = override
+
+    parent = _parent()
+    parent.reasoning_config = {"enabled": True, "effort": "medium"}
+    child_args = _spawn_kwargs(parent, {"reasoning_effort": configured}, **kwargs)
+
+    assert child_args["reasoning_config"] == expected
+    assert parent.reasoning_config == {"enabled": True, "effort": "medium"}
+
+
 def test_declared_chain_flows_through_real_profile_config_loader(
     tmp_path, monkeypatch
 ):

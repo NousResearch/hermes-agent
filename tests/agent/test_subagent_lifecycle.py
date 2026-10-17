@@ -294,15 +294,15 @@ def test_reasoning_effort_is_a_launch_local_override(routing_lifecycle, wire):
     request = {"goal": "route", "reasoning_effort": "high"}
     request = decode(encode(request)) if wire else request
 
-    handle = service.launch(request)
-    assert service.wait(handle, timeout_seconds=2).state is SubagentState.SUCCEEDED
-    assert build.call_args.kwargs["reasoning_config_override"] == {"enabled": True, "effort": "high"}
-
-    # A subsequent omitted override keeps the configured default. The value
-    # must not leak through shared config or another launch's state.
-    handle = service.launch({"goal": "route"})
-    assert service.wait(handle, timeout_seconds=2).state is SubagentState.SUCCEEDED
-    assert build.call_args.kwargs["reasoning_config_override"] is None
+    explicit_handle = service.launch(request)
+    inherited_handle = service.launch({"goal": "route"})
+    # Check both calls before either child finishes: per-launch data stays
+    # independent even when launches overlap in the shared service.
+    assert [call.kwargs["reasoning_config_override"] for call in build.call_args_list] == [
+        {"enabled": True, "effort": "high"}, None,
+    ]
+    assert service.wait(explicit_handle, timeout_seconds=2).state is SubagentState.SUCCEEDED
+    assert service.wait(inherited_handle, timeout_seconds=2).state is SubagentState.SUCCEEDED
 
 
 @pytest.mark.parametrize("value", [False, "none"])

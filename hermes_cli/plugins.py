@@ -368,6 +368,31 @@ class PluginContext:
             logger.warning("Plugin %s: steer() failed", self.plugin_id, exc_info=True)
             return False
 
+    def show_popup(
+        self, *, title: str, detail: str,
+        choices: list[tuple[str, str, str]], timeout: float = 30,
+    ) -> str | None:
+        """Open a harness-owned countdown modal and return the operator's choice.
+
+        The panel renders as harness chrome (its own border/title/desc styles) so it is never
+        read as model output. Key bindings: **Enter** = highlighted choice, **ESC** = ``"escape"``,
+        **N** = ``"disable"``, **D** = ``"delay"``, ↑/↓ move the highlight.
+
+        ``choices`` is a list of ``(value, label, description)`` tuples; the FIRST entry is what
+        Enter submits by convention (the plugin's affirmative action). Returns the chosen value,
+        or ``None`` on cancel/timeout, or when no interactive TUI is attached (gateway, kanban,
+        headless) — the caller must treat ``None`` as "no decision".
+        """
+        cli = self._manager._cli_ref
+        if cli is None or not hasattr(cli, "_prompt_plugin_popup"):
+            return None
+        try:
+            return cli._prompt_plugin_popup(
+                title=title, detail=detail, choices=choices, timeout=timeout)
+        except Exception:
+            logger.warning("Plugin %s: show_popup() failed", self.plugin_id, exc_info=True)
+            return None
+
     @cached_property
     def state(self) -> PluginState:
         """This plugin's profile-scoped durable JSON state facade."""

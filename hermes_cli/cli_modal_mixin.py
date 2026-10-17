@@ -90,6 +90,10 @@ class CLIModalMixin:
     palette, slash-confirm, external editor."""
 
     _connection_state = None
+    # model-walker plugin popup: harness-owned countdown modal (Option B). Kept separate from
+    # _slash_confirm_state so the operator never reads it as model output.
+    _plugin_popup_state = None
+    _plugin_popup_deadline = 0
 
     def _open_external_editor(self, buffer=None) -> bool:
         """Open the active input buffer in an external editor."""
@@ -393,6 +397,89 @@ class CLIModalMixin:
         state["response_queue"].put(value)
         self._slash_confirm_state = None
         self._slash_confirm_deadline = 0
+        self._invalidate()
+
+    def _prompt_plugin_popup(
+        self, *, title: str, detail: str, choices: list[tuple[str, str, str]], timeout: float = 30
+    ) -> str | None:
+        """Harness-owned countdown modal a plugin drives (model-walker walk-up confirmation).
+
+        Mirrors ``_prompt_text_input_modal`` but drives ``_plugin_popup_state`` so the panel
+        renders as harness chrome — never as model output — and accepts the plugin's own key set.
+        Returns the selected choice value, or ``None`` on cancel/timeout. Returns ``None`` without
+        an app/loop rather than falling back to a raw ``input()``: a plugin popup must never steal
+        the terminal from the TUI.
+        """
+        if not choices:
+            return None
+        if not getattr(self, "_app", None):
+            return None
+        try:
+            app_loop = self._app.loop
+        except Exception:
+            app_loop = None
+        in_main_thread = threading.current_thread() is threading.main_thread()
+        if not in_main_thread and app_loop is None:
+            return None
+
+        response_queue = queue.Queue()
+
+        def _setup_modal() -> None:
+            self._capture_modal_input_snapshot()
+            self._plugin_popup_state = {
+                "title": title,
+                "detail": detail,
+                "choices": choices,
+                "selected": 0,
+                "response_queue": response_queue,
+            }
+            self._plugin_popup_deadline = _time.monotonic() + timeout
+            self._invalidate()
+
+        def _teardown_modal() -> None:
+            self._plugin_popup_state = None
+            self._plugin_popup_deadline = 0
+            self._restore_modal_input_snapshot()
+            self._invalidate()
+
+        def _run_on_app_loop(fn) -> bool:
+            if in_main_thread or app_loop is None:
+                fn()
+                return True
+            ready = threading.Event()
+
+            def _wrapped() -> None:
+                try:
+                    fn()
+                finally:
+                    ready.set()
+
+            try:
+                app_loop.call_soon_threadsafe(_wrapped)
+            except Exception:
+                return False
+            return ready.wait(timeout=5)
+
+        if not _run_on_app_loop(_setup_modal):
+            return None
+        try:
+            result = self._poll_modal_queue(
+                response_queue, "_plugin_popup_deadline", refresh=5.0, paint=self._invalidate)
+            if result is not _TIMED_OUT:
+                _run_on_app_loop(_teardown_modal)
+                return result
+        finally:
+            if self._plugin_popup_state is not None:
+                _run_on_app_loop(_teardown_modal)
+        return None
+
+    def _submit_plugin_popup_response(self, value: str | None) -> None:
+        state = self._plugin_popup_state
+        if not state:
+            return
+        state["response_queue"].put(value)
+        self._plugin_popup_state = None
+        self._plugin_popup_deadline = 0
         self._invalidate()
 
     def _normalize_slash_confirm_choice(
@@ -1279,6 +1366,11 @@ class CLIModalMixin:
                 self._cancel_secret_capture()
             except Exception:
                 self._secret_state = None
+        if self._plugin_popup_state:
+            _put(self._plugin_popup_state, "escape")
+            self._plugin_popup_state = None
+            self._plugin_popup_deadline = 0
+            self._restore_modal_input_snapshot()
 
     def _submit_secret_response(self, value: str) -> None:
         if not self._secret_state:

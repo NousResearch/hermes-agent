@@ -185,6 +185,87 @@ class CLITuiMixin:
         panel.row('class:approval-cmd', footer)
         return panel.close()
 
+    def _get_plugin_popup_display_fragments(self):
+        """Render the model-walker plugin popup: a harness-owned countdown panel.
+
+        Deliberately styled apart from the approval panel (its own border/title/desc classes) so
+        the operator never reads it as model output. Choices carry their own key labels.
+        """
+        from cli import _panel_box_width, _wrap_panel_text_keep_ws
+        state = self._plugin_popup_state
+        if not state:
+            return []
+        wrap = _wrap_panel_text_keep_ws
+        title = state.get("title") or t("cli.tui.plugin_popup_title")
+        detail = state.get("detail") or ""
+        choices = state.get("choices") or []
+        selected = state.get("selected", 0)
+        footer = t("cli.tui.plugin_popup_footer")
+        choice_labels = [
+            f"{'❯' if idx == selected else ' '} {label} — {desc}"
+            for idx, (_value, label, desc) in enumerate(choices)]
+
+        preview_lines = [w for line in detail.splitlines() for w in wrap(line, 72)]
+        preview_lines.extend(w for _i, w in _wrap_rows(wrap, choice_labels, 72, "    "))
+        preview_lines.append(footer)
+        box_width = _panel_box_width(title, preview_lines, min_width=56, max_width=86)
+        inner_text_width = max(8, box_width - 2)
+        detail_wrapped = [w for line in detail.splitlines() for w in wrap(line, inner_text_width)]
+        choice_wrapped = _wrap_rows(wrap, choice_labels, inner_text_width, "    ")
+
+        chrome_full = 6
+        available = max(0, _term_rows() - _PANEL_RESERVED_BELOW)
+        max_detail_rows = min(8, max(1, available - chrome_full - len(choice_wrapped)))
+        if len(detail_wrapped) > max_detail_rows:
+            detail_wrapped = detail_wrapped[:max(1, max_detail_rows - 1)] + [t("cli.tui.detail_truncated")]
+
+        panel = _Panel('class:plugin-popup-border', box_width)
+        panel.row('class:plugin-popup-title', title)
+        panel.blank()
+        for wrapped in detail_wrapped:
+            panel.row('class:plugin-popup-desc', wrapped)
+        panel.blank()
+        for idx, wrapped in choice_wrapped:
+            style = 'class:plugin-popup-selected' if idx == selected else 'class:plugin-popup-choice'
+            panel.row(style, wrapped)
+        panel.blank()
+        panel.row('class:plugin-popup-cmd', footer)
+        return panel.close()
+
+    # ── model-walker plugin popup key handlers ────────────────────────────────────
+    def _tui_plugin_popup_up(self, event=None) -> None:
+        state = self._plugin_popup_state
+        if state:
+            choices = state.get("choices") or []
+            if choices:
+                state["selected"] = (state.get("selected", 0) - 1) % len(choices)
+                self._invalidate()
+
+    def _tui_plugin_popup_down(self, event=None) -> None:
+        state = self._plugin_popup_state
+        if state:
+            choices = state.get("choices") or []
+            if choices:
+                state["selected"] = (state.get("selected", 0) + 1) % len(choices)
+                self._invalidate()
+
+    def _tui_plugin_popup_enter(self, event=None) -> None:
+        state = self._plugin_popup_state
+        if not state:
+            return
+        choices = state.get("choices") or []
+        idx = state.get("selected", 0)
+        if 0 <= idx < len(choices):
+            self._submit_plugin_popup_response(choices[idx][0])
+
+    def _tui_plugin_popup_escape(self, event=None) -> None:
+        self._submit_plugin_popup_response("escape")
+
+    def _tui_plugin_popup_choice(self, value: str):
+        def _handler(event=None) -> None:
+            self._submit_plugin_popup_response(value)
+        return _handler
+
     def _get_approval_display_fragments(self):
         """Render the dangerous-command approval panel.
 
@@ -401,6 +482,7 @@ class CLITuiMixin:
         connection_widget=None,
         approval_widget,
         slash_confirm_widget=None,
+        plugin_popup_widget=None,
         clarify_widget,
         model_picker_widget=None,
         command_palette_widget=None,
@@ -422,6 +504,7 @@ class CLITuiMixin:
             connection_widget,
             approval_widget,
             slash_confirm_widget,
+            plugin_popup_widget,
             clarify_widget,
             model_picker_widget,
             command_palette_widget,
@@ -750,6 +833,7 @@ class CLITuiMixin:
         ("_secret_state", "_secret_deadline", "cli.tui.hint_secret"),
         ("_approval_state", "_approval_deadline", "cli.tui.hint_approval"),
         ("_slash_confirm_state", "_slash_confirm_deadline", "cli.tui.hint_slash_confirm"),
+        ("_plugin_popup_state", "_plugin_popup_deadline", "cli.tui.hint_plugin_popup"),
     )
     # Connection-setup phase (protocol id) → hint catalog key.
     _TUI_CONNECTION_HINT_KEYS = {
@@ -812,6 +896,8 @@ class CLITuiMixin:
             return ""
         if self._slash_confirm_state:
             return t("cli.tui.placeholder_choice")
+        if self._plugin_popup_state:
+            return ""
         if self._clarify_freetext:
             return t("cli.tui.placeholder_answer")
         if self._clarify_state:
@@ -867,7 +953,7 @@ class CLITuiMixin:
             return
         # Don't START recording during interactive prompts.
         if (self._clarify_state or self._sudo_state or self._approval_state
-                or self._slash_confirm_state or self._connection_state):
+                or self._slash_confirm_state or self._plugin_popup_state or self._connection_state):
             return
         # Cut TTS so the user can start talking: stop_playback() just terminates a subprocess;
         # the stop event drains the streaming pipeline if one is live.
@@ -1611,6 +1697,15 @@ class CLITuiMixin:
             buf.reset()
             event.app.invalidate()
             return True
+        if self._plugin_popup_state:
+            # Enter submits the highlighted choice (the plugin's "switch" row by convention).
+            choices = self._plugin_popup_state.get("choices") or []
+            selected = self._plugin_popup_state.get("selected", 0)
+            choice = choices[selected][0] if 0 <= selected < len(choices) else None
+            self._submit_plugin_popup_response(choice or "escape")
+            buf.reset()
+            event.app.invalidate()
+            return True
         if self._model_picker_state:
             try:
                 # Picker selections follow the same session-scoped default as /model <name>
@@ -1833,7 +1928,8 @@ class CLITuiMixin:
     def _tui_hint_height(self):
         if (
             self._sudo_state or self._secret_state or self._approval_state or self._connection_state
-            or self._slash_confirm_state or self._clarify_state or self._command_running):
+            or self._slash_confirm_state or self._plugin_popup_state or self._clarify_state
+            or self._command_running):
             return 1
         # Keep a spacer while the agent runs on roomy terminals; reclaim the row on narrow screens.
         return self._agent_spacer_height()
@@ -1880,6 +1976,8 @@ class CLITuiMixin:
         # Destructive slash-command confirmations (/new, /clear, /undo) are answered through the
         # composer, not raw input(), so the labels stay visible and Enter can't EOF the app.
         self._slash_confirm_state = None
+        self._plugin_popup_state = None
+        self._plugin_popup_deadline = 0
         self._slash_confirm_deadline = 0
         self._command_running = False
         self._command_blocks_input = False
@@ -2052,8 +2150,8 @@ class CLITuiMixin:
         _palette = Condition(lambda: bool(self._command_palette_state))
         kb.add('c-p', filter=Condition(
             lambda: not self._command_palette_state and not self._model_picker_state and not self._clarify_state
-            and not self._approval_state and not self._slash_confirm_state and not self._sudo_state
-            and not self._secret_state and not self._connection_state
+            and not self._approval_state and not self._slash_confirm_state and not self._plugin_popup_state
+            and not self._sudo_state and not self._secret_state and not self._connection_state
         ))(self._tui_open_command_palette)
         kb.add('up', filter=_palette)(self._tui_command_palette_up)
         kb.add('down', filter=_palette)(self._tui_command_palette_down)
@@ -2069,6 +2167,17 @@ class CLITuiMixin:
         for _num in range(10):
             _idx = 9 if _num == 0 else _num - 1
             kb.add(str(_num), filter=_slash_confirm)(self._tui_make_slash_confirm_number_handler(_idx))
+
+        # model-walker plugin popup: harness-owned countdown modal with its own key set.
+        # Enter = selected choice (switch), ESC = dismiss, N = disable, D = delay. Arrow keys
+        # move the highlight; the panel's own footer spells out the four keys.
+        _plugin_popup = Condition(lambda: bool(self._plugin_popup_state))
+        kb.add('up', filter=_plugin_popup)(self._tui_plugin_popup_up)
+        kb.add('down', filter=_plugin_popup)(self._tui_plugin_popup_down)
+        kb.add('enter', filter=_plugin_popup)(self._tui_plugin_popup_enter)
+        kb.add('escape', filter=_plugin_popup, eager=True)(self._tui_plugin_popup_escape)
+        kb.add('n', filter=_plugin_popup)(self._tui_plugin_popup_choice('disable'))
+        kb.add('d', filter=_plugin_popup)(self._tui_plugin_popup_choice('delay'))
 
     def _tui_voice_record_key_sequence(self) -> tuple:
         """Resolve the push-to-talk key (voice.record_key, default Ctrl+B) to a prompt_toolkit
@@ -2150,6 +2259,8 @@ class CLITuiMixin:
         approval_widget = self._tui_overlay_widget(self._get_approval_display_fragments, "_approval_state")
         slash_confirm_widget = self._tui_overlay_widget(
             self._get_slash_confirm_display_fragments, "_slash_confirm_state")
+        plugin_popup_widget = self._tui_overlay_widget(
+            self._get_plugin_popup_display_fragments, "_plugin_popup_state")
         model_picker_widget = self._tui_overlay_widget(
             self._get_model_picker_display_fragments, "_model_picker_state")
         command_palette_widget = self._tui_overlay_widget(
@@ -2191,6 +2302,7 @@ class CLITuiMixin:
             connection_widget=connection_widget,
             approval_widget=approval_widget,
             slash_confirm_widget=slash_confirm_widget,
+            plugin_popup_widget=plugin_popup_widget,
             clarify_widget=clarify_widget,
             model_picker_widget=model_picker_widget,
             command_palette_widget=command_palette_widget,
@@ -2332,6 +2444,14 @@ class CLITuiMixin:
             'approval-cmd': '#AAAAAA italic',
             'approval-choice': '#AAAAAA',
             'approval-selected': '#FFD700 bold',
+            # model-walker plugin popup: a harness-owned panel, visually distinct from the
+            # approval orange so the operator never reads it as model output.
+            'plugin-popup-border': '#4FC3F7',
+            'plugin-popup-title': '#4FC3F7 bold',
+            'plugin-popup-desc': '#E0F7FA',
+            'plugin-popup-cmd': '#90CAF9 italic',
+            'plugin-popup-choice': '#B0BEC5',
+            'plugin-popup-selected': '#4FC3F7 bold',
             'voice-prompt': '#87CEEB',
             'voice-recording': '#FF4444 bold',
             'voice-processing': '#FFA500 italic',

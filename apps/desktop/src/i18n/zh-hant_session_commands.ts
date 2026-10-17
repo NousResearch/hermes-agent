@@ -13,5 +13,9 @@ export const zhHantSessionCommands = {
   queued: (preview: string) => `已排入佇列：「${preview}」`,
   queueFailed: '無法將訊息排入佇列',
   countOne: (count: string) => `${count} 則排隊訊息`,
-  countOther: (count: string) => `${count} 則排隊訊息`
+  countOther: (count: string) => `${count} 則排隊訊息`,
+  queueEditKeptTitle: '排隊訊息未變更',
+  queueEditKept: '在儲存編輯之前它已開始或被拒絕。編輯後的文字仍在輸入框中。',
+  queueEditUnconfirmedTitle: '編輯未確認',
+  queueEditUnconfirmed: 'Hermes 無法確認你的編輯。再次儲存將重試同一編輯，不會重複排隊。'
 }

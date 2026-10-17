@@ -22,6 +22,7 @@ from unittest.mock import patch
 
 from gateway.config import Platform
 from gateway.run import GatewayRunner
+from gateway import kanban_watchers_notifier as notifier
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
@@ -83,5 +84,20 @@ def test_zero_sub_board_is_never_opened_writable(tmp_path, monkeypatch):
 
     spy_connect.assert_not_called()
     assert adapter.sent == []
+
+
+def test_zero_sub_probe_reuses_its_reader_between_ticks(tmp_path, monkeypatch):
+    """Regression for #137446: an idle board keeps one read-only SQLite handle."""
+    db_path = tmp_path / "zero-subs.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    with patch.object(kbn.sqlite3, "connect", wraps=kbn.sqlite3.connect) as connect:
+        probe = notifier._NotifierSubscriptionProbe()
+        assert probe.count(board=None, notifier_profiles={"default"}, include_unowned=False) == 0
+        assert probe.count(board=None, notifier_profiles={"default"}, include_unowned=False) == 0
+        probe.close()
+
+    assert connect.call_count == 1
 
 

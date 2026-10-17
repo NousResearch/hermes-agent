@@ -138,6 +138,35 @@ def test_build_models_payload_returns_expected_shape():
     assert payload["providers"][1:] == rows
 
 
+def test_build_models_payload_keeps_spaced_moa_preset_names():
+    """MoA preset names are config keys, not cloud model ids: ``_validate_moa`` accepts
+    spaces, so the picker's whitespace filter must not drop them (#134864)."""
+    rows = [
+        {"slug": "openrouter", "name": "OpenRouter", "models": ["m1"],
+         "total_models": 1, "is_current": True, "is_user_defined": False,
+         "source": "built-in"},
+    ]
+    ctx = _empty_ctx(provider="openrouter", model="m1", base_url="")
+    raw_config = {
+        "moa": {
+            "presets": {
+                "default": {"enabled": True},
+                "Opus: GPT+GLM+DeepSeek": {"enabled": True},
+            },
+        },
+    }
+    with (
+        _list_auth_returning(rows),
+        patch("hermes_cli.config.read_raw_config", return_value=raw_config),
+        patch("hermes_cli.config.load_config", return_value=raw_config),
+    ):
+        payload = build_models_payload(ctx)
+    moa_row = payload["providers"][0]
+    assert moa_row["slug"] == "moa"
+    assert moa_row["models"] == ["default", "Opus: GPT+GLM+DeepSeek"]
+    assert moa_row["total_models"] == 2
+
+
 def test_build_models_payload_hides_moa_without_raw_preset():
     """Strict opt-in (#63353): no ``moa`` row when the raw config has no enabled preset —
     the DEFAULT_CONFIG ``default`` preset everyone gets via ``load_config()`` is not a user choice."""

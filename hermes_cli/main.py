@@ -565,24 +565,6 @@ def _under_gateway_supervisor(argv: list) -> bool:
     ).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _s6_supervised_gateway_run(argv: list) -> bool:
-    """A bare ``gateway run`` inside the s6 image names the ``gateway-default`` slot too.
-
-    ``_maybe_redirect_run_to_s6_supervision`` turns it into a start of the supervised slot for the
-    current profile, and it is the image's own CMD. Following the sticky ``active_profile`` there
-    started that profile's named slot on every container boot: the one the boot reconciler just
-    registered down, because a started named slot is a second gateway beside the multiplexer.
-    ``--no-supervise`` keeps the foreground run, which follows ``active_profile`` as before (#22502).
-    """
-    words = [a for a in argv if not a.startswith("-")]
-    if words[:2] != ["gateway", "run"] or "--no-supervise" in argv:
-        return False
-    if os.environ.get("HERMES_GATEWAY_NO_SUPERVISE", "").lower() in ("1", "true", "yes"):
-        return False
-    from hermes_cli.service_manager import _s6_running
-    return _s6_running()
-
-
 def explicit_cli_profile() -> str | None:
     """Profile named by a consumed ``-p``/``--profile`` flag, else None.
 
@@ -609,9 +591,19 @@ def _apply_profile_override() -> None:
     if profile_name is None and hermes_home_env and Path(hermes_home_env).parent.name == "profiles":
         return
 
+    # A HERMES_HOME exported by the user's own interactive shell is direct
+    # intent — "operate THIS home" — and must not be silently rewritten to the
+    # sticky profile (mcp add/list then read/write the wrong config.yaml,
+    # #137656). Machine-set values (systemd's hardcoded root from #22502, cron,
+    # containers, spawned children) carry no controlling stdin and keep the
+    # sticky-profile behaviour. An explicit -p flag is unaffected: it names a
+    # profile here and skips this early return.
+    if profile_name is None and hermes_home_env and _startup_fast.stdin_is_interactive():
+        return
+
     if (profile_name is None and not _under_gateway_supervisor(argv)
             and not _startup_fast.is_desktop_ssh_backend_argv(argv)
-            and not _s6_supervised_gateway_run(argv)):
+            and not _startup_fast.s6_supervised_gateway_run(argv)):
         try:
             from hermes_constants import get_default_hermes_root
 

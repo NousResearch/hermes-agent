@@ -32,6 +32,16 @@ def envelope_tool_part_cache_markers_supported(provider: str | None, base_url: s
     return not _is_litellm_route((provider or "").strip().lower(), base_url or "")
 
 
+def is_one_shot_request(messages: list[dict[str, Any]] | None, tools: list[dict[str, Any]] | None) -> bool:
+    """True for a request no later call can read back from cache: no tools, no assistant/tool
+    turns, at most one user turn (compression summaries, titles, MoA synthesis). A marker there
+    only buys a cache write (1.25x input at 5m, 2x at 1h) that nothing ever reads."""
+    if tools:
+        return False
+    roles = [m.get("role") for m in messages or [] if isinstance(m, dict)]
+    return roles.count("user") <= 1 and not any(r in ("assistant", "tool") for r in roles)
+
+
 def _text_part(text: str, cache_marker: dict | None = None) -> dict:
     part: dict = {"type": "text", "text": text}
     if cache_marker is not None:

@@ -213,9 +213,12 @@ class TestAuxFallbackReplanThreadsTtl:
             "anthropic_messages",
             "claude-opus-4.8",
         )
+        # Multi-turn: a later call can read this prefix back, so it stays cacheable.
         messages = [
             {"role": "system", "content": "You are helpful."},
             {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+            {"role": "user", "content": "next"},
         ]
         out_msgs, _ = auxiliary_client._replan_synchronous_cache_sections(
             messages, None, destination=destination
@@ -225,3 +228,27 @@ class TestAuxFallbackReplanThreadsTtl:
         assert all(m.get("ttl") == "1h" for m in markers), (
             "the configured 1h tier must reach auxiliary fallback replans"
         )
+
+    def test_replan_leaves_one_shot_unmarked_on_caching_route(self, monkeypatch):
+        """system + one user turn, no tools: nothing reads the prefix back, so a marker
+        would only pay a cache write (2x input at 1h)."""
+        from agent import auxiliary_client
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"prompt_caching": {"cache_ttl": "1h"}},
+        )
+        messages = [
+            {"role": "system", "content": "Summarize the transcript."},
+            {"role": "user", "content": "TRANSCRIPT"},
+        ]
+        for destination in (
+            auxiliary_client._FallbackDestination(
+                "anthropic", "https://api.anthropic.com", "anthropic_messages", "claude-opus-4.8"),
+            auxiliary_client._FallbackDestination(
+                "openrouter", "https://openrouter.ai/api/v1", "chat_completions", "anthropic/claude-opus-4.8"),
+        ):
+            out_msgs, _ = auxiliary_client._replan_synchronous_cache_sections(
+                messages, None, destination=destination
+            )
+            assert _collect_cache_controls(out_msgs) == [], destination.provider

@@ -178,7 +178,11 @@ def plan_launch(profile: ModelProfile, budget: HardwareBudget, *, mtp_capable: b
             and stacked_initial.window >= lean_initial.window
             and stacked.decision.window > stacked_initial.window and lean.decision.spilled):
         return stacked
-    return lean
+    # Windows are equal and the stacked posture spills — but so does the lean posture, so the
+    # larger compute buffer costs no context: the window is already at the floor (a spilled
+    # config holds FLOOR either way), leaving nothing to trade away for the ~2x prefill. Only a
+    # lean posture that is RESIDENT is worth keeping stacked off, handled by the branch above.
+    return stacked if lean.decision.spilled else lean
 
 
 def fit_to_free_memory(plan: LaunchPlan, profile: ModelProfile, live: HardwareBudget, *,

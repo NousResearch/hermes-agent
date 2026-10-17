@@ -498,6 +498,10 @@ _PYTHON_EXCEPTION_LINE_RE = re.compile(
 # a closing quote into the mask turns value corruption into SYNTAX corruption
 # (unterminated quote → shell EOF / SyntaxError).
 _AUTH_HEADER_RE = re.compile(r"((?:Proxy-)?Authorization:\s*)([A-Za-z][\w.+-]*\s+)?([^\s\"']+)", re.IGNORECASE)
+# A standalone shell expansion names a credential source, not the credential
+# itself. Keep this deliberately narrow: concatenated expansions and command
+# substitutions still redact as potentially secret values.
+_SHELL_VARIABLE_REFERENCE_RE = re.compile(r"^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})$")
 
 # API-key style headers (single opaque value, no scheme word): non-vendor-prefix
 # values would otherwise leak when a curl command is echoed into tool output.
@@ -884,6 +888,14 @@ def _redact_phone(m):
     return phone[:keep] + "****" + phone[-keep:]
 
 
+def _redact_auth_header(m: re.Match) -> str:
+    """Mask Authorization credentials while preserving pure shell references."""
+    value = m.group(3)
+    return m.group(1) + (m.group(2) or "") + (
+        value if _SHELL_VARIABLE_REFERENCE_RE.fullmatch(value) else _mask_token(value)
+    )
+
+
 def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = False,
                           file_read: bool = False, secret_file: bool = False,
                           redact_url_credentials: bool = False) -> str:
@@ -955,7 +967,7 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         text = _redact_assignments(text, mask_nonreusable=file_read)
 
     if "uthorization" in text or "UTHORIZATION" in text:  # cheapest gate over every casing
-        text = _AUTH_HEADER_RE.sub(lambda m: m.group(1) + (m.group(2) or "") + _mask_token(m.group(3)), text)
+        text = _AUTH_HEADER_RE.sub(_redact_auth_header, text)
 
     if ":" in text:
         text = _SECRET_HEADER_RE.sub(lambda m: m.group(1) + _mask_token(m.group(2)), text)

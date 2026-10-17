@@ -139,6 +139,33 @@ class TestFormatMessageCodeBlocks:
         # \\ in input → \\\\ in output (each \ escaped once)
         assert r"`\\\\server\\share`" in result
 
+    def test_quoted_triple_backticks_do_not_steal_a_real_fence(self, adapter):
+        r"""A ``` run quoted inside a line must not swallow the block below it.
+
+        Tool-progress lines routinely quote a triple-backtick pattern (a search
+        pattern, a grep of a fenced block). Such a run was read as a fence
+        opener and closed by the next real fence: the following lines and the
+        block whose closing fence it stole were swallowed into one <pre>, while
+        the intended block arrived as escaped literal backticks.
+        """
+        text = "⚙️ pattern a|```|b\nsecond line\n```\nls -la\n```"
+        result = adapter.format_message(text)
+        # The real block below survives as a block...
+        assert "```\nls -la\n```" in result
+        assert result.count("```") == 2
+        # ...the quoted run is escaped literal text, and the line between them
+        # is still prose above the block rather than part of it.
+        assert r"\`\`\`" in result
+        assert "second line" in result
+        assert result.index("second line") < result.index("```")
+
+    def test_quoted_run_elsewhere_leaves_lead_in_fence_protected(self, adapter):
+        r"""A quoted run earlier in the message must not stop a later block whose
+        opener carries lead-in prose from being protected."""
+        text = "⚙️ a|```|b then\nHere is the code: ```python\nprint('hi')\n```"
+        result = adapter.format_message(text)
+        assert "```python\nprint('hi')\n```" in result
+
     def test_inline_triple_backticks_not_treated_as_fence(self, adapter):
         r"""Inline ``` spans must not be swallowed by the fenced-block regex.
 

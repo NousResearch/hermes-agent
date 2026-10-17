@@ -5644,6 +5644,15 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         #    sit on its own line (any indent), with optional trailing
         #    whitespace and an optional ``\r`` so CRLF-terminated fences
         #    (Windows-authored content) match too.
+        #    Ordered passes, most-unambiguous opener first, so a run that cannot
+        #    plausibly open a block cannot steal the closing fence of one that
+        #    can. "Preceded by lead-in prose" also describes a triple-backtick
+        #    run *quoted inside* a line of text — a progress line printing a
+        #    search pattern, a sentence about fence syntax — and such a run was
+        #    read as an opener and closed by the next real fence: everything
+        #    between the two, including the block whose closing fence it stole,
+        #    was swallowed into one <pre> while the intended block arrived as
+        #    escaped literal backticks.
         def _protect_fenced(m):
             prefix = m.group(1)   # lead-in text / indent before the opening fence
             opening = m.group(2)  # opening ``` (with optional language) and newline
@@ -5652,12 +5661,20 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             body = body.replace('\\', '\\\\').replace('`', '\\`')
             return prefix + _ph(opening + body + closing)
 
-        text = re.sub(
-            r'(?m)^((?:(?!```)[^\n])*)(```[^`\n]*\n)([\s\S]*?)(^[ \t]*```)[ \t]*\r?$',
-            _protect_fenced,
-            text,
-        )
-
+        # ``tag_tail``: the run ends the line, optionally with a language tag (``python``,
+        # ``text/plain``, ``rust,ignore``). Any other backtick-free tail is prose, not an info
+        # string, so it only gets the last pass.
+        _tag_tail = r'```[A-Za-z0-9_+.#/:=,-]*[ \t]*'
+        for _prefix, _tail in (
+            (r'([ \t]*)', _tag_tail),                        # fence on its own line
+            (r'((?:(?!```)[^\n])*)', _tag_tail),             # after lead-in prose, tag-shaped tail
+            (r'((?:(?!```)[^\n])*)', r'```[^`\n]*'),         # backwards-compatible catch-all
+        ):
+            text = re.sub(
+                rf'(?m)^{_prefix}({_tail}\n)([\s\S]*?)(^[ \t]*```)[ \t]*\r?$',
+                _protect_fenced,
+                text,
+            )
         # 2) Protect inline code (`...`)
         #    Escape \ inside inline code per MarkdownV2 spec.
         text = re.sub(

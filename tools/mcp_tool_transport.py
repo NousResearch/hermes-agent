@@ -414,9 +414,10 @@ class MCPServerTransportMixin:
         # "before" snapshot ahead of both spawns, so each delta held BOTH children and stopping one server
         # reaped the other's live process as its orphan (#58414). Held for the spawn only, not the handshake.
         spawn_lock = _stdio_spawn_lock()
-        await spawn_lock.acquire()
-        spawn_locked = True
+        spawn_locked = False
         try:
+            await spawn_lock.acquire()
+            spawn_locked = True
             pids_before = _lifecycle._snapshot_child_pids()  # so the new child can be identified after spawn
             async with _core.stdio_client(server_params, errlog=stderr.sink) as (read_stream, write_stream):
                 # New PIDs for force-kill cleanup, minus non-MCP children (slash_worker, LSP) racing

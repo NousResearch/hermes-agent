@@ -23,8 +23,9 @@ Hermes keeps its working-set core tools (`terminal`, `read_file`, `write_file`,
 may be deferred when they are named in `tools.tool_search.defer`; the shipped
 curated list covers tools such as `computer_use`, `session_search`, and selected
 desktop helpers. MCP and non-core plugin tools remain eligible automatically.
-An explicit `defer` list replaces the curated list, and `defer: []` keeps every
-tool eager.
+An explicit `defer` list replaces the curated list. `defer: []` removes explicit
+built-in deferrals; MCP and non-core plugin eligibility is unchanged. The optional
+owned-worker overlay below takes precedence over this list.
 :::
 
 ## How it works
@@ -101,16 +102,47 @@ tiers on the next assembly.
 
 ## Configuration
 
+### Owned Kanban workers (opt-in)
+
+Set `tools.tool_search.kanban_worker_policy` to `narrow` to change disclosure only
+for a dispatcher-owned worker with a nonblank owned task ID:
+
+```sh
+hermes config set tools.tool_search.kanban_worker_policy narrow
+```
+
+The default is `off`; unknown or malformed values safely act as `off`. Merely
+enabling the Kanban toolset is not ownership. Interactive sessions, delegated
+children (including subprocess markers), cron/non-dispatcher contexts and
+missing, blank or whitespace-only task IDs retain baseline classification.
+
+For eligible workers, `narrow` **overlays** the configured `defer` list:
+
+- Available `kanban_complete`, `kanban_block`, `kanban_schedule`,
+  `kanban_request_review` and `kanban_request_changes` stay direct, even if named
+  in `defer`.
+- Available `kanban_attach`, `kanban_attach_url`, `kanban_attachments`,
+  `kanban_comment`, `kanban_heartbeat`, `kanban_link` and `kanban_unblock` defer
+  through the normal search/describe/call bridge, even with `defer: []`.
+- `kanban_create`, `kanban_show`, `kanban_list` and unrelated tools retain their
+  configured/baseline classification.
+
+This does not enable missing tools, grant board/orchestrator access or change
+ownership, approvals, argument validation, dispatch or terminal handoff behavior.
+`tools.tool_search.enabled: off` remains pass-through, including when the worker
+policy is `narrow`. These are disclosure rules, not measured billing or speed claims.
+
 ```yaml
 tools:
   tool_search:
     enabled: auto       # auto (default), on, or off
+    kanban_worker_policy: off  # off (default), or narrow for owned workers only
     threshold_pct: 5    # listing budget as a percentage of context
     search_default_limit: 5
     max_search_limit: 25
     listing: auto       # embed a grouped name+description catalog manifest
     listing_max_tokens: 4000
-    defer:              # replace the curated default; [] keeps every tool eager
+    defer:              # replace curated built-in deferrals; narrow overlays this
       - computer_use
       - session_search
       - image_generate
@@ -132,7 +164,8 @@ shipped curated set; the runtime fallback uses the same value.
 | `max_search_limit` | `25` | Hard upper bound the model can request via `limit` (per query). Range 1–50. |
 | `listing` | `auto` | Embed a skills-style manifest of every deferred tool (name + first sentence of its description, ≤60 chars, grouped by MCP server) in the `tool_search` bridge description. `auto` includes it when it fits the budget (falling back to names-only, then to the tier-2 server summary); `on`/`off` force either way. |
 | `listing_max_tokens` | `4000` | Absolute cap on the embedded listing, regardless of context size. Range 200–60000. Large catalogs degrade to names-only or per-server summaries, keeping full schemas available through search. |
-| `defer` | Curated list | Tool names replaced by the bridge by default. The list may include cold built-in tools as well as MCP/plugin tools; an explicit list replaces it, and `[]` disables deferral for every tool. |
+| `defer` | Curated list | An explicit list replaces the curated built-in deferrals; `[]` removes explicit built-in deferrals. MCP and non-core plugin tools remain automatically eligible. The owned-worker `narrow` policy overlays this list. |
+| `kanban_worker_policy` | `off` | `narrow` overlays disclosure only for dispatcher-owned workers with a nonblank owned task ID; other contexts retain baseline classification. |
 
 Per-call array caps are internal safety bounds, not configuration. Over-cap
 calls return an error so the model can retry with a smaller batch.

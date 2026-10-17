@@ -51,10 +51,16 @@ class ToolSearchConfig:
     listing_max_tokens: int = 4000  # budget = min(this, threshold_pct% of context)
     # None = curated default; an explicit list replaces it wholesale ([] = defer no core tools).
     defer_tools: Optional[frozenset] = None
+    kanban_worker_policy: str = "off"  # "off" | "narrow", owned dispatcher workers only
 
     @property
     def effective_defer_tools(self) -> frozenset:
-        return _DEFAULT_DEFERRED_TOOLS if self.defer_tools is None else self.defer_tools
+        deferred = _DEFAULT_DEFERRED_TOOLS if self.defer_tools is None else self.defer_tools
+        from agent.delegation_context import owned_kanban_task
+
+        if self.kanban_worker_policy == "narrow" and owned_kanban_task():
+            return (deferred | _WORKER_DEFERRED_TOOLS) - _WORKER_DIRECT_TOOLS
+        return deferred
 
     @classmethod
     def from_raw(cls, raw: Any) -> ToolSearchConfig:
@@ -80,6 +86,7 @@ class ToolSearchConfig:
             max_search_limit=max_search_limit,
             listing=_tri_state(raw.get("listing", "auto")),
             listing_max_tokens=_clamped_int(raw.get("listing_max_tokens"), 4000, 200, 60000),
+            kanban_worker_policy="narrow" if raw.get("kanban_worker_policy") == "narrow" else "off",
             defer_tools=(frozenset(str(n).strip() for n in defer_raw if str(n).strip())
                          if isinstance(defer_raw, (list, tuple, set)) else None))
 
@@ -145,13 +152,30 @@ _DIRECT_SURFACE_TOOLSETS = CLIENT_SURFACE_TOOLSETS | TOOLSET_SESSION_PLATFORMS.k
 # ask-the-user affordance must be ambient, a stub is not enough.
 _DEFAULT_DEFERRED_TOOLS = frozenset(DEFAULT_CONFIG["tools"]["tool_search"]["defer"])
 
+_WORKER_DIRECT_TOOLS = frozenset({
+    "kanban_complete", "kanban_block", "kanban_schedule",
+    "kanban_request_review", "kanban_request_changes",
+})
+_WORKER_DEFERRED_TOOLS = frozenset({
+    "kanban_attach", "kanban_attach_url", "kanban_attachments", "kanban_comment",
+    "kanban_heartbeat", "kanban_link", "kanban_unblock",
+})
 
-def is_deferrable_tool_name(name: str, defer_tools: Optional[frozenset] = None) -> bool:
+
+def is_deferrable_tool_name(name: str, defer_tools: Optional[frozenset] = None, *,
+                            config: Optional[ToolSearchConfig] = None) -> bool:
     """True if a tool is *eligible* for deferral: named in ``defer_tools`` (curated set or
     user override), OR an MCP tool, OR neither core nor a session-gated GUI surface (i.e. a
     plugin tool). Bridge names never defer."""
     if name in BRIDGE_TOOL_NAMES:
         return False
+    if config is not None:
+        defer_tools = config.effective_defer_tools
+    if config is not None and config.kanban_worker_policy == "narrow":
+        from agent.delegation_context import owned_kanban_task
+
+        if name in _WORKER_DIRECT_TOOLS and owned_kanban_task():
+            return False
     if defer_tools is not None and name in defer_tools:
         return True
     if name in _core_tool_names():
@@ -167,6 +191,7 @@ def _tool_def_names(tool_defs: Iterable[dict[str, Any]]) -> Iterable[str]:
 
 
 def classify_tools(tool_defs: list[dict[str, Any]], defer_tools: Optional[frozenset] = None,
+                   *, config: Optional[ToolSearchConfig] = None,
                    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Split a tool-defs list into (visible, deferrable); bridge tools are dropped (re-added
     after classification)."""
@@ -174,13 +199,15 @@ def classify_tools(tool_defs: list[dict[str, Any]], defer_tools: Optional[frozen
     deferrable: list[dict[str, Any]] = []
     for td, name in zip(tool_defs, _tool_def_names(tool_defs)):
         if name not in BRIDGE_TOOL_NAMES:
-            (deferrable if is_deferrable_tool_name(name, defer_tools) else visible).append(td)
+            (deferrable if is_deferrable_tool_name(name, defer_tools, config=config) else visible).append(td)
     return visible, deferrable
 
 
-def _deferrable_in(tool_defs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _deferrable_in(tool_defs: list[dict[str, Any]],
+                   config: Optional[ToolSearchConfig] = None) -> list[dict[str, Any]]:
     """Deferrable subset of pre-assembly ``tool_defs`` under the read-only user config."""
-    return classify_tools(tool_defs, load_config_readonly().effective_defer_tools)[1]
+    config = config or load_config_readonly()
+    return classify_tools(tool_defs, config=config)[1]
 
 
 def estimate_tokens_from_schemas(tool_defs: Iterable[dict[str, Any]]) -> int:
@@ -339,7 +366,7 @@ def assemble_tool_defs(tool_defs: list[dict[str, Any]], *, context_length: Optio
     config = config or load_config()
     incoming = [td for td, name in zip(tool_defs, _tool_def_names(tool_defs))
                 if name not in BRIDGE_TOOL_NAMES]
-    visible, deferrable = classify_tools(incoming, config.effective_defer_tools)
+    visible, deferrable = classify_tools(incoming, config.effective_defer_tools, config=config)
     connections_granted = connections_in_scope(incoming)
     if not deferrable:
         if should_activate(config, 0, context_length, connections_granted=connections_granted):
@@ -430,7 +457,7 @@ def _string_list_arg(args: dict[str, Any], key: str, *, dedupe: bool, max_items:
 def dispatch_tool_search(args: dict[str, Any], *, current_tool_defs: list[dict[str, Any]],
                          config: Optional[ToolSearchConfig] = None,
                          connector_search: Optional[Any] = None, call: Optional[Any] = None) -> str:
-    config = config or load_config()
+    config = config or load_config_readonly()
     queries, err = _string_list_arg(args, "queries", dedupe=False, max_items=_MAX_QUERIES_PER_CALL,
                                     retry_hint="Retry with fewer, more targeted queries.")
     if err:
@@ -439,7 +466,7 @@ def dispatch_tool_search(args: dict[str, Any], *, current_tool_defs: list[dict[s
     raw_limit = args.get("limit")
     limit = (config.search_default_limit if raw_limit is None
              else _clamped_int(raw_limit, config.search_default_limit, 1, config.max_search_limit))
-    catalog = build_catalog(_deferrable_in(current_tool_defs))
+    catalog = build_catalog(_deferrable_in(current_tool_defs, config))
     remote_entries: list[list[CatalogEntry]] = [[] for _ in queries]
     hosted_failure: Optional[str] = None
     if connections_in_scope(current_tool_defs):
@@ -493,7 +520,7 @@ def dispatch_tool_describe(args: dict[str, Any], *, current_tool_defs: list[dict
         retry_hint="Retry with fewer names per call.")
     if err:
         return err
-    deferrable = _deferrable_in(current_tool_defs)
+    deferrable = _deferrable_in(current_tool_defs, config)
     by_name = {name: _fn(td) for td, name in zip(deferrable, _tool_def_names(deferrable)) if name}
     remote_schemas, hosted_failure = remote_schemas_for(names, current_tool_defs, connector_describe, call=call)
 
@@ -513,7 +540,7 @@ def dispatch_tool_describe(args: dict[str, Any], *, current_tool_defs: list[dict
         elif is_connector_name(name):
             (undescribed if hosted_failure else not_found).append(name)
         elif _registry_entry(name) is not None and not is_deferrable_tool_name(
-            name, load_config_readonly().effective_defer_tools):
+            name, config=config):
             # Registered but bridge/core/GUI-surface: a real name, wrong door.
             errors[name] = not_deferrable_error(name)
         else:
@@ -533,9 +560,7 @@ def scoped_deferrable_names(tool_defs: list[dict[str, Any]]) -> frozenset[str]:
     """Deferrable names in the *pre-assembly* ``tool_defs`` of the session scope — the
     universe ``tool_call`` may reach. Gates bridge dispatch AND the executor unwrap so a
     restricted session cannot invoke an out-of-scope tool via the bridge."""
-    defer_tools = load_config_readonly().effective_defer_tools
-    return frozenset(n for n in _tool_def_names(tool_defs)
-                     if n and is_deferrable_tool_name(n, defer_tools))
+    return frozenset(n for n in _tool_def_names(_deferrable_in(tool_defs)) if n)
 
 
 def out_of_scope_reason(name: str) -> Optional[str]:
@@ -580,7 +605,7 @@ def resolve_underlying_call(args: dict[str, Any]) -> tuple[Optional[str], dict[s
 
     name = entries[0]["name"]
     raw_args = entries[0]["arguments"]
-    if not is_deferrable_tool_name(name, load_config_readonly().effective_defer_tools):
+    if not is_deferrable_tool_name(name, config=load_config_readonly()):
         return None, {}, not_deferrable_error(name)
     return name, raw_args, None
 

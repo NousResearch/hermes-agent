@@ -150,9 +150,11 @@ def usage_frame(stats: dict) -> dict:
     placeholder for as long as the frame carries the counters alone. Publishing both serves every
     viewer from one frame, and leaves the counters untouched for every existing consumer.
 
-    ``usage`` is the embedded ticker's ``server._get_usage`` view (same keys, same rules, same
-    omissions; ``avg_latency_s`` / ``avg_tps`` are rounded from the counters' two decimals), so a
-    Desktop bundle that reads only ``payload.usage`` fills its meters here too. The
+    ``usage`` is the standard status-bar projection of the embedded ticker's ``server._get_usage``
+    view, with two exceptions: ``dev_credits_spent_micros`` (``HERMES_DEV_CREDITS`` only) is not
+    carried, and ``avg_latency_s`` / ``avg_tps`` are rounded from the counters' two decimals rather
+    than the raw values, so they can differ by 0.1 at a rounding boundary. A Desktop bundle that
+    reads only ``payload.usage`` fills its meters here too. The
     top-level counters on this event are deprecated: new viewers read ``usage`` (or call
     ``session.stats`` for the counters). Before they can be dropped, these readers must move off
     them: the classic CLI's ``SessionState.apply_event`` → ``GatewayAgent.apply_session_usage``,

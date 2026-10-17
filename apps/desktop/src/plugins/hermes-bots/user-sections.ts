@@ -32,10 +32,13 @@ import type { BotMeta, GroupChat, RosterRow } from './types'
 /** The one section-name dialog's state: New section (optionally filing the
  *  bot or group whose menu opened it) or Rename. */
 export type SectionDialogState =
-  null | { bot?: RosterRow; group?: string; mode: 'create' } | { id: string; mode: 'rename'; name: string }
+  | null
+  | { bot?: RosterRow; group?: string; mode: 'create'; scope: 'bot' | 'group' }
+  | { id: string; mode: 'rename'; name: string; scope: 'bot' | 'group' }
 
 export const UNASSIGNED_SECTION_KEY = 'section:unassigned'
 export const BOT_SECTIONS_KEY = 'bot-sections-v1'
+export const GROUP_CHAT_SECTIONS_KEY = 'group-chat-sections-v1'
 
 export interface BotSection {
   id: string
@@ -44,6 +47,8 @@ export interface BotSection {
 
 /** `[{ id, name }]`, in display order. */
 export const $botSections = atom<BotSection[]>([])
+/** Categories belong to group chats only; bot folders never render here. */
+export const $groupChatSections = atom<BotSection[]>([])
 
 /** Sections whose delete is still clearing its members. A delete clears them
  *  one profile write at a time, and a slow write (a remote gateway, a pooled
@@ -109,6 +114,14 @@ export function loadBotSections(): void {
   }
 }
 
+export function loadGroupChatSections(): void {
+  try {
+    $groupChatSections.set(normalizeBotSections(getPluginCtx()?.storage?.get?.(GROUP_CHAT_SECTIONS_KEY, [])))
+  } catch {
+    $groupChatSections.set([])
+  }
+}
+
 function newSectionId(): string {
   return `sec-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
 }
@@ -130,6 +143,32 @@ export function createBotSection(name: string, bots: RosterRow[] = []): BotSecti
   return section
 }
 
+function persistGroupChatSections(next: BotSection[]): void {
+  $groupChatSections.set(next)
+
+  try {
+    getPluginCtx()?.storage?.set?.(GROUP_CHAT_SECTIONS_KEY, next)
+  } catch {
+    // Keep category changes usable for this window when plugin storage fails.
+  }
+}
+
+/** Create a category that is visible only under Group Chats. */
+export function createGroupChatSection(name: string, groups: string[] = []): BotSection | null {
+  const clean = String(name || '').trim()
+
+  if (!clean) {
+    return null
+  }
+
+  const section = { id: newSectionId(), name: clean }
+
+  persistGroupChatSections([...$groupChatSections.get(), section])
+  moveGroupChatsToSection(groups, section.id)
+
+  return section
+}
+
 export function renameBotSection(id: string, name: string, roster: RosterRow[] = []): void {
   const clean = String(name || '').trim()
 
@@ -144,6 +183,14 @@ export function renameBotSection(id: string, name: string, roster: RosterRow[] =
     (roster || []).filter(bot => botSectionId(bot, $botMeta.get()) === id),
     id
   )
+}
+
+export function renameGroupChatSection(id: string, name: string): void {
+  const clean = String(name || '').trim()
+
+  if (clean) {
+    persistGroupChatSections($groupChatSections.get().map(s => (s.id === id ? { ...s, name: clean } : s)))
+  }
 }
 
 /**
@@ -330,6 +377,12 @@ export function groupDragKey(name: string): string {
   return `${GROUP_DRAG_PREFIX}${name}`
 }
 
+/** A bot folder and a group-chat category are separate axes: never let a
+ * drag write one type's category id onto the other type's durable record. */
+export function sectionDropMatchesScope(key: string, scope: 'bot' | 'group'): boolean {
+  return scope === 'group' ? key.startsWith(GROUP_DRAG_PREFIX) : !key.startsWith(GROUP_DRAG_PREFIX)
+}
+
 /** A group's section, off the live room record. */
 export function groupChatSectionId(name: string, rooms: Record<string, GroupChat>): null | string {
   const id = rooms?.[name]?.sectionId
@@ -358,6 +411,52 @@ export function moveGroupChatsToSection(groups: string[], sectionId: null | stri
   }
 }
 
+/** Delete only the category and clear its group assignments; bot folders and
+ * their memberships are intentionally untouched. */
+export function deleteGroupChatSection(
+  id: string,
+  groups: string[]
+): { members: string[]; undo: () => void } {
+  const list = $groupChatSections.get()
+  const index = list.findIndex(section => section.id === id)
+  const section = list[index]
+  const members = (groups || []).filter(name => groupChatSectionId(name, $groupChats.get()) === id)
+
+  persistGroupChatSections(list.filter(section => section.id !== id))
+  moveGroupChatsToSection(members, null)
+
+  return {
+    members,
+    undo: () => {
+      if (!section) {
+        return
+      }
+
+      const current = $groupChatSections.get().filter(currentSection => currentSection.id !== id)
+
+      current.splice(Math.min(index, current.length), 0, section)
+      persistGroupChatSections(current)
+      moveGroupChatsToSection(members, id)
+    }
+  }
+}
+
+export function moveGroupChatSection(id: string, delta: number): void {
+  const list = $groupChatSections.get()
+  const from = list.findIndex(section => section.id === id)
+  const to = from + delta
+
+  if (from < 0 || to < 0 || to >= list.length) {
+    return
+  }
+
+  const next = list.slice()
+  const [moved] = next.splice(from, 1)
+
+  next.splice(to, 0, moved!)
+  persistGroupChatSections(next)
+}
+
 export interface SectionBlock<TRow> {
   id: null | string
   key: string
@@ -377,7 +476,8 @@ export function groupRowsBySection<TRow extends { bot?: RosterRow } | RosterRow>
   rows: TRow[],
   sections: unknown,
   metaByName: Record<string, BotMeta>,
-  groupRooms: Record<string, GroupChat> = {}
+  groupRooms: Record<string, GroupChat> = {},
+  groupsOnly = false
 ): SectionBlock<TRow>[] {
   const list = normalizeBotSections(sections)
   const known = new Set(list.map(s => s.id))
@@ -389,7 +489,9 @@ export function groupRowsBySection<TRow extends { bot?: RosterRow } | RosterRow>
 
     const id = group
       ? groupChatSectionId(String((group as { name?: string }).name || ''), groupRooms)
-      : botSectionId(((row as { bot?: RosterRow })?.bot || row) as RosterRow, metaByName)
+      : groupsOnly
+        ? null
+        : botSectionId(((row as { bot?: RosterRow })?.bot || row) as RosterRow, metaByName)
 
     if (id && known.has(id)) {
       byId.get(id)!.push(row)

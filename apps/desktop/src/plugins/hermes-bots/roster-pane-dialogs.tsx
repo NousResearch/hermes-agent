@@ -8,7 +8,13 @@ import { disbandGroupChat, openGroupChat } from './group-chat-view'
 import type { useBots } from './i18n'
 import { deleteBot } from './profile-ops'
 import type { GroupMember, RosterRow } from './types'
-import { createBotSection, moveGroupChatsToSection, renameBotSection, type SectionDialogState } from './user-sections'
+import {
+  createBotSection,
+  createGroupChatSection,
+  renameBotSection,
+  renameGroupChatSection,
+  type SectionDialogState
+} from './user-sections'
 import { SectionNameDialog } from './user-sections-ui'
 
 interface renderRosterDialogsProps {
@@ -82,12 +88,16 @@ export function renderRosterDialogs({
         }}
         onSubmit={name => {
           if (sectionDialog?.mode === 'rename') {
-            renameBotSection(sectionDialog.id, name, roster)
+            if (sectionDialog.scope === 'group') {
+              renameGroupChatSection(sectionDialog.id, name)
+            } else {
+              renameBotSection(sectionDialog.id, name, roster)
+            }
           } else {
-            const section = createBotSection(name, sectionDialog?.bot ? [sectionDialog.bot] : [])
-
-            if (section && sectionDialog?.group) {
-              moveGroupChatsToSection([sectionDialog.group], section.id)
+            if (sectionDialog?.scope === 'group') {
+              createGroupChatSection(name, sectionDialog.group ? [sectionDialog.group] : [])
+            } else {
+              createBotSection(name, sectionDialog?.bot ? [sectionDialog.bot] : [])
             }
           }
         }}

@@ -84,7 +84,7 @@ import { ProfileGroupScreenPortal } from './screen-portal'
 import { startHideSweepScheduler } from './session-sweep'
 import { bumpBotOpenGeneration, getBotOpenGeneration, ID, setPluginCtx } from './shared'
 import type { GroupChat, RosterRow } from './types'
-import { loadBotSections } from './user-sections'
+import { loadBotSections, loadGroupChatSections } from './user-sections'
 
 // ── plugin ───────────────────────────────────────────────────────────────────
 
@@ -117,6 +117,7 @@ export default {
     // The user's own roster sections. Read once at register; every mutation
     // writes through.
     loadBotSections()
+    loadGroupChatSections()
     const disposeLocales = ctx.i18n.register(BOTS_LOCALES)
     setGroupChatSyncDisposed(false)
     startFaceClock()

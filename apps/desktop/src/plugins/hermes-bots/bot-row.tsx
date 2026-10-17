@@ -82,6 +82,7 @@ import type { GroupMember, RosterRow, SidebarRowLabels } from './types'
 import {
   $botSections,
   $draggingBot,
+  $groupChatSections,
   BOT_DRAG_MIME,
   botSectionId,
   groupChatSectionId,
@@ -512,7 +513,7 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband, 
   const { t } = useI18n()
   const b = useBots()
   const rooms = useValue($groupChats)
-  const sections = useValue($botSections)
+  const sections = useValue($groupChatSections)
   const currentSectionId = groupChatSectionId(group, rooms)
 
   const room = rooms[group] || {

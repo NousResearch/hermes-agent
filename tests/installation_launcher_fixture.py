@@ -17,7 +17,10 @@ def publish_fixture_launcher(root: Path, main_source: str) -> Path:
     # are real. The interpreter is external to the checkout, like PM's store.
     (root / "hermes_bootstrap.py").write_text("", encoding="utf-8")
     (root / "pm").mkdir(exist_ok=True)
-    for relative in ("hermes_constants.py", "hermes_cli/_launchers.py", "pm/environments.py"):
+    for relative in (
+        "hermes_constants.py", "hermes_cli/_launchers.py",
+        "hermes_cli/_runtime_command.py", "pm/environments.py",
+    ):
         shutil.copyfile(repository / relative, root / relative)
     out = root / ".hermes" / "bin"
     out.mkdir(parents=True)

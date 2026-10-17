@@ -2512,9 +2512,16 @@ def _rotate_worker_log(
         pass
 
 
+def _isolated_store_python() -> bool:
+    """True when this process is the isolated store interpreter (``python -I``)."""
+    return bool(sys.flags.isolated)
+
+
 def _module_hermes_argv() -> list[str]:
-    """Interpreter-bound Hermes CLI invocation (``hermes_cli.main`` is the
-    console-script target — there is no top-level ``hermes`` package)."""
+    """Use this install's launcher/bootstrap when isolated; otherwise its module."""
+    if _isolated_store_python():
+        from hermes_cli._runtime_command import isolated_hermes_argv
+        return isolated_hermes_argv(Path(__file__).resolve().parents[1], python=sys.executable)
     return [sys.executable, "-m", "hermes_cli.main"]
 
 
@@ -2550,12 +2557,7 @@ def _path_search_names(command: str) -> list[str]:
 
 
 def _safe_which_no_cwd(command: str) -> Optional[str]:
-    """Resolve a bare command from PATH without implicit current-dir search.
-
-    On Windows ``shutil.which`` may search the current directory before PATH
-    for bare names — unsafe for a dispatcher. Only explicit PATH entries are
-    considered; empty / ``.`` entries are skipped.
-    """
+    """Search explicit PATH entries, never Windows' implicit current directory."""
     for raw_dir in os.environ.get("PATH", "").split(os.pathsep):
         if not raw_dir or raw_dir == ".":
             continue
@@ -2568,25 +2570,17 @@ def _safe_which_no_cwd(command: str) -> Optional[str]:
 
 
 def _hermes_path_argv(path: str) -> list[str]:
-    """argv for a resolved Hermes executable path. Windows batch shims
-    (``.cmd``/``.bat``) are unsafe as argv[0] because the argument vector
-    includes task-derived values; prefer the module form."""
+    """Use Python for Windows batch shims: task-derived shell arguments are unsafe."""
     if _kb._IS_WINDOWS and _is_windows_batch_shim(path):
         return _module_hermes_argv()
     return [_absolute_hermes_path(path)]
 
 
 def _resolve_hermes_argv() -> list[str]:
-    """Resolve the ``hermes`` invocation as argv for ``Popen``: ``$HERMES_BIN``
-    (path-like -> absolute; bare names keep PATH semantics, never a
-    same-directory file), then the running interpreter's ``sys.executable -m
-    hermes_cli.main`` (exactly this install; also covers shim-less cron,
-    systemd ``User=``, launchd), then ``which("hermes")`` (Windows: safe PATH
-    search, batch shims fall back to the module form) only when ``hermes_cli``
-    is not importable. The module argv must win over PATH: a PATH-first lookup
-    lets an attacker-planted ``hermes`` shadow the running install (#111569).
-    Mirrors ``gateway.run._resolve_hermes_bin``; local because ``hermes_cli``
-    sits below ``gateway`` in the dependency order.
+    """Prefer an explicit override, then this interpreter's module/bootstrap, then PATH.
+
+    Bare overrides skip implicit cwd lookup; Windows batch shims use Python.
+    Installation binding prevents PATH shadowing (#111569).
     """
     import importlib.util
     import shutil
@@ -2598,6 +2592,12 @@ def _resolve_hermes_argv() -> list[str]:
         resolved_env_bin = _safe_which_no_cwd(env_bin)
         if resolved_env_bin:
             return _hermes_path_argv(resolved_env_bin)
+        return _module_hermes_argv()
+
+    # An isolated parent already proves this source installation is loaded.
+    # Its bootstrap is the only safe fallback; do not swallow a construction
+    # failure and select an unrelated PATH executable.
+    if _isolated_store_python():
         return _module_hermes_argv()
 
     try:

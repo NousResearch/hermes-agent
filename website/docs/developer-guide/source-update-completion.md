@@ -91,6 +91,13 @@ status stays 0; only a user action (local changes left in the stash) still exits
 
 ## Parent lifecycle and failures
 
+Gateway re-exec from isolated Python stays bound to the running installation and
+interpreter, even from an unrelated working directory without `PYTHONPATH`.
+The Windows detached `/update` helper also uses that installation's bootstrap,
+not a bare module invocation or an executable shim that the update must replace.
+Bootstrap repair runs before default-home imports; bootstrap failures must not
+select another `hermes` from `PATH`. Exit-code publication remains atomic.
+
 The parent waits and propagates the child's exact nonzero result (a signal is
 mapped to shell-style 128+signal); post-commit step failures never produce one. A child cannot succeed by merely exiting zero:
 a terminal response with the matching receipt identity is required. The response

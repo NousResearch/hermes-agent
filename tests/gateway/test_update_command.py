@@ -105,6 +105,62 @@ class TestHandleUpdateCommand:
 
         assert result == [sys.executable, "-m", "hermes_cli.main"]
 
+    def test_resolve_hermes_bin_isolated_bootstraps_from_unrelated_cwd(self, tmp_path):
+        """An isolated gateway re-exec remains bound to its source installation."""
+        import os
+        import subprocess
+        import sys
+        import gateway.run as gateway_run
+
+        source_root = tmp_path / "source"
+        (source_root / "gateway").mkdir(parents=True)
+        (source_root / "gateway" / "run.py").touch()
+        (source_root / "hermes_cli").mkdir()
+        (source_root / "hermes_cli" / "__init__.py").touch()
+        (source_root / "hermes_cli" / "main.py").write_text(
+            "from pathlib import Path\n"
+            "print(Path(__file__).resolve().parents[1])\n",
+            encoding="utf-8",
+        )
+        (source_root / "hermes_bootstrap.py").touch()
+        unrelated = tmp_path / "workspace"
+        unrelated.mkdir()
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if key not in {"PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "HERMES_BIN"}
+        }
+        env["HERMES_HOME"] = str(tmp_path / "home")
+
+        original_flags = sys.flags
+
+        class IsolatedFlags:
+            isolated = 1
+
+            def __getattr__(self, name):
+                return getattr(original_flags, name)
+
+        with patch.object(gateway_run, "__file__", str(source_root / "gateway" / "run.py")), \
+             patch.object(sys, "flags", IsolatedFlags()), \
+             patch("importlib.util.find_spec", return_value=MagicMock()), \
+             patch("shutil.which", return_value="/tmp/attacker/hermes"):
+            argv = gateway_run._resolve_hermes_bin()
+
+        assert argv is not None
+        assert argv[0] == sys.executable
+        assert argv[1:3] == ["-I", "-c"]
+        result = subprocess.run(
+            argv,
+            cwd=unrelated,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == str(source_root)
+
     @pytest.mark.asyncio
     async def test_resolve_hermes_bin_falls_back_to_path_then_none(self):
         """Without an importable hermes_cli the argv degrades to PATH, then to None — never a
@@ -640,6 +696,39 @@ class TestUpdateCommandInstallMethodRefusal:
 
 class TestDetachedUpdateExitCodePublication:
     """The detached wrapper never exposes an empty ``.update_exit_code`` to the 2 s watcher poll."""
+
+    @pytest.mark.platforms("windows")
+    def test_windows_update_bootstraps_this_install_outside_source(self, tmp_path, monkeypatch):
+        import subprocess
+        import sys
+        import gateway.slash_commands as commands
+
+        root = tmp_path / "source with spaces"
+        (root / "gateway").mkdir(parents=True)
+        (root / "hermes_cli").mkdir()
+        (root / "hermes_cli" / "__init__.py").touch()
+        (root / "hermes_bootstrap.py").touch()
+        (root / "hermes_cli" / "main.py").write_text(
+            "import json, sys\nfrom pathlib import Path\n"
+            "print(json.dumps([str(Path(__file__).resolve().parents[1]), sys.argv[1:]]))\n",
+            encoding="utf-8",
+        )
+        workspace = tmp_path / "unrelated"
+        workspace.mkdir()
+        output, marker = tmp_path / "out.log", tmp_path / ".update_exit_code"
+        monkeypatch.setattr(commands, "__file__", str(root / "gateway" / "slash_commands.py"))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        for key in ("PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV"):
+            monkeypatch.delenv(key, raising=False)
+        with patch("subprocess.Popen") as spawned:
+            commands._spawn_detached_update(["unrelated-hermes.exe"], output, marker)
+        # Run the captured helper synchronously; the fixture CLI never updates an installation.
+        result = subprocess.run(spawned.call_args.args[0], cwd=workspace,
+                                capture_output=True, text=True, timeout=30, check=False)
+        assert result.returncode == 0, result.stderr
+        assert marker.read_text(encoding="utf-8") == "0", output.read_text(encoding="utf-8")
+        assert json.loads(output.read_text(encoding="utf-8")) == [str(root), ["update", "--gateway"]]
+        assert spawned.call_args.args[0][5:8] == [sys.executable, "-I", "-c"]
 
     @pytest.mark.platforms("linux", "macos")
     @pytest.mark.live_system_guard_bypass  # runs the wrapper around `sh -c 'exit 3'`, never hermes

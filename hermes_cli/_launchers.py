@@ -21,18 +21,7 @@ if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pm.environments import owning_home_root, store_root
-
-# ``sys`` attribute a launcher sets before ``import hermes_bootstrap``: pin HERMES_HOME to the
-# install's default root once the launch-time repair ran (``hermes_bootstrap._pin_launcher_home``).
-PIN_DEFAULT_HOME_FLAG = "_hermes_pin_default_home"
-
-
-def _inline_string_literal(value: str) -> str:
-    """Keep inline Python source intact through Windows PowerShell's native argv quoting."""
-    if os.name != "nt":
-        return repr(value)
-    escaped = value.encode("unicode_escape").decode("ascii")
-    return "'" + escaped.replace("'", "\\x27").replace('"', "\\x22") + "'"
+from hermes_cli._runtime_command import PIN_DEFAULT_HOME_FLAG, bootstrap_runtime_command
 
 
 def runtime_command(repo_root: Path, args=(), *, module: str = "hermes_cli.main",
@@ -46,29 +35,9 @@ def runtime_command(repo_root: Path, args=(), *, module: str = "hermes_cli.main"
     """
     root = Path(repo_root).resolve()
     python = python or resolve_store_python(root) or Path(sys.executable)
-    entry = f"exec({_inline_string_literal(code)})" if code is not None else (
-        f"runpy.run_module({_inline_string_literal(module)}, run_name='__main__', alter_sys=True)")
-    # A literal home is pinned up front; the default one needs ``hermes_constants`` from the
-    # checkout, so it is pinned only after ``hermes_bootstrap``'s launch-time repair (see
-    # ``_launcher_script``), here again for a bootstrap that predates that hook.
-    if home is not None:
-        pin, settle = (f"os.environ['HERMES_HOME'] = os.environ.get('HERMES_HOME') or "
-                       f"{_inline_string_literal(str(home))}; "), ""
-    else:
-        pin = f"sys.{PIN_DEFAULT_HOME_FLAG} = True; "
-        settle = ("os.environ.get('HERMES_HOME') or os.environ.__setitem__('HERMES_HOME', "
-                  "str(__import__('hermes_constants').get_default_hermes_root())); ")
-    bootstrap = (
-        "import os, sys, runpy; "
-        "os.environ.pop('PYTHONHOME', None); os.environ.pop('PYTHONPATH', None); "
-        "os.environ.pop('VIRTUAL_ENV', None); "
-        f"sys.path.insert(0, {_inline_string_literal(str(root))}); "
-        + pin
-        + "import hermes_bootstrap; "
-        + settle
-        + entry
+    return bootstrap_runtime_command(
+        root, args, module=module, code=code, python=python, home=home
     )
-    return [str(python), "-I", "-c", bootstrap, *args]
 
 
 def print_runtime_command(repo_root: Path, argv: list[str]) -> None:

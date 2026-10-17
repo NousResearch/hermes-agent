@@ -35,6 +35,7 @@ import {
   useI18n,
   useValue
 } from '@hermes/plugin-sdk'
+import { cjk as streamdownCjk } from '@streamdown/cjk'
 import type { ClipboardEvent, DragEvent, ReactNode } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
@@ -1404,7 +1405,15 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
             {MessageTextContent ? (
               <MessageTextContent decorateText={mentionText} media={!member?.remoteSource} text={entry.text} />
             ) : Streamdown ? (
-              <Streamdown components={mentionComponents}>{entry.text}</Streamdown>
+              <Streamdown
+                components={mentionComponents}
+                // CJK-friendly emphasis in bot room bodies too (#92814): a
+                // partial plugin map is additive in streamdown 2.5, so the
+                // fallback keeps its default math/code behaviour.
+                plugins={{ cjk: streamdownCjk }}
+              >
+                {entry.text}
+              </Streamdown>
             ) : (
               entry.text
             )}

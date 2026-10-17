@@ -88,7 +88,7 @@ def _iter_skill_mds(root: Path, sort: bool = False) -> Iterator[Path]:
     """Yield every non-excluded SKILL.md under ``root`` (nothing when it does not exist)."""
     found = root.rglob("SKILL.md") if root.exists() else iter(())
     for skill_md in sorted(found) if sort else found:
-        if not is_excluded_skill_path(skill_md):
+        if not is_excluded_skill_path(skill_md, root=root):
             yield skill_md
 
 

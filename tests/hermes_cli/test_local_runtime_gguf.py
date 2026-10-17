@@ -12,6 +12,40 @@ from hermes_cli.local_runtime.estimator import profile_from_gguf
 from hermes_cli.local_runtime.gguf import read_gguf_header
 
 
+@pytest.mark.parametrize("missing_bytes", range(1, 9))
+def test_incomplete_tensor_offset_does_not_create_launch_preset(tmp_path, missing_bytes):
+    """An interrupted header must be skipped, even when all weight sizes precede the cut."""
+    from hermes_cli.local_runtime.estimator import HardwareBudget
+    from hermes_cli.local_runtime.presets import preset_for_model
+
+    path = tmp_path / "incomplete.gguf"
+    _write_gguf(path, {
+        "general.architecture": "llama", "llama.block_count": 1,
+        "llama.context_length": 8192, "llama.embedding_length": 128,
+        "llama.attention.head_count": 2, "llama.attention.head_count_kv": 2,
+    }, [("token_embd.weight", 64)])
+    budget = HardwareBudget(usable_vram_bytes=16 << 30, total_device_bytes=16 << 30,
+                            ram_available_bytes=16 << 30)
+    assert preset_for_model(path, budget, set()) is not None
+
+    path.write_bytes(path.read_bytes()[:-missing_bytes])
+    assert preset_for_model(path, budget, set()) is None
+    with pytest.raises(ValueError, match="truncated GGUF header"):
+        read_gguf_header(path)
+
+
+@pytest.mark.parametrize("missing_bytes", [1, 5, 14])
+def test_incomplete_metadata_string_is_not_returned_as_valid(tmp_path, missing_bytes):
+    """Metadata-only split headers still require every byte of their declared strings."""
+    path = tmp_path / "metadata.gguf"
+    _write_gguf(path, {"general.architecture": "llama", "general.name": "complete-title"}, [])
+    assert read_gguf_header(path).metadata["general.name"] == "complete-title"
+
+    path.write_bytes(path.read_bytes()[:-missing_bytes])
+    with pytest.raises(ValueError, match="truncated GGUF header"):
+        read_gguf_header(path)
+
+
 def _gguf_str(s: str) -> bytes:
     b = s.encode()
     return struct.pack("<Q", len(b)) + b

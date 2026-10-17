@@ -43,7 +43,15 @@ def _glm_5_2_reasoning_effort(reasoning_config: dict | None, *, model: str | Non
 
 
 class ZaiProfile(ProviderProfile):
-    """Z.AI / GLM — extra_body.thinking on/off + GLM-5.2 reasoning_effort."""
+    """Z.AI / GLM — extra_body.thinking on/off + GLM-5.2 reasoning_effort + tool_stream."""
+
+    def build_extra_body(self, *, session_id: str | None = None, **context: Any) -> dict[str, Any]:
+        """Ask Z.AI to stream tool-call arguments. Without ``tool_stream`` the whole argument
+        string is buffered and arrives in a single delta, leaving the connection silent for the
+        entire generation (measured 19-38s for a ~2.5KB argument, against 5-8s with it) -- long
+        enough for a proxy to drop the stream mid tool-call. Tool-call requests only; a plain
+        completion has nothing to stream."""
+        return {"tool_stream": True} if context.get("tools") else {}
 
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context

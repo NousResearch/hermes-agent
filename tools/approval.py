@@ -399,12 +399,17 @@ def load_permanent(patterns: set):
 
 
 def _persist_choice(session_key: str, choice: str, keys: list[str]) -> None:
-    """Persist a human ``session``/``always`` choice for each pattern key. ``once`` persists nothing."""
+    """Persist a human ``session``/``always`` choice for each pattern key. ``once`` persists nothing.
+
+    ``approvals.allow_permanent: false`` downgrades ``always`` to session scope: the permanent scope
+    was never advertised, so a stale or custom client that answers ``always`` must not write
+    ``command_allowlist``."""
+    permanent_scope = approval_context._get_allow_permanent()
     for key in keys:
         if choice not in ("session", "always"):
             continue
         approve_session(session_key, key)
-        if choice == "always":
+        if choice == "always" and permanent_scope:
             approve_permanent(key)
             # Pass only this process's grants, taken against the baseline of the same snapshot. A
             # check that syncs a hand removal before the save runs advances the baseline, so a
@@ -812,7 +817,11 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         if result is not None:
             return result
     pending_body = pending_body() if pending_body else None
-    allow_permanent = not smart_denied
+    # ``approvals.allow_permanent: false`` removes the permanent scope from every surface at once:
+    # the pending record, the transport prompt and the CLI prompt all advertise the scopes from this
+    # flag, and ``_persist_choice`` refuses the write — so no surface can offer an "always" its
+    # backend would not honour, and no gate can be reached that way.
+    allow_permanent = not smart_denied and approval_context._get_allow_permanent()
 
     def deny(template: str, outcome: str, **fmt) -> dict:
         breaker = ""
@@ -861,7 +870,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             data = {
                 "command": display_command, "pattern_key": pattern_key,
                 "pattern_keys": pattern_keys, "description": display_description,
-                "allow_permanent": not smart_denied,
+                "allow_permanent": allow_permanent,
                 "allow_session": not smart_denied,
             }
             if smart_denied:

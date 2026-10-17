@@ -26,6 +26,35 @@ import time
 
 _IS_WINDOWS = sys.platform == "win32"
 _bootstrap_applied = False
+
+
+def _suppress_foreign_checkout_bytecode() -> None:
+    """Keep a root launch of a user's checkout from littering it with root-owned ``*.pyc``.
+
+    Root ignores directory permissions (DAC_OVERRIDE), and sudo's env_reset strips
+    ``PYTHONDONTWRITEBYTECODE``/``PYTHONPYCACHEPREFIX`` before Python ever sees them
+    (#135181), so the only remaining guard is here, before this process imports any
+    further checkout module. Only a checkout owned by another uid triggers it: a root
+    install keeps its bytecode cache, and a non-root user cannot write someone else's
+    tree anyway (the failed pyc write is silently ignored by Python). An operator who
+    preserved either standard variable through sudo (``--preserve-env``) already
+    directed their bytecode placement, so the guard only fills the env_reset void.
+    """
+    if not hasattr(os, "geteuid") or os.geteuid() != 0:
+        return
+    if os.environ.get("PYTHONDONTWRITEBYTECODE") or os.environ.get(
+        "PYTHONPYCACHEPREFIX"
+    ):
+        return
+    try:
+        checkout_owner = os.lstat(os.path.dirname(os.path.abspath(__file__))).st_uid
+    except OSError:
+        return
+    if checkout_owner != 0:
+        sys.dont_write_bytecode = True
+
+
+_suppress_foreign_checkout_bytecode()
 _HAPPY_EYEBALLS_DELAY_SECONDS = 0.25
 _URLLIB3_CONNECTION_MODULE = "urllib3.util.connection"
 

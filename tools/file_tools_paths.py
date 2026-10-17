@@ -1,3 +1,4 @@
+/Users/junkawasaki/.zshenv:.:1: no such file or directory: /Users/junkawasaki/.cargo/env
 """Path resolution for the file tools: task-aware base dir, ``~`` expansion, workspace-divergence warning.
 
 Core invariant: the base directory anchoring relative paths is ALWAYS absolute
@@ -299,8 +300,9 @@ def workspace_confinement_error(
     """Return a refusal when an enabled workspace-only file operation escapes.
 
     Host paths are resolved physically, including existing symlink hops.
-    Container and SSH paths are compared lexically in the backend's POSIX
-    namespace. This in-process check does not replace OS-level isolation.
+    Container and SSH paths are resolved inside the backend's POSIX namespace
+    so a workspace symlink cannot lexically disguise an outside target. This
+    in-process check does not replace OS-level isolation.
     """
     policy = _workspace_confinement_policy()
     if policy is None:
@@ -327,6 +329,7 @@ def workspace_confinement_error(
         )
 
     try:
+        container_paths = False
         if ssh_backend:
             root = _resolve_ssh_path(".", task_id)
         else:
@@ -334,6 +337,17 @@ def workspace_confinement_error(
             container_paths = _uses_container_paths(task_id)
             root = _anchor(_host_text(root_text, container_paths), os.getcwd, container_paths)
         target = _resolve_path_for_task(filepath, task_id)
+        if ssh_backend and _ssh_path_escapes_home(str(target)):
+            raise ValueError("remote target escapes the unresolved home directory")
+        if ssh_backend or container_paths:
+            # These paths belong to another filesystem namespace. Resolving
+            # them with host Path.resolve() misses symlinks in that backend.
+            # The backend probe fails closed when it cannot canonicalize.
+            from tools.file_tools import _get_file_ops
+
+            file_ops = _get_file_ops(task_id)
+            root = PurePosixPath(file_ops.canonicalize_workspace_path(str(root)))
+            target = PurePosixPath(file_ops.canonicalize_workspace_path(str(target)))
         if not (ssh_backend and _ssh_path_escapes_home(str(target))) and target.is_relative_to(root):
             return None
     except Exception as exc:

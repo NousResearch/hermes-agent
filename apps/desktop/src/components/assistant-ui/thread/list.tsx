@@ -213,6 +213,22 @@ export function shouldSnapOnRunStart(remainingPx: number, thresholdPx = RUN_STAR
   return remainingPx < thresholdPx
 }
 
+/**
+ * Whether the end of a run should re-pin the thread to the bottom. The
+ * resize-follow pin only runs while `isRunning` is true, and the final reply
+ * is exactly what drops it; the virtualizer's post-turn re-measure can then
+ * land the new content below the viewport with nothing left to follow it
+ * (`overflow-anchor: none` disabled the browser's own correction, #135583).
+ * A reader who was at the bottom when the turn ended is re-pinned; a reader
+ * up in history is left where they are.
+ */
+export function shouldPinOnRunEnd(
+  wasAtBottomWhenRunEnded: boolean,
+  isHistorical: boolean
+): boolean {
+  return wasAtBottomWhenRunEnded && !isHistorical
+}
+
 // True when the pin-to-bottom settle should re-arm. A same-session refresh
 // (transcript briefly emptied and repopulated under the same key) must keep
 // the reader's position; only a session switch or a cold-load arrival re-pins.
@@ -836,6 +852,31 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       scrollToBottomUnlessSelecting()
     }
   })
+
+  // End of a run: the resize-follow pin above is gated on isRunningRef, so the
+  // moment the final reply lands is also the moment nothing follows the
+  // virtualizer's re-measure. A reader who was at the bottom when the turn
+  // ended gets re-pinned; a reader in history keeps their position (#135583).
+  // The gate is the MEASURED distance-from-bottom, not `isAtBottom`:
+  // use-stick-to-bottom escapes its lock on any unrecognized scrollTop
+  // decrease, including the synthetic one from an above-viewport
+  // content-visibility re-measure, so `isAtBottom` can already be false while
+  // the viewport is still parked at the end.
+  const wasRunningRef = useRef(isRunning)
+  wasRunningRef.current = isRunning
+  useEffect(() => {
+    const ended = wasRunningRef.current && !isRunning
+
+    if (!ended) {
+      return
+    }
+
+    const el = scrollRef.current
+
+    if (el && shouldPinOnRunEnd(threadScrollStateFromMetrics(el).kind === 'bottom', isHistorical)) {
+      scrollToBottomUnlessSelecting()
+    }
+  }, [isRunning, isHistorical, scrollRef, scrollToBottomUnlessSelecting])
 
   // Live scroll state of the CURRENT session, updated on every scroll event
   // AND on content height changes (ResizeObserver). The RO leg is what keeps

@@ -3,6 +3,9 @@ import type { TranslationOverride } from '@hermes/shared/i18n'
 import type { Translations } from './types'
 
 export const deLocalModels: TranslationOverride<Translations['settings']['localModels']> = {
+  downloadDiscardAction: 'Verwerfen',
+  downloadDiscardDetail: 'Diesen unvollständigen Download entfernen. Fertige Dateien bleiben erhalten.',
+  downloadDiscardFailed: model => `Der Download von ${model} konnte nicht verworfen werden`,
   connectionChanged: 'Verbindung für lokale Modelle geändert',
   title: 'Lokale Modelle',
   runtimeTitle: 'Lokale Laufzeit',

@@ -1,7 +1,8 @@
 import { type ReactElement, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { pauseLocalDownload, resumeLocalDownload } from '@/hermes'
+import { Tip } from '@/components/ui/tooltip'
+import { discardLocalDownload, pauseLocalDownload, resumeLocalDownload } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Loader2, Pause, Play } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -24,6 +25,8 @@ interface ProgressBarProps {
 interface LocalModelDownloadProps {
   job: LocalRuntimeJob
 }
+
+type DownloadAction = 'discard' | 'pause' | 'resume'
 
 export function ProgressBar({ percent, paused = false }: ProgressBarProps) {
   const unknown = typeof percent !== 'number'
@@ -196,32 +199,32 @@ export function LocalModelDownloadActions({
 }: LocalModelDownloadProps & { owner?: LocalModelsOwner }): ReactElement | null {
   const { t } = useI18n()
   const copy = t.settings.localModels
-  const [busy, setBusy] = useState<boolean>(false)
+  const [busy, setBusy] = useState<DownloadAction | null>(null)
 
-  const send = async (kind: 'pause' | 'resume'): Promise<void> => {
-    setBusy(true)
+  const send = async (kind: DownloadAction): Promise<void> => {
+    setBusy(kind)
 
     try {
-      // A false paused/resumed flag is usually a benign race (the job
+      // A false control flag is usually a benign race (the job
       // settled between render and click) — the authoritative refresh
       // below decides what the row shows; only a real transport failure
       // surfaces as an error.
-      if (kind === 'pause') {
-        await pauseLocalDownload(job.job_id, owner ? localModelsRequestScope(owner) : undefined)
-      } else {
-        await resumeLocalDownload(job.job_id, owner ? localModelsRequestScope(owner) : undefined)
-      }
+      const controls = { discard: discardLocalDownload, pause: pauseLocalDownload, resume: resumeLocalDownload }
+      await controls[kind](job.job_id, owner ? localModelsRequestScope(owner) : undefined)
 
       watchLocalRuntimeJobs(owner)
     } catch (err) {
       if (!owner || isCurrentLocalModelsOwner(owner)) {
-        notifyError(
-          err,
-          kind === 'pause' ? copy.downloadPauseFailed(job.target) : copy.downloadResumeFailed(job.target)
-        )
+        const failures = {
+          discard: copy.downloadDiscardFailed,
+          pause: copy.downloadPauseFailed,
+          resume: copy.downloadResumeFailed
+        }
+
+        notifyError(err, failures[kind](job.target))
       }
     } finally {
-      setBusy(false)
+      setBusy(null)
     }
   }
 
@@ -233,15 +236,24 @@ export function LocalModelDownloadActions({
           {copy.downloadPausedLabel}
         </Pill>
 
+        {job.can_discard === true && (
+          <Tip label={copy.downloadDiscardDetail}>
+            <Button disabled={busy !== null} onClick={() => void send('discard')} size="sm" variant="text">
+              {busy === 'discard' && <Loader2 className="animate-spin" />}
+              {copy.downloadDiscardAction}
+            </Button>
+          </Tip>
+        )}
+
         {job.can_resume === true && (
           <Button
-            className={cn(busy && '[&_svg]:animate-spin')}
-            disabled={busy}
+            className={cn(busy === 'resume' && '[&_svg]:animate-spin')}
+            disabled={busy !== null}
             onClick={() => void send('resume')}
             size="sm"
             variant="outline"
           >
-            {busy ? <Loader2 /> : <Play />}
+            {busy === 'resume' ? <Loader2 /> : <Play />}
             {copy.downloadResumeAction}
           </Button>
         )}
@@ -268,7 +280,7 @@ export function LocalModelDownloadActions({
   return (
     <Button
       className={cn(busy && '[&_svg]:animate-spin')}
-      disabled={busy}
+      disabled={busy !== null}
       onClick={() => void send('pause')}
       size="sm"
       variant="outline"

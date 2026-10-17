@@ -3,7 +3,13 @@ import { beforeEach, expect, it, vi } from 'vitest'
 import type { LocalModelsOwner } from '@/store/local-runtime-jobs'
 
 import { setApiRequestConnection, setApiRequestProfile } from './client'
-import { getLocalModelsJobs, getLocalModelsStatus, pauseLocalDownload, resumeLocalDownload } from './local-models'
+import {
+  discardLocalDownload,
+  getLocalModelsJobs,
+  getLocalModelsStatus,
+  pauseLocalDownload,
+  resumeLocalDownload
+} from './local-models'
 
 beforeEach((): void => {
   Object.defineProperty(window, 'hermesDesktop', {
@@ -27,13 +33,14 @@ it('pins delayed reads and controls to their captured connection and profile', a
 
 it.each([
   ['pause', pauseLocalDownload, { ok: true, paused: true }],
-  ['resume', resumeLocalDownload, { ok: true, resumed: false }]
+  ['resume', resumeLocalDownload, { ok: true, resumed: false }],
+  ['discard', discardLocalDownload, { ok: true, discarded: true }]
 ] as const)(
   '%s preserves the captured owner, request body and backend verdict',
   async (
     action: string,
-    control: typeof pauseLocalDownload | typeof resumeLocalDownload,
-    response: { ok: boolean; paused?: boolean; resumed?: boolean }
+    control: typeof pauseLocalDownload | typeof resumeLocalDownload | typeof discardLocalDownload,
+    response: { ok: boolean; paused?: boolean; resumed?: boolean; discarded?: boolean }
   ): Promise<void> => {
     const owner: LocalModelsOwner = { connectionId: 'background', profile: 'work' }
     vi.mocked(window.hermesDesktop.api).mockResolvedValue(response)

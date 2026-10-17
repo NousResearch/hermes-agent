@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 
 from pm.downloader import Download, Source, _Remote
-from pm.download_state import partial_lock
+from pm.download_state import collect_download_plans, partial_lock
 from pm.filesystem import durable_write_bytes
 
 
@@ -44,12 +44,27 @@ def remove_plan(key: str) -> None:
         logging.getLogger(__name__).warning("could not remove model download recipe: %s", exc)
 
 
+def discard_plan(key: str) -> bool:
+    with plan_lock(key) as acquired:
+        if not acquired:
+            return False
+        (_root() / f"{key}.json").unlink(missing_ok=True)
+        return True
+
+
+def has_plan(key: str) -> bool:
+    return (_root() / f"{key}.json").exists()
+
+
 def pending_plans():
     """Yield abandoned recipes while holding their cross-process ownership."""
     from hermes_cli.local_runtime.bootstrap import models_dir, assets_dir
 
+    collect_download_plans(_root().parent)
     parents = {models_dir().resolve(), assets_dir().resolve()}
     for path in sorted(_root().glob("*.json")):
+        if len(path.stem) != 64 or any(char not in "0123456789abcdef" for char in path.stem):
+            continue
         with plan_lock(path.stem) as acquired:
             if not acquired:
                 continue

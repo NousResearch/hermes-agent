@@ -1,0 +1,16 @@
+name: hermes-bot-hq
+repo: https://github.com/RohanRJ389/hermes-bot-hq
+sha: 55b5ae0dba454774d808b2cfca191646b1f8c764
+description: "Desktop fleet page plus a per-bot Home (status, metrics, alerts, tasks, routines, buttons) published by the bot as JSON. Disclosure — reads each local profile's home files, can run a declared cron routine from the UI, and opens chat, a path, or a URL the bot declared. No database, signup, or telemetry."
+maintainer: RohanRJ389
+tier: community
+category: desktop
+version: "0.1.0"
+title: Bot HQ
+image: https://raw.githubusercontent.com/RohanRJ389/hermes-bot-hq/55b5ae0dba454774d808b2cfca191646b1f8c764/docs/bot-hq-infographic.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

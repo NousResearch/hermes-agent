@@ -1,0 +1,40 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: traderspy
+description: Read-only crypto futures signals, whale positions, and indicators.
+source: https://github.com/target1m/traderspy-mcp
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (verified live: RFC 9728 protected-resource metadata -> AS metadata with
+# registration_endpoint); Hermes's MCP client + mcp_oauth_manager handle
+# discovery, PKCE, token exchange, and refresh.
+
+transport:
+  type: http
+  url: https://mcp.traderspy.app/mcp
+
+auth:
+  type: oauth
+
+# No tools excluded: all 17 tools are read-only market data, each annotated
+# readOnlyHint. The server has no order, transfer or withdrawal tool.
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - traderspy
+    - trader spy
+  hosts:
+    - traderspy.app
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  TraderSpy (or run `hermes mcp login traderspy`). Sign in, approve
+  access, then restart the session so tools load. A free account
+  allows 300 tool calls a day.
+
+  Every tool is read-only: there is no order, transfer or withdrawal
+  tool. Market data and analysis, not financial advice.

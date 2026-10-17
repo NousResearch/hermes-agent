@@ -1354,6 +1354,20 @@ class TestDoctorStaleMaxIterationsDrift:
         )
         monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
 
+        # Isolate HOME and the project root before run_doctor. Command
+        # Installation runs before the tool-availability short-circuit and,
+        # with fix=True against a real HOME, rewrites ~/.local/bin/hermes.
+        # Same boundary as test_doctor_command_install._tree.
+        project = tmp_path / "source"
+        project.mkdir()
+        (project / ".install_method").write_text("git", encoding="utf-8")
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+        monkeypatch.setenv("HERMES_RUNTIME_DIR", str(hermes_home / "tools"))
+        monkeypatch.delenv("PREFIX", raising=False)
+        assert Path.home() == tmp_path
+        assert doctor_mod.PROJECT_ROOT == project
+
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf), pytest.raises(SystemExit):
             doctor_mod.run_doctor(Namespace(fix=fix))

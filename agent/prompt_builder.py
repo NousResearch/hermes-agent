@@ -914,6 +914,23 @@ def _clear_backend_probe_cache() -> None:
     _BACKEND_PROBE_CACHE.clear()
 
 
+def _local_hermes_binary_path() -> Optional[str]:
+    """Absolute path of this install's ``hermes`` console-script, or ``None``.
+
+    Reuses the terminal env's resolution (payload launcher dir first, then
+    ``which``/argv[0]/``sys.executable``) so the prompt can never name a
+    different copy than child processes run (#140553).
+    """
+    try:
+        from tools.environments.local import _resolve_hermes_bin_dir
+        bin_dir = _resolve_hermes_bin_dir()
+    except Exception:
+        return None
+    if not bin_dir:
+        return None
+    return os.path.join(bin_dir, "hermes.exe" if sys.platform == "win32" else "hermes")
+
+
 def _local_host_hints() -> list[str]:
     """Host OS / home / cwd block for a local terminal backend (tools run on this host)."""
     import platform
@@ -929,6 +946,12 @@ def _local_host_hints() -> list[str]:
         host_lines.append(f"Current working directory: {resolve_agent_cwd()}")
     except OSError:
         pass
+    # The agent's own CLI is the one path agents need most (hermes skills / cron / config),
+    # and the only one the prompt never named — rediscovering it cost real tool calls (#140553).
+    hermes_bin = _local_hermes_binary_path()
+    if hermes_bin:
+        host_lines.append(f"Hermes binary: {hermes_bin} (the `hermes` CLI; use this path when `hermes` "
+                          "is not on PATH or an absolute path is needed)")
     # The model reaches for the system temp dir by reflex (tmpfs on most Linux hosts, fills RAM);
     # naming Hermes' scratch dir here is what makes the TMPDIR export a habit rather than a hidden default.
     try:

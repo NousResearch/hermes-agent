@@ -1340,7 +1340,7 @@ def _resolve_last_session(source: str = "cli") -> Optional[str]:
     if source == "cli":
         from agent.session_source import CLI_FAMILY_SOURCES
         source = sorted(CLI_FAMILY_SOURCES)
-    with _session_db() as db:  # min_message_count: an empty launch stub never wins (resolve_latest_session)
+    with _session_db() as db:
         ws_key = _resolve_workspace_key()
         if ws_key:
             sessions = db.search_sessions(source=source, limit=1, workspace_key=ws_key, min_message_count=1)

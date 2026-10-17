@@ -68,7 +68,7 @@ class TestRecoveryWindow:
         ):
             assert cc.should_compress(cc.threshold_tokens + 1) is True
             cc._verify_compaction_cleared_threshold = True
-            cc.update_from_response({"prompt_tokens": cc.threshold_tokens - 500})
+            cc.update_from_response({"prompt_tokens": cc.threshold_tokens // 2})
         assert cc._ineffective_compression_count == 0
         assert cc._anti_thrash_recovery_deadline == 0.0
 

@@ -149,6 +149,23 @@ class TestOutboundMentions:
             "@alice:example.org</a>, please check this."
         )
 
+    @pytest.mark.asyncio
+    async def test_send_without_mentions_writes_empty_block(self):
+        """MSC3952: an empty block means "mentions nobody", so a name in the prose stays prose."""
+        result = await self.adapter.send("!room1:example.org", "bob is idle today")
+
+        assert result.success is True
+        assert self._sent_content(self.mock_client)["m.mentions"] == {"user_ids": []}
+
+    @pytest.mark.asyncio
+    async def test_edit_without_mentions_writes_empty_block_at_both_levels(self):
+        """An edit that mentions nobody carries an empty top-level block, as MSC3952 recommends."""
+        await self.adapter.edit_message("!room1:example.org", "$orig", "bob is idle today")
+
+        content = self._sent_content(self.mock_client)
+        assert content["m.mentions"] == {"user_ids": []}
+        assert content["m.new_content"]["m.mentions"] == {"user_ids": []}
+
 
 # ---------------------------------------------------------------------------
 # Require-mention gating in _on_room_message

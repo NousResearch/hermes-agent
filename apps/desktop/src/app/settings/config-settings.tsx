@@ -57,6 +57,7 @@ import { QuickEntrySettings } from './quick-entry-settings'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { SharedMetricsSettings } from './shared-metrics-settings'
 import { useSettingDeepLink } from './use-setting-deep-link'
+import { CommandTtsVoicePicker } from './voice-provider-fields'
 
 export function ConfigSettings({
   activeSectionId,
@@ -496,6 +497,9 @@ function ConfigSettingsInner({
       {showSharedMetrics ? <SharedMetricsSettings /> : null}
       {activeSectionId === 'voice' ? (
         <ListRow description={c.voiceShortcutHintDesc} title={c.voiceShortcutHintTitle} />
+      ) : null}
+      {activeSectionId === 'voice' ? (
+        <CommandTtsVoicePicker config={config} onChange={updateConfig} profile={scopeProfile} />
       ) : null}
       {showEmptyState ? (
         <EmptyState description={c.emptyDesc} title={c.emptyTitle} />

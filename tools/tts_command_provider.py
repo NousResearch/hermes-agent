@@ -328,6 +328,32 @@ def _is_command_tts_voice_compatible(config: dict[str, Any]) -> bool:
     return is_truthy_value(config.get("voice_compatible", False))
 
 
+def list_command_tts_voices(provider_name: str, tts_config: dict[str, Any]) -> list[str] | None:
+    """Run a command provider's optional voice lister and return its non-empty lines.
+
+    The lister deliberately shares the synthesis command's timeout, scrubbed environment,
+    and explicit passthrough boundary.  ``None`` means that this provider has not opted
+    into discovery; callers can then leave their existing free-form configuration alone.
+    """
+    config = _resolve_command_provider_config(provider_name, tts_config)
+    if config is None:
+        return None
+    command = config.get("voices_command")
+    if not isinstance(command, str) or not command.strip():
+        return None
+    try:
+        result = run_command_provider(
+            command, _get_command_tts_timeout(config), env_passthrough=command_env_passthrough(config),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"TTS voice list for '{provider_name}' timed out") from exc
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(
+            f"TTS voice list for '{provider_name}' exited with code {exc.returncode}: {command_failure_detail(exc)}"
+        ) from exc
+    return list(dict.fromkeys(line.strip() for line in result.stdout.splitlines() if line.strip()))
+
+
 def _configured_command_tts_output_path(path: Path, config: dict[str, Any]) -> Path:
     """Return an output path whose extension matches the provider's output_format."""
     return path.with_suffix(f".{_get_command_tts_output_format(config)}")

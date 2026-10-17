@@ -290,6 +290,28 @@ async def get_elevenlabs_voices(profile: Optional[str] = None):
     return {"available": True, "voices": voices}
 
 
+@router.get("/api/audio/tts/voices")
+async def get_command_tts_voices(provider: str, profile: Optional[str] = None):
+    """Return an opted-in command TTS provider's voice IDs for the settings picker."""
+    from tools.tts_command_provider import list_command_tts_voices
+    from tools.tts_tool import _load_tts_config
+
+    try:
+        voices = await _run_config_scoped(
+            profile, lambda: list_command_tts_voices(provider, _load_tts_config()),
+        )
+    except RuntimeError as exc:
+        _log.warning("Command TTS voice list unavailable for %s: %s", provider, exc)
+        return {"available": False, "provider": provider, "voices": []}
+    if voices is None:
+        return {"available": False, "provider": provider, "voices": []}
+    return {
+        "available": True,
+        "provider": provider,
+        "voices": [{"id": voice, "label": voice} for voice in voices],
+    }
+
+
 @router.post("/api/audio/speak")
 async def speak_text(payload: TTSSpeakRequest, profile: Optional[str] = None):
     """Synthesize speech and return audio as base64 data URL.

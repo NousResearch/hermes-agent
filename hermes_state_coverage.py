@@ -9,9 +9,10 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from agent.context_compressor import MODEL_ONLY_DISPLAY_METADATA_KEY
 from hermes_cli.timefmt import coerce_epoch
-from hermes_state_common import _placeholders
-from hermes_state_messages import _parse_tool_calls
+from hermes_state_common import _id_chunks, _placeholders
+from hermes_state_messages import _DISPLAY_ACTIVE_CLAUSE, _parse_tool_calls
 
 
 class SessionCoverageMixin:
@@ -78,6 +79,52 @@ class SessionCoverageMixin:
             if len(matches) == 1:
                 resolved.append(matches[0])
         return list(dict.fromkeys(resolved))
+
+    def _mark_superseded_display_copies(
+        self, conn, session_id: str, messages: list[dict[str, Any]],
+    ) -> None:
+        """Flag carried copies whose durable original stays in display history (#135655).
+
+        A commit re-inserts ``compacted_messages`` as fresh live rows. A copy whose content was
+        rewritten since its durable original was loaded (a pruned tool-result digest, a merge
+        carrier) no longer shares the original's display identity, so
+        :meth:`_dedupe_display_generations` cannot fold the two and the display read paints the
+        logical message twice: the archived original plus its rewrite. The archived original is the
+        generation the user should see, so the copy is marked model-only (mirrors
+        ``micro_compaction._merge_adjacent_user_turns``): the model still reads it, display
+        projections skip it. The rule is uniform, not rewrite-conditional: a copy that kept its
+        original's display identity is folded by ``_dedupe_display_generations`` anyway, so marking
+        it only makes the archived original the representative of the single painted generation. An
+        original that is itself model-only still supersedes the copy - its lineage keeps its own
+        display generation (a suppressed merge join keeps the pre-merge rows), and a visible copy
+        would resurrect what the suppression removed.
+
+        Call AFTER the rewind/archive step of the commit transaction: it leaves exactly the
+        display-visible originals as ``active = 1 OR compacted = 1``. A copy whose original was
+        rewound (``active = 0, compacted = 0`` - the carried tail) is the only visible generation
+        and stays unmarked, as does a copy with no ``_row_id``.
+        """
+        candidates = [
+            msg for msg in messages
+            if isinstance(msg, dict) and type(row_id := msg.get("_row_id")) is int and row_id > 0
+            and not (isinstance(msg.get("display_metadata"), dict)
+                     and msg["display_metadata"].get(MODEL_ONLY_DISPLAY_METADATA_KEY))]
+        if not candidates:
+            return
+        row_ids = list(dict.fromkeys(msg["_row_id"] for msg in candidates))
+        visible: set[int] = set()
+        for chunk in _id_chunks(row_ids):
+            visible.update(
+                int(row["id"]) for row in conn.execute(
+                    f"SELECT id FROM messages WHERE session_id = ? AND id IN ({_placeholders(chunk)})"
+                    f"{_DISPLAY_ACTIVE_CLAUSE}", (session_id, *chunk)))
+        for msg in candidates:
+            if msg["_row_id"] not in visible:
+                continue
+            metadata = msg.get("display_metadata")
+            msg["display_metadata"] = {
+                **(metadata if isinstance(metadata, dict) else {}),
+                MODEL_ONLY_DISPLAY_METADATA_KEY: True}
 
     def _matching_active_ids(self, conn, session_id: str, message: dict[str, Any]) -> list[int]:
         """Active row ids whose stored role and content equal *message*. Empty when it was never persisted."""

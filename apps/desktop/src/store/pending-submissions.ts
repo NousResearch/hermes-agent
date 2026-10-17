@@ -15,6 +15,8 @@ interface PendingSubmission {
   status?: string
   /** Where in the session's event order the owner last listed this admission as pending. */
   seen?: PendingSnapshotFence
+  /** The snapshot's queued-row controls; carried to the card only, never journaled. */
+  controls?: string[]
 }
 
 /** A canonical pending snapshot's place in its session's event order: the replay epoch and the
@@ -193,7 +195,8 @@ function collectReceipts(value: RawReceipts, known: Record<string, PendingSubmis
       ...known[id],
       id,
       text: typeof raw.user === 'string' ? raw.user : (known[id]?.text ?? ''),
-      status: stale ? known[id].status : raw.status
+      status: stale ? known[id].status : raw.status,
+      ...(Array.isArray(raw.controls) ? { controls: raw.controls.filter((c: unknown) => typeof c === 'string') } : {})
     })
   }
 
@@ -214,6 +217,9 @@ function projectQueue(
   admissionByInput: Map<string, string>,
   stillPending: Set<string>
 ): QueuedPromptEntry[] {
+  // The owner lists its admissions in FIFO order: a card it lists is shown in that order, so an
+  // admission back in its queue place (a steer that never reached the turn) is not shown last.
+  const order = new Map([...receipts.keys()].map((id, index) => [id, index]))
   const next: QueuedPromptEntry[] = []
 
   for (const entry of current) {
@@ -221,7 +227,7 @@ function projectQueue(
 
     if (receipt) {
       if (receipt.status !== 'started') {
-        next.push({ ...entry, id: receipt.id, serverStatus: receipt.status })
+        next.push({ ...entry, id: receipt.id, serverStatus: receipt.status, serverControls: receipt.controls })
       }
 
       receipts.delete(receipt.id)
@@ -238,10 +244,24 @@ function projectQueue(
         displayText: receipt.displayText,
         attachments: [],
         queuedAt: Date.now(),
-        serverStatus: receipt.status
+        serverStatus: receipt.status,
+        serverControls: receipt.controls
       })
     }
   }
+
+  return inOwnerOrder(next, order)
+}
+
+/** Listed cards take the owner's order among the slots they hold; every other card keeps its slot. */
+function inOwnerOrder(entries: QueuedPromptEntry[], order: Map<string, number>): QueuedPromptEntry[] {
+  const slots = entries.flatMap((entry, index) => (order.has(entry.id) ? [index] : []))
+  const listed = slots.map(index => entries[index]).sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0))
+  const next = [...entries]
+
+  slots.forEach((slot, index) => {
+    next[slot] = listed[index]
+  })
 
   return next
 }
@@ -270,7 +290,9 @@ function updateKnownReceipts(known: Record<string, PendingSubmission>, value: Ra
         ...previous,
         id: raw.admission_id,
         text: raw.user ?? previous?.text ?? '',
-        status: raw.status,
+        // A steer in transfer reads `started` but can still go back to its queue place: it never
+        // raises the admission's rank, so the owner's later `queued` listing repaints its card.
+        status: raw.steering === true ? (previous?.status ?? 'queued') : raw.status,
         ...(fence && !predates(fence, previous?.seen) ? { seen: fence } : {})
       }
     }

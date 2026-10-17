@@ -932,6 +932,50 @@ class TestToolsConfigIncludeMode:
 
 class TestShippedCatalog:
 
+    def test_ibkr_manifest_curates_draft_order_tools(self, monkeypatch):
+        """IBKR is discoverable with OAuth and draft-order tools excluded."""
+        monkeypatch.delenv("HERMES_OPTIONAL_MCPS", raising=False)
+        from hermes_cli.mcp_catalog import get_entry
+
+        entry = get_entry("ibkr")
+
+        assert entry is not None
+        assert entry.transport.type == "http"
+        assert entry.transport.url == "https://api.ibkr.com/v1/api/mcp-public"
+        assert entry.auth.type == "oauth"
+        assert entry.auth.scopes == ["mcp.read"]
+        assert entry.tools.default_enabled is None
+        assert entry.tools.default_excluded == [
+            "create_order_instruction",
+            "delete_order_instruction",
+        ]
+        assert entry.suggest is not None
+        assert entry.suggest.keywords == ["ibkr", "interactive brokers", "brokerage", "portfolio"]
+        assert entry.suggest.hosts == ["interactivebrokers.com", "ibkr.com"]
+
+    def test_ibkr_install_preserves_explicit_draft_opt_in(self, monkeypatch):
+        """Real config writes apply defaults and retain the user's draft opt-in."""
+        monkeypatch.delenv("HERMES_OPTIONAL_MCPS", raising=False)
+        from hermes_cli.config import load_config, save_config
+        from hermes_cli.mcp_catalog import install_entry
+
+        entry = _entry("ibkr")
+        install_entry(entry, enable=True)
+
+        cfg = load_config()
+        server = cfg["mcp_servers"]["ibkr"]
+        assert server["enabled"] is True
+        assert server["url"] == entry.transport.url
+        assert server["auth"] == "oauth"
+        assert server["tools"] == {"exclude": entry.tools.default_excluded}
+
+        server["tools"] = {"include": ["create_order_instruction"]}
+        save_config(cfg)
+        install_entry(entry, enable=True)
+
+        server = load_config()["mcp_servers"]["ibkr"]
+        assert server["tools"] == {"include": ["create_order_instruction"]}
+
     def test_manifest_connector_slugs_are_valid_and_unique(self, monkeypatch):
         from hermes_cli.mcp_catalog import catalog_diagnostics, list_catalog
 

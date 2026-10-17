@@ -299,9 +299,70 @@ describe('openSession', () => {
     expect(openSessionTile).toHaveBeenCalledWith('s1', 'center')
   })
 
+  it('docks an edge split without replacing main', () => {
+    openSession('s1', navigate, 'in-place', undefined, { pane: 'workspace', pos: 'right' })
+
+    expect(openSessionTile).toHaveBeenCalledWith('s1', 'right', 'workspace', undefined)
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it.each(['left', 'top', 'bottom'] as const)('docks the %s edge', pos => {
+    openSession('s1', navigate, 'in-place', undefined, { pane: 'workspace', pos })
+
+    expect(openSessionTile).toHaveBeenCalledWith('s1', pos, 'workspace', undefined)
+  })
+
+  it('relocates an existing tile through its requested edge dock', () => {
+    focusOpenSession.mockReturnValue('tile')
+
+    openSession('s1', navigate, 'in-place', undefined, { before: 'first', pane: 'sidebar', pos: 'left' })
+
+    expect(openSessionTile).toHaveBeenCalledWith('s1', 'left', 'sidebar', 'first')
+    expect(focusOpenSession).not.toHaveBeenCalled()
+  })
+
+  it('keeps the intent path for center and invalid docks', () => {
+    openSession('center', navigate, 'in-place', undefined, { pane: 'workspace', pos: 'center' })
+    openSession('invalid', navigate, 'in-place', undefined, { pane: 'workspace', pos: 'diagonal' } as never)
+
+    expect(openSessionTile).not.toHaveBeenCalled()
+    expect(navigate).toHaveBeenCalledWith('/c/center')
+    expect(navigate).toHaveBeenCalledWith('/c/invalid')
+  })
+
+  it('guards invalid runtime dock fields', () => {
+    openSession('s1', navigate, 'in-place', undefined, {
+      before: { id: 'not-a-pane' },
+      pane: 42,
+      pos: 'right'
+    } as never)
+
+    expect(openSessionTile).toHaveBeenCalledWith('s1', 'right', undefined, undefined)
+  })
+
+  it('threads a Bot workspace scope into an edge tile', () => {
+    const scope = { workspaceMode: 'bots' as const, workspaceOwnerKey: 'connection-a::default' }
+
+    openSession('s1', navigate, 'in-place', scope, { pane: 'workspace', pos: 'right' })
+
+    expect(openSessionTile).toHaveBeenCalledWith('s1', 'right', 'workspace', undefined, scope)
+  })
+
+  it('window intent ignores dock and keeps its tab fallback', () => {
+    canOpenSessionWindow.mockReturnValue(false)
+    focusOpenSession.mockReturnValue(null)
+
+    openSession('s1', navigate, 'window', undefined, { pane: 'workspace', pos: 'right' })
+
+    expect(openSessionInNewWindow).not.toHaveBeenCalled()
+    expect(openSessionTile).toHaveBeenCalledWith('s1', 'center')
+    expect(openSessionTile).not.toHaveBeenCalledWith('s1', 'right', expect.anything(), expect.anything())
+  })
+
   it('no-ops on an empty id', () => {
-    openSession('', navigate)
+    openSession('', navigate, 'in-place', undefined, { pane: 'workspace', pos: 'right' })
     expect(navigate).not.toHaveBeenCalled()
     expect(focusOpenSession).not.toHaveBeenCalled()
+    expect(openSessionTile).not.toHaveBeenCalled()
   })
 })

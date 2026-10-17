@@ -16,6 +16,8 @@ import json
 import threading
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from tools.delegate_tool import (
     DELEGATE_TASK_SCHEMA,
     _run_single_child,
@@ -72,6 +74,12 @@ class TestValidateOutput:
 
     def test_empty_text_is_invalid(self):
         ok, errors = validate_output("", ADDRESS_SCHEMA)
+        assert ok is False
+        assert errors
+
+    @pytest.mark.parametrize("text, schema_type", [('"[]"', "array"), ('"{}"', "object")])
+    def test_json_string_does_not_validate_as_its_embedded_container(self, text, schema_type):
+        ok, errors = validate_output(text, {"type": schema_type})
         assert ok is False
         assert errors
 
@@ -171,6 +179,16 @@ class TestRunSingleChildSchemaValidation:
         assert entry["status"] == "completed"
         assert entry["schema_valid"] is True
         assert "schema_errors" not in entry
+        assert len(child.calls) == 1
+
+    @pytest.mark.parametrize("text", ['"a[0]"', '"{}"', '```json\n"a[0]"\n```'])
+    def test_string_output_preserves_brackets_without_retry(self, text):
+        child = _StubChild([text])
+        child._delegate_output_schema = {"type": "string"}
+        entry = _run(child)
+        assert entry["status"] == "completed"
+        assert entry["summary"] == text
+        assert entry["schema_valid"] is True
         assert len(child.calls) == 1
 
     def test_invalid_then_retry_then_valid(self):

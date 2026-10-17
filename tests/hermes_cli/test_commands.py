@@ -29,6 +29,12 @@ class TestCommandRegistry:
         names = [cmd.name for cmd in COMMAND_REGISTRY]
         assert len(names) == len(set(names)), f"Duplicate names: {[n for n in names if names.count(n) > 1]}"
 
+    def test_fast_registry_exposes_ultrafast(self):
+        fast = resolve_command("fast")
+        assert fast is not None
+        assert "ultrafast" in fast.args_hint
+        assert "ultrafast" in fast.subcommands
+
     def test_no_alias_collides_with_canonical_name(self):
         """An alias must not shadow another command's canonical name."""
         canonical_names = {cmd.name for cmd in COMMAND_REGISTRY}

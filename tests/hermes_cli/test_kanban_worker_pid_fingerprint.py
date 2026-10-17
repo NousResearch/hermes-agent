@@ -149,3 +149,78 @@ def test_unverified_fingerprint_capture_never_authorizes_a_signal(board, monkeyp
     monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)
     assert kb.release_stale_claims(conn, signal_fn=sig) == 1
     assert killed == [] and kb.get_task(conn, tid2).status == "ready"
+
+
+def test_liveness_read_drifted_by_a_second_keeps_the_live_worker(board, monkeypatch):
+    """Same-host start-time readings drift ~1 s between the spawn write and a later liveness read
+    (macOS ``kern.boottime`` adjustment, #117505): a recorded 179196376755 and a live read
+    179196376655 identify the SAME process. Exact equality called that a recycled PID, released a
+    still-valid claim and orphaned the run while the worker kept producing output."""
+    conn = board
+    killed = []
+    live = kbd._process_fingerprint(os.getpid())
+    assert live is not None
+    epoch, start = live.split("|", 1)
+    tid = _claimed_running(conn, pid=os.getpid(), started_at=live, max_runtime=1)
+
+    # A later read reports the start half 1 s (100 centiseconds) lower — the observed direction.
+    drifted = f"{epoch}|{int(start) - 100}"
+    monkeypatch.setattr(kbd, "_process_fingerprint", lambda pid: drifted)
+
+    assert kbd._worker_alive(os.getpid(), live) is True
+    assert kbd._pid_recycled(os.getpid(), live) is False
+    assert kb.release_stale_claims(conn) == 0
+    assert kb.get_task(conn, tid).status == "running"
+    assert "claim_extended" in [e.kind for e in kb.list_events(conn, tid)]
+
+    kbd.enforce_max_runtime(conn, signal_fn=lambda pid, sig: killed.append((pid, sig)))
+    assert killed and killed[0] == (os.getpid(), signal.SIGTERM)
+
+
+def test_drift_at_the_fleet_tolerance_boundary_is_still_our_worker(monkeypatch):
+    """The comparator tolerates ±2 s (200 centiseconds, the fleet-wide
+    ``START_TIME_DRIFT_TOLERANCE``): at the boundary the process is still the same incarnation, one
+    centisecond past it is not — a recycled PID is never that close to the original's start time."""
+    from gateway.status import START_TIME_DRIFT_TOLERANCE
+
+    live = kbd._process_fingerprint(os.getpid())
+    assert live is not None
+    epoch, start = live.split("|", 1)
+    for offset, expected in ((START_TIME_DRIFT_TOLERANCE, False), (START_TIME_DRIFT_TOLERANCE + 1, True)):
+        monkeypatch.setattr(kbd, "_process_fingerprint", lambda pid, o=offset: f"{epoch}|{int(start) + o}")
+        assert kbd._pid_recycled(os.getpid(), live) is expected
+
+
+def test_drift_tolerance_does_not_excuse_a_different_boot_witness(monkeypatch):
+    """The tolerance applies to the start half only: a matching start time under a different
+    instantiation epoch stays a post-reboot stranger, exactly as before."""
+    live = kbd._process_fingerprint(os.getpid())
+    assert live is not None
+    _, start = live.split("|", 1)
+    recorded = f"deadbeef-boot:1|{start}"
+    monkeypatch.setattr(kbd, "_process_fingerprint", lambda pid: f"cafebabe-boot:2|{int(start) - 100}")
+    assert kbd._pid_recycled(os.getpid(), recorded) is True
+    assert kbd._worker_alive(os.getpid(), recorded) is False
+
+
+def test_legacy_int_fingerprint_tolerates_the_same_drift(board, monkeypatch):
+    """Rows written before the boot witness recorded a bare start time. The same drift is tolerated
+    there — a live worker whose reading moved 1 s must not be released as a dead one."""
+    from gateway.status import START_TIME_DRIFT_TOLERANCE, get_process_start_time
+
+    conn = board
+    real = get_process_start_time(os.getpid())
+    assert real is not None
+    tid = _claimed_running(conn, pid=os.getpid(), started_at=real, max_runtime=1)
+
+    monkeypatch.setattr("gateway.status.get_process_start_time", lambda pid: real - 100)
+    assert kbd._pid_recycled(os.getpid(), real) is False
+    assert kbd._worker_alive(os.getpid(), real) is True
+    assert kb.release_stale_claims(conn) == 0
+    assert kb.get_task(conn, tid).status == "running"
+
+    # Past the tolerance it is a stranger again: the guard still releases it, never signals it.
+    monkeypatch.setattr("gateway.status.get_process_start_time",
+                        lambda pid: real - START_TIME_DRIFT_TOLERANCE - 1)
+    assert kbd._pid_recycled(os.getpid(), real) is True
+    assert kbd._worker_alive(os.getpid(), real) is False

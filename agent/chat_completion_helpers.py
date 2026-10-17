@@ -42,6 +42,7 @@ from agent.gemini_native_adapter import is_native_gemini_base_url
 # misidentify and, without an api_key, return 401 on every leg (issue #89863).
 from agent.model_metadata import is_local_endpoint
 from agent.message_content import flatten_message_text
+from agent.chat_completion_images import materialize_chat_images, materialize_chat_response
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, append_message, stamp_message_timestamp
 from agent.message_sanitization import (
     _sanitize_messages_surrogates, _sanitize_surrogates, _repair_tool_call_arguments,
@@ -786,13 +787,15 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
         _completions = getattr(getattr(agent.client, "chat", None), "completions", None)
         if not callable(getattr(_completions, "prepare", None)):
             api_kwargs.pop("_moa_prepared_request", None)
-        return agent.client.chat.completions.create(**api_kwargs)
+        return materialize_chat_response(agent.client.chat.completions.create(**api_kwargs),
+            save=not agent._interrupt_requested)
     request_client = make_client("chat_completion_request")
     # #93650: keep the bulk wire-format payload out of the SDK's GIL-holding
     # request transform. No-op unless this really is the OpenAI SDK, so the
     # MoA facade above and the suite's stand-in clients are unaffected.
     api_kwargs = bypass_chat_sdk_request_transform(api_kwargs, request_client)
-    return request_client.chat.completions.create(**api_kwargs)
+    return materialize_chat_response(request_client.chat.completions.create(**api_kwargs),
+        save=not agent._interrupt_requested)
 
 
 def should_use_direct_api_call(agent) -> bool:
@@ -2377,8 +2380,8 @@ def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, u
     an empty list for ``max_tokens``.
 
     ``clean_eof``: the stream ended with no transport exception and no
-    ``finish_reason`` (server/intermediary closed cleanly). Only the two
-    clean-EOF sites in ``_finish_chat_stream`` pass True; the stub built after a
+    ``finish_reason`` (server/intermediary closed cleanly). Only clean-EOF
+    sites in ``_finish_chat_stream`` pass True; the stub built after a
     real transport exception keeps False so the loop can word the two failure
     modes differently (#102766).
     """
@@ -2718,6 +2721,9 @@ class _StreamingCall(StreamingWaitMonitor):
         self.first_delta_fired = {"done": False}
         self.deltas_were_sent = {"yes": False}  # for the partial-delivery fallback
         self.provider_tool_in_flight = {"yes": False}
+        # Intake artifacts survive Relay failure, suppressed/callback-less delivery and retries.
+        self._chat_images_seen: set[str] = set()
+        self._chat_image_markers: list[str] = []
         # Last REAL chunk; the monitor detects SSE-ping-only connections with it.
         self.last_chunk_time = {"t": time.time()}
         self.prompt_progress = {"progress": None, "t": 0.0}  # latest llama-server prompt progress
@@ -2965,7 +2971,8 @@ class _StreamingCall(StreamingWaitMonitor):
         self.agent._capture_nous_model_switch(response)
         self.agent._stream_diag_capture_response(self.clients.diag, response)
         self.agent._check_openrouter_cache_status(response)
-        self._writer_token = claim_stream_writer(self.agent)
+        if self._writer_token is None:
+            self._writer_token = claim_stream_writer(self.agent)
         self._reabort_if_cancelled(response)
 
     def _reabort_if_cancelled(self, response: Any) -> None:
@@ -2988,6 +2995,7 @@ class _StreamingCall(StreamingWaitMonitor):
             abort(self._attempt_request_client, reason="cancelled_attempt_late_connect")
 
     def _accept_chat_chunk(self, stream_attempt_id: int, chunk: Any) -> bool:
+        delta = None
         with contextlib.suppress(Exception):
             choices = getattr(chunk, "choices", None)
             choice = choices[0] if choices else None
@@ -2999,15 +3007,19 @@ class _StreamingCall(StreamingWaitMonitor):
             # Marker-only finish chunk (no writable delta) always passes: the fence only stops
             # MORE text; fending the completion signal would mislabel a clean end as a drop.
             if getattr(choice, "finish_reason", None) and not any(
-                getattr(delta, attr, None) for attr in ("content", "tool_calls", "reasoning_content", "reasoning")):
+                getattr(delta, attr, None) for attr in ("content", "tool_calls", "reasoning_content", "reasoning", "images")):
                 return True
-        if not self._stream_attempt_is_active(stream_attempt_id):
+        if self.agent._interrupt_requested or not self._stream_attempt_is_active(stream_attempt_id):
             return False
         if not self._writer_still_current("Streaming"):
             return False
         # Stamp BEFORE Relay processes the chunk so the watchdog can't cancel
         # a live stream mid-interceptor.
         self.last_chunk_time["t"] = time.time()
+        # Before Relay serializes this provider chunk: keep only local MEDIA paths.
+        if delta is not None:
+            markers = materialize_chat_images(delta, self._chat_images_seen)
+            self._chat_image_markers.extend(markers)
         return True
 
     def _writer_still_current(self, label: str) -> bool:
@@ -3046,7 +3058,9 @@ class _StreamingCall(StreamingWaitMonitor):
         response_id = upstream_provider = None  # the provider's own id / serving upstream, from the chunks
         role = "assistant"
         _diag = self._new_diag()
-        self._writer_token = self._attempt_request_client = self._attempt_stream_response = None
+        # Claim before create(): a slow completed response must not steal a newer writer.
+        self._writer_token = claim_stream_writer(self.agent)
+        self._attempt_request_client = self._attempt_stream_response = None
         from agent.chat_completion_helpers_relay import RelayChatAccumulator
         relay_response = RelayChatAccumulator()
         # The raw channels, not the callback-delivered text: cron, subagents and callback-less
@@ -3071,12 +3085,26 @@ class _StreamingCall(StreamingWaitMonitor):
             for text in pending_parts:
                 (self._route_suppressed_text if tool_calls_acc else self._emit_text)(text)
 
+        def _completed_chat_response(value):
+            if not hasattr(value, "choices"):
+                return False
+            self._chat_stream_created(value)
+            if (self.agent._interrupt_requested or not self._stream_attempt_is_active(stream_attempt_id)
+                    or not self._writer_still_current("Completed chat response")):
+                materialize_chat_response(value, save=False)
+                # Raising preserves cancellation/failure semantics; False would iterate a response.
+                if self.agent._interrupt_requested or self._request_cancelled["value"]:
+                    raise InterruptedError("Agent interrupted before completed chat response intake")
+                raise InterruptedError("Completed chat response attempt was superseded")
+            materialize_chat_response(value, seen=self._chat_images_seen, markers=self._chat_image_markers)
+            return True
+
         from agent import relay_llm
         stream = self._set_managed_stream(relay_llm.stream(self.api_kwargs, _open_stream,
             **_relay_stream_identity(self.agent, "provider"), finalizer=relay_response.finalize,
             on_stream_created=self._chat_stream_created, on_chunk=relay_response.observe,
             accept_chunk=lambda chunk: self._accept_chat_chunk(stream_attempt_id, chunk),
-            completed_response_predicate=lambda value: hasattr(value, "choices"),
+            completed_response_predicate=_completed_chat_response,
             metadata=_relay_stream_metadata(self.agent, "chat_completions"), defer_logical_completion=True))
         if self.agent.provider == "moa":
             # Hermes interrupts the managed stream; Relay alone closes the provider stream.
@@ -3187,7 +3215,8 @@ class _StreamingCall(StreamingWaitMonitor):
                     pending = "".join(pending_text_parts)
                     if not (_provider_stream_text_may_be_sse(pending) or router_timeout_shim_may_follow(pending)):
                         _flush_pending_stream_text()
-                    continue
+                    if pending_text_parts and not getattr(delta, "tool_calls", None):
+                        continue
                 else:
                     self._emit_text(delta_content)
 
@@ -3310,6 +3339,19 @@ class _StreamingCall(StreamingWaitMonitor):
 
             full_reasoning = extract_reasoning(self.agent, SimpleNamespace(content=full_content))
         mock_tool_calls, has_truncated_tool_args = self._assemble_tool_calls(tool_calls_acc, finish_reason)
+        if finish_reason is None and self._chat_image_markers:
+            # Receipt is not completion, even with usage or parseable tool arguments.
+            # Use accumulated content, not callback delivery; never execute partial tools.
+            for marker in self._chat_image_markers:
+                if marker not in (full_content or ""):
+                    full_content = (full_content + "\n" if full_content else "") + marker
+            full_content = (full_content or "") + (
+                "\n[Image response interrupted; received image artifacts are preserved above. "
+                "Do not generate them again; any unfinished tool call was not executed.]")
+            _dropped_names = [(tool_calls_acc[idx]["function"]["name"] or "?") for idx in sorted(tool_calls_acc)]
+            return _build_partial_stream_stub(
+                role, full_content, full_reasoning, model_name, usage_obj,
+                dropped_tool_names=_dropped_names or None, clean_eof=True)
         # Zero-chunk guard: nothing usable = upstream error / malformed SSE.
         if finish_reason is None and not content_parts and not reasoning_parts and not refusal_parts and not tool_calls_acc:
             raise EmptyStreamError(
@@ -3574,6 +3616,14 @@ class _StreamingCall(StreamingWaitMonitor):
         # poll loop raises InterruptedError).
         if self._request_cancelled["value"]:
             logger.debug("Streaming worker caught %s after request cancellation — exiting without retry.", type(e).__name__)
+            return False
+        if isinstance(e, InterruptedError):
+            self.result["error"] = e
+            return False
+        if self._chat_image_markers:
+            # Already paid for/received an image (including save failures): never replay this request.
+            self.deltas_were_sent["yes"] = True
+            self.result["error"] = e
             return False
         _is_timeout = isinstance(e, (_httpx.ReadTimeout, _httpx.ConnectTimeout, _httpx.PoolTimeout))
         # ReadError: abort/reset mid-body (stale-kill shutdown under a parked reader,
@@ -3902,6 +3952,13 @@ class _StreamingCall(StreamingWaitMonitor):
         handler reclassifies it as undelivered (#112419)."""
         error = self.result["error"]
         _partial_text = (getattr(self.agent, "_current_streamed_assistant_text", "") or "").strip() or None
+        for marker in self._chat_image_markers:
+            if marker not in (_partial_text or ""):
+                _partial_text = (_partial_text + "\n" if _partial_text else "") + marker
+        if self._chat_image_markers:
+            _partial_text = (_partial_text or "") + (
+                "\n[Image response interrupted; received image artifacts are preserved above. "
+                "Do not generate them again; any unfinished tool call was not executed.]")
         _partial_names = list(self.result.get("partial_tool_names") or [])
         if _partial_names:
             # User-visible warning so the user and model both know what was attempted.
@@ -3974,6 +4031,13 @@ class _StreamingCall(StreamingWaitMonitor):
             self.worker = threading.Thread(target=_context_thread_target(self._run_call), daemon=True)
             self.worker.start()
             self._monitor_loop()
+        if self._chat_image_markers and self._writer_still_current("Chat image recovery"):
+            # Existing interrupt/redirect persistence reads this buffer even with no stream callback.
+            partial = getattr(self.agent, "_current_streamed_assistant_text", "") or ""
+            for marker in self._chat_image_markers:
+                if marker not in partial:
+                    self.agent._record_streamed_assistant_text("\n" + marker)
+                    partial += "\n" + marker
         if self._monitor_interrupted["yes"]:
             raise InterruptedError("Agent interrupted during streaming API call")
         if self.agent._interrupt_requested:  # worker returned early before the monitor saw the flag

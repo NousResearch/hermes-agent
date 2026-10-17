@@ -265,6 +265,33 @@ async def test_gateway_stop_kills_tool_subprocesses_before_adapter_disconnect_on
     assert call_order.count("kill_all") >= 2
 
 
+@pytest.mark.asyncio
+async def test_gateway_stop_sweeps_tool_subprocesses_before_adapter_disconnect_after_graceful_drain(monkeypatch):
+    """A graceful drain still needs to reap orphaned tool children before egress closes (#140162)."""
+    runner, adapter = make_restart_runner()
+    call_order: list[str] = []
+
+    import tools.process_registry as _pr
+
+    monkeypatch.setattr(
+        _pr.process_registry, "kill_all",
+        lambda **_kwargs: call_order.append("kill_all") or 0,
+    )
+    monkeypatch.setattr("tools.async_delegation.interrupt_all", lambda **_kwargs: 0)
+    monkeypatch.setattr("tools.terminal_tool_lifecycle.cleanup_all_environments", lambda: None)
+    monkeypatch.setattr("tools.browser_tool_lifecycle.cleanup_all_browsers", lambda: None)
+
+    async def _disconnect():
+        call_order.append("disconnect")
+
+    adapter.disconnect = _disconnect
+
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.publish_runtime_status"):
+        await runner.stop()
+
+    assert call_order.index("kill_all") < call_order.index("disconnect"), call_order
+
+
 # ---------------------------------------------------------------------------
 # gateway_state persistence on shutdown (issue #42675)
 #

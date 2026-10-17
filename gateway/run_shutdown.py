@@ -173,6 +173,10 @@ def _effective_watchdog_leash(runner: object) -> float:
 class GatewayShutdownMixin(GatewaySessionEndMixin):
     """Stop/drain/restart, scale-to-zero and active-work accounting methods for GatewayRunner."""
 
+    # ``kill_all`` can wait on a systemd scope or a sandbox backend. Leave its
+    # worker alone after this deadline so an unkillable child cannot pin exit.
+    _TOOL_SUBPROCESS_SWEEP_TIMEOUT_S = 30.0
+
     @dataclasses.dataclass
     class _StopContext:
         """State threaded through the ``_stop_*`` phases of one ``stop()`` run."""
@@ -1818,9 +1822,17 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         worker runs, the thread is left to finish on its own; the thread-based shutdown
         watchdog remains the hard backstop.
         """
-        return await asyncio.to_thread(
-            GatewayShutdownMixin._stop_kill_tool_subprocesses, phase
-        )
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(GatewayShutdownMixin._stop_kill_tool_subprocesses, phase),
+                timeout=GatewayShutdownMixin._TOOL_SUBPROCESS_SWEEP_TIMEOUT_S,
+            )
+        except TimeoutError:
+            logger.warning(
+                "Shutdown (%s): tool subprocess sweep exceeded %ss; continuing teardown while its worker finishes",
+                phase, GatewayShutdownMixin._TOOL_SUBPROCESS_SWEEP_TIMEOUT_S,
+            )
+            return []
 
     async def _stop_begin_teardown(self, ctx: GatewayShutdownMixin._StopContext) -> None:
         """Flag teardown, stop room worker/watchdog, notify sessions."""
@@ -2218,6 +2230,13 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             await GatewayRunner._stop_drain_active_work(self, timeout, ctx)
             if ctx.timed_out:
                 await GatewayRunner._stop_interrupt_remaining_work(self, ctx)
+            else:
+                # A successful drain does not prove all tool descendants exited: a
+                # timeout wrapper can outlive its completed turn. Sweep before
+                # adapter teardown, while terminal/environment cleanup still has
+                # the live gateway runtime it needs (#140162).
+                await GatewayRunner._stop_kill_tool_subprocesses_off_loop("post-drain")
+                logger.info("Shutdown phase: post-drain tool kill done at +%.2fs", ctx.elapsed())
             from gateway.run_runtime import settle_gateway_runtime  # within what the leash has left
             await settle_gateway_runtime(self, budget=_effective_watchdog_leash(self) - ctx.elapsed())
             await GatewayRunner._stop_finalize_agents_and_adapters(self, ctx)

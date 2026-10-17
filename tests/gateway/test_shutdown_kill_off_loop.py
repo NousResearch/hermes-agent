@@ -89,3 +89,17 @@ async def test_post_interrupt_kill_preserves_phase_order(monkeypatch):
     probe = asyncio.Event()
     asyncio.get_running_loop().call_soon(probe.set)
     await asyncio.wait_for(probe.wait(), timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_tool_subprocess_sweep_timeout_does_not_block_shutdown(monkeypatch):
+    """An unkillable child must not leave the shutdown task waiting forever (#140162)."""
+    async def _blocked_worker(*_args, **_kwargs):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(asyncio, "to_thread", _blocked_worker)
+    monkeypatch.setattr(GatewayShutdownMixin, "_TOOL_SUBPROCESS_SWEEP_TIMEOUT_S", 0.01)
+
+    started = time.monotonic()
+    assert await GatewayShutdownMixin._stop_kill_tool_subprocesses_off_loop("test") == []
+    assert time.monotonic() - started < 0.5

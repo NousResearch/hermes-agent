@@ -1930,6 +1930,10 @@ def test_approval_for_a_ws_client_that_never_advertised_settles_the_queue_entry(
     monkeypatch.setattr(wait_mod._ctx, "_get_approval_timeout", lambda: 3)
     monkeypatch.setattr(wait_mod._ctx, "_fire_approval_hook", lambda name, **kw: None)
     approval_mod.register_gateway_notify("ws-old-approval", lambda data: server._emit_approval_request("ws-old-approval", data))
+    # Warm the lazy ``gateway.run`` import behind the command redaction first: cold, it is nearly all of this
+    # test's wall time (0.24s of 0.24s locally; 1.97s on a CI runner tripped the bound), and the stopwatch
+    # below is about the approval wait, not module import time.
+    server._approval_request_payload({"command": "warm"})
     try:
         t0 = time.monotonic()
         decision = wait_mod._await_gateway_decision(

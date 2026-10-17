@@ -453,10 +453,7 @@ class SurfaceLabelReader:
                 sources=src, limit=lim, offset=off, local_created_sources=surfaces, **kw))
 
     def session_count(self, source=None, sources=None, **kw):
-        requested = sources if sources else ([source] if source else None)
-        if not requested:
-            return self._wrapped.session_count(source=source, sources=sources, **kw)
-        expanded = self._expand(requested)
+        expanded = self._expand(sources or source)
         if expanded is None:
             return self._wrapped.session_count(source=source, sources=sources, **kw)
         live, surfaces = expanded

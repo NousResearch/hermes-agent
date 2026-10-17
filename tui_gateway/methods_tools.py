@@ -865,7 +865,8 @@ def _cmd_undo(rid, params, session, name, arg):
             lambda: hasattr(agent, "_invalidate_system_prompt") and agent._invalidate_system_prompt(),
             lambda: hasattr(agent, "_last_flushed_db_idx") and setattr(agent, "_last_flushed_db_idx", len(active)),
         ):
-            with contextlib.suppress(Exception):
+            # The session's profile scope: a multiplexed manager refuses a hook naming no profile (#140058).
+            with contextlib.suppress(Exception), _session_profile_runtime_scope(session):
                 step()
     _tui_model_friction("undo", session, turns_undone)
     turn_word = "turn" if turns_undone == 1 else "turns"

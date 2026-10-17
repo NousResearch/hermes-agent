@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
 import { connectionRequestOwnsPart, ConnectorOffer, ConnectorTool } from '@/components/assistant-ui/connector-tool'
 import { I18nProvider } from '@/i18n'
+import { authorizationUrlNow, dismissAuthorizationUrl } from '@/lib/authorization-url'
 import {
   $connectionRequests,
   type ConnectionRequest,
@@ -116,6 +117,7 @@ afterEach(() => {
   setPrimaryGateway(null)
   $notifications.set([])
   _resetSessionOwnerHintsForTests({ storage: true })
+  dismissAuthorizationUrl()
   vi.useRealTimers()
   vi.clearAllMocks()
 })
@@ -175,7 +177,7 @@ describe('ConnectorTool operation card', () => {
     expect(screen.queryByRole('button', { name: 'Not now' })).toBeNull()
   })
 
-  it('opens the stored link from Connect on a waiting row, without an RPC', async () => {
+  it('offers the stored link for copy instead of opening the default browser', async () => {
     const request = vi.fn()
     // SAFETY: the store calls only `request`; the rest of the client is never touched in these tests.
     $gateway.set({ request } as never)
@@ -189,7 +191,8 @@ describe('ConnectorTool operation card', () => {
     expect(connect.hasAttribute('disabled')).toBe(false)
     fireEvent.click(connect)
 
-    expect(openExternal).toHaveBeenCalledWith('https://connect.example/gmail')
+    expect(openExternal).not.toHaveBeenCalled()
+    expect(authorizationUrlNow()).toBe('https://connect.example/gmail')
     expect(request).not.toHaveBeenCalledWith('connectors.connect', expect.anything())
   })
 

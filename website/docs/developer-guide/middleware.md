@@ -115,9 +115,12 @@ emits `post_auxiliary_call` with whatever response the chain produced.
 - The payload carries `aux_task`, `provider`, `model`, `api_mode`, `api_request_id`, `retry_count`
   and the parent turn's `session_id`, `task_id`, `turn_id` and `platform` (empty outside a turn,
   for example cron).
-- Return a replacement response without calling `next_call` to refuse the attempt. Auxiliary
-  consumers receive that object as the provider answer, so a refusal must have the shape callers
-  of that task already accept, and should carry a marker the consumer can recognise.
+- Return a replacement response without calling `next_call` to answer the attempt yourself. To
+  **refuse** it, set a truthy `auxiliary_refused` attribute on that response: Hermes raises
+  `AuxiliaryCallRefused` (carrying the response text) instead of returning it, so refusal text can
+  never be stored as a compression summary, a title or a vision answer. The caller's normal error
+  handling (fallback chain, "no summary" paths) then runs, and `post_auxiliary_call` reports the
+  error.
 - The request cannot be rewritten: the payload `next_call` receives is not applied to the call.
 - Streaming attempts are not gated, because a synthetic non-stream refusal would break stream
   reassembly. On the async path `next_call` returns an awaitable; a replacement response is

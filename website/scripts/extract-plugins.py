@@ -179,7 +179,10 @@ def load_git_dates(catalog_dir: Path) -> dict[str, dict[str, str]]:
     when = ""
     for line in log.splitlines():
         if line.startswith("\x00"):
-            when = line[1:].strip()
+            # %cI (iso-strict) prints UTC as "Z" only from git 2.45 (69e2bee1a3 there);
+            # older gits — including macOS's Apple Git — print "+00:00". Normalize so
+            # plugins.json carries the same canonical UTC stamp on every build host.
+            when = line[1:].strip().replace("+00:00", "Z")
             continue
         parts = line.split("\t")
         if len(parts) < 2 or not when:

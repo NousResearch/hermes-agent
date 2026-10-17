@@ -434,6 +434,36 @@ class SessionSchemaMixin:
         except Exception:
             logger.debug("Could not drop residual CJK UPDATE trigger after quarantine", exc_info=True)
 
+    def _migrate_uid_dedup_index_scope(self, cursor: sqlite3.Cursor) -> None:
+        """Scope the message-dedup uniqueness claim to ACTIVE rows (idempotent).
+
+        The 2026-10-11 dedup fix (#860, #110123) indexed (session_id, message_uid)
+        across every row, but archive_and_compact() soft-archives originals
+        (active=0, compacted=1) and re-inserts the compressor's held dicts — which
+        carry the SAME uids — as fresh active rows. Against the unscoped index every
+        compaction/prune commit collides with the rows it just archived and the whole
+        transaction rolls back ("Proactive tool-result prune DB commit failed:
+        UNIQUE constraint failed"), leaving transcripts unpruned (2026-10-12).
+        Uniqueness among ACTIVE rows is the invariant the dedup fix needs: two live
+        copies of one logical message are still rejected; archived originals release
+        the claim. ``CREATE IF NOT EXISTS`` never updates an existing index, so
+        legacy installs are migrated here by comparing the stored definition.
+        """
+        row = cursor.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_messages_session_uid_dedup'"
+        ).fetchone()
+        if row is None:
+            return  # fresh store: SCHEMA_SQL already created the scoped index
+        if "active = 1" in (row[0] or ""):
+            return  # already scoped
+        cursor.execute("DROP INDEX idx_messages_session_uid_dedup")
+        cursor.execute(
+            "CREATE UNIQUE INDEX idx_messages_session_uid_dedup "
+            "ON messages(session_id, message_uid) WHERE message_uid IS NOT NULL AND active = 1"
+        )
+        logger.info("Migrated idx_messages_session_uid_dedup to active-row scope "
+                    "(archived originals no longer block compaction re-inserts)")
+
     @staticmethod
     def _rebuild_fts_indexes(cursor: sqlite3.Cursor, *, legacy: bool = False, include_trigram: bool = True) -> None:
         """v23+ external-content 'rebuild'. It indexes EVERY row, so the deferred-backfill
@@ -964,6 +994,7 @@ class SessionSchemaMixin:
         except sqlite3.OperationalError as exc:
             logger.debug("idx_messages_platform_msg_id create skipped: %s", exc)
         self._execute_ddl_skipping_settled_triggers(cursor, DEFERRED_INDEX_SQL)  # same ordering constraint (``active``)
+        self._migrate_uid_dedup_index_scope(cursor)  # release archived rows' uid claim (see method docstring)
 
         # Heal NULL ``active`` rows on every startup: older reconciler builds added ``active``
         # without NOT NULL DEFAULT 1, so ``WHERE active = 1`` loaders hid whole histories. A

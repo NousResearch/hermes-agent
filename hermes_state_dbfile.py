@@ -791,6 +791,11 @@ def collect_state_db_stats(db_path: Path) -> dict[str, Any]:
         stats["journal_mode"] = str(jm) if jm is not None else None
         stats["messages"] = _int("SELECT COUNT(*) FROM messages")
         stats["sessions"] = _int("SELECT COUNT(*) FROM sessions")
+        # Message-duplication ratio: COUNT(DISTINCT message_uid) vs COUNT(*) tells us whether
+        # the same logical uid has been INSERTed more than once. A value < 1.0 means duplication.
+        _total = stats.get("messages")
+        _unique_uids = _int("SELECT COUNT(DISTINCT message_uid) FROM messages WHERE message_uid IS NOT NULL")
+        stats["message_dedup_ratio"] = (float(_unique_uids) / float(_total)) if _total and _unique_uids else 1.0
         # FTS table presence via sqlite_master (never SELECTs from the
         # virtual tables themselves — a corrupt index must not fail stats).
         with contextlib.suppress(Exception):

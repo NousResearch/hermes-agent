@@ -716,6 +716,14 @@ def _hermes_metadata(frontmatter: dict[str, Any]) -> dict[str, Any]:
     return hermes if isinstance(hermes, dict) else {}
 
 
+def extract_related_skills(frontmatter: dict[str, Any]) -> list[str]:
+    """Declared ``related_skills`` (``metadata.hermes`` first, then top level, as the skills tool
+    reads them); a list, a scalar, or the bracketed string the malformed-YAML fallback yields."""
+    raw = _hermes_metadata(frontmatter).get("related_skills") or frontmatter.get("related_skills") or []
+    items = raw.strip("[]").split(",") if isinstance(raw, str) else raw if isinstance(raw, list) else []
+    return [name for item in items if (name := str(item).strip().strip("'\""))]
+
+
 # ``session_platforms`` is the gateway-channel gate: session platforms the skill
 # is FOR (hidden from the index elsewhere), unlike ``platforms:`` (host OS).
 _CONDITION_KEYS = ("fallback_for_toolsets", "requires_toolsets", "fallback_for_tools", "requires_tools", "session_platforms")

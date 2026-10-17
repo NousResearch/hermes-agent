@@ -121,6 +121,14 @@ def clarify_tool(questions, callback: Optional[Callable] = None) -> str:
     with human_input_request("clarify", prompt="\n".join(q["question"] for q in normalized)) as human:
         try:
             reply = callback(normalized)
+            # A surface may hand back a plain string (older/foreign renderer, or a bridge that
+            # returns its own text instead of the {"answers", "outcome"} contract). Coerce it
+            # rather than letting ``reply.get`` raise and turn the whole wait into an error.
+            if not isinstance(reply, dict):
+                if isinstance(reply, str) and reply.strip():
+                    reply = {"answers": {}, "outcome": "undelivered", "notice": reply.strip()}
+                else:
+                    reply = {"answers": {}, "outcome": "undelivered"}
             human.outcome = str(reply.get("outcome") or "")
             return _result(normalized, reply)
         except Exception as exc:

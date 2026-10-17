@@ -1,10 +1,14 @@
-"""Sibling owner-liveness checks tolerate a drifted start-time fingerprint (#117505).
+"""Owner-liveness is fail-safe: a live pid is never proved dead by a fingerprint mismatch.
 
-``cron.executions`` is not the only reconciler that compares a recorded owner fingerprint with
-a fresh ``get_process_start_time`` reading: the delivery ledger, API-server durable runs and the
-async-delegation ledger did the same exact-equality test and reconciled a live owner to
-dead/unknown under the same ~1 s same-host drift. All of them now share
-``gateway.status.start_time_fingerprints_match``.
+``cron.executions`` is not the only reconciler that compared a recorded owner start fingerprint
+with a fresh ``get_process_start_time`` reading: the delivery ledger, API-server durable runs and
+the async-delegation ledger treated a mismatch as death and reconciled a live owner to
+dead/unknown. Same-host readings of a LIVE process drift without bound (measured 2026-10-17:
+1064 of 1073 live-owner rows mismatched the 2 s tolerance), so a fixed tolerance can never
+separate "drifted" from "recycled". Every one of these liveness checks now fails safe: the owner
+pid's continued existence is the only positive signal, and a mismatched fingerprint never proves
+death. A genuinely wedged claim is released by each caller's stale bound, never by the
+fingerprint.
 """
 
 from __future__ import annotations
@@ -58,7 +62,19 @@ def test_one_second_drift_keeps_owner_live(site, monkeypatch, tmp_path):
         assert _async_delegation_alive(monkeypatch, tmp_path) is True
 
 
-def test_far_fingerprint_is_still_a_recycled_pid(monkeypatch):
+def test_unbounded_drift_never_proves_death(monkeypatch):
+    """A live owner whose fingerprint drifted far past the old tolerance is still alive.
+
+    The drift has no fixed bound, so no magnitude of mismatch can prove PID reuse. A far mismatch
+    on a still-existing pid therefore stays owned; the stale bound is the reclaim path.
+    """
     monkeypatch.setattr(status, "get_process_start_time", lambda pid: RECORDED + 3600)
+    assert _delivery_ledger_alive() is True
+    assert _api_server_run_alive() is True
+
+
+def test_gone_owner_is_still_dead(monkeypatch):
+    """A pid that no longer exists remains the one way liveness proves death."""
+    monkeypatch.setattr(status, "_pid_exists", lambda pid: False)
     assert _delivery_ledger_alive() is False
     assert _api_server_run_alive() is False

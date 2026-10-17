@@ -962,8 +962,12 @@ class AIAgent(
         """Detach and close per-turn child agents; ``soft`` releases their clients first, falling back to close()."""
         try:
             with self._active_children_lock:
-                children = list(self._active_children)
-                self._active_children.clear()
+                review = getattr(self, "_background_review_agent", None) if soft else None
+                children = [child for child in self._active_children if child is not review]
+                # The asynchronous review owns its own completion/cleanup. Cache retirement
+                # must not cut its live request short; hard close still owns every child.
+                for child in children:
+                    self._active_children.remove(child)
         except Exception:
             return
         for child in children:
@@ -993,12 +997,9 @@ class AIAgent(
         _quietly(self._close_cached_request_anthropic_client, reason=reason)
 
     def _close_codex_session(self) -> None:
-        """Close the Codex app-server session (else the child keeps running); the attribute is cleared BEFORE
-        close() so a concurrent reader can't grab a half-closed session."""
-        codex_session = getattr(self, "_codex_session", None)
-        if codex_session is not None:
-            self._codex_session = None
-            codex_session.close()
+        """Retire this instance's writer before dropping its ownership reference."""
+        from agent.codex_lifecycle import close_codex_session
+        close_codex_session(self)
 
     @staticmethod
     def _trim_process_memory() -> None:

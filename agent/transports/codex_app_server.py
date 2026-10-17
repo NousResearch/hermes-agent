@@ -17,7 +17,6 @@ import threading
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from agent.deadline import kill_process_tree
 from agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
 from tools.environments.local import hermes_subprocess_env
 
@@ -155,6 +154,9 @@ class CodexAppServerClient:
         self._stderr_lines: list[str] = []
         self._stderr_lock = threading.Lock()
         self._closed = False
+        self._close_lock = threading.Lock()
+        self._close_complete = False
+        self._closing_descendants = None
         self._initialized = False
 
         self._reader = threading.Thread(target=self._read_stdout, daemon=True)
@@ -179,29 +181,38 @@ class CodexAppServerClient:
         return result
 
     def close(self, timeout: float = 3.0) -> None:
-        """Close stdin and wait for the subprocess TREE to exit, escalating to kill.
+        """Confirm root subprocess exit, then best-effort reap snapshotted descendants.
 
         Codex app-server owns stdio MCP descendants that may sit in their own process
         groups (``setsid``). Once the root exits they reparent and a parent walk can no
         longer find them, so descendants are snapshotted BEFORE the root is retired and
         the proven identities (PID + create time) are swept afterwards."""
-        if self._closed:
-            return
-        self._closed = True
-        self._fail_pending_requests("codex app-server client is closing")
-        descendants = _snapshot_descendants(self._proc.pid)
-        with contextlib.suppress(Exception):
-            if self._proc.stdin and not self._proc.stdin.closed:
-                self._proc.stdin.close()
+        if not self._close_lock.acquire(timeout=30):
+            raise TimeoutError("codex app-server close is still in progress")
         try:
-            self._proc.terminate()
-            self._proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
+            if self._close_complete:
+                return
+            self._closed = True  # reject new requests, even if termination needs a retry
+            self._fail_pending_requests("codex app-server client is closing")
+            if self._closing_descendants is None:
+                self._closing_descendants = _snapshot_descendants(self._proc.pid) if self._proc.poll() is None else []
             with contextlib.suppress(Exception):
-                kill_process_tree(self._proc.pid)
+                if self._proc.stdin and not self._proc.stdin.closed:
+                    self._proc.stdin.close()
+            try:
+                if self._proc.poll() is None:
+                    self._proc.terminate()
+                self._proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                # Popen retains the child identity and guards signaling after exit. Do not
+                # rediscover a process tree from a PID that may have been recycled on retry.
+                self._proc.kill()
                 self._proc.wait(timeout=1.0)
+            finally:
+                _reap_snapshotted(self._closing_descendants)
+            self._close_complete = True
         finally:
-            _reap_snapshotted(descendants)
+            self._close_lock.release()
 
     def _fail_pending_requests(self, reason: str) -> None:
         """Unblock every thread currently sitting in request() instead of

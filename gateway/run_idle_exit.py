@@ -75,10 +75,10 @@ def _messaging_busy(runner) -> str | None:
     local = {Platform.LOCAL}
     live = [p for p in (getattr(runner, "adapters", None) or {}) if p not in local]
     for adapters in (getattr(runner, "_profile_adapters", None) or {}).values():
-        live.extend(adapters)
+        live.extend(p for p in adapters if p not in local)
     for pending in (getattr(runner, "_profile_failed_platforms", None) or {}).values():
-        live.extend(pending or {})
-    live.extend(getattr(runner, "_failed_platforms", None) or {})
+        live.extend(p for p in (pending or {}) if p not in local)
+    live.extend(p for p in (getattr(runner, "_failed_platforms", None) or {}) if p not in local)
     config = getattr(runner, "config", None)
     if config is not None:
         live.extend(p for p, cfg in config.platforms.items() if p not in local and getattr(cfg, "enabled", False))

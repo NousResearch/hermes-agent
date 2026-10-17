@@ -90,3 +90,46 @@ def test_jsonl_backup_refuses_a_session_over_max_export_messages(tmp_path, monke
     assert not backup.exists()
     out = capsys.readouterr().out
     assert SID in out and "max_export_messages" in out
+
+
+@pytest.mark.parametrize("selection", [("--session-id", SID), ()], ids=["session-id", "bare"])
+def test_refused_export_keeps_existing_backup_and_a_raised_limit_recovers(tmp_path, monkeypatch, capsys, selection):
+    """A refusal leaves the previous backup intact; raising the limit then rewrites it with the new turn."""
+    from hermes_cli.config import load_config, save_config
+
+    def set_limit(limit):
+        cfg = load_config()
+        cfg.setdefault("sessions", {})["max_export_messages"] = limit
+        save_config(cfg)
+
+    src = _seed_compacted_session()
+    src.end_session(SID, "user_exit")  # bulk filters match ended sessions
+    src.close()
+    set_limit(0)
+    backup = tmp_path / "backup.jsonl"
+    _export(monkeypatch, backup, *selection)
+    prior = backup.read_bytes()
+    capsys.readouterr()
+
+    db = SessionDB()
+    db.append_message(SID, "user", "new question")
+    db.append_message(SID, "assistant", "new answer")
+    expected = _shape(db, include_inactive=True)
+    db.close()
+    stored = len(expected)
+    set_limit(stored - 1)
+    _export(monkeypatch, backup, *selection)
+
+    out = capsys.readouterr().out
+    assert SID in out and "max_export_messages" in out
+    assert backup.read_bytes() == prior
+
+    set_limit(stored)
+    _export(monkeypatch, backup, *selection)
+
+    records = [json.loads(line) for line in backup.read_text(encoding="utf-8-sig").splitlines() if line]
+    assert [r["id"] for r in records] == [SID]
+    exported = [(m["role"], m["content"], m.get("active", 1), m.get("compacted", 0)) for m in records[0]["messages"]]
+    assert exported == expected
+    assert ("assistant", "new answer", 1, 0) in exported
+    assert backup.read_bytes() != prior

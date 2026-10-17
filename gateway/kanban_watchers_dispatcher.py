@@ -247,7 +247,7 @@ class _KanbanDispatcher:
     def auto_decompose_tick(self, auto_decompose_per_tick: int) -> int:
         """Auto-decompose up to N triage tasks across all boards into ready workgraphs.
 
-        Runs before dispatch fans out; the per-tick cap keeps a bulk triage
+        Runs after ready dispatch; the per-tick cap keeps a bulk triage
         load from burst-spending the aux LLM. Returns the number decomposed.
         """
         try:

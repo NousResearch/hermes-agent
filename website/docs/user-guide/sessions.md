@@ -26,6 +26,42 @@ The SQLite database stores:
 - Timestamps (started_at, ended_at)
 - Parent session ID (for compression-triggered session splitting)
 
+### Authenticated gateway session access and attribution
+
+The gateway owns execution; a client does not own the running agent. Verified
+operators of the same gateway profile can attach to canonical local CLI, TUI, or
+Desktop sessions created through another operator authentication method. For
+example, a native local operator and an authenticated dashboard operator can
+access the same conversation without creating another runtime. Closing a client
+connection detaches that client; accepted work remains with the gateway.
+
+This deliberately replaces creator-only access for verified operators, preserving
+the dashboard's existing operator permissions. Password and OAuth identities stay
+distinct but do not create separate access barriers to canonical local sessions
+when both connections have operator access to the profile. The trusted server
+paths include native interactive bootstrap, authenticated dashboard tickets,
+internal credentials used by server-spawned PTY clients, and the verified legacy
+dashboard token. HTTP session mutations also accept the verified native HTTP owner
+grant. This does not grant operator permissions to restricted worker, messaging,
+room, or service credentials, or remove profile and operation-specific checks.
+
+Attribution remains identity-specific. Dashboard identities include the provider,
+verified OAuth issuer (when present), and subject. Creation receipts retain the
+original identity; submissions and mutation retries retain the acting identity.
+An operator joining a session does not replace its recorded owner or merge retry
+identities. Native bootstrap owner keys and session IDs remain unchanged.
+
+Older remote sessions whose receipts contain only a bare subject cannot establish
+which provider owned them. They remain stored but are not automatically assigned
+to the first authenticated account requesting them. Operator access does not permit
+remote first-claim adoption of unowned historical transcripts.
+
+Cross-device attachment also requires a supported, authenticated route to the same
+gateway. Shared operator access does not itself expose a remote listener or add
+OpenAI-compatible API continuation of local sessions. A gateway crash is different
+from a client disconnect: interrupted work becomes `unknown` rather than being
+automatically replayed, and may need resolution before queued followers proceed.
+
 ### What Counts Toward Context
 
 Hermes stores session history so it can resume conversations, but it does not
@@ -62,9 +98,10 @@ Use `/compress` when a session gets long, `/new` for a fresh thread, and
 `hermes sessions prune` only when you want to delete old ended sessions from
 storage. If `state.db` has simply grown large, start with the non-destructive
 option first: `hermes sessions optimize` merges FTS5 index segments and
-VACUUMs the database without touching any session data. Both `optimize` and `prune` refuse
-while another Hermes process (gateway, Desktop, dashboard, cron) holds `state.db` — stop it
-first, or pass `--force`; see [Session storage recovery](session-storage-recovery.md).
+VACUUMs the database without touching any session data. With the gateway running, `prune`
+asks the gateway to delete the sessions it selected. `optimize`, and `prune` with no gateway
+running, refuse while another Hermes process (Desktop, dashboard, cron) holds `state.db`. Stop
+it first, or pass `--force`; see [Session storage recovery](session-storage-recovery.md).
 Compression reduces the active context; it is not a privacy delete.
 Pass a name to `/new` (e.g. `/new payments-refactor`) to set the new session's
 initial title up front — useful for finding it later with `/resume <name>` or
@@ -186,6 +223,8 @@ hermes --resume 20250305_091523_a1b2c3 --no-restore-cwd
 ```
 
 A `↪ restored workspace dir: …` line confirms the switch. Restore failures never break the resume itself.
+
+Resuming an idle session picks up the profile's current config: toolsets, MCP servers, `terminal` settings, `max_turns`, checkpoints and the default reasoning effort. The session keeps its model, its launch flags and any `/reasoning` or workspace change you made. Any difference starts a new prompt-cache prefix, so the first turn after the resume costs more. A change to the `terminal` settings, even an unrelated one like `terminal.timeout`, also resets an earlier `cd` to the session's directory.
 
 ### Filtering Sessions by Workspace
 
@@ -485,6 +524,26 @@ hermes sessions rename 20250305_091523_a1b2c3d4 debugging auth flow
 ```
 
 If the title is already in use by another session, an error is shown.
+
+### Discard a Turn Lost in a Gateway Crash
+
+If the gateway stops in the middle of a turn, that turn's outcome is unknown and it is never replayed. It blocks
+the session until you acknowledge it. Interactive `hermes chat --resume <id>` lists it and accepts
+`/discard <admission_id>`. A scripted `hermes chat --resume <id> -q` refuses with exit code 3 and submits nothing.
+To clear it from a script:
+
+```bash
+# Acknowledge every unknown (lost) turn on the session, then continue it
+hermes sessions discard 20250305_091523_a1b2c3d4 --yes
+hermes chat --resume 20250305_091523_a1b2c3d4 -q "next question"
+
+# Only one specific admission (repeatable); the session may also be named by title
+hermes sessions discard "debugging auth flow" --admission a9b59ad3ee914d75967def2a33435c88 --yes
+```
+
+Without `--yes` the command asks for confirmation, and it refuses (exit code 2) when stdin is not a terminal.
+The lost input stays in the transcript. Some of its actions may already have run, so check their effects before
+you resend it. Inputs queued behind it run once it is discarded.
 
 ### Pin a Session
 
@@ -976,6 +1035,15 @@ install the catalog plugin that reads the same block unchanged:
 replacing the durable conversation. Restart-recovery freshness limits automatic
 continuation, not the history loaded when you send a message.
 
+**`/new` moves only the view that ran it.** One session can be open in several
+places at once — a Desktop window, the TUI, a `hermes chat --resume` terminal, an
+ACP editor, a Telegram topic — all attached to the same live conversation on the
+gateway. Running `/new` (or `/reset`) in one of them creates a fresh session and
+rebinds *that* window or chat route to it. The other viewers stay on the original
+session, its history is untouched, and a turn already running there keeps running.
+Ending or clearing the shared conversation is a separate, explicit action (Stop, then
+`/new`; or a delete, which is refused while a turn is live).
+
 ### Session hygiene: why you should still run `/new`
 
 Because gateway conversations never expire on their own, it is easy to run one
@@ -1074,24 +1142,25 @@ Key tables in `state.db`:
 
 - Gateway conversations persist across inactivity; use `/new` or `/reset` for an explicit boundary
 - Before reset, the agent saves memories and skills from the expiring session
-- Auto-pruning (**on by default** since #54189): when `sessions.auto_prune` is `true`, ended sessions inactive for `sessions.retention_days` (default 90) are pruned at CLI/gateway/cron startup
+- Auto-pruning (**off by default**; opt in): when `sessions.auto_prune` is `true`, ended sessions inactive for `sessions.retention_days` (default 90) are pruned at CLI/gateway/cron startup
+- **Low-disk prompt.** While your `config.yaml` has no `sessions.auto_prune` key, Hermes checks the disk holding `state.db` at session start (two filesystem calls, no measurable cost). When that disk is low (under 2 GB free, or under 10% free with less than 20 GB left) it asks once: the classic CLI asks at startup (the first low-disk launch only measures, in the background, and the question appears from the next launch on, so startup never waits on the database), the TUI and Desktop show a notice, and a gateway posts the question to its home channel. The prompt estimates how much history a prune would delete (weighted by stored bytes, so many small old messages don't overstate it) and says plainly when pruning will *not* fix the disk (no session older than `retention_days`, or the history is a small share of the full disk). Deleted history frees space inside `state.db`; the automatic `VACUUM` below rarely triggers after a single prune, so run `hermes sessions optimize` to give the space back to the disk. Answer with `/autoprune on`, `/autoprune off` (keep everything; never asked again) or `/autoprune later` (reminded in a week); `/autoprune` alone shows the current state
 - `sessions.retention_days` must be a whole number of days `>= 0`. A negative value (or a missing one) is rejected: startup maintenance logs a warning naming the allowed range and skips the sweep instead of treating the future cutoff as "everything" — `sessions.auto_prune: false` is the switch that disables pruning
 - After a prune that actually removed rows, `state.db` is `VACUUM`ed to reclaim disk space only when **both** gates pass: at least `sessions.min_vacuum_interval_days` (default 30) have elapsed since the last successful `VACUUM`, **and** more than 25% of the file's pages are reclaimable (`PRAGMA freelist_count / page_count`). A dense database never pays for a full rewrite to reclaim a few MB (SQLite does not shrink the file on plain DELETE)
 - Pruning runs at most once per `sessions.min_interval_hours` (default 24); the last-run timestamp is tracked inside `state.db` itself so it's shared across every Hermes process in the same `HERMES_HOME`
 
-Without pruning, `state.db` grows without bound — multi-GB files within weeks were reported on gateway + cron installs. If you would rather keep every ended session forever (the pre-#54189 behavior), turn it off in `~/.hermes/config.yaml`:
+Without pruning, `state.db` grows without bound — multi-GB files within weeks were reported on gateway + cron installs. To bound it, turn it on in `~/.hermes/config.yaml` (or answer `/autoprune on`):
 
 ```yaml
 sessions:
-  auto_prune: false         # default is true — set false to keep all history
+  auto_prune: true          # default is false — true deletes ended sessions past retention_days
   retention_days: 90        # keep ended sessions active within this window
   vacuum_after_prune: true  # reclaim disk space after a pruning sweep
   min_vacuum_interval_days: 30 # don't rewrite the DB more often than this
   min_interval_hours: 24    # don't re-run the sweep more often than this
 ```
 
-Existing installs that already set any of these keys explicitly keep their
-values; only unset keys pick up the new defaults.
+Installs that set any of these keys explicitly keep their values; only unset
+keys follow the defaults.
 
 Only **ended** sessions are ever deleted. Active sessions are never auto-pruned,
 regardless of age. Ended sessions are aged from their last activity — the
@@ -1166,5 +1235,5 @@ hermes sessions prune --older-than 30 --yes
 ```
 
 :::tip
-Auto-prune is **on by default**: ended sessions that have been inactive for `sessions.retention_days` (default 90) are removed at startup, and active sessions are never touched (see [Automatic Cleanup](#automatic-cleanup) above). Session history powers `session_search` recall across past conversations, so if you want to keep every ended session forever, set `sessions.auto_prune: false` in `config.yaml`, or raise `retention_days`. With auto-prune off, `hermes sessions prune` remains available for one-off cleanup (observed failure mode without any pruning: a 384 MB `state.db` with ~1000 sessions slowing down FTS5 inserts and `/resume` listing).
+Auto-prune is **off by default**, and Hermes asks you once when the disk holding `state.db` runs low (see [Automatic Cleanup](#automatic-cleanup) above). When on, ended sessions inactive for `sessions.retention_days` (default 90) are removed at startup and active sessions are never touched. Session history powers `session_search` recall across past conversations, so the choice is yours: `/autoprune on|off`, or `sessions.auto_prune` in `config.yaml`. With auto-prune off, `hermes sessions prune` remains available for one-off cleanup (observed failure mode without any pruning: a 384 MB `state.db` with ~1000 sessions slowing down FTS5 inserts and `/resume` listing).
 :::

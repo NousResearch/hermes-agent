@@ -870,7 +870,7 @@ class MemoryManager:
 
     # Actions mirrored to external providers; non-mutating results (errors, staged) are
     # filtered by ``notify_memory_tool_write`` first.
-    _MIRRORED_MEMORY_ACTIONS = {"add", "replace", "remove"}
+    _MIRRORED_MEMORY_ACTIONS = {"add", "replace", "patch", "remove"}
 
     @staticmethod
     def _memory_tool_result_succeeded(result: Any) -> bool:
@@ -908,16 +908,29 @@ class MemoryManager:
                 old_text = op.get("old_text")
                 if old_text:
                     metadata["old_text"] = str(old_text)
-                field = {"replace": "replaced", "remove": "removed"}.get(action)
+                field = {"replace": "replaced", "patch": "patched", "remove": "removed"}.get(action)
                 if field:
                     if batched:
                         entries = result.get(f"{field}_entries", {})
                         previous = entries.get(str(index), entries.get(index)) if isinstance(entries, dict) else None
                     else:
                         previous = result.get(f"{field}_entry")
+                        if field == "patched" and previous is None:
+                            previous = result.get("patched_entry_before")
                     if isinstance(previous, str) and previous:
                         metadata["previous_content"] = previous
-                self.on_memory_write(action, target, str(op.get("content") or op.get("new_text") or ""), metadata=metadata)
+                mirrored_action, content = action, str(op.get("content") or op.get("new_text") or "")
+                if action == "patch":
+                    # To a provider a patch replaced the whole entry with its edited form; mirror it as
+                    # that replace, with the entry the store reports, so providers that know
+                    # add/replace/remove handle it unchanged.
+                    if batched:
+                        after_entries = result.get("patched_entries_after") or {}
+                        after = after_entries.get(str(index), after_entries.get(index))
+                    else:
+                        after = result.get("patched_entry_after")
+                    mirrored_action, content = "replace", str(after or "")
+                self.on_memory_write(mirrored_action, target, content, metadata=metadata)
             except Exception as e:
                 logger.debug("notify_memory_tool_write failed for op %s: %s", action, e)
 

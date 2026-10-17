@@ -1376,6 +1376,21 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         return last_result
 
     _PERMANENT_SEND_ERRORS = ("invalid", "forbidden", "not found")
+    # QQ refuses a reply anchor it no longer accepts. ``40034024 请求参数msg_id无效或越权`` is the C2C
+    # answer for a msg_id that is not this chat's triggering message (an anchor the bot no longer
+    # owns, or a value that was never a QQ message id); ``304046`` / ``回复消息msg_id已过期`` is the
+    # group 5-minute window. Re-sending the same anchor can never succeed, and the wording is not in
+    # ``_PERMANENT_SEND_ERRORS``, so a stale anchor used to burn the inner 3 attempts and the caller's
+    # outer 3 before the delivery ledger re-sent the reply as a standalone message anyway — with a
+    # "♻️ Recovered reply" duplicate warning on top (#43467, #99144).
+    _STALE_ANCHOR_ERRORS = ("msg_id无效或越权", "40034024", "msg_id已过期", "304046",
+                            "msg_id invalid", "msg_id expired", "message id invalid", "message id expired")
+
+    @classmethod
+    def _is_stale_anchor_error(cls, error: Any) -> bool:
+        """True when the platform rejected the ``msg_id`` reply anchor itself, not the message."""
+        text = str(error or "").lower()
+        return any(k in text for k in cls._STALE_ANCHOR_ERRORS)
 
     async def _send_chunk(self, chat_id: str, content: str, reply_to: Optional[str] = None) -> SendResult:
         last_exc: Optional[Exception] = None
@@ -1387,6 +1402,18 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 return await sender(chat_id, content, reply_to)
             except Exception as exc:
                 last_exc = exc
+                if reply_to and self._is_stale_anchor_error(exc):
+                    # The anchor itself is dead: retrying it cannot succeed. Drop it and deliver the
+                    # same text once as a standalone (proactive) message, which is what the delivery
+                    # ledger would otherwise do a minute later — after 9 rejected attempts.
+                    logger.warning("[%s] reply anchor rejected (%s); resending standalone",
+                                   self._log_tag, exc)
+                    reply_to = None
+                    try:
+                        return await sender(chat_id, content, None)
+                    except Exception as exc2:
+                        last_exc = exc2
+                        break  # nothing anchor-related is left to retry
                 if any(k in str(exc).lower() for k in self._PERMANENT_SEND_ERRORS + ("bad request",)):
                     break  # permanent — don't retry
                 if attempt < 2:
@@ -1397,6 +1424,8 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         error_msg = (str(last_exc) or type(last_exc).__name__) if last_exc else "Unknown error"
         logger.error("[%s] Send failed: %s", self._log_tag, error_msg)
         retryable = not any(k in error_msg.lower() for k in self._PERMANENT_SEND_ERRORS)
+        if self._is_stale_anchor_error(error_msg):
+            retryable = False  # the anchor is already gone; another pass changes nothing
         return SendResult(success=False, error=error_msg, retryable=retryable)
 
     @staticmethod
@@ -1465,6 +1494,13 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         try:
             return await sender(chat_id, truncated, reply_to, keyboard=keyboard)
         except Exception as exc:
+            if reply_to and self._is_stale_anchor_error(exc):
+                logger.warning("[%s] reply anchor rejected (%s); resending keyboard standalone",
+                               self._log_tag, exc)
+                try:
+                    return await sender(chat_id, truncated, None, keyboard=keyboard)
+                except Exception as exc2:
+                    exc = exc2
             logger.error("[%s] send_with_keyboard failed: %s", self._log_tag, exc)
             return SendResult(success=False, error=str(exc) or type(exc).__name__)
 
@@ -1577,7 +1613,16 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 body["content"] = caption[: self.MAX_MESSAGE_LENGTH]
             if reply_to:
                 body["msg_id"] = reply_to
-            return await self._post_message(self._messages_path(chat_type, chat_id), body)
+            path = self._messages_path(chat_type, chat_id)
+            try:
+                return await self._post_message(path, body)
+            except Exception as exc:
+                if not (reply_to and self._is_stale_anchor_error(exc)):
+                    raise
+                logger.warning("[%s] reply anchor rejected (%s); resending media standalone",
+                               self._log_tag, exc)
+                body.pop("msg_id", None)
+                return await self._post_message(path, body)
         except UploadDailyLimitExceededError as exc:
             # Non-retryable quota hit; give the model actionable text.
             logger.warning("[%s] Daily upload limit exceeded for %s (%s)", self._log_tag, exc.file_name, exc.file_size_human)

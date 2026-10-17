@@ -81,10 +81,6 @@ function harness() {
       return { type: 'exec', output: '🎭 **Available Personalities**' }
     }
 
-    if (method === 'slash.exec' && params.command === 'voice tts') {
-      return { type: 'exec', output: 'Auto-TTS enabled.' }
-    }
-
     throw new Error(`unknown_method: ${method}`)
   })
 
@@ -265,14 +261,16 @@ it('/reasoning --global is the owner\'s /reasoning handler behind config.set; /s
   expect(notices.some(line => /skin: default/.test(line))).toBe(true)
 })
 
-it('/voice tts sets the session\'s voice state through the owner\'s /voice handler', async () => {
+it('/voice tts refuses by name: the owner never speaks a TUI reply', async () => {
   const { request, slash, sys } = harness()
 
   slash('/voice tts')
   await flush()
 
-  expect(request).toHaveBeenCalledWith('slash.exec', { command: 'voice tts', session_id: 'owner' })
-  expect(sys.mock.calls.map(([text]) => String(text))).toEqual(['Auto-TTS enabled.'])
+  expect(request.mock.calls.some(([method]) => method === 'slash.exec' || method === 'voice.toggle')).toBe(false)
+  expect(sys.mock.calls.map(([text]) => String(text))).toEqual([
+    '/voice tts is not available on the shared gateway yet'
+  ])
 })
 
 it('bare /personality lists through the owner\'s /personality handler', async () => {

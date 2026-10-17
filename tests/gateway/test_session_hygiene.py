@@ -1074,7 +1074,23 @@ async def test_hygiene_skips_when_compression_already_in_flight(
         runner, _adapter, event = _make_cooldown_runner(
             monkeypatch, tmp_path, ShouldNotRunAgent, db, session_id
         )
-        runner._session_has_compression_in_flight = AsyncMock(return_value=True)
+        # The lock is taken while the turn is being set up (load_transcript), i.e. AFTER the
+        # fresh-turn gate check (#134239) — that gate refuses a turn that would start against
+        # a pre-rotation history, so a lock already held at dispatch is covered there. What
+        # this test locks is the turn-internal decision: hygiene must sit out rather than
+        # spawn a sibling compressor behind the held lock.
+        lock_held = {"now": False}
+
+        async def _guard(_key):
+            return lock_held["now"]
+
+        runner._session_has_compression_in_flight = _guard
+
+        def _load_and_take_lock(*_a, **_k):
+            lock_held["now"] = True
+            return _make_history(6, content_size=400)
+
+        runner.session_store.load_transcript.side_effect = _load_and_take_lock
         assert await runner._handle_message(event) == "ok"
         assert ShouldNotRunAgent.instances == 0
         assert runner._run_agent.await_count == 1

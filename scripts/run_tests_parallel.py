@@ -762,6 +762,9 @@ def _parse_pytest_summary(output: str) -> dict[str, int]:
     return result
 
 
+_NTSTATUS_ERROR = 0xC0000000
+
+
 def _describe_interpreter_crash(rc: int, output: str) -> Optional[str]:
     """Return a one-line description when the pytest subprocess died instead of exiting.
 
@@ -788,6 +791,13 @@ def _describe_interpreter_crash(rc: int, output: str) -> Optional[str]:
         except ValueError:
             name = f"signal {-rc}"
         return f"{fatal} ({name})" if fatal else f"killed by {name}"
+    if rc > 0 and rc & _NTSTATUS_ERROR == _NTSTATUS_ERROR:
+        # Windows reports a native fault or loader failure (0xC0000005,
+        # 0xC0000142, 0xC000012D under memory pressure) as a positive exit
+        # code with the NTSTATUS error severity bits set — never a pytest
+        # exit code, and usually with no output at all (#137198).
+        status = f"NTSTATUS 0x{rc:08X}"
+        return f"{fatal} ({status})" if fatal else f"exited with {status}"
     return fatal
 
 

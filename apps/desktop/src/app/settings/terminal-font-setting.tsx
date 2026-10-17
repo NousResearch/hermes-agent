@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
 import {
@@ -7,9 +8,11 @@ import {
   TERMINAL_FONT_SUGGESTIONS
 } from '@/app/right-sidebar/terminal/terminal-font'
 import { Button } from '@/components/ui/button'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import { saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
+import { $terminalFontSize, setTerminalFontSize, TERMINAL_FONT_SIZE_PRESETS } from '@/store/terminal-font-size'
 import type { HermesConfigRecord } from '@/types/hermes'
 
 import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
@@ -28,6 +31,7 @@ function fontFamilyFromConfig(config: HermesConfigRecord): string {
 
 export function TerminalFontSetting() {
   const { t } = useI18n()
+  const terminalFontSize = useStore($terminalFontSize)
   const copy = t.settings.appearance
   const { data: loadedConfig, dataUpdatedAt, writeScope } = useHermesConfigRecord()
   // draft === null ⇔ unseeded: nothing painted yet for this profile. The
@@ -148,10 +152,17 @@ export function TerminalFontSetting() {
               {copy.terminalFontReset}
             </Button>
           </div>
+          <div aria-label={copy.terminalFontTitle} role="group">
+            <SegmentedControl
+              onChange={value => setTerminalFontSize(Number(value))}
+              options={TERMINAL_FONT_SIZE_PRESETS.map(size => ({ id: String(size), label: `${size}` }))}
+              value={String(terminalFontSize)}
+            />
+          </div>
           <div
             aria-label={copy.terminalFontPreview}
             className="overflow-hidden px-1 py-2 text-sm text-(--ui-text-secondary)"
-            style={{ fontFamily: previewFontFamily }}
+            style={{ fontFamily: previewFontFamily, fontSize: terminalFontSize }}
           >
             <span className="mr-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
               {copy.terminalFontPreview}

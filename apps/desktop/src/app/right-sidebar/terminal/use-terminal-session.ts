@@ -429,7 +429,7 @@ export function useTerminalSession({
   // Re-fit on activation: a tab hidden via display:none has a 0×0 host, so its
   // last fit is stale by the time it's shown again.
   const fitRef = useRef<(() => void) | null>(null)
-  const { latestFontFamilyRef, mountedRef } = useTerminalFontController({ fitRef, termRef, webglRef })
+  const { latestFontFamilyRef, latestFontSizeRef, mountedRef } = useTerminalFontController({ fitRef, termRef, webglRef })
   const [status, setStatus] = useState<TerminalStatus>('starting')
   const [selection, setSelection] = useState('')
   const [selectionStyle, setSelectionStyle] = useState<CSSProperties | null>(null)
@@ -537,7 +537,7 @@ export function useTerminalSession({
       convertEol: true,
       cursorBlink: true,
       fontFamily: latestFontFamilyRef.current,
-      fontSize: 11,
+      fontSize: latestFontSizeRef.current,
       // VS Code's terminal renders 'normal'/'bold' (400/700); we were using Medium
       // (500) as the base, which reads a touch heavy at this size.
       fontWeight: 'normal',
@@ -1003,6 +1003,7 @@ export function useTerminalSession({
         return
       }
 
+      term.options.fontSize = latestFontSizeRef.current
       term.open(host)
       mountedRef.current = true
       mounted = true
@@ -1108,7 +1109,7 @@ export function useTerminalSession({
     // `id` is stable for the instance's life (keyed by tab id), so listing it
     // doesn't re-create the shell — it just satisfies the deps check for the
     // closeTerminal(id) call in onExit.
-  }, [addSelectionToChat, cwd, id, latestFontFamilyRef, mountedRef])
+  }, [addSelectionToChat, cwd, id, latestFontFamilyRef, latestFontSizeRef, mountedRef])
 
   useEffect(() => {
     const term = termRef.current

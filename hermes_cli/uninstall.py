@@ -703,7 +703,8 @@ def run_gui_uninstall(args):
     _refuse_if_steward_owned()
 
     hermes_home = get_hermes_home()
-    summary = gui_install_summary(hermes_home)
+    project_root = get_project_root()
+    summary = gui_install_summary(hermes_home, project_root=project_root)
     skip_confirm = bool(getattr(args, "yes", False))
 
     print()
@@ -743,7 +744,7 @@ def run_gui_uninstall(args):
     print()
     print(color("Uninstalling Chat GUI...", Colors.CYAN, Colors.BOLD))
     print()
-    uninstall_gui(hermes_home)
+    uninstall_gui(hermes_home, project_root=project_root)
 
     print()
     _print_box("│            ✓ Chat GUI Uninstalled!                      │", Colors.GREEN)
@@ -1049,7 +1050,7 @@ def _perform_uninstall(
     log_info("Removing desktop Chat GUI artifacts...")
     try:
         from hermes_cli.gui_uninstall import uninstall_gui
-        if not uninstall_gui(hermes_home, remove_userdata=full_uninstall):
+        if not uninstall_gui(hermes_home, remove_userdata=full_uninstall, project_root=project_root):
             log_info("No desktop GUI artifacts found")
     except Exception as e:
         log_warn(f"Could not remove desktop GUI artifacts: {e}")

@@ -34,14 +34,51 @@ def desktop_userdata_dir() -> Path:
     return _env_dir("XDG_CONFIG_HOME", home / ".config") / "Hermes"
 
 
-def source_built_gui_artifacts(hermes_home: Path) -> list[Path]:
-    """GUI build artifacts produced by ``hermes desktop`` inside the checkout (same ``hermes-agent/`` layout
-    install.sh uses). The workspace-root node_modules is shared with the TUI, dashboard and other
-    workspaces, so only the desktop workspace's own dependencies belong to GUI removal."""
-    agent_root = hermes_home / "hermes-agent"
-    desktop_dir = agent_root / "apps" / "desktop"
-    return [desktop_dir / "dist", desktop_dir / "release", desktop_dir / "node_modules",
-            hermes_home / "desktop-build-stamp.json"]
+def _running_checkout_root() -> Path:
+    """The checkout whose ``apps/desktop`` this code builds and uninstalls.
+
+    ``hermes_cli/`` sits directly under the checkout root, so the running module's own location
+    IS that root: ``$HERMES_HOME/hermes-agent`` on an install.sh install, or a custom install
+    directory (``hermes --version`` prints it) when the git checkout was cloned elsewhere. A
+    bundled or sealed install carries no ``apps/desktop`` under it, so that candidate is a no-op
+    there.
+    """
+    return Path(__file__).resolve().parent.parent
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    """Lexical identity, never ``resolve()``: either candidate may be a symlinked entry point."""
+    return os.path.normcase(os.path.abspath(left)) == os.path.normcase(os.path.abspath(right))
+
+
+def source_built_gui_artifacts(hermes_home: Path, project_root: Path | None = None) -> list[Path]:
+    """GUI build artifacts produced by ``hermes desktop`` inside the checkout.
+
+    Two layouts own those artifacts and BOTH must be swept: the ``hermes-agent/`` directory install.sh
+    writes under ``$HERMES_HOME``, and the running checkout itself, which a git install may place at
+    any directory. The desktop build, the update tail and the rebuild decision all key off the running
+    checkout, so reporting only the first let ``hermes uninstall --gui`` claim success on a
+    custom-path checkout while the next ``hermes update`` rebuilt the desktop app from artifacts it
+    had never removed.
+
+    The workspace-root ``node_modules`` is shared with the TUI, dashboard and other workspaces, so only
+    the desktop workspace's own dependencies belong to GUI removal — and only next to a build:
+    ``apps/desktop`` is an npm workspace, so a root ``npm install`` creates its ``node_modules`` on a
+    clone that never built the desktop app, and that alone must not read as an installed GUI.
+    """
+    roots = [hermes_home / "hermes-agent"]
+    actual = _running_checkout_root() if project_root is None else Path(project_root)
+    if not any(_same_path(actual, root) for root in roots):
+        roots.append(actual)
+    artifacts: list[Path] = []
+    for root in roots:
+        desktop = root / "apps" / "desktop"
+        built = [desktop / "dist", desktop / "release"]
+        artifacts += built
+        if any(p.exists() for p in built):
+            artifacts.append(desktop / "node_modules")
+    artifacts.append(hermes_home / "desktop-build-stamp.json")
+    return artifacts
 
 
 def desktop_install_record() -> Path:
@@ -85,15 +122,15 @@ def agent_is_installed(hermes_home: Path) -> bool:
     return any((hermes_home / "hermes-agent" / sub).is_dir() for sub in ("hermes_cli", "venv", ".venv"))
 
 
-def gui_is_installed(hermes_home: Path) -> bool:
+def gui_is_installed(hermes_home: Path, project_root: Path | None = None) -> bool:
     """Return True when any desktop GUI artifact or install record exists."""
     return any(p.exists() for p in (
-        *source_built_gui_artifacts(hermes_home), *packaged_gui_app_paths(),
+        *source_built_gui_artifacts(hermes_home, project_root), *packaged_gui_app_paths(),
         desktop_userdata_dir(), desktop_install_record(),
     ))
 
 
-def gui_install_summary(hermes_home: Path | None = None) -> dict:
+def gui_install_summary(hermes_home: Path | None = None, project_root: Path | None = None) -> dict:
     """JSON-serializable snapshot of what's installed, for the desktop UI to render via IPC."""
     home: Path = hermes_home if hermes_home is not None else get_hermes_home()
     userdata = desktop_userdata_dir()
@@ -102,13 +139,16 @@ def gui_install_summary(hermes_home: Path | None = None) -> dict:
     # removed; sealed trees (nix / desktop-app / docker) get data-only.
     from hermes_cli import steward as steward_mod
 
-    steward, code_removal_allowed = steward_mod.classify_install(home / "hermes-agent")
+    # Classify the checkout the artifacts and the CLI uninstaller key off, not the install.sh path:
+    # on a custom-path git checkout the latter is absent and would read as a sealed "unknown" tree.
+    root = _running_checkout_root() if project_root is None else Path(project_root)
+    steward, code_removal_allowed = steward_mod.classify_install(root)
 
     return {
         "hermes_home": str(home),
         "agent_installed": agent_is_installed(home),
-        "gui_installed": gui_is_installed(home),
-        "source_built_artifacts": [str(p) for p in source_built_gui_artifacts(home) if p.exists()],
+        "gui_installed": gui_is_installed(home, project_root),
+        "source_built_artifacts": [str(p) for p in source_built_gui_artifacts(home, project_root) if p.exists()],
         "packaged_app_paths": [str(p) for p in packaged_gui_app_paths() if p.exists()],
         "userdata_dir": str(userdata),
         "userdata_exists": userdata.exists(),
@@ -133,7 +173,8 @@ def _remove_path(path: Path) -> bool:
         return False
 
 
-def uninstall_gui(hermes_home: Path | None = None, *, remove_userdata: bool = True) -> list[Path]:
+def uninstall_gui(hermes_home: Path | None = None, *, remove_userdata: bool = True,
+                  project_root: Path | None = None) -> list[Path]:
     """Remove the desktop GUI's artifacts, leaving the agent + user data intact."""
     home: Path = hermes_home if hermes_home is not None else get_hermes_home()
     removed: list[Path] = []
@@ -148,7 +189,7 @@ def uninstall_gui(hermes_home: Path | None = None, *, remove_userdata: bool = Tr
                 removed.append(path)
         return found
     log_info("Removing built GUI artifacts (renderer, release, node_modules)...")
-    _remove_existing([*source_built_gui_artifacts(home), desktop_install_record()])
+    _remove_existing([*source_built_gui_artifacts(home, project_root), desktop_install_record()])
     log_info("Removing installed desktop app...")
     if not _remove_existing(packaged_gui_app_paths()):
         log_info("No packaged desktop app found in standard locations")

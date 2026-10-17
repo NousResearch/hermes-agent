@@ -159,7 +159,9 @@ def _import(db, conn, session_id, payload):
         sid = raw['id']
         from hermes_state_mutation_retirement import RETIRED_PREFIX
         if conn.execute('SELECT 1 FROM state_meta WHERE key=?', (RETIRED_PREFIX + sid,)).fetchone():
-            raise RuntimeStoreError('admission_conflict')
+            # Refused by name at import time: a row restored beside the fence would refuse every turn.
+            raise RuntimeStoreError('admission_conflict', field='sessions',
+                                    detail=f'session {sid} was deleted here; a deleted session is not restored')
         if conn.execute('SELECT 1 FROM sessions WHERE id=?', (sid,)).fetchone():
             skipped.append(sid)
             continue

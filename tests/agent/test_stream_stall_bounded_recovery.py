@@ -268,9 +268,9 @@ def _agent():
 
 
 def test_post_chunk_idle_bound_scopes(monkeypatch):
-    """90s default applies to local endpoints only; explicit values apply anywhere."""
+    """600s default applies to local endpoints only; explicit values apply anywhere."""
     monkeypatch.delenv("HERMES_STREAM_POST_CHUNK_IDLE_TIMEOUT", raising=False)
-    assert helpers._stream_post_chunk_idle_bound(_agent()) == 90.0
+    assert helpers._stream_post_chunk_idle_bound(_agent()) == 600.0
     assert helpers._stream_post_chunk_idle_bound(SimpleNamespace(base_url="https://api.example.com/v1")) is None
     monkeypatch.setenv("HERMES_STREAM_POST_CHUNK_IDLE_TIMEOUT", "45")
     assert helpers._stream_post_chunk_idle_bound(SimpleNamespace(base_url="https://api.example.com/v1")) == 45.0
@@ -284,9 +284,25 @@ def test_idle_kill_threshold_is_phase_aware(monkeypatch):
     call._stream_stale_timeout = 3600.0
     assert call._idle_kill_threshold() == 3600.0  # prefill grace: full stale budget
     call.clients.diag = {"first_chunk_at": time.time()}
-    assert call._idle_kill_threshold() == 90.0  # post-chunk: the short local bound
+    assert call._idle_kill_threshold() == 600.0  # post-chunk: the local bound
     monkeypatch.setenv("HERMES_STREAM_POST_CHUNK_IDLE_TIMEOUT", "30")
     assert call._idle_kill_threshold() == 30.0  # explicit override
     call.agent.base_url = "https://api.example.com/v1"
     monkeypatch.delenv("HERMES_STREAM_POST_CHUNK_IDLE_TIMEOUT", raising=False)
     assert call._idle_kill_threshold() == 3600.0  # cloud untouched by default
+
+
+def test_thinking_gap_survives_the_default_local_bound(monkeypatch):
+    """A real OpenAI-compatible reasoning server sends a role-only delta (or SSE
+    keep-alive comments) before byte one, flipping the stream into post-chunk
+    phase while the model is still silently thinking — measured gaps ran past
+    104s. The default local bound must stay above minutes-scale thinking gaps
+    or healthy xhigh requests die at exactly the bound, engine-side finish=disconnect.
+    """
+    monkeypatch.delenv("HERMES_STREAM_POST_CHUNK_IDLE_TIMEOUT", raising=False)
+    call = helpers._StreamingCall(_agent(), {"model": "m", "messages": []}, None)
+    call._stream_stale_timeout = 3600.0
+    call.clients.diag = {"first_chunk_at": time.time()}
+    bound = call._idle_kill_threshold()
+    measured_thinking_gap_s = 104.0
+    assert bound == 600.0 and bound > measured_thinking_gap_s

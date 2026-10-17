@@ -82,7 +82,15 @@ _STREAM_REASONING_READ_CAP = 300.0
 # serialized server cancel and release its queue (a Windows reader parked in recv
 # cannot be woken by shutdown() alone; the peer's cancel/close is the actual
 # wake-up). Prefill (pre-first-chunk silence) keeps the full stale budget.
-_STREAM_POST_CHUNK_IDLE_DEFAULT_S = 90.0
+# 600s, not a tighter number: a server that speaks before byte one (role-only
+# delta or SSE keep-alive comments) flips the stream into post-chunk phase while
+# a thinking model is still silently prefilling — an OpenAI-compatible server
+# that does this was measured killing healthy xhigh-reasoning requests at 90s
+# intervals, engine-side logs reading finish=disconnect. 600 keeps the clause a
+# generation ahead of "never kill" while leaving minutes-scale thinking gaps
+# alone; per-endpoint override: agent.stream_post_chunk_idle_timeout /
+# HERMES_STREAM_POST_CHUNK_IDLE_TIMEOUT.
+_STREAM_POST_CHUNK_IDLE_DEFAULT_S = 600.0
 
 
 def _context_thread_target(callback):
@@ -672,7 +680,7 @@ def _stream_post_chunk_idle_bound(agent) -> Optional[float]:
 
     Configurable via ``agent.stream_post_chunk_idle_timeout`` or
     HERMES_STREAM_POST_CHUNK_IDLE_TIMEOUT (explicit values apply to every endpoint;
-    the 90s default applies to local endpoints only). ``<= 0`` disables.
+    the 600s default applies to local endpoints only). ``<= 0`` disables.
     """
     value = _STREAM_POST_CHUNK_IDLE_DEFAULT_S
     explicit = False

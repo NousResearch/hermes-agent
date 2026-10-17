@@ -146,6 +146,39 @@ def test_a_borrower_holding_the_checkout_never_becomes_its_owner(tmp_path, monke
     assert owning_home_root(root) == default
 
 
+def test_a_per_task_home_linking_back_keeps_the_shared_launcher(tmp_path, monkeypatch):
+    """#123798's per-task home links tools/ and installs/ back to the main home. Its first
+    launch must not republish the shared checkout launcher under the per-task spelling (#123238)."""
+    import os
+
+    import pm
+    from hermes_cli import _launchers
+
+    default = tmp_path / ".hermes"
+    root = _checkout(tmp_path, monkeypatch)
+    entry = default / "tools" / "python-owner"
+    python = entry / ("python.exe" if os.name == "nt" else "bin/python3")
+    python.parent.mkdir(parents=True)
+    python.touch()
+    (default / "tools" / "facts.json").write_text(json.dumps(
+        {"schema": 1, "packages": {"python": {"version": "fixture", "entry": entry.name}}}), encoding="utf-8")
+    _state(default, root)
+    _home(monkeypatch, default)
+    local = root / ".hermes" / "bin"
+    published = {path: Path(path).read_bytes() for path in _launchers.ensure_install_launchers(root, local)}
+    assert published
+
+    task = _home(monkeypatch, tmp_path / "task")
+    for name in ("tools", "installs"):
+        os.symlink(default / name, task / name, target_is_directory=True)
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kwargs: True)
+    monkeypatch.setattr(_launchers, "expose_cli", lambda *args, **kwargs: {"ok": True})
+    monkeypatch.setattr(sys, "executable", str(python))
+    relaunch = venv_sync.prepare_launch(root, ["chat"])
+    assert {path: _launchers._launcher_python(Path(path)) for path in published} == {path: python for path in published}
+    assert relaunch is None
+
+
 def test_a_borrowing_launch_syncs_its_own_dependencies_and_nothing_of_the_checkout(
     tmp_path, monkeypatch, completion_tail
 ):

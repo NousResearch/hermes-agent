@@ -83,6 +83,35 @@ def _op_shape_error(action: str, args: dict):
     return None
 
 
+def _preflight_staged_skill_write(action: str, name: str, payload: dict) -> str | None:
+    """Reject invalid payloads before staging using the replay path's validators.
+
+    Filesystem-dependent checks stay at replay: a batch may create a skill or
+    modify a patch target before a later operation uses it, and disk state can
+    change while approval is pending.
+    """
+    from tools import skill_manager_tool as smt
+    if err := _op_shape_error(action, payload):
+        return err
+    if err := smt._validate_name(name if action == "create" or not name else Path(name).name):
+        return err
+    content = payload.get("content") or ""
+    file_path = payload.get("file_path")
+    file_content = payload.get("file_content") or ""
+    validators = {
+        "create": lambda: (smt._validate_category(payload.get("category"))
+                           or smt._validate_frontmatter(content, new_skill=True)
+                           or smt._validate_content_size(content)),
+        "edit": lambda: (smt._validate_frontmatter(content) or smt._validate_content_size(content)),
+        "patch": lambda: ((smt._validate_frontmatter(content) or smt._validate_content_size(content))
+                          if content else (smt._validate_file_path(file_path) if file_path else None)),
+        "write_file": lambda: (smt._validate_file_path(file_path) or smt._validate_file_bytes(file_content)
+                               or smt._validate_content_size(file_content, label=file_path)),
+        "remove_file": lambda: smt._validate_file_path(file_path),
+    }
+    return validators.get(action, lambda: None)()
+
+
 def _validate_batch_ops(operations, default_name, tool_error):
     """Shape checks with no side effects. Returns (names, None) or (None, error_json)."""
     from tools.skill_manager_guards import _background_review_preflight
@@ -247,7 +276,14 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
             acts = ", ".join(op["action"] for op in operations)
             gist = f"batch({len(operations)} ops: {acts}) on {', '.join(sorted(set(names)))}"
             return {"action": "batch", "operations": operations}, gist
-        staged = _smt._run_write_gate(_staging)
+        def _preflight():
+            # Payload-intrinsic shape of EVERY op, before the batch becomes pending: one
+            # invalid op would otherwise surface only after the whole batch was approved.
+            for i, op in enumerate(operations):
+                if err := _preflight_staged_skill_write(op["action"], names[i], op):
+                    return f"operations[{i}]: {err}"
+            return None
+        staged = _smt._run_write_gate(_staging, _preflight)
         if staged is not None:
             return staged
     # Every target's lock is held from the snapshot through commit or rollback; the per-op

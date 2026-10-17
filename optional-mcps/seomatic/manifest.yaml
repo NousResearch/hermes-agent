@@ -1,0 +1,37 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: seomatic
+description: 'SEOmatic SEO: Google Search Console data, site audits, AI visibility, fixes you approve.'
+source: https://seomatic.ai/ai-assistants/hermes-agent
+
+# Official vendor-hosted remote MCP (URL-only, Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (RFC 9728 protected-resource metadata -> AS metadata with
+# registration_endpoint, PKCE S256); Hermes's MCP client handles discovery,
+# token exchange and refresh. Headless hosts can use an API key instead
+# (Authorization: Bearer smk_live_..., minted in SEOmatic Settings).
+
+transport:
+  type: http
+  url: https://app.seomatic.ai/api/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - seomatic
+    - search console
+  hosts:
+    - seomatic.ai
+
+post_install: |
+  On first connection Hermes opens a browser to sign in to SEOmatic
+  (or run `hermes mcp login seomatic`). Approve access and pick your
+  site, then restart the session so tools load. A free account works;
+  connect Google Search Console once for answers from your own data.
+
+  Nothing changes on your site until you approve it in SEOmatic.

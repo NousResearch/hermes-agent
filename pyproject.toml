@@ -236,6 +236,14 @@ exa = ["exa-py==2.10.2"]
 firecrawl = ["firecrawl-py==4.17.0"]
 parallel-web = ["parallel-web==0.4.2"]
 ddgs = ["ddgs==9.16.0"]
+# Opt-in local vault store (vault.store: floorvault): AES-256-SIV + OS key custody.
+# The OS-custody tiers live in floorvault's own platform extras — without them
+# only the FLOOR_VAULT_KEY env tier works (Windows DPAPI is stdlib ctypes).
+floorvault = [
+  "floorvault==0.1.0",
+  "floorvault[macos]==0.1.0; sys_platform == 'darwin'",
+  "floorvault[linux]==0.1.0; sys_platform == 'linux'",
+]
 # Image generation backends
 fal = ["fal-client==0.13.1"]
 # Edge TTS — default TTS provider but still optional (users can pick
@@ -546,6 +554,7 @@ dev = [
 test = [
   "distlib==0.4.3; sys_platform == 'win32'",
   "anthropic==0.87.0",
+  "floorvault==0.1.0",  # same pin as the floorvault extra; tests/agent/test_vault_store_floorvault.py
 ]
 
 [build-system]

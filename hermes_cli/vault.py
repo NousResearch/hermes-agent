@@ -7,6 +7,8 @@ Subcommands:
 - ``hermes vault list``  metadata — labels, kinds, identifiers, origins,
   handles. Passwords are never shown.
 - ``hermes vault rm``    remove an item by handle/id.
+- ``hermes vault migrate-floorvault``  copy the Fernet vault into the opt-in
+  FloorVault store (``vault.store: floorvault``), keeping every handle.
 
 The vault backs the password-blind browser autofill tools
 (``browser_vault`` list / fill): the agent sees handles
@@ -103,7 +105,9 @@ def _cmd_add(args) -> None:
                     secret[field] = value
             meta = get_vault_store().add_item(kind=kind, label=label, secret=secret, origin=origin)
     except VaultError as exc:
-        c.print(f"[red]Error:[/] {exc}")
+        from rich.markup import escape
+
+        c.print(f"[red]Error:[/] {escape(str(exc))}")
         return
 
     c.print(f"[green]Stored.[/] handle=[bold]{meta.id}[/] kind={meta.kind} origin={meta.origin or '-'}")
@@ -182,6 +186,50 @@ def _cmd_rm(args) -> None:
         c.print(f"[red]No vault item with handle {args.handle!r}[/]")
 
 
+def _cmd_migrate_floorvault(args) -> None:
+    from agent.vault_store import VaultError, VaultStore, configured_store_name
+    from agent.vault_store_floorvault import get_floorvault_store, migrate_from_fernet
+
+    c = _console()
+    legacy = VaultStore()
+    base = legacy._base
+    if not legacy._vault_path.exists():
+        c.print("[dim]No Fernet vault (vault.json.enc) to migrate.[/]")
+        return
+
+    def activate() -> None:
+        from hermes_cli.config import _ensure_dict, load_config, save_config
+
+        cfg = load_config()
+        _ensure_dict(cfg, "vault")["store"] = "floorvault"
+        save_config(cfg)
+        if configured_store_name(base.parent / "config.yaml") != "floorvault":
+            raise VaultError("FloorVault was not activated; the Fernet vault is untouched. Check managed settings.")
+        if args.remove_legacy:
+            for path in (legacy._vault_path, legacy._key_path):
+                path.unlink(missing_ok=True)
+
+    result = migrate_from_fernet(legacy, get_floorvault_store(base), on_verified=activate)
+    c.print(f"Copied {result['copied']} of {result['total']} items "
+            f"({result['skipped']} already present) into {base / 'vault.db'}.")
+    if not result["verified"]:
+        c.print("[red]Verification failed:[/] the FloorVault copy does not match; the Fernet vault is untouched.")
+        if result["mismatched"]:
+            c.print(f"[dim]Mismatched handles: {', '.join(result['mismatched'])} — fix or remove the conflicting "
+                    "FloorVault item (`hermes config set vault.store floorvault`, then `hermes vault rm`), "
+                    "then rerun the migration.[/]")
+        return
+    c.print("[green]Verified[/]: newly migrated items read back identical; previously migrated ids stay retired "
+            "[dim](created_at shows the migration time — the original timestamps do not carry over).[/]")
+    c.print("vault.store is now [bold]floorvault[/].")
+    if args.remove_legacy:
+        c.print("Removed vault.json.enc and vault.key.")
+    else:
+        c.print("[dim]vault.json.enc and vault.key were left in place; rerun with --remove-legacy "
+                "to delete them (the key file decrypts the old copy). While they remain you can "
+                "revert with `hermes config set vault.store fernet`.[/]")
+
+
 def register_cli(subparser) -> None:
     """Build the ``hermes vault`` argparse tree (called from main.py)."""
     subs = subparser.add_subparsers(dest="vault_action")
@@ -203,6 +251,14 @@ def register_cli(subparser) -> None:
     p_rm.add_argument("handle", help="Item handle (see `hermes vault list`)")
     p_rm.set_defaults(_vault_handler=_cmd_rm)
 
+    p_mig = subs.add_parser(
+        "migrate-floorvault",
+        help="Copy the local vault into the FloorVault store (OS key custody; needs the floorvault extra)",
+    )
+    p_mig.add_argument("--remove-legacy", action="store_true",
+                       help="Delete vault.json.enc and vault.key after a verified copy")
+    p_mig.set_defaults(_vault_handler=_cmd_migrate_floorvault)
+
     p_src = subs.add_parser("sources", help="Show detected password managers (1Password, Bitwarden); they are on automatically")
     group = p_src.add_mutually_exclusive_group()
     group.add_argument("--disable", metavar="NAME", help="Stop using a detected manager: onepassword | bitwarden")
@@ -220,4 +276,6 @@ def vault_command(args) -> None:
             return
         handler(args)
     except VaultError as exc:
-        _console().print(f"[red]Error:[/] {exc}")
+        from rich.markup import escape
+
+        _console().print(f"[red]Error:[/] {escape(str(exc))}")

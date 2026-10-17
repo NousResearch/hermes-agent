@@ -2441,10 +2441,10 @@ DEFAULT_CONFIG = {
     # External secret sources — pull credentials from secret managers at startup instead of storing
     # them in ~/.hermes/.env.
     # Browser credential vault: which login sources browser_vault may draw from. The local
-    # encrypted vault (`hermes vault add`, Desktop → Settings → Credential Vault) is always on.
-    # External password managers are unlocked per session with a masked master-password prompt;
-    # headless sessions (cron, webhook, API) never prompt and see them as locked.
+    # encrypted vault (`hermes vault add`, Desktop → Settings → Credential Vault) is always on;
+    # external managers unlock per session with a masked prompt (headless never prompts).
     "vault": {
+        "store": "fernet",  # "fernet" | "floorvault" (vault.db, OS key custody; `hermes vault migrate-floorvault`)
         "onepassword": {
             # Detected managers are login sources unless the user opts out (vault.<name>.enabled: false).
             "enabled": True,        # `op` CLI: Login items with a website URL become fillable handles.

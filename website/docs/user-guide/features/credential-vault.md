@@ -107,6 +107,35 @@ vault:
     enabled: false
 ```
 
+## Optional: OS-key storage (FloorVault)
+
+By default the local vault encrypts itself with a key file (`vault.key`) stored
+next to the data. An opt-in alternative stores records in `vault.db` sealed
+with AES-256-SIV — every field cryptographically bound to its record and
+column — and keeps the master key in your OS key store instead of a file:
+macOS Keychain, Windows DPAPI, or Linux Secret Service. On a headless host set
+`FLOOR_VAULT_KEY` (64 hex characters, the same value every run); with neither
+key nor OS store the vault fails closed rather than falling back to disk.
+
+```bash
+hermes vault migrate-floorvault                 # copies + verifies every item, then flips vault.store
+hermes vault migrate-floorvault --remove-legacy # additionally deletes vault.json.enc and vault.key
+```
+
+Handles are preserved — saved logins keep working and nothing needs re-adding.
+Needs `hermes pm install floorvault` on first use. Environment keys take
+precedence over the OS store everywhere, so unset `FLOOR_VAULT_KEY` once you
+leave the headless host.
+
+**Backup caveat:** `vault.db` is included in `hermes backup`, but a restore
+only opens where the same master key exists. Keychain/DPAPI/Secret Service
+items do not travel with the archive — on a new machine the vault fails closed
+until the key does. If you need restores to be portable, either stay on the
+default store (`vault.key` restores with it) or keep the `FLOOR_VAULT_KEY`
+hex value somewhere safe and set it on the new machine. While
+`vault.json.enc` still exists you can revert with
+`hermes config set vault.store fernet`.
+
 ## What this does and does not guarantee
 
 **Does:** the password never enters the model's context through Hermes: not in

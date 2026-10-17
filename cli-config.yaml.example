@@ -2350,3 +2350,25 @@ updates:
 #   # This runs ONCE per process at startup, so it cannot replace a credential
 #   # that expires mid-session. For a single provider whose token needs
 #   # re-minting during a session, use `providers.<name>.key_cmd` instead.
+
+# =============================================================================
+# Local credential vault store (browser autofill: `hermes vault add`)
+# =============================================================================
+# "fernet" (default): vault.json.enc + vault.key under <HERMES_HOME>/vault/.
+# "floorvault": AES-256-SIV records in vault.db, each field bound to its record
+#   and column; the master key lives in the OS key store (macOS Keychain,
+#   Windows DPAPI, Linux Secret Service). The floorvault extra pulls the macOS /
+#   Linux custody clients automatically; Windows DPAPI needs nothing extra.
+#   Headless hosts set FLOOR_VAULT_KEY (64 hex chars, the same value every run);
+#   with neither, the vault fails closed. Env keys are checked BEFORE the OS
+#   store on every platform — a stale FLOOR_VAULT_KEY on a desktop silently
+#   overrides Keychain/DPAPI/Secret Service, so unset it once you leave the
+#   headless host. Note: floorvault also honours its generic APPSTATE_KEY
+#   variable ahead of FLOOR_VAULT_KEY — unset it if it was meant for another tool. Switch with `hermes vault migrate-floorvault`,
+#   which copies items (handles unchanged), verifies them and sets this key.
+#   Cutover serializes Fernet writers; stale writers fail and should retry.
+#   Rerunning with --remove-legacy respects items deleted after migration.
+#   To revert while vault.json.enc still exists, set store back to fernet.
+#
+# vault:
+#   store: fernet

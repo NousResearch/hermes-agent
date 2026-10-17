@@ -100,6 +100,16 @@ async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source:
         if source is None:
             raise ValueError("deliver_wake: push-capable adapter requires a SessionSource")
         from gateway.platforms.event import MessageEvent, MessageType
+        runner = getattr(adapter, "gateway_runner", None)
+        if runner is not None:
+            from gateway.session_automation import admit_route_wake
+            from hermes_state_runtime import RuntimeStoreError
+            category = {"notification_category": notification_category} if notification_category != "result" else {}
+            try:
+                if await admit_route_wake(runner, adapter, source, text, "kanban-wake", category):
+                    return  # committed to the session FIFO: never interrupts the admitted turn
+            except RuntimeStoreError as exc:
+                raise WakeNotAccepted(str(exc)) from exc
         synth_event = MessageEvent(text=text, message_type=MessageType.TEXT, source=source, internal=True,
                                    metadata={"notification_category": notification_category})
         await admit_internal_event(adapter, synth_event)
@@ -247,7 +257,7 @@ async def _self_post_chat_completion(adapter: Any, *, text: str, session_id: str
                     await resp.read()
                     logger.info("wake self-post delivered for session %s (attempt %d)", session_id, attempt + 1)
                     return
-        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
+        except (TimeoutError, aiohttp.ClientError, OSError) as exc:
             last_err = exc
             logger.warning("wake self-post transient failure for session %s (attempt %d/%d): %s",
                            session_id, attempt + 1, attempts, exc)

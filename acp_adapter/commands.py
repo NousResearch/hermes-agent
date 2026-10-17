@@ -13,11 +13,6 @@ from acp_adapter.session import SessionState, _expand_acp_enabled_toolsets
 
 logger = logging.getLogger("acp_adapter.server")
 
-try:
-    from hermes_cli import __version__ as HERMES_VERSION
-except Exception:
-    HERMES_VERSION = "0.0.0"
-
 
 def _estimate_tokens(history: list, agent: Any, system_prompt: str | None = None, tools: Any = None) -> int:
     """Rough request-token estimate over history + system prompt + tool schemas."""
@@ -102,6 +97,8 @@ class SlashCommandsMixin:
 
         if cmd not in self._COMMANDS:
             return None
+        from hermes_cli.observability.shared_metrics_events import record_slash_command
+        record_slash_command(command=cmd, surface="acp")
         mutating = cmd in _MID_TURN_BLOCKED_COMMANDS
         if mutating:
             with state.runtime_lock:
@@ -310,4 +307,6 @@ class SlashCommandsMixin:
         return f"Queued for the next turn. ({_queue_prompt(state, queued_text)} queued)"
 
     def _cmd_version(self, args: str, state: SessionState) -> str:
-        return f"Hermes Agent v{HERMES_VERSION}"
+        from hermes_cli.version_info import get_version_info
+
+        return f"Hermes Agent v{get_version_info().derived_version}"

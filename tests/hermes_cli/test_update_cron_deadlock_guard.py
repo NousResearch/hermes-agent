@@ -20,7 +20,7 @@ from unittest.mock import patch
 
 import pytest
 
-linux_only = pytest.mark.linux_only
+linux_only = pytest.mark.platforms("linux")
 
 
 class TestAncestorDetectionGuard:

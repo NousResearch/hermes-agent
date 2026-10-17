@@ -1,9 +1,14 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  collectThemeBridge,
   directiveFrameHeight,
+  evaluateIntent,
   frameSizeFromMessage,
-  intentFromMessage,
+  INTENT_THROTTLE_MS,
+  intentAckMessage,
+  intentScript,
+  MAX_INTENT_LENGTH,
   themePrelude,
   withInlineChrome
 } from './inline-preview-directive'
@@ -24,7 +29,7 @@ describe('directiveFrameHeight', () => {
 })
 
 describe('withInlineChrome', () => {
-  const prelude = themePrelude({ '--foreground': '#eee' }, 'Inter')
+  const prelude = themePrelude({ '--foreground': '#eee' }, 'Inter', 'dark')
 
   it('puts the theme prelude FIRST so page styles override it', () => {
     const doc = '<html><head><style>body{color:red}</style></head><body><h1>hi</h1></body></html>'
@@ -52,8 +57,24 @@ describe('withInlineChrome', () => {
 })
 
 describe('themePrelude', () => {
+  it.each(['light', 'dark'] as const)('injects the app color scheme %s into the frame document', colorScheme => {
+    expect(themePrelude({}, '', colorScheme)).toContain(`color-scheme:${colorScheme}`)
+  })
+
+  it('puts the injected color scheme where a page declaration overrides it', () => {
+    const doc = '<html><head><style>:root{color-scheme:dark}</style></head><body><h1>hi</h1></body></html>'
+    const framed = withInlineChrome(doc, 'tok', themePrelude({}, '', 'light'))
+
+    // The injected default comes first; the page's own :root rule wins.
+    expect(framed.indexOf('color-scheme:light')).toBeLessThan(framed.indexOf('color-scheme:dark'))
+  })
+
   it('carries resolved tokens, transparent background, and the app font', () => {
-    const prelude = themePrelude({ '--foreground': 'oklch(0.9 0 0)', '--accent': '#7aa2f7' }, 'Inter, sans-serif')
+    const prelude = themePrelude(
+      { '--foreground': 'oklch(0.9 0 0)', '--accent': '#7aa2f7' },
+      'Inter, sans-serif',
+      'dark'
+    )
 
     expect(prelude).toContain('--foreground:oklch(0.9 0 0)')
     expect(prelude).toContain('--accent:#7aa2f7')
@@ -62,7 +83,32 @@ describe('themePrelude', () => {
   })
 
   it('omits the font rule when no font resolved', () => {
-    expect(themePrelude({}, '')).not.toContain('font-family')
+    expect(themePrelude({}, '', 'light')).not.toContain('font-family')
+  })
+})
+
+describe('collectThemeBridge', () => {
+  afterEach(() => {
+    document.documentElement.className = ''
+    delete document.documentElement.dataset.hermesMode
+  })
+
+  // #123048: the frame's color-scheme must come from the same resolved
+  // appearance as the injected tokens, not from the separate `.dark` class
+  // React's useIsDark() reads — that class can still hold last render's
+  // value for a paint after applyTheme() has already updated data-hermes-mode.
+  it('reads color-scheme from data-hermes-mode, not the .dark class', () => {
+    document.documentElement.dataset.hermesMode = 'dark'
+    document.documentElement.classList.remove('dark')
+
+    expect(collectThemeBridge().colorScheme).toBe('dark')
+  })
+
+  it('falls back to light when the mode attribute disagrees the other way', () => {
+    document.documentElement.dataset.hermesMode = 'light'
+    document.documentElement.classList.add('dark')
+
+    expect(collectThemeBridge().colorScheme).toBe('light')
   })
 })
 
@@ -100,28 +146,135 @@ describe('frameSizeFromMessage', () => {
   })
 })
 
-describe('intentFromMessage', () => {
+describe('evaluateIntent', () => {
   const msg = (over: Record<string, unknown> = {}) => ({
     type: 'hermes-inline-preview-intent',
     token: 'tok',
+    id: 7,
     prompt: 'get-price eth',
     ...over
   })
 
-  it('accepts our intent with our token, trimmed', () => {
-    expect(intentFromMessage(msg(), 'tok')).toBe('get-price eth')
-    expect(intentFromMessage(msg({ prompt: '  hi  ' }), 'tok')).toBe('hi')
+  const NOW = 100_000
+
+  it('accepts our intent with our token, trimmed, carrying the call id', () => {
+    expect(evaluateIntent(msg(), 'tok', NOW, 0)).toEqual({ id: 7, kind: 'accept', prompt: 'get-price eth' })
+    expect(evaluateIntent(msg({ prompt: '  hi  ' }), 'tok', NOW, 0)).toMatchObject({ kind: 'accept', prompt: 'hi' })
   })
 
-  it('caps runaway prompts to a sentence-sized budget', () => {
-    expect(intentFromMessage(msg({ prompt: 'x'.repeat(9000) }), 'tok')).toHaveLength(500)
+  it('accepts a prompt exactly at the cap untouched', () => {
+    const prompt = 'x'.repeat(MAX_INTENT_LENGTH)
+
+    expect(evaluateIntent(msg({ prompt }), 'tok', NOW, 0)).toMatchObject({ kind: 'accept', prompt })
   })
 
-  it('rejects wrong token, wrong type, empty, and hostile shapes', () => {
-    expect(intentFromMessage(msg({ token: 'stolen' }), 'tok')).toBeNull()
-    expect(intentFromMessage(msg({ type: 'hermes-inline-preview-size' }), 'tok')).toBeNull()
-    expect(intentFromMessage(msg({ prompt: '   ' }), 'tok')).toBeNull()
-    expect(intentFromMessage(msg({ prompt: 42 }), 'tok')).toBeNull()
-    expect(intentFromMessage(null, 'tok')).toBeNull()
+  // #118973: a sliced JSON payload reached the agent as garbage while the
+  // widget believed it sent. Over-length is an explicit rejection now.
+  it('rejects an over-length prompt instead of truncating it', () => {
+    const payload = 'FC-FLUSH ' + JSON.stringify(Array.from({ length: 30 }, (_, i) => ({ card: i, rating: 3 })))
+
+    expect(payload.length).toBeGreaterThan(MAX_INTENT_LENGTH)
+    expect(evaluateIntent(msg({ prompt: payload }), 'tok', NOW, 0)).toEqual({
+      ack: { error: 'too_long', maxLength: MAX_INTENT_LENGTH, ok: false },
+      id: 7,
+      kind: 'reject'
+    })
+  })
+
+  it('rejects a throttled intent with a retry hint instead of dropping it', () => {
+    expect(evaluateIntent(msg(), 'tok', NOW, NOW - 300)).toEqual({
+      ack: { error: 'throttled', ok: false, retryAfterMs: INTENT_THROTTLE_MS - 300 },
+      id: 7,
+      kind: 'reject'
+    })
+    expect(evaluateIntent(msg(), 'tok', NOW, NOW - INTENT_THROTTLE_MS)).toMatchObject({ kind: 'accept' })
+  })
+
+  it('rejects an empty or non-string prompt from our frame as invalid', () => {
+    expect(evaluateIntent(msg({ prompt: '   ' }), 'tok', NOW, 0)).toMatchObject({ ack: { error: 'invalid' } })
+    expect(evaluateIntent(msg({ prompt: 42 }), 'tok', NOW, 0)).toMatchObject({ ack: { error: 'invalid' } })
+  })
+
+  it('drops a non-integer id so the ack cannot be aimed with a hostile value', () => {
+    expect(evaluateIntent(msg({ id: 'x' }), 'tok', NOW, 0)).toMatchObject({ id: null, kind: 'accept' })
+    expect(evaluateIntent(msg({ id: 1.5 }), 'tok', NOW, 0)).toMatchObject({ id: null })
+  })
+
+  it('ignores wrong token, wrong type, and hostile shapes without a reply', () => {
+    expect(evaluateIntent(msg({ token: 'stolen' }), 'tok', NOW, 0)).toBeNull()
+    expect(evaluateIntent(msg({ type: 'hermes-inline-preview-size' }), 'tok', NOW, 0)).toBeNull()
+    expect(evaluateIntent(null, 'tok', NOW, 0)).toBeNull()
+    expect(evaluateIntent('str', 'tok', NOW, 0)).toBeNull()
+  })
+})
+
+describe('intentScript', () => {
+  // Run the injected script against a fake parent so the frame side of the
+  // protocol is exercised for real: what it posts and what send() resolves.
+  function mountFrame() {
+    const posted: Array<Record<string, unknown>> = []
+    const listeners: Record<string, Array<(e: unknown) => void>> = {}
+    const parent = { postMessage: (data: Record<string, unknown>) => posted.push(data) }
+    const win: { hermes?: { maxLength: number; send: (p: unknown) => Promise<unknown> } } = {}
+
+    const addEventListener = (type: string, fn: (e: unknown) => void) => {
+      ;(listeners[type] ??= []).push(fn)
+    }
+
+    const body = intentScript('tok')
+      .replace(/^<script>/, '')
+      .replace(/<\/script>$/, '')
+
+    new Function('parent', 'addEventListener', 'window', body)(parent, addEventListener, win)
+
+    const reply = (data: unknown, source: unknown = parent) => listeners.message?.forEach(fn => fn({ data, source }))
+
+    return { posted, reply, send: win.hermes!.send, win }
+  }
+
+  it('posts the full prompt, never a truncated one', () => {
+    const { posted, send } = mountFrame()
+    const long = 'y'.repeat(3200)
+
+    void send(long)
+
+    expect(posted).toHaveLength(1)
+    expect(posted[0]).toMatchObject({ prompt: long, token: 'tok', type: 'hermes-inline-preview-intent' })
+  })
+
+  it('resolves send() with the parent ack for that call', async () => {
+    const { posted, reply, send } = mountFrame()
+    const pending = send('hello')
+    const id = posted[0].id as number
+
+    reply(intentAckMessage('tok', id, { error: 'too_long', maxLength: 500, ok: false }))
+
+    await expect(pending).resolves.toEqual({ error: 'too_long', maxLength: 500, ok: false })
+  })
+
+  it('ignores acks with the wrong token or from a non-parent source', async () => {
+    vi.useFakeTimers()
+
+    try {
+      const { posted, reply, send } = mountFrame()
+      const pending = send('hello')
+      const id = posted[0].id as number
+
+      reply(intentAckMessage('stolen', id, { ok: true }))
+      reply(intentAckMessage('tok', id, { ok: true }), {})
+      vi.advanceTimersByTime(5000)
+
+      await expect(pending).resolves.toEqual({ error: 'undelivered', ok: false })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('resolves invalid for an empty prompt without posting, and exposes the cap', async () => {
+    const { posted, send, win } = mountFrame()
+
+    await expect(send('   ')).resolves.toEqual({ error: 'invalid', ok: false })
+    expect(posted).toHaveLength(0)
+    expect(win.hermes?.maxLength).toBe(MAX_INTENT_LENGTH)
   })
 })

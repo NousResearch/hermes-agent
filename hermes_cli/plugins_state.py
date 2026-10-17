@@ -17,7 +17,7 @@ _PLUGIN_SETTING_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _PLUGIN_SETTING_RESERVED_ROOTS = frozenset({"model", "plugins", "security", "settings"})
 _PLUGIN_STATE_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _PLUGIN_STATE_QUOTA_BYTES = 10 * 1024 * 1024
-_PLUGIN_STATE_LOCKS: Dict[str, threading.RLock] = {}
+_PLUGIN_STATE_LOCKS: dict[str, threading.RLock] = {}
 _PLUGIN_STATE_LOCKS_GUARD = threading.Lock()
 
 
@@ -160,7 +160,7 @@ class PluginState:
 
     def _read_unlocked(self) -> dict[str, Any]:
         try:
-            with open(self.path, encoding="utf-8") as handle:
+            with open(self.path, encoding="utf-8-sig") as handle:
                 data = json.load(handle)
         except FileNotFoundError:
             return {}

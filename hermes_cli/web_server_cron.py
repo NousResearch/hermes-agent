@@ -2,6 +2,7 @@
 gateway forwarding.
 """
 
+import asyncio
 import contextlib
 import logging
 import inspect
@@ -25,7 +26,7 @@ def _cron_optional_text(value: Any, *, strip_trailing_slash: bool = False) -> Op
     return text or None
 
 
-def _cron_string_list(value: Any) -> Optional[List[str]]:
+def _cron_string_list(value: Any) -> Optional[list[str]]:
     if isinstance(value, str):
         raw_items = re.split(r"[\n,]", value)
     elif isinstance(value, (list, tuple)):
@@ -55,7 +56,7 @@ def _normalize_dashboard_cron_script(value: Any, profile_home: Path) -> Optional
     return str(relative)
 
 
-def _validate_dashboard_cron_effective_job(job: Dict[str, Any]) -> None:
+def _validate_dashboard_cron_effective_job(job: dict[str, Any]) -> None:
     prompt = _cron_optional_text(job.get("prompt"))
     script = _cron_optional_text(job.get("script"))
     skills = _cron_string_list(job.get("skills")) or _cron_string_list(job.get("skill"))
@@ -67,7 +68,7 @@ def _validate_dashboard_cron_effective_job(job: Dict[str, Any]) -> None:
         raise HTTPException(status_code=400, detail="agent cron jobs require a prompt, skill, or script")
 
 
-def _validate_dashboard_cron_context_from(refs: Optional[List[str]], profile_name: str) -> None:
+def _validate_dashboard_cron_context_from(refs: Optional[list[str]], profile_name: str) -> None:
     for ref in refs or ():
         # "self" (the continuity toggle) resolves to the job's own id at run time — it can't be
         # validated against the store (create precedes the job's existence).
@@ -79,7 +80,7 @@ def _validate_dashboard_cron_context_from(refs: Optional[List[str]], profile_nam
                 detail=f"context_from job '{ref}' not found in profile '{profile_name}'")
 
 
-def _cron_profile_dicts() -> List[Dict[str, Any]]:
+def _cron_profile_dicts() -> list[dict[str, Any]]:
     """Minimal profile records (callers only consume ``name``); avoids ``list_profiles()``,
     whose config parsing, gateway probes and skill counts are GIL pressure on large pools."""
     from hermes_cli.web_server_profiles import _fallback_profile_dicts
@@ -109,7 +110,7 @@ def _cron_default_profile() -> str:
     return "default" if name in ("default", "custom") else name
 
 
-def _cron_profile_home(profile: Optional[str]) -> Tuple[str, Path]:
+def _cron_profile_home(profile: Optional[str]) -> tuple[str, Path]:
     """Resolve a profile query value to (profile_name, HERMES_HOME)."""
     from hermes_cli import profiles as profiles_mod
     raw = (profile or _cron_default_profile()).strip() or "default"
@@ -124,8 +125,8 @@ def _cron_profile_home(profile: Optional[str]) -> Tuple[str, Path]:
 
 
 def _annotate_cron_job(
-    job: Dict[str, Any], profile: str, home: Path, heartbeat_age: Optional[float] = None,
-) -> Dict[str, Any]:
+    job: dict[str, Any], profile: str, home: Path, heartbeat_age: Optional[float] = None,
+) -> dict[str, Any]:
     return {
         **job,
         "profile": profile,
@@ -248,6 +249,17 @@ def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
         context_from = _cron_string_list(body.context_from)
         _validate_dashboard_cron_context_from(context_from, profile_name)
         no_agent = bool(body.no_agent)
+        # Finite repeat: non-positive counts are a client error (the core chokepoint
+        # would silently make them unlimited — indistinguishable from omission);
+        # everything else (int, 'forever'/'once'/'3') coerces through the shared
+        # normalize_repeat_value, the same validation the CLI uses.
+        repeat = body.repeat
+        if repeat is not None:
+            if isinstance(repeat, int) and not isinstance(repeat, bool) and repeat < 1:
+                raise HTTPException(
+                    status_code=400, detail="repeat must be a positive integer")
+            from cron.jobs import normalize_repeat_value
+            repeat = normalize_repeat_value(repeat)
         _validate_dashboard_cron_effective_job(
             {"prompt": body.prompt, "skills": skills, "script": script, "no_agent": no_agent})
         return _mutate_cron_for_profile(
@@ -256,6 +268,7 @@ def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
             prompt=body.prompt or "",
             schedule=body.schedule,
             name=body.name,
+            repeat=body.repeat,
             deliver=_cron_optional_text(body.deliver) or "local",
             skills=skills,
             model=_cron_optional_text(body.model),
@@ -373,7 +386,7 @@ def _gateway_fire_endpoint(profile: str, home: Path) -> str:
 
 
 async def _forward_cron_fire_to_gateway(
-    profile: str, job_id: str, authorization: str) -> Optional[Tuple[int, Dict[str, Any]]]:
+    profile: str, job_id: str, authorization: str) -> Optional[tuple[int, dict[str, Any]]]:
     """Forward a Chronos fire callback byte-preserved to the gateway api_server on loopback.
 
     The dashboard is the hosted deployment's only public HTTP door, but cron execution belongs to
@@ -386,7 +399,7 @@ async def _forward_cron_fire_to_gateway(
     drops the fire with 200: retrying into an operator-stopped gateway can never succeed.
     """
     _profile_name, home = _cron_profile_home(profile)
-    url = _gateway_fire_endpoint(_profile_name, home)
+    url = await asyncio.to_thread(_gateway_fire_endpoint, _profile_name, home)
     import httpx
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -415,7 +428,7 @@ def _gateway_intentionally_stopped(profile: Optional[str]) -> bool:
     """
     import json as _json
     try:
-        data = _json.loads((_cron_profile_home(profile)[1] / "gateway_state.json").read_text(encoding="utf-8"))
+        data = _json.loads((_cron_profile_home(profile)[1] / "gateway_state.json").read_text(encoding="utf-8-sig"))
         return isinstance(data, dict) and data.get("desired_state") == "stopped"
     except Exception:
         return False

@@ -7,6 +7,7 @@ registry first, then the legacy built-in path. Plugin side: ``platform_registry
 .register(PlatformEntry(...))``; gateway side: ``create_adapter("irc", platform_config)``.
 """
 
+import contextvars
 import logging
 import sys
 import threading
@@ -48,19 +49,27 @@ class PlatformEntry:
     # PASSIVE dependency probe (deps importable RIGHT NOW); must be side-effect free since it
     # runs from status displays and the config enablement pass, which may never pip-install.
     check_fn: Callable[[], bool]
-    validate_config: Optional[Callable[[Any], bool]] = None  # None = let connect() fail descriptively
-    # ACTIVE installer, run by ``create_adapter()`` only when ``check_fn`` is False (platform
-    # enabled+configured, about to connect); None = a False check_fn is a hard block. Split
-    # from check_fn because one field either installed from every status display or never.
-    # ACTIVE dependency installer: make the platform's dependencies available, installing them (pip /
-    # lazy_deps) if needed. Returns True once deps are importable, False if they could not be installed.
-    # None = no auto-install; a False ``check_fn`` is then a hard block (correct for platforms with no
-    # optional deps). Why two fields (#79812): when the ACTIVE installer was registered as ``check_fn``,
-    # every status display pip-installed SDKs as a side effect (desktop boot-loop at 94%, see
-    # gateway/config.py enablement comments); when the PASSIVE probe was registered instead,
-    # ``create_adapter()`` returned None before ``connect()`` could lazy-install, so the deps never
-    # installed at all (Teams deadlock). Splitting the two roles makes both call sites correct by
-    # construction.
+
+    # Optional: given a PlatformConfig, is it properly configured?
+    # If None, the registry skips config validation and lets the adapter
+    # fail at connect() time with a descriptive error.
+    validate_config: Optional[Callable[[Any], bool]] = None
+
+    # ACTIVE dependency installer: make the platform's dependencies available,
+    # installing them (pm.sync_venv) if needed.  Returns True once deps are
+    # importable, False if they could not be installed.  Called by
+    # ``create_adapter()`` when ``check_fn`` returns False — i.e. exactly at
+    # the moment the gateway is about to bring the platform up and the user
+    # has it enabled/configured.  None = no auto-install; a False ``check_fn``
+    # is then a hard block (correct for platforms with no optional deps).
+    #
+    # Why two fields (#79812): when the ACTIVE installer was registered as
+    # ``check_fn``, every status display pip-installed SDKs as a side effect
+    # (desktop boot-loop at 94%, see gateway/config.py enablement comments);
+    # when the PASSIVE probe was registered instead, ``create_adapter()``
+    # returned None before ``connect()`` could lazy-install, so the deps
+    # never installed at all (Teams deadlock).  Splitting the two roles makes
+    # both call sites correct by construction.
     ensure_deps_fn: Optional[Callable[[], bool]] = None
     # Connected/configured for this PlatformConfig (``get_connected_platforms``, setup UI);
     # None falls back to ``validate_config`` or ``check_fn``.
@@ -99,6 +108,77 @@ class PlatformEntry:
     # ``async (pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False)
     # -> {"success": True, "message_id": ...} | {"error": str}``.
     standalone_sender_fn: Optional[Callable[..., Awaitable[dict]]] = None
+    # Every inbound event is produced by the service the adapter authenticated to with its own
+    # credential (an event bus, not a person), so user allowlists and pairing do not apply. Never
+    # set it for a chat platform: any sender would reach the agent. Consumer: Home Assistant.
+    trusted_inbound: bool = False
+    # Built-in display defaults tier ("high" | "medium" | "low" | "minimal", see
+    # gateway/display_config.py) used below the user's display.* overrides; "" = global defaults.
+    display_tier: str = ""
+    # --- prompt ---
+    # Per-key display defaults layered over ``display_tier`` (e.g. Discord ``reasoning_style``);
+    # empty = the tier as-is. Same keys as display_config._GLOBAL_DEFAULTS.
+    display_overrides: dict = field(default_factory=dict)
+    # Env prefixes shared with a non-channel capability (the same plugin's tools): profile clones
+    # strip keys under them only when the source profile runs the adapter (profile_channels.py).
+    shared_env_prefixes: tuple = ()
+    # --- config ---
+    # Gateway "sufficiently configured?" verdict from the PlatformConfig ALONE (yaml + env seeding
+    # already merged into it), for ``GatewayConfig.get_connected_platforms``. Unlike ``is_connected``
+    # it never falls back to the env / ``.env`` (the gateway runs from the merged config, setup UIs
+    # read the env), and it owns the ``token``/``api_key`` shortcut so a platform that needs more
+    # than a token (Weixin: token AND account_id) can refuse it. None = ``token or api_key``, then
+    # ``is_connected`` / ``validate_config``.
+    config_connected_fn: Optional[Callable[[Any], bool]] = None
+    # --- authz ---
+    # ``<PLATFORM>_ALLOW_BOTS`` (YAML ``allow_bots`` wins): bot senders it admits ("mentions"/"all")
+    # bypass the human allowlist, checked before the no-user-id guard. "" = bots get no bypass.
+    allow_bots_env: str = ""
+    # (dm_policy_env, group_policy_env) of a platform with its own dm/group policy: when enabled and
+    # either resolves "open" without ``allow_all_env`` / GATEWAY_ALLOW_ALL_USERS, startup is refused.
+    # A "" member = that policy is YAML-only (QQ Bot). None = no own policy, never checked.
+    own_policy_env: Optional[tuple] = None
+    # --- send ---
+    # send_message native target syntax, see ``gateway.platforms.send_targets``. A hint, not an
+    # authority like ``parse_target_ref_fn``: None / NOT_EXPLICIT fall back to core's generic id
+    # rules / channel directory, it also re-parses channel-directory hits, and it keeps
+    # ``pass_unresolved_references`` lenient.
+    target_ref_syntax_fn: Optional[Callable[[str], Any]] = None
+    # ``gateway.platforms.send_targets.StandaloneSendPolicy`` or None (generic send routing).
+    standalone_send: Optional[Any] = None
+    # --- dashboard ---
+    # Channels-page card metadata (hermes_cli/web_server_messaging.py, Desktop + web dashboard).
+    # Every field defaults to "not declared": the card then falls back to ``label`` / ``install_hint``
+    # / ``required_env`` + prefix-discovered env vars.
+    dashboard_label: str = ""  # card title when it differs from ``label`` (status/CLI keep ``label``)
+    dashboard_description: str = ""  # human description; ``install_hint`` is a dependency note
+    docs_url: str = ""  # setup guide linked from the card
+    dashboard_env_vars: tuple = ()  # card fields shown first, in this order, before discovered vars
+    # Credentials the card treats as "configured"; None = ``required_env`` (which also drives
+    # ``hermes setup`` and the child-env scrub, so the card may legitimately ask for a different set).
+    dashboard_required_env: Optional[tuple] = None
+    # ``{ENV_KEY: (accepts(value) -> bool, 400 detail)}``: the dashboard PUT rejects a non-empty value
+    # the predicate refuses, catching credentials pasted into the wrong field.
+    env_value_rules: dict = field(default_factory=dict)
+    # --- env ---
+    # Ordered ``step(GatewayConfig) -> None`` env->config bridge run by ``_apply_env_overrides`` for a
+    # platform with activation evidence (``gateway.platform_env.EnvCred`` / ``home_step`` /
+    # ``reply_mode_step``); () = none. Unlike ``env_enablement_fn`` it runs whether or not deps are
+    # importable and may set token / home channel / reply mode or force-disable.
+    env_overrides: tuple = ()
+    # Env names whose presence drives that enable, cited by the explicit-disable WARNING and used by
+    # ``hermes_cli.profile_channels`` as the platform's credential set; () = none declared.
+    env_enable_credentials: tuple = ()
+
+
+def core_ships_platform(name: str) -> bool:
+    """*name* is a platform core ships an adapter for: a static ``Platform`` member or a bundled
+    ``plugins/platforms/`` plugin. A user plugin may replace such an adapter but never mark it
+    ``trusted_inbound``: its senders are people, and that flag waives allowlists and pairing."""
+    from gateway.config import Platform
+    value = str(name or "").strip().lower()
+    return value in {Platform[member].value for member in Platform._member_names_} or (
+        value in Platform._scan_bundled_plugin_platforms()[0])
 
 
 class PlatformRegistry:
@@ -118,11 +198,19 @@ class PlatformRegistry:
         self._scoped_deferred: dict[str, dict[str, _Loader]] = {}
         self._inflight: dict[_LoadKey, threading.Event] = {}
         self._inflight_loaders: dict[_LoadKey, _Loader] = {}
-        self._inflight_owners: dict[_LoadKey, int] = {}
+        # Load keys whose loader is running in the current flow; copied into plugin deadline
+        # workers, so a nested walk from register() sees its own parent's load as recursive.
+        self._loading: contextvars.ContextVar[frozenset[_LoadKey]] = contextvars.ContextVar(
+            f"platform_registry_loading_{id(self)}", default=frozenset()
+        )
         self._cancelled_inflight: set[_LoadKey] = set()
         # A failed loader is no longer discoverable, but its identity remains
         # until ownership teardown can CAS-restore the displaced predecessor.
         self._consumed_loaders: dict[_LoadKey, _Loader] = {}
+        # Manifest-declared env names per deferred platform (``requires_env``), recorded without
+        # importing the adapter so ``gateway.platform_activation`` can tell a configured platform
+        # from an unconfigured one. A hint only: a stale entry costs one extra import, never a miss.
+        self._activation_env: dict[str, frozenset[str]] = {}
 
     @staticmethod
     def current_scope_key() -> str:
@@ -163,6 +251,16 @@ class PlatformRegistry:
             self._consumed_loaders.pop((scope, name), None)
             if name not in entries:
                 deferred[name] = loader
+
+    def note_activation_env(self, name: str, env_names) -> None:
+        """Record the env names a deferred platform's manifest declares (see ``_activation_env``)."""
+        names = frozenset(str(n).strip() for n in env_names or () if str(n).strip())
+        with self._lock:
+            self._activation_env[name] = self._activation_env.get(name, frozenset()) | names
+
+    def activation_env(self, name: str) -> frozenset[str]:
+        with self._lock:
+            return self._activation_env.get(name, frozenset())
 
     def snapshot_registration(
         self, name: str, *, scope: Optional[str] = None
@@ -205,6 +303,10 @@ class PlatformRegistry:
             global_key = (None, name)
             event = self._inflight.get(scoped_key)
             load_key = scoped_key
+            if event is None and name not in entries and self._loading.get():
+                from hermes_cli.plugins_loader import in_plugin_load_worker
+                if in_plugin_load_worker():
+                    return  # on a deadline worker: never block on a sibling load the parent may hold the lock for; caller sees it unloaded
             if event is None and name not in entries:
                 loader = deferred.pop(name, None)
             if event is None and loader is None and name not in entries:
@@ -216,11 +318,10 @@ class PlatformRegistry:
                 event = threading.Event()
                 self._inflight[load_key] = event
                 self._inflight_loaders[load_key] = loader
-                self._inflight_owners[load_key] = threading.get_ident()
                 is_loader = True
             if event is None:
                 return
-            if not is_loader and self._inflight_owners.get(load_key) == threading.get_ident():
+            if not is_loader and load_key in self._loading.get():
                 logger.warning("Deferred platform '%s' recursively requested while loading", name)
                 return
         if not is_loader:
@@ -229,11 +330,13 @@ class PlatformRegistry:
             # we waited for; resolve that predecessor instead of a one-shot false negative.
             self._resolve(name, active_scope)
             return
+        token = self._loading.set(self._loading.get() | {load_key})
         try:
             loader()
         except Exception as e:
             logger.warning("Deferred load of platform '%s' failed: %s", name, e, exc_info=True)
         finally:
+            self._loading.reset(token)
             with self._lock:
                 was_cancelled = load_key in self._cancelled_inflight
                 entries, deferred = self._scope_maps(load_key[0])
@@ -241,7 +344,6 @@ class PlatformRegistry:
                     self._consumed_loaders[load_key] = loader
                 self._inflight.pop(load_key, None)
                 self._inflight_loaders.pop(load_key, None)
-                self._inflight_owners.pop(load_key, None)
                 self._cancelled_inflight.discard(load_key)
                 event.set()
         if was_cancelled:
@@ -252,10 +354,8 @@ class PlatformRegistry:
         with self._lock:
             return (scope, name) in self._cancelled_inflight
 
-    def _resolve_all(self) -> None:
-        """Run every pending deferred loader (only ``all_entries``/``plugin_entries`` call this;
-        CLI chat never iterates the full set)."""
-        active_scope = self.current_scope_key()
+    def _pending_names(self, active_scope: str) -> list[str]:
+        """Deferred (or in-flight) names for *active_scope*, scoped first, without loading them."""
         with self._lock:
             _entries, scoped_deferred = self._scope_maps(active_scope)
             scoped_names = set(scoped_deferred)
@@ -265,10 +365,37 @@ class PlatformRegistry:
                     scoped_names.add(name)
                 elif inflight_scope is None:
                     global_names.add(name)
+        return [*sorted(scoped_names), *sorted(global_names - scoped_names)]
+
+    def _resolve_all(self, wanted: Optional[Callable[[str], bool]] = None) -> None:
+        """Run every pending deferred loader, or only those *wanted* accepts (``all_entries`` /
+        ``plugin_entries`` / ``configured_entries``; CLI chat never iterates the full set)."""
+        active_scope = self.current_scope_key()
         # Load outside the registry lock; each name has an in-flight event so concurrent
         # readers wait for the same materialization.
-        for name in (*sorted(scoped_names), *sorted(global_names)):
-            self._resolve(name, active_scope)
+        for name in self._pending_names(active_scope):
+            if wanted is None or wanted(name):
+                self._resolve(name, active_scope)
+
+    def pending_names(self) -> list[str]:
+        """Names registered as deferred loaders that have not been imported yet (current scope)."""
+        return self._pending_names(self.current_scope_key())
+
+    def configured_entries(self, wanted: Callable[[str], bool]) -> list[PlatformEntry]:
+        """Loaded entries, after materializing only the deferred platforms *wanted* accepts.
+
+        The gateway's config/env passes need each platform's hooks only for platforms the profile
+        actually configures; importing every bundled adapter (~20 SDKs) just to read metadata cost
+        every cold start ~0.5 s. *wanted* is :func:`gateway.platform_activation.has_activation_evidence`
+        (or a test stub); entries that are already loaded are always returned."""
+        self._resolve_all(wanted)
+        with self._lock:
+            return list({**self._entries, **self._scoped_entries.get(self.current_scope_key(), {})}.values())
+
+    def loaded_entries(self) -> list[PlatformEntry]:
+        """Entries already materialized (never imports a deferred adapter)."""
+        with self._lock:
+            return list({**self._entries, **self._scoped_entries.get(self.current_scope_key(), {})}.values())
 
     def register(self, entry: PlatformEntry, *, scope: Optional[str] = None) -> None:
         """Register a platform adapter entry (last writer wins on name clash)."""
@@ -339,6 +466,14 @@ class PlatformRegistry:
         with self._lock:
             entries, deferred = self._scope_maps(self.current_scope_key())
             return entries.keys() | deferred.keys() | self._entries.keys() | self._deferred.keys()
+
+    def required_env_names(self) -> set[str]:
+        """``required_env`` of every loaded entry (current profile scope AND process-global) without
+        loading deferred adapters; the child-env scrub reads this on every spawn."""
+        with self._lock:
+            entries, _deferred = self._scope_maps(self.current_scope_key())
+            return {n for e in (*self._entries.values(), *entries.values())
+                    for n in e.required_env if isinstance(n, str)}
 
     def is_registered(self, name: str) -> bool:
         # A deferred (not-yet-imported) platform still counts as registered so cheap membership

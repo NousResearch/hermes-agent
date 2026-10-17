@@ -90,6 +90,8 @@ const server = http.createServer(async (req, res) => {
 })
 await new Promise(r => server.listen(0, '127.0.0.1', r))
 const browser = await chromium.launch({
+  channel: 'chromium',
+  executablePath: process.env.AGENT_BROWSER_EXECUTABLE_PATH,
   headless: true,
   args: ['--no-sandbox'],
   ...(process.env.CHROMIUM_EXECUTABLE ? { executablePath: process.env.CHROMIUM_EXECUTABLE } : {})

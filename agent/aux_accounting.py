@@ -64,9 +64,9 @@ def record_aux_usage(
         if raw_usage is None:
             return
 
-        from agent.usage_pricing import estimate_usage_cost, normalize_usage
+        from agent.usage_pricing import estimate_usage_cost, normalize_usage, with_served_service_tier
 
-        usage = normalize_usage(raw_usage, provider=provider)
+        usage = with_served_service_tier(normalize_usage(raw_usage, provider=provider), response)
         if not (
             usage.input_tokens or usage.output_tokens
             or usage.cache_read_tokens or usage.cache_write_tokens
@@ -89,14 +89,3 @@ def record_aux_usage(
         )
     except Exception:
         logger.debug("Aux usage recording failed (non-fatal)", exc_info=True)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def get_accounting_context() -> Optional[tuple]:
-    """Return ``(session_db, session_id)`` for the active turn, or ``None``."""
-    return _accounting.get()
-# ---- END PLUGIN-COMPAT ----

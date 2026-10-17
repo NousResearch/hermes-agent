@@ -32,6 +32,8 @@ import { Codecs, persistentAtom } from '@/lib/persisted'
 import { TIP_CATALOG, type TipSide } from '@/lib/tips/catalog'
 import { mirrorDisplayToggle } from '@/store/display-toggles'
 
+import { recordFeatureToggle } from './desktop-metrics'
+
 /** Hours, not minutes. The catalog is ten tips and it should take weeks. */
 const COOLDOWN_MS = 6 * 60 * 60_000
 
@@ -106,6 +108,8 @@ export const $tipShownAt = persistentAtom<Record<string, number>>(
 )
 
 export function setTipsEnabled(enabled: boolean): void {
+  recordFeatureToggle('tips', $tipsEnabled.get(), enabled)
+
   if (!enabled) {
     // Including whichever one is up: the switch is answering a bubble on
     // screen as often as it is answering the idea of them.
@@ -162,6 +166,22 @@ export function showTip(tip: ActiveTip): void {
 /** Soft close: this one has had its moment, the rotation carries on. */
 export function dismissTip(): void {
   $activeTip.set(null)
+}
+
+/** Retire tips without showing them (Skip on the first-run intro); Settings → Reset brings them back. */
+export function retireTips(ids: readonly string[]): void {
+  const retired = $retiredTips.get()
+  const fresh = ids.filter(id => !retired.includes(id))
+
+  if (fresh.length > 0) {
+    $retiredTips.set([...retired, ...fresh])
+  }
+
+  const activeId = $activeTip.get()?.tipId
+
+  if (activeId && ids.includes(activeId)) {
+    $activeTip.set(null)
+  }
 }
 
 /** Hard close (the ✕): retire the identified tip behind the bubble for good. */

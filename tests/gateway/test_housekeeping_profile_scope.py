@@ -2,11 +2,11 @@
 profile's runtime scope on a multiplexed gateway.
 
 The housekeeping thread has no turn on the stack, so nothing bound a profile for it: under
-``gateway.multiplex_profiles`` the skills-sync pulls resolved Nous credentials through the
-fail-closed reader and logged ``no profile secret scope on a multiplexed call`` four times per
-hourly tick, per chore, while the launch profile's home/credentials leaked into every served
-profile's pull. The MCP config reconciler already iterated the served profiles under
-``_profile_runtime_scope``; the sync/curator ticks now ride the same iteration.
+``gateway.multiplex_profiles`` credential-reading chores resolved Nous credentials through the
+fail-closed reader and logged ``no profile secret scope on a multiplexed call`` on every hourly
+tick, while the launch profile's home/credentials leaked into every served profile's chore. The
+MCP config reconciler already iterated the served profiles under ``_profile_runtime_scope``; the
+curator tick now rides the same iteration.
 """
 
 import json
@@ -67,20 +67,16 @@ def two_homes(tmp_path, monkeypatch):
 
 
 def _record_credential_chores(monkeypatch):
-    """Replace the three credential-reading chores with recorders of (home, Nous override) they see."""
-    import agent.curator as curator
-    import tools.skills_sync_client as ssc
-    import tools.skills_sync_client_org as sso
+    """Replace the credential-reading chores with recorders of (home, Nous override) they see."""
+    from agent import curator
     from hermes_cli.auth_nous import _nous_inference_env_override
     from hermes_constants import get_hermes_home
 
-    seen: dict = {"sync": [], "org": [], "curator": []}
+    seen: dict = {"curator": []}
 
     def _rec(key):
         return lambda *a, **k: seen[key].append((get_hermes_home().name, _nous_inference_env_override()))
 
-    monkeypatch.setattr(ssc, "maybe_pull_skills", _rec("sync"))
-    monkeypatch.setattr(sso, "maybe_pull_org_skills", _rec("org"))
     monkeypatch.setattr(curator, "maybe_run_curator", _rec("curator"))
     return seen
 
@@ -89,7 +85,7 @@ def _run_60_ticks(runner):
     gateway_run._start_gateway_housekeeping(_Ticks(60), interval=0, runner=runner)
 
 
-def test_multiplexed_sync_ticks_run_once_per_profile_in_its_own_scope(two_homes, monkeypatch, caplog):
+def test_multiplexed_credential_chores_run_once_per_profile_in_its_own_scope(two_homes, monkeypatch, caplog):
     """Under multiplex every credential-reading chore visits each served profile inside ITS scope:
     A's tick reads A's override, B's reads B's (B never sees A's), and no fail-closed credential
     read fires the ``no profile secret scope`` warning. The ambient home is untouched afterwards."""
@@ -106,7 +102,7 @@ def test_multiplexed_sync_ticks_run_once_per_profile_in_its_own_scope(two_homes,
         set_multiplex_active(False)
 
     expected = [(a.name, "https://a.example/v1"), (b.name, "https://b.example/v1")]
-    assert seen == {"sync": expected, "org": expected, "curator": expected}
+    assert seen == {"curator": expected}
     assert not [r for r in caplog.records if "no profile secret scope" in r.getMessage()]
     assert get_hermes_home() == a
 
@@ -282,7 +278,7 @@ def test_prune_unlinks_transcripts_under_the_configured_sessions_dir(two_homes, 
     assert not (b / "sessions" / "old.jsonl").exists(), "profile b's transcript survived"
 
 
-def test_single_profile_sync_ticks_run_once_against_the_process_home(two_homes, monkeypatch):
+def test_single_profile_credential_chores_run_once_against_the_process_home(two_homes, monkeypatch):
     """Control: a single-profile gateway (multiplex off) still runs each chore exactly once against
     the process home — the named profile directory on disk is not visited."""
     a, _b = two_homes
@@ -290,5 +286,35 @@ def test_single_profile_sync_ticks_run_once_against_the_process_home(two_homes, 
 
     _run_60_ticks(SimpleNamespace(config=SimpleNamespace(multiplex_profiles=False)))
 
-    assert {k: [h for h, _ in v] for k, v in seen.items()} == {
-        "sync": [a.name], "org": [a.name], "curator": [a.name]}
+    assert {k: [h for h, _ in v] for k, v in seen.items()} == {"curator": [a.name]}
+
+
+def test_multiplexed_plugin_update_check_visits_every_served_profiles_plugins(two_homes, monkeypatch):
+    """The plugin update check runs once per served profile, against THAT profile's plugins dir
+    and marker, under that profile's ``plugins:`` config. Unscoped it checked the launch home's
+    plugins only, so B's plugins were never checked and B's ``plugins.auto_apply`` was ignored."""
+    from agent.secret_scope import set_multiplex_active
+    from hermes_cli import plugins_cadence
+
+    a, b = two_homes
+    (a / "config.yaml").write_text("plugins:\n  auto_update_check_hours: 1\n", encoding="utf-8")
+    (b / "config.yaml").write_text(
+        "plugins:\n  auto_update_check_hours: 1\n  auto_apply: true\n", encoding="utf-8")
+    checked: list = []
+
+    def _run_checks(plugins_dir, *a_, **k_):
+        checked.append((plugins_dir, plugins_cadence.auto_apply_enabled()))
+        return []
+
+    import hermes_cli.plugins_updates as updates
+    monkeypatch.setattr(updates, "run_checks", _run_checks)
+
+    set_multiplex_active(True)
+    try:
+        _run_60_ticks(SimpleNamespace(config=SimpleNamespace(multiplex_profiles=True)))
+    finally:
+        set_multiplex_active(False)
+
+    assert checked == [(a / "plugins", False), (b / "plugins", True)]
+    assert (a / "plugin-update-checks" / "last-run").exists()
+    assert (b / "plugin-update-checks" / "last-run").exists()

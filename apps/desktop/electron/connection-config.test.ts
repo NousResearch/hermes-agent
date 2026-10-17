@@ -14,6 +14,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
+import { httpStatusError } from './api-transport'
 import { makeNousCloudBackendDownError } from './backend-health'
 import {
   apiRequestRegistryConnectionId,
@@ -50,6 +51,7 @@ import {
   translateSelfProfileQuery,
   withTransientRetries
 } from './connection-config'
+import { mintGatewayWsTicket } from './oauth-rest-request'
 
 // --- connectionScopeKey / normAuthMode ---
 
@@ -69,6 +71,7 @@ test('resolveRemoteSshDashboardProfile never sends a conn: pool key to the remot
   assert.equal(resolveRemoteSshDashboardProfile('', 'bob'), 'bob')
   assert.equal(resolveRemoteSshDashboardProfile('', 'default'), '')
   assert.equal(resolveRemoteSshDashboardProfile('writer', 'conn:mac-mini::default'), 'writer')
+  assert.equal(resolveRemoteSshDashboardProfile('default', 'mac-mini'), '')
 })
 
 test('normAuthMode coerces to token unless explicitly oauth', () => {
@@ -250,6 +253,37 @@ test('SSH remains separate from URL-shaped remote modes and preserves an explici
     keyPath: '/key',
     remoteProfile: 'default'
   })
+})
+
+test('profileRemoteOverride preserves an explicit remote profile mapping on a URL override', () => {
+  const config = {
+    profiles: { gris: { mode: 'remote', url: 'https://agent.example.com/hermes', remoteProfile: 'main-gris' } }
+  }
+
+  assert.deepEqual(profileRemoteOverride(config, 'gris'), {
+    url: 'https://agent.example.com/hermes',
+    authMode: 'token',
+    token: undefined,
+    remoteProfile: 'main-gris'
+  })
+})
+
+test('profileRemoteOverride drops invalid or reserved remote profile mappings', () => {
+  assert.equal(
+    profileRemoteOverride({ profiles: { p: { mode: 'remote', url: 'https://x', remoteProfile: 'bad profile' } } }, 'p')
+      ?.remoteProfile,
+    undefined
+  )
+  assert.equal(
+    profileRemoteOverride({ profiles: { p: { mode: 'cloud', url: 'https://x', remoteProfile: 'root' } } }, 'p')
+      ?.remoteProfile,
+    undefined
+  )
+  assert.equal(
+    profileRemoteOverride({ profiles: { p: { mode: 'remote', url: 'https://x', remoteProfile: '' } } }, 'p')
+      ?.remoteProfile,
+    undefined
+  )
 })
 
 test('normalizeSshConfig rejects unsafe remote profile mappings', () => {
@@ -695,6 +729,32 @@ test('pathWithGlobalRemoteProfile translates a desktop SSH alias in an explicit 
       backendProfile: 'default'
     }),
     '/api/cron/jobs?profile=default'
+  )
+})
+
+test('pathWithGlobalRemoteProfile translates a URL-remote override alias via backendProfile', () => {
+  // A URL-remote per-profile override (gris → main-gris) must rewrite the
+  // self-profile scope the same way the SSH mapping does, or the backend 404s
+  // on a profile it does not have (#88282).
+  assert.equal(
+    pathWithGlobalRemoteProfile('/api/cron/jobs?profile=gris', 'gris', {
+      globalRemote: false,
+      profileRemoteOverride: true,
+      backendProfile: 'main-gris'
+    }),
+    '/api/cron/jobs?profile=main-gris'
+  )
+})
+
+test('pathWithGlobalRemoteProfile keeps the local label when a URL override has no mapping', () => {
+  // Blank remoteProfile → the label itself is the scope (historical behavior).
+  assert.equal(
+    pathWithGlobalRemoteProfile('/api/cron/jobs?profile=gris', 'gris', {
+      globalRemote: false,
+      profileRemoteOverride: true,
+      backendProfile: undefined
+    }),
+    '/api/cron/jobs?profile=gris'
   )
 })
 
@@ -1297,6 +1357,40 @@ test('resolveTestWsUrl (oauth, auth rejected) requests sign-in and does not skip
       assert.match(err.message, /sign in again/i)
       assert.equal(err.needsOauthLogin, true)
       assert.ok(err.cause instanceof Error)
+
+      return true
+    }
+  )
+})
+
+test('resolveTestWsUrl (oauth, stale app bearer) names the app token, not the server OAuth session', async () => {
+  const staleBearer = 'stale-app-bearer-do-not-log'
+
+  const cause = await mintGatewayWsTicket('https://gw.example.com', {
+    ensureNativeAccessToken: async () => staleBearer,
+    fetchJson: async (_url, _token, options) => {
+      assert.equal(options.bearer, staleBearer)
+      throw httpStatusError(401, JSON.stringify({ reason: 'invalid_or_expired_session' }))
+    },
+    fetchJsonViaOauthSession: async () => {
+      throw httpStatusError(401, JSON.stringify({ reason: 'no_cookie' }))
+    }
+  }).catch((error: unknown) => error)
+
+  await assert.rejects(
+    () =>
+      resolveTestWsUrl('https://gw.example.com', 'oauth', null, {
+        mintTicket: async () => {
+          throw cause
+        }
+      }),
+    (err: any) => {
+      assert.match(err.message, /app token is invalid/i)
+      assert.match(err.message, /saved gateway bearer/i)
+      assert.doesNotMatch(err.message, /oauth session/i)
+      assert.doesNotMatch(err.message, /re-authenticate/i)
+      assert.equal(err.message.includes(staleBearer), false)
+      assert.equal(err.needsOauthLogin, true)
 
       return true
     }

@@ -59,6 +59,7 @@ def _external_writer_can_break_in(db_path) -> bool:
         capture_output=True,
         text=True,
         timeout=60,
+        check=False,
     )
     return "ACQUIRED" in result.stdout
 

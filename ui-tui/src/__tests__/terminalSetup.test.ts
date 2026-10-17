@@ -41,10 +41,11 @@ describe('terminalSetup helpers', () => {
       getVSCodeStyleConfigDir(
         'Code',
         'win32',
-        { APPDATA: 'C:/Users/me/AppData/Roaming' } as NodeJS.ProcessEnv,
+        // Explicit win32-style platform data; win32.join yields backslash separators.
+        { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } as NodeJS.ProcessEnv,
         '/home/me'
       )
-    ).toBe('C:/Users/me/AppData/Roaming/Code/User')
+    ).toBe('C:\\Users\\me\\AppData\\Roaming\\Code\\User')
   })
 
   it('strips line comments from keybindings JSON', () => {
@@ -338,7 +339,9 @@ describe('configureTerminalKeybindings', () => {
     await expect(
       shouldPromptForTerminalSetup({
         env: { TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv,
-        fileOps: { readFile: readMissing }
+        fileOps: { readFile: readMissing },
+        homeDir: '/tmp/fake-home',
+        platform: 'darwin'
       })
     ).resolves.toBe(true)
 
@@ -386,7 +389,9 @@ describe('configureTerminalKeybindings', () => {
     await expect(
       shouldPromptForTerminalSetup({
         env: { TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv,
-        fileOps: { readFile: readComplete }
+        fileOps: { readFile: readComplete },
+        homeDir: '/tmp/fake-home',
+        platform: 'darwin'
       })
     ).resolves.toBe(false)
   })
@@ -446,7 +451,9 @@ describe('configureTerminalKeybindings', () => {
     await expect(
       shouldPromptForTerminalSetup({
         env: { TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv,
-        fileOps: { readFile: readLegacy }
+        fileOps: { readFile: readLegacy },
+        homeDir: '/tmp/fake-home',
+        platform: 'darwin'
       })
     ).resolves.toBe(true)
   })

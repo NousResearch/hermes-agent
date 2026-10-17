@@ -14,7 +14,7 @@ import pytest
 def fireworks_profile():
     """Resolve the registered Fireworks profile through the real discovery path."""
     # Importing model_tools triggers plugin discovery, registering the profile.
-    import model_tools  # noqa: F401
+    import model_tools
     import providers
 
     profile = providers.get_provider_profile("fireworks")
@@ -39,8 +39,10 @@ class TestFireworksHeaders:
         assert headers["X-Title"] == _OR_HEADERS_BASE["X-Title"]
 
     def test_user_agent_identifies_hermes(self, fireworks_profile):
-        # Prefix, not the full string — the version moves every release.
-        assert fireworks_profile.default_headers["User-Agent"].startswith("HermesAgent/")
+        from hermes_cli.version_info import get_version_info
+        assert fireworks_profile.default_headers["User-Agent"] == (
+            f"HermesAgent/{get_version_info().base_version}"
+        )
 
 
 

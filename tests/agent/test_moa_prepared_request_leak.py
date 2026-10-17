@@ -10,7 +10,6 @@ from unittest.mock import MagicMock
 
 from agent.chat_completion_helpers import _dispatch_nonstreaming_api_request
 
-
 class _FakeNativeClient:
     """Mimics a native OpenAI client whose create() rejects unknown kwargs."""
 
@@ -19,14 +18,12 @@ class _FakeNativeClient:
         self.chat.completions = types.SimpleNamespace()
         self.chat.completions.create = MagicMock(return_value="native-response")
 
-
 def _make_agent(provider="moa"):
     agent = MagicMock()
     agent.provider = provider
     agent.client = _FakeNativeClient()
     agent.api_mode = "chat_completions"
     return agent
-
 
 def test_moa_key_stripped_from_native_client():
     """_moa_prepared_request must not reach a native OpenAI client."""
@@ -48,5 +45,3 @@ def test_moa_key_stripped_from_native_client():
     assert "_moa_prepared_request" not in call_kwargs, (
         f"_moa_prepared_request leaked to native client: {call_kwargs.keys()}"
     )
-
-

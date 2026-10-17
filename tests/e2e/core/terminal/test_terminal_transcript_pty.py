@@ -18,14 +18,12 @@ Invariants, checked on the settled final frame of every scenario:
 
 The ``resize`` scenarios change the terminal width while a long reply is streaming (SIGWINCH via
 the PTY), the recurring "history re-appended on resize" shape. ``resize_scrollback`` replays it on
-a normal 24-row classic-CLI terminal, where earlier turns already sit in scrollback: while the live
-bug #95375 (fix PR #120321) duplicates them, that cell XFAILs on exactly that duplication and on
-nothing else, and passes as a plain test once the fix lands.
+a normal 24-row classic-CLI terminal, where earlier turns already sit in scrollback and a redraw
+must not print them again (#95375).
 """
 
 from __future__ import annotations
 
-import contextlib
 import os
 import shutil
 import sys
@@ -34,7 +32,6 @@ from pathlib import Path
 
 import pytest
 
-from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.terminal._pty import REPO_ROOT, PtyHermes, canon
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall
 
@@ -134,12 +131,6 @@ MATRIX = [
     ("tui", "resize"),
 ]
 
-# Merge-order safe (see _pending_fixes.known_failure): only a turn rendered MORE than once excuses the cell.
-KNOWN = {("cli", "resize_scrollback"): (
-    r"(?:rendered|echoed) (?:[2-9]|\d{2,})x",
-    "LIVE BUG #95375 (fix PR #120321): a width-changing resize clears only the visible screen (CSI 2J) and "
-    "replays the last 200 output lines, so turns already in scrollback are printed again")}
-
 
 @pytest.mark.parametrize(("surface", "scenario"), MATRIX)
 def test_terminal_transcript_integrity(surface: str, scenario: str, tmp_path: Path) -> None:
@@ -173,26 +164,23 @@ def test_terminal_transcript_integrity(surface: str, scenario: str, tmp_path: Pa
             dump = "\n".join(final[-120:])
 
             positions = []
-            known = KNOWN.get((surface, scenario))
-            gate = known_failure(*known, raises=DuplicateRender) if known else contextlib.nullcontext()
-            with gate:
-                for turn in spec.turns:
-                    n_reply = text.count(canon(turn.reply))
-                    if n_reply != 1:
-                        raise DuplicateRender(
-                            f"[{surface}/{scenario}] assistant reply rendered {n_reply}x (want exactly 1, verbatim): "
-                            f"{turn.reply[:60]!r}\n{dump}")
-                    n_prompt = text.count(canon(turn.prompt))
-                    if n_prompt != 1:
-                        raise DuplicateRender(
-                            f"[{surface}/{scenario}] user prompt echoed {n_prompt}x (want 1): {turn.prompt!r}\n{dump}")
-                    positions += [text.index(canon(turn.prompt)), text.index(canon(turn.reply))]
-                    if turn.tool_command:
-                        n_cmd = text.count(canon(turn.tool_command))
-                        assert n_cmd == 1, f"[{surface}/{scenario}] tool call rendered {n_cmd}x\n{dump}"
-                    if turn.reasoning:
-                        n_reason = text.count(canon(turn.reasoning))
-                        assert n_reason <= 1, f"[{surface}/{scenario}] reasoning rendered {n_reason}x\n{dump}"
+            for turn in spec.turns:
+                n_reply = text.count(canon(turn.reply))
+                if n_reply != 1:
+                    raise DuplicateRender(
+                        f"[{surface}/{scenario}] assistant reply rendered {n_reply}x (want exactly 1, verbatim): "
+                        f"{turn.reply[:60]!r}\n{dump}")
+                n_prompt = text.count(canon(turn.prompt))
+                if n_prompt != 1:
+                    raise DuplicateRender(
+                        f"[{surface}/{scenario}] user prompt echoed {n_prompt}x (want 1): {turn.prompt!r}\n{dump}")
+                positions += [text.index(canon(turn.prompt)), text.index(canon(turn.reply))]
+                if turn.tool_command:
+                    n_cmd = text.count(canon(turn.tool_command))
+                    assert n_cmd == 1, f"[{surface}/{scenario}] tool call rendered {n_cmd}x\n{dump}"
+                if turn.reasoning:
+                    n_reason = text.count(canon(turn.reasoning))
+                    assert n_reason <= 1, f"[{surface}/{scenario}] reasoning rendered {n_reason}x\n{dump}"
             assert positions == sorted(positions), (
                 f"[{surface}/{scenario}] transcript out of conversation order\n{dump}")
 

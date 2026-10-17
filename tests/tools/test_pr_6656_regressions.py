@@ -29,11 +29,9 @@ from tools.skills_hub_install import bundle_content_hash, uninstall_skill
 from tools.skills_hub_models import SkillBundle
 from tools.skills_guard import content_hash
 
-
 # =============================================================================
 # uninstall_skill: path traversal guard
 # =============================================================================
-
 
 class TestUninstallPathTraversal:
     """The ``install_path`` field in ``lock.json`` is attacker-controllable
@@ -83,7 +81,7 @@ class TestUninstallPathTraversal:
 
     def test_traversal_via_parent_segments_rejected(self, hub_setup):
         """install_path: "../do-not-delete" must NOT escape SKILLS_DIR."""
-        skills_dir, hub_dir, victim = hub_setup
+        _skills_dir, hub_dir, victim = hub_setup
         self._write_lock(hub_dir, {
             "evil": {
                 "install_path": "../do-not-delete",
@@ -92,7 +90,7 @@ class TestUninstallPathTraversal:
             },
         })
 
-        ok, msg = uninstall_skill("evil")
+        ok, _msg = uninstall_skill("evil")
 
         assert ok is False
         # The victim directory MUST still exist.
@@ -101,7 +99,7 @@ class TestUninstallPathTraversal:
 
     def test_absolute_path_rejected(self, hub_setup):
         """install_path that's an absolute path outside SKILLS_DIR must be refused."""
-        skills_dir, hub_dir, victim = hub_setup
+        _skills_dir, hub_dir, victim = hub_setup
         self._write_lock(hub_dir, {
             "evil": {
                 "install_path": str(victim),
@@ -110,13 +108,14 @@ class TestUninstallPathTraversal:
             },
         })
 
-        ok, msg = uninstall_skill("evil")
+        ok, _msg = uninstall_skill("evil")
 
         # SKILLS_DIR / "<absolute>" still results in an absolute path,
         # which when resolved is outside skills_dir. Must be refused.
         assert ok is False
         assert victim.exists()
 
+    @pytest.mark.require_symlinks
     def test_symlink_escape_rejected(self, tmp_path, hub_setup):
         """Symlinks inside SKILLS_DIR that point outside must be refused
         after realpath resolution."""
@@ -133,7 +132,7 @@ class TestUninstallPathTraversal:
             },
         })
 
-        ok, msg = uninstall_skill("trap")
+        ok, _msg = uninstall_skill("trap")
 
         # realpath resolves the symlink → outside skills_dir → refused.
         assert ok is False
@@ -156,16 +155,14 @@ class TestUninstallPathTraversal:
             },
         })
 
-        ok, msg = uninstall_skill("my-skill")
+        ok, _msg = uninstall_skill("my-skill")
 
         assert ok is True
         assert not legit.exists()
 
-
 # =============================================================================
 # Bundle / disk hash symmetry + filename inclusion
 # =============================================================================
-
 
 class TestBundleHashFilenameSensitivity:
     """Hashes must change when filenames are swapped, even if combined
@@ -191,7 +188,6 @@ class TestBundleHashFilenameSensitivity:
         b = self._make_bundle({"SKILL.md": "world", "scripts/run.sh": "hello"})
         assert bundle_content_hash(a) != bundle_content_hash(b)
 
-
     def test_bundle_and_disk_hash_match(self, tmp_path):
         """Symmetry contract: the same skill, expressed as a SkillBundle
         and as a directory tree, must produce the same digest. If this
@@ -210,9 +206,6 @@ class TestBundleHashFilenameSensitivity:
 
         assert bundle_content_hash(bundle) == content_hash(skill_dir)
 
-
 # =============================================================================
 # PairingStore.list_pending: must hold the lock
 # =============================================================================
-
-

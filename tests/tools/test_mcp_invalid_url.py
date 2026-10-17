@@ -20,7 +20,6 @@ import pytest
 
 from tools.mcp_tool_errors import InvalidMcpUrlError, _validate_remote_mcp_url
 
-
 class TestValidUrlsAccepted:
     """Every valid http(s) URL must pass through untouched (stripped of whitespace)."""
 
@@ -45,7 +44,6 @@ class TestValidUrlsAccepted:
             == "https://example.com/mcp"
         )
 
-
 class TestInvalidUrlsRejected:
     """Every broken shape must raise ``InvalidMcpUrlError`` with a clear message."""
 
@@ -53,12 +51,7 @@ class TestInvalidUrlsRejected:
         with pytest.raises(InvalidMcpUrlError, match="context7"):
             _validate_remote_mcp_url("context7", None)
 
-
-
-
     def test_error_mentions_server_name(self):
         # So users can find the bad entry when there are multiple configured.
         with pytest.raises(InvalidMcpUrlError, match="my-weird-server"):
             _validate_remote_mcp_url("my-weird-server", "not a url at all")
-
-

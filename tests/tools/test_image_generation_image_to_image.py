@@ -17,7 +17,7 @@ import json
 from typing import Any, Dict
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from agent import image_gen_registry
 from agent.image_gen_provider import ImageGenProvider
@@ -174,13 +174,13 @@ class TestFalRouting:
 
 class _EditCapableProvider(ImageGenProvider):
     def __init__(self):
-        self.received: Dict[str, Any] = {}
+        self.received: dict[str, Any] = {}
 
     @property
     def name(self) -> str:
         return "editcap"
 
-    def capabilities(self) -> Dict[str, Any]:
+    def capabilities(self) -> dict[str, Any]:
         return {"modalities": ["text", "image"], "max_reference_images": 4}
 
     def generate(self, prompt, aspect_ratio="landscape", *, image_url=None,

@@ -17,6 +17,7 @@ from hermes_cli.config import cfg_get
 from hermes_cli.web_routers._common import config_scoped_to_thread
 from hermes_cli.web_server_dashboard import (
     _BUILTIN_DASHBOARD_THEMES, _discover_user_themes, _invalidate_plugins_hub_cache, _merged_plugins_hub,
+    _plugin_consent_withheld,
 )
 from hermes_cli.web_server_memory import _normalize_memory_provider_name, _require_memory_provider_ready
 from hermes_cli.web_models import (
@@ -106,59 +107,35 @@ async def set_dashboard_font(body: FontSetBody, profile: Optional[str] = None):
     return {"ok": True, "font": font}
 
 
-def _plugin_enable_sets() -> tuple[set, set]:
-    """(enabled, disabled) plugin name sets; empty on any failure."""
-    try:
-        from hermes_cli.plugins_cmd import _get_enabled_set, _get_disabled_set
-        return _get_enabled_set(), _get_disabled_set()
-    except Exception:
-        return set(), set()
-
-
-def _plugin_activated(plugin: dict, enabled_set: set, disabled_set: set) -> bool:
-    """Gate: user plugins must be in plugins.enabled and not in plugins.disabled; bundled
-    plugins must not be explicitly disabled — the frontend must never load JS/CSS from
-    plugins the user never activated."""
-    name = plugin.get("name", "")
-    source = plugin.get("source")
-    if source == "user":
-        return name not in disabled_set and name in enabled_set
-    if source == "bundled":
-        return name not in disabled_set
-    return True
-
-
 @router.get("/api/dashboard/plugins")
 async def get_dashboard_plugins(profile: Optional[str] = None):
     """Return discovered dashboard plugins (excludes user-hidden and non-enabled ones)."""
     def _run():
-        plugins = _get_dashboard_plugins()
         hidden: list = cfg_get(load_config(), "dashboard", "hidden_plugins", default=[]) or []
-        return plugins, hidden, *_plugin_enable_sets()
-
-    plugins, hidden, enabled_set, disabled_set = await config_scoped_to_thread(profile, _run)
+        # The consent the asset route and the API gates apply, so no listed tab fails to load.
+        return [p for p in _get_dashboard_plugins()
+                if p.get("name", "") not in hidden and not _plugin_consent_withheld(p)]
 
     # Strip internal fields before sending to frontend.
-    return [
-        {k: v for k, v in p.items() if not k.startswith("_")}
-        for p in plugins
-        if p.get("name", "") not in hidden and _plugin_activated(p, enabled_set, disabled_set)
-    ]
+    return [{k: v for k, v in p.items() if not k.startswith("_")}
+            for p in await config_scoped_to_thread(profile, _run)]
 
 
 @router.get("/api/dashboard/plugins/rescan")
-async def rescan_dashboard_plugins():
-    """Force re-scan of dashboard plugins."""
-    plugins = _get_dashboard_plugins(force_rescan=True)
+async def rescan_dashboard_plugins(profile: Optional[str] = None):
+    """Force re-scan of the selected profile's dashboard plugins (its own cache, PLG-3)."""
+    plugins = await config_scoped_to_thread(profile, lambda: _get_dashboard_plugins(force_rescan=True))
     return {"ok": True, "count": len(plugins)}
 
 
 @router.get("/api/dashboard/plugins/hub")
-async def get_plugins_hub(request: Request):
+async def get_plugins_hub(request: Request, profile: Optional[str] = None):
     """Unified agent plugins + dashboard extension metadata (session protected)."""
     _require_token(request)
     try:
-        return await asyncio.to_thread(_merged_plugins_hub)
+        return await config_scoped_to_thread(profile, _merged_plugins_hub)
+    except HTTPException:
+        raise  # an unknown ?profile= is the scope's 404, not a hub failure
     except Exception as exc:
         _log.warning("plugins/hub failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to build plugins hub.") from exc
@@ -380,8 +357,15 @@ _PLUGIN_ASSET_CONTENT_TYPES = {
 }
 
 
+@router.get("/dashboard-plugins/@{profile}/{plugin_name}/{file_path:path}")  # before the unscoped route
+async def serve_profile_plugin_asset(profile: str, plugin_name: str, file_path: str):
+    """``serve_plugin_asset`` with the profile as a path segment (PLG-3): URLs relative to a stylesheet
+    or bundle (``url("./icon.svg")``, chunk imports) drop a query string but keep this prefix."""
+    return await serve_plugin_asset(plugin_name, file_path, profile)
+
+
 @router.get("/dashboard-plugins/{plugin_name}/{file_path:path}")
-async def serve_plugin_asset(plugin_name: str, file_path: str):
+async def serve_plugin_asset(plugin_name: str, file_path: str, profile: Optional[str] = None):
     """Serve static assets from a dashboard plugin's ``dashboard/`` directory.
 
     Unauthenticated on purpose: the SPA loads plugin JS via ``<script src>`` and CSS
@@ -389,13 +373,21 @@ async def serve_plugin_asset(plugin_name: str, file_path: str):
     allowlist — user plugins ship a ``plugin_api.py`` backend the browser never
     fetches, and without it anyone on the loopback port could curl a private
     plugin's source. Path traversal is blocked via ``resolve().is_relative_to()``;
-    user plugins must be enabled (bundled ones not disabled) (GHSA-mcfc-hp25-cjv7).
+    user plugins must be enabled (bundled ones not disabled) (GHSA-mcfc-hp25-cjv7) in the profile
+    whose copy these files are: a native ticket's, the ``?profile=`` the browser's plugin list used
+    (PLG-3), else the launch profile. An unknown profile answers as an unknown plugin.
 
     See #46435.
     """
-    plugins = _get_dashboard_plugins()
-    plugin = next((p for p in plugins if p["name"] == plugin_name), None)
-    if not plugin or not _plugin_activated(plugin, *_plugin_enable_sets()):
+    def _consented() -> Optional[dict]:
+        plugin = next((p for p in _get_dashboard_plugins() if p["name"] == plugin_name), None)
+        return None if not plugin or _plugin_consent_withheld(plugin) else plugin
+
+    try:
+        plugin = await config_scoped_to_thread(profile, _consented)
+    except HTTPException:
+        plugin = None
+    if plugin is None:
         raise HTTPException(status_code=404, detail="Plugin not found")
 
     base = Path(plugin["_dir"])

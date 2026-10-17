@@ -93,7 +93,8 @@ def slack_manifest_command(args) -> int:
     if long_description_file is not None:
         source_arg = str(long_description_file)
         try:
-            with Path(source_arg).expanduser().open("r", encoding="utf-8", newline="") as handle:
+            source = Path(source_arg).expanduser()
+            with source.open("r", encoding="utf-8-sig", newline="") as handle:
                 long_description = handle.read()
         except (OSError, UnicodeError, RuntimeError) as exc:
             return fail(f"cannot read long description from {source_arg}: {exc}")
@@ -145,11 +146,3 @@ def slack_manifest_command(args) -> int:
         "     (xoxb-...) and app token (xapp-...) configured via\n"
         "     `hermes setup`.\n", file=sys.stderr)
     return 0
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import os  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

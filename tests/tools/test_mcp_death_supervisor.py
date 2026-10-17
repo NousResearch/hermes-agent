@@ -22,9 +22,7 @@ import pytest
 from tools import mcp_death_supervisor, mcp_tool
 from tools import mcp_tool_lifecycle as _mcp_lifecycle
 
-pytestmark = pytest.mark.skipif(
-    os.name != "posix", reason="the supervisor is POSIX-only (process groups)"
-)
+pytestmark = pytest.mark.platforms("posix")  # the supervisor is POSIX-only (process groups)
 
 SUPERVISOR = os.path.join(os.path.dirname(mcp_tool.__file__), "mcp_death_supervisor.py")
 
@@ -179,6 +177,7 @@ def test_refuses_to_run_inside_the_parents_own_process_group():
         capture_output=True,
         text=True,
         timeout=30,
+        check=False,
     )
 
     assert proc.returncode == 2
@@ -732,7 +731,7 @@ def test_scoped_teardown_of_one_owner_keeps_the_other_owner_supervised(monkeypat
             _kill(p.pid)
             try:
                 p.wait(timeout=10)
-            except Exception:  # noqa: BLE001 - best-effort cleanup
+            except Exception:
                 pass
         with mcp_tool._lock:
             for p in (a, b):

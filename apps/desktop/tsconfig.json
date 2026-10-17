@@ -5,6 +5,8 @@
     "lib": ["DOM", "DOM.Iterable", "ES2023"],
     "types": ["node"],
     "allowJs": false,
+    "outDir": "build/renderer-types",
+    "rootDir": "..",
     "skipLibCheck": true,
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,

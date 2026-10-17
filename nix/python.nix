@@ -45,8 +45,9 @@ let
       };
     };
 
-  # Legacy alibabacloud packages ship only sdists with setup.py/setup.cfg
-  # and no pyproject.toml, so setuptools isn't declared as a build dep.
+  # Legacy alibabacloud packages, and antlr4-python3-runtime (hydra-core's,
+  # in [kittentts]), ship only sdists with setup.py/setup.cfg and no
+  # pyproject.toml, so setuptools isn't declared as a build dep.
   buildSystemOverrides =
     final: prev:
     builtins.mapAttrs
@@ -63,6 +64,7 @@ let
           "alibabacloud-gateway-dingtalk"
           "alibabacloud-gateway-spi"
           "alibabacloud-tea"
+          "antlr4-python3-runtime"
         ] (_: null)
       )
     // {
@@ -72,13 +74,6 @@ let
         nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ final.resolveBuildSystem {
           setuptools = [ ];
           cffi = [ ];
-        };
-      });
-      # [kittentts] locks misaki as a git source. uv.lock records no build
-      # backend for it, so supply the hatchling its pyproject declares.
-      misaki = prev.misaki.overrideAttrs (old: {
-        nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ final.resolveBuildSystem {
-          hatchling = [ ];
         };
       });
     };

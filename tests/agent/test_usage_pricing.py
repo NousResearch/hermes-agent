@@ -38,6 +38,57 @@ def test_astra_whole_request_price_tier_includes_cache_writes():
     assert below.amount_usd < above.amount_usd
 
 
+_GPT_56_MODELS = ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna")
+
+
+@pytest.mark.parametrize("suffix", ["", "-pro", "-900k"])
+@pytest.mark.parametrize("slug", _GPT_56_MODELS)
+def test_gpt_56_at_or_below_272k_uses_base_rates(slug, suffix):
+    model = slug + suffix
+    entry = _OFFICIAL_DOCS_PRICING[("openai", model)]
+    assert entry.cache_write_cost_per_million == entry.input_cost_per_million * Decimal("1.25")
+
+    # Exactly 272K prompt tokens is still the short-context tier (">272K" is the long tier).
+    at_threshold = estimate_usage_cost(
+        model, CanonicalUsage(input_tokens=272_000, output_tokens=10_000), provider="openai",
+    )
+    assert at_threshold.amount_usd == (
+        Decimal(272_000) * entry.input_cost_per_million + Decimal(10_000) * entry.output_cost_per_million
+    ) / Decimal(1_000_000)
+
+    # developers.openai.com/api/docs/pricing (fetched 2026-09-29): luna short-context input is
+    # $0.20/M; the superseded July-2026 snapshot carried $1.00.
+    assert _OFFICIAL_DOCS_PRICING[("openai", "gpt-5.6-luna")].input_cost_per_million == Decimal("0.20")
+
+
+@pytest.mark.parametrize("suffix", ["", "-pro", "-900k"])
+@pytest.mark.parametrize("slug", _GPT_56_MODELS)
+def test_gpt_56_above_272k_reprices_whole_request_including_cache_writes(slug, suffix):
+    model = slug + suffix
+    entry = _OFFICIAL_DOCS_PRICING[("openai", model)]
+
+    # OpenAI: >272K prompts bill 2x input (and cache) and 1.5x output for the full request;
+    # cache writes are 1.25x uncached input at both tiers.
+    assert entry.tier_threshold_tokens == 272_000
+    assert entry.input_cost_per_million_above == entry.input_cost_per_million * 2
+    assert entry.output_cost_per_million_above == entry.output_cost_per_million * Decimal("1.5")
+    assert entry.cache_read_cost_per_million_above == entry.cache_read_cost_per_million * 2
+    assert entry.cache_write_cost_per_million_above == entry.cache_write_cost_per_million * 2
+    assert entry.cache_write_cost_per_million_above == entry.input_cost_per_million_above * Decimal("1.25")
+
+    above = estimate_usage_cost(
+        model,
+        CanonicalUsage(input_tokens=100_000, output_tokens=10_000, cache_read_tokens=100_000, cache_write_tokens=72_001),
+        provider="openai",
+    )
+    assert above.amount_usd == (
+        Decimal(100_000) * entry.input_cost_per_million_above
+        + Decimal(10_000) * entry.output_cost_per_million_above
+        + Decimal(100_000) * entry.cache_read_cost_per_million_above
+        + Decimal(72_001) * entry.cache_write_cost_per_million_above
+    ) / Decimal(1_000_000)
+
+
 _MODELS_DEV_REGISTRY = {
     "openai": {"models": {"gpt-5-nano": {"cost": {"input": 0.05, "output": 0.4, "cache_read": 0.005}}}},
     "xai": {"models": {"grok-4.3": {"cost": {"input": 1.25, "output": 2.5, "cache_read": 0.2}}}},

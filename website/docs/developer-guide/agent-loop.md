@@ -71,7 +71,10 @@ run_conversation()
      - codex_responses: convert to Responses API input items
      - anthropic_messages: convert via anthropic_adapter.py
   6. Inject ephemeral prompt layers (budget warnings, context pressure)
-  7. Apply prompt caching markers if on Anthropic
+  7. Apply the provider-specific prompt-cache policy
+     - Anthropic: explicit `cache_control` markers
+     - OpenAI Responses: stable `prompt_cache_key` plus append-only history
+     - Other compatible providers: only fields supported by that transport
   8. Make interruptible API call (_interruptible_api_call)
   9. Parse response:
      - If tool_calls: execute them, append results, loop back to step 5

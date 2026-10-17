@@ -479,3 +479,25 @@ class TestDiscoverFallbackIps:
 
         assert ips == ["149.154.167.220"]
         assert elapsed < 1.4, f"discovery gated on hung system DNS ({elapsed:.2f}s)"
+
+
+def test_transport_error_description_carries_the_wrapped_cause():
+    """httpx raises an empty ``ConnectError('')`` from the real ssl/OS failure; the reason must reach the log."""
+    try:
+        try:
+            raise ConnectionResetError(54, "Connection reset by peer")
+        except ConnectionResetError as low:
+            raise httpx.ConnectError("") from low
+    except httpx.ConnectError as exc:
+        described = tnet._describe_transport_error(exc)
+    assert "ConnectError" in described and "ConnectionResetError(54" in described
+
+
+def test_transport_error_cause_chain_is_redacted_and_bounded():
+    token = "123456789:" + "A" * 35
+    looped = ValueError(f"https://api.telegram.org/bot{token}/getUpdates")
+    looped.__context__ = looped                      # a cycle must not hang the logger
+    outer = httpx.ConnectError("")
+    outer.__cause__ = looped
+    described = tnet._describe_transport_error(outer)
+    assert token not in described and "ValueError" in described

@@ -9,6 +9,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
+import { pathForRegistryBackendRequest, resolveRemoteSshDashboardProfile } from './connection-config'
 import type { ConnectionRegistry } from './connection-registry'
 import {
   agentHandle,
@@ -31,6 +32,7 @@ import {
   REGISTRY_VERSION,
   registryDialConnectionId,
   registrySourceOwnsPrimaryBackend,
+  registryTargetProfile,
   rememberSshEnumeration,
   removeConnection,
   resolvedConnectionId,
@@ -46,6 +48,7 @@ import {
   upsertConnection
 } from './connection-registry'
 import { matchingConnectionId } from './connection-route-identity'
+import { buildRegistryProfileRoutes } from './plugin-profile-routes'
 
 // Non-literal specifier on purpose: tsconfig.electron.json's project boundary
 // excludes apps/shared sources, but vitest resolves the workspace package fine
@@ -873,6 +876,60 @@ test('local enumeration: forced-local route defers until a local child exists (r
 })
 
 // --- buildAgentRoster (union roster + @name-device rule) ---
+
+test('registered SSH default scope agrees with launch ownership through roster, RPC and REST routing', () => {
+  const connection = {
+    id: 'lab',
+    kind: 'ssh' as const,
+    label: 'Lab',
+    host: 'example.invalid',
+    remoteProfile: 'default'
+  }
+
+  const profiles = ['default', 'research']
+  const roster = buildAgentRoster([{ connection, profiles }])
+  const routes = buildRegistryProfileRoutes({ agents: roster, sources: [connection] })
+
+  for (const profile of profiles) {
+    const row = roster.find(agent => agent.profile === profile)!
+    const route = routes.find(route => route.profile === profile)!
+    const launched = resolveRemoteSshDashboardProfile(connection.remoteProfile, backendScopeKey(connection.id, profile))
+    const target = launched || 'default'
+    assert.equal(row.targetProfile, target)
+    assert.equal(route.targetProfile, target)
+    assert.equal(registryTargetProfile(connection, profile), target)
+    assert.equal(
+      pathForRegistryBackendRequest(`/api/cron/jobs?profile=${profile}`, profile, {
+        remoteProfile: route.targetProfile
+      }),
+      `/api/cron/jobs?profile=${target}`
+    )
+  }
+})
+
+test('registered SSH named aliases and same-name routes agree with launch ownership', () => {
+  for (const remoteProfile of [undefined, 'remote-research']) {
+    const connection = { id: 'lab', kind: 'ssh' as const, label: 'Lab', remoteProfile }
+    const profile = 'research'
+    const target = resolveRemoteSshDashboardProfile(remoteProfile, backendScopeKey(connection.id, profile)) || 'default'
+    const roster = buildAgentRoster([{ connection, profiles: [profile] }])
+    const routes = buildRegistryProfileRoutes({ agents: roster, sources: [connection] })
+
+    assert.equal(registryTargetProfile(connection, profile), target)
+    assert.equal(roster[0].targetProfile, target)
+    assert.equal(routes[0].targetProfile, target)
+    assert.equal(
+      pathForRegistryBackendRequest(`/api/sessions/sample/messages?profile=${profile}`, profile, {
+        remoteProfile: registryTargetProfile(connection, profile)
+      }),
+      `/api/sessions/sample/messages?profile=${target}`
+    )
+    assert.equal(
+      pathForRegistryBackendRequest('/api/sessions/sample/messages', profile, { remoteProfile: target }),
+      '/api/sessions/sample/messages'
+    )
+  }
+})
 
 test('roster: unique profiles keep bare handles; duplicates get @name-device', () => {
   const local = { id: 'local', kind: 'local' as const, label: 'This device' }

@@ -11,7 +11,7 @@ import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { $gateway } from '@/store/gateway'
 import { OFFICIAL_SKILLS_KEY } from '@/store/hub-actions'
-import { notifyError } from '@/store/notifications'
+import { notify, notifyError } from '@/store/notifications'
 import { $activeSessionId, sessionOfProfile } from '@/store/session'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
@@ -95,9 +95,13 @@ export function CapabilitiesView({
     const gateway = $gateway.get()
     const profileName = capabilityScoped(scope.profile).profile
 
-    // A scope pinned to another backend has no live socket here; the invalidations below still
-    // refetch it, but the rescan RPC would land on the active gateway instead.
-    if (gateway && !scope.crossBackend) {
+    // A scope pinned to another backend has no live socket here; the list queries below refetch it,
+    // but the rescan RPC would land on the active gateway instead. Say so rather than implying a rescan.
+    if (gateway && scope.crossBackend) {
+      notify({ kind: 'info', message: t.connectorsPage.reload.skillsRemote })
+    } else if (gateway) {
+      // The session id only rides along when that chat belongs to the selected profile: a rescan
+      // bound to another profile's chat would scan its workspace and report its project skills.
       const sessionId = sessionOfProfile($activeSessionId.get(), profileName)
 
       try {

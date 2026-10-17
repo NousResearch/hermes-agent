@@ -958,6 +958,7 @@ slashCmd.ops.reloadEnv.reloadedOne: "已重新載入 .env（更新了 {0} 個變
 slashCmd.ops.reloadEnv.reloadedOther: "已重新載入 .env（更新了 {0} 個變數）"
 slashCmd.ops.reloadMcp.complete: "重新載入完成"
 slashCmd.ops.reloadMcp.confirmRequired: "/reload-mcp 需要確認"
+slashCmd.ops.reloadMcp.deferred: "此設定檔的 MCP 伺服器已更新；此聊天會在執行中的回合結束後再次重新載入，或重新開啟聊天時套用變更"
 slashCmd.ops.reloadMcp.notConnected: "未連線：{0}"
 slashCmd.ops.reloadMcp.reloaded: "MCP 伺服器已重新載入"
 slashCmd.ops.reloadMcp.reloadedAlways: "MCP 伺服器已重新載入 · 之後的 /reload-mcp 將不需確認直接執行"

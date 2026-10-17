@@ -938,6 +938,7 @@
   "slashCmd.ops.reloadEnv.reloadedOther",
   "slashCmd.ops.reloadMcp.complete",
   "slashCmd.ops.reloadMcp.confirmRequired",
+  "slashCmd.ops.reloadMcp.deferred",
   "slashCmd.ops.reloadMcp.notConnected",
   "slashCmd.ops.reloadMcp.reloaded",
   "slashCmd.ops.reloadMcp.reloadedAlways",

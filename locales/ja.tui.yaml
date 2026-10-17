@@ -958,6 +958,7 @@ slashCmd.ops.reloadEnv.reloadedOne: ".env を再読み込みしました（{0} �
 slashCmd.ops.reloadEnv.reloadedOther: ".env を再読み込みしました（{0} 個の変数を更新）"
 slashCmd.ops.reloadMcp.complete: "再読み込み完了"
 slashCmd.ops.reloadMcp.confirmRequired: "/reload-mcp には確認が必要です"
+slashCmd.ops.reloadMcp.deferred: "このプロファイルの MCP サーバーを更新しました。このチャットは実行中のターンが終わり、再度再読み込みした後、または開き直したときに適用します"
 slashCmd.ops.reloadMcp.notConnected: "接続できませんでした: {0}"
 slashCmd.ops.reloadMcp.reloaded: "MCP サーバーを再読み込みしました"
 slashCmd.ops.reloadMcp.reloadedAlways: "MCP サーバーを再読み込みしました · 今後の /reload-mcp は確認なしで実行されます"

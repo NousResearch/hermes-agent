@@ -958,6 +958,7 @@ slashCmd.ops.reloadEnv.reloadedOne: ".env újratöltve ({0} változó frissült)
 slashCmd.ops.reloadEnv.reloadedOther: ".env újratöltve ({0} változó frissült)"
 slashCmd.ops.reloadMcp.complete: "újratöltés befejezve"
 slashCmd.ops.reloadMcp.confirmRequired: "a /reload-mcp megerősítést igényel"
+slashCmd.ops.reloadMcp.deferred: "Az MCP-kiszolgálók frissítve ehhez a profilhoz; ez a csevegés a futó kör befejezése és az ismételt újratöltés után, vagy újranyitáskor alkalmazza őket"
 slashCmd.ops.reloadMcp.notConnected: "nem csatlakozott: {0}"
 slashCmd.ops.reloadMcp.reloaded: "MCP-szerverek újratöltve"
 slashCmd.ops.reloadMcp.reloadedAlways: "MCP-szerverek újratöltve · a /reload-mcp ezentúl megerősítés nélkül fut"

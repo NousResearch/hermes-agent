@@ -958,6 +958,7 @@ slashCmd.ops.reloadEnv.reloadedOne: ".env yeniden yüklendi ({0} değişken gün
 slashCmd.ops.reloadEnv.reloadedOther: ".env yeniden yüklendi ({0} değişken güncellendi)"
 slashCmd.ops.reloadMcp.complete: "yeniden yükleme tamamlandı"
 slashCmd.ops.reloadMcp.confirmRequired: "/reload-mcp onay gerektirir"
+slashCmd.ops.reloadMcp.deferred: "MCP sunucuları bu profil için güncellendi; bu sohbet, çalışan turu bittiğinde ve yeniden yükleme çalıştığında ya da yeniden açıldığında uygular"
 slashCmd.ops.reloadMcp.notConnected: "bağlanamadı: {0}"
 slashCmd.ops.reloadMcp.reloaded: "MCP sunucuları yeniden yüklendi"
 slashCmd.ops.reloadMcp.reloadedAlways: "MCP sunucuları yeniden yüklendi · sonraki /reload-mcp çalıştırmaları onay istemeyecek"

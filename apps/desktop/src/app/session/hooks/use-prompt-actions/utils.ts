@@ -6,7 +6,7 @@ import type { ChatMessage } from '@/lib/chat-messages'
 import { isReadFileErrorResult } from '@/lib/desktop-fs'
 import { type CommandsCatalogLike, filterDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
 import type { ErrorSurface } from '@/lib/error-surface'
-import { parseMcpReloadResult } from '@/lib/mcp-reload'
+import { parseMcpReloadReply } from '@/lib/mcp-reload'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import type { ComposerAttachment } from '@/store/composer'
 
@@ -722,17 +722,22 @@ export function renderRpcResult(response: unknown, name: string): string {
 }
 
 function renderMcpReloadResult(result: Record<string, unknown>, arg: string): string {
-  const { failed, message, status } = parseMcpReloadResult(result)
+  const { message, session, status, unavailable } = parseMcpReloadReply(result)
 
   if (status === 'confirm_required') {
     return message || translateNow('connectorsPage.reload.confirmRequired')
   }
 
   const always = arg.trim().toLowerCase() === 'always'
-  const lines = [translateNow(always ? 'connectorsPage.reload.reloadedAlways' : 'connectorsPage.reload.success')]
 
-  if (failed.length) {
-    lines.push(translateNow('connectorsPage.reload.notConnected', failed.join(', ')))
+  const lines = [
+    session === 'busy'
+      ? translateNow('promptNotices.mcpReloadDeferred')
+      : translateNow(always ? 'connectorsPage.reload.reloadedAlways' : 'connectorsPage.reload.success')
+  ]
+
+  if (unavailable.length) {
+    lines.push(translateNow('connectorsPage.reload.notConnected', unavailable.join(', ')))
   }
 
   return lines.join('\n')

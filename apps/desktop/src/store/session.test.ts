@@ -56,6 +56,7 @@ import {
   rotateFreshDraftKey,
   sessionBelongsToProfile,
   sessionMatchesStoredId,
+  sessionOfProfile,
   sessionOwnerRouteFromRow,
   sessionPinId,
   setComposerSelectionOwner,
@@ -301,6 +302,25 @@ describe('session owner hints', () => {
     })
     expect(sessionOwnerRouteFromRow(session({ profile: 'default' }))).toBeUndefined()
     expect(sessionOwnerRouteFromRow(session({ connection_id: '  ', profile: 'default' }))).toBeUndefined()
+  })
+})
+
+describe('sessionOfProfile', () => {
+  afterEach(() => $sessions.set([]))
+
+  it('keeps a session only for the profile that owns it', () => {
+    $sessions.set([session({ id: 'stored-1', profile: 'work' })])
+
+    expect(sessionOfProfile('stored-1', 'work')).toBe('stored-1')
+    expect(sessionOfProfile('stored-1', 'default')).toBeNull()
+    expect(sessionOfProfile('stored-1', undefined)).toBeNull()
+  })
+
+  it('has no session for a draft or an unknown owner', () => {
+    $sessions.set([])
+
+    expect(sessionOfProfile(null, 'default')).toBeNull()
+    expect(sessionOfProfile('unlisted', 'default')).toBeNull()
   })
 })
 

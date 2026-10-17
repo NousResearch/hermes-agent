@@ -2,11 +2,10 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { deBoot } from './de_boot'
 import { deClarify } from './de_clarify'
-import { deConnectorAccounts } from './de_connector_accounts'
 import { deConnectorCard } from './de_connector_card'
 import { deFirstRun } from './de_first_run'
 import { deLocalModels } from './de_local_models'
-import { deMcpReload } from './de_mcp_reload'
+import { deConnectorPage } from './de_mcp_reload'
 import { deModelMenu } from './de_model_menu'
 import { deModelSettings } from './de_model_settings'
 import { deNotices } from './de_notices'
@@ -180,8 +179,7 @@ export const deOverrides = {
       advancedHint: 'der mcp.json-Eintrag und die Logs'
     },
 
-    accounts: deConnectorAccounts,
-    reload: deMcpReload,
+    ...deConnectorPage,
 
     tools: {
       title: 'Tools',

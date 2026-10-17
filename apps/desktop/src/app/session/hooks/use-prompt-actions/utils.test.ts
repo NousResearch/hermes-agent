@@ -511,14 +511,24 @@ describe('renderRpcResult', () => {
       )
     })
 
-    it('reports a clean reload, tolerating a backend that omits failed', () => {
+    it('reports a clean reload, tolerating a backend that omits the server list', () => {
       expect(renderSlashRpcResult({ status: 'reloaded' }, 'reload-mcp')).toBe('MCP servers reloaded')
     })
 
     it('names the servers that did not connect', () => {
-      expect(renderSlashRpcResult({ failed: ['alpha', 'beta'], status: 'reloaded' }, 'reload-mcp')).toBe(
+      expect(renderSlashRpcResult({ status: 'reloaded', unavailable: ['alpha', 'beta'] }, 'reload-mcp')).toBe(
         ['MCP servers reloaded', 'Did not connect: alpha, beta'].join('\n')
       )
+    })
+
+    it('still names the servers an older gateway reports as failed', () => {
+      expect(renderSlashRpcResult({ failed: ['legacy'], status: 'reloaded' }, 'reload-mcp')).toBe(
+        ['MCP servers reloaded', 'Did not connect: legacy'].join('\n')
+      )
+    })
+
+    it('says a busy chat keeps its servers until its turn finishes', () => {
+      expect(renderSlashRpcResult({ session: 'busy', status: 'reloaded' }, 'reload-mcp')).toMatch(/turn finishes/i)
     })
 
     it('notes the confirmation opt-out only when always was used', () => {

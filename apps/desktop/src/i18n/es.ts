@@ -3,11 +3,10 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { esBoot } from './es_boot'
 import { esClarify } from './es_clarify'
-import { esConnectorAccounts } from './es_connector_accounts'
 import { esConnectorCard } from './es_connector_card'
 import { esFirstRun } from './es_first_run'
 import { esLocalModels } from './es_local_models'
-import { esMcpReload } from './es_mcp_reload'
+import { esConnectorPage } from './es_mcp_reload'
 import { esModelMenu } from './es_model_menu'
 import { esModelSettings } from './es_model_settings'
 import { esNotices } from './es_notices'
@@ -180,8 +179,7 @@ export const esOverrides = {
       advancedHint: 'la entrada de mcp.json y los registros'
     },
 
-    accounts: esConnectorAccounts,
-    reload: esMcpReload,
+    ...esConnectorPage,
 
     tools: {
       title: 'Herramientas',

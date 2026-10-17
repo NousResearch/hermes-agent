@@ -4038,9 +4038,10 @@ export interface ReloadEnvParams {
 export interface ReloadEnvResult {
   updated: number
 }
-/** Without ``confirm`` the handler may answer ``confirm_required`` (per ``approvals.mcp_reload_confirm``); ``always`` persists the opt-out; ``rev`` is the config revision the caller wants loaded (coalescing). */
+/** Without ``confirm`` (or ``always``) the handler may answer ``confirm_required``; ``always`` also persists the invoking profile's opt-out; ``rev`` is the config revision the caller wants loaded (coalescing). The reload acts for ``profile`` when given, else the profile of ``session_id``, else the launch profile. */
 export interface ReloadMcpParams {
   session_id?: string | null
+  profile?: string | null
   confirm?: boolean
   always?: boolean
   rev?: string | null
@@ -6287,7 +6288,7 @@ export interface RpcMethods {
   'prompt.submit': { params: PromptSubmitParams; result: PromptSubmitResult }
   /** Re-read ~/.hermes/.env (CLI /reload parity); built agents keep their pool until /new. */
   'reload.env': { params: ReloadEnvParams; result: ReloadEnvResult }
-  /** Tear down and rediscover MCP servers for every live session (prompt cache is invalidated). */
+  /** Reconcile the calling profile's MCP servers with its config and apply the calling chat's new selection as a policy generation (deferred while its turn runs; the prompt cache is invalidated). */
   'reload.mcp': { params: ReloadMcpParams; result: ReloadMcpResult }
   /** Answer an open server→client request from a client that never received the frame. */
   'request.answer': { params: RequestAnswerParams; result: RequestAnswerResult }

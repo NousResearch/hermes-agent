@@ -516,6 +516,12 @@ export interface ReloadMcpResponse {
   loaded_rev?: string
   /** Servers of the caller's profile that did not connect; absent on older gateways. */
   failed?: string[]
+  /** The calling chat's committed policy: a turn in flight defers the change. */
+  session?: 'applied' | 'busy' | 'unchanged' | null
+  /** Unified gateway: configured servers that did not connect. */
+  unavailable?: string[]
+  /** Unified gateway: the MCP servers the chat's committed policy runs. */
+  session_servers?: string[]
 }
 
 export interface ReloadEnvResponse {

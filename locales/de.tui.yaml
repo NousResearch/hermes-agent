@@ -958,6 +958,7 @@ slashCmd.ops.reloadEnv.reloadedOne: ".env neu geladen ({0} Variable aktualisiert
 slashCmd.ops.reloadEnv.reloadedOther: ".env neu geladen ({0} Variablen aktualisiert)"
 slashCmd.ops.reloadMcp.complete: "Neuladen abgeschlossen"
 slashCmd.ops.reloadMcp.confirmRequired: "/reload-mcp erfordert eine Bestätigung"
+slashCmd.ops.reloadMcp.deferred: "MCP-Server für dieses Profil aktualisiert; dieser Chat übernimmt sie, nachdem sein laufender Turn endet und erneut geladen wurde, oder wenn er neu geöffnet wird"
 slashCmd.ops.reloadMcp.notConnected: "nicht verbunden: {0}"
 slashCmd.ops.reloadMcp.reloaded: "MCP-Server neu geladen"
 slashCmd.ops.reloadMcp.reloadedAlways: "MCP-Server neu geladen · künftige /reload-mcp laufen ohne Bestätigung"

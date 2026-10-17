@@ -733,7 +733,7 @@ describe('createSlashHandler', () => {
   })
 
   it('names the MCP servers that did not connect after /reload-mcp', async () => {
-    const rpc = vi.fn(() => Promise.resolve({ failed: ['broken', 'flaky'], status: 'reloaded' }))
+    const rpc = vi.fn(() => Promise.resolve({ status: 'reloaded', unavailable: ['broken', 'flaky'] }))
     const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
 
     expect(createSlashHandler(ctx)('/reload-mcp now')).toBe(true)
@@ -741,6 +741,31 @@ describe('createSlashHandler', () => {
       expect(ctx.transcript.sys).toHaveBeenCalledWith('MCP servers reloaded')
       expect(ctx.transcript.sys).toHaveBeenCalledWith('did not connect: broken, flaky')
     })
+  })
+
+  it('names the servers an older gateway reports as failed', async () => {
+    const rpc = vi.fn(() => Promise.resolve({ failed: ['broken'], status: 'reloaded' }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/reload-mcp now')).toBe(true)
+    await vi.waitFor(() => expect(ctx.transcript.sys).toHaveBeenCalledWith('did not connect: broken'))
+  })
+
+  it('says a busy chat keeps its servers until the turn finishes', async () => {
+    const rpc = vi.fn(() => Promise.resolve({ session: 'busy', status: 'reloaded' }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/reload-mcp now')).toBe(true)
+    await vi.waitFor(() => expect(ctx.transcript.sys).toHaveBeenCalledWith(expect.stringMatching(/busy|turn finishes/i)))
+  })
+
+  it('runs /reload-mcp on the canonical gateway, which now owns the verb', async () => {
+    const rpc = vi.fn(() => Promise.resolve({ status: 'reloaded' }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), gw: { ...buildGateway().gw, isCanonical: true }, rpc } })
+
+    expect(createSlashHandler(ctx)('/reload-mcp now')).toBe(true)
+    await vi.waitFor(() => expect(rpc).toHaveBeenCalledWith('reload.mcp', { confirm: true, session_id: null }))
+    expect(ctx.transcript.sys).not.toHaveBeenCalledWith(expect.stringContaining('not available'))
   })
 
   it('reports a clean /reload-mcp without a failure line on an older gateway', async () => {

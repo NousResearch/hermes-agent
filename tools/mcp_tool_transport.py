@@ -433,6 +433,9 @@ class MCPServerTransportMixin:
                     connect_timeout = float(config.get("connect_timeout", _core._DEFAULT_CONNECT_TIMEOUT))
                     return await self._serve_session(session, connect_timeout, mark_lifecycle=True)
         except Exception as exc:
+            if spawn_locked:  # a failed spawn must not hold the next server's spawn through the stderr drain
+                spawn_lock.release()
+                spawn_locked = False
             # The SDK only sees "Connection closed"; the child's stderr says why (#124264).
             abi_error = node_abi_error(self.name, await asyncio.to_thread(stderr.close))
             if abi_error is not None:

@@ -1,14 +1,12 @@
 /**
- * Desktop reloads the live session's MCP servers (#58414): `/reload-mcp now`
- * from the composer and Capabilities ▸ Connectors ▸ Reload MCP servers both
- * restart the profile's real MCP server, and a server added to config while a
- * chat is open becomes callable in that same chat after the reload — not
- * before it.
+ * Desktop applies a profile's MCP changes to the chat that asked (#58414): `/reload-mcp now`
+ * from the composer and Capabilities ▸ Connectors ▸ Reload MCP servers both reconcile the
+ * profile and commit the calling chat's new selection. A server added to config while a chat is
+ * open is unreachable before the reload and callable in that same chat after it.
  *
- * Before, Desktop refused `/reload-mcp` ("not shown in the desktop slash
- * palette … use the relevant desktop control") and had no such control. The
- * fixture servers log every message they receive with their pid, so a restart
- * is a new pid sending `initialize` and a reached tool is a `tools/call`.
+ * The fixture servers log every message they receive with their pid. A newly added server is
+ * proven by its first `initialize`; a reached tool is a `tools/call`. Servers whose config did
+ * not change keep their connection (the unified gateway reconciles, it does not restart them).
  */
 
 import fs from 'node:fs'
@@ -71,46 +69,65 @@ test('reloads the profile MCP servers from the composer and from Connectors', as
 
   const provider = await startScriptedProvider()
   const sandbox = createCoreSandbox('mcp-reload')
-  const log = path.join(sandbox.root, 'alpha.jsonl')
+  const alphaLog = path.join(sandbox.root, 'alpha.jsonl')
   const gammaLog = path.join(sandbox.root, 'gamma.jsonl')
+  const deltaLog = path.join(sandbox.root, 'delta.jsonl')
   const configPath = path.join(sandbox.hermesHome, 'config.yaml')
 
   writeProviderHome(
     sandbox.hermesHome,
     provider.url,
-    stringify({ mcp_servers: { alpha: fixtureServer('alpha', python!, log) } })
+    stringify({ mcp_servers: { alpha: fixtureServer('alpha', python!, alphaLog) } })
   )
   const { app, page } = await launchCoreApp(coreAppEnv(sandbox))
 
-  const callGamma = (nonce: string) => ({
-    toolCalls: [{ name: 'tool_call', args: { calls: [{ name: 'mcp__gamma__ro_probe', arguments: { nonce } }] } }]
+  const callServer = (server: string, nonce: string) => ({
+    toolCalls: [{ name: 'tool_call', args: { calls: [{ name: `mcp__${server}__ro_probe`, arguments: { nonce } }] } }]
   })
+
+  // The app rewrites config.yaml after launch, so edit the mapping rather than appending text.
+  const addServer = (name: string, log: string) => {
+    const config = parse(fs.readFileSync(configPath, 'utf8')) as { mcp_servers: Record<string, unknown> }
+    config.mcp_servers[name] = fixtureServer(name, python!, log)
+    fs.writeFileSync(configPath, stringify(config))
+  }
 
   try {
     await waitForInteractive(app, page)
     provider.script('U1-mcpreload', [{ text: ['A1-mcpreload ready'] }])
     await send(page, 'U1-mcpreload hello')
     await expect(page.getByText('A1-mcpreload ready')).toBeVisible()
-    await expect.poll(() => serverPids(log).length, { message: 'the MCP server started' }).toBeGreaterThan(0)
+    await expect.poll(() => serverPids(alphaLog).length, { message: 'the MCP server started' }).toBeGreaterThan(0)
     const chat = await currentSessionId(page)
+    const alphaPids = serverPids(alphaLog)
 
-    const beforeSlash = serverPids(log)
-    await send(page, '/reload-mcp now')
-    await expect(page.getByText('MCP servers reloaded').first()).toBeVisible()
-    await expect
-      .poll(() => serverPids(log).length, { message: '/reload-mcp now restarted the MCP server' })
-      .toBeGreaterThan(beforeSlash.length)
-
-    // The app writes its own keys into config.yaml after launch, so edit the mapping, never append text.
-    const config = parse(fs.readFileSync(configPath, 'utf8')) as { mcp_servers: Record<string, unknown> }
-    config.mcp_servers.gamma = fixtureServer('gamma', python!, gammaLog)
-    fs.writeFileSync(configPath, stringify(config))
-    provider.script('U2-mcpreload', [callGamma('beforereload'), { text: ['A2-mcpreload tried'] }])
+    addServer('gamma', gammaLog)
+    provider.script('U2-mcpreload', [callServer('gamma', 'beforereload'), { text: ['A2-mcpreload tried'] }])
     await send(page, 'U2-mcpreload call gamma')
     await expect(page.getByText('A2-mcpreload tried')).toBeVisible()
     expect(callNonces(gammaLog), 'the chat reached a server added after it opened, before any reload').toEqual([])
 
-    const beforeButton = serverPids(log)
+    await send(page, '/reload-mcp now')
+    await expect(page.getByText('MCP servers reloaded').first()).toBeVisible()
+    await expect
+      .poll(() => serverPids(gammaLog).length, { message: '/reload-mcp now started the added server' })
+      .toBeGreaterThan(0)
+    expect(serverPids(alphaLog), 'an unchanged server kept its connection').toEqual(alphaPids)
+
+    provider.script('U3-mcpreload', [callServer('gamma', 'afterreload'), { text: ['A3-mcpreload called'] }])
+    await send(page, 'U3-mcpreload call gamma')
+    await expect(page.getByText('A3-mcpreload called')).toBeVisible()
+    expect(await currentSessionId(page), 'the call ran in the chat that was open before the reload').toBe(chat)
+    await expect
+      .poll(() => callNonces(gammaLog), { message: 'the same chat reached the added server after the reload' })
+      .toEqual(['afterreload'])
+
+    addServer('delta', deltaLog)
+    provider.script('U4-mcpreload', [callServer('delta', 'beforebutton'), { text: ['A4-mcpreload tried'] }])
+    await send(page, 'U4-mcpreload call delta')
+    await expect(page.getByText('A4-mcpreload tried')).toBeVisible()
+    expect(callNonces(deltaLog), 'the chat reached the second added server before the button reload').toEqual([])
+
     await page.evaluate(() => {
       window.location.hash = '#/capabilities?tab=connectors'
     })
@@ -118,19 +135,19 @@ test('reloads the profile MCP servers from the composer and from Connectors', as
     await page.getByRole('button', { name: 'Reload now' }).click()
     await expect(page.getByText('MCP servers reloaded').first()).toBeVisible()
     await expect
-      .poll(() => serverPids(log).length, { message: 'the Connectors button restarted the MCP server' })
-      .toBeGreaterThan(beforeButton.length)
+      .poll(() => serverPids(deltaLog).length, { message: 'the Connectors button started the added server' })
+      .toBeGreaterThan(0)
+    expect(serverPids(alphaLog), 'the button reload kept the unchanged server').toEqual(alphaPids)
 
     await page.evaluate(id => {
       window.location.hash = `#/${id}`
     }, chat)
-    provider.script('U3-mcpreload', [callGamma('afterreload'), { text: ['A3-mcpreload called'] }])
-    await send(page, 'U3-mcpreload call gamma')
-    await expect(page.getByText('A3-mcpreload called')).toBeVisible()
-    expect(await currentSessionId(page), 'the call ran in the chat that was open before the reload').toBe(chat)
+    provider.script('U5-mcpreload', [callServer('delta', 'afterbutton'), { text: ['A5-mcpreload called'] }])
+    await send(page, 'U5-mcpreload call delta')
+    await expect(page.getByText('A5-mcpreload called')).toBeVisible()
     await expect
-      .poll(() => callNonces(gammaLog), { message: 'the same chat reached the newly added server after the reload' })
-      .toEqual(['afterreload'])
+      .poll(() => callNonces(deltaLog), { message: 'the same chat reached the button-added server' })
+      .toEqual(['afterbutton'])
   } finally {
     await app.close()
     await provider.close()

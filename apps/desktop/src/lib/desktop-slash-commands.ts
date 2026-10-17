@@ -403,7 +403,7 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     name: '/reload-skills',
     description: 'Re-scan the skills directory for newly installed or removed skills',
     aliases: ['/reload_skills'],
-    surface: rpc('skills.reload', ctx => ({ session_id: ctx.sessionId }))
+    surface: rpc('skills.reload', ctx => (ctx.sessionId ? { session_id: ctx.sessionId } : {}))
   }
 ]
 

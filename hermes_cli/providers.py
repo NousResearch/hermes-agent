@@ -195,6 +195,15 @@ def get_provider(name: str, *, allow_network: bool = True) -> Optional[ProviderD
     """Look up a built-in provider by id or alias: models.dev catalog merged with the Hermes overlay;
     Hermes-only overlay (nous, openai-codex, …); plugin provider profiles with a concrete endpoint."""
     canonical = normalize_provider(name)
+    # models.dev's commandcode entry uses CMD_API_KEY, not the bundled
+    # CommandCode API's COMMANDCODE_API_KEY and /provider/v1 endpoint. Prefer
+    # that profile (including its aliases) only for this known collision.
+    # Other catalog ids and Hermes overlays retain their routing contracts:
+    # e.g. the profile alias "meta" must not rewrite the catalog id to "meta-ai".
+    if canonical in {"commandcode", "commandcode-chat"}:
+        pdef = _plugin_profile_pdef(canonical)
+        if pdef is not None and pdef.base_url:
+            return pdef
     mdev_info = _models_dev_info(canonical, allow_network)
     overlay = HERMES_OVERLAYS.get(canonical)
     if mdev_info is not None:

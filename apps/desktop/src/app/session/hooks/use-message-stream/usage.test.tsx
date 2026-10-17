@@ -175,6 +175,20 @@ describe('useMessageStream status-bar usage scoping', () => {
     expect($currentUsage.get()).toMatchObject({ active_subagents: 2, avg_latency_s: 0.8, calls: 1, total: 10 })
   })
 
+  it('keeps the compression count of an unsized compressor, as session_usage.tui_usage does', () => {
+    mountStream()
+
+    act(() =>
+      stream.handleEvent({
+        payload: { api_calls: 1, compression_count: 2, context_length: null, context_source: 'local_estimate' },
+        session_id: SID,
+        type: 'session.usage'
+      })
+    )
+
+    expect($currentUsage.get()).toMatchObject({ calls: 1, compressions: 2 })
+  })
+
   it('merges a partial canonical tick without zeroing counters it does not carry', () => {
     mountStream()
 

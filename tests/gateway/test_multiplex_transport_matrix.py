@@ -156,6 +156,73 @@ def test_restored_rows_fail_closed_on_intake_and_deliver_only_via_a_unique_owner
     assert solo.runner._intake_adapter_for(None) is None and solo.runner._delivery_adapter_for(None) is None
 
 
+@pytest.mark.asyncio
+async def test_unavailable_receiving_bot_never_sends_final_through_primary(mux):
+    """Regression for #140535: the final-send seam must retain resolver refusal."""
+    from unittest.mock import AsyncMock
+    from gateway.platforms.base import MessageEvent, SendResult
+
+    source, _ = _live(mux, mux.team_b, "42", transport_profile="team_b")
+    mux.runner._profile_adapters["team_b"] = {}
+    mux.runner._profile_failed_platforms = {"team_b": {Platform.TELEGRAM: {}}}
+    assert mux.runner._delivery_adapter_for(source) is None
+    primary = mux.primary
+    primary._send_with_retry = AsyncMock(return_value=SendResult(success=True, message_id="wrong-bot"))
+    primary._record_delivery_obligation = AsyncMock(return_value=None)
+    event = MessageEvent(text="question", source=source, message_id="input")
+    result, _ = await primary.send_final_ledgered(event, "agent:team_b:telegram:dm:42", "answer", {}, reply_to=None)
+    primary._send_with_retry.assert_not_awaited()
+    assert not result.success
+
+
+@pytest.mark.asyncio
+async def test_refused_final_retains_receiving_profile_in_real_ledger(mux, monkeypatch, tmp_path):
+    from unittest.mock import AsyncMock
+    from gateway import delivery_ledger as dl
+    from gateway.platforms.base import MessageEvent
+
+    monkeypatch.setattr(dl, "_db_path", lambda: tmp_path / "ledger.db")
+    source, _ = _live(mux, mux.team_b, "999", transport_profile="team_b")
+    assert source.profile == "default"  # runtime is not the delivery identity
+    mux.runner._profile_adapters["team_b"] = {}
+    mux.runner._profile_failed_platforms = {"team_b": {Platform.TELEGRAM: {}}}
+    mux.primary._send_with_retry = AsyncMock()
+    mux.runner._redeliver_failed_obligations_for_platform = AsyncMock()
+    event = MessageEvent(text="question", source=source, message_id="input")
+    result, adapter = await mux.primary.send_final_ledgered(
+        event, "agent:main:telegram:dm:999", "answer", {}, reply_to=None)
+    assert not result.success and adapter is None
+    mux.primary._send_with_retry.assert_not_awaited()
+    with dl._connect() as conn:
+        row = conn.execute("SELECT state, content, adapter_profile FROM delivery_obligations").fetchone()
+    assert tuple(row) == ("failed", "answer", "team_b")
+    mux.runner._redeliver_failed_obligations_for_platform.assert_not_awaited()
+
+
+@pytest.mark.parametrize("fault", ["none", "exception", "wrong_platform", "missing"])
+def test_multiplex_resolver_refusal_never_falls_back(mux, fault):
+    from unittest.mock import Mock
+    resolve = Mock(return_value=None)
+    if fault == "exception":
+        resolve.side_effect = RuntimeError("lookup failed")
+    elif fault == "wrong_platform":
+        resolve.return_value = _stub(Platform.SLACK, mux.runner, "other")
+    mux.runner._delivery_adapter_for = None if fault == "missing" else resolve
+    assert mux.primary._final_delivery_adapter(None) is None
+    mux.runner.config.multiplex_profiles = False
+    assert mux.primary._final_delivery_adapter(None) is mux.primary
+
+
+def test_final_delivery_preserves_routed_receiving_bot_and_replacement(mux):
+    source, _ = _live(mux, mux.team_b, "999", transport_profile="team_b")
+    assert source.profile == "default"
+    assert mux.primary._final_delivery_adapter(source) is mux.team_b
+    replacement = _stub(Platform.TELEGRAM, mux.runner, "replacement")
+    replacement.set_owner_profile("team_b")
+    mux.runner._profile_adapters["team_b"][Platform.TELEGRAM] = replacement
+    assert mux.primary._final_delivery_adapter(source) is replacement
+
+
 def test_inferred_primary_transport_does_not_hide_a_secondary_local_session_policy(mux):
     """A LOCAL source belongs to its session authority, not the inferred primary transport (#139060)."""
     from gateway.session_local import LocalSessionAdapter

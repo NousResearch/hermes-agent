@@ -3584,21 +3584,28 @@ class BasePlatformAdapter(ABC):
             logger.debug("[%s] Failed to resolve media delivery scope", self.name, exc_info=True)
             return contextlib.nullcontext()
 
-    def _final_delivery_adapter(self, source: Optional[SessionSource]) -> "BasePlatformAdapter":
+    def _final_delivery_adapter(self, source: Optional[SessionSource]) -> "Optional[BasePlatformAdapter]":
         """The runner's CURRENT adapter for a new final-response send: a reconnect can swap the
         registry adapter mid-task; an unsent final response belongs on the replacement transport,
         while message IDs, edits and deletes stay owned by the old one (nothing is migrated)."""
         resolve = getattr(self.gateway_runner, "_delivery_adapter_for", None)
+        fallback = None if getattr(getattr(self.gateway_runner, "config", None), "multiplex_profiles", False) else self
         if not callable(resolve):
-            return self
+            return fallback
         try:
             live_adapter = resolve(source)
         except Exception:
             logger.debug("[%s] Failed to resolve live adapter for final delivery", self.name)
-            return self
+            return fallback
         if isinstance(live_adapter, BasePlatformAdapter) and live_adapter.platform == self.platform:
             return live_adapter
-        return self
+        return fallback
+
+    def _final_delivery_profile(self, source, delivery_adapter) -> Optional[str]:
+        """Keep a refused final owed to its receiving bot, never the ambient adapter."""
+        if delivery_adapter is not None:
+            return getattr(delivery_adapter, "_owner_profile", None)
+        return self.gateway_runner._adapter_profile_for_source(source)
 
     @records_delivery
     async def _send_with_retry(
@@ -4221,7 +4228,7 @@ class BasePlatformAdapter(ABC):
 
     async def _record_delivery_obligation(
         self, event: MessageEvent, session_key: str, text_content: str,
-        delivery_adapter: "BasePlatformAdapter", is_ephemeral_response: bool) -> Optional[str]:
+        delivery_adapter: "Optional[BasePlatformAdapter]", is_ephemeral_response: bool) -> Optional[str]:
         """Ledger the final response BEFORE the send so a crash before platform ACK redelivers on
         next boot; best-effort, skips slash-command and ephemeral replies. Returns the obligation id
         or None."""
@@ -4246,7 +4253,7 @@ class BasePlatformAdapter(ABC):
                 platform=str(getattr(source.platform, "value", source.platform)),
                 chat_id=source.chat_id, thread_id=getattr(source, "thread_id", None),
                 content=text_content,
-                adapter_profile=getattr(delivery_adapter, "_owner_profile", None))
+                adapter_profile=self._final_delivery_profile(source, delivery_adapter))
             await asyncio.to_thread(mark_attempting, obligation_id)
             return obligation_id
         except Exception:
@@ -4255,7 +4262,7 @@ class BasePlatformAdapter(ABC):
 
     async def _finalize_delivery_obligation(
         self, obligation_id: str, result: Any, event: MessageEvent,
-        delivery_adapter: "BasePlatformAdapter") -> None:
+        delivery_adapter: "Optional[BasePlatformAdapter]") -> None:
         """Mark the ledger row delivered/failed (best-effort). On ``send_path_degraded`` with a
         replacement adapter live, trigger another redelivery sweep (the watcher's may have run
         before this failure landed; atomic claiming keeps it idempotent). On any other rejection arm
@@ -4275,12 +4282,12 @@ class BasePlatformAdapter(ABC):
                 live = self._final_delivery_adapter(event.source)
                 if live is not delivery_adapter and callable(redeliver):
                     await redeliver(event.source.platform,
-                                    profile=getattr(delivery_adapter, "_owner_profile", None))
+                                    profile=self._final_delivery_profile(event.source, delivery_adapter))
             elif classify_dead_error(error) is None:  # a dead chat is never retried: no timer to wake
                 schedule = getattr(self.gateway_runner, "_schedule_flood_redelivery", None)
                 if callable(schedule):
                     schedule(event.source.platform,
-                             profile=getattr(delivery_adapter, "_owner_profile", None))
+                             profile=self._final_delivery_profile(event.source, delivery_adapter))
         except Exception:
             logger.debug("delivery ledger update failed", exc_info=True)
 
@@ -4355,7 +4362,7 @@ class BasePlatformAdapter(ABC):
     async def send_final_ledgered(
         self, event: MessageEvent, session_key: str, text_content: str, metadata: dict[str, Any], *,
         reply_to: Optional[str], is_ephemeral_response: bool = False,
-    ) -> "tuple[SendResult, BasePlatformAdapter]":
+    ) -> "tuple[SendResult, Optional[BasePlatformAdapter]]":
         """The delivery-ledger bracket every final text goes through, on the CURRENT transport
         (a reconnect may have replaced this adapter): record the obligation before the send,
         send with retry, finalize from the result — so a refused final (flood control, a dead
@@ -4364,15 +4371,18 @@ class BasePlatformAdapter(ABC):
         Returns the result with the adapter that sent it: that adapter owns ``result.message_id``
         (an ephemeral delete must go to the same transport)."""
         delivery_adapter = self._final_delivery_adapter(event.source)
-        logger.info("[%s] Sending response (%d chars) to %s", delivery_adapter.name,
-                    len(text_content), event.source.chat_id)
         obligation_id = await self._record_delivery_obligation(
             event, session_key, text_content, delivery_adapter, is_ephemeral_response)
         if obligation_id is not None:
             await self._release_turn_marker(event)  # the ledger now owns the crash recovery
-        result = await delivery_adapter._send_with_retry(
-            chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
-        stop_reply_clock(delivery_adapter, event.source.chat_id, result)
+        if delivery_adapter is None:
+            result = SendResult(success=False, error="send_path_degraded: receiving bot unavailable")
+        else:
+            logger.info("[%s] Sending response (%d chars) to %s", delivery_adapter.name,
+                        len(text_content), event.source.chat_id)
+            result = await delivery_adapter._send_with_retry(
+                chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
+            stop_reply_clock(delivery_adapter, event.source.chat_id, result)
         if obligation_id is not None:
             await self._finalize_delivery_obligation(obligation_id, result, event, delivery_adapter)
         return result, delivery_adapter

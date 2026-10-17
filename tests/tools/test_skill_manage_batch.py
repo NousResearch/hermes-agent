@@ -99,7 +99,7 @@ class TestSkillManageBatch(unittest.TestCase):
             {"action": "delete"},
         ])
         self.assertFalse(r["success"])
-        self.assertIn("SOLE", r["error"])
+        self.assertIn("Delete refused", r["error"])
         # create must be first
         r = self._call("x", [
             {"action": "write_file", "file_path": "references/a.md", "file_content": "a"},

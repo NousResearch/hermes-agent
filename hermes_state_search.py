@@ -39,7 +39,6 @@ _FTS5_SPECIAL_CHARS = '+{}():"^@/#&|~[]<>,;!?$=\\\''
 _FTS5_SPECIAL_RE = re.compile(f"[{re.escape(_FTS5_SPECIAL_CHARS)}]")
 
 _FTS_OPERATORS = frozenset({"AND", "OR", "NOT"})
-_LIKE_SKIP_TOKENS = _FTS_OPERATORS | {"NEAR"}
 _LIKE_TOKEN_RE = re.compile(r'"[^"]+"|\S+')
 _QUOTED_PHRASE_RE = re.compile(r'"[^"]*"')
 
@@ -980,7 +979,7 @@ class SessionSearchMixin:
                     groups.append([])
                 negate_next = False
                 continue
-            if operator in {"AND", "NEAR"}:
+            if operator == "AND":
                 continue
             if operator == "NOT":
                 negate_next = True
@@ -1115,7 +1114,8 @@ class SessionSearchMixin:
             matches = self._search_messages_like_fallback(query, limit=limit, offset=offset, sort=sort, **filters)
             return self._finalize_search_matches(matches, result_fields=result_fields)
         if not self._fts_enabled:
-            return []
+            matches = self._search_messages_like_fallback(query, limit=limit, offset=offset, sort=sort, **filters)
+            return self._finalize_search_matches(matches, result_fields=result_fields)
 
         order_by_sql = _FTS_ORDER_BY.get(sort.strip().lower() if isinstance(sort, str) else None, "ORDER BY rank")
         route = dict(order_by_sql=order_by_sql, limit=limit, offset=offset, **filters)
@@ -1131,7 +1131,8 @@ class SessionSearchMixin:
             try:
                 matches = [dict(row) for row in self._read_all(sql, params)]
             except sqlite3.OperationalError:
-                return []  # FTS5 syntax error despite sanitization
+                matches = self._search_messages_like_fallback(query, limit=limit, offset=offset, sort=sort, **filters)
+                return self._finalize_search_matches(matches, result_fields=result_fields)
             except sqlite3.DatabaseError as exc:
                 # Corruption parent class: detach the derived indexes and answer from
                 # canonical rows; repair paths own the rebuild.
@@ -1226,7 +1227,7 @@ class SessionSearchMixin:
         if status is None or limit <= 0:
             return []
         terms = [tok for tok in (t.strip('"').strip("*").strip() for t in _LIKE_TOKEN_RE.findall(fts_query))
-                 if tok and tok.upper() not in _LIKE_SKIP_TOKENS]
+                 if tok and tok.upper() not in _FTS_OPERATORS]
         if not terms:
             return []
         where = ["m.id > ? AND m.id <= ?", *([_LIKE_ANY_COLUMN_SQL] * len(terms))]

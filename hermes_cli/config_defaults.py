@@ -297,6 +297,8 @@ DEFAULT_CONFIG = {
     "terminal": {
         "backend": "local",
         "modal_mode": "auto",
+        # Report interactive CLI lifecycle state using OSC 7501 when the terminal supports it.
+        "program_status": True,
         # Remote-backend connection-class failures (SSH host unreachable, Docker daemon down):
         # "warn" = structured degraded tool result with reason + retry hint; "fail" = raise error +
         # traceback.

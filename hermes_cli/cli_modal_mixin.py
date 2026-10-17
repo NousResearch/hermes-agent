@@ -554,10 +554,37 @@ class CLIModalMixin:
             always_msg=t("cli.modal.destructive_always_msg"),
             persist_failed_msg=t("cli.modal.persist_failed_proceeding"))
 
-    def _ring_bell(self, prompt: bool = False, context: str = "", detail: str = "") -> None:
+    def _report_program_status(self, state: str, *, kind: str = "", message: str = "") -> None:
+        """Report CLI lifecycle state only through an interactive terminal transport."""
+        if not getattr(self, "program_status_enabled", True) or getattr(self, "_terminal_io_broken", False):
+            return
+        if not sys.stdout.isatty():
+            return
+        from hermes_cli.terminal_notify import program_status_sequence, write_tty
+        try:
+            seq = program_status_sequence(state, kind=kind, message=message)
+        except (TypeError, ValueError, UnicodeError):
+            return
+        app = getattr(self, "_app", None)
+        if app is None or not getattr(app, "_is_running", False):
+            write_tty(seq)
+            return
+        from hermes_cli.cli_terminal_mixin import _run_on_app_loop, _write_terminal_sequence
+
+        def _emit() -> None:
+            try:
+                _write_terminal_sequence(app, seq)
+            except (OSError, ValueError):
+                pass
+
+        _run_on_app_loop(app, _emit)
+
+    def _ring_bell(self, prompt: bool = False, context: str = "", detail: str = "", status_kind: str = "") -> None:
         """Terminal bell (\\a) gated by ``display.bell_on_prompt`` (``prompt=True``, blocking modals)
         or ``display.bell_on_complete`` (end of turn); works over SSH. The same flag also emits the
         OSC 9 / Warp OSC 777 desktop notification; ``context`` is the short notification body."""
+        if prompt and status_kind:
+            self._report_program_status("blocked", kind=status_kind, message=detail or context)
         flag = "bell_on_prompt" if prompt else "bell_on_complete"
         if not getattr(self, flag, False) or getattr(self, "_terminal_io_broken", False):
             return
@@ -722,7 +749,7 @@ class CLIModalMixin:
         state["owns_hook"] = installed
         state["tool_thread_id"] = threading.current_thread().ident
         if state["phase"] != "waiting":
-            self._ring_bell(prompt=True, context=t("cli.connect.bell_context"))
+            self._ring_bell(prompt=True, context=t("cli.connect.bell_context"), status_kind="auth")
         return
 
     def _connection_answer(self, *, approve: bool) -> None:
@@ -1025,10 +1052,11 @@ class CLIModalMixin:
         self._clarify_state = state
         self._clarify_batch_set_active(state, 0)
         self._clarify_deadline = None if timeout <= 0 else _time.monotonic() + timeout
-        self._ring_bell(prompt=True, context=t("cli.clarify.bell_context"))
+        self._ring_bell(prompt=True, context=t("cli.clarify.bell_context"), status_kind="question")
         self._paint_now()
 
         result = self._poll_modal_queue(response_queue, "_clarify_deadline")
+        self._report_program_status("working")
         if result is not _TIMED_OUT:
             self._clarify_deadline = None
             outcome = "cancelled" if result is None else "submitted"
@@ -1047,10 +1075,11 @@ class CLIModalMixin:
         self._capture_modal_input_snapshot()
         self._sudo_state = {"response_queue": response_queue}
         self._sudo_deadline = _time.monotonic() + 45
-        self._ring_bell(prompt=True, context=t("cli.secret.bell_sudo"))
+        self._ring_bell(prompt=True, context=t("cli.secret.bell_sudo"), status_kind="auth")
         self._paint_now()
 
         result = self._poll_modal_queue(response_queue, "_sudo_deadline", refresh=0)
+        self._report_program_status("working")
         self._sudo_state = None
         self._sudo_deadline = 0
         self._restore_modal_input_snapshot()
@@ -1090,10 +1119,11 @@ class CLIModalMixin:
                 "selected": 0,
                 "response_queue": response_queue}
             self._approval_deadline = _time.monotonic() + timeout
-            self._ring_bell(prompt=True, context=t("cli.approval.bell_context"), detail=command)
+            self._ring_bell(prompt=True, context=t("cli.approval.bell_context"), detail=command, status_kind="permission")
             self._paint_now()
 
             result = self._poll_modal_queue(response_queue, "_approval_deadline")
+            self._report_program_status("working")
             self._approval_state = None
             self._approval_deadline = 0
             self._paint_now()
@@ -1153,10 +1183,11 @@ class CLIModalMixin:
         self._capture_modal_input_snapshot()
         self._sudo_state = {"response_queue": response_queue, "vault_backend": display_name}
         self._sudo_deadline = _time.monotonic() + 120
-        self._ring_bell(prompt=True, context=t("cli.secret.bell_unlock", name=display_name))
+        self._ring_bell(prompt=True, context=t("cli.secret.bell_unlock", name=display_name), status_kind="auth")
         self._paint_now()
 
         result = self._poll_modal_queue(response_queue, "_sudo_deadline", refresh=0)
+        self._report_program_status("working")
         self._sudo_state = None
         self._sudo_deadline = 0
         self._restore_modal_input_snapshot()
@@ -1180,9 +1211,10 @@ class CLIModalMixin:
                                                                                   "step": step}}
             self._sudo_deadline = _time.monotonic() + 180
             if step == "identifier":
-                self._ring_bell(prompt=True, context=t("cli.secret.bell_save_login", site=site))
+                self._ring_bell(prompt=True, context=t("cli.secret.bell_save_login", site=site), status_kind="auth")
             self._paint_now()
             result = self._poll_modal_queue(response_queue, "_sudo_deadline", refresh=0)
+            self._report_program_status("working")
             self._sudo_state = None
             self._sudo_deadline = 0
             self._restore_modal_input_snapshot()
@@ -1203,9 +1235,10 @@ class CLIModalMixin:
         self._capture_modal_input_snapshot()
         self._sudo_state = {"response_queue": response_queue, "vault_code": {"site": site, "hint": hint}}
         self._sudo_deadline = _time.monotonic() + 180
-        self._ring_bell(prompt=True, context=t("cli.secret.bell_verification_code", site=site))
+        self._ring_bell(prompt=True, context=t("cli.secret.bell_verification_code", site=site), status_kind="auth")
         self._paint_now()
         result = self._poll_modal_queue(response_queue, "_sudo_deadline", refresh=0)
+        self._report_program_status("working")
         self._sudo_state = None
         self._sudo_deadline = 0
         self._restore_modal_input_snapshot()

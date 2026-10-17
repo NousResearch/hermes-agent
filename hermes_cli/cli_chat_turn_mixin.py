@@ -118,6 +118,7 @@ class CLIChatTurnMixin:
                 self._chat_settle_turn(turn)
                 return self._chat_render_turn(turn, agent_thread, interrupt_msg)
             except Exception as e:
+                self._report_program_status("error", message=str(e))
                 _cprint(t("gateway.model.error_prefix", error=e))
                 return None
             finally:
@@ -523,6 +524,12 @@ class CLIChatTurnMixin:
         except Exception:
             pass
 
+        if turn.result and turn.result.get("interrupted"):
+            self._report_program_status("idle")
+        elif turn.result and turn.result.get("failed"):
+            self._report_program_status("error", message=str(turn.result.get("error") or ""))
+        else:
+            self._report_program_status("done", message=response)
         self._ring_bell(context=t("cli.modal.bell_turn_complete"))  # propagates over SSH
         if turn.result and not turn.result.get("completed") and not turn.result.get("interrupted"):
             _api_calls = turn.result.get("api_calls", 0)

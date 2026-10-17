@@ -50,6 +50,12 @@ def _secret_result(var_name: str, value: str) -> dict:
         "message": "Secret stored securely. The secret value was not exposed to the model."}
 
 
+def _resume_program_status(cli) -> None:
+    reporter = getattr(cli, "_report_program_status", None)
+    if reporter is not None:
+        reporter("working")
+
+
 def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:
     """Prompt for a secret value through the TUI (e.g. API keys for skills).
 
@@ -65,6 +71,7 @@ def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:
             value = masked_secret_prompt(f"{prompt} (hidden, ESC or empty Enter to skip): ")
         except (EOFError, KeyboardInterrupt):
             value = ""
+        _resume_program_status(cli)
         return _secret_result(var_name, value)
 
     response_queue = queue.Queue()
@@ -75,7 +82,7 @@ def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:
         "response_queue": response_queue}
     cli._secret_deadline = _time.monotonic() + 120
     if hasattr(cli, "_ring_bell"):
-        cli._ring_bell(prompt=True, context=f"secret needed ({var_name})")
+        cli._ring_bell(prompt=True, context=f"secret needed ({var_name})", status_kind="auth")
     _clear_secret_input(cli)
     _invalidate(cli)
 
@@ -90,6 +97,7 @@ def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:
         cli._secret_state = None
         cli._secret_deadline = 0
         _invalidate(cli)
+        _resume_program_status(cli)
         return _secret_result(var_name, value)
 
     cli._secret_state = None
@@ -97,4 +105,5 @@ def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:
     _clear_secret_input(cli)
     _invalidate(cli)
     cprint(f"\n{_DIM}  ⏱ Timeout — secret capture cancelled{_RST}")
+    _resume_program_status(cli)
     return _skipped(var_name, "timeout", "Secret setup timed out and was skipped.")

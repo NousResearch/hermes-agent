@@ -30,6 +30,7 @@ class CLITuiRuntimeMixin:
 
     def _tui_process_loop(self):
         """REPL worker thread: drain ``_pending_input``, run idle housekeeping, dispatch each input."""
+        self._report_program_status("idle")
         while not self._should_exit:
             try:
                 try:
@@ -131,6 +132,7 @@ class CLITuiRuntimeMixin:
             _attached = t("cli.tui.images_attached_one" if n == 1 else "cli.tui.images_attached_other", count=n)
             _cprint(f"  {_DIM}{_attached}{_RST}")
 
+        self._report_program_status("working")
         self._agent_running = self._interactive_turn = True
         self._pet_turn_error = self._pet_reasoning = False
         self._turn_summary_begin()

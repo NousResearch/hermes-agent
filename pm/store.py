@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import shutil
 import stat
 import sys
@@ -343,6 +344,24 @@ def tree_digest(root: Path) -> str:
     return digest.hexdigest()
 
 
+_ARTIFACT_SHA256 = re.compile(r"[a-f0-9]{64}")
+
+
+def artifact_entry_name(sha256: object) -> str:
+    """The store's cache slot for a pinned archive: ``fetch-<sha256>``.
+
+    The name is a path component, and both callers remove the entry it
+    names *before* anything verifies the bytes: `Store.fetch_many` drops a
+    cache copy it cannot reuse and `pm.install._remove_downloads` releases
+    the archive after publication. The digest comes from the lockfile, so
+    a value that is not one — ``slot/../../elsewhere`` — would otherwise
+    aim a recursive removal at a path of the lockfile's choosing.
+    """
+    if not isinstance(sha256, str) or not _ARTIFACT_SHA256.fullmatch(sha256):
+        raise ValueError(f"a pinned artifact requires a full lowercase sha256, got {sha256!r}")
+    return f"fetch-{sha256}"
+
+
 class Store:
     """One directory of immutable published entries plus a scratch area.
     Hash-keyed archives survive failed installs. Publication releases them."""
@@ -376,7 +395,7 @@ class Store:
             if pause_event is not None and pause_event.is_set():
                 raise DownloadPaused("download paused")
             url, digest = artifact["url"], artifact["sha256"]
-            entry_name = f"fetch-{digest}"
+            entry_name = artifact_entry_name(digest)
             entry = self.entry(entry_name)
             files = list(entry.iterdir()) if entry.is_dir() else []
             if len(files) == 1 and files[0].is_file():
@@ -400,8 +419,8 @@ class Store:
             # Only finalized, hash-verified files can exist at these paths.
             for source in sources:
                 if source.dest.is_relative_to(scratch) and source.dest.is_file():
-                    self.publish(source.dest.parent, f"fetch-{source.sha256}")
-        return [self.entry(f"fetch-{source.sha256}") / source.dest.name for source in sources]
+                    self.publish(source.dest.parent, artifact_entry_name(source.sha256))
+        return [self.entry(artifact_entry_name(source.sha256)) / source.dest.name for source in sources]
 
     @contextmanager
     def scratch(self):

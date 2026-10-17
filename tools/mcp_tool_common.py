@@ -94,14 +94,14 @@ def _exc_str(exc: BaseException) -> str:
     return text or repr(exc)
 
 
-def _prepend_path(env: dict, directory: str) -> dict:
-    """Prepend *directory* to env PATH if it is not already present."""
+def _prepend_path(env: dict, directory: str, *, path_key: str = "PATH") -> dict:
+    """Prepend *directory* to the selected env PATH key if it is not already present."""
     updated = dict(env or {})
     if directory:
-        parts = [part for part in updated.get("PATH", "").split(os.pathsep) if part]
+        parts = [part for part in updated.get(path_key, "").split(os.pathsep) if part]
         if directory not in parts:
             parts = [directory, *parts]
-        updated["PATH"] = os.pathsep.join(parts) if parts else directory
+        updated[path_key] = os.pathsep.join(parts) if parts else directory
     return updated
 
 

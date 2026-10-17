@@ -22,6 +22,7 @@ PRICE = "skills/productivity/product-price-monitor"
 WEEKLY = "skills/productivity/weekly-review-planning"
 SOCIAL = "optional-skills/creative/social-media-content-calendar"
 MCP = "optional-skills/mcp/mcp-oauth-remote-gateway"
+VIDEO_ORCHESTRATOR = "optional-skills/creative/kanban-video-orchestrator"
 
 
 def _document(skill):
@@ -118,3 +119,16 @@ def test_optional_skill_available_on_posix(skill):
 def test_optional_skill_availability_on_windows():
     assert skill_matches_platform(_document(QUESTIONNAIRE)[0])
     assert not skill_matches_platform(_document(DARWINIAN)[0])
+
+
+def test_video_orchestrator_resolves_complete_intake_before_asking():
+    """Regression for #136905: supplied baseline answers must not force repeat questions."""
+    _, skill = _document(VIDEO_ORCHESTRATOR)
+    intake = (REPO / VIDEO_ORCHESTRATOR / "references" / "intake.md").read_text(encoding="utf-8")
+
+    for document in (skill, intake):
+        normalized = re.sub(r"\s+", " ", document.lower())
+        assert "resolve the three baseline answers" in normalized
+        assert "ask only for answers that are genuinely missing or materially ambiguous" in normalized
+    assert "Never start generating a brief or team without asking at least the three baseline questions" not in skill
+    assert "## Tier 0 — Baseline (always ask)" not in intake

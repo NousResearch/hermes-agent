@@ -136,3 +136,36 @@ def test_diagnostics_stay_with_the_session_that_made_the_edit(mock_workspace):
     notes_a = deferred.pop_notes("S-A")
     assert not notes_b, f"session B was told about session A's error: {notes_b}"
     assert notes_a and "MOCK001" in notes_a[0][1], f"session A never heard about its own error: {notes_a}"
+
+
+def test_each_session_is_checked_on_the_bytes_it_wrote(mock_workspace):
+    """Session A's clean edit is still unchecked when session B writes an error into the same file:
+    A's check must diagnose the bytes A wrote (clean), not the file as B left it, and B gets its error."""
+    import threading
+
+    repo, gate = mock_workspace("by_content")
+    gate.touch()  # the server answers at once; the LSP loop itself is held below
+    target = repo / "e.py"
+    target.write_text("x = 1\n", encoding="utf-8")
+    from agent.lsp import get_service
+    svc = get_service()
+    held, release = threading.Event(), threading.Event()
+
+    def hold():
+        held.set()
+        release.wait(_WAIT)
+
+    svc._loop._loop.call_soon_threadsafe(hold)
+    assert held.wait(5)
+    try:
+        result_a, _ = _patch(target, "x = 1", "x = 2", session="S-A2")
+        result_b, _ = _patch(target, "x = 2", "x = bad", session="S-B2")
+    finally:
+        release.set()
+    assert result_a["success"] is True and result_b["success"] is True, (result_a, result_b)
+    wait_until(lambda: _settled("S-A2", "S-B2"), timeout=_WAIT, what="both edit checks settling")
+    notes_a = deferred.pop_notes("S-A2")
+    notes_b = deferred.pop_notes("S-B2")
+    assert not notes_a and "lsp_diagnostics" not in result_a, f"A was told about B's error: {notes_a or result_a}"
+    told_b = " ".join(text for _path, text in notes_b) + str(result_b.get("lsp_diagnostics") or "")
+    assert "MOCK001" in told_b, f"session B never heard about its own error: {notes_b}"

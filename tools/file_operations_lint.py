@@ -331,12 +331,11 @@ class LintMixin:
                                post_content: Optional[str] = None, started: Optional[float] = None) -> str:
         """Formatted LSP diagnostics this edit introduced, or "" when LSP is unavailable/disabled/clean
         OR the verdict is not ready yet.  Never blocks the write on the language server: the check
-        (``agent.lsp.edit_check``) diffs the written file against ``pre_content`` (None = new file) on
-        the LSP loop.  The write waits for the verdict only until ``inline_deadline(started)`` (what is
+        (``agent.lsp.edit_check``) diagnoses ``post_content`` (the bytes this write produced) against
+        ``pre_content`` (None = new file) on the LSP loop: those snapshots, not a later read of the
+        file, which another session may already have rewritten.  The write waits for the verdict only until ``inline_deadline(started)`` (what is
         left of the write's latency budget; ``started`` = ``time.monotonic()`` at write entry); a slower
-        verdict reaches the model with a later tool result of the same session (``agent.lsp.deferred``).
-        ``post_content`` is unused (the check reads the file it just wrote) and kept for callers."""
-        del post_content
+        verdict reaches the model with a later tool result of the same session (``agent.lsp.deferred``)."""
         svc = self._lsp_service()
         if svc is None or not self._lsp_will_handle(path):
             return ""
@@ -349,7 +348,8 @@ class LintMixin:
             # against its baseline) and hands it back in ``result.carry`` only if it gets no verdict.
             older = deferred.take(owner, abs_path)
             carry = (older,) if older is not None else ()
-            future = svc.start_edit_check(path, pre_text=pre_content, owner=owner, carry=carry)
+            future = svc.start_edit_check(path, pre_text=pre_content, post_text=post_content, owner=owner,
+                                          carry=carry)
         except Exception:
             return ""
         if future is None:

@@ -51,7 +51,7 @@ def test_maybe_lsp_diagnostics_returns_empty_for_non_local(monkeypatch):
 
 
 def test_edit_check_started_for_local_env(tmp_path, monkeypatch):
-    """The local backend hands the written file and its pre-edit text to the service's edit check."""
+    """The local backend hands the written file and its pre-/post-edit text to the service's edit check."""
     from tools.environments.local import LocalEnvironment
     from tools.file_operations import ShellFileOperations
 
@@ -62,10 +62,10 @@ def test_edit_check_started_for_local_env(tmp_path, monkeypatch):
         def enabled_for(self, path):
             return True
 
-        def start_edit_check(self, path, *, pre_text, owner=None, carry=()):
-            started.append((path, pre_text))
+        def start_edit_check(self, path, *, pre_text, post_text=None, owner=None, carry=()):
+            started.append((path, pre_text, post_text))
 
     monkeypatch.setattr("agent.lsp.get_service", lambda: FakeService())
 
-    assert fops._maybe_lsp_diagnostics(str(tmp_path / "x.py"), pre_content="x = 1\n") == ""
-    assert started == [(str(tmp_path / "x.py"), "x = 1\n")]
+    assert fops._maybe_lsp_diagnostics(str(tmp_path / "x.py"), pre_content="x = 1\n", post_content="x = 2\n") == ""
+    assert started == [(str(tmp_path / "x.py"), "x = 1\n", "x = 2\n")]

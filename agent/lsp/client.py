@@ -135,6 +135,15 @@ class _DocState:
         return self.fresh_push(version) or self.fresh_pull(version)
 
 
+def as_disk_read(text: str) -> str:
+    """``text`` as ``Path.read_text(encoding="utf-8-sig", errors="replace")`` returns the file holding it."""
+    try:
+        text = text.encode("utf-8", "surrogateescape").decode("utf-8-sig", "replace")
+    except UnicodeEncodeError:  # lone surrogate outside the escape range: keep the text, drop the BOM
+        text = text.removeprefix("\ufeff")
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 class LSPClient:
     """One server process + one workspace root.  ``start()`` → ``open_file()`` → ``wait_for_diagnostics()`` →
     ``diagnostics_for()`` → ``shutdown()``."""
@@ -587,7 +596,9 @@ class LSPClient:
     async def open_file(self, path: str, *, language_id: str = "plaintext", text: Optional[str] = None) -> int:
         """Send didOpen (first time) or didChange (subsequent); return the new document version.
         ``text`` is the document content to sync (default: the file on disk) — the deferred write check
-        syncs the pre-edit content it already holds for its baseline after the new bytes have landed."""
+        syncs the exact pre-/post-edit snapshots of the edit it checks, whatever the disk holds by then.
+        A supplied text is normalized as the disk read would decode it (BOM, newlines, undecodable bytes),
+        so a snapshot and the file it was written to sync identically."""
         if not self.is_running:
             raise LSPProtocolError("client not running")
         abs_path = os.path.abspath(path)
@@ -596,8 +607,8 @@ class LSPClient:
                 text = Path(abs_path).read_text(encoding="utf-8-sig", errors="replace")
             except OSError as e:
                 raise LSPProtocolError(f"cannot read {abs_path}: {e}") from e
-        elif text.startswith("\ufeff"):
-            text = text[1:]  # same as the utf-8-sig disk read
+        else:
+            text = as_disk_read(text)
         uri = file_uri(abs_path)
         doc = self._docs.get(abs_path)
         if doc is not None and doc.version < 0:

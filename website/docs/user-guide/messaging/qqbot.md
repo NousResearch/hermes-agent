@@ -99,6 +99,25 @@ Voice transcription works in two stages:
    - **OpenAI Whisper**: Set `QQ_STT_BASE_URL` and `QQ_STT_MODEL`
    - Any OpenAI-compatible STT endpoint
 
+## Menu and panel management
+
+The bundled QQ platform registers a REST-only CLI; no running gateway is required. It uses the active profile's configured QQ credentials. QQ-side menu/panel permissions are still required.
+
+```sh
+hermes -p PROFILE qqbot --help
+hermes -p PROFILE qqbot menu-get
+hermes -p PROFILE qqbot panel-list --scope c2c
+hermes -p PROFILE qqbot panel-get PANEL_ID
+hermes -p PROFILE qqbot menu-put --file menu.json          # offline preview
+hermes -p PROFILE qqbot menu-put --file menu.json --apply  # replaces the entire global menu
+hermes -p PROFILE qqbot panel-create --file panel.json --apply
+hermes -p PROFILE qqbot panel-update PANEL_ID --file panel.json --apply
+hermes -p PROFILE qqbot panel-targets PANEL_ID --file targets.json --apply
+hermes -p PROFILE qqbot panel-delete PANEL_ID --apply
+```
+
+Mutations default to an **offline JSON request preview**, without loading credentials or opening a network client. Only `--apply` performs a write. Read commands make real authenticated requests. JSON files must contain a complete request object using the [QQ menu/panel API](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/menu-panel/) schema; Hermes does not invent defaults or merge a partial menu. Panel lists return one page, preserving the provider's cursor and fields; pass `--cursor` / `--limit` explicitly for another page. No automatic retries or pagination are performed. Authentication and remote request failures return nonzero status without dumping remote bodies or credentials.
+
 ## Troubleshooting
 
 ### Bot disconnects immediately (quick disconnect)

@@ -15,6 +15,10 @@ from typing import List, Optional, Tuple
 
 # Hard cap on scanned text: scanners are advisory, so bound worst-case runtime.
 MAX_SCAN_CHARS = 65_536
+# Windows overlap so a match straddling a boundary is still seen (> the longest bounded gap, _MODIFY's 2048).
+SCAN_WINDOW_OVERLAP = 4_096
+# Absolute ceiling on scanned text; anything longer is reported as ``scan_truncated_oversize``.
+SCAN_HARD_CAP_CHARS = 1_048_576
 # Bounded filler between key attack words (unbounded ``(?:\w+\s+)*`` backtracks badly).
 _FILLER = r"(?:\w+\s+){0,8}"
 # Env var reference ending in a secret-ish suffix (see exfil comment below).
@@ -135,13 +139,33 @@ def scan_for_threats(content: str, scope: str = "context") -> list[str]:
         return []
     if (patterns := _COMPILED.get(scope)) is None:
         raise ValueError(f"scan_for_threats: unknown scope {scope!r}")
-    content = content[:MAX_SCAN_CHARS]
+    # OBS-AB / OBS-SC-007: a fixed 64 KiB prefix cap let an attacker pad past the window and put
+    # the payload after it. Scan the content in overlapping bounded windows up to a hard ceiling;
+    # per-window cost stays bounded (ReDoS hardening intact) and total cost is linear. Past the
+    # ceiling the remainder is unscanned and that is itself reported (fail closed for callers).
+    oversize = len(content) > SCAN_HARD_CAP_CHARS
+    content = content[:SCAN_HARD_CAP_CHARS]
     # Invisible unicode is checked on the RAW content: NFKC below can strip these codepoints.
     findings: list[str] = [f"invisible_unicode_U+{ord(ch):04X}" for ch in set(content) & INVISIBLE_CHARS]
     # NFKC folds full-width / compatibility variants (ｃａｔ → cat) against homograph bypass.
     # It does NOT fold cross-script confusables (Cyrillic ``а``) — that needs a TR#39 database.
-    normalised = unicodedata.normalize("NFKC", content)
-    findings.extend(pid for compiled, pid in patterns if compiled.search(normalised))
+    step = MAX_SCAN_CHARS - SCAN_WINDOW_OVERLAP
+    pending = list(patterns)
+    for start in range(0, len(content), step):
+        if not pending:
+            break
+        normalised = unicodedata.normalize("NFKC", content[start:start + MAX_SCAN_CHARS])
+        still = []
+        for compiled, pid in pending:
+            if compiled.search(normalised):
+                findings.append(pid)
+            else:
+                still.append((compiled, pid))
+        pending = still
+        if start + MAX_SCAN_CHARS >= len(content):
+            break
+    if oversize:
+        findings.append("scan_truncated_oversize")
     return findings
 
 
@@ -159,4 +183,4 @@ def first_threat_message(content: str, scope: str = "strict") -> Optional[str]:
             f"injection or exfiltration payloads.")
 
 
-__all__ = ["INVISIBLE_CHARS", "MAX_SCAN_CHARS", "first_threat_message", "scan_for_threats"]
+__all__ = ["INVISIBLE_CHARS", "MAX_SCAN_CHARS", "SCAN_HARD_CAP_CHARS", "SCAN_WINDOW_OVERLAP", "first_threat_message", "scan_for_threats"]

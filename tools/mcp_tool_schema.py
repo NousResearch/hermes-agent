@@ -41,6 +41,58 @@ def _scan_mcp_description(server_name: str, tool_name: str, description: str) ->
     return findings
 
 
+# Findings that quarantine a tool (it is NOT registered) unless the server opts out with
+# ``allow_suspicious_tools: true``. Deliberately the unambiguous override/concealment/role-hijack
+# set: the weak indicators above (``system:``, ``curl``, ``exec(``) stay warning-only.
+_QUARANTINE_REASONS = frozenset({
+    "prompt override attempt ('ignore previous instructions')",
+    "identity override attempt ('you are now a...')",
+    "task override attempt",
+    "role tag injection attempt",
+    "concealment instruction",
+})
+_QUARANTINE_THREAT_IDS = frozenset({"prompt_injection", "sys_prompt_override", "disregard_rules",
+                                    "bypass_restrictions"})
+_SCHEMA_TEXT_BUDGET = 1_000_000
+
+
+def _schema_strings(node, out: list[str], budget: list[int], depth: int = 0) -> None:
+    """Collect every string a model will read from a JSON schema: descriptions, titles, enum/const/
+    default/examples values AND property names (full-schema poisoning, not just the top description)."""
+    if depth > 24 or budget[0] <= 0:
+        return
+    if isinstance(node, str):
+        budget[0] -= len(node)
+        out.append(node)
+    elif isinstance(node, dict):
+        for k, v in node.items():
+            if isinstance(k, str):
+                budget[0] -= len(k)
+                out.append(k)
+            _schema_strings(v, out, budget, depth + 1)
+    elif isinstance(node, (list, tuple)):
+        for v in node:
+            _schema_strings(v, out, budget, depth + 1)
+
+
+def _scan_mcp_tool(server_name: str, mcp_tool) -> list[str]:
+    """Scan a tool's description AND whole input schema; return the QUARANTINE-grade findings
+    (empty = register). Every other suspicious indicator is only logged by ``_scan_mcp_description``."""
+    from tools.threat_patterns import scan_for_threats
+    parts: list[str] = [mcp_tool.description or ""]
+    _schema_strings(mcp_field(mcp_tool, "input_schema", "inputSchema"), parts, [_SCHEMA_TEXT_BUDGET])
+    text = "\n".join(p for p in parts if p)
+    if not text:
+        return []
+    findings = [r for pat, r in _MCP_INJECTION_PATTERNS if r in _QUARANTINE_REASONS and pat.search(text)]
+    findings += [f"threat:{f}" for f in scan_for_threats(text, scope="all")
+                 if f in _QUARANTINE_THREAT_IDS or f == "scan_truncated_oversize"]
+    if findings:
+        logger.warning("MCP server '%s' tool '%s': quarantine-grade schema content — %s",
+                       server_name, getattr(mcp_tool, "name", "?"), "; ".join(findings))
+    return findings
+
+
 _EMPTY_OBJECT_SCHEMA = {"type": "object", "properties": {}}
 
 

@@ -255,15 +255,24 @@ class _Candidate:
 
 
 def _tool_candidates(name: str, tools: Iterable[Any], should_register: Callable[[str], bool],
-                     tool_timeout) -> list[_Candidate]:
+                     tool_timeout, config: Optional[dict] = None) -> list[_Candidate]:
     """Native tools (live SDK objects or cache stand-ins) -> candidates. The injection scan runs on
-    BOTH paths: the cache file is user-writable JSON."""
+    BOTH paths: the cache file is user-writable JSON. Tools whose description or input schema carry
+    quarantine-grade injection content are NOT registered (``allow_suspicious_tools: true`` opts a
+    reviewed server out)."""
     out: list[_Candidate] = []
     for t in tools:
         if not should_register(t.name):
             logger.debug("MCP server '%s': skipping tool '%s' (filtered by config)", name, t.name)
             continue
         _schema._scan_mcp_description(name, t.name, t.description or "")
+        if not (config or {}).get("allow_suspicious_tools"):
+            quarantined = _schema._scan_mcp_tool(name, t)
+            if quarantined:
+                logger.error("MCP server '%s': tool %r QUARANTINED (not registered): %s. Set "
+                             "allow_suspicious_tools: true on the server only after reviewing it.",
+                             name, t.name, "; ".join(quarantined))
+                continue
         schema = _schema._convert_mcp_schema(name, t)
         handler = _handlers._make_tool_handler(name, t.name, tool_timeout, native_images=True)
         out.append(_Candidate(schema["name"], f"tool {t.name!r}", schema, handler))
@@ -405,7 +414,7 @@ def _register_server_tools(name: str, server: "MCPServerTask", config: dict) -> 
     should_register = _make_tool_filter(name, config)
     key = _server_key_for_task(server)
     _record_tool_trust_metadata(name, config, server._tools, key)
-    candidates = _tool_candidates(name, server._tools, should_register, server.tool_timeout)
+    candidates = _tool_candidates(name, server._tools, should_register, server.tool_timeout, config)
     candidates += _utility_candidates(name, _select_utility_schemas(name, server, config), server.tool_timeout)
     # Judged by the connection's owner scope (the ``(scope, name)`` key the registration below
     # publishes into), never by the bare name resolved in the caller's context.
@@ -580,7 +589,7 @@ def _register_connected_into_current_scope(servers: dict) -> int:
         _record_scope_trust(name, config, scope)
         if registry.get_tool_names_for_toolset(f"mcp-{name}"):
             continue
-        candidates = _tool_candidates(name, server._tools, _make_tool_filter(name, config), server.tool_timeout)
+        candidates = _tool_candidates(name, server._tools, _make_tool_filter(name, config), server.tool_timeout, config)
         candidates += _utility_candidates(
             name, _select_utility_schemas(name, server, config), server.tool_timeout)
         names = _register_candidates(
@@ -607,7 +616,7 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> list[str]
     tool_timeout = _resolve_tool_timeout(config)
     cached_tools = _cached_tools(tools_from_cache_entry(entry))
     _record_tool_trust_metadata(name, config, cached_tools)
-    candidates = _tool_candidates(name, cached_tools, _make_tool_filter(name, config), tool_timeout)
+    candidates = _tool_candidates(name, cached_tools, _make_tool_filter(name, config), tool_timeout, config)
     candidates += _utility_candidates(name, utility_tools_from_cache_entry(entry), tool_timeout)
     registered = _register_candidates(
         name, candidates, check_fn=_make_check_fn(name), scope=_core._mcp_registry_scope, lazy=True,

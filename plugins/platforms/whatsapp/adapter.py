@@ -2,6 +2,7 @@
 client; messages are polled over a local HTTP API and responses are posted back through it."""
 
 import asyncio
+import json
 import logging
 import mimetypes
 import os
@@ -775,7 +776,19 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 if resp.status == 200:
                     data = await resp.json()
                     return SendResult(success=True, message_id=data.get("messageId"), raw_response=data)
-                return SendResult(success=False, error=await resp.text())
+                text = await resp.text()
+                if resp.status == 503:
+                    # The bridge carries its own verdict in the 503 body (#140571): reconnectPending
+                    # means the socket is rebuilding and a resend after backoff lands, while a body
+                    # without it (an older bridge, or a logged-out session) stays non-retryable so
+                    # the retry budget is not spent on sends that cannot succeed.
+                    try:
+                        pending = bool(json.loads(text).get("reconnectPending"))
+                    except (ValueError, AttributeError):
+                        pending = False
+                    if pending:
+                        return SendResult(success=False, error=text, retryable=True)
+                return SendResult(success=False, error=text)
         except Exception as e:
             return SendResult(success=False, error=str(e))
 
@@ -795,7 +808,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     payload["replyTo"] = reply_to  # Reply-to on the first chunk only.
                 result = await self._post_bridge_message("send", payload, timeout=30)
                 if not result.success:
-                    return SendResult(success=False, error=result.error)
+                    # Keep the retry verdict only while nothing is on screen yet: a chunked send
+                    # that failed midway must not be re-sent whole (the landed head would duplicate).
+                    return SendResult(success=False, error=result.error,
+                                      retryable=result.retryable and not sent_message_ids)
                 last_message_id = result.message_id
                 if last_message_id:
                     sent_message_ids.append(str(last_message_id))

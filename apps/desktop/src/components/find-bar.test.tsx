@@ -6,6 +6,7 @@ import { type KeybindRuntimeDeps, useKeybinds } from '@/app/hooks/use-keybinds'
 import { FindBar } from '@/components/find-bar'
 import { I18nProvider } from '@/i18n'
 import { findBarClaimsCombo, findBarKeyAction, formatMatchLabel } from '@/lib/find-in-page'
+import { releaseFindScope } from '@/lib/find-in-page-scope'
 import { actionAllowedInInput } from '@/lib/keybinds/combo'
 import {
   $findInPage,
@@ -19,6 +20,7 @@ import {
   setFindQuery,
   updateFindResults
 } from '@/store/find-in-page'
+import { findHitsWithin } from '@/test/jsdom'
 
 // useKeybinds only needs the theme context for resolvedMode/setMode; the real
 // provider persists themes and subscribes to backend sync, which is unrelated
@@ -84,10 +86,9 @@ function drainListeners() {
  * Plant a chat surface in the DOM. The scoped walker resolves its scope from
  * the foreground `[data-chat-surface]`, so any test that exercises a real
  * search needs one — even just an empty container — to make sure the store
- * has something to walk. `releaseFindScope` is called in afterEach via
- * `cleanup` + a body reset, but tests that close the bar mid-flight also
- * rely on `document.body.innerHTML = ''` between cases (see pane-visibility
- * tests for the same pattern).
+ * has something to walk. Tests that close the bar mid-flight rely on the
+ * afterEach teardown: `releaseFindScope()` (the registry is process-wide and
+ * survives a body reset) plus `document.body.innerHTML = ''`.
  */
 function plantSurface(id = 'surface') {
   const root = document.createElement('div')
@@ -108,6 +109,9 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  // The registry (and the walker's range state) is process-wide: wiping the
+  // body leaves stale ranges registered, so drop them explicitly.
+  releaseFindScope()
   document.body.innerHTML = ''
   resetStore()
   drainListeners()
@@ -266,7 +270,7 @@ describe('find-in-page store', () => {
     setFindQuery('needle')
 
     expect($findInPage.get().matchCount).toBe(2)
-    expect(surface.querySelectorAll('mark.find-hit').length).toBe(2)
+    expect(findHitsWithin(surface)).toBe(2)
 
     closeFindBar()
 
@@ -274,7 +278,7 @@ describe('find-in-page store', () => {
     expect($findInPage.get().query).toBe('')
     expect($findInPage.get().matchCount).toBe(0)
     // Highlights are unwrapped; the original text is restored.
-    expect(surface.querySelectorAll('mark.find-hit').length).toBe(0)
+    expect(findHitsWithin(surface)).toBe(0)
     expect(surface.textContent).toBe('needle in a haystack, needle again')
   })
 
@@ -287,7 +291,7 @@ describe('find-in-page store', () => {
     expect($findInPage.get().query).toBe('needle')
     expect($findInPage.get().matchCount).toBe(3)
     expect($findInPage.get().matchOrdinal).toBe(1)
-    expect(surface.querySelectorAll('mark.find-hit').length).toBe(3)
+    expect(findHitsWithin(surface)).toBe(3)
   })
 
   it('clearing the query unwraps highlights and zeroes the counter', () => {
@@ -295,13 +299,13 @@ describe('find-in-page store', () => {
     surface.textContent = 'needle haystack needle'
     openFindBar()
     setFindQuery('needle')
-    expect(surface.querySelectorAll('mark.find-hit').length).toBe(2)
+    expect(findHitsWithin(surface)).toBe(2)
 
     setFindQuery('')
 
     expect($findInPage.get().matchCount).toBe(0)
     expect($findInPage.get().query).toBe('')
-    expect(surface.querySelectorAll('mark.find-hit').length).toBe(0)
+    expect(findHitsWithin(surface)).toBe(0)
     expect(surface.textContent).toBe('needle haystack needle')
   })
 
@@ -351,7 +355,7 @@ describe('find-in-page store', () => {
     setFindQuery('needle')
 
     expect($findInPage.get().query).toBe('')
-    expect(surface.querySelectorAll('mark.find-hit').length).toBe(0)
+    expect(findHitsWithin(surface)).toBe(0)
   })
 
   it('scopes the search to the active chat surface, never the whole document', () => {
@@ -374,13 +378,13 @@ describe('find-in-page store', () => {
     setFindQuery('needle')
 
     // Foreground: both matches wrapped. Background: untouched.
-    expect(foreground.querySelectorAll('mark.find-hit').length).toBe(2)
-    expect(hidden.querySelectorAll('mark.find-hit').length).toBe(0)
+    expect(findHitsWithin(foreground)).toBe(2)
+    expect(findHitsWithin(hidden)).toBe(0)
     expect($findInPage.get().matchCount).toBe(2)
 
     closeFindBar()
-    expect(foreground.querySelectorAll('mark.find-hit').length).toBe(0)
-    expect(hidden.querySelectorAll('mark.find-hit').length).toBe(0)
+    expect(findHitsWithin(foreground)).toBe(0)
+    expect(findHitsWithin(hidden)).toBe(0)
   })
 
   it('opening the bar twice on different surfaces retargets the scope', () => {
@@ -402,8 +406,8 @@ describe('find-in-page store', () => {
     setFindQuery('needle')
 
     // Surface A is foreground; only its hit is wrapped.
-    expect(surfaceA.querySelectorAll('mark.find-hit').length).toBe(1)
-    expect(surfaceB.querySelectorAll('mark.find-hit').length).toBe(0)
+    expect(findHitsWithin(surfaceA)).toBe(1)
+    expect(findHitsWithin(surfaceB)).toBe(0)
     closeFindBar()
 
     // Flip visibility: surface B is now the foreground.
@@ -412,8 +416,8 @@ describe('find-in-page store', () => {
     openFindBar()
     setFindQuery('needle')
 
-    expect(surfaceA.querySelectorAll('mark.find-hit').length).toBe(0)
-    expect(surfaceB.querySelectorAll('mark.find-hit').length).toBe(1)
+    expect(findHitsWithin(surfaceA)).toBe(0)
+    expect(findHitsWithin(surfaceB)).toBe(1)
     expect($findInPage.get().matchCount).toBe(1)
   })
 
@@ -437,8 +441,8 @@ describe('find-in-page store', () => {
     setFindQuery('needle')
 
     // Surface A is foreground; only its match is wrapped.
-    expect(surfaceA.querySelectorAll('mark.find-hit').length).toBe(1)
-    expect(surfaceB.querySelectorAll('mark.find-hit').length).toBe(0)
+    expect(findHitsWithin(surfaceA)).toBe(1)
+    expect(findHitsWithin(surfaceB)).toBe(0)
     expect($findInPage.get().matchCount).toBe(1)
 
     // Tab flip while the bar stays open: A's pane layer hides, B is now the
@@ -449,8 +453,8 @@ describe('find-in-page store', () => {
 
     // The scope re-targeted to B — its matches are wrapped, and A's stale
     // highlights are cleared rather than left to resurface on its next visit.
-    expect(surfaceB.querySelectorAll('mark.find-hit').length).toBe(2)
-    expect(surfaceA.querySelectorAll('mark.find-hit').length).toBe(0)
+    expect(findHitsWithin(surfaceB)).toBe(2)
+    expect(findHitsWithin(surfaceA)).toBe(0)
     expect($findInPage.get().matchCount).toBe(2)
 
     // Stepping still works on the re-targeted surface.
@@ -467,7 +471,7 @@ describe('find-in-page store', () => {
 
     expect($findInPage.get().matchCount).toBe(0)
     expect($findInPage.get().matchOrdinal).toBe(0)
-    expect(surface.querySelectorAll('mark.find-hit').length).toBe(0)
+    expect(findHitsWithin(surface)).toBe(0)
   })
 
   it('match is case-insensitive', () => {
@@ -485,13 +489,13 @@ describe('find-in-page store', () => {
     surface.textContent = 'alpha beta alpha beta'
     openFindBar()
     setFindQuery('alpha')
-    expect(surface.querySelectorAll('mark.find-hit').length).toBe(2)
+    expect(findHitsWithin(surface)).toBe(2)
 
     setFindQuery('beta')
 
     // The previous marks were unwrapped before the new query highlighted.
     expect($findInPage.get().matchCount).toBe(2)
-    expect(surface.querySelectorAll('mark.find-hit').length).toBe(2)
+    expect(findHitsWithin(surface)).toBe(2)
     // Original text intact (no doubled marks / no lost text).
     expect(surface.textContent).toBe('alpha beta alpha beta')
   })
@@ -667,7 +671,7 @@ describe('FindBar', () => {
       fireEvent.change(input, { target: { value: 'nee' } })
 
       // No marks yet — debounced.
-      expect(surface.querySelectorAll('mark.find-hit').length).toBe(0)
+      expect(findHitsWithin(surface)).toBe(0)
 
       // Flushing the debounce updates the store, which re-renders the bar.
       act(() => {
@@ -677,7 +681,7 @@ describe('FindBar', () => {
       // Now the scoped walker has wrapped the matches.
       expect($findInPage.get().query).toBe('nee')
       expect($findInPage.get().matchCount).toBe(2)
-      expect(surface.querySelectorAll('mark.find-hit').length).toBe(2)
+      expect(findHitsWithin(surface)).toBe(2)
     } finally {
       vi.useRealTimers()
     }
@@ -731,7 +735,7 @@ describe('FindBar', () => {
 
       // The debounced timer that already fired is gated by `active`, so
       // closing the bar prevents the walker from running.
-      expect(surface.querySelectorAll('mark.find-hit').length).toBe(0)
+      expect(findHitsWithin(surface)).toBe(0)
       expect($findInPage.get().query).toBe('')
     } finally {
       vi.useRealTimers()
@@ -778,13 +782,13 @@ describe('FindBar', () => {
     surface.textContent = 'needle haystack'
     openFindBar()
     setFindQuery('needle')
-    expect(surface.querySelectorAll('mark.find-hit').length).toBe(1)
+    expect(findHitsWithin(surface)).toBe(1)
 
     renderFindBar()
     fireEvent.keyDown(window, { key: 'Escape' })
 
     expect($findInPage.get().active).toBe(false)
-    expect(surface.querySelectorAll('mark.find-hit').length).toBe(0)
+    expect(findHitsWithin(surface)).toBe(0)
     await waitFor(() => expect(screen.queryByRole('search')).toBeNull())
   })
 
@@ -793,13 +797,13 @@ describe('FindBar', () => {
     surface.textContent = 'needle haystack'
     openFindBar()
     setFindQuery('needle')
-    expect(surface.querySelectorAll('mark.find-hit').length).toBe(1)
+    expect(findHitsWithin(surface)).toBe(1)
 
     renderFindBar()
     fireEvent.click(screen.getByRole('button', { name: /close/i }))
 
     expect($findInPage.get().active).toBe(false)
-    expect(surface.querySelectorAll('mark.find-hit').length).toBe(0)
+    expect(findHitsWithin(surface)).toBe(0)
   })
 
   it('the next / previous buttons dispatch a step', () => {
@@ -873,7 +877,7 @@ describe('FindBar', () => {
     surface.textContent = 'needle haystack'
     openFindBar()
     setFindQuery('needle')
-    expect(surface.querySelectorAll('mark.find-hit').length).toBe(1)
+    expect(findHitsWithin(surface)).toBe(1)
 
     const { navigate } = renderFindBarWithNavigation('/session/a')
     await waitFor(() => expect(screen.getByRole('search')).toBeTruthy())
@@ -884,7 +888,7 @@ describe('FindBar', () => {
     // must not survive a session switch.
     await waitFor(() => expect(screen.queryByRole('search')).toBeNull())
     expect($findInPage.get()).toEqual({ active: false, query: '', matchOrdinal: 0, matchCount: 0, focusRequest: 0 })
-    expect(surface.querySelectorAll('mark.find-hit').length).toBe(0)
+    expect(findHitsWithin(surface)).toBe(0)
   })
 
   it('does not render on overlay routes (settings, command center, …)', () => {

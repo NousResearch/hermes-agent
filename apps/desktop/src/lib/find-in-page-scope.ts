@@ -12,72 +12,112 @@
  * (#81726).
  *
  * Strategy. At bar-open time, capture the active chat surface element and
- * remember it for the lifetime of the find bar. Subsequent queries highlight
- * only text nodes inside that subtree. ⌘G / ⌘⇧G step between highlights
- * inside the same subtree. Closing the bar unwraps the highlights. If a
- * keep-alive tab flip hides the captured surface while the bar stays open
- * (the route didn't change, so the FindBar's pathname cleanup never ran),
- * the scope re-resolves to the new foreground surface — "find wherever the
- * user is reading" holds across a flip, not just at open time (#81726).
+ * remember it for the lifetime of the find bar. Every query highlights the
+ * occurrences inside that subtree, ⌘G / ⌘⇧G step between them, and closing the
+ * bar drops the highlight. If a keep-alive tab flip hides the captured surface
+ * while the bar stays open (the route didn't change, so the FindBar's pathname
+ * cleanup never ran), the scope re-resolves to the new foreground surface —
+ * "find wherever the user is reading" holds across a flip, not just at open
+ * time (#81726).
  *
  * "Current view" is the foreground `[data-chat-surface]` element after
- * filtering out inactive keep-alive tabs. That is the same policy every
- * other document-wide lookup obeys (see pane-visibility.ts), so this can be
- * reasoned about as "find wherever the user is reading".
+ * filtering out inactive keep-alive tabs. That is the same policy every other
+ * document-wide lookup obeys (see pane-visibility.ts), so this can be reasoned
+ * about as "find wherever the user is reading".
  *
- * Implementation notes:
- * - We wrap each match in a `<mark class="find-hit">` so the active match is
- *   a single class toggle. Walking raw text nodes lets us split a node that
- *   spans a match boundary without disturbing the surrounding React tree
- *   (text nodes are inert for React reconciliation until the parent changes).
- * - The active ordinal is the 1-indexed position of the match whose
- *   `<mark>` carries `data-active`. We re-derive it on every step instead of
- *   keeping a counter, so a stale count after a DOM mutation self-heals on
- *   the next search.
- * - The transcript is React-owned and re-renders while the bar is open —
- *   assistant responses stream through `markdown-text.tsx`, which rebuilds
- *   the markdown DOM on every delta, and a new message is appended whenever
- *   the assistant answers. React does not know about the `<mark>`s we insert,
- *   so a re-render of a region whose text or structure changed detaches our
- *   marks (React re-allocates those nodes) while leaving marks in untouched
- *   regions intact. To keep highlights consistent across those renders we
- *   watch the captured scope with a MutationObserver and re-apply the wrap
- *   whenever an unmarked occurrence of the query reappears — but ONLY then,
- *   so a responsive render that left every mark in place costs nothing and an
- *   append that adds no matching text is a no-op. The observer is gated off
- *   while WE are mutating (a re-entrancy flag), coalesced to one re-apply per
- *   microtask, and torn down when the bar closes (#81726).
- * - We do NOT call `webContents.findInPage` from here. That bridge still
- *   exists for multi-window secondary sessions (each window searches its
- *   own webContents), but for the primary window it cannot be scoped, so
- *   the renderer-side walker is the only path that satisfies the issue.
+ * Painting. Matches are painted with the **CSS Custom Highlight API**
+ * (`CSS.highlights` + `Range`s), never by inserting nodes. This is a
+ * correctness requirement, not an optimization:
+ *
+ * - The transcript is React-owned and re-renders while the bar is open
+ *   (assistant responses stream through `markdown-text.tsx`, which rebuilds the
+ *   markdown DOM on every delta). Injecting `<mark>`s into that tree means
+ *   fighting the reconciler: a render that re-allocates a region detaches the
+ *   marks, so the old engine had to re-walk and re-wrap the WHOLE scope on
+ *   every mutation to keep highlights consistent. Ranges are inert — React
+ *   never sees them, and a re-render simply re-ranks which ranges are still
+ *   attached, which one cheap re-scan fixes.
+ * - The scope also contains a live `contentEditable` composer (`chat/index.tsx`).
+ *   Splitting and replacing text nodes under a live caret is exactly the kind
+ *   of external DOM write the editing machinery is not required to survive.
+ * - Cost. Wrapping every occurrence allocates a node per match (plus the text
+ *   nodes around it) and forces layout. Measured with the desktop's own
+ *   Electron build (Chromium 142) on a deterministic fixture the size the DOM
+ *   budget in `thread/list.tsx` allows — 875,824 characters, 41,977 text nodes,
+ *   42,281 elements — searching `e` (99,759 occurrences) added 99,769
+ *   `<mark>`s, took 1.20-1.36s for the keystroke, 6.1-8.7s for three more
+ *   keystrokes, ~0.1-0.3s per Enter/Ctrl+G step, and let only 2-4 streamed
+ *   deltas through in 8s (~2-4s per delta: the observer re-wraps the whole
+ *   scope on every mutation, so the renderer is saturated for as long as the
+ *   assistant streams). The same fixture through `CSS.highlights`: the same
+ *   query costs 58ms, a step 0.1ms, 146 deltas land in 8s, and the DOM gains
+ *   ten nodes instead of a hundred thousand. The first scan after page load
+ *   pays V8 warm-up (~200ms on this fixture); later scans are ~10-60ms.
+ *
+ * Re-scanning. The scope is watched with a MutationObserver, but a mutation
+ * only marks the scan dirty; the re-scan itself is **throttled** to one per
+ * {@link RESCAN_MIN_INTERVAL_MS} so a streaming turn cannot starve the main
+ * thread, and it never scrolls (a background re-render must not move the
+ * reader — see "Never navigate, move focus, or open a surface because
+ * something happened in the background" in apps/desktop/AGENTS.md). Stepping
+ * with an unchanged, non-dirty scope reuses the existing ranges, so ⌘G costs
+ * nothing.
+ *
+ * Support. The Custom Highlight API is the only painting path; there is no
+ * node-inserting fallback, because that fallback IS the freeze this module was
+ * rewritten to remove. Where the API is missing (jsdom in the unit tests), the
+ * module still counts, steps and scrolls — only the paint is skipped.
  */
 
 import { queryVisible } from '@/components/pane-shell/pane-visibility'
 
 const SCOPE_SELECTOR = '[data-chat-surface]'
-const HIGHLIGHT_CLASS = 'find-hit'
-const ACTIVE_ATTR = 'data-find-active'
 const ROOT_ATTR = 'data-find-root'
 
-// ── Re-render watch ─────────────────────────────────────────────────────────
-// The transcript is React-owned and re-renders under us (streaming markdown,
-// message append). React doesn't know about our `<mark>`s, so a render that
-// re-allocates a region detaches the marks in that region. We watch the scope
-// and re-wrap when an unmarked occurrence of the active query appears.
-//
-// `applying` is the re-entrancy guard: it's set for the whole synchronous
-// re-apply, and any observer callback that fires during it flips `pending`
-// so we take one more look afterwards instead of recursing infinitely. All
-// observer work is coalesced to a single microtask so a burst of mutations
-// (one streaming delta) lands as one re-apply.
+/** Registry name for every match ("hermes-" prefix: the page is shared with
+ *  plugin content, and a bare "find" name is a collision waiting to happen). */
+const ALL_HIGHLIGHT = 'hermes-find'
+/** Registry name for the match the bar is currently on. Registered AFTER the
+ *  all-matches highlight, since `CSS.highlights` paints in insertion order and
+ *  the active match must win. */
+const ACTIVE_HIGHLIGHT = 'hermes-find-active'
+
+/**
+ * Subtrees the walker never looks into.
+ *
+ * - `script,style,noscript` — neither painted nor searchable.
+ * - `[role="search"]` — the find bar's own control; its text must never be a
+ *   match of itself.
+ * - editors (`[contenteditable]`, `textarea`, `[role="textbox"]`) — the
+ *   composer's draft is a live editing surface, not part of the document being
+ *   read. Counting it made the match counter disagree with what is on screen
+ *   (#134070), and writing into it is what corrupted the caret and the writing
+ *   direction there.
+ *
+ * Skipped subtrees cost nothing per text node: they are collected once per scan
+ * (see {@link collectRanges}).
+ */
+const SKIPPED_SELECTOR =
+  'script,style,noscript,[role="search"],[contenteditable]:not([contenteditable="false"]),textarea,[role="textbox"]'
+
+/** At most one mutation-driven re-scan per this interval. A streaming turn
+ *  mutates the scope on every delta; a scan is ~15-30ms on a full page, so
+ *  unthrottled re-scans would spend the frame budget on highlights. */
+const RESCAN_MIN_INTERVAL_MS = 200
+
+/** Above this many skip subtrees, testing each text node against all of them
+ *  costs more than the `closest()` walk it replaces. */
+const MAX_SKIP_ROOTS = 8
+
 let observer: MutationObserver | null = null
+let rescanTimer: null | ReturnType<typeof setTimeout> = null
 let scopeRoot: HTMLElement | null = null
+let ranges: Range[] = []
+let activeIndex = 0
 let activeQuery = ''
-let lastActiveOrdinal = 0
-let applying = false
-let pending = false
-let scheduled = false
+/** The scope changed since the last scan: a step must re-scan before moving. */
+let dirty = false
+let lastScanAt = 0
 
 /**
  * The element the open FindBar should search. Captured at bar-open time and
@@ -95,27 +135,14 @@ export function resolveCurrentFindScope(): HTMLElement | null {
 export function captureFindScope(): HTMLElement | null {
   const root = resolveCurrentFindScope()
 
+  resetFindState()
+  scopeRoot = root
+
   if (root) {
     root.setAttribute(ROOT_ATTR, '')
   }
 
-  resetScopeState()
-  scopeRoot = root
-
   return root
-}
-
-/** Forget a past scope: stop watching it and drop any queued re-apply. Called
- *  whenever the bar re-opens or closes so state never leaks across searches. */
-function resetScopeState(): void {
-  observer?.disconnect()
-  observer = null
-  scopeRoot = null
-  activeQuery = ''
-  lastActiveOrdinal = 0
-  applying = false
-  pending = false
-  scheduled = false
 }
 
 /**
@@ -149,12 +176,11 @@ export function currentFindScope(): HTMLElement | null {
 
 /**
  * Move the find scope to the foreground chat surface after a keep-alive tab
- * flip hid the captured one. Clears the old surface's highlights and marker
- * (they'd otherwise resurface as stray marks when its tab is revisited), then
- * stamps `data-find-root` on the new surface so the walker keeps searching
- * where the user is now reading. Returns the new scope, or null when no chat
- * surface is visible (the user flipped to a non-chat pane — nothing on screen
- * qualifies as a view).
+ * flip hid the captured one. Drops the stale surface's ranges (they belong to
+ * a subtree the user can no longer see) and stamps `data-find-root` on the new
+ * surface so the walker keeps searching where the user is now reading. Returns
+ * the new scope, or null when no chat surface is visible (the user flipped to
+ * a non-chat pane — nothing on screen qualifies as a view).
  */
 function retargetFindScope(roots: NodeListOf<HTMLElement>): HTMLElement | null {
   const foreground = resolveCurrentFindScope()
@@ -168,14 +194,14 @@ function retargetFindScope(roots: NodeListOf<HTMLElement>): HTMLElement | null {
       continue
     }
 
-    clearHighlights(root)
     root.removeAttribute(ROOT_ATTR)
   }
 
-  // The re-render watcher is still observing the OLD root; detach it so the
-  // next performScopedFind re-attaches to the new scope (ensureObserver only
-  // trusts an observer whose root matches scopeRoot).
+  // The observer is still watching the OLD root, and the ranges point into it;
+  // the next performScopedFind re-scans the new scope (its fast path requires
+  // live ranges, so the drop cannot be stepped over).
   stopObserver()
+  dropHighlights()
   scopeRoot = foreground
   foreground.setAttribute(ROOT_ATTR, '')
 
@@ -189,236 +215,145 @@ function isElementInHiddenPane(element: Element): boolean {
 }
 
 /**
- * Walk `root`'s text nodes in document order, wrapping every (case-
- * insensitive) occurrence of `query` in a `<mark class="find-hit">`.
+ * Every (case-insensitive) occurrence of `query` in `root`, as a `Range` per
+ * occurrence in document order.
  *
- * Splits text nodes that span a match boundary so React (or any other
- * framework holding the parent) sees the text-node change as a normal DOM
- * mutation. Returns the marks in document order — the same order the step
- * functions use to walk forward / backward.
+ * Two choices here keep the scan cheap on a full page — measured on the same
+ * 875,824-character / 41,977-text-node fixture as the module header: 10ms for a
+ * query with no matches, 58ms for one with 99,759 of them (the first scan after
+ * page load pays V8 warm-up and lands near 200ms). The node-wrapping engine
+ * spent 1.2-1.4s on that same query, because it paid for both the scan and
+ * 99,769 new DOM nodes.
  *
- * Implementation: walk forward, accumulating the global text offset and the
- * active text node as we go. When we hit a match, split the text node,
- * wrap the matched slice, and JUMP the offset past the wrapped region so we
- * don't re-match inside our own `<mark>`. Crucially, we update the text-
- * node pointer AFTER the wrap, so the next search step sees the new node
- * layout rather than the (now detached) original.
+ * - `SHOW_TEXT` with no `NodeFilter` callback. A filter callback is a JS call
+ *   per visited node, element and text alike (~84K crossings on a full page);
+ *   the skip subtrees are collected once per scan instead and tested with one
+ *   `contains()` per text node — usually zero of them, since the find bar
+ *   itself mounts outside `[data-chat-surface]`.
+ * - No text-node splitting. A `Range` can start and end anywhere inside a
+ *   single text node, so a match costs one object and no DOM write.
  */
-function highlightMatches(root: Element, query: string): HTMLElement[] {
-  const marks: HTMLElement[] = []
+function collectRanges(root: Element, query: string): Range[] {
   const lowerQuery = query.toLowerCase()
+  const found: Range[] = []
 
   if (!lowerQuery) {
-    return marks
+    return found
   }
 
-  let current: Node | null = root.firstChild
-  let textNode: Text | null = null
+  const skipRoots = [...root.querySelectorAll(SKIPPED_SELECTOR)]
 
-  // Outer loop: walk element children until we have a text node to search.
-  while (current) {
-    if (current.nodeType === Node.TEXT_NODE) {
-      textNode = current as Text
-    } else if (current.nodeType === Node.ELEMENT_NODE) {
-      const el = current as Element
-
-      // Skip elements we never want to search into. The walker is
-      // deliberately flat (no recursion); a nested <p> in a <section>
-      // becomes a fresh descendant scan via the recursive call below.
-      if (shouldSkipElement(el)) {
-        current = el.nextSibling
-
-        continue
-      }
-
-      // Recurse into the element's descendants.
-      const inner = highlightMatches(el, query)
-
-      marks.push(...inner)
-      current = el.nextSibling
-
-      continue
-    } else {
-      current = current.nextSibling
-
-      continue
-    }
-
-    if (!textNode || !textNode.parentNode) {
-      current = textNode?.nextSibling ?? null
-
-      continue
-    }
-
-    // Search within this text node. Splits may invalidate `textNode`'s
-    // identity, so we re-read it from the parent each iteration.
-    let nodeValue = textNode.nodeValue ?? ''
-    // Capture the text node's own next sibling BEFORE any replaceChild:
-    // once the original node is detached, `.nextSibling` reads null and
-    // the outer walker would stop, skipping every following sibling
-    // subtree (`<div>needle<span>needle</span></div>` searching "needle"
-    // matched only the first). `continueFrom` is the sibling AFTER this
-    // text node — for a fully-consumed match, the walker resumes there.
-    const continueFrom = textNode.nextSibling
-
-    while (true) {
-      const lower = nodeValue.toLowerCase()
-      const idx = lower.indexOf(lowerQuery)
-
-      if (idx === -1) {
-        break
-      }
-
-      const before = nodeValue.slice(0, idx)
-      const matchText = nodeValue.slice(idx, idx + lowerQuery.length)
-      const after = nodeValue.slice(idx + lowerQuery.length)
-      const parent = textNode.parentNode
-
-      if (!parent) {
-        break
-      }
-
-      const fragment = document.createDocumentFragment()
-
-      if (before) {
-        fragment.appendChild(document.createTextNode(before))
-      }
-
-      const mark = document.createElement('mark')
-
-      mark.className = HIGHLIGHT_CLASS
-      mark.textContent = matchText
-      fragment.appendChild(mark)
-
-      // Capture the after-sibling BEFORE replaceChild — replaceChild moves
-      // the fragment's children into the parent and empties the fragment,
-      // so looking at `fragment.lastChild` afterwards would point at a
-      // detached `<mark>` (or null if `before` was empty).
-      const afterNode = after ? document.createTextNode(after) : null
-
-      if (afterNode) {
-        fragment.appendChild(afterNode)
-      }
-
-      parent.replaceChild(fragment, textNode)
-
-      marks.push(mark)
-
-      if (!afterNode) {
-        // Whole text node consumed — nothing left to scan in this region.
-        textNode = null
-
-        break
-      }
-
-      textNode = afterNode
-      nodeValue = afterNode.nodeValue ?? ''
-    }
-
-    if (textNode) {
-      current = textNode.nextSibling
-    } else {
-      // The whole text node was consumed by matches — `textNode` was
-      // detached by replaceChild so its own `.nextSibling` is null. Resume
-      // the outer walker from the parent's next sibling (captured before
-      // the first replaceChild), so the sibling subtree is still searched.
-      current = continueFrom
-    }
-  }
-
-  return marks
-}
-
-/** Elements we never want to descend into during a search. Mirrors the
- *  filter the TreeWalker applied in the original design. */
-function shouldSkipElement(el: Element): boolean {
-  const tag = el.tagName
-
-  if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT') {
-    return true
-  }
-
-  if (el.closest(`mark.${HIGHLIGHT_CLASS}`)) {
-    return true
-  }
-
-  if (el.closest('[role="search"]')) {
-    return true
-  }
-
-  return false
-}
-
-/**
- * True when `root` contains an occurrence of `query` that is NOT inside one
- * of our find-hit marks. Read-only counterpart of `highlightMatches` with
- * the identical skip rules, used by the findNext fast path to verify that
- * the existing marks still cover every match — a stale mark from an earlier
- * query can satisfy the per-mark text comparison yet leave live occurrences
- * unwrapped, and stepping on that set would never highlight them.
- */
-function hasUnmarkedMatch(root: Element, query: string): boolean {
-  const lowerQuery = query.toLowerCase()
-
-  if (!lowerQuery) {
-    return false
-  }
+  // Pathological page (many skip subtrees): one `closest()` per text node beats
+  // testing every node against every subtree.
+  const isSkipped =
+    skipRoots.length > MAX_SKIP_ROOTS
+      ? (node: Node) => Boolean((node as Text).parentElement?.closest(SKIPPED_SELECTOR))
+      : (node: Node) => skipRoots.some(skipRoot => skipRoot.contains(node))
 
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
 
   while (walker.nextNode()) {
-    const node = walker.currentNode as Text
-    const parent = node.parentElement
+    const node = walker.currentNode
 
-    if (parent && shouldSkipElement(parent)) {
+    if (isSkipped(node)) {
       continue
     }
 
-    if (node.nodeValue?.toLowerCase().includes(lowerQuery)) {
-      return true
+    const text = node.nodeValue ?? ''
+    const lowerText = text.toLowerCase()
+    let index = lowerText.indexOf(lowerQuery)
+
+    while (index !== -1) {
+      const range = document.createRange()
+
+      range.setStart(node, index)
+      range.setEnd(node, index + lowerQuery.length)
+      found.push(range)
+
+      index = lowerText.indexOf(lowerQuery, index + lowerQuery.length)
     }
   }
 
-  return false
+  return found
 }
 
-/** Remove every find-hit mark we previously added, restoring original text. */
-function clearHighlights(root: Element): void {
-  const marks = root.querySelectorAll<HTMLElement>(`mark.${HIGHLIGHT_CLASS}`)
+/** The registry, or null where the Custom Highlight API is unavailable. */
+function highlightRegistry(): HighlightRegistry | null {
+  const css = (globalThis as { CSS?: { highlights?: HighlightRegistry } }).CSS
 
-  for (const mark of marks) {
-    const parent = mark.parentNode
-
-    if (!parent) {
-      continue
-    }
-
-    while (mark.firstChild) {
-      parent.insertBefore(mark.firstChild, mark)
-    }
-
-    parent.removeChild(mark)
-    parent.normalize()
-  }
+  return typeof Highlight === 'function' && css?.highlights ? css.highlights : null
 }
 
-/** Mark one element as the active match and scroll it into view. */
-function setActiveMark(mark: HTMLElement | null): void {
-  document.querySelectorAll(`mark[${ACTIVE_ATTR}]`).forEach(el => el.removeAttribute(ACTIVE_ATTR))
+/** Publish every match. Deleting before setting keeps the active highlight
+ *  last in insertion order, which is what makes it paint on top. */
+function publishRanges(): void {
+  const registry = highlightRegistry()
 
-  if (!mark) {
+  if (!registry) {
     return
   }
 
-  mark.setAttribute(ACTIVE_ATTR, '')
+  registry.delete(ALL_HIGHLIGHT)
+  registry.delete(ACTIVE_HIGHLIGHT)
 
-  // Block: 'nearest' so a match already on screen doesn't twitch, but a
-  // match below the fold scrolls into view instead of silently landing off-
-  // screen. Inline: 'nearest' for the same reason. Guarded: jsdom does not
-  // implement scrollIntoView, and the bar still needs to highlight even
-  // when the renderer side has no layout (tests, headless boot, …).
-  if (typeof mark.scrollIntoView === 'function') {
-    mark.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  if (ranges.length === 0) {
+    return
+  }
+
+  const all = new Highlight()
+
+  for (const range of ranges) {
+    all.add(range)
+  }
+
+  registry.set(ALL_HIGHLIGHT, all)
+  publishActive()
+}
+
+/**
+ * Move the active highlight alone. Stepping reuses the same `Range` objects, so
+ * the match highlight stays registered and a step costs one range, not N.
+ */
+function publishActive(): void {
+  const registry = highlightRegistry()
+  const active = ranges[activeIndex]
+
+  if (!registry) {
+    return
+  }
+
+  // Re-insert (not overwrite): `CSS.highlights` is a Map, so an existing key
+  // keeps its original paint position and the active match could land under
+  // the all-matches highlight.
+  registry.delete(ACTIVE_HIGHLIGHT)
+
+  if (active) {
+    const only = new Highlight()
+
+    only.add(active)
+    registry.set(ACTIVE_HIGHLIGHT, only)
+  }
+}
+
+/** Drop every painted match. Module state, not the DOM — nothing to unwrap. */
+function dropHighlights(): void {
+  const registry = highlightRegistry()
+
+  registry?.delete(ALL_HIGHLIGHT)
+  registry?.delete(ACTIVE_HIGHLIGHT)
+  ranges = []
+  activeIndex = 0
+}
+
+/** Scroll the active match into view. Block: 'nearest' so a match already on
+ *  screen doesn't twitch; guarded because jsdom has no scrollIntoView and the
+ *  bar must still work where the renderer side has no layout. */
+function scrollActiveIntoView(): void {
+  const active = ranges[activeIndex]
+  const element = active?.startContainer.parentElement ?? null
+
+  if (element && typeof element.scrollIntoView === 'function') {
+    element.scrollIntoView({ block: 'nearest', inline: 'nearest' })
   }
 }
 
@@ -436,9 +371,10 @@ export interface ScopedFindOptions {
 const DEFAULT_RESULT: ScopedFindResult = { count: 0, activeOrdinal: 0 }
 
 /**
- * Run a scoped find against `root`. When `findNext` is true, advance / step
- * the active mark without re-highlighting (the query has not changed). When
- * false, drop prior highlights and re-wrap matches for `query`.
+ * Run a scoped find against `root`. When `findNext` is true and the query is
+ * unchanged on a clean scope, advance / step the active match without
+ * re-scanning; otherwise collect the matches for `query` and start at the
+ * first one (or the last, entering backwards).
  *
  * Returns the (count, activeOrdinal) the bar should display. Returning a
  * plain object instead of pushing into the store keeps this helper testable
@@ -446,94 +382,55 @@ const DEFAULT_RESULT: ScopedFindResult = { count: 0, activeOrdinal: 0 }
  */
 export function performScopedFind(root: Element, query: string, options: ScopedFindOptions): ScopedFindResult {
   if (!query) {
-    clearHighlights(root)
-    setActiveMark(null)
-    // No query, no marks to maintain — stop watching and forget the query.
     activeQuery = ''
-    lastActiveOrdinal = 0
+    dirty = false
+    dropHighlights()
     stopObserver()
 
     return DEFAULT_RESULT
   }
 
-  const existingMarks = [...root.querySelectorAll<HTMLElement>(`mark.${HIGHLIGHT_CLASS}`)]
+  // Step only when we hold ranges for THIS query and nothing has invalidated
+  // them. A dirty scope means a render may have detached them (or added
+  // matches), so re-scan first and land on a live match rather than a stale
+  // ordinal (the old node-wrapping engine needed the same guard, #81778).
+  const stepping = Boolean(options.findNext) && activeQuery === query && ranges.length > 0 && !dirty
 
-  // The marks store the ORIGINAL-CASE source slice (`highlightMatches`
-  // writes `mark.textContent = matchText`), so byte-equality against the
-  // typed query fails on the first match whose casing differs — 'Hermes'
-  // for 'hermes', sentence-initial capitals, ALL-CAPS. Without the
-  // case-insensitive comparison, every Enter/⌘G step re-wraps all
-  // highlights, `data-find-active` is lost on the fresh DOM, and the
-  // active ordinal resets to 1 forever (triage finding on #81778).
-  // The per-mark comparison alone is not enough: a stale mark from an
-  // earlier query that survived a raced re-wrap (or external DOM writes)
-  // can match the current query case-insensitively while the mark set no
-  // longer covers every match — stepping would walk old highlights and
-  // never wrap the live ones. Only step when the marks match AND cover
-  // every occurrence (review finding on #81778).
-  const sameQuery =
-    options.findNext &&
-    existingMarks.length > 0 &&
-    existingMarks.every(mark => mark.textContent.toLowerCase() === query.toLowerCase()) &&
-    !hasUnmarkedMatch(root, query)
+  if (stepping) {
+    activeIndex = options.forward
+      ? (activeIndex + 1) % ranges.length
+      : (activeIndex - 1 + ranges.length) % ranges.length
+    publishActive()
+    scrollActiveIntoView()
 
-  let marks = existingMarks
-
-  if (!sameQuery) {
-    // Mutate under the re-entrancy guard so the re-render watcher doesn't
-    // fire on the marks WE are replacing (it has nothing to repair yet).
-    applying = true
-
-    try {
-      clearHighlights(root)
-      marks = highlightMatches(root, query)
-    } finally {
-      applying = false
-    }
+    return { count: ranges.length, activeOrdinal: activeIndex + 1 }
   }
 
-  if (marks.length === 0) {
-    setActiveMark(null)
-    // A query that matches nothing has nothing to maintain.
-    activeQuery = ''
-    lastActiveOrdinal = 0
-    stopObserver()
-
-    return DEFAULT_RESULT
-  }
-
-  const previousActive = root.querySelector<HTMLElement>(`mark[${ACTIVE_ATTR}]`)
-  let nextIndex = 0
-
-  if (previousActive) {
-    const previousIndex = marks.indexOf(previousActive)
-
-    if (previousIndex !== -1) {
-      nextIndex = options.forward
-        ? (previousIndex + 1) % marks.length
-        : (previousIndex - 1 + marks.length) % marks.length
-    }
-  } else if (!options.forward) {
-    // Entering find mode backwards (Shift+Enter on first press): land on the
-    // last match, matching browser convention.
-    nextIndex = marks.length - 1
-  }
-
-  setActiveMark(marks[nextIndex] ?? null)
-
-  // A live search must survive React re-rendering the transcript under us.
-  // Remember the query + active position and start watching the scope; the
-  // observer re-wraps when a render detaches our marks and re-activates the
-  // same ordinal so the user's place doesn't reset to match #1 on the next
-  // streamed token.
+  ranges = collectRanges(root, query)
   activeQuery = query
-  lastActiveOrdinal = nextIndex + 1
-  ensureObserver(root)
+  lastScanAt = Date.now()
+  dirty = false
 
-  return { count: marks.length, activeOrdinal: nextIndex + 1 }
+  // Entering find mode backwards (Shift+Enter on the first press) lands on
+  // the last match, matching browser convention.
+  activeIndex = options.forward ? 0 : Math.max(0, ranges.length - 1)
+
+  if (ranges.length === 0) {
+    // A query that matches nothing has nothing to maintain.
+    dropHighlights()
+    stopObserver()
+
+    return DEFAULT_RESULT
+  }
+
+  publishRanges()
+  ensureObserver(root)
+  scrollActiveIntoView()
+
+  return { count: ranges.length, activeOrdinal: activeIndex + 1 }
 }
 
-// ── Re-apply on React re-render ─────────────────────────────────────────────
+// ── Re-scan on React re-render ──────────────────────────────────────────────
 /**
  * Attach the scope watcher, if it isn't already attached. Only observes the
  * current scope; a fresh `captureFindScope` (or close) detaches it.
@@ -544,96 +441,69 @@ function ensureObserver(root: Element): void {
   }
 
   stopObserver()
-  observer = new MutationObserver(() => scheduleReapply())
-  observer.observe(root, { childList: true, subtree: true })
+  observer = new MutationObserver(() => {
+    // Ranges survive a re-render that leaves their text nodes attached and go
+    // dark when it doesn't; either way the match set may have changed, so a
+    // mutation only marks the scan dirty. The scan itself is throttled.
+    dirty = true
+    scheduleRescan()
+  })
+  observer.observe(root, { characterData: true, childList: true, subtree: true })
 }
 
 function stopObserver(): void {
   observer?.disconnect()
   observer = null
+
+  if (rescanTimer !== null) {
+    clearTimeout(rescanTimer)
+    rescanTimer = null
+  }
 }
 
-/**
- * Coalesce a mutation burst (one streaming delta) into a single re-apply that
- * runs on the next microtask. A no-op when the marks still cover the query —
- * React reusing an untouched region doesn't need any work.
- */
-function scheduleReapply(): void {
-  if (applying) {
-    // A mutation landed while we were mutating the tree. We'll look again
-    // once this apply finishes rather than recursing now.
-    pending = true
-
+function scheduleRescan(): void {
+  if (rescanTimer !== null || !scopeRoot || !activeQuery) {
     return
   }
 
-  if (scheduled || !scopeRoot || !activeQuery) {
+  const wait = Math.max(0, RESCAN_MIN_INTERVAL_MS - (Date.now() - lastScanAt))
+
+  rescanTimer = setTimeout(() => {
+    rescanTimer = null
+    rescanNow()
+  }, wait)
+}
+
+/** Re-collect the matches for the active query after the scope changed.
+ *  Deliberately does NOT scroll: this runs because a background render
+ *  happened, and the reader's viewport is theirs. */
+function rescanNow(): void {
+  const root = scopeRoot
+
+  if (!root || !activeQuery) {
     return
   }
 
-  scheduled = true
-
-  queueMicrotask(() => {
-    scheduled = false
-
-    if (applying || !scopeRoot || !activeQuery) {
-      return
-    }
-
-    // Nothing to repair: every occurrence is still wrapped (React only
-    // touched a region that doesn't match the query).
-    if (!hasUnmarkedMatch(scopeRoot, activeQuery)) {
-      return
-    }
-
-    reapplying(scopeRoot)
-  })
+  ranges = collectRanges(root, activeQuery)
+  activeIndex = Math.min(activeIndex, Math.max(0, ranges.length - 1))
+  lastScanAt = Date.now()
+  dirty = false
+  publishRanges()
 }
 
-/**
- * Re-wrap every occurrence in the scope after React detached our previous
- * marks, re-activating the position the user was on. Runs with `applying` set
- * so the observer ignores the mutations WE make, then drains any `pending`
- * mutation that arrived during the apply.
- */
-function reapplying(root: HTMLElement): void {
-  const restoreOrdinal = lastActiveOrdinal
-
-  applying = true
-
-  try {
-    clearHighlights(root)
-    const marks = highlightMatches(root, activeQuery)
-
-    if (marks.length === 0) {
-      return
-    }
-
-    // Re-activate the same ordinal the user last stood on, clamped to the
-    // re-wrapped set, so a mid-stream re-render doesn't bounce their place
-    // back to match #1.
-    const nextIndex = Math.min(restoreOrdinal - 1, marks.length - 1)
-    setActiveMark(marks[nextIndex] ?? null)
-    lastActiveOrdinal = nextIndex + 1
-  } finally {
-    applying = false
-  }
-
-  if (pending) {
-    pending = false
-    scheduleReapply()
-  }
+/** Forget everything about the current search. Called when the bar re-opens or
+ *  closes so state never leaks across searches. */
+function resetFindState(): void {
+  stopObserver()
+  dropHighlights()
+  scopeRoot = null
+  activeQuery = ''
+  dirty = false
+  lastScanAt = 0
 }
 
 /** Tear down highlights and the scope marker — called when the bar closes. */
 export function releaseFindScope(): void {
-  const roots = document.querySelectorAll<HTMLElement>(`[${ROOT_ATTR}]`)
-
-  for (const root of roots) {
-    clearHighlights(root)
-    root.removeAttribute(ROOT_ATTR)
-  }
-
-  setActiveMark(null)
-  resetScopeState()
+  resetFindState()
+  document.querySelectorAll<HTMLElement>(`[${ROOT_ATTR}]`).forEach(root => root.removeAttribute(ROOT_ATTR))
 }

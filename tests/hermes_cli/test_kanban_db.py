@@ -847,6 +847,67 @@ def test_complete_task_persists_scratch_artifacts_before_cleanup(kanban_home):
     ]
 
 
+def test_complete_task_stages_scratch_artifacts_before_write_transaction(kanban_home, monkeypatch):
+    """Copying an artifact must not close a caller-selected file under SQLite's lock."""
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="stage before completion")
+        workspace = kbw.resolve_workspace(kb.get_task(conn, task_id))
+        kbw.set_workspace_path(conn, task_id, workspace)
+        artifact = workspace / "evidence.txt"
+        artifact.write_text("proof", encoding="utf-8")
+        original_copy = kb._copy_capped
+        copied_while_in_txn = []
+
+        def _copy_outside_transaction(*args):
+            copied_while_in_txn.append(conn.in_transaction)
+            return original_copy(*args)
+
+        monkeypatch.setattr(kb, "_copy_capped", _copy_outside_transaction)
+        assert kb.complete_task(conn, task_id, result="done", metadata={"artifacts": [str(artifact)]})
+
+    assert copied_while_in_txn == [False]
+
+
+def test_complete_task_rollback_discards_staged_copies(kanban_home, monkeypatch):
+    """A failed completion leaves no durable copy for its retry to collide with."""
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="completion rollback")
+        workspace = kbw.resolve_workspace(kb.get_task(conn, task_id))
+        kbw.set_workspace_path(conn, task_id, workspace)
+        artifact = workspace / "evidence.txt"
+        artifact.write_text("proof", encoding="utf-8")
+
+        def _boom(*_args, **_kwargs):
+            raise RuntimeError("run bookkeeping failed")
+
+        monkeypatch.setattr(kb, "_end_run", _boom)
+        with pytest.raises(RuntimeError, match="run bookkeeping failed"):
+            kb.complete_task(conn, task_id, result="done", metadata={"artifacts": [str(artifact)]})
+
+        attachment_dir = kb.task_attachments_dir(task_id)
+        assert kb.get_task(conn, task_id).status != "done"
+        assert not attachment_dir.exists() or not any(attachment_dir.iterdir())
+
+
+def test_complete_task_state_rejection_discards_staged_copies(kanban_home):
+    """A compare-and-swap rejection must remove a copy staged before the lock."""
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="completion state rejection")
+        workspace = kbw.resolve_workspace(kb.get_task(conn, task_id))
+        kbw.set_workspace_path(conn, task_id, workspace)
+        artifact = workspace / "evidence.txt"
+        artifact.write_text("proof", encoding="utf-8")
+        conn.execute("UPDATE tasks SET status = 'todo' WHERE id = ?", (task_id,))
+        conn.commit()
+
+        assert not kb.complete_task(
+            conn, task_id, result="done", metadata={"artifacts": [str(artifact)]},
+        )
+
+        attachment_dir = kb.task_attachments_dir(task_id)
+        assert not attachment_dir.exists() or not any(attachment_dir.iterdir())
+
+
 def test_review_bound_handoff_preserves_declared_artifacts(kanban_home):
     """A review-bound card's declared files must outlive the reviewer's
     completion — that completion is what cleans the scratch workspace up."""
@@ -874,6 +935,32 @@ def test_review_bound_handoff_preserves_declared_artifacts(kanban_home):
     assert [(a.filename, a.stored_path) for a in attachments] == [
         ("evidence.json", str(persisted.resolve()))
     ]
+
+
+def test_request_review_stages_scratch_artifacts_before_write_transaction(kanban_home, monkeypatch):
+    """Review staging also copies outside the board write transaction."""
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="stage before review")
+        workspace = kbw.resolve_workspace(kb.get_task(conn, task_id))
+        kbw.set_workspace_path(conn, task_id, workspace)
+        artifact = workspace / "evidence.txt"
+        artifact.write_text("proof", encoding="utf-8")
+        kb.claim_task(conn, task_id)
+        run_id = kb.get_task(conn, task_id).current_run_id
+        original_copy = kb._copy_capped
+        copied_while_in_txn = []
+
+        def _copy_outside_transaction(*args):
+            copied_while_in_txn.append(conn.in_transaction)
+            return original_copy(*args)
+
+        monkeypatch.setattr(kb, "_copy_capped", _copy_outside_transaction)
+        assert kb.request_review(
+            conn, task_id, summary="ready", expected_run_id=run_id,
+            metadata={"artifacts": [str(artifact)]},
+        )
+
+    assert copied_while_in_txn == [False]
 
 
 def test_request_review_rollback_discards_staged_copies(kanban_home):

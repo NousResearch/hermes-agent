@@ -1,12 +1,46 @@
-"""Guard ``hermes config set`` against a single-segment key overwriting a whole config section.
+"""Config-section shape guards: ``hermes config set`` must not overwrite a whole section with a scalar,
+and a non-mapping ``agent:`` section read from config.yaml must not crash the loader.
 
-Split out of :mod:`hermes_cli.config` (code-health size ratchet); ``set_config_value`` late-imports it.
+Split out of :mod:`hermes_cli.config` (code-health size ratchet); ``set_config_value`` late-imports
+``_guard_section_overwrite``, and ``hermes_cli.config`` re-exports the ``agent`` helpers.
 """
 
 from __future__ import annotations
 
+import logging
 import sys
 from typing import Any, Dict
+
+logger = logging.getLogger("hermes_cli.config")
+
+
+def _drop_non_mapping_agent(user_config: Any) -> Any:
+    """Drop a non-mapping ``agent:`` (``agent: 5``, ``agent: true``) from a parsed config.yaml.
+
+    ``_deep_merge`` lets any non-None scalar replace the default ``agent`` mapping, and the
+    max_turns normalization plus every ``config["agent"].get(...)`` reader then raise, so no
+    command (``hermes doctor`` and ``hermes config`` included) could start. Ignore it like an
+    empty ``agent:`` (None), which keeps the defaults; anything else is returned unchanged."""
+    if not isinstance(user_config, dict) or isinstance(user_config.get("agent"), (dict, type(None))):
+        return user_config
+    logger.warning("config.yaml: 'agent' must be a mapping, got %s; ignoring it and using the defaults",
+                   type(user_config["agent"]).__name__)
+    return {key: value for key, value in user_config.items() if key != "agent"}
+
+
+def _normalize_max_turns_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Move legacy root-level ``max_turns`` under ``agent``; the schema default is injected only
+    when the user set max_turns somewhere (so save_config can otherwise omit it). A non-mapping
+    ``agent`` value is treated as empty rather than passed to ``dict()``."""
+    config = dict(config)
+    agent_section = config.get("agent")
+    agent_config = dict(agent_section) if isinstance(agent_section, dict) else {}
+    if "max_turns" in config and "max_turns" not in agent_config:
+        agent_config["max_turns"] = config["max_turns"]
+    if agent_config or "agent" in config:  # a sparse save must not grow an `agent: {}` section
+        config["agent"] = agent_config
+    config.pop("max_turns", None)
+    return config
 
 
 def _guard_section_overwrite(key: str, value: Any, user_config: dict[str, Any], force: bool) -> str:

@@ -18,10 +18,11 @@ metadata:
 
 An autonomous process for building extremely impressive visuals, especially 3D
 scenes (games, apps, usually browser three.js/WebGL): generate photorealistic
-concept art of the ideal result, build it, screenshot the live build, have a
-judge score screenshot vs concept against a gated ladder, and iterate until
-convergence. Goal: the most visually stunning result at an acceptable frame
-rate for the target platform (e.g. 60 fps browser, 120 fps modern mobile).
+concept art of the ideal result — or concept art in whatever art style the
+user requested — build it, screenshot the live build, have a judge score
+screenshot vs concept against a gated ladder, and iterate until convergence.
+Goal: the most visually stunning result at an acceptable frame rate for the
+target platform (e.g. 60 fps browser, 120 fps modern mobile).
 
 This skill does NOT cover general web-app functionality, 2D UI design, or
 non-visual quality — only the visual-fidelity loop.
@@ -74,21 +75,28 @@ otherwise).
 
 ### 2. Concept art
 
-The concept is a realistic, high-quality, impressive target: the look of a
-current AAA game running in real time. Physically plausible materials (wet
-stone, brushed metal, cloth, glass) with real roughness and normal detail,
-correct proportions, atmosphere (fog, haze, rain, dust, volumetric light),
-cinematic lighting with a clear key and rich shadows. It should NOT be
-stylized or an artistic rendition — it should look like a true screenshot of
-the ideal result.
+If the user named an art style (cel-shaded, low-poly, toy-like, retro, …),
+the concept must be faithful to that style; the photorealistic target below
+is the default for an unspecified brief, never a mandate to override the
+user's style.
+
+The concept is a realistic, high-quality, impressive target: by default the
+look of a current AAA game running in real time. Physically plausible
+materials (wet stone, brushed metal, cloth, glass) with real roughness and
+normal detail, correct proportions, atmosphere (fog, haze, rain, dust,
+volumetric light), cinematic lighting with a clear key and rich shadows. It
+should NOT be an artistic rendition — it should look like a true screenshot
+of the ideal result in the target art style.
 
 Avoid these failure modes when generating with `image_generate`:
 
 - **Overbaked**: photographic clutter, film grain, hundreds of unique small
   objects, excessive detail on every surface that reads as noise. A real-time
   build with modeled assets won't match this, and it won't even look good.
-- **Oversimplified**: cartoon or toy look, flat shading, blobby primitive
-  shapes, empty surfaces. Boring; will not impress the user.
+- **Oversimplified**: lazy, blobby primitive shapes and empty, untextured
+  surfaces. Boring; will not impress the user. (A deliberate cartoon, toy,
+  or flat-shaded look the brief calls for is a style, not this failure
+  mode.)
 
 Aim for the middle ground: beautiful surfaces and materials that shaders
 render well, strong atmosphere and lighting, an interesting palette, and
@@ -105,10 +113,13 @@ matches the user's vision before starting the build loop.
 
 ### 3. Time budget
 
-If the user gives a time budget, record the start time and check the clock
-between rounds. Don't degrade visual fidelity to hit the budget — strive for
-the absolute best result, and don't rush work to the judge. Parallelize or
-distribute work (e.g. `delegate_task` for independent assets) to hit the
+If the user gives a time or spend budget, record the start time and check
+the clock between rounds. The budget is binding: when it runs out, exit via
+the budget exit criterion (step 8) with the best result so far — never
+silently start another round or renew the budget on your own. Don't
+degrade visual fidelity to hit the budget — strive for the absolute best
+result, and don't rush work to the judge. Parallelize or distribute work
+(e.g. `delegate_task` for independent assets) to hit the
 time goal, but no shortcuts: it's better to hit the time limit with
 meaningful, beautiful progress than with something broadly complete but ugly.
 
@@ -169,7 +180,9 @@ and analyze that single image.
 Judge prompt:
 
 > You are an art director reviewing a real-time render against its concept
-> art. Compare the screenshot to the concept and score it 0-10 using this
+> art. Judge fidelity to the concept — including its art style: a deliberate
+> stylization the concept calls for is fidelity, not a defect. Compare the
+> screenshot to the concept and score it 0-10 using this
 > ladder. The ladder is gated: a frame cannot score above a tier's cap until
 > every requirement of the tiers below it is fully met. Be strict about the
 > gates.
@@ -188,9 +201,10 @@ Judge prompt:
 >   contrast are generally right.
 > - **Tier 3, materials and surfaces (5-7):** every surface reads as the
 >   right material at a glance: textures, roughness, translucency, wetness,
->   reflections. Assets must not look procedural, blocky, smooth/plastic;
->   frame-dominating elements should be properly sculpted and detailed. Cap 7
->   until true.
+>   reflections. Assets must not look lazy or procedural — blocky or
+>   smooth/plastic looks are failures only when the concept's style does not
+>   call for them; frame-dominating elements should be properly crafted and
+>   detailed. Cap 7 until true.
 > - **Tier 4, fine detail (7-9):** the small things. Nitpick relentlessly;
 >   inspect every little object up close. Layout aligns near-perfectly;
 >   materials extremely convincing. Cap 9 until right.
@@ -222,6 +236,11 @@ Judge prompt:
 
 ### 8. Exit criteria
 
+- **User budget exhausted or cancelled**: the time/spend budget recorded in
+  step 3 (or an explicit user stop) ends the loop now, ahead of every score
+  or stall heuristic. Report the best available result with its score, FPS,
+  and the remaining gaps; do not start another round or renew the budget on
+  your own authority.
 - **Score >= 8 and target FPS acceptable**: done. Show the user the latest
   screenshot; ask if they want more iterations.
 - **Score >= 8 but FPS unacceptable**: optimize — lossless wins first, then
@@ -237,7 +256,8 @@ Judge prompt:
 - **Stalled** (already tried a big structural change, score flat 3 rounds,
   judge is nitpicking or demanding intractable things like raytracing on a
   GPU-less machine): stop, tell the user why you're blocked, give options.
-- **Otherwise**: address all or most heavy-hitting gaps this round, not just
+- **Otherwise** (no budget limit reached): address all or most
+  heavy-hitting gaps this round, not just
   the top one — rounds are expensive. Prioritize gaps that move the needle
   most (lighting, textures, mesh detail). Only revert if the score dropped a
   full point or more; small dips are judge noise, and reverting a whole round
@@ -250,7 +270,8 @@ When building on an existing product (or the user re-invokes the skill for
 refinements), don't create new concept art in a vacuum — it may diverge from
 what exists. Instead capture a live screenshot of the current product and
 prompt `image_generate` to render the best possible version of it (current
-screenshot → AAA-graphics version of the same shot), then use that as the
+screenshot → the same shot at its best, in the established or requested art
+style — AAA photorealism only when that is the target), then use that as the
 target. Multiple screens can run parallel judge loops if asked, at higher
 token cost.
 

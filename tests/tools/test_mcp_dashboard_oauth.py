@@ -61,6 +61,42 @@ def test_dashboard_flow_preserves_rfc9207_iss():
     assert asyncio.run(flow.wait_for_callback()) == ("code-1", "s1", "https://mcp.cloudflare.com")
 
 
+@pytest.mark.parametrize(
+    ("redirect_uri", "expected_target"),
+    [
+        ("https://dashboard.example/api/mcp/oauth/callback/reports",
+         "https://dashboard.example/api/mcp/oauth/callback/reports"),
+        ("http://dashboard.example:9119/hermes/api/mcp/oauth/callback/reports",
+         "http://dashboard.example:9119/hermes/api/mcp/oauth/callback/reports"),
+        ("http://[::1]:9119/api/mcp/oauth/callback/reports",
+         "http://[::1]:9119/api/mcp/oauth/callback/reports"),
+        ("https://private-user:private-password@dashboard.example/hermes/callback"
+         "?private-query=hidden#private-fragment",
+         "https://dashboard.example/hermes/callback"),
+        ("https://[invalid-host/private-password", "<invalid redirect URI>"),
+    ],
+)
+def test_callback_timeout_identifies_safe_target(redirect_uri, expected_target):
+    flow = _flow("flow-unreachable", "reports")
+    flow.redirect_uri = redirect_uri
+    asyncio.run(flow.publish_authorization_url("https://idp.example/authorize?state=pending"))
+
+    with pytest.raises(TimeoutError, match="Timed out waiting for MCP OAuth callback") as caught:
+        asyncio.run(flow.wait_for_callback(timeout=0))
+
+    flow.mark_error(str(caught.value))
+    message = flow.snapshot()["error"]
+    assert flow.snapshot()["status"] == "error"
+    assert expected_target in message
+    assert "reachable from your browser" in message
+    assert "scheme, port and reverse-proxy path" in message
+    assert "dashboard.public_url / HERMES_DASHBOARD_PUBLIC_URL" in message
+    assert "oauth.redirect_uri" in message
+    assert flow.redirect_uri == redirect_uri
+    for secret in ("private-user", "private-password", "private-query", "private-fragment"):
+        assert secret not in message
+
+
 def test_dashboard_flow_accepts_only_one_concurrent_callback():
     from tools.mcp_dashboard_oauth import DashboardOAuthFlow
 

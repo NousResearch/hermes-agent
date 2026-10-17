@@ -123,7 +123,19 @@ class DashboardOAuthFlow:
 
     async def wait_for_callback(self, timeout: float = 300.0) -> tuple[str, str | None, str | None]:
         if not await asyncio.to_thread(self._callback_ready.wait, timeout):
-            raise TimeoutError("Timed out waiting for MCP OAuth callback")
+            try:
+                target = urlparse(self.redirect_uri)
+                callback_url = target._replace(
+                    netloc=target.netloc.rsplit("@", 1)[-1], query="", fragment=""
+                ).geturl()
+            except ValueError:
+                callback_url = "<invalid redirect URI>"
+            raise TimeoutError(
+                f"Timed out waiting for MCP OAuth callback at {callback_url!r}. "
+                "Verify that this URL is reachable from your browser, including its scheme, "
+                "port and reverse-proxy path. Check dashboard.public_url / "
+                "HERMES_DASHBOARD_PUBLIC_URL or this server's oauth.redirect_uri, then retry."
+            )
         if self._callback_error:
             raise RuntimeError(f"OAuth authorization failed: {self._callback_error}")
         if self._callback is None:

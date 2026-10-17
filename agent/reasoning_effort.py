@@ -72,10 +72,10 @@ SOLAR_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
 #: widens it to a graded scale (live-verified, monotonic). ``xhigh`` requests the top tier.
 GLM52_EFFORTS: tuple[str, ...] = ("high", "max")
 GLM52_OVERRIDES: dict[str, str] = {"xhigh": "max"}
-# : GLM-5.3 widens the knob to a graded low/medium/high/max scale — verified : live on
-# api.z.ai/api/coding/paas/v4 (issue #91789, 2026-08-21): every : level accepted with monotonic
-# reasoning-token scaling (low=4, medium=11, : high=98, max=125 on the probe prompt).
-GLM53_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "max")
+#: GLM-5.3 / 5.3-Flash: thinking cannot be disabled and the wire accepts exactly low/high/max
+#: (default max; docs.z.ai + docs.bigmodel.cn). ``medium`` 400s with code 1210 (#140239, after
+#: the 2026-08 probe in #91789 saw it accepted) and steps down to ``low``; ``xhigh`` rounds up.
+GLM53_EFFORTS: tuple[str, ...] = ("low", "high", "max")
 GLM53_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 
 #: DeepSeek V4 OpenAI-compat endpoint; ``xhigh`` requests the top tier.

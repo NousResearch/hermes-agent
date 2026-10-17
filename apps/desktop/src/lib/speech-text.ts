@@ -250,6 +250,10 @@ function normalizeLineBreaks(text: string): string {
 
 const SENTENCE_CUT_RE = /[.!?…。！？]+["'”’)\]]*\s+/g
 const MIN_SENTENCE_CHARS = 24
+// Fenced code is shown, never spoken. Each sentence is sanitized on its own, so a cut inside a
+// fence would hand its code lines to the voice: closed fences leave the buffer, an open one holds.
+const CLOSED_CODE_FENCE_RE = /```[\s\S]*?```/g
+const CODE_FENCE = '```'
 
 export function cutSentences(
   buffer: string,
@@ -260,6 +264,9 @@ export function cutSentences(
   // whole clause); the historical 24 for older backends without the key.
   const minChars = minSentenceChars ?? MIN_SENTENCE_CHARS
   const sentences: string[] = []
+  buffer = buffer.replace(CLOSED_CODE_FENCE_RE, '\n')
+  const openFence = buffer.indexOf(CODE_FENCE)
+  const speakableEnd = openFence < 0 ? buffer.length : openFence
   let rest = buffer
   let start = 0
 
@@ -267,7 +274,7 @@ export function cutSentences(
 
   let match = SENTENCE_CUT_RE.exec(buffer)
 
-  while (match) {
+  while (match && match.index + match[0].length <= speakableEnd) {
     const end = match.index + match[0].length
     const candidate = buffer.slice(start, end).trim()
 
@@ -284,13 +291,15 @@ export function cutSentences(
   rest = buffer.slice(start)
 
   if (flush) {
-    const tail = rest.trim()
+    const tail = buffer.slice(start, speakableEnd).trim()
 
     if (tail) {
       sentences.push(tail)
     }
 
-    rest = ''
+    // A flush mid-stream is not the end of the reply: an open fence stays buffered until it
+    // closes, or its closing fence would open a new one over the prose after it.
+    rest = buffer.slice(speakableEnd)
   }
 
   return { sentences, rest }

@@ -227,6 +227,31 @@ After the table.`
 })
 
 describe('cutSentences', () => {
+  it('never cuts inside a code fence, even across a mid-stream flush', () => {
+    const reply =
+      'Here is a script that cleans the build folder for you.\n\n' +
+      "```python\nimport shutil\n\nshutil.rmtree('build')\nprint('Removed the build folder. All done!')\n```\n\n" +
+      'Run it from the project root and it will delete the folder. '
+
+    // Mirrors voice-playback's ingest: deltas append, a flush mid-fence keeps the rest.
+    const spoken: string[] = []
+    let buffer = ''
+
+    for (let i = 0; i < reply.length; i += 7) {
+      buffer += reply.slice(i, i + 7)
+      const cut = cutSentences(buffer, i === 77)
+      buffer = cut.rest
+      spoken.push(...cut.sentences.map(sanitizeTextForSpeech).filter(Boolean))
+    }
+
+    spoken.push(...cutSentences(buffer, true).sentences.map(sanitizeTextForSpeech).filter(Boolean))
+
+    expect(spoken).toEqual([
+      'Here is a script that cleans the build folder for you.',
+      'Run it from the project root and it will delete the folder.'
+    ])
+  })
+
   it('emits complete sentences and holds the incomplete tail', () => {
     const { sentences, rest } = cutSentences('This is the first full sentence. And then it keeps goi', false)
 

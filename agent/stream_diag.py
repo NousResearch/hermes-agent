@@ -25,7 +25,7 @@ STREAM_DIAG_HEADERS = (
 def stream_diag_init() -> dict[str, Any]:
     """Fresh per-attempt diagnostic dict; mutated in place by the streaming functions and read by the retry block."""
     return {
-        "started_at": time.time(), "first_chunk_at": None, "chunks": 0, "bytes": 0,
+        "started_at": time.time(), "first_chunk_at": None, "first_token_at": None, "chunks": 0, "bytes": 0,
         "headers": {}, "http_status": None, "serving_provider": None,
         # True once a terminal finish_reason is seen on this attempt: tells a mid-flight
         # transport failure (False) from an error raised after completion (#102766).

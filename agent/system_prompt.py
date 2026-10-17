@@ -135,6 +135,22 @@ def _frozen_plugin_prompt_sections(agent: Any) -> tuple:
     return rendered
 
 
+# Opens the paragraph _active_profile_line emits; build_system_prompt_parts puts
+# it between the plugin sections and the timestamp.
+_ACTIVE_PROFILE_PREFIX = "Active Hermes profile: "
+
+
+def _past_profile_paragraph(tail: str) -> str:
+    """*tail* (the prompt after the plugin sections) past the one active-profile
+    paragraph the builder emits there, or unchanged when it does not start with
+    one (prompts persisted before the paragraph moved into the volatile tier)."""
+    head = "\n\n" + _ACTIVE_PROFILE_PREFIX
+    if not tail.startswith(head):
+        return tail
+    paragraph_end = tail.find("\n\n", len(head))
+    return tail[paragraph_end:] if paragraph_end >= 0 else ""
+
+
 def _restore_plugin_prompt_sections(prompt: str) -> tuple:
     """Recover frozen section bytes from the persisted full prompt.  Only the
     exact canonical container emitted by core is accepted — user/project text
@@ -148,7 +164,7 @@ def _restore_plugin_prompt_sections(prompt: str) -> tuple:
     if end < 0:
         return ()
     after_end = end + len(PLUGIN_SECTIONS_END)
-    if not prompt[after_end:].startswith("\n\nConversation started:"):
+    if not _past_profile_paragraph(prompt[after_end:]).startswith("\n\nConversation started:"):
         return ()
     framed = prompt[start:after_end]
     restored = []
@@ -383,7 +399,7 @@ def _active_profile_line(agent: Any) -> str:
         # Without one, keep the ambient (patchable) resolution byte-identical.
         _root_str = str(get_default_hermes_root() if _agent_home_path is not None else get_hermes_home())
         return (
-            "Active Hermes profile: default. Other profiles (if any) live "
+            _ACTIVE_PROFILE_PREFIX + "default. Other profiles (if any) live "
             "under " + _root_str + "/profiles/<name>/. Each profile has its own "
             "skills/, plugins/, cron/, and memories/ that affect a different "
             "session than this one. Do not modify another profile's "
@@ -400,7 +416,7 @@ def _active_profile_line(agent: Any) -> str:
     # NOT get_hermes_home().
     default_root = get_default_hermes_root()
     return (
-        f"Active Hermes profile: {active_profile}. This session reads "
+        f"{_ACTIVE_PROFILE_PREFIX}{active_profile}. This session reads "
         f"and writes {profile_home}/. The default "
         f"profile's data lives at {default_root}/skills/, {default_root}/plugins/, "
         f"{default_root}/cron/, {default_root}/memories/ — those belong to a "

@@ -32,13 +32,19 @@ _SNAPSHOT_FILENAME = "monitor_last_output.txt"
 
 @dataclass
 class MonitorOutcome:
-    """Result of one monitor-source evaluation."""
+    """Result of one monitor-source evaluation.
+
+    ``pending_persist``: set only when ``changed`` — the ``(new_hash, output)`` the caller must
+    persist via ``_persist_monitor_state`` once it knows the agent turn actually completed. Not
+    persisted here: see ``check_monitor`` docstring for why.
+    """
 
     ok: bool
     changed: bool = False
     first_run: bool = False
     context_block: Optional[str] = None
     error: Optional[str] = None
+    pending_persist: Optional[tuple[str, str]] = None
 
 
 def hash_monitor_output(output: str) -> str:
@@ -126,9 +132,18 @@ def job_has_monitor(job: dict) -> bool:
 def check_monitor(job: dict) -> MonitorOutcome:
     """Run the monitor source and decide whether the agent should run.
 
-    On change (or first run) the new hash + snapshot are persisted BEFORE the agent runs — detection
-    time is the state boundary, so a failed agent run doesn't re-alert on the same content forever.
-    On failure nothing is persisted.
+    On change (or first run) the new hash + snapshot are NOT persisted here — the caller must do
+    that only after confirming the agent turn actually completed (``MonitorOutcome.pending_persist``
+    carries ``(new_hash, output)`` for that). Persisting detection-time instead of success-time was
+    the original design (state boundary = detection, so a failed agent run wouldn't re-alert on the
+    same content forever), but it traded a loud failure mode (repeat alerts) for a silent one
+    (crash-before-persist content is marked "seen" and never revisited): an agent construction
+    crash (e.g. a stale install path after a self-update) would silently and permanently swallow
+    whatever content triggered that tick (2026-10-14 incident, see AH2 ah2-suho report — 21 alerts
+    went unprocessed for ~11h because every "changed" tick persisted before the agent could run,
+    then crashed). Repeat-alert noise on a durably-failing source is strictly easier to notice and
+    bound (e.g. a future N-consecutive-failures backoff) than a permanently silent drop.
+    On failure nothing is persisted (unchanged from before).
     """
     job_id = str(job.get("id") or "")
     ok, output = _run_monitor_source(job)
@@ -164,8 +179,10 @@ def check_monitor(job: dict) -> MonitorOutcome:
             f"### Diff (previous → current)\n\n```diff\n{diff}\n```\n\n" + current
         )
 
-    _persist_monitor_state(job_id, new_hash, output)
-    return MonitorOutcome(ok=True, changed=True, first_run=first_run, context_block=context_block)
+    return MonitorOutcome(
+        ok=True, changed=True, first_run=first_run, context_block=context_block,
+        pending_persist=(new_hash, output),
+    )
 
 
 def _persist_monitor_state(job_id: str, new_hash: str, output: str) -> None:

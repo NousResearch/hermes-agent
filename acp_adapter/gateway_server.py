@@ -96,6 +96,10 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         self._settling = set()
         # Admissions a terminal receipt already delivered: their late message.complete adds nothing.
         self._receipted = {}
+        # ``gateway_replay_gap``: admission -> the reply segment shown when a gap cut it; own prompts awaiting
+        # their terminal, in admission order; those whose reply the hole lost for good; per session, the gap
+        # re-attaches sent and adopted (a snapshot covers the submits sent before its resume).
+        self._cut, self._inflight, self._lost, self._resumes, self._adopted = {}, {}, {}, {}, {}
         self._pending_cancels = set()
         # (session, tool_call_id) -> (tool name, args, admission) of a call still open on the editor.
         self._tool_args = {}
@@ -232,6 +236,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         self._streamed.clear()
         self._segments.clear()
         self._message_ids.clear()
+        self._cut.clear()
         async with self._changed:
             # Every waiter on the old transport wakes to its ambiguous failure, even one that had
             # not yet observed ``_failure`` before it is cleared here.
@@ -585,7 +590,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         try:
             # Inside the try: a failed reconnect is as ambiguous for a retained identity as a lost ack.
             client = await self._client()
-            link = self._link
+            link, resumes = self._link, self._resumes.get(session_id, 0)
             receipt = await client.rpc("prompt.submit", session_id=session_id, input_id=input_id, **submit)
         except BaseException as exc:
             from hermes_cli.gateway_client import GatewayRPCError
@@ -608,13 +613,15 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             # A retry of an un-acked submit the owner lost in a restart: never a second turn.
             self._admissions.pop(session_id, None)
             raise GatewayClientError(self._unknown_recovery(session_id, admission_id))
+        self._inflight[(session_id, admission_id)] = None
         try:
+            await self._after_ack(session_id, admission_id, link, resumes)
             if session_id in self._pending_cancels:
                 self._pending_cancels.discard(session_id)
                 await self._cancel_admission(session_id, admission_id)
             async with self._changed:
                 await self._changed.wait_for(lambda: admission_id in self._terminals or self._failure is not None
-                                            or self._link != link
+                                            or self._link != link or admission_id in self._lost
                                             or self._blocked_admission(session_id, admission_id))
                 # A successor's unknown state cannot replace our committed terminal result.
                 if admission_id not in self._terminals:
@@ -624,13 +631,15 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                         raise self._lost_failure
                     if self._failure:
                         raise self._failure
-                    raise GatewayClientError(self._unknown_recovery(session_id, admission_id))
+                    raise self._lost.pop(admission_id, None) or GatewayClientError(
+                        self._unknown_recovery(session_id, admission_id))
                 terminal = self._terminals.pop(admission_id)
         finally:
             # Do not let one prompt tear down a newer mapping if the session has
             # already advanced while this coroutine unwinds.
             if self._admissions.get(session_id) == admission_id:
                 self._admissions.pop(session_id, None)
+            self._inflight.pop((session_id, admission_id), None)
         outcome = terminal.get("outcome")
         if outcome == "unknown":
             # Our own lost turn: the same refusal whether session.info or this completion woke us.
@@ -686,10 +695,50 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             return None
         return retry_key, uuid.uuid4().hex, staged
 
-    async def _settled_receipt(self, client, held_id, session_id, receipt):
+    async def _after_ack(self, session_id, admission_id, link, resumes):
+        """A gap re-attach whose resume left after this submit covers it. The pump owns recovery: it
+        recovers this admission against that snapshot behind the ones it already holds (FIFO, once)."""
+        if self._resumes.get(session_id, 0) == resumes:
+            return
+        async with self._changed:
+            await self._changed.wait_for(lambda: self._adopted.get(session_id, 0) > resumes
+                                         or self._failure is not None or self._link != link)
+        if self._adopted.get(session_id, 0) > resumes:
+            with suppress(asyncio.QueueFull):  # full: the reader's own overflow ends this link
+                self._gateway.events.put_nowait((session_id, admission_id))
+
+    async def _recover(self, session_id, admission_id):
+        """Queued: it lost nothing. Running: cut until its live completion. Unknown: the waiter refuses it.
+        Unlisted: it ended in the hole and its receipt settles it (unreadable: that prompt alone fails).
+        Terminal evidence received, being delivered or already delivered always wins."""
+        from hermes_cli.gateway_replay_gap import pending_status, settled
+        status = pending_status(self._snapshots[session_id].get("pending"), admission_id)
+        if status in ("queued", "unknown") or {admission_id} & (
+                self._terminals.keys() | self._settling | self._receipted.keys()):
+            return
+        self._cut.setdefault(admission_id, self._streamed.pop(admission_id, ""))
+        if status:
+            return
+        try:
+            receipt = await self._gateway.rpc("prompt.receipt", session_id=session_id, admission_id=admission_id,
+                                              include_result=True)
+        except (GatewayClientError, OSError, TimeoutError):
+            receipt = {"status": "terminal"}  # unreadable
+        verdict = settled(receipt)
+        if verdict is not False:  # its one recovery read: a later entry (a post-ack request) joins it
+            self._receipted.setdefault(admission_id, None)
+        if verdict:
+            await self._settled_receipt(self._gateway, self._editor_id(session_id), session_id, receipt, receipt)
+        elif verdict is None and admission_id not in self._terminals and admission_id not in self._settling:
+            async with self._changed:
+                self._lost[admission_id] = GatewayClientError("session_replay_gap")
+                self._changed.notify_all()
+
+    async def _settled_receipt(self, client, held_id, session_id, receipt, saved=None):
+        """``saved``: the receipt already fetched with its result (a replay gap's recovery read)."""
         admission_id = receipt["admission_id"]
-        saved = await client.rpc("prompt.receipt", session_id=session_id, admission_id=admission_id,
-                                 include_result=True)
+        saved = saved or await client.rpc("prompt.receipt", session_id=session_id, admission_id=admission_id,
+                                          include_result=True)
         if admission_id in self._terminals or admission_id in self._settling:
             return  # this connection's pump carried the completion itself
         self._settling.add(admission_id)  # claimed before the first await; the pump yields to it
@@ -698,8 +747,10 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             self._receipted.pop(next(iter(self._receipted)))
         try:
             outcome = {"interrupted": "cancelled"}.get(receipt.get("outcome"), receipt.get("outcome"))
-            text = (saved.get("result") or {}).get("final_response") or ""
-            await self._finish_reply(session_id, held_id, admission_id, {"text": text, "outcome": outcome})
+            result = saved.get("result") or {}
+            await self._finish_reply(session_id, held_id, admission_id, {
+                "text": result.get("final_response") or "", "outcome": outcome,
+                "response_reused": result.get("response_reused"), "receipt": True})
             async with self._changed:
                 self._terminals[admission_id] = {"outcome": outcome}
                 self._changed.notify_all()
@@ -738,6 +789,9 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                 frame = await gateway.events.get()
                 if isinstance(frame, Exception):
                     raise frame
+                if isinstance(frame, tuple):  # a post-ack recovery (``_after_ack``), behind every frame so far
+                    await self._recover(*frame)
+                    continue
                 event = frame.get("params", {})
                 sid = event.get("session_id")
                 snapshot = self._snapshots.get(sid)
@@ -766,8 +820,8 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         if kind in {"session.info", "session.updated", "session.usage", "session.tools_changed"}:
             await self._project_session_state(kind, sid, editor_id, payload)
             return
-        if kind == "session.replay_gap":
-            raise GatewayClientError("session_replay_gap")
+        if await self._gap_guard(kind, sid, aid):
+            return
         if kind in {"approval.request", "clarify.request"}:
             self._permission(sid, payload)
             return
@@ -814,6 +868,32 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                     self._changed.notify_all()
             finally:
                 self._settling.discard(aid)
+
+    async def _gap_guard(self, kind, sid, aid):
+        """What a replay gap changes in the projection; True when the frame is consumed here."""
+        if kind == "session.replay_gap":
+            # Re-attach that session alone (a refusal still fails the pump: the next call redials).
+            params = {"editor": self._editor_mcp[sid]} if sid in self._editor_mcp else {}
+            self._resumes[sid] = self._resumes.get(sid, 0) + 1
+            snapshot = await self._gateway.rpc("session.resume", session_id=sid, **params)
+            async with self._changed:  # its pending rows and controls may settle or block a waiter
+                self._snapshots[sid], self._adopted[sid] = snapshot, self._resumes[sid]
+                self._changed.notify_all()
+            for prompt in snapshot.get("prompts", []):
+                self._permission(sid, prompt)
+            started = [row["admission_id"] for row in snapshot.get("pending", []) if row.get("status") == "started"]
+            for admission_id in dict.fromkeys([*started, *(a for held, a in self._inflight if held == sid)]):
+                await self._recover(sid, admission_id)
+            return True
+        if aid not in self._cut:
+            return False
+        if kind in {"tool.start", "message.interim"}:  # a new segment: what was shown before it is closed
+            if self._cut[aid].strip():
+                self._segments.setdefault(aid, []).append(self._cut[aid])
+            self._cut[aid] = ""
+            self._end_message(sid)
+        # Live deltas stopped at the gap; an interim is whole (it may be the only copy of the reply).
+        return kind == "message.delta"
 
     async def _project_session_state(self, kind, sid, editor_id, payload):
         if kind == "session.usage":

@@ -398,15 +398,14 @@ class SessionUsageMixin:
         usage["api_call_count"] = 1 if api_call_count is None else int(api_call_count)
         # FK to sessions.id. A missing row is inserted as the ``unknown`` placeholder, which
         # the creator upsert later replaces. An existing row keeps source and created_source,
-        # including a NULL surface update_token_counts can still fill. The upsert's profile_name backfill
-        # still runs: a NULL owner is filled without writing ``unknown`` anywhere.
+        # including a NULL surface update_token_counts can still fill; the UPDATE below only
+        # fills a NULL profile_name, without writing ``unknown`` anywhere.
         from hermes_state_worker_lifecycle import insert_session_row_in_transaction
-        own_profile = self._own_profile_name()
 
         def _write(conn):
             if conn.execute("SELECT 1 FROM sessions WHERE id=?", (session_id,)).fetchone() is None:
                 insert_session_row_in_transaction(self, conn, session_id, "unknown")
-            elif own_profile:
+            elif own_profile := self._own_profile_name():
                 conn.execute(
                     "UPDATE sessions SET profile_name=? WHERE id=? AND profile_name IS NULL",
                     (own_profile, session_id))

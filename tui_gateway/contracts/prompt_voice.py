@@ -33,6 +33,7 @@ class PromptSubmitParams(SessionParams):
     display_kind: str | None = None  # only "hidden" is honoured; anything else renders as a user row
     interrupted: bool | None = None  # client-side barge-in: the turn's model message carries the note
     queued: bool | None = None  # client queue drain — the busy path must hold it, never redirect/steer
+    origin: str | None = None  # client-declared per-message front-end identity for pre_llm_call hooks
     surface: str | None = None  # a ClientSurface value; unknown values clear the surface
     voice_context: str | None = None  # recent spoken transcript, model input only (voice-live)
     voice_turn: bool | None = None  # a spoken voice-conversation turn: runs on auxiliary.voice_chat

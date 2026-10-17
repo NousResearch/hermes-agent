@@ -4776,6 +4776,16 @@ def test_compute_host_turn_frame_carries_the_session_login(monkeypatch):
     assert frame["auth_user_id"] == "basic:alice"
 
 
+def test_compute_host_turn_frame_carries_the_message_origin(monkeypatch):
+    record = _login_session(monkeypatch, "sid-origin", "origin-key", _LoginSocket(), history=[],
+                            history_lock=threading.Lock(), cwd="/tmp", cols=80)
+    monkeypatch.setattr(server, "_session_cwd", lambda session: "/tmp")
+
+    frame = server._compute_host_turn_frame("rid", "sid-origin", record, "hello", turn_origin="hermes-pilot")
+
+    assert frame["turn_origin"] == "hermes-pilot"
+
+
 def test_attaching_a_different_login_keeps_the_creator_and_warns_once(monkeypatch):
     """Ownership is not enforced. The record keeps the creator's login, and the attach is logged once with both
     ids rather than on every prompt the second client sends."""

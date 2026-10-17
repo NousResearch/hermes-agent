@@ -345,11 +345,13 @@ def _empty_requested_mcp_toolsets(job: dict, cfg: dict) -> Optional[str]:
     requested = [str(name) for name in (job.get("enabled_toolsets") or [])]
     if not requested:
         return None
-    from hermes_cli.tools_config import enabled_mcp_server_names
+    from hermes_cli.tools_config import enabled_mcp_server_names, mcp_server_toolset_key
     from toolsets import resolve_toolset
     from tools.mcp_tool_discovery import mcp_server_reconnecting
+    # Resolve the server's own key: a name a toolset also owns resolves to that toolset's tools too,
+    # which would hide a server that came up empty.
     missing = [name for name in requested
-               if name in enabled_mcp_server_names(cfg) and not resolve_toolset(name)]
+               if name in enabled_mcp_server_names(cfg) and not resolve_toolset(mcp_server_toolset_key(name))]
     # A server that worked in this process and is parked/self-probing after a network blip
     # (router reboot, DNS failure) is recovering, not misconfigured: the job runs with the tools
     # that did resolve rather than losing a whole tick to a minute of downtime (#112871). Only a

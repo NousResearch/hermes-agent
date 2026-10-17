@@ -109,7 +109,16 @@ from scoped code use `agent.memory_provider.spawn_context_thread` (a bare `threa
 drops the scope). **MCP trust is a per-profile record:** `mcp_tool_registration.py::
 _record_scope_trust` keys trust on the home; a secondary never adopts the launch profile's trust
 for a same-named server, and `mcp_tool_handlers.py::_trust_gate_check` consults the calling
-session's profile.
+session's profile. **An MCP server's bare name is an alias that can collide** with a static or a
+plugin toolset (`homeassistant` since HA became a catalog plugin), and then it selects THAT toolset:
+layer servers onto a selection with `tools_config.mcp_server_toolset_key` (`mcp-<name>` on a
+collision), never the bare name, or every server tool silently leaves the session and its Tool Search
+catalog while discovery and `hermes mcp test` still list them (plugin name), or the built-in toolset
+is enabled with it (static name). Disabling a server's name disables `mcp-<name>` too
+(`disabled_with_mcp_server_keys`, `model_tools._select_tool_names`). Never union the server into the
+plugin's name instead: plugin toolsets are on by default, so `no_mcp` and allowlists would stop
+excluding the server. Prove reachability with a session
+(`tests/e2e/core/mcp_plugins/test_mcp_plugin_toolset_collision.py`), never a raw probe.
 
 **Background-process teardown signals the parent first.** `process_registry_termination.py::
 ProcessTerminationMixin._terminate_host_pid` snapshots the descendants, SIGTERMs only the recorded parent, waits

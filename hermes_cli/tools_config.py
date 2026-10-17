@@ -428,6 +428,45 @@ def enabled_mcp_server_names(config: dict) -> set[str]:
     return names
 
 
+def _settled_plugin_toolset_keys() -> set[str]:
+    """Plugin toolset keys once discovery has finished.
+
+    ``_get_plugin_toolset_keys`` may answer with last launch's persisted set while a background scan
+    runs; that is safe only for callers that EXCLUDE keys. ``mcp_server_toolset_key`` decides what to
+    INCLUDE, so it joins discovery: a plugin enabled since the last launch must not be missed."""
+    try:
+        from hermes_cli.plugins import discover_plugins, get_plugin_toolsets
+
+        discover_plugins()
+        return {ts_key for ts_key, _, _ in get_plugin_toolsets()}
+    except Exception:
+        logger.debug("Plugin discovery failed while keying MCP servers", exc_info=True)
+        return set()
+
+
+def mcp_server_toolset_key(name: str) -> str:
+    """Toolset key that selects MCP server *name*'s tools: its bare name (an alias of ``mcp-<name>``),
+    or ``mcp-<name>`` when a static or plugin toolset owns that name. The bare name then selects THAT
+    toolset: added as a plugin's name it dropped every server tool from the session and its Tool
+    Search catalog; added as a static toolset's name it enabled that built-in toolset as well.
+
+    Contract: callers layer servers onto a selection with this key, never the bare name, and it reads
+    the plugin toolsets after discovery (``_settled_plugin_toolset_keys``)."""
+    from toolsets import TOOLSETS, _get_plugin_toolset_names
+
+    owned = name in TOOLSETS or name in _get_plugin_toolset_names() or name in _settled_plugin_toolset_keys()
+    return f"mcp-{name}" if owned else name
+
+
+def disabled_with_mcp_server_keys(disabled: list[str], servers: set[str]) -> list[str]:
+    """*disabled* plus ``mcp-<name>`` for every name in it that is an enabled MCP server.
+
+    When a toolset owns a server's name, the bare name no longer reaches the server (the server is
+    selected as ``mcp-<name>``), so disabling the name must disable the server too, or the server's
+    tools would stay on (fail open)."""
+    return [*disabled, *(f"mcp-{name}" for name in disabled if name in servers and f"mcp-{name}" not in disabled)]
+
+
 #: Toolsets young enough that absence from a saved ``platform_toolsets`` list means "never offered", not
 #: "declined": saving ``hermes tools`` freezes a platform's composite into an explicit list nothing adds to, so
 #: a later toolset stays off forever for picker users while ``[hermes-cli]`` users inherit it.
@@ -646,6 +685,7 @@ def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_serv
     if disabled_toolsets:
         from agent.skill_utils import parse_config_string_list
         disabled_names = [name.strip() for name in parse_config_string_list(disabled_toolsets) if name.strip()]
+        disabled_names = disabled_with_mcp_server_keys(disabled_names, enabled_mcp_server_names(config))
         enabled_toolsets = _prune_toolsets_stripped_by_disabled(enabled_toolsets, disabled_names)
 
     if explicitly_configured and toolset_names:
@@ -715,8 +755,10 @@ def _merge_mcp_servers(
     # A listed server that is configured but disabled is still the user's server selection: it stays
     # off, and it must not fall through to every enabled server.
     if include_default_mcp_servers and not explicit_passthrough & known:
-        return result | enabled_mcp_servers
-    return result | explicit_mcp_servers
+        selected = enabled_mcp_servers
+    else:
+        selected = explicit_mcp_servers
+    return result | {mcp_server_toolset_key(name) for name in selected}
 
 
 def _warn_all_invalid_platform_toolsets(platform: str, explicit: list) -> None:

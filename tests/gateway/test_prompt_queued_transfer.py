@@ -382,7 +382,7 @@ def test_an_owner_restart_mid_transfer_settles_the_steered_admission_interrupted
 @pytest.mark.parametrize('verb', ['steer', 'replace'])
 async def test_a_held_sqlite_writer_never_stalls_the_owner_loop_behind_a_queued_control(tmp_path, monkeypatch, verb):
     """Reviewer repro: another connection holds BEGIN IMMEDIATE while a steer/replace waits on the writer.
-    A loop-side receipt (which takes the session's stream lock) and an unrelated ticker stay responsive."""
+    A loop-side receipt (which takes the session's stream lock) still returns while the writer is held."""
     db, authority = _authority(tmp_path, monkeypatch)
     interactive(db)
     turn = Turn(monkeypatch)

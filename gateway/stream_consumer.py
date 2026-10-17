@@ -14,6 +14,7 @@ import contextlib
 import inspect
 import logging
 import queue
+import re
 import secrets
 import threading
 import time
@@ -55,6 +56,13 @@ _FUTURE_TYPES = (asyncio.Future, concurrent.futures.Future)
 
 # Boundary finalize text when nothing has accumulated yet (overridable per boundary).
 _DEFAULT_BOUNDARY_PLACEHOLDER = "⏸ 等待审批中..."
+
+# A delivery directive still being streamed on the open (last) line: "MEDIA:" not yet
+# stripped by the cleaner, a word-start prefix of "MEDIA", or a prefix of a [[…]] flag.
+_PENDING_MEDIA_RE = re.compile(
+    r"""MEDIA:|(?:^|\s)[`"'*_]{0,3}M(?:E(?:D(?:I(?:A)?)?)?)?$""", re.IGNORECASE)
+_PENDING_DIRECTIVE_RE = re.compile(r"\[\[?[A-Za-z_]*\]?$")
+_STREAM_DIRECTIVES = ("[[audio_as_voice]]", "[[as_document]]")
 
 
 @dataclass
@@ -749,8 +757,12 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                                    and not self._flood_strikes))
         # Defer mid-stream edits while the buffer could still resolve to a silence
         # marker ("NO"→"NO_REPLY"); got_done always resolves the buffer.
-        return should_edit and not _is_partial_silence_marker(
-            self._clean_for_display(self._accumulated))
+        # Likewise defer while a MEDIA:/[[…]] directive is still being typed: the cleaner
+        # only strips complete deliverable tags, so a half-streamed one would be shown, and
+        # a media-only reply cleans to "" at finish, which never edits the bubble away.
+        cleaned = self._clean_for_display(self._accumulated)
+        return (should_edit and not _is_partial_silence_marker(cleaned)
+                and not self._has_pending_media_directive(cleaned))
 
     async def _split_first_send(self, tick: _Tick) -> bool:
         """No message to edit yet and the buffer overflows: seal only the head chunks; the
@@ -964,6 +976,17 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                 item = self._queue.get_nowait()
                 if isinstance(item, tuple) and len(item) == 2 and item[0] is _FLUSH:
                     self._signal_flush(item[1])
+
+    @staticmethod
+    def _has_pending_media_directive(cleaned: str) -> bool:
+        """True while the open line of cleaned streamed text may still become a delivery
+        directive. Complete deliverable tags are already gone, so a ``MEDIA:`` left there is
+        unfinished or undeliverable; the final (non-interim) flush still shows the latter."""
+        line = cleaned.rsplit("\n", 1)[-1]
+        if _PENDING_MEDIA_RE.search(line):
+            return True
+        bracket = _PENDING_DIRECTIVE_RE.search(line)
+        return bool(bracket) and any(d.startswith(bracket.group(0)) for d in _STREAM_DIRECTIVES)
 
     @staticmethod
     # Strip MEDIA:<path> tags before display. Uses the shared anchored MEDIA_TAG_CLEANUP_RE from

@@ -136,6 +136,13 @@ def _session_images_dir(session: dict) -> Path:
     return _session_home_dir(session, "images")
 
 
+def _unique_upload_token() -> str:
+    """Keep same-second clipboard captures from sharing a per-session counter name (#75761)."""
+    import uuid  # bodies are rebound onto server globals: import inside functions only
+
+    return uuid.uuid4().hex[:8]
+
+
 def stage_image_bytes(directory, img_bytes: bytes, ext: str, *, prefix: str):
     """Private, collision-free staging shared by local and canonical byte uploads."""
     import os

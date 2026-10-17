@@ -1,7 +1,9 @@
 """Interactive picker for ``hermes sessions browse``: curses UI with live search filtering and ``d``
 delete-with-confirmation; numbered-list fallback when curses is unavailable (Windows, etc.)."""
 
-from typing import Optional
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, Optional
 
 from hermes_cli.timefmt import relative_time as _relative_time
 from hermes_state_errors import SessionActiveWriteGuardError
@@ -272,3 +274,68 @@ def _session_browse_picker(sessions: list, session_db=None) -> Optional[str]:
         return browser.result
     except Exception:
         return _fallback_picker(sessions)
+
+
+def session_browse_to_json_record(s: dict[str, Any], session_db: Any = None) -> dict[str, Any]:
+    """Convert a session dict to the JSON projection for non-interactive browse (#139608)."""
+    sid = str(s.get("id") or "")
+    name = s.get("name")
+    if not name:
+        name = (s.get("title") or "").strip() or (s.get("display_name") or "").strip() or (s.get("preview") or "").strip() or sid
+    name = str(name).strip()
+
+    created_at = None
+    val = s.get("created_at")
+    if isinstance(val, str) and val:
+        created_at = val
+    else:
+        ts = val if val is not None else s.get("started_at")
+        if ts is not None:
+            try:
+                created_at = datetime.fromtimestamp(float(ts), tz=UTC).isoformat().replace("+00:00", "Z")
+            except (ValueError, OSError, OverflowError, TypeError):
+                created_at = str(ts)
+
+    turn_count = s.get("turn_count")
+    if turn_count is None:
+        turn_count = s.get("message_count", 0)
+    try:
+        turn_count = int(turn_count or 0)
+    except (ValueError, TypeError):
+        turn_count = 0
+
+    tokens = s.get("tokens")
+    if tokens is None:
+        tokens = s.get("total_tokens")
+    if tokens is None:
+        tokens = (s.get("input_tokens") or 0) + (s.get("output_tokens") or 0)
+    try:
+        tokens = int(tokens or 0)
+    except (ValueError, TypeError):
+        tokens = 0
+
+    if s.get("path"):
+        path = str(s["path"])
+    else:
+        db_path = getattr(session_db, "db_path", None)
+        if db_path is not None:
+            sessions_dir = Path(db_path).parent / "sessions"
+        else:
+            from hermes_constants import get_hermes_home
+            sessions_dir = get_hermes_home() / "sessions"
+        path = str(sessions_dir / f"{sid}.jsonl")
+
+    return {
+        "id": sid,
+        "name": name,
+        "source": str(s.get("source") or ""),
+        "created_at": created_at,
+        "turn_count": turn_count,
+        "tokens": tokens,
+        "path": path,
+    }
+
+
+def session_browse_to_json_records(sessions: list[dict[str, Any]], session_db: Any = None) -> list[dict[str, Any]]:
+    """Convert a list of session dicts to the JSON records projection."""
+    return [session_browse_to_json_record(s, session_db=session_db) for s in sessions]

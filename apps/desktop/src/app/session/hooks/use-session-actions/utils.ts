@@ -10,6 +10,7 @@ import {
   textPart,
   toChatMessages
 } from '@/lib/chat-messages'
+import { withoutCoveredAssistantPrefix } from '@/lib/chat-messages/coverage'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { parseErrorSurface } from '@/lib/error-surface'
@@ -1626,6 +1627,15 @@ export function removeRepresentedLocalLiveProjection(
   )
 }
 
+/** Whether `candidate` already carries every tool occurrence `live` holds. */
+function carriesToolOccurrences(candidate: ChatMessage, live: ChatMessage): boolean {
+  const candidateTools = new Set(
+    candidate.parts.flatMap(part => (part.type === 'tool-call' && part.toolCallId ? [part.toolCallId] : []))
+  )
+
+  return live.parts.every(part => part.type !== 'tool-call' || !part.toolCallId || candidateTools.has(part.toolCallId))
+}
+
 /**
  * Overlay messages that changed while activation waited on REST. Existing ids
  * replace the older activation row; only rows added or changed since the warm
@@ -1664,7 +1674,8 @@ export function overlayConcurrentMessageChanges(
           !(index > lastUser) ||
           message.role !== 'assistant' ||
           baselineById.has(message.id) ||
-          isLiveTailRow(message)
+          isLiveTailRow(message) ||
+          (current.pending === true && !carriesToolOccurrences(message, current))
         ) {
           return false
         }
@@ -1695,6 +1706,52 @@ export function overlayConcurrentMessageChanges(
     )
   }
 
+  // A tool-heavy turn folds into ONE committed row built from its own streamed
+  // text, while the live side still holds each sealed segment as a bubble of
+  // its own: the lead-in duplicates the fold's first text part and the tail its
+  // last, so neither bubble matches the fold on its own text. Walk the live run
+  // against the committed rows the way the resume fold does — ordered parts,
+  // tool-anchored, from every possible offset — and retire what the walk
+  // consumes. Text-only runs stay (no anchor), and a run that grew past the
+  // fold keeps its survivor, so this cannot swallow a coincidentally equal
+  // paragraph. Narration is not an occurrence: strip reasoning from both sides
+  // before the walk, or a reasoning-led row stalls the cursor on its first
+  // part. A row that was only reasoning carries no identity to prove with and
+  // stays.
+  const lastUserInPage = nextMessages.findLastIndex(message => message.role === 'user')
+
+  const committedAfterPrompt = nextMessages
+    .filter((message, index) => index > lastUserInPage && message.role === 'assistant' && !isLiveTailRow(message))
+    .map(message => ({ ...message, parts: message.parts.filter(part => part.type !== 'reasoning') }))
+
+  const lastUserLocally = currentMessages.findLastIndex(message => message.role === 'user')
+
+  const liveRunAfterPrompt = currentMessages
+    .filter(
+      (message, index) => index > lastUserLocally && message.role === 'assistant' && isLiveTailReplyId(message.id)
+    )
+    .map(message => ({ ...message, parts: message.parts.filter(part => part.type !== 'reasoning') }))
+
+  const liveRunIds = liveRunAfterPrompt.filter(message => message.parts.length > 0).map(message => message.id)
+  const coveredLiveRunIds = new Set<string>()
+  const committedParts = committedAfterPrompt.flatMap(message => message.parts)
+
+  for (let offset = 0; offset < committedParts.length; offset += 1) {
+    const window = [
+      { id: 'committed-window', parts: committedParts.slice(offset), role: 'assistant' } as ChatMessage
+    ]
+
+    const survivors = new Set(
+      withoutCoveredAssistantPrefix(window, liveRunAfterPrompt).map(message => message.id)
+    )
+
+    for (const id of liveRunIds) {
+      if (!survivors.has(id)) {
+        coveredLiveRunIds.add(id)
+      }
+    }
+  }
+
   const representedByStoredRow = (current: ChatMessage): boolean => {
     const rows = transcriptRowIds(current)
 
@@ -1711,12 +1768,20 @@ export function overlayConcurrentMessageChanges(
 
   const representedOnPage = (current: ChatMessage): boolean =>
     // The page can still carry the row's older streaming copy by id when it
-    // was composed from the baseline; the committed row replaces both.
+    // was composed from the baseline; the committed row replaces both — or the
+    // live run's parts, which the committed fold already spells out (walk
+    // above). A still-pending row is the turn's stream target, so it folds on
+    // a stricter proof: the committed row must carry every tool occurrence the
+    // live row holds as well (`committedOnPage` above), or a text collision
+    // with an unrelated row would drop the only copy of a running tool
+    // (#123047). The turn persists its assistant row before the tool round
+    // runs, so a window that re-attaches mid-turn holds exactly that pair —
+    // committed row plus its own pending copy — and exempting it painted one
+    // reply twice (#127288).
     (current.role === 'assistant' &&
-      current.pending !== true &&
       !current.error &&
       isLiveTailReplyId(current.id) &&
-      committedOnPage(current)) ||
+      (committedOnPage(current) || coveredLiveRunIds.has(current.id))) ||
     // A completion receipt bound this optimistic prompt to its stored row
     // while REST was in flight, so it differs from the pre-bind baseline only
     // by that row id. The page already carries the stored row under its own

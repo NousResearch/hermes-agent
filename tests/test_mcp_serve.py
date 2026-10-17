@@ -1392,3 +1392,24 @@ class TestEventBridgePollE2E:
             db.close()
 
         assert before is not None and after != before
+
+
+def test_serving_mode_marks_the_process_and_refuses_a_nested_copy(monkeypatch):
+    """The serving marker is the brake on the self-recursion: it tells every later startup path
+    that this process is the server, and a copy spawned by a serving process refuses to serve
+    instead of growing the chain."""
+    import mcp_serve
+
+    monkeypatch.delenv(mcp_serve.MCP_SERVING_ENV, raising=False)
+    monkeypatch.delenv(mcp_serve.MCP_SERVE_DEPTH_ENV, raising=False)
+    try:
+        mcp_serve._enter_serving_mode()
+        assert os.environ[mcp_serve.MCP_SERVING_ENV] == "1"
+        assert os.environ[mcp_serve.MCP_SERVE_DEPTH_ENV] == "1"
+
+        with pytest.raises(SystemExit) as excinfo:
+            mcp_serve._enter_serving_mode()
+        assert excinfo.value.code == 2
+    finally:
+        os.environ.pop(mcp_serve.MCP_SERVING_ENV, None)
+        os.environ.pop(mcp_serve.MCP_SERVE_DEPTH_ENV, None)

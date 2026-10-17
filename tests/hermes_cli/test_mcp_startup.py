@@ -170,44 +170,23 @@ def test_prepare_agent_startup_skips_discovery_when_chat_resolves_to_tui(
     assert mcp_startup._current_home_thread() is None
 
 
-def test_prepare_agent_startup_keeps_discovery_for_non_chat_commands(
+def test_non_chat_agent_subcommands_never_consult_the_tui_display_config(
     monkeypatch,
 ):
-    """Non-chat commands never launch the TUI, so they must keep their own
-    MCP discovery even when the ambient display config resolves to TUI —
-    ``_is_tui_chat_launch`` must not consult ``_resolve_use_tui`` there."""
-    calls = {"inline": 0}
+    """Non-chat commands never launch the TUI, so ``_is_tui_chat_launch`` must not consult
+    ``_resolve_use_tui`` there — even when the ambient display config resolves to TUI.
 
+    ``mcp serve`` is the case that matters: it is a SERVER that owns its own startup. It must not
+    be routed as a TUI chat launch (whose wrapper pre-warms a second MCP discovery), and it must
+    not run the launcher's client-side discovery either — that discovery spawns the configured
+    servers, including a copy of ``hermes mcp serve`` itself when a server is configured that way,
+    and the parent then blocks on its child's handshake while its child blocks on its own child's.
+    """
     monkeypatch.setattr(main_mod, "_resolve_use_tui", lambda _args: True)
-    monkeypatch.setitem(
-        sys.modules,
-        "hermes_cli.plugins",
-        types.SimpleNamespace(discover_plugins=lambda: None),
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "hermes_cli.config",
-        types.SimpleNamespace(
-            read_raw_config=lambda: {"mcp_servers": {"demo": {"transport": "stdio"}}},
-            load_config=dict,
-        ),
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "agent.shell_hooks",
-        types.SimpleNamespace(register_from_config=lambda *_a, **_k: None),
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "tools.mcp_tool_discovery",
-        types.SimpleNamespace(
-            discover_mcp_tools=lambda: calls.__setitem__("inline", calls["inline"] + 1),
-        ),
-    )
 
-    main_mod._prepare_agent_startup(_agent_args(command="mcp", mcp_action="serve"))
-
-    assert calls["inline"] == 1
+    args = _agent_args(command="mcp", mcp_action="serve")
+    assert main_mod._is_tui_chat_launch(args) is False
+    assert main_mod._command_has_dedicated_mcp_startup(args) is True
 
 
 def test_background_mcp_discovery_suppresses_interactive_oauth(monkeypatch):
@@ -518,3 +497,32 @@ def test_server_added_after_discovery_is_connected_by_the_next_agent_build(monke
     configured["linear"] = {"url": "https://mcp.example.test/linear"}  # hermes mcp add linear
     build_agent()
     assert len(runs) == 2
+
+
+def test_mcp_serve_is_treated_as_a_server_not_a_client():
+    """`hermes mcp serve` must not run the launcher's client-side discovery: doing so spawns a
+    copy of itself whenever a server is configured as `hermes mcp serve` (hermes-messaging), and
+    the parent then blocks on that copy's MCP handshake forever."""
+    assert main_mod._command_has_dedicated_mcp_startup(
+        _agent_args(command="mcp", mcp_action="serve")
+    ) is True
+    # Any other `mcp` subcommand can run an agent turn, so it keeps its own startup behaviour.
+    assert main_mod._command_has_dedicated_mcp_startup(
+        _agent_args(command="mcp", mcp_action="list")
+    ) is False
+
+
+def test_serving_process_never_starts_client_side_discovery(monkeypatch):
+    """A process that IS the MCP server must not discover MCP servers (the recursion brake)."""
+    monkeypatch.setenv("HERMES_MCP_SERVING", "1")
+    monkeypatch.setattr(mcp_startup, "_has_configured_mcp_servers", lambda: True)
+    mcp_startup.start_background_mcp_discovery(
+        logger=types.SimpleNamespace(
+            debug=lambda *_a, **_k: None,
+            info=lambda *_a, **_k: None,
+            warning=lambda *_a, **_k: None,
+        ),
+        thread_name="serving-guard",
+    )
+    assert mcp_startup._mcp_discovery_started == set()
+    assert mcp_startup._mcp_discovery_thread == {}

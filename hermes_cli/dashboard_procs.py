@@ -26,8 +26,43 @@ def _append_row(rows: list[tuple[int, str]], pid_text: str, command: str) -> Non
         pass
 
 
+def _cim_process_table() -> list[tuple[int, str]]:
+    """Bounded replacement for WMIC on Windows releases that no longer ship it."""
+    import json
+
+    from hermes_cli._subprocess_compat import bounded_probe_run
+
+    try:
+        result = bounded_probe_run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+             "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); "
+             "Get-CimInstance Win32_Process -ErrorAction Stop | "
+             "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"],
+            timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if result is None or result.returncode != 0 or not result.stdout:
+        return []
+    try:
+        records = json.loads(result.stdout)
+    except ValueError:
+        return []
+    if isinstance(records, dict):
+        records = [records]
+    if not isinstance(records, list):
+        return []
+    rows: list[tuple[int, str]] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        pid, command = record.get("ProcessId"), record.get("CommandLine")
+        if type(pid) is int and pid > 0 and isinstance(command, str) and command:
+            rows.append((pid, command))
+    return rows
+
+
 def _iter_process_table() -> list[tuple[int, str]]:
-    """``(pid, cmdline)`` for every process, via wmic (Windows) or ps. Raises on scan failure."""
+    """``(pid, cmdline)`` for every process, via WMIC/CIM (Windows) or ps."""
     rows: list[tuple[int, str]] = []
     if sys.platform == "win32":
         # errors="ignore": wmic may emit the system code page. bounded_probe_run, not run():
@@ -43,11 +78,14 @@ def _iter_process_table() -> list[tuple[int, str]]:
         # pythonw.exe desktop/gateway backend during an update, where a bare wmic spawn would pop a console
         # window.
         from hermes_cli._subprocess_compat import bounded_probe_run
-        result = bounded_probe_run(
-            ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
-            timeout=10, errors="ignore")
+        try:
+            result = bounded_probe_run(
+                ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
+                timeout=10, errors="ignore")
+        except (OSError, subprocess.TimeoutExpired):
+            result = None
         if result is None or result.returncode != 0 or result.stdout is None:
-            return rows
+            return _cim_process_table()
         current_cmd = ""
         for line in result.stdout.split("\n"):
             line = line.strip()
@@ -55,7 +93,7 @@ def _iter_process_table() -> list[tuple[int, str]]:
                 current_cmd = line[len("CommandLine=") :]
             elif line.startswith("ProcessId="):
                 _append_row(rows, line[len("ProcessId=") :], current_cmd)
-        return rows
+        return rows or _cim_process_table()
     # ps, not `pgrep -f "hermes.*dashboard"` (greedy regex; consistent with gateway pid scan).
     result = subprocess.run(["ps", "-A", "-o", "pid=,command="], timeout=10, **_PS_RUN_KWARGS, check=False)
     if result.returncode == 0:
@@ -83,7 +121,12 @@ def _scan_dashboard_processes(*, exclude_pids: set[int] | None = None) -> list[t
     # Canonical token matcher, never argv substrings: ``hermes serve`` is a prefix of ``hermes
     # server`` and this list decides a SIGTERM — ``herdr --session hermes server`` (a terminal
     # multiplexer) was killed and its unit restarted by ``hermes update`` (#121156).
-    from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
+    from hermes_cli.update_cmd_windows import (
+        _hermes_holder_subcommand, _psutil, _self_and_non_gateway_ancestor_pids,
+    )
+    # MSYS keeps a shell parent around native Python. It is the current CLI's
+    # launcher, not another Dashboard to report or nominate for termination.
+    skip.update(_self_and_non_gateway_ancestor_pids(_psutil()))
     try:
         found = [(pid, cmd) for pid, cmd in _iter_process_table()
                  if pid not in skip and _hermes_holder_subcommand(cmd) in ("dashboard", "serve")]

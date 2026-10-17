@@ -194,7 +194,10 @@ def run_command_provider(
                     break
                 output_queue.put((name, chunk))
         finally:
-            output_queue.put((name, None))
+            try:
+                stream.close()
+            finally:
+                output_queue.put((name, None))
 
     readers = [threading.Thread(target=read_stream, args=(name, stream), daemon=True)
                for name, stream in (("stdout", proc.stdout), ("stderr", proc.stderr))]
@@ -335,6 +338,7 @@ def _configured_command_tts_output_path(path: Path, config: dict[str, Any]) -> P
 
 def _generate_command_tts(
     text: str, output_path: str, provider_name: str, config: dict[str, Any], tts_config: dict[str, Any],
+    *, instructions: Optional[str] = None,
 ) -> str:
     """Generate speech by running a user-configured shell command; returns the audio path it wrote.
     Raises ``ValueError`` for bad provider config, ``RuntimeError`` for timeouts / bad exits / no output."""
@@ -348,13 +352,15 @@ def _generate_command_tts(
     timeout = _get_command_tts_timeout(config)
     with tempfile.TemporaryDirectory() as tmpdir:
         text_path = Path(tmpdir) / "input.txt"
-        text_path.write_text(text, encoding="utf-8")
+        text_path.write_bytes(text.encode("utf-8"))
         placeholders = {
             "input_path": str(text_path), "text_path": str(text_path), "output_path": str(output),
             "format": _get_command_tts_output_format(config, str(output)),
             "voice": str(config.get("voice", "")), "model": str(config.get("model", "")),
             "speed": str(config.get("speed", tts_config.get("speed", ""))),
         }
+        if instructions is not None:
+            placeholders["instructions"] = instructions
         command = render_command_template(command_template, placeholders)
         try:
             run_command_provider(command, timeout, env_passthrough=command_env_passthrough(config))

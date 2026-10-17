@@ -1082,9 +1082,9 @@ DEFAULT_CONFIG = {
         # 0 unloads immediately.
         "keep_warm_seconds": 60,
         "streaming": {
-            # Shortest first sentence (chars) spoken on its own by streaming TTS; shorter openers
-            # ride with the next sentence. 20 suits English; CJK voice setups use ~6.
-            "min_len": 20,
+            # min_len: shortest first sentence (chars) spoken on its own; CJK setups use ~6.
+            # finalize_timeout_seconds: after the reply text, longest wait for new audio.
+            "min_len": 20, "finalize_timeout_seconds": 10,
         },
         "edge": {
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural

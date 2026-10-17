@@ -18,7 +18,7 @@ import tempfile
 import zipfile
 from contextlib import closing, contextmanager
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 from hermes_state_holders import read_only_db_uri
 from hermes_cli.backup_sqlite import _safe_copy_db
@@ -561,6 +561,62 @@ def _count_session_rows(path: Path) -> Optional[tuple[int, int]]:
         return None
     finally:
         conn.close()
+
+
+def _count_kanban_rows(path: Path) -> Optional[tuple[int, int]]:
+    """Return ``(tasks, task_events)`` stored in a Kanban database *path*.
+
+    Read-only and best effort. ``None`` keeps the import's existing fail-open
+    behavior for SQLite files whose schema is not a Kanban board.
+    """
+    if not path.is_file():
+        return None
+    try:
+        conn = sqlite3.connect(read_only_db_uri(path), uri=True)
+    except sqlite3.Error:
+        return None
+    try:
+        tasks = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+        events = conn.execute("SELECT COUNT(*) FROM task_events").fetchone()[0]
+        return int(tasks), int(events)
+    except (sqlite3.Error, TypeError, ValueError):
+        return None
+    finally:
+        conn.close()
+
+
+def _print_replaced_data_warnings(
+    db_shrunk: list[tuple[str, tuple[int, int], tuple[int, int]]],
+    kanban_shrunk: list[tuple[str, tuple[int, int], tuple[int, int]]],
+    recovery_hint: Callable[[], str],
+) -> None:
+    """Report overwritten session and Kanban history without blocking an older restore."""
+    if db_shrunk:
+        # The backup predates work that is now overwritten. Say so: the
+        # reported incident was twelve sessions disappearing with nothing
+        # logged anywhere (issue #100960).
+        print("\n  ⚠ Session data replaced by older backup contents:")
+        for rel, before, after in db_shrunk:
+            print(
+                f"    {rel}: {before[0]} session(s) / {before[1]} message(s)"
+                f" -> {after[0]} / {after[1]}"
+            )
+        print(
+            "    Anything recorded after the backup was taken is not in it. "
+            f"{recovery_hint()}"
+        )
+
+    if kanban_shrunk:
+        print("\n  ⚠ Kanban board data replaced by older backup contents:")
+        for rel, before, after in kanban_shrunk:
+            print(
+                f"    {rel}: {before[0]} task(s) / {before[1]} event(s)"
+                f" -> {after[0]} / {after[1]}"
+            )
+        print(
+            "    Anything recorded after the backup was taken is not in it. "
+            f"{recovery_hint()}"
+        )
 
 
 def _import_db_member(

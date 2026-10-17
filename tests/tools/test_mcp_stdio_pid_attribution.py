@@ -15,6 +15,8 @@ import sys
 from contextlib import asynccontextmanager
 from unittest.mock import patch
 
+import pytest
+
 from tools.mcp_tool import MCPServerTask
 
 
@@ -79,3 +81,53 @@ def test_two_servers_spawning_together_each_track_only_their_own_child(monkeypat
 
     assert set(children) == {"alpha", "beta"}
     assert tracked == {name: {child.pid} for name, child in children.items()}
+
+
+def test_cancelling_a_queued_spawn_closes_stderr_without_releasing_another_spawn(monkeypatch):
+    from tools import mcp_tool_config, mcp_tool_transport
+
+    tees = []
+    real_tee = mcp_tool_config._StderrTee
+
+    def capture_tee(log):
+        tee = real_tee(log)
+        tees.append(tee)
+        return tee
+
+    async def cancel_waiter():
+        waiting = asyncio.Event()
+
+        class HeldSpawnLock(asyncio.Lock):
+            async def acquire(self):
+                waiting.set()
+                return await super().acquire()
+
+        lock = HeldSpawnLock()
+        await lock.acquire()
+        waiting.clear()
+        monkeypatch.setattr(mcp_tool_transport, '_stdio_spawn_lock', lambda: lock)
+        task = asyncio.create_task(_server('waiting')._run_stdio({'command': 'fixture'}))
+        try:
+            await asyncio.wait_for(waiting.wait(), timeout=10)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert len(tees) == 1
+            assert tees[0].sink.closed, 'a cancelled queued connection must close its stderr pipe'
+            assert lock.locked(), 'the queued connection must leave the active spawn lock held'
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            lock.release()
+            for tee in tees:
+                tee.close()
+
+    with patch('tools.mcp_tool._MCP_AVAILABLE', True), \
+         patch('tools.mcp_tool_config._build_safe_env', return_value={}), \
+         patch('tools.mcp_tool_config._resolve_stdio_command', side_effect=lambda command, env: (command, env)), \
+         patch('tools.mcp_tool_config._write_stderr_log_header'), \
+         patch('tools.mcp_tool._get_mcp_stderr_log', return_value=None), \
+         patch('tools.mcp_tool_config._StderrTee', capture_tee), \
+         patch('tools.osv_check.check_package_for_malware', return_value=None):
+        asyncio.run(cancel_waiter())

@@ -51,3 +51,31 @@ def test_declared_own_policy_env_refuses_open_policy_without_allow_all(probe_pla
     assert _own_policy_open_startup_violation(cfg) == "authzprobe: open policy without allow-all opt-in"
     monkeypatch.setenv("AUTHZPROBE_ALLOW_ALL_USERS", "true")
     assert _own_policy_open_startup_violation(cfg) is None
+
+
+@pytest.mark.parametrize("declared", [True, False])
+def test_declared_group_chat_env_and_pairing_suppression(monkeypatch, declared):
+    """A plugin platform declaring ``group_allowed_chats_env`` / ``allowlist_suppresses_pairing``
+    gets chat-id group authorization and the allowlist-aware "ignore" default; undeclared, neither."""
+    from gateway.platform_registry import PlatformEntry, platform_registry
+    from gateway.run import GatewayRunner
+
+    for var in ("GRPPROBE_ALLOWED_USERS", "GRPPROBE_GROUP_CHATS", "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS"):
+        monkeypatch.delenv(var, raising=False)
+    fields = dict(group_allowed_chats_env="GRPPROBE_GROUP_CHATS", allowlist_suppresses_pairing=True) if declared else {}
+    platform_registry.register(PlatformEntry(
+        name="grpprobe", label="Group Probe", adapter_factory=lambda cfg: None, check_fn=lambda: True,
+        allowed_users_env="GRPPROBE_ALLOWED_USERS", **fields))
+    try:
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(platforms={Platform("grpprobe"): PlatformConfig(enabled=True)})
+        runner.pairing_store = SimpleNamespace(is_approved=lambda *_a, **_kw: False)
+        group = SessionSource(platform=Platform("grpprobe"), chat_id="g1", chat_type="group", user_id=None,
+                              user_name="")
+        monkeypatch.setenv("GRPPROBE_GROUP_CHATS", "g1")
+        assert runner._is_user_authorized(group) is declared
+        monkeypatch.delenv("GRPPROBE_GROUP_CHATS")
+        monkeypatch.setenv("GRPPROBE_ALLOWED_USERS", "owner")
+        assert runner._get_unauthorized_dm_behavior(Platform("grpprobe")) == ("ignore" if declared else "pair")
+    finally:
+        platform_registry.unregister("grpprobe")

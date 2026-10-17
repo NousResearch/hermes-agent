@@ -181,7 +181,7 @@ async def test_prompt_response_resolves_clarify_choice_and_other(monkeypatch):
     marked: list[str] = []
     monkeypatch.setattr(
         "tools.clarify_gateway.resolve_gateway_clarify",
-        lambda cid, resp: resolved.append((cid, resp)) or True,
+        lambda cid, resp, *, session_key: resolved.append((cid, resp, session_key)) or True,
     )
     monkeypatch.setattr(
         "tools.clarify_gateway.mark_awaiting_text", lambda cid: marked.append(cid)
@@ -189,7 +189,7 @@ async def test_prompt_response_resolves_clarify_choice_and_other(monkeypatch):
     # Positional id maps back to the REAL choice text.
     event = _event({"prompt_id": prompt_id, "option_id": "c1"})
     assert await adapter._consume_prompt_response(event) is True
-    assert resolved == [("cl-9", "beta")]
+    assert resolved == [("cl-9", "beta", "s")]
 
     # "Other" flips to text capture.
     await adapter.send_clarify("c1", "Which?", ["a"], "cl-10", "s")
@@ -382,7 +382,7 @@ async def test_sibling_gateway_ignores_another_instances_prompt_answer(monkeypat
     resolved: list[tuple] = []
     monkeypatch.setattr(
         "tools.clarify_gateway.resolve_gateway_clarify",
-        lambda cid, resp: resolved.append((cid, resp)) or True,
+        lambda cid, resp, *, session_key: resolved.append((cid, resp, session_key)) or True,
     )
     monkeypatch.setattr("tools.clarify_gateway.mark_awaiting_text", lambda cid: None)
 
@@ -396,7 +396,7 @@ async def test_sibling_gateway_ignores_another_instances_prompt_answer(monkeypat
 
     # The owner still resolves the same press normally.
     assert await owner._consume_prompt_response(event) is True
-    assert resolved == [("cl-1", "beta")]
+    assert resolved == [("cl-1", "beta", "s")]
 
 
 @pytest.mark.asyncio
@@ -409,15 +409,15 @@ async def test_repeat_answer_for_resolved_prompt_is_ignored(monkeypatch):
     resolved: list[tuple] = []
     monkeypatch.setattr(
         "tools.clarify_gateway.resolve_gateway_clarify",
-        lambda cid, resp: resolved.append((cid, resp)) or True,
+        lambda cid, resp, *, session_key: resolved.append((cid, resp, session_key)) or True,
     )
     event = _event({"prompt_id": prompt_id, "option_id": "c0"})
     assert await adapter._consume_prompt_response(event) is True
-    assert resolved == [("cl-2", "alpha")]
+    assert resolved == [("cl-2", "alpha", "s")]
 
     sent_after_first = len(stub.sent)
     assert await adapter._consume_prompt_response(event) is True
-    assert resolved == [("cl-2", "alpha")]  # not resolved a second time
+    assert resolved == [("cl-2", "alpha", "s")]  # not resolved a second time
     assert len(stub.sent) == sent_after_first  # and no second ack / notice
 
 

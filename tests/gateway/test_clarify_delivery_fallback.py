@@ -159,7 +159,7 @@ def test_card_resolving_ambiguous_after_the_ack_window_stays_armed_for_a_button_
         entry = cm.get_pending_for_session("sk-fallback", include_choice_prompts=True)
         pending_at_tap.append(entry)
         if entry is not None:
-            cm.resolve_gateway_clarify(entry.clarify_id, "beta")
+            cm.resolve_gateway_clarify(entry.clarify_id, "beta", session_key="sk-fallback")
     tap = threading.Thread(target=_tap_button, daemon=True)
     tap.start()
 

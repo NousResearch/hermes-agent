@@ -1049,16 +1049,17 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             config_path = Path(__file__).parent / 'cli-config.yaml'
         config_status = _t("cli.config.loaded") if config_path.exists() else _t("cli.config.not_found")
 
-        # ``api_key`` may be a callable (Entra ID bearer provider): never invoke it. Prefer the
-        # LIVE agent's key: the constructor seeds self.api_key from env before provider
-        # resolution, so on non-OpenAI providers it can be another vendor's key.
-        from agent.azure_identity_adapter import is_token_provider
+        # ``api_key`` may be a callable bearer provider (Entra ID, Vertex OAuth, key_cmd, ...):
+        # label it by its tagged source and never invoke it (that would mint a token just to mask
+        # it). Prefer the LIVE agent's key: the constructor seeds self.api_key from env before
+        # provider resolution, so on non-OpenAI providers it can be another vendor's key.
+        from agent.credential_source import credential_label
 
         display_key = self.api_key
         if self.agent is not None and getattr(self.agent, "api_key", None):
             display_key = self.agent.api_key
-        if is_token_provider(display_key):
-            api_key_display = _t("cli.config.microsoft_entra_id")
+        if label := credential_label(display_key):
+            api_key_display = label
         elif isinstance(display_key, str) and len(display_key) > 12:
             api_key_display = f"{display_key[:8]}...{display_key[-4:]}"
         else:

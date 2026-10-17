@@ -219,10 +219,27 @@ def build_write_denied_prefixes(home: str) -> list[str]:
     return [os.path.realpath(p) + os.sep for p in paths]
 
 
+def _write_safe_root_setting() -> str:
+    """Raw ``HERMES_WRITE_SAFE_ROOT``, honoring the active profile secret scope.
+
+    A desktop/gateway-served profile's ``.env`` is only installed as a secret scope,
+    never exported to ``os.environ``, so the plain env read saw no limit (or the launch
+    profile's) on every shared-process surface (#136204). A scope miss still falls back
+    to the process env: the limit is a restriction, and a deployment-wide value must
+    keep constraining profiles that don't set their own.
+    """
+    from agent.secret_scope import current_secret_scope
+
+    scoped = (current_secret_scope() or {}).get("HERMES_WRITE_SAFE_ROOT")
+    if scoped is not None:
+        return scoped
+    return os.getenv("HERMES_WRITE_SAFE_ROOT", "")
+
+
 def get_safe_write_roots() -> set[str]:
     """Resolved HERMES_WRITE_SAFE_ROOT paths (``os.pathsep``-separated list)."""
     roots: set[str] = set()
-    for path in filter(None, os.getenv("HERMES_WRITE_SAFE_ROOT", "").split(os.pathsep)):
+    for path in filter(None, _write_safe_root_setting().split(os.pathsep)):
         with suppress(OSError, ValueError):
             roots.add(os.path.realpath(os.path.expanduser(path)))
     return roots

@@ -62,8 +62,11 @@ def _eval_js(task_id: str, expression: str) -> dict[str, Any]:
     """
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY
+        from tools.browser_tool_cdp import _get_cdp_override_raw
 
         supervisor = SUPERVISOR_REGISTRY.get(task_id)
+        if supervisor is None and _get_cdp_override_raw():
+            supervisor = _ensure_supervisor(task_id)   # the configured browser, attached again
         if supervisor is not None:
             sup = supervisor.evaluate_runtime(expression)
             if sup.get("ok"):
@@ -99,8 +102,21 @@ def _ensure_supervisor(task_id: str):
     if supervisor is not None:
         return supervisor
     from tools.browser_tool import _last_session_key
-    from tools.browser_tool_cdp import _get_dialog_policy_config, _resolve_cdp_override
+    from tools.browser_tool_cdp import (_get_cdp_override, _get_cdp_override_raw, _get_dialog_policy_config,
+                                        _resolve_cdp_override)
     from tools.browser_tool_session import _run_browser_command
+
+    if _get_cdp_override_raw():
+        # A configured browser (browser.cdp_url) whose supervisor gave up when it went away (closed for being idle,
+        # restarted): attach to it again, resolved afresh (a restarted Chromium has a new browser id). Asking the
+        # local agent-browser daemon instead would find no browser, or one in a sandbox, not this one.
+        policy, timeout_s = _get_dialog_policy_config()
+        try:
+            return SUPERVISOR_REGISTRY.get_or_start(task_id=task_id, cdp_url=_get_cdp_override(),
+                                                    dialog_policy=policy, dialog_timeout_s=timeout_s)
+        except Exception:   # any failure to attach means no supervisor: the fill then refuses, never via argv
+            logger.debug("vault fill: supervisor attach to the configured browser failed", exc_info=True)
+            return None
 
     res = _run_browser_command(_last_session_key(task_id), "get", ["cdp-url"])
     cdp_url = str(((res or {}).get("data") or {}).get("cdpUrl") or "") if (res or {}).get("success") else ""

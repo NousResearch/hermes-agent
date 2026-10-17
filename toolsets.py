@@ -36,6 +36,9 @@ _HERMES_CORE_TOOLS = [
     "computer_use",
     # Service-gated connector account status and authorization links.
     "manage_connections",
+    # Structured gateway self-restart (gated on _HERMES_GATEWAY=1 via check_fn;
+    # hidden in CLI/cron contexts, visible only in a live gateway session).
+    "request_gateway_restart",
 ]
 
 # Webhook payloads are untrusted third-party content: no file/system execution.

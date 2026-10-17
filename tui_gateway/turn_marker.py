@@ -34,6 +34,10 @@ _MAX_AGE_SECS = 24 * 3600
 _MAX_ENTRIES = 32
 # Enough to re-submit any realistic prompt; guards against a multi-megabyte paste being journaled.
 _MAX_PROMPT_CHARS = 64_000
+# Minimum gap between progress touches: a busy turn emits many events and every touch is a locked
+# read-modify-write of a file sibling backends share. 15s is far below the staleness threshold and
+# far above the event rate.
+_PROGRESS_MIN_INTERVAL_SECS = 15.0
 
 _lock = threading.Lock()
 _file_lock_holder = threading.local()
@@ -62,6 +66,16 @@ def _cross_process_lock(path: Path):
 
 def _started_at(entry: dict) -> float:
     return float(entry.get("started_at") or 0)
+
+
+def _progress_at(entry: dict) -> float:
+    """Last sign of life for a recorded turn: the throttle-stamped progress, else when it started.
+
+    An entry written before the heartbeat existed carries no ``progress_at``; falling back to
+    ``started_at`` keeps an old build honest (a long turn then reads as no progress) rather than
+    inventing liveness.
+    """
+    return float(entry.get("progress_at") or entry.get("started_at") or 0)
 
 
 def _writer_identity() -> dict:
@@ -168,6 +182,7 @@ def record_turn_start(home: Path | str, session_key: str, prompt: str, *, attemp
     text = prompt if isinstance(prompt, str) else ""
     now = time.time()
     entry = {"attempts": max(0, int(attempts)), "prompt": text[:_MAX_PROMPT_CHARS], "started_at": now,
+             "progress_at": now,
              "auto_continue": bool(auto_continue), **_writer_identity()}
     if notification_category == "diagnostic":
         entry["notification_category"] = notification_category
@@ -180,6 +195,52 @@ def clear_turn_marker(home: Path | str, session_key: str) -> None:
     """Remove the marker once its turn concluded (any outcome the client saw)."""
     if session_key:
         _update(home, session_key, lambda e: {k: v for k, v in e.items() if k != session_key} if session_key in e else None, "clear")
+
+
+def touch_turn_marker(home: Path | str, session_key: str, *, now: float | None = None,
+                      min_interval: float = _PROGRESS_MIN_INTERVAL_SECS) -> bool:
+    """Record that the turn this chat already has in flight is still making progress.
+
+    Called from the turn's own progress events (tool steps, streamed deltas), never from a timer:
+    a timer keeps touching a turn that is wedged inside one call, which is exactly the case this
+    signal has to detect. Throttled because a busy turn produces many events and every touch is a
+    locked read-modify-write of a file shared by sibling backends.
+
+    Only an EXISTING marker for this chat is refreshed — a touch never creates one, so it cannot
+    resurrect a turn that already concluded. Best effort: every failure answers False.
+    """
+    if not session_key:
+        return False
+    stamp = time.time() if now is None else float(now)
+    wrote = False
+
+    def mutate(entries: dict[str, dict]) -> dict[str, dict] | None:
+        nonlocal wrote
+        entry = entries.get(session_key)
+        if not isinstance(entry, dict):
+            return None
+        if stamp - _progress_at(entry) < min_interval:
+            return None
+        entry["progress_at"] = stamp
+        wrote = True
+        return entries
+
+    _update(home, session_key, mutate, "touch")
+    return wrote
+
+
+def turn_marker_stale(entry: dict[str, Any] | None, *, stale_after: float,
+                      now: float | None = None) -> bool:
+    """True when a recorded turn has shown NO progress for ``stale_after`` seconds.
+
+    This is the only way to tell "long turn" from "hung turn": ``started_at`` alone cannot, and
+    nothing else about the holder is observable from outside its process. Absent/!dict entries are
+    not stale (there is no turn to judge), and the caller decides what an unreadable file means.
+    """
+    if not isinstance(entry, dict):
+        return False
+    stamp = time.time() if now is None else float(now)
+    return stamp - _progress_at(entry) > float(stale_after)
 
 
 def read_turn_marker_entry(home: Path | str, session_key: str) -> dict[str, Any] | None:

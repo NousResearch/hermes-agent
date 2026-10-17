@@ -74,7 +74,7 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
-    SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
+    SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, ssrf_redirect_guard,
 )
 from gateway.platforms.base import transcode_to_ogg_opus
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
@@ -1566,7 +1566,7 @@ class MatrixAdapter(BasePlatformAdapter):
         except ImportError:
             from tools.url_safety import create_ssrf_safe_async_client
             _httpx_kw: dict = {"proxy": self._proxy_url} if self._proxy_url else {}
-            _httpx_kw["event_hooks"] = {"response": [_ssrf_redirect_guard]}
+            _httpx_kw["event_hooks"] = {"response": [ssrf_redirect_guard]}
             async with create_ssrf_safe_async_client(**_httpx_kw) as http:
                 async with http.stream("GET", url, follow_redirects=True, timeout=30) as resp:
                     resp.raise_for_status()

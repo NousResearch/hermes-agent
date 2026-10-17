@@ -75,13 +75,34 @@ def _active_remote_env():
     return get_active_env(get_session_env("HERMES_SESSION_ID") or get_session_env("HERMES_SESSION_KEY") or "default")
 
 
-def fetch_remote_media(path: str) -> Optional[str]:
+def fetch_remote_media(path: str, session_key: str = "") -> Optional[str]:
     """Host path of a validated copy of sandbox file ``path``, or None (never raises). Only fires
-    when a remote backend is active; the caller has already failed local validation."""
+    when a remote backend is active; the caller has already failed local validation.
+    ``session_key``: the turn's key, for a caller that runs outside the turn's context and still
+    holds it. It is AUTHORITATIVE -- see below."""
     from gateway.media_policy import media_delivery_strict
+    from gateway.session_context import scoped_session_key
     if media_delivery_strict():
         return None
-    env = _active_remote_env()
+    # A supplied key names the session whose sandbox holds the artifact, so it is tried FIRST. The
+    # gateway binds its session ContextVars around the HANDLER only (`_set_session_env` /
+    # `_clear_session_env`) and never mirrors the key into os.environ -- concurrent messages would
+    # overwrite each other -- so post-handler media extraction runs with no key in context and
+    # `_resolve_container_task_id` answers "default". Looking that up first would be wrong twice: a
+    # sandbox registered as `session:<key>` (every non-docker backend) stays invisible and the
+    # artifact is dropped, and when anything IS cached under "default" -- a CLI or cron task's
+    # environment -- the file is fetched out of an unrelated sandbox instead.
+    #
+    # The key is bound rather than turned into `session:<key>` here, so `_resolve_container_task_id`
+    # keeps deciding the registry key for every backend. Only the key: profile-scoped persistent
+    # docker keys off the session PROFILE, which resolves to "default" either way, so this changes
+    # nothing for that branch.
+    env = None
+    if session_key:
+        with scoped_session_key(session_key):
+            env = _active_remote_env()
+    if env is None:
+        env = _active_remote_env()      # no key supplied, or the session has no sandbox of its own
     if env is None:
         return None
     from gateway.platforms.base import (

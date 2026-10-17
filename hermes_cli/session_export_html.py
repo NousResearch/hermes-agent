@@ -578,15 +578,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             }});
             const activeView = document.getElementById(`view-${{id}}`);
             if (activeView) activeView.classList.add('active');
-
-            // Store in URL hash
-            window.location.hash = encodeURIComponent(id);
         }}
 
         document.querySelectorAll('.session-item').forEach(item => {{
             item.addEventListener('click', (e) => {{
                 e.preventDefault();
-                showSession(item.dataset.id || '');
+                const id = item.dataset.id || '';
+                showSession(id);
+                window.location.hash = encodeURIComponent(id);
             }});
         }});
 
@@ -614,17 +613,23 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             }}
         }});
 
-        // Initialization
-        window.addEventListener('load', () => {{
-            const hash = decodeURIComponent(window.location.hash.slice(1));
-            if (hash) {{
-                showSession(hash);
-            }} else {{
-                // Show first session by default if none selected
-                const first = document.querySelector('.session-item');
-                if (first) showSession(first.getAttribute('data-id'));
+        // Restore selection without adding history entries or discarding Forward history.
+        function restoreSessionFromHash() {{
+            let id = '';
+            try {{
+                id = decodeURIComponent(window.location.hash.slice(1));
+            }} catch {{
+                // An incomplete percent escape in a shared URL must not hide the transcript.
             }}
-        }});
+            if (!document.getElementById(`view-${{id}}`)) {{
+                const first = document.querySelector('.session-view');
+                if (!first) return;
+                id = first.id.slice('view-'.length);
+            }}
+            showSession(id);
+        }}
+        window.addEventListener('load', restoreSessionFromHash);
+        window.addEventListener('hashchange', restoreSessionFromHash);
 
         // Intersection Observer for scroll animations
         if ('IntersectionObserver' in window) {{

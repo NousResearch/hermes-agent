@@ -55,6 +55,33 @@ WRAPPER_PLIST = (
     "  </array>\n</dict>\n</plist>\n"
 )
 
+# A `bash -lc '<script>'` wrapper (well-formed plist, #133272 comment from
+# auroracapital): after shlex.join the script is ONE quoted token, so the
+# #121156 token matcher never reaches the `hermes_cli.main` entry inside it.
+# The script is deliberately free of any `.hermes/bin/` substring — the venv
+# python lives elsewhere — so only the script re-parse arm can admit it.
+BASH_LC_WRAPPER_PLIST = (
+    '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0">\n<dict>\n'
+    "  <key>Label</key>\n  <string>ai.hermes.dashboard.bashlc</string>\n"
+    "  <key>ProgramArguments</key>\n  <array>\n"
+    "    <string>/bin/bash</string>\n    <string>-lc</string>\n"
+    "    <string>set -a; . /Users/hermes-user/etc/dashboard.env; "
+    "exec /Users/hermes-user/hermes-agent/.venv/bin/python -m hermes_cli.main "
+    "dashboard --host 127.0.0.1 --port 9119 --no-open --skip-build</string>\n"
+    "  </array>\n</dict>\n</plist>\n"
+)
+
+# A `bash -c` wrapper whose script is not a backend at all: it must still never
+# reach the launchctl probe.
+UNRELATED_SHELL_C_PLIST = (
+    '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0">\n<dict>\n'
+    "  <key>Label</key>\n  <string>com.example.shellc</string>\n"
+    "  <key>ProgramArguments</key>\n  <array>\n"
+    "    <string>/bin/sh</string>\n    <string>-c</string>\n"
+    "    <string>open -a Calendar; exit 0</string>\n"
+    "  </array>\n</dict>\n</plist>\n"
+)
+
 
 def test_unparseable_plist_probes_its_file_name_label_and_stays_unloaded(tmp_path):
     p = tmp_path / "com.example.bad.plist"
@@ -126,6 +153,34 @@ def test_wrapper_argv_plist_is_a_candidate(tmp_path):
         ["/bin/sh", "/Users/hermes-user/.hermes/bin/dashboard-serve"],
         555,
     )]
+
+
+def test_bash_lc_wrapper_plist_is_a_candidate(tmp_path):
+    """>#133272 (auroracapital's comment): a well-formed plist wrapping the backend
+    in `bash -lc '<script>'` was dropped by the #121156 token matcher — after
+    shlex.join the script is one quoted token, so `hermes_cli.main` is never an
+    entry token. The script re-parse arm must admit the job."""
+    (tmp_path / "ai.hermes.dashboard.bashlc.plist").write_text(
+        BASH_LC_WRAPPER_PLIST, encoding="utf-8"
+    )
+    with mock.patch(
+        "hermes_cli.gateway._launchd_print_service_pid", return_value=(True, 777)
+    ):
+        jobs = main_dashboard._loaded_launchd_backend_jobs([("agent", tmp_path)])
+    assert [(label, pid) for _, label, _, pid in jobs] == [("ai.hermes.dashboard.bashlc", 777)]
+
+
+def test_shell_c_wrapper_unrelated_script_is_still_filtered(tmp_path):
+    """The script re-parse arm is narrow: a `sh -c` plist whose script runs no
+    hermes holder must not reach the launchctl probe."""
+    (tmp_path / "com.example.shellc.plist").write_text(
+        UNRELATED_SHELL_C_PLIST, encoding="utf-8"
+    )
+    with mock.patch(
+        "hermes_cli.gateway._launchd_print_service_pid", return_value=(True, 1)
+    ) as probe:
+        assert main_dashboard._loaded_launchd_backend_jobs([("agent", tmp_path)]) == []
+    probe.assert_not_called()
 
 
 def test_non_hermes_argv_plist_is_still_filtered(tmp_path):

@@ -262,12 +262,24 @@ def _launchd_plist_dirs() -> list[tuple[str, Path]]:
 
 
 def _hermes_wrapper_argv(argv: list[str]) -> bool:
-    """True when *argv* wraps the published launcher the way a launchd job legitimately does —
-    ``/bin/sh <home>/.hermes/bin/dashboard-serve`` or ``/bin/sh -c 'exec …/.hermes/bin/hermes
-    dashboard …'`` — a shape ``_parse_dashboard_runtime``'s ``hermes dashboard`` substring cannot
-    recognize, because the wrapper (not the launcher) is argv[0]. launchd jobs need the wrapper to
-    prep the versioned tool PATH the managed toolchain lives in. See #133272."""
-    return any(".hermes/bin/" in str(a) for a in argv)
+    """True when *argv* wraps the backend the way a launchd job legitimately does —
+    ``/bin/sh <home>/.hermes/bin/dashboard-serve``, or a ``bash|sh -c|-lc '<script>'`` whose
+    script runs the holder (``exec …/venv/bin/python -m hermes_cli.main dashboard …``) —
+    shapes ``_parse_dashboard_runtime`` cannot see into, because after ``shlex.join`` the
+    script stays one quoted token, so the holder entry token is never reached (a #121156
+    regression). launchd jobs need the wrapper to prep the versioned tool PATH the managed
+    toolchain lives in. See #133272."""
+    if any(".hermes/bin/" in str(a) for a in argv):
+        return True
+    # The script argument is handed to the holder matcher itself: inside the script the
+    # entry token (``… -m hermes_cli.main`` / ``…/bin/hermes``) is a real token again, and
+    # the dashboard|serve mode gate plus the launchctl probe below keep unrelated scripts
+    # from ever claiming a process.
+    if len(argv) >= 3 and argv[0].rsplit("/", 1)[-1] in ("sh", "bash", "zsh", "dash"):
+        for i in range(1, min(len(argv), 4)):
+            if argv[i] in ("-c", "-lc") and i + 1 < len(argv):
+                return _parse_dashboard_runtime(argv[i + 1]) is not None
+    return False
 
 
 def _loaded_launchd_backend_jobs(

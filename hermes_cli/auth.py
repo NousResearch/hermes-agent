@@ -435,13 +435,33 @@ def _resolve_api_key_provider_secret(provider_id: str, pconfig: ProviderConfig) 
     return "", ""
 
 
-# ── Error formatting (AuthError itself lives in auth_constants) ─────────────────────────────────────
+# ── Error formatting (AuthError itself lives in auth_constants.py) ──────────────────────────────────
+
+# Provider credential pools bench a credential for one model after an upstream 429 and report it as
+# a *text* message, not a code (native Anthropic: ``_anthropic_token_or_raise`` in
+# ``hermes_cli/runtime_provider.py``). Match that wording so a benched pool credential is never
+# mistaken for a missing one — the key is present and works for every other model (#138816).
+_POOL_RATE_LIMIT_PHRASES = (
+    "credentials are rate-limited for",
+    "credential is rate-limited for",
+)
+
+
+def _is_pool_rate_limited_message(error: Exception) -> bool:
+    """True when *error* reads as a credential-pool 429 bench for one model."""
+    text = str(error).lower()
+    return any(phrase in text for phrase in _POOL_RATE_LIMIT_PHRASES)
+
 
 def is_rate_limited_auth_error(error: Exception) -> bool:
     """True when an :class:`AuthError` is upstream rate-limiting / quota: transient, and
     re-authenticating cannot fix it, so callers should say "retry later", not ``hermes auth``."""
-    return (isinstance(error, AuthError) and not error.relogin_required
-            and error.code == CODEX_RATE_LIMITED_CODE)
+    if not isinstance(error, AuthError) or error.relogin_required:
+        return False
+    if error.code == CODEX_RATE_LIMITED_CODE:
+        return True
+    # No shared rate-limit code on the native-Anthropic route: the pool-bench message is the signal.
+    return _is_pool_rate_limited_message(error)
 
 
 def primary_failure_wording(error: Exception) -> tuple[str, str]:

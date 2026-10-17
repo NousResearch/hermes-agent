@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import logging
+import math
 import re
 from typing import Any, Dict, Optional
 
@@ -55,6 +56,15 @@ def _coerce_content_text(raw: Any) -> str:
     return str(raw)
 
 
+def _sanitize_decode_seconds(value: Any) -> Optional[float]:
+    """Keep only finite, positive decode durations."""
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return seconds if math.isfinite(seconds) and seconds > 0 else None
+
+
 def _fire_post_api_request_hook(
     agent: Any, response: Any, assistant_message: Any, finish_reason: Any, *, api_messages: Any,
     api_call_count: Any, api_duration: Any, api_start_time: Any, api_request_id: Any,
@@ -83,6 +93,11 @@ def _fire_post_api_request_hook(
                 # First stream chunk time (epoch s); None if not streamed / no chunk.
                 # TTFB = first_chunk_at - started_at.
                 first_chunk_at=getattr(agent, "_last_api_first_chunk_at", None),
+                # Decode window: first real data delta through terminal-frame processing.
+                # Non-streaming, unmeasured, interrupted, or replaced streams are None; retries reset state.
+                decode_seconds=_sanitize_decode_seconds(
+                    getattr(agent, "_last_api_decode_seconds", None)
+                ),
                 finish_reason=finish_reason,
                 message_count=len(api_messages),
                 response_model=getattr(response, "model", None),

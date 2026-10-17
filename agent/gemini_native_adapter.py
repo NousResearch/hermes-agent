@@ -15,7 +15,7 @@ import re
 import time
 import uuid
 from types import SimpleNamespace
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional
 
 import httpx
 
@@ -150,6 +150,15 @@ def is_vertex_express_base_url(base_url: str) -> bool:
 
 
 def normalize_gemini_base_url(base_url: Optional[str]) -> str:
+    """Normalize only the endpoint path; preserve configured query parameters."""
+    from urllib.parse import urlsplit, urlunsplit
+
+    parsed = urlsplit(str(base_url or DEFAULT_GEMINI_BASE_URL).strip())
+    endpoint = _normalize_gemini_base_path(urlunsplit(parsed._replace(query="", fragment="")))
+    return urlunsplit(urlsplit(endpoint)._replace(query=parsed.query))
+
+
+def _normalize_gemini_base_path(base_url: Optional[str]) -> str:
     """Gemini native base URL with the API version segment guaranteed. Google's own client treats the
     base as a host root and appends the version itself, so users configure ``GEMINI_BASE_URL`` (or a
     proxy root like ``http://localhost:4000/gemini``) that way; our request builders expect
@@ -167,6 +176,9 @@ def normalize_gemini_base_url(base_url: Optional[str]) -> str:
     trimmed = re.sub(r"/openai\Z", "", trimmed, flags=re.IGNORECASE).rstrip("/")
     if not trimmed:
         trimmed = DEFAULT_GEMINI_BASE_URL
+    from agent.gemini_routing import is_opencode_zen_base_url
+    if is_opencode_zen_base_url(trimmed):
+        return trimmed if trimmed.lower().endswith("/v1") else f"{trimmed}/v1"
     if is_vertex_express_base_url(trimmed):
         if trimmed.lower().endswith("/publishers/google"):
             return trimmed
@@ -873,18 +885,21 @@ class GeminiNativeClient:
     MISSING_KEY_ERROR = _MISSING_KEY_ERROR
 
     def __init__(
-        self, *, api_key: str, base_url: Optional[str] = None, default_headers: Optional[dict[str, str]] = None,
-        timeout: Any = None, http_client: Optional[httpx.Client] = None, **_: Any,
+        self, *, api_key: str | Callable[[], str], base_url: Optional[str] = None, default_headers: Optional[dict[str, str]] = None,
+        timeout: Any = None, http_client: Optional[httpx.Client] = None, default_query: Optional[dict[str, Any]] = None, **_: Any,
     ) -> None:
-        if not (api_key or "").strip():
+        if not callable(api_key) and not (isinstance(api_key, str) and api_key.strip()):
             raise RuntimeError(self.MISSING_KEY_ERROR)
-        self.api_key, self.is_closed = api_key, False
+        self._api_key_provider = api_key if callable(api_key) else None
+        self.api_key, self.is_closed = "" if callable(api_key) else api_key, False
         self.base_url = normalize_gemini_base_url(base_url)
         self._default_headers = dict(default_headers or {})
+        self._custom_query = dict(default_query or {})
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create_chat_completion))
         # read=1200: Gemini 4 hops can think for minutes; Google asks for a >=20 min read timeout (its
         # stream limit), and a shorter one cuts long-decode hops off mid-think.
         self._http = http_client or httpx.Client(timeout=timeout or httpx.Timeout(connect=15.0, read=1200.0, write=30.0, pool=30.0))
+        self._client = self._http  # Let the owner-safe watchdog traverse this adapter's socket pool.
 
     def close(self) -> None:
         self.is_closed = True
@@ -899,7 +914,10 @@ class GeminiNativeClient:
         self.close()
 
     def _auth_headers(self) -> dict[str, str]:
-        return {"x-goog-api-key": self.api_key}
+        key = self._api_key_provider() if self._api_key_provider else self.api_key
+        if not isinstance(key, str) or not key.strip():
+            raise RuntimeError(self.MISSING_KEY_ERROR)
+        return {"x-goog-api-key": key.strip()}
 
     def _headers(self) -> dict[str, str]:
         return {"Content-Type": "application/json", "Accept": "application/json", **self._auth_headers(),
@@ -917,7 +935,7 @@ class GeminiNativeClient:
         self, *, model: str = "gemini-3.7-flash", messages: Optional[list[dict[str, Any]]] = None, stream: bool = False,
         tools: Any = None, tool_choice: Any = None, temperature: Optional[float] = None, max_tokens: Optional[int] = None,
         top_p: Optional[float] = None, stop: Any = None, response_format: Any = None, extra_body: Optional[dict[str, Any]] = None,
-        timeout: Any = None, **_: Any,
+        timeout: Any = None, extra_headers: Optional[dict[str, str]] = None, **_: Any,
     ) -> Any:
         extra = extra_body if isinstance(extra_body, dict) else {}
         # Long-decode budget (Gemini 4, effort above high) raises the total cap; an explicit larger cap still wins.
@@ -931,19 +949,21 @@ class GeminiNativeClient:
             tools_as_json_schema=gemini_accepts_parameters_json_schema(self.base_url),
         )
         model = bare_gemini_model_id(model)
-        url = f"{self.base_url}/models/{model}:"
+        from agent.gemini_client_options import gemini_method_url
+        method = self.STREAM_METHOD if stream else self.GENERATE_METHOD
+        url = gemini_method_url(self.base_url, model, method, self._custom_query, stream=stream)
         if stream:
-            return self._stream_completion(model, f"{url}{self.STREAM_METHOD}?alt=sse", request, timeout)
-        hops = [self._generate(url + self.GENERATE_METHOD, request, timeout)]
+            return self._stream_completion(model, url, request, timeout, extra_headers)
+        hops = [self._generate(url, request, timeout, extra_headers)]
         max_hops = long_decode_hops(request["generationConfig"].get("maxOutputTokens")) + 1
         # Long decode: same request + token, never the partial output. Past the ceiling the last hop's
         # CONTINUATION finish translates to ``length``.
         while (token := continuation_token(hops[-1])) and len(hops) < max_hops:
-            hops.append(self._generate(url + self.GENERATE_METHOD, {**request, "continuationToken": token}, timeout))
+            hops.append(self._generate(url, {**request, "continuationToken": token}, timeout, extra_headers))
         return translate_gemini_response(merge_hop_responses(hops) if len(hops) > 1 else hops[0], model=model)
 
-    def _generate(self, url: str, request: dict[str, Any], timeout: Any) -> dict[str, Any]:
-        response = self._http.post(url, json=request, headers=self._headers(), timeout=timeout)
+    def _generate(self, url: str, request: dict[str, Any], timeout: Any, extra_headers: Optional[dict[str, str]] = None) -> dict[str, Any]:
+        response = self._http.post(url, json=request, headers={**self._headers(), **(extra_headers or {})}, timeout=timeout)
         if response.status_code != 200:
             raise self._http_error(response)
         try:
@@ -953,7 +973,8 @@ class GeminiNativeClient:
                 f"Invalid JSON from Gemini native API: {exc}", code="gemini_invalid_json", status_code=response.status_code, response=response,
             ) from exc
 
-    def _stream_completion(self, model: str, url: str, request: dict[str, Any], timeout: Any) -> Iterator[_GeminiStreamChunk]:
+    def _stream_completion(self, model: str, url: str, request: dict[str, Any], timeout: Any,
+                           extra_headers: Optional[dict[str, str]] = None) -> Iterator[_GeminiStreamChunk]:
         tool_call_indices: dict[str, dict[str, Any]] = {}  # shared across hops: they form one model turn
         hop_usage: list[dict[str, Any]] = []
         max_hops = long_decode_hops(request["generationConfig"].get("maxOutputTokens")) + 1
@@ -963,7 +984,7 @@ class GeminiNativeClient:
         resume, sends = None, 0
         while True:
             try:
-                headers = {**self._headers(), "Accept": "text/event-stream"}
+                headers = {**self._headers(), **(extra_headers or {}), "Accept": "text/event-stream"}
                 with self._http.stream("POST", url, json=body, headers=headers, timeout=timeout) as response:
                     if response.status_code != 200:
                         raise self._http_error(response, read_streaming_error_body(response))

@@ -1956,26 +1956,6 @@ def _ensure_copilot_headers(client_kwargs: dict) -> None:
         _ra().logger.debug("Copilot default-header guard skipped", exc_info=True)
 
 
-def _gemini_native_client(agent, client_kwargs: dict, httpx_verify, *, reason: str, shared: bool):
-    """Native Gemini client when the base_url is the Gemini API, else None."""
-    from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
-    base_url = str(client_kwargs.get("base_url", "") or "")
-    if not is_native_gemini_base_url(base_url):
-        return None
-    safe_kwargs = {
-        k: v for k, v in client_kwargs.items()
-        if k in {"api_key", "base_url", "default_headers", "timeout", "http_client"}
-    }
-    if "http_client" not in safe_kwargs:
-        keepalive_http = agent._build_keepalive_http_client(base_url, verify=httpx_verify)
-        if keepalive_http is not None:
-            safe_kwargs["http_client"] = keepalive_http
-    client = GeminiNativeClient(**safe_kwargs)
-    _ra().logger.info(
-        "Gemini native client created (%s, shared=%s) %s", reason, shared, agent._client_log_context()
-    )
-    return client
-
 
 def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
     from agent.auxiliary_client import (
@@ -2036,11 +2016,10 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             agent.provider, reason, shared, agent._client_log_context(),
         )
         return provider_client
-    from agent.auxiliary_client import _GEMINI_NATIVE_PROVIDER_NAMES
-    if agent.provider in _GEMINI_NATIVE_PROVIDER_NAMES:
-        client = _gemini_native_client(agent, client_kwargs, httpx_verify, reason=reason, shared=shared)
-        if client is not None:
-            return client
+    from agent.gemini_routing import _gemini_native_client
+    client = _gemini_native_client(agent, client_kwargs, httpx_verify, reason=reason, shared=shared)
+    if client is not None:
+        return client
     # TCP keepalives so dead provider connections are detected (~60s) instead of hanging in
     # CLOSE-WAIT. Injected into the local copy only, so each client gets its own httpx.Client;
     # pinned by tests/agent/test_create_openai_client_reuse.py. What IS shared across those per-client wrappers is the
@@ -2353,6 +2332,7 @@ def _resolve_switch_context_length(agent, snapshot):
 def _update_switch_compressor(agent, custom_providers, effective_context_length, snapshot) -> None:
     """Point the context compressor at the new model (rolls back the switch on failure)."""
     from agent.model_metadata import get_model_context_length
+    from agent.gemini_routing import compressor_output_budget_kwargs
     if custom_providers is None:
         try:
             from hermes_cli.config import get_compatible_custom_providers, load_config
@@ -2373,7 +2353,7 @@ def _update_switch_compressor(agent, custom_providers, effective_context_length,
             base_url=agent.base_url,
             api_key=agent.api_key,  # context_compressor forwards to call_llm; callable preserved
             provider=agent.provider,
-            api_mode=agent.api_mode,
+            api_mode=agent.api_mode, **compressor_output_budget_kwargs(agent),
         )
     except Exception:
         _restore_switch_snapshot(agent, snapshot)

@@ -50,10 +50,10 @@ class TestOpenCodeZenOxReasoning:
         assert extra_body == {}
         assert top_level == {}
 
-    def test_other_zen_models_are_untouched(self, opencode_zen_profile):
+    def test_other_zen_chat_models_are_untouched(self, opencode_zen_profile):
         extra_body, top_level = opencode_zen_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": "max"},
-            model="gemini-3-flash",
+            model="glm-5.3",
         )
         assert extra_body == {}
         assert top_level == {}

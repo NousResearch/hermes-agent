@@ -669,13 +669,18 @@ class ChatCompletionsTransport(ProviderTransport):
             else:
                 api_kwargs[k] = v
 
+        from agent.gemini_routing import project_zen_gemini_reasoning
+        project_zen_gemini_reasoning(
+            api_kwargs, extra_body, provider=params.get("provider_name") or profile.name,
+            model=model, base_url=params.get("base_url"), reasoning_config=reasoning_config,
+        )
         if extra_body:
             # Native Gemini speaks Google's REST schema: OpenAI-style extra_body
             # keys (tags, reasoning, provider, ...) are unknown fields -> HTTP 400.
             # The native client reads only thinking_config and the long-decode budget.
             try:
-                from agent.gemini_native_adapter import is_native_gemini_base_url
-                _native_gemini = is_native_gemini_base_url(params.get("base_url"))
+                from agent.gemini_routing import is_native_gemini_request
+                _native_gemini = is_native_gemini_request(params.get("provider_name") or profile.name, model, params.get("base_url"))
             except Exception:
                 _native_gemini = False
             if _native_gemini:

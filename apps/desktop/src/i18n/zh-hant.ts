@@ -1,4 +1,4 @@
-import { defineLocale } from './define-locale'
+import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introZhHant } from './intro-zh-hant'
 import { zhHantArtifacts } from './zh-hant_artifacts'
 import { zhHantAssistant } from './zh-hant_assistant'
@@ -10,9 +10,21 @@ import { zhHantCommandCenter } from './zh-hant_command_center'
 import { zhHantCommon } from './zh-hant_common'
 import { zhHantConnectors } from './zh-hant_connectors'
 import { zhHantDiagnostics } from './zh-hant_diagnostics'
+import { zhHantFirstRun } from './zh-hant_first_run'
 import { zhHantSettings } from './zh-hant_settings'
 
-export const zhHant = defineLocale({
+export const zhHantOverrides = {
+  connectors: {
+    directory: {
+      suggested: '推薦',
+      allApps: '全部應用程式',
+      receiptConnected: apps => `已連接：${apps}`,
+      receiptNone: '未連接新的應用程式',
+      receiptTimedOut: '5 分鐘後已關閉',
+      finishInBrowser: '請在瀏覽器中完成',
+      signInFailed: '連接失敗，點擊重試'
+    }
+  },
   skillDeepLink: {
     installTitle: (name: string) => `安裝「${name}」？`,
     installDescription: '此技能將於新的工作階段中可用。請僅安裝可信來源的內容。',
@@ -31,39 +43,37 @@ export const zhHant = defineLocale({
     close: '關閉'
   },
   sharedMetrics: {
-    consentTitle: '協助改進 Hermes？',
+    consentTitle: '分享使用統計？',
+    dialogTitle: '使用統計',
     consentBody:
-      '共享指標只包含有上限的計數，絕不包含提示詞、檔案、路徑或錯誤文字。收集僅在本機進行；傳送給 Nous 需要另行同意。',
-    whatIsCollected: '收集哪些內容',
-    collectedIntro: '僅限有上限的計數：',
-    collectedActivity: '活動、工作階段長度、結果和錯誤類別，包括記憶寫入或上下文壓縮被拒絕、失敗或略過時的原因（來自固定清單）',
-    collectedModels: '模型路由和 token 總量',
-    collectedNames: '內建工具、指令和目錄項名稱',
-    collectedMilestones: '分組的設定計數',
-    collectedReliability: '更新結果與耗時、當機、啟動與回覆速度、訊息平台狀態',
-    collectedUsage:
-      'Hermes 的使用方式：代理的準確度與效率（編輯是否成功、迴圈、錯誤後的恢復、每個任務的 token 與工具呼叫數、快取中斷），各介面與 Desktop 模式的活躍時間，哪些應用程式區域、操作與設定被使用、很快關閉或被關閉，以及供應商設定的結果',
-    collectedMachine:
-      '概略的機器資訊：記憶體範圍、GPU 類型、Hermes 版本新舊與發行通道、落後的更新數、是否使用本機模型伺服器',
-    installId:
-      '傳送會把每日資料包上傳到 Nous 遙測服務。資料包帶有此設定檔的安裝 ID：一個不含個人資訊的固定隨機 UUID，刪除共享指標目錄即可重設。',
-    consentWindow:
-      '只有整個收集期間都落在已記錄同意時段內的資料包才會被傳送——你同意之前的資料，或傳送關閉期間的資料，都會留在本機。你可以隨時再次關閉傳送。',
+      'Hermes 可以統計你的使用方式：工作階段長度、執行了哪些模型和工具，以及何時發生失敗。它絕不記錄你的訊息、檔案、路徑或錯誤文字。',
+    whatIsCollected: '統計哪些內容',
+    collectedActivity: '工作階段：長度、結果、錯誤類型、每日活躍時間',
+    collectedModels: '模型：使用哪些模型、token 總量',
+    collectedNames: '功能：使用或關閉的內建工具、指令、應用程式區域和設定',
+    collectedMilestones: '設定：完成了哪些步驟、提供方連線、技能、外掛和排程工作的數量',
+    collectedReliability: '應用程式健康狀態：當機、啟動與回覆速度、更新、訊息平台連線',
+    collectedUsage: '代理品質：未成功的編輯、損壞的工具呼叫、卡住的迴圈、每個任務的成本',
+    collectedMachine: '機器：作業系統、記憶體範圍、GPU 類型、Hermes 版本、本機模型使用情況',
+    sending:
+      '除非你選擇分享，否則統計資料只會保留在這台電腦上。分享的統計資料每天傳送給 Nous 一次，並附帶此設定檔的隨機 ID。除了一則 Hermes 已安裝的一次性記錄（僅在你同意後計入）之外，你同意之前的統計資料永遠不會被傳送。你可以隨時在設定中變更。',
     readDocs: '查看完整說明',
-    share: '收集並傳送給 Nous',
-    local: '僅在本機收集',
+    share: '與 Nous 分享',
+    local: '保留在這部電腦上',
     off: '不用了',
-    changeLater: '你可以隨時在 設定 → 安全性 中變更。',
     saveFailed: '無法儲存你的選擇',
     collectLabel: '收集使用統計',
-    collectDesc: '在此裝置上保存有上限的計數。絕不包含提示詞、檔案、路徑或錯誤文字。',
-    sendLabel: '向 Nous 傳送使用統計',
-    sendDesc: '將每日資料包上傳到 Nous 遙測服務。只傳送同意時段內的資料。需要先開啟收集。',
+    collectDesc: '僅限計數，保留在這部電腦上。絕不包含你的訊息、檔案、路徑或錯誤文字。',
+    sendLabel: '與 Nous 分享使用統計',
+    sendDesc:
+      '每天一次將統計資料連同此設定檔的隨機 ID 傳送給 Nous。除一次性的安裝記錄外，你同意之前的統計資料絕不會被傳送。需要先開啟收集。',
     unavailable: '請更新 Hermes 後端以變更此設定。',
-    stripBody: '僅限有界計數器，絕不包含提示詞或檔案。',
-    stripChoices: { share: '傳送給 Nous', local: '僅限本機', off: '不用了' },
+    stripBody: '僅限計數，絕不包含你的訊息或檔案。',
+    stripReaskBody: '再次詢問：舊版本可能在你看到此問題之前就已儲存了「不用了」。',
+    stripChoices: { share: '與 Nous 分享', local: '保留在這部電腦上', off: '不用了' },
     stripDetails: '詳細資訊'
   },
+  firstRun: zhHantFirstRun,
   intro: introZhHant,
   sessionImport: zhHantConnectors.sessionImport,
   common: zhHantCommon.common,
@@ -71,6 +81,9 @@ export const zhHant = defineLocale({
   boot: zhHantBoot.boot,
   notifications: zhHantDiagnostics.notifications,
   remoteDisplayBanner: zhHantBoot.remoteDisplayBanner,
+  butterbar: zhHantBoot.butterbar,
+  promptNotices: zhHantBoot.promptNotices,
+  keepAwakeOffer: zhHantBoot.keepAwakeOffer,
   billingBlock: zhHantCommon.billingBlock,
   sendDiagnostics: zhHantDiagnostics.sendDiagnostics,
   titlebar: zhHantChrome.titlebar,
@@ -94,10 +107,17 @@ export const zhHant = defineLocale({
   artifactCard: zhHantArtifacts.artifactCard,
   artifactPreview: zhHantArtifacts.artifactPreview,
   sidebar: zhHantChrome.sidebar,
-  composer: zhHantChat.composer,
+  composer: {
+    ...zhHantChat.composer,
+    redirect: '重新導向目前的執行',
+    queueLostNote: '重新啟動期間該回合已遺失',
+    restoreImageDraft: '還原圖片草稿',
+    queueCancelFailed: '無法移除排隊的回合',
+    queueLostDiscard: '捨棄',
+    queueLostDiscardTip: '閘道在該回合進行中重新啟動，無法完成。捨棄後其後的排隊回合將繼續執行。'
+  },
   statusStack: zhHantChat.statusStack,
   updates: zhHantBoot.updates,
-  guidedGreeting: zhHantBoot.guidedGreeting,
   install: zhHantBoot.install,
   onboarding: zhHantBoot.onboarding,
   modelPicker: zhHantSettings.modelPicker,
@@ -125,5 +145,15 @@ export const zhHant = defineLocale({
   desktop: zhHantChat.desktop,
   errors: zhHantDiagnostics.errors,
   tips: zhHantChat.tips,
-  ui: zhHantCommon.ui
-})
+  ui: zhHantCommon.ui,
+  freeTier: {
+    offer: {
+      heading: '繼續使用 Hermes',
+      body: '你正在使用免費額度。繼續使用 Hermes 的話，你會開始遇到限制。登入免費的 Nous 帳戶，即可獲得更多額度。',
+      signIn: '登入',
+      notNow: '暫不'
+    }
+  }
+} satisfies TranslationOverrides
+
+export const zhHant = defineLocale(zhHantOverrides)

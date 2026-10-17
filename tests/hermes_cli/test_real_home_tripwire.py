@@ -35,7 +35,9 @@ def _open_close(path):
 
 
 def _io_open_close(path):
-    with io.open(path, encoding="utf-8"):
+    # io.open is a separate guarded entry point from builtins.open (HomeIOGuard wraps both);
+    # bare `open` would only re-exercise the builtin-open case above.
+    with io.open(path, encoding="utf-8"):  # noqa: UP020 — exercise io.open separately
         pass
 
 
@@ -142,7 +144,7 @@ def test_close_keeps_a_reused_descriptors_new_owner(tmp_path, monkeypatch):
         original_close(fd)
         reopened.append(os.open(second, os.O_RDONLY))
 
-    guard = HomeIOGuard(lambda: [])
+    guard = HomeIOGuard(list)
     try:
         with monkeypatch.context() as patcher:
             patcher.setattr(os, "close", close_and_reopen)
@@ -184,6 +186,22 @@ def test_relative_path_metadata_exemption_tracks_working_directory(protected_hom
         guard.check(target, metadata=True)
 
 
+def test_resolving_a_path_entry_under_the_home_is_command_lookup(protected_home, monkeypatch):
+    """Command resolution realpath()s a PATH entry under the home (``~/.hermes/tools/<tool>``)
+    to tell Hermes-managed bin dirs apart; that lstats the entry and each of its ancestors."""
+    from tests.home_io_guard import HomeIOGuard
+
+    entry = protected_home / "tools" / "npm" / "bin"
+    guard = HomeIOGuard(lambda: [protected_home])
+    monkeypatch.setenv("PATH", str(entry))
+    guard.check(entry, metadata=True)
+    guard.check(entry.parent, metadata=True)
+    with pytest.raises(AssertionError, match="REAL hermes home"):
+        guard.check(protected_home / "tools" / "other", metadata=True)
+    with pytest.raises(AssertionError, match="REAL hermes home"):
+        guard.check(entry.parent, metadata=False)
+
+
 def test_checkout_inside_a_guarded_root_is_not_hermes_state():
     """The default install checks the repo out INSIDE the home (install.sh:
     INSTALL_DIR=$HERMES_HOME/hermes-agent): the checkout, its .venv and test
@@ -223,6 +241,7 @@ def test_hermes_exported_scratch_tmp_is_not_the_test_temp_root(tmp_path):
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "-p", "tests.conftest", "-p", "no:cacheprovider", "-q", str(probe)],
         cwd=PROJECT_ROOT, env=env, capture_output=True, text=True, timeout=120,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "1 passed" in result.stdout

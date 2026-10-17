@@ -168,7 +168,7 @@ _NAMED_CUSTOM_MEMO_SIG: dict[str, Any] = {}
 _NAMED_CUSTOM_MEMO_NO_SIG = object()
 
 
-def _has_named_custom_provider(name: str, home: "Path | None", hkey: str) -> bool:
+def _has_named_custom_provider(name: str, home: Path | None, hkey: str) -> bool:
     """``has_named_custom_provider`` memoized on the home's config file signature."""
     from utils import file_signature
 
@@ -194,6 +194,10 @@ def get_provider_profile(name: str) -> ProviderProfile | None:
 
     Returns None if the provider has no profile (falls back to generic).
     """
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return None
     if not _discovered:
         _discover_providers()
     layer, home, key = _bound_home_layer()
@@ -256,6 +260,10 @@ def routed_model_rejects_vision_tool_messages(provider: str, model: str) -> bool
 def list_providers() -> list[ProviderProfile]:
     """Return all registered provider profiles (one per canonical name); the bound home's
     ``$HERMES_HOME`` plugins shadow process-wide profiles of the same name."""
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return []
     global _PROVIDER_LIST_CACHE
     if not _discovered:
         _discover_providers()
@@ -272,6 +280,25 @@ def list_providers() -> list[ProviderProfile]:
     result = [p for p in _PROVIDER_LIST_CACHE if p.name not in layer.registry]
     result.extend({id(p): p for p in layer.registry.values()}.values())
     return result
+
+
+def unlisted_provider_names() -> set[str]:
+    """Registered profiles that discovery surfaces (provider pickers, setup lists, the accounts tab)
+    must not offer: pre-release ones the user has not opted into.
+
+    Resolution never consults this: an unlisted profile still resolves, authenticates and serves
+    turns by name. A raising ``listed()`` counts as unlisted, because a broken gate must never
+    advertise a dark launch.
+    """
+    hidden: set[str] = set()
+    for profile in list_providers():
+        try:
+            if not profile.listed():
+                hidden.add(profile.name)
+        except Exception:
+            logger.debug("provider %s listed() raised; hiding it", profile.name, exc_info=True)
+            hidden.add(profile.name)
+    return hidden
 
 
 def _home_layer(*, force_stamp_check: bool = False) -> _HomeLayer:
@@ -624,6 +651,10 @@ def _discover_providers() -> None:
     module-level. Later steps win on name collision. ``$HERMES_HOME`` plugins are
     per profile home and load through :func:`_home_layer` at lookup time.
     """
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return
     global _discovered, _discovering
     if _discovered:
         return

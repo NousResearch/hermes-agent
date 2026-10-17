@@ -139,6 +139,9 @@ def _emit_reasoning_delta(sid: str, text: str) -> None:
 
 
 def _agent_cbs(sid: str) -> dict:
+    # Late import: bind_module rebinds this function to server.py's globals and skips plain imports.
+    from tui_gateway.theme_bridge import theme_request
+
     def _read_block(method: str, timeout: int):
         # read_terminal / read_preview (desktop GUI): server request like clarify; the preview
         # read gets longer since a URL tab extracts text from a live page.
@@ -175,7 +178,10 @@ def _agent_cbs(sid: str) -> dict:
         # (tools/connectors/run.py), and the card drives it through connection.respond by op_id.
         "connection_callback": lambda payload: _emit("connection.request", sid, dict(payload)) and None,
         # tour (desktop GUI): renderer drives driver.js and answers the ``tour`` request.
-        "tour_callback": lambda payload: _tour_request(sid, payload)}
+        "tour_callback": lambda payload: _tour_request(sid, payload),
+        # set_theme (desktop GUI): theme.apply with the tour probe ladder, or a theme.pick card.
+        "theme_callback": lambda payload: theme_request(sid, payload),
+        "setup_beat_callback": lambda payload: _setup_beat_request(sid, payload)}
 
     # Interim assistant commentary (text alongside tool calls), gated on display.interim_assistant_
     # messages; _run_prompt_submit overwrites it per turn and clears it so a stale closure can't fire.
@@ -442,15 +448,13 @@ def _side_agent_session_db(parent_db):
         release_or_close(db)
 
 
-def _preview_restart_history(session: dict, max_messages: int = 24, max_tool_chars: int = 1200) -> list[dict]:
+def _preview_restart_history(messages: list[dict] | None, max_messages: int = 24,
+                             max_tool_chars: int = 1200) -> list[dict]:
     """Distill recent parent history for the ephemeral preview-restart agent (else it guesses
     app/cwd/port from the bare URL): last ``max_messages`` back to the last user turn, tool
-    results truncated to ``max_tool_chars``."""
-    try:
-        with session["history_lock"]:
-            history = list(session.get("history") or [])
-    except Exception:
-        history = list(session.get("history") or [])
+    results truncated to ``max_tool_chars``. ``messages`` is a snapshot the caller owns (the
+    legacy session's history taken under its ``history_lock``, or the owner's stored transcript)."""
+    history = list(messages or [])
     if not history:
         return []
     last_user = next((i for i in range(len(history) - 1, -1, -1) if history[i].get("role") == "user"), None)

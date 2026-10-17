@@ -81,7 +81,7 @@ def _running_interpreter() -> str:
     return str(path.resolve())
 
 
-_probe_cache: "dict[str, bool]" = {}
+_probe_cache: dict[str, bool] = {}
 
 
 def _can_import_hermes_cli(interpreter: Path) -> bool:
@@ -328,7 +328,7 @@ def _resolve_hermes_bin_for_desktop_entry(
     return None
 
 
-def _shebang_tokens(shebang: str) -> "list[str]":
+def _shebang_tokens(shebang: str) -> list[str]:
     return shebang[2:].strip().split()
 
 
@@ -599,7 +599,7 @@ def _render_legacy_alias_entry(exec_command: str, icon: str) -> str:
     return render_desktop_entry(exec_command, icon) + "NoDisplay=true\n"
 
 
-def refresh_desktop_databases(applications_dir: Path) -> "list[str]":
+def refresh_desktop_databases(applications_dir: Path) -> list[str]:
     """Reindex the menu caches. Run each tool only when it exists."""
     ran: list[str] = []
 
@@ -618,7 +618,7 @@ def refresh_desktop_databases(applications_dir: Path) -> "list[str]":
     return ran
 
 
-def _run_quiet(cmd: "list[str]", *, timeout: int = 60, on_error: Optional[bool] = False, **kwargs) -> Optional[bool]:
+def _run_quiet(cmd: list[str], *, timeout: int = 60, on_error: Optional[bool] = False, **kwargs) -> Optional[bool]:
     """Exit-status success of a silenced subprocess; ``on_error`` when it could not be run at all."""
     try:
         result = subprocess.run(

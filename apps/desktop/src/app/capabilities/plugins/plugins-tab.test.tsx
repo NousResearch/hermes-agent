@@ -299,6 +299,58 @@ describe('PluginsTab', () => {
     )
   })
 
+  it('turns a unified package on with ONE switch: Agent on also turns its desktop half on', async () => {
+    publishPlugin(
+      { id: 'meter-ui', name: 'Meter', kind: 'disk', status: 'disabled', packageName: 'meter' },
+      { activate: () => patchPlugin('meter-ui', { status: 'loaded' }), deactivate: () => undefined }
+    )
+    $agentPlugins.set([
+      { description: '', key: 'meter', name: 'meter', source: 'git', status: 'not enabled', version: '1' }
+    ])
+    requestGateway.mockImplementation((async (_method: string, params?: { action?: string }) =>
+      params?.action === 'toggle'
+        ? { ok: true, plugin: { key: 'meter', name: 'meter', status: 'enabled' } }
+        : { plugins: [] }) as never)
+
+    render(<PluginsTab profile={null} />)
+
+    screen.getByRole('switch', { name: 'Agent: Meter' }).click()
+
+    await waitFor(() =>
+      expect(screen.getByRole('switch', { name: 'Desktop: Meter' }).getAttribute('aria-checked')).toBe('true')
+    )
+    expect($pluginDecisions.get()['meter-ui']).toBe(true)
+    requestGateway.mockImplementation(async () => ({ plugins: [] }))
+    $pluginDecisions.set({})
+  })
+
+  it('leaves a desktop half the user switched off alone when its agent half is turned on', async () => {
+    $pluginDecisions.set({ 'meter-ui': false })
+    publishPlugin(
+      { id: 'meter-ui', name: 'Meter', kind: 'disk', status: 'disabled', packageName: 'meter' },
+      { activate: () => patchPlugin('meter-ui', { status: 'loaded' }), deactivate: () => undefined }
+    )
+    $agentPlugins.set([
+      { description: '', key: 'meter', name: 'meter', source: 'git', status: 'not enabled', version: '1' }
+    ])
+    requestGateway.mockImplementation((async (_method: string, params?: { action?: string }) =>
+      params?.action === 'toggle'
+        ? { ok: true, plugin: { key: 'meter', name: 'meter', status: 'enabled' } }
+        : { plugins: [] }) as never)
+
+    render(<PluginsTab profile={null} />)
+
+    screen.getByRole('switch', { name: 'Agent: Meter' }).click()
+
+    await waitFor(() =>
+      expect(requestGateway).toHaveBeenCalledWith('plugins.manage', expect.objectContaining({ action: 'toggle' }))
+    )
+    expect($pluginDecisions.get()['meter-ui']).toBe(false)
+    expect(screen.getByRole('switch', { name: 'Desktop: Meter' }).getAttribute('aria-checked')).toBe('false')
+    requestGateway.mockImplementation(async () => ({ plugins: [] }))
+    $pluginDecisions.set({})
+  })
+
   it('renders keyless rows read-only (no name-addressed toggle RPC)', () => {
     // Name-addressed toggles flip every same-named plugin across category
     // dirs — pre-contract-v6 rows must never reach the RPC.

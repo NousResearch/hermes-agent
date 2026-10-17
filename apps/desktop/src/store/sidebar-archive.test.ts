@@ -1,8 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $apiRequestScope } from '@/api/client'
 import type { SessionInfo } from '@/types/hermes'
 
-import { $archivedSessions, listEveryArchivedSession, loadArchivedSessions } from './sidebar-archive'
+import { $sidebarShowArchived } from './layout'
+import {
+  $archivedSessions,
+  $archivedSessionsLoading,
+  listEveryArchivedSession,
+  loadArchivedSessions
+} from './sidebar-archive'
 
 const listAllProfileSessions = vi.hoisted(() => vi.fn())
 
@@ -35,6 +42,8 @@ const page = (from: number, count: number): SessionInfo[] =>
   Array.from({ length: count }, (_, i) => row(`a-${from + i}`))
 
 beforeEach(() => {
+  $sidebarShowArchived.set(false)
+  $apiRequestScope.set({ connectionId: null, profile: null })
   $archivedSessions.set([])
   listAllProfileSessions.mockReset()
 })
@@ -48,6 +57,100 @@ describe('loadArchivedSessions', () => {
     await loadArchivedSessions()
 
     expect($archivedSessions.get()).toEqual([existing])
+  })
+
+  it('does not publish the previous connection rows after a switch mid-load', async () => {
+    let resolvePrevious!: (page: unknown) => void
+    let resolveCurrent!: (page: unknown) => void
+
+    listAllProfileSessions
+      .mockImplementationOnce(() => new Promise(resolve => (resolvePrevious = resolve)))
+      .mockImplementationOnce(() => new Promise(resolve => (resolveCurrent = resolve)))
+
+    $apiRequestScope.setKey('connectionId', 'conn-a')
+    const previous = loadArchivedSessions()
+    $apiRequestScope.setKey('connectionId', 'conn-b')
+    const current = loadArchivedSessions()
+
+    // The new connection's reload must fetch, not be swallowed by A's flag.
+    expect(listAllProfileSessions).toHaveBeenCalledTimes(2)
+
+    resolveCurrent({ sessions: [row('b-archived')], total: 1 })
+    await current
+    resolvePrevious({ sessions: [row('a-archived')], total: 1 })
+    await previous
+
+    expect($archivedSessions.get().map(session => session.id)).toEqual(['b-archived'])
+    expect($archivedSessionsLoading.get()).toBe(false)
+  })
+
+  it('clears the previous connection rows when a load starts on a new one', async () => {
+    let resolveCurrent!: (page: unknown) => void
+
+    listAllProfileSessions
+      .mockResolvedValueOnce({ sessions: [row('a-archived')], total: 1 })
+      .mockImplementationOnce(() => new Promise(resolve => (resolveCurrent = resolve)))
+
+    $apiRequestScope.setKey('connectionId', 'conn-a')
+    await loadArchivedSessions()
+    $apiRequestScope.setKey('connectionId', 'conn-b')
+    const current = loadArchivedSessions()
+
+    expect($archivedSessions.get()).toEqual([])
+
+    resolveCurrent({ sessions: [row('b-archived')], total: 1 })
+    await current
+
+    expect($archivedSessions.get().map(session => session.id)).toEqual(['b-archived'])
+  })
+
+  // Nothing else reloads on a scope switch: the sidebar effect watches only the Archived toggle
+  // and background sync waits for a backend sessions.changed event.
+  it('clears and reloads an open Archived view on a scope switch with no other trigger', async () => {
+    $sidebarShowArchived.set(true)
+    let resolveCurrent!: (page: unknown) => void
+
+    listAllProfileSessions
+      .mockResolvedValueOnce({ sessions: [row('a-archived')], total: 1 })
+      .mockImplementationOnce(() => new Promise(resolve => (resolveCurrent = resolve)))
+
+    await loadArchivedSessions()
+    $apiRequestScope.setKey('profile', 'work')
+
+    expect($archivedSessions.get()).toEqual([])
+    expect(listAllProfileSessions).toHaveBeenCalledTimes(2)
+
+    resolveCurrent({ sessions: [row('work-archived')], total: 1 })
+    await vi.waitFor(() => expect($archivedSessions.get().map(session => session.id)).toEqual(['work-archived']))
+    expect($archivedSessionsLoading.get()).toBe(false)
+  })
+
+  it('replaces a first load stranded by a scope switch while Archived is open', async () => {
+    $sidebarShowArchived.set(true)
+    let resolvePrevious!: (page: unknown) => void
+
+    listAllProfileSessions
+      .mockImplementationOnce(() => new Promise(resolve => (resolvePrevious = resolve)))
+      .mockResolvedValueOnce({ sessions: [row('b-archived')], total: 1 })
+
+    const previous = loadArchivedSessions()
+    $apiRequestScope.setKey('connectionId', 'conn-b')
+
+    await vi.waitFor(() => expect($archivedSessions.get().map(session => session.id)).toEqual(['b-archived']))
+    resolvePrevious({ sessions: [row('a-archived')], total: 1 })
+    await previous
+
+    expect($archivedSessions.get().map(session => session.id)).toEqual(['b-archived'])
+    expect($archivedSessionsLoading.get()).toBe(false)
+  })
+
+  it('clears a closed Archived view on a scope switch without fetching', async () => {
+    $archivedSessions.set([row('a-archived')])
+
+    $apiRequestScope.setKey('profile', 'work')
+
+    expect($archivedSessions.get()).toEqual([])
+    expect(listAllProfileSessions).not.toHaveBeenCalled()
   })
 })
 
@@ -81,10 +184,16 @@ describe('listEveryArchivedSession', () => {
     // a riding pin. The next offset must stay 200/400 regardless.
     listAllProfileSessions
       .mockResolvedValueOnce({
-        sessions: [...page(0, PAGE_SIZE), pinnedRow('pin-x')], total: 401, limit: PAGE_SIZE, offset: 0
+        sessions: [...page(0, PAGE_SIZE), pinnedRow('pin-x')],
+        total: 401,
+        limit: PAGE_SIZE,
+        offset: 0
       })
       .mockResolvedValueOnce({
-        sessions: [...page(PAGE_SIZE, PAGE_SIZE), pinnedRow('pin-x')], total: 401, limit: PAGE_SIZE, offset: PAGE_SIZE
+        sessions: [...page(PAGE_SIZE, PAGE_SIZE), pinnedRow('pin-x')],
+        total: 401,
+        limit: PAGE_SIZE,
+        offset: PAGE_SIZE
       })
       .mockResolvedValueOnce({ sessions: [row('a-400')], total: 401, limit: PAGE_SIZE, offset: 2 * PAGE_SIZE })
 
@@ -94,10 +203,8 @@ describe('listEveryArchivedSession', () => {
     expect(sessions).toHaveLength(402)
     expect(sessions.filter(s => s.id === 'pin-x')).toHaveLength(1)
     expect(sessions.filter(s => s.archived).map(s => s.id)).toContain('a-400')
-    expect(listAllProfileSessions).toHaveBeenNthCalledWith(
-      2, PAGE_SIZE, 0, 'only', 'recent', 'all', {}, PAGE_SIZE)
-    expect(listAllProfileSessions).toHaveBeenNthCalledWith(
-      3, PAGE_SIZE, 0, 'only', 'recent', 'all', {}, 2 * PAGE_SIZE)
+    expect(listAllProfileSessions).toHaveBeenNthCalledWith(2, PAGE_SIZE, 0, 'only', 'recent', 'all', {}, PAGE_SIZE)
+    expect(listAllProfileSessions).toHaveBeenNthCalledWith(3, PAGE_SIZE, 0, 'only', 'recent', 'all', {}, 2 * PAGE_SIZE)
   })
 
   it('loads every archived row when non-archived pins inflate each page', async () => {

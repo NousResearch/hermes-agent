@@ -56,6 +56,21 @@ export interface UpdateCopyResult {
   body: string
 }
 
+/** The release an update would move BACK to (the checkout already contains it), else null. */
+export function rollbackRelease(status?: null | { rollback?: boolean; sourceVersion?: string }): null | string {
+  return status?.rollback && status.sourceVersion ? `v${status.sourceVersion}` : null
+}
+
+/** The tooltip sentence for {@link rollbackRelease}, or undefined when the update moves forward. */
+export function rollbackSentence(
+  status: Parameters<typeof rollbackRelease>[0],
+  sentence: (version: string) => string
+): string | undefined {
+  const tag = rollbackRelease(status)
+
+  return tag ? sentence(tag) : undefined
+}
+
 export function resolveUpdateCopy({
   target,
   shownItems,

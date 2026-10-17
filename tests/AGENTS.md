@@ -32,7 +32,9 @@ scripts/run_tests.sh -v --tb=long                       # pytest flags pass thro
   `HERMES_TEST_FILE_RETRIES=0` disables); a worker killed by signal or the file timeout is never
   retried (relaunching a runaway doubles the damage). Pass-on-retry is green but printed under `⚠ FLAKY`
   with both outputs — a bug to fix, not noise. Timing tests must not assume a quiet runner:
-  wall-clock bounds ≥ 2s, event-based sync, no `assert not _wait_until(...)` races.
+  wall-clock bounds ≥ 2s, event-based sync, no `assert not _wait_until(...)` races. A new
+  non-zero `time.sleep`/`asyncio.sleep` in a test fails the ratchet (HX013): wait on an Event or
+  poll with `tests.waiting.wait_until` / `async_wait_until`.
 - **Placement mirrors the source tree.** A test lives in `tests/<top-level source dir>/` (`tests/hermes_cli/`,
   `tests/agent/`, `tests/hermes_state/`, `tests/gateway/relay/`, ...); installer/updater script tests
   under `tests/scripts/{install,desktop_update}/`. Only tests of root-level modules (`batch_runner`,

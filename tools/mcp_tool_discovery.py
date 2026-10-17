@@ -100,10 +100,10 @@ async def _install_owner_secret_scope():
 
 
 _HYDRATE_RETRY_INTERVAL_SEC = 30.0
-_hydrate_retry_after: Dict[str, float] = {}
+_hydrate_retry_after: dict[str, float] = {}
 
 
-def _owner_secret_mapping(home: Path) -> Dict[str, str]:
+def _owner_secret_mapping(home: Path) -> dict[str, str]:
     """The owner's FRESH secret mapping. The launch profile's is ``launch_secret_scope`` (its files
     over the frozen launch env): a credential injected only by systemd ``Environment=`` /
     ``op run`` / Compose has no file to rebuild from, so a files-only rebuild dropped it, left the
@@ -167,7 +167,7 @@ async def _connect_server(name: str, config: dict) -> _core.MCPServerTask:
         if claim is None:
             try:
                 await server.shutdown()
-            except Exception as shutdown_exc:  # noqa: BLE001 -- best-effort reap, don't mask the real error
+            except Exception as shutdown_exc:
                 logger.debug("MCP server '%s' shutdown during orphan-reap failed: %s", name, shutdown_exc)
         raise
     finally:
@@ -323,10 +323,10 @@ def _get_connected_server_for_call(server_name: str) -> Optional[_core.MCPServer
         return _core._servers.get(key)
 
 
-async def _discover_and_register_server(name: str, config: dict) -> List[str]:
+async def _discover_and_register_server(name: str, config: dict) -> list[str]:
     """Connect one server, register its tools; return the registered names."""
     # The claim fires inside _connect_server while this frame is suspended (list, not nonlocal).
-    claimed: List[_core.MCPServerTask] = []
+    claimed: list[_core.MCPServerTask] = []
     claim_token = _core._connect_server_claim.set(claimed.append)
     try:
         server = await asyncio.wait_for(_connect_server(name, config),
@@ -356,7 +356,7 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
     return registered_names
 
 
-def _select_new_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
+def _select_new_servers(servers: dict[str, dict]) -> dict[str, dict]:
     """Pick connect candidates (enabled, not connected/connecting/lazy, not in backoff) and
     refresh per-server bookkeeping. Known servers without a live session are parked or
     mid-reconnect with tools deregistered, so nothing else can nudge them: signal a reconnect."""
@@ -391,17 +391,20 @@ def _select_new_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
             else:
                 _core._parallel_safe_servers.discard(own_key)
     for srv in stale_cached:
-        _loop._signal_reconnect(srv)
+        auth_park = getattr(srv, "_auth_park", None)
+        # Parked on an OAuth failure and not re-authorized since: leave it to its timed self-probe.
+        if auth_park is None or auth_park[0].credential_stamp() != auth_park[1]:
+            _loop._signal_reconnect(srv)
     return new_servers
 
 
-def _register_lazy_from_cache(new_servers: Dict[str, dict]) -> Tuple[Dict[str, dict], int, int]:
+def _register_lazy_from_cache(new_servers: dict[str, dict]) -> tuple[dict[str, dict], int, int]:
     """Register ``lazy: true`` servers from a valid schema-cache entry without connecting
     (missing/stale entry or failed registration -> eager). Returns (eager servers, lazy tool
     count, lazy server count)."""
     # A missing or stale cache entry falls back to the normal eager connect below (which write-through
     # refreshes the cache for next time). See #56832.
-    eager_servers: Dict[str, dict] = dict(new_servers)
+    eager_servers: dict[str, dict] = dict(new_servers)
     lazy_registered = 0
     lazy_server_count = 0
     try:
@@ -429,7 +432,7 @@ def _register_lazy_from_cache(new_servers: Dict[str, dict]) -> Tuple[Dict[str, d
     return eager_servers, lazy_registered, lazy_server_count
 
 
-async def _discover_all(new_servers: Dict[str, dict]) -> None:
+async def _discover_all(new_servers: dict[str, dict]) -> None:
     """Connect every candidate concurrently; record per-server outcome.
 
     Concurrency is bounded: every stdio server spawns child processes, so an
@@ -460,7 +463,7 @@ async def _discover_all(new_servers: Dict[str, dict]) -> None:
             _note_connect_success(name)
 
 
-def _run_discovery_pass(new_servers: Dict[str, dict]) -> None:
+def _run_discovery_pass(new_servers: dict[str, dict]) -> None:
     """Run ``_discover_all`` on the MCP loop with the interrupt flag parked; clean up
     ``_server_connecting`` when the pass dies early."""
     # Executor threads are reused: a prior session's stale interrupt must not cancel this pass.
@@ -502,7 +505,7 @@ def _run_discovery_pass(new_servers: Dict[str, dict]) -> None:
 
 
 def _connected_summary(names, *, lazy_tools: int = 0,
-                       lazy_servers: int = 0) -> Tuple[int, int, List[Tuple[str, str]]]:
+                       lazy_servers: int = 0) -> tuple[int, int, list[tuple[str, str]]]:
     """(tool count, connected count, ``[(failed name, reason)]``) for candidate names, plus lazy
     servers. The reason is the recorded connect error; a candidate this pass never attempted (still
     inside its retry cooldown from an earlier failure) has none."""
@@ -532,9 +535,14 @@ def _log_summary(prefix: str, names, **lazy) -> None:
         logger.info(summary)
 
 
-def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
+def register_mcp_servers(servers: dict[str, dict]) -> list[str]:
     """Connect ``{name: config}`` servers and register their tools; idempotent for connected
     names, ``enabled: false`` skipped without disconnecting. Returns every MCP tool name."""
+    from agent.safe_worker_policy import safe_worker_enabled
+    if safe_worker_enabled():
+        # A troubleshooting worker never spawns MCP processes; nor may it borrow tools
+        # another caller already connected in this process.
+        return []
     if not _core._ensure_mcp_sdk():
         logger.debug("MCP SDK not available -- skipping explicit MCP registration")
         return []
@@ -547,7 +555,7 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         _lifecycle._reregister_orphaned_adopters()
 
 
-def _register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
+def _register_mcp_servers(servers: dict[str, dict]) -> list[str]:
     scoped_healed = _registration.register_connected_into_current_scope(servers)
     if not servers:
         logger.debug("No explicit MCP servers provided")
@@ -592,7 +600,7 @@ def _acquire_discovery_lock_with_retry():
     return cookie
 
 
-def discover_mcp_tools(allowed_mcp_names: Optional[List[str]] = None) -> List[str]:
+def discover_mcp_tools(allowed_mcp_names: Optional[list[str]] = None) -> list[str]:
     """Entry point: load config, connect servers, register tools. [] without the ``mcp``
     package; idempotent (only servers missing from a previous call are retried).
 
@@ -600,6 +608,9 @@ def discover_mcp_tools(allowed_mcp_names: Optional[List[str]] = None) -> List[st
     list simply don't match); ``None`` spawns every configured server. Used by
     ``hermes -z -t <toolsets>`` to skip cold-starting servers the caller doesn't need (10-60s
     each); it only affects which servers start, not which names ``-t`` validation can see."""
+    from agent.safe_worker_policy import safe_worker_enabled
+    if safe_worker_enabled():
+        return []
     with _owner_secret_scope():
         servers = _config._load_mcp_config()
     if not servers:
@@ -646,7 +657,7 @@ def discover_mcp_tools(allowed_mcp_names: Optional[List[str]] = None) -> List[st
             cookie.release()
 
 
-def reconcile_mcp_servers_with_config() -> Dict[str, List[str]]:
+def reconcile_mcp_servers_with_config() -> dict[str, list[str]]:
     """Bring the live server set in step with ``mcp_servers`` as it is on disk NOW: tear down
     servers that were removed from config or set ``enabled: false`` (a parked server keeps
     self-probing forever otherwise — for hours after the user deleted its entry), then connect
@@ -679,7 +690,7 @@ def reconcile_mcp_servers_with_config() -> Dict[str, List[str]]:
             "pending": sorted(connecting - wanted)}
 
 
-def _awaiting_connect(wanted: Set[str], scope) -> List[str]:
+def _unregistered(wanted: set[str], scope) -> set[str]:
     with _core._lock:
         # Same resolution ``_select_new_servers`` applies: this scope's own connection OR a shared
         # one it adopted from another profile counts as live. Owner==scope alone misses the adopted
@@ -688,22 +699,60 @@ def _awaiting_connect(wanted: Set[str], scope) -> List[str]:
         known = {name for name in wanted
                  if (key := _resolve_server_key(name, scope, current=False)) in _core._servers
                  or key in _core._server_connecting or key in _core._lazy_server_configs}
+    return wanted - known
+
+
+def _awaiting_connect(wanted: set[str], scope) -> list[str]:
     # A configured server that is not live is retried — the only way one whose FIRST connect
     # failed comes back (#112445) — but only once its connect cooldown lapsed: ``discover_mcp_tools``
     # would skip it anyway, and entering it takes the cross-process discovery lock (up to 120 s of
     # waiting when another process holds it) and logs a failed pass, every call, for nothing.
-    return sorted(name for name in wanted - known if not _connect_cooldown_active(name))
+    return sorted(name for name in _unregistered(wanted, scope) if not _connect_cooldown_active(name))
 
 
-def mcp_servers_awaiting_connect() -> List[str]:
+def _enabled_config_names() -> set[str]:
+    with _owner_secret_scope():
+        servers = _config._load_mcp_config()
+    return {name for name, cfg in servers.items() if mcp_server_enabled(cfg)}
+
+
+def _not_connected(wanted: set[str], scope) -> set[str]:
+    with _core._lock:
+        # A parked task stays registered (it self-probes) but serves nothing, as does one whose connect
+        # recorded an error since its last success, and a lazy registration whose first-use connect failed
+        # (a timed-out one leaves no task; one that never started has no error).
+        serving_nothing = {name for name in wanted
+                           if ((key := _resolve_server_key(name, scope, current=False)) in _core._servers
+                               and (key in _core._server_connect_errors
+                                    or getattr(_core._servers[key], "_park_reason", None) is not None))
+                           or (key in _core._lazy_server_configs and key in _core._server_connect_errors)}
+    return _unregistered(wanted, scope) | serving_nothing
+
+
+def mcp_servers_not_connected() -> list[str]:
+    """Enabled ``mcp_servers`` entries the current registry scope has no live, connecting or lazy
+    registration for, in connect cooldown or not, or whose registration (lazy included) is parked or
+    failed its connect: after a reload, the servers that did not connect."""
+    return sorted(_not_connected(_enabled_config_names(), _core._mcp_registry_scope()))
+
+
+def mcp_servers_ready() -> list[str]:
+    """Enabled ``mcp_servers`` entries the current registry scope serves now: live, or lazily registered
+    and not failed on its first use."""
+    wanted, scope = _enabled_config_names(), _core._mcp_registry_scope()
+    with _core._lock:
+        registered = {name for name in wanted
+                      if (key := _resolve_server_key(name, scope, current=False)) in _core._servers
+                      or key in _core._lazy_server_configs}
+    return sorted(registered - _not_connected(wanted, scope))
+
+
+def mcp_servers_awaiting_connect() -> list[str]:
     """Enabled ``mcp_servers`` entries the current registry scope has no live, connecting or lazy
     registration for, whose connect cooldown has lapsed: added to config since the last discovery
     run, or one whose earlier connect failed. Read-only — what the next :func:`discover_mcp_tools`
     would connect."""
-    with _owner_secret_scope():
-        servers = _config._load_mcp_config()
-    wanted = {name for name, cfg in servers.items() if mcp_server_enabled(cfg)}
-    return _awaiting_connect(wanted, _core._mcp_registry_scope())
+    return _awaiting_connect(_enabled_config_names(), _core._mcp_registry_scope())
 
 
 def _forget_lazy_server(key) -> None:
@@ -727,7 +776,7 @@ def is_mcp_tool_parallel_safe(tool_name: str) -> bool:
         return bool(server_name and _server_key(server_name) in _core._parallel_safe_servers)
 
 
-def get_mcp_status(configured: Optional[Dict[str, dict]] = None, *, include_runtime: bool = True) -> List[dict]:
+def get_mcp_status(configured: Optional[dict[str, dict]] = None, *, include_runtime: bool = True) -> list[dict]:
     """Per-server status dicts for banner/TUI: name, transport, tools, connected, disabled,
     status (connected / disabled / connecting / failed / lazy / configured) and error for failed.
     Reads cached runtime state only; never connects.
@@ -760,7 +809,7 @@ def get_mcp_status(configured: Optional[Dict[str, dict]] = None, *, include_runt
                       if include_runtime and _key_visible_in_scope(k, current_scope)
                       and k in _core._lazy_server_configs}
 
-    result: List[dict] = []
+    result: list[dict] = []
     for name, cfg in configured.items():
         enabled = mcp_server_enabled(cfg)  # evaluated unconditionally: malformed values warn even when connected
         server = active_servers.get(name)
@@ -802,7 +851,7 @@ def mcp_server_reconnecting(name: str) -> bool:
     return server._task is None or not server._task.done()
 
 
-def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
+def probe_mcp_server_tools() -> dict[str, list[tuple]]:
     """Connect each enabled server, list ``(tool_name, description)``, disconnect; nothing is
     registered and failed servers are omitted."""
     if not _core._ensure_mcp_sdk():
@@ -812,8 +861,8 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
     if not enabled:
         return {}
     _loop._ensure_mcp_loop()
-    result: Dict[str, List[tuple]] = {}
-    probed_servers: List[_core.MCPServerTask] = []
+    result: dict[str, list[tuple]] = {}
+    probed_servers: list[_core.MCPServerTask] = []
 
     async def _probe_all():
         coros = [asyncio.wait_for(_connect_server(name, cfg),

@@ -42,7 +42,7 @@ def _truncate_description(description: str) -> str:
     return description[: MAX_DESCRIPTION_LENGTH - 3] + "..."
 
 
-def _safe_frontmatter(path: Path | None = None, *, content: str | None = None) -> Dict[str, Any]:
+def _safe_frontmatter(path: Path | None = None, *, content: str | None = None) -> dict[str, Any]:
     """Frontmatter of *path* (or of *content*), ``{}`` on any read/parse failure.
     Parses via ``tools.skills_tool._parse_frontmatter`` so test patches are honored."""
     from tools import skills_tool as _st
@@ -51,10 +51,10 @@ def _safe_frontmatter(path: Path | None = None, *, content: str | None = None) -
     return {}
 
 
-def _available_skill_files(skill_dir: Path) -> Dict[str, List[str]]:
+def _available_skill_files(skill_dir: Path) -> dict[str, list[str]]:
     """Non-SKILL.md files grouped by support dir (+ "other" for known source extensions
     elsewhere); empty groups dropped."""
-    groups: Dict[str, List[str]] = {}
+    groups: dict[str, list[str]] = {}
     for f in skill_dir.rglob("*"):
         if not f.is_file() or f.name == "SKILL.md":
             continue
@@ -97,9 +97,9 @@ def _serve_skill_file(
         return _fail(f"Failed to read '{file_path}': {exc}")
     if mark_read:
         _mark_background_review_read(target)
-    return _json({  # _source_path: internal, feeds the repeat-view dedup fingerprint
+    return _json({
         "success": True, "name": label, "file": file_path, "content": content,
-        "file_type": target.suffix, "_source_path": str(target)})
+        "file_type": target.suffix})
 
 
 def _mark_background_review_read(path: Path) -> None:
@@ -158,12 +158,12 @@ def _serve_plugin_skill(
         "description": _truncate_description(str(parsed_frontmatter.get("description", ""))),
         "linked_files": _plugin_skill_linked_files(skill_md.parent),
         "readiness_status": SkillReadinessStatus.AVAILABLE.value,
-        "skill_dir": str(skill_md.parent), "_source_path": str(skill_md)})
+        "skill_dir": str(skill_md.parent)})
 
 
-def _plugin_skill_linked_files(skill_root: Path) -> Dict[str, List[str]] | None:
+def _plugin_skill_linked_files(skill_root: Path) -> dict[str, list[str]] | None:
     from tools.path_security import validate_within_dir
-    linked: Dict[str, List[str]] = {}
+    linked: dict[str, list[str]] = {}
     for category in _SUPPORT_DIRS:
         files = [
             str(path.relative_to(skill_root)) for path in sorted((skill_root / category).rglob("*"))

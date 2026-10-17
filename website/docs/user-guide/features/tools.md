@@ -53,7 +53,7 @@ hermes tools
 hermes tools
 ```
 
-Common toolsets include `web`, `search`, `terminal`, `file`, `browser`, `vision`, `image_gen`, `skills`, `tts`, `todo`, `memory`, `session_search`, `cronjob`, `code_execution`, `delegation`, `clarify`, `messaging`, `spotify`, `discord`, `discord_admin`, `debugging`, and `safe`.
+Common toolsets include `web`, `search`, `terminal`, `file`, `browser`, `vision`, `image_gen`, `skills`, `tts`, `todo`, `memory`, `session_search`, `cronjob`, `code_execution`, `delegation`, `clarify`, `messaging`, `discord`, `discord_admin`, `debugging`, and `safe`.
 
 See [Toolsets Reference](../../reference/toolsets-reference.md) for the full set, including platform presets such as `hermes-cli`, `hermes-telegram`, and dynamic MCP toolsets like `mcp-<server>`.
 
@@ -234,6 +234,39 @@ process(action="write", session_id="proc_abc123", data="y")  # Send input
 ```
 
 PTY mode (`pty=true`) enables interactive CLI tools like Codex and Claude Code.
+
+A foreground command whose only backgrounding is a trailing `&` (for example
+`python3 -m http.server 8765 &` or `cd app && npm start > app.log 2>&1 &`) runs
+as `background=true` with the `&` removed, and the result carries an
+`auto_backgrounded` note with the `session_id`. It goes through the same
+approval checks as any background command. Shapes that mix in other commands
+(`server & curl ...`, `a; b &`, multi-line scripts), `nohup`/`disown`/`setsid`
+wrappers, command substitutions (`$(...)`, backticks, `<(...)`) and commands
+whose approval category would change without the `&` are still refused with
+guidance, because Hermes cannot safely tell which part should keep running.
+
+### Repeated waits on a quiet process
+
+When the agent calls `process(action="wait")` or `process(action="poll")` twice in a row on a
+process that is still running and has printed nothing new, Hermes turns on `notify_on_complete`
+for that process and the result tells the agent to stop checking: the exit (code and final output)
+arrives later as its own message, so the agent can do other work or end its turn instead of
+spending a model call on every unchanged check. New output, the process exiting, or any other
+action on that process resets the count.
+
+This applies where a completion can reach the agent: the interactive CLI (including interactive
+`hermes chat -q`), the TUI and desktop app, and messaging chats. Non-interactive `hermes chat -q`,
+one-shot `hermes -z`, cron jobs, Kanban workers, stateless API requests and delegated subagents keep the
+previous behaviour because they cannot receive a later completion, as does any profile with
+`display.background_process_notifications: off` (completions never start an agent turn there). Checking
+a process whose completion goes to someone else (another session's process, or a subagent's process
+that was not handed off) also stays plain polling. Admin-managed settings and `${VAR}` values count.
+To keep plain polling everywhere, set:
+
+```yaml
+terminal:
+  process_wait_auto_notify: false
+```
 
 Completed background commands retain their exit status and captured output in the
 active profile. Resume the conversation that launched the command (or its

@@ -104,7 +104,9 @@ export function fieldLabel(field: Pick<PluginSettingField, 'key' | 'label'>): st
 export function joinSentences(...parts: (null | string | undefined)[]): string {
   const kept = parts.map(part => part?.trim() ?? '').filter(Boolean)
 
-  return kept.map((part, index) => (index < kept.length - 1 && !/[.!?。！？…:;]$/.test(part) ? `${part}.` : part)).join(' ')
+  return kept
+    .map((part, index) => (index < kept.length - 1 && !/[.!?。！？…:;]$/.test(part) ? `${part}.` : part))
+    .join(' ')
 }
 
 /** What the input shows before the user touches it. */
@@ -328,7 +330,9 @@ export function PluginSettingsForm({
       if (await onSave(changes)) {
         // Secrets are never echoed back; clear them so the placeholder shows "set".
         setDraft(current =>
-          Object.fromEntries(fields.map(field => [field.key, field.type === 'secret' ? '' : (current[field.key] ?? '')]))
+          Object.fromEntries(
+            fields.map(field => [field.key, field.type === 'secret' ? '' : (current[field.key] ?? '')])
+          )
         )
       }
     } finally {

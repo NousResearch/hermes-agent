@@ -33,7 +33,10 @@ def test_git_checkout_still_walks_ancestry(monkeypatch):
 
     monkeypatch.setattr(chk.subprocess, "run", lambda cmd, **k: calls.append(cmd) or _R())
     assert chk.checkout_contains("cafebabe" * 5) is True
-    assert calls and calls[0][:3] == ["git", "merge-base", "--is-ancestor"]
+    from hermes_cli.update_custody import git_subcommand
+
+    assert calls and calls[0][0] == "git" and git_subcommand(calls[0][1:]) == "merge-base"
+    assert calls[0][-3:] == ["--is-ancestor", "cafebabe" * 5, "HEAD"]
 
 
 def test_partial_clone_never_downloads_history_for_a_sha_it_lacks(monkeypatch, tmp_path):
@@ -42,7 +45,7 @@ def test_partial_clone_never_downloads_history_for_a_sha_it_lacks(monkeypatch, t
     import subprocess
     from types import SimpleNamespace
 
-    import hermes_cli.update_cmd as update_cmd
+    from hermes_cli import update_cmd
 
     def git(cwd, *args):
         return subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", *args], cwd=cwd,

@@ -10,14 +10,16 @@
  *     and passes the transcript oracle.
  *  2. kill -9 the backend: the supervisor respawns EXACTLY one replacement
  *     (no crash-loop, no double spawn), and the app serves a new turn.
- *  3. quit while a turn is streaming and a tool subprocess is running: zero
- *     sandbox processes remain — no backend, no tool child, no Electron helper.
- *  4. relaunch the same HERMES_HOME repeatedly: each boot has exactly one
- *     backend, each quit leaves zero processes, and the transcript persisted
- *     by the first launch cold-hydrates exactly once every time.
+ *  3. quit while a turn is streaming and a tool subprocess is running: every
+ *     Electron process is gone, and exactly ONE gateway remains — the same
+ *     daemon that served the app, still answering. Desktop is an attach
+ *     client of the profile's gateway (`hermes gateway ensure`): closing the
+ *     app never takes cron, messaging adapters, bots or an in-flight turn down
+ *     with it. `hermes gateway stop` then proves teardown works when asked.
+ *  4. relaunch the same HERMES_HOME repeatedly: each boot ATTACHES to the one
+ *     gateway (same PID throughout, never a second backend), and the transcript
+ *     persisted by the first launch cold-hydrates exactly once every time.
  */
-
-import * as fs from 'node:fs'
 
 import { expect, test } from '@playwright/test'
 
@@ -27,14 +29,15 @@ import {
   createCoreSandbox,
   currentSessionId,
   launchCoreApp,
-  type ProcInfo,
   recordWebSockets,
   sandboxProcesses,
   send,
+  stopSandboxGateway,
   waitForInteractive,
   writeProviderHome
 } from './harness'
 import { assertTranscriptOracle, installDuplicateSampler, type OracleTarget } from './oracle'
+import { processesTagged } from './process-census'
 import { gate, startScriptedProvider } from './provider'
 
 const nonce = Math.random()
@@ -47,30 +50,6 @@ const U = (n: number) => `U${n}-${nonce}`
 const A = (n: number) => `A${n}-${nonce}`
 const TOOL_TAG = `core-orphan-${nonce}`
 
-/** Every live process whose command line carries `tag` (tool children may scrub HERMES_HOME). */
-function taggedProcesses(tag: string): ProcInfo[] {
-  const out: ProcInfo[] = []
-
-  for (const entry of fs.readdirSync('/proc')) {
-    const pid = Number(entry)
-
-    if (!Number.isInteger(pid) || pid === process.pid) {
-      continue
-    }
-
-    try {
-      const cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').join(' ').trim()
-
-      if (cmdline.includes(tag)) {
-        out.push({ pid, ppid: 0, cmdline })
-      }
-    } catch {
-      /* exited mid-scan */
-    }
-  }
-
-  return out
-}
 
 test('boot handshake, supervised respawn, and zero orphans on quit', async () => {
   const provider = await startScriptedProvider()
@@ -100,8 +79,8 @@ test('boot handshake, supervised respawn, and zero orphans on quit', async () =>
     }
   }, 100)
 
-  const describeSeen = () =>
-    JSON.stringify([...seen].map(([pid, e]) => ({ pid, ...e, electronPid: app.process().pid })))
+  const electronPid = app.process().pid
+  const describeSeen = () => JSON.stringify([...seen].map(([pid, e]) => ({ pid, ...e, electronPid })))
 
   const finished = (marker: string, step = 0) =>
     expect
@@ -157,7 +136,7 @@ test('boot handshake, supervised respawn, and zero orphans on quit', async () =>
       expect(seen.size, `backend pids ever seen: ${describeSeen()}`).toBe(2)
     })
 
-    await test.step('quit mid-turn with a running tool child: zero processes remain', async () => {
+    await test.step('quit mid-turn with a running tool child: the app is gone, the one gateway is not', async () => {
       const hold = gate()
       provider.script(U(3), [
         {
@@ -168,27 +147,42 @@ test('boot handshake, supervised respawn, and zero orphans on quit', async () =>
       ])
       await send(page, `${U(3)} long tool`, 'Enter', ws)
       await expect
-        .poll(() => taggedProcesses(TOOL_TAG).length, { timeout: 120_000, message: 'tool child running' })
+        .poll(() => processesTagged(TOOL_TAG).length, { timeout: 120_000, message: 'tool child running' })
         .toBeGreaterThan(0)
-      expect(sandboxProcesses(sandbox).length).toBeGreaterThan(0)
+      const [gateway] = backendProcesses(sandbox)
+      expect(gateway).toBeTruthy()
 
       await app.close()
       closed = true
       clearInterval(census)
+      // Electron main + helpers leave; the gateway they attached to stays and keeps its turn.
       await expect
         .poll(
           () =>
-            [...sandboxProcesses(sandbox), ...taggedProcesses(TOOL_TAG)].map(
-              p => `${p.pid} ${p.cmdline.slice(0, 120)}`
-            ),
-          {
-            timeout: 60_000,
-            message: 'no sandbox process (backend, tool child, Electron helper) survives quit'
-          }
+            sandboxProcesses(sandbox)
+              .filter(p => /electron/i.test(p.cmdline.split(' ')[0]))
+              .map(p => `${p.pid} ${p.cmdline.slice(0, 120)}`),
+          { timeout: 60_000, message: 'no Electron process survives quit' }
         )
         .toEqual([])
+      expect(backendProcesses(sandbox).map(p => p.pid), 'the same gateway keeps serving after quit').toEqual([gateway!.pid])
+      expect(seen.size, `backend pids ever seen: ${describeSeen()}`).toBe(2)
       hold.open()
+
+      // Teardown on request: the CLI stop takes the daemon and its tool child down.
+      const stopped = stopSandboxGateway(sandbox)
+      expect(stopped.code, stopped.output).toBe(0)
+      await expect
+        .poll(
+          () =>
+            [...sandboxProcesses(sandbox), ...processesTagged(TOOL_TAG)].map(
+              p => `${p.pid} ${p.cmdline.slice(0, 120)}`
+            ),
+          { timeout: 60_000, message: 'no sandbox process (gateway, tool child) survives hermes gateway stop' }
+        )
+        .toEqual([])
     })
+
   } finally {
     clearInterval(census)
 
@@ -197,7 +191,7 @@ test('boot handshake, supervised respawn, and zero orphans on quit', async () =>
     }
 
     // Never leave a test-made process behind even on failure (only our own tag / sandbox).
-    for (const proc of [...sandboxProcesses(sandbox), ...taggedProcesses(TOOL_TAG)]) {
+    for (const proc of [...sandboxProcesses(sandbox), ...processesTagged(TOOL_TAG)]) {
       try {
         process.kill(proc.pid, 'SIGKILL')
       } catch {
@@ -210,12 +204,13 @@ test('boot handshake, supervised respawn, and zero orphans on quit', async () =>
   }
 })
 
-test('relaunching the same home: one backend per boot, zero after each quit, transcript intact', async () => {
+test('relaunching the same home: one gateway across every boot, transcript intact', async () => {
   const provider = await startScriptedProvider()
   const sandbox = createCoreSandbox('relaunch')
   writeProviderHome(sandbox.hermesHome, provider.url)
   const session: OracleTarget = { sessionId: '', expectUserMarkers: [U(1)] }
   let live: Awaited<ReturnType<typeof launchCoreApp>> | null = null
+  let gatewayPid: number | null = null
 
   try {
     for (let launch = 1; launch <= 3; launch++) {
@@ -228,6 +223,11 @@ test('relaunching the same home: one backend per boot, zero after each quit, tra
         await expect
           .poll(() => backendProcesses(sandbox).length, { message: `one backend on launch ${launch}` })
           .toBe(1)
+
+        // Launch 1 starts the profile's gateway; every later launch attaches to that same daemon.
+        const [gateway] = backendProcesses(sandbox)
+        gatewayPid ??= gateway!.pid
+        expect(gateway!.pid, `launch ${launch} attaches to the gateway launch 1 started`).toBe(gatewayPid)
 
         if (launch === 1) {
           provider.script(U(1), [{ text: [`${A(1)} `, 'persisted ', 'across ', 'launches'] }])
@@ -252,13 +252,26 @@ test('relaunching the same home: one backend per boot, zero after each quit, tra
         await app.close()
         live = null
         await expect
-          .poll(() => sandboxProcesses(sandbox).map(p => `${p.pid} ${p.cmdline.slice(0, 120)}`), {
-            timeout: 60_000,
-            message: `no sandbox process survives quit #${launch}`
-          })
+          .poll(
+            () =>
+              sandboxProcesses(sandbox)
+                .filter(p => /electron/i.test(p.cmdline.split(' ')[0]))
+                .map(p => `${p.pid} ${p.cmdline.slice(0, 120)}`),
+            { timeout: 60_000, message: `no Electron process survives quit #${launch}` }
+          )
           .toEqual([])
+        expect(backendProcesses(sandbox).map(p => p.pid), `gateway outlives quit #${launch}`).toEqual([gatewayPid])
       })
     }
+
+    const stopped = stopSandboxGateway(sandbox)
+    expect(stopped.code, stopped.output).toBe(0)
+    await expect
+      .poll(() => sandboxProcesses(sandbox).map(p => `${p.pid} ${p.cmdline.slice(0, 120)}`), {
+        timeout: 60_000,
+        message: 'no sandbox process survives hermes gateway stop'
+      })
+      .toEqual([])
   } finally {
     if (live) {
       await (live as Awaited<ReturnType<typeof launchCoreApp>>).app.close().catch(() => undefined)

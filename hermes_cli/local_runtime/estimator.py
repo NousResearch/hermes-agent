@@ -113,6 +113,9 @@ class HardwareBudget:
     gpu_name: str = ""          # display name; legacy fallback for performance estimates
     platform: str = ""          # sys.platform of the machine being priced
     gpu_pci_id: int | None = None  # nvidia-smi's packed PCI device/vendor ID
+    # The engine runs on the CUDA backend here, so its launch carries a CUDA context. The policy
+    # prices runtime overhead from this; Metal/Vulkan/HIP/CPU backends have no such context.
+    cuda: bool = False
     # The engine reads lazy tensors from disk here. llama.cpp's own default does so everywhere
     # except integrated GPUs (b11370 #28160); Hermes passes --lazy-mode on to NVIDIA's, so only
     # AMD/Intel integrated GPUs load them up front.

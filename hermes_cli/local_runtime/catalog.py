@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
 from hermes_cli.local_runtime.context_policy import (
-    FLOOR, RUNTIME_OVERHEAD_BYTES, TARGET_WINDOW, LaunchPlan, plan_launch)
+    FLOOR, TARGET_WINDOW, LaunchPlan, plan_launch, runtime_overhead_bytes)
 from hermes_cli.local_runtime.estimator import (
     HardwareBudget, LayerKind, ModelProfile, PhysicsRefusal, as_loaded)
 from hermes_cli.local_runtime.gguf import model_id_from_stem
@@ -143,7 +143,7 @@ class CatalogEntry:
     def launch_plan(self, variant: QuantVariant, budget: HardwareBudget) -> LaunchPlan:
         # Optional external drafts may use spare memory after download, never reduce this grant.
         return plan_launch(as_loaded(self.profile(variant), budget), budget, mtp_capable=self.mtp_capable,
-                           fixed_overhead=RUNTIME_OVERHEAD_BYTES + self.companion_bytes)
+                           fixed_overhead=runtime_overhead_bytes(budget) + self.companion_bytes)
 
     def download_files(self, variant: QuantVariant) -> tuple:
         """Everything a download job fetches for this variant, in order."""

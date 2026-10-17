@@ -15,13 +15,17 @@ import pytest
 
 from hermes_cli.local_runtime.context_policy import (
     FLOOR,
+    NON_CUDA_RUNTIME_OVERHEAD_BYTES,
+    RUNTIME_OVERHEAD_BYTES,
     SPEED_FLOOR_TOK_S,
     WindowDecision,
     growth_decision,
     initial_window,
     ladder,
     launch_args,
+    plan_launch,
     recurrent_spill_blocks,
+    runtime_overhead_bytes,
     spill_overrides,
     ub_logits_bytes,
 )
@@ -132,6 +136,23 @@ def test_physics_check_prices_at_floor_not_native():
     the check prices the floor only."""
     p = hybrid(weights_gib=22)
     assert physics_check(p, card(24, ram_gib=8), FLOOR) is None
+
+
+def test_runtime_overhead_prices_the_budgets_backend_not_cuda_everywhere():
+    """#136164: a 16 GiB unified-memory Mac was refused an imported IQ2 hybrid that runs fine
+    under llama.cpp/Metal at the same 64K window. RUNTIME_OVERHEAD_BYTES is calibrated on a
+    CUDA card (per-process CUDA context); a budget whose backend has no CUDA context must be
+    priced with the smaller constant instead."""
+    profile = replace(hybrid(weights_gib=8, native=256 * KIB), weights_bytes=int(7.35 * GIB),
+                      n_vocab=248320)   # 16 full-attn layers -> ~2.3 GiB q8 KV at the 64K floor
+    mac = HardwareBudget(int(16 * GIB * 0.8), 16 * GIB, 0, uma=True)   # Metal: cuda=False
+    cuda = replace(mac, cuda=True)
+
+    assert runtime_overhead_bytes(mac) == NON_CUDA_RUNTIME_OVERHEAD_BYTES
+    assert runtime_overhead_bytes(cuda) == RUNTIME_OVERHEAD_BYTES
+    # Same profile, same memory: only the backend's runtime overhead flips the verdict.
+    assert isinstance(plan_launch(profile, cuda).decision, PhysicsRefusal)
+    assert not isinstance(plan_launch(profile, mac).decision, PhysicsRefusal)
 
 
 @pytest.mark.parametrize("uma", [False, True])

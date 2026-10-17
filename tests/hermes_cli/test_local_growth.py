@@ -235,7 +235,8 @@ def test_mtp_plan_matches_cost_at_initial_and_restored_windows(hermes_home, tmp_
     from types import SimpleNamespace
 
     from hermes_cli.local_runtime import presets
-    from hermes_cli.local_runtime.context_policy import FLOOR, RUNTIME_OVERHEAD_BYTES, ub_logits_bytes
+    from hermes_cli.local_runtime.context_policy import (
+        FLOOR, NON_CUDA_RUNTIME_OVERHEAD_BYTES, ub_logits_bytes)
     from hermes_cli.local_runtime.estimator import HardwareBudget, LayerKind, ModelProfile, ctx_bytes
     from hermes_cli.local_runtime.growth import save_window_override
 
@@ -244,8 +245,10 @@ def test_mtp_plan_matches_cost_at_initial_and_restored_windows(hermes_home, tmp_
                            n_ctx_train=262144, layers=[(LayerKind.FULL, 4096)] * 32,
                            moe=True, n_vocab=151936)
     priced = replace(profile, kv_scale=1.2)
-    lean = RUNTIME_OVERHEAD_BYTES + ub_logits_bytes(profile.n_vocab, mtp_capable=True)
-    stacked = RUNTIME_OVERHEAD_BYTES + ub_logits_bytes(profile.n_vocab, mtp_capable=True, mtp_prefill=True)
+    # These budgets carry no CUDA backend, so both sides price the non-CUDA overhead constant.
+    lean = NON_CUDA_RUNTIME_OVERHEAD_BYTES + ub_logits_bytes(profile.n_vocab, mtp_capable=True)
+    stacked = (NON_CUDA_RUNTIME_OVERHEAD_BYTES
+               + ub_logits_bytes(profile.n_vocab, mtp_capable=True, mtp_prefill=True))
     mdir = tmp_path / "models"
     _stage_fake_gguf(mdir, profile.name)
     monkeypatch.setattr(presets, "read_gguf_header", lambda p: SimpleNamespace(sampling_defaults={}))
@@ -295,7 +298,8 @@ def test_growth_requires_an_admissible_materialized_preset(hermes_home, tmp_path
     from types import SimpleNamespace
 
     from hermes_cli.local_runtime import bootstrap, catalog, growth, hardware, presets
-    from hermes_cli.local_runtime.context_policy import FLOOR, RUNTIME_OVERHEAD_BYTES, ub_logits_bytes
+    from hermes_cli.local_runtime.context_policy import (
+        FLOOR, NON_CUDA_RUNTIME_OVERHEAD_BYTES, ub_logits_bytes)
     from hermes_cli.local_runtime.estimator import HardwareBudget, ctx_bytes
 
     entry = next(e for e in catalog.CATALOG if e.mtp and e.mmproj)
@@ -314,7 +318,9 @@ def test_growth_requires_an_admissible_materialized_preset(hermes_home, tmp_path
     asset = bootstrap.assets_dir() / entry.mmproj.local_name
     asset.parent.mkdir(parents=True, exist_ok=True)
     asset.touch()
-    overhead = RUNTIME_OVERHEAD_BYTES + entry.mmproj.size_bytes + ub_logits_bytes(profile.n_vocab, mtp_capable=True)
+    # The budget below carries no CUDA backend, so both sides price the non-CUDA constant.
+    overhead = (NON_CUDA_RUNTIME_OVERHEAD_BYTES + entry.mmproj.size_bytes
+                + ub_logits_bytes(profile.n_vocab, mtp_capable=True))
     priced = replace(profile, kv_scale=1.2)
     next_window = FLOOR * 3 // 2
     floor_need = profile.weights_bytes + ctx_bytes(priced, FLOOR) + overhead

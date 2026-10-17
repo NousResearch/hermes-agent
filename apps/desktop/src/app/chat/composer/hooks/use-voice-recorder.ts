@@ -95,6 +95,10 @@ export function useVoiceRecorder({
       return // unmounted (or never started) while the recorder stopped
     }
 
+    if (!result) {
+      notify({ kind: 'warning', title: voiceCopy.recordingFailed, message: voiceCopy.tryRecordingAgain })
+    }
+
     if (!result || !onTranscribeAudio) {
       finish(dictation)
       setVoiceStatus('idle')

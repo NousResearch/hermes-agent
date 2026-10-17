@@ -39,6 +39,7 @@ from gateway.platforms.event import MessageEvent, MessageType
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
 from gateway.platforms._shared import env_is_connected, extra_or_secret as _extra_or_env, get_scoped_secret as _wx_secret
+from gateway.platforms.send_targets import StandaloneSendPolicy, regex_groups_parser
 
 
 def _extra_or_secret(extra: dict[str, Any], key: str, default: str = "") -> str:
@@ -1254,6 +1255,12 @@ _INSTALL_HINT = "Weixin: aiohttp/cryptography not installed"
 _env_configured = env_is_connected("WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN")
 
 
+def _config_connected(config: Any) -> bool:
+    """``config_connected_fn``: account_id AND token in the merged PlatformConfig; a token alone is
+    not enough, so this platform opts out of the generic ``token or api_key`` shortcut."""
+    return bool(config.extra.get("account_id") and (config.token or config.extra.get("token")))
+
+
 def _is_connected(config: Any) -> bool:
     """Account ID AND token, from ``config`` or the scoped ``WEIXIN_*`` env (``gateway/config.py``'s
     Weixin connected check reads the same pair), else ``.env``, which a plain CLI process never loads
@@ -1384,13 +1391,37 @@ def interactive_setup() -> None:
         gw.print_info(f"  User ID: {user_id}")
 
 
+# System-prompt platform hint (PlatformEntry.platform_hint); cached-prompt bytes, keep stable.
+_PLATFORM_HINT = (
+    "You are on Weixin/WeChat. Markdown formatting is supported, so you may use it when it improves readability, "
+    "but keep the message compact and chat-friendly. You can send media files natively: include "
+    "MEDIA:/absolute/path/to/file in your response. Images are sent as native photos, videos play inline when "
+    "supported, and other files arrive as downloadable documents. You can also include image URLs in markdown "
+    "format ![alt](url) and they will be downloaded and sent as native media when possible."
+)
+_SEND_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
+
+
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
+    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
     ctx.register_platform(
+        target_ref_syntax_fn=regex_groups_parser(_SEND_TARGET_RE, thread_group=False),
+        standalone_send=StandaloneSendPolicy(label="Weixin", media=True),
         name="weixin", label="Weixin / WeChat", adapter_factory=WeixinAdapter, check_fn=check_weixin_requirements,
+        dashboard_label="Weixin / WeChat (Personal)",
+        dashboard_description="Connect a personal WeChat account through Tencent's iLink Bot API.",
+        docs_url="https://hermes-agent.nousresearch.com/docs/user-guide/messaging/weixin/",
+        dashboard_env_vars=("WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN", "WEIXIN_BASE_URL"),
         is_connected=_is_connected, required_env=["WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN"], install_hint=_INSTALL_HINT,
-        setup_fn=interactive_setup, allowed_users_env="WEIXIN_ALLOWED_USERS", allow_all_env="WEIXIN_ALLOW_ALL_USERS",
+        config_connected_fn=_config_connected,
+        setup_fn=interactive_setup,
         cron_deliver_env_var="WEIXIN_HOME_CHANNEL",
         # Out-of-process send_message/cron; the adapter's own send() chunks (MAX_MESSAGE_LENGTH), so
         # max_message_length stays 0: send_message hands the full text + all media to one native send.
-        standalone_sender_fn=_standalone_send, max_message_length=0, emoji="💬", allow_update_command=True)
+        standalone_sender_fn=_standalone_send, max_message_length=0, emoji="💬", allow_update_command=True,
+        platform_hint=_PLATFORM_HINT,
+        display_tier="low",
+        env_overrides=gateway_env.ENV_OVERRIDES,
+        env_enable_credentials=gateway_env.ENV_ENABLE_CREDENTIALS, **gateway_env.AUTHZ,
+    )

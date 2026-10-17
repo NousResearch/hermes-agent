@@ -39,6 +39,18 @@ def _finite(v):
     return None if v is None or v != v or v < 0 or v > 1e6 else v
 
 
+def _server_labels(agent) -> tuple[str, str]:
+    """Status-bar labels for the server-reported generation speed of the last completed response
+    and for the models the endpoint's swap proxy reports resident. Only providers whose profile opts
+    in (surfaces_server_timings, resident_models) ever set the agent attributes; an empty label hides
+    the segment."""
+    tps = getattr(agent, "last_server_tps", None)
+    residency = "+".join(getattr(agent, "last_server_residency", None) or ())
+    if len(residency) > 26:
+        residency = f"{residency[:23]}..."
+    return (f"{tps:.1f} tok/s" if tps else ""), residency
+
+
 class CLIStatusBarMixin:
     """Status bar, spinner, turn-summary, pet pane, and prompt-stash rendering for the
     interactive CLI."""
@@ -295,6 +307,7 @@ class CLIStatusBarMixin:
 
         for key in _AGENT_COUNTERS:
             snapshot[key] = getattr(agent, key, 0) or 0
+        snapshot["server_tps_label"], snapshot["server_residency_label"] = _server_labels(agent)
 
         compressor = getattr(agent, "context_compressor", None)
         if compressor:
@@ -1069,7 +1082,8 @@ class CLIStatusBarMixin:
                 add("cache_hit", self._cache_hit_rate_style(cache[0]), cache[1])
             if wide:
                 for name, key, glyph in (
-                    ("latency", "avg_latency_label", "◷"), ("tps", "avg_velocity_label", "↑")):
+                    ("latency", "avg_latency_label", "◷"), ("tps", "avg_velocity_label", "↑"),
+                    ("server_tps", "server_tps_label", "⚡"), ("server_residency", "server_residency_label", "⌂")):
                     label = snapshot.get(key) or ""
                     if label:
                         add(name, _DIM, f"{glyph} {label}")

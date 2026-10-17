@@ -32,6 +32,7 @@ from agent.error_classifier import (
 from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
 from agent.chat_completion_local import _streams_llamacpp, stale_giveup
+from agent.chat_completion_helpers_relay import _relay_stream_identity, _relay_stream_metadata
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
 from agent.fast_mode import effective_request_overrides
@@ -53,6 +54,7 @@ from agent.reasoning_summaries import (
 )
 from agent.local_prompt_progress import prompt_progress, with_prompt_progress
 from agent.repetition_guard import RunawayStreamWatch, is_repetition_dominated
+from agent.server_observability import chunk_server_timings
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool_lifecycle import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
@@ -1459,8 +1461,8 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
     _qwen_meta = {"sessionId": agent.session_id or "hermes", "promptId": str(uuid.uuid4())} if _is_qwen else None
     _profile = None
     with contextlib.suppress(Exception):
-        from providers import get_provider_profile
-        _profile = get_provider_profile(agent.provider)
+        from providers import resolve_provider_profile
+        _profile = resolve_provider_profile(agent.provider, getattr(agent, "requested_provider", None))
 
     _ephemeral_out = _consume_ephemeral_max_output(agent)
     from agent.reasoning_carriers import shape_wire_carriers
@@ -2460,20 +2462,6 @@ def _is_sse_connection_error(exc: BaseException) -> bool:
     return any(phrase in err_lower for phrase in _SSE_CONN_PHRASES)
 
 
-def _relay_stream_identity(agent, name_default: str) -> dict:
-    """``session_id``/``name``/``model_name`` kwargs for ``relay_llm.stream``."""
-    return {"session_id": str(getattr(agent, "session_id", "") or ""),
-        "name": str(getattr(agent, "provider", "") or name_default),
-        "model_name": str(getattr(agent, "model", "") or "")}
-
-
-def _relay_stream_metadata(agent, api_mode: str) -> dict:
-    call_role = ("delegated" if getattr(agent, "is_subagent", False)
-                 else "fallback" if int(getattr(agent, "_fallback_index", 0) or 0) > 0 else "primary")
-    return {"api_mode": api_mode, "api_request_id": getattr(agent, "_current_api_request_id", None),
-        "call_role": call_role}
-
-
 def _stream_final_text(response) -> str:
     with contextlib.suppress(Exception):
         choices = getattr(response, "choices", None)
@@ -3042,7 +3030,7 @@ class _StreamingCall(StreamingWaitMonitor):
         tool_calls_acc = tool_calls.acc
         from agent.reasoning_carriers import StreamCarriers
         carriers = StreamCarriers()
-        finish_reason = model_name = usage_obj = None
+        finish_reason = model_name = usage_obj = timings_obj = None
         response_id = upstream_provider = None  # the provider's own id / serving upstream, from the chunks
         role = "assistant"
         _diag = self._new_diag()
@@ -3108,6 +3096,7 @@ class _StreamingCall(StreamingWaitMonitor):
                 usage, finish_reason = self._choiceless_chunk(chunk, finish_reason)
                 usage_obj = usage or usage_obj
                 self._mark_finish_seen(_diag, finish_reason)
+                timings_obj = chunk_server_timings(chunk) or timings_obj
                 continue
 
             choice = chunk.choices[0]
@@ -3118,6 +3107,7 @@ class _StreamingCall(StreamingWaitMonitor):
             self._mark_finish_seen(_diag, finish_reason)
             if hasattr(chunk, "usage") and chunk.usage:
                 usage_obj = chunk.usage
+            timings_obj = chunk_server_timings(chunk) or timings_obj
 
             reasoning_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
             # Same ``model_extra`` fallback as the non-streaming path: a reasoning-only stream
@@ -3212,7 +3202,7 @@ class _StreamingCall(StreamingWaitMonitor):
         if stream.final_response is not None:
             return self._adopt_final_response(stream.final_response)
         response = self._finish_chat_stream(stream, role, content_parts, reasoning_parts, tool_calls_acc,
-            "length" if runaway else finish_reason, model_name, usage_obj, flush_pending=_flush_pending_stream_text,
+            "length" if runaway else finish_reason, model_name, usage_obj, timings_obj=timings_obj, flush_pending=_flush_pending_stream_text,
             response_id=response_id, upstream_provider=upstream_provider, reasoning_details=reasoning_details,
             refusal_parts=refusal_parts)
         carriers.apply(response)
@@ -3295,7 +3285,7 @@ class _StreamingCall(StreamingWaitMonitor):
         return mock_tool_calls or None, has_truncated_tool_args
 
     def _finish_chat_stream(self, stream, role, content_parts, reasoning_parts, tool_calls_acc, finish_reason,
-        model_name, usage_obj, *, flush_pending, response_id=None, upstream_provider=None, reasoning_details=None,
+        model_name, usage_obj, *, flush_pending, timings_obj=None, response_id=None, upstream_provider=None, reasoning_details=None,
         refusal_parts=None):
         """Assemble the non-streaming-shaped response after the chunk loop. A
         stream ending with no finish_reason is a drop, not a completion: return a
@@ -3348,10 +3338,13 @@ class _StreamingCall(StreamingWaitMonitor):
             # for replay, and non-reasoning providers keep the attribute absent.
             message.reasoning_details = reasoning_details
         # The provider's id when the chunks carried one (chatcmpl-/gen-...): it is what a provider needs to
-        # look a request up. Fabricated only when the stream never sent one.
+        # look a request up. Fabricated only when the stream never sent one. Server ``timings`` from the
+        # final chunk ride the same attribute the OpenAI SDK uses for unknown fields, so the streaming and
+        # non-streaming paths read identically.
         response = SimpleNamespace(id=response_id or ("stream-" + str(uuid.uuid4())), model=model_name, usage=usage_obj,
             provider=upstream_provider,
-            choices=[SimpleNamespace(index=0, message=message, finish_reason=effective_finish_reason)])
+            choices=[SimpleNamespace(index=0, message=message, finish_reason=effective_finish_reason)],
+            model_extra={"timings": timings_obj} if timings_obj else None)
         # A held router timeout shim (#68396) is rejected by validate_response and retried;
         # releasing its text here would show the provider failure as assistant output.
         if not is_router_timeout_shim(response):

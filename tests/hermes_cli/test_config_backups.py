@@ -57,3 +57,27 @@ def test_legacy_siblings_move_but_user_named_copies_stay(tmp_path: Path):
     assert (root / "config.yaml.corrupt.20260729-093706.bak").exists()
     assert (tmp_path / "config.yaml.bak-my-note").read_text() == "mine"
     assert not list(tmp_path.glob("config.yaml.bak.*")) and not list(tmp_path.glob("config.yaml.corrupt.*"))
+
+
+def test_elevated_backup_adopts_config_owner(tmp_path: Path, monkeypatch):
+    """An elevated quick backup must not strand a profile's recovery copy as root-owned."""
+    from hermes_cli import config_backups
+
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("model: a\n")
+    owner = cfg.stat()
+    changes = []
+    monkeypatch.setattr(config_backups.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        config_backups.os,
+        "chown",
+        lambda path, uid, gid, **kwargs: changes.append((Path(path), uid, gid, kwargs)),
+    )
+
+    dest = backup_config(cfg, "good")
+
+    assert dest is not None
+    assert changes == [
+        (tmp_path / "backups" / "config", owner.st_uid, owner.st_gid, {"follow_symlinks": False}),
+        (dest, owner.st_uid, owner.st_gid, {"follow_symlinks": False}),
+    ]

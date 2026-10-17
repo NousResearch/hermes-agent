@@ -86,7 +86,9 @@ describe('ConnectionsRegistrySection', () => {
     Object.assign(window.hermesDesktop, { applyConnectionConfig })
     Object.assign(window.hermesDesktop.connections, { select })
     render(<ConnectionsRegistrySection />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }))
+    await screen.findByText('Homelab')
+    // The local row carries an Edit pencil too (#135452) — scope to the row.
+    fireEvent.click(within(screen.getByText('Homelab').closest('div.\\@container') as HTMLElement).getByLabelText('Edit'))
     const values = screen.getAllByPlaceholderText('Saved — leave blank to keep')
     fireEvent.change(values[1], { target: { value: 'new-header-secret' } })
     fireEvent.click(within(screen.getByDisplayValue('Delete').parentElement!).getByRole('button', { name: 'Remove' }))
@@ -288,7 +290,7 @@ describe('ConnectionsRegistrySection', () => {
     render(<ConnectionsRegistrySection />)
 
     await screen.findByText('Build host')
-    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    fireEvent.click(within(screen.getByText('Build host').closest('div.\\@container') as HTMLElement).getByLabelText('Edit'))
     const pathInput = screen.getByPlaceholderText('auto-detect') as HTMLInputElement
     expect(pathInput.value).toBe('/opt/hermes/bin/hermes')
     fireEvent.change(pathInput, { target: { value: '   ' } })
@@ -306,6 +308,32 @@ describe('ConnectionsRegistrySection', () => {
 
     const localKind = screen.getByRole('button', { name: 'Local' }) as HTMLButtonElement
     expect(localKind.disabled).toBe(true)
+  })
+
+  it('edits the managed local entry down to its label (#135452)', async () => {
+    render(<ConnectionsRegistrySection />)
+
+    await waitFor(() => expect(screen.getByText('Homelab')).toBeTruthy())
+
+    // The local row carries the same Edit pencil as every other entry, but no
+    // Remove — the app owns that entry.
+    const localRow = screen.getByText('This device').closest('div.\\@container') as HTMLElement
+    expect(within(localRow).getByLabelText('Edit')).toBeTruthy()
+    expect(within(localRow).queryByLabelText('Remove')).toBeNull()
+
+    fireEvent.click(within(localRow).getByLabelText('Edit'))
+
+    // Label is the only field a local edit offers: prefilled with the current
+    // name, kind locked to Local, no URL/auth inputs anywhere in the editor.
+    const labelInput = screen.getByDisplayValue('This device')
+    expect(screen.getByRole('button', { name: 'Local' })).toBeTruthy()
+    expect(screen.queryByPlaceholderText('http://homelab.lan:9119')).toBeNull()
+
+    fireEvent.change(labelInput, { target: { value: 'Mi equipo' } })
+    fireEvent.click(screen.getByText('Save connection').closest('button')!)
+
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({ id: 'local', kind: 'local', label: 'Mi equipo' })
   })
 
   it('rejects a duplicate gateway URL in the save path with an inline error', async () => {

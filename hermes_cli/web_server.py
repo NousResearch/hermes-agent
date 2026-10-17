@@ -338,8 +338,11 @@ def _require_token(request: Request) -> None:
     A verified native owner (``authenticate_native_http``) is the same-user
     principal the outer seams already accepted; local Desktop runs with no
     static token, so that principal must satisfy route-local policy too.
+    Hosted plugins receive this guard's decision via private IPC and request-local
+    state, not via a forwarded gateway credential or a process-wide bypass.
     """
-    if getattr(request.state, "native_http_principal", None):
+    if (getattr(request.state, "native_http_principal", None)
+            or getattr(request.state, "hosted_http_authenticated", None) is True):
         return
     if getattr(request.app.state, "auth_required", False):
         ok = getattr(request.state, "session", None) is not None

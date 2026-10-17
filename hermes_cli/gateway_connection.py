@@ -58,6 +58,8 @@ class SessionState:
         self.usage_listeners: list = []
         # A gateway-admitted notification turn the idle CLI queued a header for (gateway_tools_notify).
         self.admitted_turn: dict | None = None
+        # This viewer's preference, not snapshot state: None leaves the owner's default alone.
+        self.show_reasoning: bool | None = None
 
     def adopt_snapshot(self, snapshot):
         self.info = dict(snapshot.get("info") or {})
@@ -233,6 +235,11 @@ class GatewayConnection:
                     raise
                 logger.debug("session.resume %s after reconnect: %s", session_id, exc)
                 state.subscription_id = None
+                continue
+            if state.show_reasoning is not None:
+                # Restore before ready/prompt.submit, on this loop's client (call() would deadlock).
+                await client.rpc("config.set", session_id=session_id, key="show_reasoning",
+                                 value="1" if state.show_reasoning else "0", _timeout=10)
 
     async def _pump(self, client):
         while True:

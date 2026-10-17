@@ -293,7 +293,11 @@ export function useSlashCompletions(options: {
   )
 
   const toItem = useCallback((entry: CompletionEntry, index: number): Unstable_TriggerItem => {
-    const command = commandText(entry.text)
+    // `complete.slash` appends a trailing space to an exact command-name match
+    // (a prompt_toolkit convenience for its own menu). The composer reads that
+    // space as "an argument is already part of this command", so a fully typed
+    // command committed as a pill and skipped its options step (#138237).
+    const command = commandText(entry.text.trim())
     const display = textValue(entry.display, commandText(entry.text))
     const meta = textValue(entry.meta)
 

@@ -2,6 +2,7 @@ import type { Unstable_TriggerItem } from '@assistant-ui/core'
 import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
 import type { HermesGateway } from '@/hermes'
 import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
@@ -186,5 +187,27 @@ describe('useSlashCompletions', () => {
     expect(groupOf('/refine')).toBe('Commands')
     expect(groupOf('/compress')).toBe('Commands')
     expect(groupOf('/docx')).toBe('Skills')
+  })
+
+  // An exact command-name match comes back from `complete.slash` with a trailing
+  // space. Carried into the composer it read as "an argument is already part of
+  // this command", so a fully typed command committed as a pill and skipped its
+  // options step (#138237).
+  it('keeps the completer exact-match trailing space out of the command token', async () => {
+    const request = vi.fn().mockImplementation((method: string) =>
+      Promise.resolve(
+        method === 'commands.catalog'
+          ? CATALOG
+          : { items: [{ text: 'compress ', display: '/compress', kind: 'command', meta: 'Compress context' }] }
+      )
+    )
+
+    const api = harness({ request } as unknown as HermesGateway)
+    const [item] = await completions(api, 'compress')
+
+    // `command` drives the argument-mode lookup; the serialized form is what the
+    // composer's expands-to-args gate scans for a space.
+    expect((item.metadata as { command?: string }).command).toBe('/compress')
+    expect(hermesDirectiveFormatter.serialize(item)).toBe('/compress')
   })
 })

@@ -9,14 +9,17 @@ Authenticating moves the caller onto the token's 5,000/hour budget.
 Credential ladder: GITHUB_TOKEN, then GH_TOKEN, then ``gh auth token`` (the
 gh CLI's own login — the only rung most desktop users have, since a
 GUI-launched app inherits a minimal environment; its answer is cached per
-process so the check never spawns gh more than once), then anonymous. A
-token GitHub rejects (401) drops that request to anonymous. The token itself
-never reaches a log line or an error string.
+process so the check never spawns gh more than once), then anonymous. The
+capture contributes only its token-shaped line — a wrapper around gh that
+prints to stdout cannot become the credential — and a capture with no token
+line is no token at all. A token GitHub rejects (401) drops this request to
+anonymous. The token itself never reaches a log line or an error string.
 """
 from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 import time
 import urllib.error
@@ -26,8 +29,29 @@ logger = logging.getLogger(__name__)
 
 GITHUB_TOKEN_ENV_VARS = ("GITHUB_TOKEN", "GH_TOKEN")
 _GH_CLI_TIMEOUT_SECONDS = 3
+# One line of ``gh auth token`` output: a gh CLI token (gho_/ghp_/ghu_/ghs_/ghr_…) or
+# a fine-grained PAT. Everything else a capture holds is wrapper noise.
+_TOKEN_LINE = re.compile(r"(?:gh[a-z]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,})")
 _gh_cli_cache: Optional[str] = None
 _gh_cli_probed = False
+
+
+def captured_gh_cli_token(stdout: str) -> Optional[str]:
+    """The one token-shaped line of a ``gh auth token`` capture, or None.
+
+    A wrapper ahead of gh on PATH (mise/asdf shims, direnv-style hooks, custom
+    launchers) can print its own lines around gh's answer, so the capture can
+    be several lines. The whole capture must never become a credential: a
+    newline in an Authorization header makes the request die with "Invalid
+    header value" before the anonymous fallback can take over (#138444). The
+    last token-shaped line wins — a wrapper's exec chain leaves gh's own
+    answer last, and a re-invoking wrapper's trailing banner loses to it.
+    """
+    for line in reversed(stdout.splitlines()):
+        line = line.strip()
+        if _TOKEN_LINE.fullmatch(line):
+            return line
+    return None
 
 
 def github_token_from_env(env=os.environ) -> Optional[str]:
@@ -54,8 +78,10 @@ def _gh_cli_token() -> Optional[str]:
     except (OSError, subprocess.SubprocessError) as exc:
         logger.debug("gh CLI token lookup unavailable: %s", exc)
         return None
-    token = result.stdout.strip() if result.returncode == 0 else ""
-    _gh_cli_cache = token or None
+    token = captured_gh_cli_token(result.stdout) if result.returncode == 0 else None
+    if token is None and result.returncode == 0 and result.stdout.strip():
+        logger.debug("gh auth token output held no token line; ignoring the capture")
+    _gh_cli_cache = token
     return _gh_cli_cache
 
 

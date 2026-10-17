@@ -114,7 +114,7 @@ def _request(operation, arguments, *, callbacks=None, pause_event=None, project_
     write_lock = threading.Lock()
     monitor = None
     with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                          text=True, encoding="utf-8", env=environment) as process:
+                          text=True, encoding="utf-8", errors="replace", env=environment) as process:
         assert process.stdin is not None and process.stdout is not None
         writer = process.stdin
 

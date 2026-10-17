@@ -38,6 +38,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 _IS_WINDOWS = sys.platform == "win32"
+_CELL_SETTLED_INTERRUPT_REASON = "execute_code cell settled"
 
 # Runner-side cap on captured python-level output; the host re-applies its own MAX_STDOUT cap.
 _RUNNER_CAPTURE_BYTES = 1_000_000
@@ -243,6 +244,8 @@ class CellAuthority:
         self.task_id = task_id
         self.ctx = contextvars.copy_context()
         self.active = True
+        self._dispatch_lock = threading.Lock()
+        self._dispatch_threads: set[int] = set()
         # ((getter, setter), captured value) per thread-local prompt callback (approval, sudo, vault unlock…)
         self._callbacks: list = []
         try:
@@ -253,15 +256,38 @@ class CellAuthority:
             self._callbacks = []
 
     def retire(self) -> None:
-        self.active = False
+        """Refuse new RPCs and interrupt calls that are still executing.
+
+        A session-kernel timeout kills the child process, but its host-side RPC
+        handler can be waiting for a human approval. That handler must learn
+        that its originating cell is gone before a later approval can permit a
+        side effect.
+        """
+        from tools.interrupt import set_interrupt
+        with self._dispatch_lock:
+            self.active = False
+            dispatch_threads = tuple(self._dispatch_threads)
+        for thread_id in dispatch_threads:
+            set_interrupt(True, thread_id, reason=_CELL_SETTLED_INTERRUPT_REASON)
 
     def dispatch(self, tool_name: str, tool_args: dict) -> str:
         """Run one tool call under THIS cell's context and callbacks."""
         from tools.registry import tool_error
-        if not self.active:
-            return tool_error("No active execute_code cell: the cell this kernel call "
-                              "belonged to has settled, so its tool authority is retired.")
-        return self.ctx.run(self._invoke, tool_name, tool_args)
+        thread_id = threading.current_thread().ident
+        with self._dispatch_lock:
+            if not self.active:
+                return tool_error("No active execute_code cell: the cell this kernel call "
+                                  "belonged to has settled, so its tool authority is retired.")
+            if thread_id is not None:
+                self._dispatch_threads.add(thread_id)
+        try:
+            return self.ctx.run(self._invoke, tool_name, tool_args)
+        finally:
+            from tools.interrupt import clear_interrupt_if_reason
+            if thread_id is not None:
+                clear_interrupt_if_reason(thread_id, _CELL_SETTLED_INTERRUPT_REASON)
+                with self._dispatch_lock:
+                    self._dispatch_threads.discard(thread_id)
 
     def _invoke(self, tool_name: str, tool_args: dict) -> str:
         from model_tools import handle_function_call

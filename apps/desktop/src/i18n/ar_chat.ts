@@ -1,3 +1,4 @@
+import { arCoding } from './ar_coding'
 import type { TranslationOverrides } from './define-locale'
 
 export const arChat = {
@@ -298,52 +299,7 @@ export const arChat = {
       dismissError: 'تجاهل الخطأ',
       add: 'إضافة'
     },
-    coding: {
-      title: 'شجرة العمل',
-      noBranch: 'لا يوجد فرع',
-      detached: 'منفصل',
-      clean: 'نظيف',
-      changed: count => `${count} مُغيَّر`,
-      ahead: count => `${count} متقدم`,
-      behind: count => `${count} متأخر`,
-      review: 'مراجعة',
-      close: 'إغلاق',
-      openChanges: 'فتح التغييرات',
-      openFile: 'فتح الملف',
-      stage: 'إدراج',
-      unstage: 'إلغاء الإدراج',
-      stageAll: 'إدراج الكل',
-      viewAsTree: 'عرض كشجرة',
-      viewAsList: 'عرض كقائمة',
-      revert: 'تراجع',
-      revertAll: 'التراجع عن الكل',
-      revertConfirm: 'هل تريد تجاهل التغييرات على هذا الملف واستعادته إلى الحالة المُودعة؟ لا يمكن التراجع عن هذا.',
-      revertAllConfirm: 'هل تريد تجاهل كل التغييرات واستعادة الملفات إلى الحالة المُودعة؟ لا يمكن التراجع عن هذا.',
-      staged: 'مُدرَج',
-      noChanges: 'لا توجد تغييرات',
-      notRepo: 'ليس مستودع git',
-      noDiff: 'لا يوجد فرق لعرضه',
-      scopeUncommitted: 'غير مُودَع',
-      scopeBranch: 'فرع',
-      scopeLastTurn: 'آخر دور',
-      readOnlyScope: 'عرض للقراءة فقط — التخزين المؤقت والاستعادة والإيداع تنطبق على غير المُودَع',
-      commit: 'إيداع',
-      commitAndPush: 'إيداع ودفع',
-      commitPlaceholder: shortcut => `رسالة (${shortcut} للإيداع)`,
-      generateCommitMessage: 'توليد رسالة الإيداع',
-      stopGenerating: 'إيقاف التوليد',
-      createPr: 'إنشاء PR',
-      openPr: 'فتح PR',
-      ghMissing: 'ثبّت GitHub CLI (gh) وسجّل الدخول لفتح طلبات السحب',
-      agentShip: 'اطلب من Hermes فتح PR',
-      agentShipUnavailable: 'المحادثة التي تملك هذه التغييرات ليست على الشاشة.',
-      agentShipPrompt: 'راجع التغييرات الحالية، وأودعها برسالة إيداع تقليدية واضحة، وادفع الفرع، وافتح طلب سحب.',
-      newBranch: 'فرع جديد',
-      branchOffFrom: base => `فرع جديد من ${base}`,
-      switchTo: branch => `التبديل إلى ${branch}`,
-      switchFailed: branch => `تعذّر التبديل إلى ${branch}`,
-      worktrees: 'أشجار العمل'
-    }
+    coding: arCoding
   },
   prompts: {
     gatewayDisconnected: 'البوابة غير متصلة',

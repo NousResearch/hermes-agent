@@ -381,19 +381,36 @@ def _user_safe_directories(base_env: Mapping[str, str]) -> list[str]:
     return values
 
 
+_pm_git_declined = False
+
+
 def selected_git_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
     """PM's full Git environment, or the original base for system-Git fallback.
 
     Keep lazy acquisition under PM's policy (not just installed-package lookup).
     Unsupported targets and failed acquisition must not disable a working system
     Git. Callers apply their own config/security isolation after selection.
+
+    A target the registry refuses outright — POSIX's deliberate git gap — answers
+    ``InstallError`` with remedy ``"none"`` on every call, each costing a pm-worker
+    round-trip, and cannot change within a process; the refusal is remembered after
+    the first one. Transient failures (a download error, a paused install) keep
+    today's retry-per-call behavior, and successful selections are never cached: a
+    changed PM choice later in this same process still applies.
     """
+    global _pm_git_declined
     env = dict(base if base is not None else os.environ)
+    if _pm_git_declined:
+        return env
     try:
         from pm import ensure
 
         return ensure("git", base_env=env).env
-    except Exception:
+    except Exception as exc:  # health: allow BLE001 -- fail-open boundary: any PM failure falls back to the system git
+        from pm import InstallError
+
+        if isinstance(exc, InstallError) and exc.remedy == "none":
+            _pm_git_declined = True
         return env
 
 

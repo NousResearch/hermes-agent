@@ -1033,3 +1033,68 @@ class TestRolloverPreservesLogOwnership:
         monkeypatch.setattr(os, "chown", _refuse)
         self._rolled_handler(log_path)
         assert log_path.exists()
+
+
+class TestAppendJsonLineRotating:
+    """The gateway exit-diagnostic recorder writes raw JSON lines (no logging records); it must
+    rotate on a size cap instead of growing without bound, and literal ``%`` in payloads must
+    survive the formatter untouched."""
+
+    def test_append_round_trips_json_lines(self, tmp_path):
+        import json as _json
+
+        log_path = tmp_path / "gateway-exit-diag.log"
+        hermes_logging.append_json_line_rotating(log_path, {"tag": "gateway.start", "pid": 1})
+        hermes_logging.append_json_line_rotating(log_path, {"tag": "asyncio.run.SystemExit", "code": 75})
+        lines = log_path.read_text(encoding="utf-8").splitlines()
+        assert [_json.loads(line)["tag"] for line in lines] == [
+            "gateway.start",
+            "asyncio.run.SystemExit",
+        ]
+
+    def test_percent_signs_survive_uninterpolated(self, tmp_path):
+        import json as _json
+
+        log_path = tmp_path / "gateway-exit-diag.log"
+        payload = {"tag": "gateway.start", "path": "C:\\Users\\me 100% sure %s %d"}
+        hermes_logging.append_json_line_rotating(log_path, payload)
+        line = log_path.read_text(encoding="utf-8").splitlines()[0]
+        assert _json.loads(line)["path"] == "C:\\Users\\me 100% sure %s %d"
+
+    def test_rotates_once_size_cap_is_exceeded(self, tmp_path):
+        log_path = tmp_path / "gateway-exit-diag.log"
+        for i in range(20):
+            hermes_logging.append_json_line_rotating(
+                log_path, {"tag": "gateway.start", "i": i, "pad": "x" * 500}, max_bytes=2048
+            )
+        assert log_path.exists()
+        rotated = log_path.with_name(log_path.name + ".1")
+        assert rotated.exists()
+        # The rotated copy holds the earlier records; nothing was lost.
+        assert rotated.stat().st_size > 0
+        # The live file is bounded: stdlib rolls *before* the write that would
+        # cross max_bytes, CLH lets one more full record land first, so the
+        # invariant that holds on both backends is "well under 2 × max_bytes",
+        # never the exact <= max_bytes that only stdlib guarantees.
+        assert log_path.stat().st_size <= 2 * 2048
+
+    def test_warns_once_when_fallback_disables_rotation(self, tmp_path, monkeypatch, caplog):
+        import logging as _logging
+
+        log_path = tmp_path / "gateway-exit-diag.log"
+        monkeypatch.setattr(hermes_logging, "_WINDOWS_CLH_FALLBACK", True)
+        monkeypatch.setattr(hermes_logging, "_WINDOWS_CLH_FALLBACK_REASON", "portalocker probe failed")
+        monkeypatch.setattr(hermes_logging, "_exit_diag_fallback_warned", False)
+        with caplog.at_level(_logging.WARNING, logger="hermes_logging"):
+            hermes_logging.append_json_line_rotating(log_path, {"tag": "gateway.start"})
+            hermes_logging.append_json_line_rotating(log_path, {"tag": "gateway.start"})
+        matches = [r.message for r in caplog.records if "rotation is disabled" in r.message]
+        assert len(matches) == 1  # one-shot, not per-write
+
+    def test_never_raises_when_handler_construction_fails(self, tmp_path, monkeypatch):
+        def _boom(*_args, **_kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(hermes_logging, "_new_file_handler", _boom)
+        log_path = tmp_path / "gateway-exit-diag.log"
+        hermes_logging.append_json_line_rotating(log_path, {"tag": "gateway.start"})

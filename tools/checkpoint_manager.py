@@ -378,6 +378,18 @@ def _run_git(
         msg = f"working directory is not a directory: {normalized_working_dir}"
         logger.error("Git command skipped: %s (%s)", " ".join(["git"] + list(args)), msg)
         return False, "", msg
+    # A directory can exist and be a directory yet still be unreadable /
+    # untraversable by this process — e.g. a session whose working dir is a
+    # root-owned 0700 path such as ``/root`` while the gateway runs as another
+    # user.  ``subprocess.run(cwd=...)`` then raises ``PermissionError`` before
+    # git is even exec'd, which used to surface as an "Unexpected git error"
+    # traceback on every snapshot.  Treat it like the missing-directory case
+    # and skip quietly: the checkpoint manager cannot snapshot what it cannot
+    # read.
+    if not os.access(normalized_working_dir, os.R_OK | os.X_OK):
+        msg = f"working directory is not accessible: {normalized_working_dir}"
+        logger.debug("Git command skipped: %s (%s)", " ".join(["git"] + list(args)), msg)
+        return False, "", msg
 
     env = _git_env(store, str(normalized_working_dir), index_file=index_file)
     if extra_env:
@@ -425,6 +437,14 @@ def _run_git(
             return False, "", "git not found"
         msg = f"working directory not found: {normalized_working_dir}"
         logger.error("Git command failed before execution: %s (%s)", " ".join(cmd), msg, exc_info=True)
+        return False, "", msg
+    except PermissionError:
+        # Defence in depth: ``os.access`` above can pass yet the process launch
+        # still fail (a TOCTOU race, or an ACL that ``access()`` cannot see).
+        # The working directory is simply not usable by this process — skip it
+        # quietly rather than logging an "Unexpected git error" traceback.
+        msg = f"working directory is not accessible: {normalized_working_dir}"
+        logger.debug("Git command skipped: %s (%s)", " ".join(cmd), msg)
         return False, "", msg
     except Exception as exc:
         logger.error("Unexpected git error running %s: %s", " ".join(cmd), exc, exc_info=True)

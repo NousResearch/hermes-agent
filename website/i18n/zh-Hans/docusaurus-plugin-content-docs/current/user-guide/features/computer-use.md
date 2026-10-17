@@ -151,7 +151,7 @@ Hermes 不会重新注册。
 
 **元素索引已过期** — SOM 索引仅在下次 `capture` 之前有效。任何改变状态的操作后请重新截图。
 
-**「blocked pattern in type text」** — 你尝试 `type` 的文本匹配了危险 shell 模式列表。请拆分命令或重新考虑操作方式。
+**「blocked pattern in type text」** — 你尝试 `type` 的文本匹配了危险 shell 模式列表。这是安全拒绝，不是输入投递失败：不要拆分、重新编码或重新输入该命令来绕过防护。如果任务确实需要这条命令，请改用 `terminal` 执行，由 Hermes 的危险命令审批交给用户决定；否则停下来询问用户。
 
 ## 另请参阅
 

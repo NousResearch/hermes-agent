@@ -82,6 +82,11 @@ def _snapshot_child_pids() -> set:
 _NON_MCP_CHILD_CMDLINE_MARKERS: tuple[str, ...] = (
     "tui_gateway.slash_worker", "tui_gateway.entry",
     "-dorg.eclipse.equinox.launcher", "eclipse.jdt.ls", "org.eclipse.equinox.launcher_",  # jdtls
+    # The shared parent-death supervisor is lazily spawned by the first server's registration, often
+    # while a slower server's stdio_client() is still inside its snapshot window. Attributing it to
+    # that server made every shutdown SIGTERM the supervisor, find its unreaped zombie still holding
+    # the pgroup, and log a bogus "Force-killed MCP process ... after SIGTERM timeout".
+    "mcp_death_supervisor.py",
 )
 
 

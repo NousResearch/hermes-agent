@@ -45,6 +45,7 @@ import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
 
 import { AttachmentList } from './attachments'
+import { alternateBusyInputMode, busyModeHasCarrier, resolveBusyComposerAction } from './busy-input-mode'
 import { deriveBusySubmitState } from './busy-submit-state'
 import { ComposerDockGlow, QueuedEditBanner } from './chat-bar-parts'
 import {
@@ -402,9 +403,9 @@ export function ChatBar({
   const hasComposerPayload = hasText || attachments.length > 0
   const { cardWaiting } = useCardWaitingSubmit(sessionId ?? null, busy, hasComposerPayload)
 
-  const { busyAction, canSteer, canSubmit } = deriveBusySubmitState({
+  const { canSteer, canSubmit } = deriveBusySubmitState({
     attachmentCount: attachments.length,
-    blockingPrompt,
+    blockingPrompt: blockingPrompt || cardWaiting,
     busy,
     busyInputMode,
     compacting,
@@ -413,14 +414,63 @@ export function ChatBar({
     isSteerableText
   })
 
-  // The submit engine — the orchestration seam where draft + queue meet. Owns
-  // the submit decision tree, the send-with-restore primitive, and steer.
+  // A parked card consumes typed replies before any busy-mode routing.
+  // Every other mid-turn submission follows the configured policy, with a
+  // carrier check for redirect versus non-cancelling tool-boundary steering.
+  const canCorrect =
+    busy &&
+    busyInputMode !== null &&
+    !cardWaiting &&
+    !blockingPrompt &&
+    busyModeHasCarrier(busyInputMode, { onSteer: !!onSteer, onSteerHidden: !!onSteerHidden }) &&
+    attachments.length === 0 &&
+    isSteerableText
+
+  const resolvedBusyAction = cardWaiting
+    ? 'steer'
+    : resolveBusyComposerAction({
+        busy,
+        canCorrect,
+        compacting,
+        hasPayload: hasComposerPayload,
+        blockingPrompt,
+        mode: busyInputMode ?? 'interrupt'
+      })
+
+  const busyAction = resolvedBusyAction === 'redirect' ? 'interrupt' : resolvedBusyAction
+
+  // The hotkey help must show the action that can actually execute, not an
+  // unreachable Steer when the gateway has no steer carrier or is compacting.
+  const enterHintAction = !canSubmit
+    ? null
+    : queueEdit || cardWaiting || (hasText && !isSteerableText && attachments.length === 0)
+      ? 'composer.send'
+    : busyAction === 'queue'
+      ? 'composer.queue'
+      : busyAction === 'steer'
+        ? 'composer.steer'
+        : 'composer.send'
+
+  const alternateCanSteer =
+    busy &&
+    !cardWaiting &&
+    !compacting &&
+    !blockingPrompt &&
+    !!onSteerHidden &&
+    attachments.length === 0 &&
+    isSteerableText
+
+  const alternateHintAction =
+    cardWaiting ? 'composer.send' : busyInputMode === 'queue' && alternateCanSteer ? 'composer.steer' : 'composer.queue'
+
+  // The submit engine — the orchestration seam where draft + queue meet.
   const { queueDraft, steerDraft, submitDraft } = useComposerSubmit({
-    busyInputMode,
     activeQueueSessionKey,
     activeQueueSessionKeyRef,
     attachments,
     busy,
+    busyInputMode,
+    compacting,
     clearDraft,
     disabled,
     draftScopeRef,
@@ -963,22 +1013,24 @@ export function ChatBar({
       return
     }
 
-    // Cmd/Ctrl+Enter queues a follow-up while a turn runs. Plain Enter steers
-    // a text-only draft, so both live-turn actions stay reachable by keyboard.
+    // Cmd/Ctrl+Enter is a one-message override while a turn runs: Queue and
+    // Steer swap, while Interrupt keeps Queue as its non-interrupting alternate.
+    // The configured mode itself is unchanged.
     if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey) {
       event.preventDefault()
 
       if (busy && !disabled) {
-        // As with plain Enter, source the just-typed content from the DOM so a
-        // fast keypress cannot queue a stale draft.
         const editorText = liveComposerDraft(editorRef.current, draftRef.current)
+        const hasLivePayload = editorText.trim().length > 0 || attachments.length > 0
 
         if (editorText !== draftRef.current) {
           draftRef.current = editorText
           setComposerText(editorText)
         }
 
-        queueDraft()
+        if (hasLivePayload) {
+          submitDraft(alternateBusyInputMode(busyInputMode ?? 'interrupt'))
+        }
       }
 
       return
@@ -1398,7 +1450,9 @@ export function ChatBar({
             }}
             ref={composerRef}
           >
-            {isHelpHint && <HelpHint />}
+            {isHelpHint && (
+              <HelpHint alternateAction={alternateHintAction} busy={busy} enterAction={enterHintAction} />
+            )}
             {trigger && !argStageEmpty && (
               <ComposerTriggerPopover
                 activeIndex={triggerActive}

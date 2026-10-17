@@ -1,9 +1,12 @@
 import { useStore } from '@nanostores/react'
 
 import { $registryVersion } from '@/contrib/registry'
+import { $busyInputConfig, configuredBusyInputMode } from '@/store/busy-input-mode'
 import { $bindings, bindingsFor } from '@/store/keybinds'
+import { $activeGatewayProfile } from '@/store/profile'
+import { $connection } from '@/store/session'
 
-import { KEYBIND_READONLY } from './actions'
+import { readonlyKeybindsFor } from './actions'
 import { formatCombo } from './combo'
 
 // The formatted first combo for `actionId`, or null when unbound. Rebindable
@@ -12,6 +15,10 @@ import { formatCombo } from './combo'
 // tooltip shows just the text label with no trailing hint.
 export function useKeybindHint(actionId: string): string | null {
   const bindings = useStore($bindings)
+  const config = useStore($busyInputConfig)
+  const connection = useStore($connection)
+  const profile = useStore($activeGatewayProfile)
+  const busyInputMode = configuredBusyInputMode(config, connection, profile)
 
   // `bindingsFor`, not a raw `bindings[id]`: $bindings is seeded at module init
   // from the actions known THEN, so a plugin action contributed later isn't in
@@ -26,7 +33,7 @@ export function useKeybindHint(actionId: string): string | null {
     return formatCombo(rebindable)
   }
 
-  const readonly = KEYBIND_READONLY.find(entry => entry.id === actionId)
+  const readonly = readonlyKeybindsFor(busyInputMode).find(entry => entry.id === actionId)
 
   if (readonly) {
     return formatCombo(readonly.keys[0])

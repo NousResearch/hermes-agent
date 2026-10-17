@@ -13,13 +13,16 @@ import {
   allKeybindActions,
   KEYBIND_CATEGORIES,
   KEYBIND_PANEL_ACTION,
-  KEYBIND_READONLY,
+  readonlyKeybindsFor,
   type KeybindActionMeta,
   type KeybindReadonly,
   KEYBINDS_AREA
 } from '@/lib/keybinds/actions'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { arraysEqual } from '@/lib/storage'
+import { $busyInputConfig, configuredBusyInputMode } from '@/store/busy-input-mode'
+import { $activeGatewayProfile } from '@/store/profile'
+import { $connection } from '@/store/session'
 import {
   $bindings,
   $capture,
@@ -67,6 +70,11 @@ function ShortcutSettings({ includeScreenshot }: { includeScreenshot: boolean })
   const { t } = useI18n()
   const hasBreadcrumb = useContext(SettingsBreadcrumbContext)
   const bindings = useStore($bindings)
+  const config = useStore($busyInputConfig)
+  const connection = useStore($connection)
+  const profile = useStore($activeGatewayProfile)
+  const busyInputMode = configuredBusyInputMode(config, connection, profile)
+  const readonlyList = useMemo(() => readonlyKeybindsFor(busyInputMode), [busyInputMode])
   const k = t.keybinds
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
   // Subscribe so contributed actions appear/disappear live in the map. The
@@ -120,12 +128,12 @@ function ShortcutSettings({ includeScreenshot }: { includeScreenshot: boolean })
 
     const lower = query.toLowerCase()
 
-    return KEYBIND_READONLY.filter(shortcut => {
+    return readonlyList.filter(shortcut => {
       const label = k.actions[shortcut.id] ?? shortcut.id
 
       return label.toLowerCase().includes(lower) || shortcut.id.includes(lower)
     })
-  }, [isSearching, query, k.actions])
+  }, [isSearching, query, k.actions, readonlyList])
 
   return (
     <SettingsContent>
@@ -183,7 +191,7 @@ function ShortcutSettings({ includeScreenshot }: { includeScreenshot: boolean })
               action => action.category === category && action.id !== KEYBIND_PANEL_ACTION
             )
 
-            const readonly = KEYBIND_READONLY.filter(shortcut => shortcut.category === category)
+            const readonly = readonlyList.filter(shortcut => shortcut.category === category)
 
             if (actions.length === 0 && readonly.length === 0) {
               return null

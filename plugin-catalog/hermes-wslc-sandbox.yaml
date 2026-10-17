@@ -6,7 +6,7 @@ description: "Run Hermes' terminal, file and execute_code tools in a Linux conta
 maintainer: Yicheng-Mark
 tier: community
 category: tools
-requires_hermes: ">=0.20.6"
+requires_hermes: ">=0.21.3"
 docs_url: https://github.com/Yicheng-Mark/hermes-wslc-sandbox#readme
 platforms: [windows]
 known_issues:

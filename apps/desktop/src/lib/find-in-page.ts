@@ -116,3 +116,19 @@ export function findBarKeyAction(event: FindBarKeyEvent, options: { inInput?: bo
 export function findBarClaimsCombo(combo: string): boolean {
   return combo === 'mod+g' || combo === 'mod+shift+g' || combo === 'escape'
 }
+
+/**
+ * Whether the open find bar owns the whole chord. The dispatcher resolves a
+ * keydown two ways (#137849): the combo the layout types, and the physical-code
+ * twin it falls back to when nothing is bound to the first. The bar's ownership
+ * is about the gesture (⌘G steps matches), so it must yield the dispatcher for
+ * either resolution carrying one of its combos — a layout whose ⌘G press
+ * resolves differently must not step on the bar by the back door.
+ */
+export function findBarClaimsChord(combo: string, codeCombo: string | null): boolean {
+  if (findBarClaimsCombo(combo)) {
+    return true
+  }
+
+  return codeCombo != null && codeCombo !== combo && findBarClaimsCombo(codeCombo)
+}

@@ -189,7 +189,8 @@ def _reply_insertion_index(followers: list, compressed: list, *, reused_ids: fro
     followed it: the LAST match in ``compressed`` on role + normalized text
     (a first-match scan binds to an older identical "ok"/"thanks" twin and
     resurfaces the reply mid-history; raw ``==`` misses a follower the engine
-    re-rendered from a parts list). When no follower survives but the original
+    re-rendered from a parts list). Text matches are clamped before every follower
+    located by an unreused tool id or a preserved ``_row_id``. When no follower survives but the original
     had a real user turn after the reply, the reply must still never land after
     a trailing REAL user row — that is the turn the loop is about to answer, and
     an ``assistant`` tail would present the old reply as its answer — so it goes
@@ -238,6 +239,25 @@ def _reply_insertion_index(followers: list, compressed: list, *, reused_ids: fro
                     return pos
                 continue
             if _same_visible_content(message, follower, follower_text):
+                # A text twin may be later than a surviving original follower (#138173).
+                anchors = [f for f in followers if not _row_ids(f) & reused_ids]
+                row_ids = {f["_row_id"] for f in anchors if f.get("_row_id") is not None}
+                call_ids = {
+                    (f.get("role"), _tool_call_ids(f)) for f in anchors if _tool_call_ids(f)
+                }
+                result_ids = {
+                    _tool_result_id(f) for f in anchors
+                    if f.get("role") == "tool" and _tool_result_id(f)
+                }
+                for anchor_pos, anchor in enumerate(compressed[:pos]):
+                    if not isinstance(anchor, dict):
+                        continue
+                    if (
+                        anchor.get("_row_id") in row_ids
+                        or (anchor.get("role"), _tool_call_ids(anchor)) in call_ids
+                        or (anchor.get("role") == "tool" and _tool_result_id(anchor) in result_ids)
+                    ):
+                        return anchor_pos
                 return pos
     if ambiguous:
         return None

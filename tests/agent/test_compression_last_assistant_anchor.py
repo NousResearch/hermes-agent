@@ -20,6 +20,7 @@ import pytest
 from agent.context_compressor import SUMMARY_PREFIX
 from agent.conversation_compression_reply_anchor import (
     _ensure_compressed_keeps_last_assistant_reply,
+    _reply_insertion_index,
 )
 import itertools
 
@@ -89,6 +90,82 @@ def _tool_chain(*call_ids):
         ]
     return rows
 
+
+def test_text_twin_slot_clamps_to_tool_call_and_skips_reply(caplog):
+    """A dropped first follower must not bind the reply after surviving tool rounds (#138173)."""
+    first_round, second_round = _tool_chain("call_1"), _tool_chain("call_2")
+    later_follower = {"role": "user", "content": "continue"}
+    followers = [
+        {"role": "user", "content": "continue"},
+        *first_round, later_follower, *second_round,
+    ]
+    original = [
+        {"role": "user", "content": "Earlier turns. " * 100},
+        {"role": "assistant", "content": REPLY},
+        *followers,
+    ]
+    surviving = [*first_round, later_follower, *second_round]
+    compressed = [{"role": "user", "content": SUMMARY}, *surviving]
+    before = list(compressed)
+
+    slot = _reply_insertion_index(followers, compressed)
+    with caplog.at_level("WARNING", logger="agent.conversation_compression_reply_anchor"):
+        inserted = _ensure_compressed_keeps_last_assistant_reply(original, compressed)
+
+    assert slot == 1
+    assert all(slot <= before.index(row) for row in surviving)
+    assert inserted is None
+    assert compressed == before
+    assert any("strict role alternation" in r.getMessage() for r in caplog.records)
+
+
+def test_text_twin_slot_clamps_to_tool_result_and_inserts_reply():
+    """With a legal seam, the reply precedes every surviving original follower (#138173)."""
+    first_round, second_round = _tool_chain("call_1"), _tool_chain("call_2")
+    later_follower = {"role": "user", "content": "continue"}
+    followers = [
+        {"role": "user", "content": "continue"},
+        *first_round, later_follower, *second_round,
+    ]
+    original = [
+        {"role": "user", "content": "Earlier turns. " * 100},
+        {"role": "assistant", "content": REPLY},
+        *followers,
+    ]
+    surviving = [first_round[1], later_follower, *second_round]
+    compressed = [{"role": "user", "content": SUMMARY}, *surviving]
+
+    inserted = _ensure_compressed_keeps_last_assistant_reply(original, compressed)
+
+    assert inserted is not None
+    assert compressed[1] is inserted
+    assert all(compressed.index(inserted) < compressed.index(row) for row in surviving)
+    assert _count_reply(compressed) == 1
+    _assert_no_same_role_adjacency(compressed)
+
+
+def test_text_twin_slot_clamps_to_preserved_row_id():
+    """A follower the engine re-rendered still bounds the slot through its preserved ``_row_id`` (#138173)."""
+    followers = [
+        {"role": "user", "content": "continue", "_row_id": 3},
+        {"role": "user", "content": "also check the logs", "_row_id": 4},
+        {"role": "user", "content": "continue", "_row_id": 5},
+    ]
+    original = [
+        {"role": "user", "content": "Earlier turns. " * 100, "_row_id": 1},
+        {"role": "assistant", "content": REPLY, "_row_id": 2},
+        *followers,
+    ]
+    rerendered = {"role": "user", "content": "[note] also check the logs", "_row_id": 4}
+    later_twin = dict(followers[2])
+    compressed = [{"role": "user", "content": SUMMARY}, rerendered, later_twin]
+
+    inserted = _ensure_compressed_keeps_last_assistant_reply(original, compressed)
+
+    assert inserted is not None
+    assert compressed.index(inserted) == 1
+    assert compressed.index(inserted) < compressed.index(rerendered) < compressed.index(later_twin)
+    assert _count_reply(compressed) == 1
 
 def _seed(tmp_path, tail_rows, fold, follower):
     """Real SessionDB with the persisted history, a stub engine returning ``fold``, and the

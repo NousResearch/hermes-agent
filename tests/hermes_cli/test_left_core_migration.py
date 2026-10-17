@@ -421,3 +421,177 @@ def test_old_langfuse_plugin_key_keeps_naming_the_catalog_plugin(tmp_path, monke
     manifest = PluginManifest(name="langfuse", source="user", path=str(plugin_dir), key="langfuse")
     assert gate_manifest(manifest, set(), {"observability/langfuse"}).action == "load"
     assert gate_manifest(manifest, {"observability/langfuse"}, {"langfuse"}).error == "disabled via config"
+
+
+@pytest.mark.parametrize("runtime_exists", [False, True])
+@pytest.mark.parametrize("entry", ["startup", "update"])
+def test_managed_markers_skip_migration_and_keep_profile_reads(
+    tmp_path, monkeypatch, runtime_exists, entry
+):
+    import hermes_yaml as yaml
+    import pm.install
+    import pm.plugins_state as ps
+    from agent.secret_scope import (
+        current_secret_scope,
+        current_secret_scope_home,
+        reset_multiplex_context,
+        reset_secret_scope,
+        set_multiplex_context,
+        set_secret_scope,
+    )
+
+    home = _home(
+        tmp_path,
+        "a",
+        env="HASS_TOKEN=abc\nD7_SELECTION=on-disk-a\n",
+        config=(
+            "toolsets: ['${D7_SELECTION}']\nruntime_only: keep\n"
+            "security:\n  allow_lazy_installs: true\n"
+        )
+        if runtime_exists
+        else "",
+    )
+    other = _home(
+        tmp_path,
+        "b",
+        env="D7_SELECTION=profile-b\n",
+        config="toolsets: ['${D7_SELECTION}']\n",
+    )
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    managed_path = managed / "config.yaml"
+    managed_path.write_text(
+        yaml.safe_dump(
+            {
+                "_left_core_installed": ["homeassistant"],
+                "_left_core_scoped": ["homeassistant"],
+                "security": {"allow_lazy_installs": False},
+                "model": {"api_key": "managed-only-secret"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (home / "plugins" / "nix-managed-homeassistant").mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    monkeypatch.setenv("D7_SELECTION", "ambient-must-not-win")
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    monkeypatch.setattr(ps, "dependency_homes", lambda: [home, other])
+    calls, said = [], []
+
+    def install_into(target):
+        calls.append(target)
+        return lambda name: {"ok": False, "error": "unexpected install"}
+
+    monkeypatch.setattr(lcm, "_install_into", install_into)
+    runtime_path = home / "config.yaml"
+    before = runtime_path.read_bytes() if runtime_exists else None
+    managed_before = managed_path.read_bytes()
+    secrets = {"D7_SELECTION": "active-a"}
+    multiplex_token = set_multiplex_context(True)
+    token = set_secret_scope(secrets, profile_home=str(home))
+    try:
+        views = [
+            lcm._read_config(target).get("toolsets") for target in (home, other, home)
+        ]
+        result = (
+            lcm.recover_at_startup(say=said.append)
+            if entry == "startup"
+            else lcm.migrate_all_homes(say=said.append)
+        )
+        after = runtime_path.read_bytes() if runtime_path.exists() else None
+        assert (
+            result,
+            said,
+            calls,
+            views,
+            current_secret_scope(),
+            current_secret_scope_home(),
+            pm.install.lazy_installs_allowed(),
+            after,
+            managed_path.read_bytes(),
+        ) == (
+            [],
+            [],
+            [],
+            [
+                ["active-a"] if runtime_exists else None,
+                ["profile-b"],
+                ["active-a"] if runtime_exists else None,
+            ],
+            secrets,
+            str(home),
+            False,
+            before,
+            managed_before,
+        )
+    finally:
+        reset_secret_scope(token)
+        reset_multiplex_context(multiplex_token)
+
+
+@pytest.mark.parametrize("already_scoped", [False, True])
+def test_effective_migration_scope_writes_only_runtime_deltas(
+    tmp_path, monkeypatch, already_scoped
+):
+    import hermes_yaml as yaml
+    from hermes_cli.config import read_user_config_raw
+
+    raw = {
+        "runtime_only": {"keep": True},
+        "model": {"api_key": "${D7_USER_SECRET}"},
+        "platform_toolsets": {"telegram": ["homeassistant"], "discord": ["web"]},
+        "known_plugin_toolsets": {
+            "telegram": ["runtime-telegram"],
+            "runtime-platform": ["runtime-only"],
+        },
+        "_left_core_installed": ["old"],
+        "_left_core_scoped": ["old"],
+    }
+    home = _home(tmp_path, config=yaml.safe_dump(raw))
+    (home / "plugins" / "homeassistant").mkdir(parents=True)
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    managed_path = managed / "config.yaml"
+    managed_path.write_text(
+        yaml.safe_dump(
+            {
+                "_left_core_installed": ["managed-install-sibling"],
+                "_left_core_scoped": ["homeassistant"]
+                if already_scoped
+                else ["managed-scope-sibling"],
+                "platform_toolsets": {
+                    "telegram": ["web"],
+                    "discord": ["homeassistant"],
+                    "webhook": ["homeassistant"],
+                },
+                "known_plugin_toolsets": {
+                    "telegram": ["managed-telegram"],
+                    "acp": ["homeassistant", "managed-acp"],
+                    "managed-platform": ["managed-only"],
+                },
+                "model": {"api_key": "managed-only-secret"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    before = managed_path.read_bytes()
+    expected = {
+        **raw,
+        "_left_core_installed": ["homeassistant", "old"],
+    }
+    if not already_scoped:
+        expected["_left_core_scoped"] = ["homeassistant", "old"]
+        expected["known_plugin_toolsets"] = {
+            "telegram": ["homeassistant", "runtime-telegram"],
+            "runtime-platform": ["runtime-only"],
+        }
+    lcm._record_migration(
+        home, next(f for f in lcm.LEFT_CORE if f.plugin == "homeassistant")
+    )
+    assert (read_user_config_raw(home / "config.yaml"), managed_path.read_bytes()) == (
+        expected,
+        before,
+    )

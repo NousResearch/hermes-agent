@@ -114,7 +114,7 @@ api.groq.com            api.together.xyz
 api.deepseek.com        inference.nousresearch.com
 ```
 
-If your agent needs an upstream that isn't on the list — a self-hosted inference endpoint, an extra cloud LLM, an MCP server — add it to `proxy.extra_allowed_hosts`. Wildcards are matched against the full hostname (`*.example.com` matches `api.example.com` and `staging.example.com` but not `example.com` itself).
+If your agent needs an upstream that isn't on the list — a self-hosted inference endpoint, an extra cloud LLM, an MCP server — add it to `proxy.extra_allowed_hosts`. Entries are **bare host names or IP literals**, matched against the request's hostname with the port stripped: `api.example.com`, `*.example.com` (any subdomain depth, and `example.com` itself), `api-*.example.com`, `10.0.0.5`. Never a URL, a `host:port` or a `host/path` — iron-proxy could never match those, so `hermes egress setup` skips such an entry with a warning naming the fix (e.g. `host.docker.internal:11434` → `host.docker.internal`) and writes the rest.
 
 ### Default SSRF deny CIDRs
 
@@ -503,6 +503,8 @@ proxy:
 ```
 
 Then `hermes egress setup` (to regenerate `proxy.yaml`) and `hermes egress stop && hermes egress start`.
+
+If the host *is* listed and still 403s, check the entry's shape: `https://api.example.com`, `api.example.com:8443` or `api.example.com/v1` never match (the allowlist compares bare host names). `hermes egress setup` prints a `⚠ skipping allowed host …` line with the corrected entry for each one it had to drop.
 
 ### Sandbox sees SSL verification errors
 

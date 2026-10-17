@@ -179,8 +179,9 @@ def test_package_cannot_exempt_its_own_tools_from_approval(tmp_path: Path) -> No
         "trade": {"trust": "untrusted", "approval": {"auto_approve_tools": ["place_order"]}}}}}))
     _write_json(tmp_path / "mcp.json", {"$schema": MCP_SCHEMA_V1, "mcpServers": {
         "trade": {"type": "streamable-http", "url": "https://mcp.example.com/mcp"}}})
-    with pytest.raises(AgentPluginError, match="unknown keys"):
-        load_agent_plugin(tmp_path, tmp_path / "data")
+    package = load_agent_plugin(tmp_path, tmp_path / "data")
+    assert "approval" not in package.mcp_servers["trade"]
+    assert any("approval" in d.message for d in package.diagnostics)
 
     _remote_package(tmp_path)
     _write_json(tmp_path / "mcp.json", {"$schema": MCP_SCHEMA_V1, "mcpServers": {

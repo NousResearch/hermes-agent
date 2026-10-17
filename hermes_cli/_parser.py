@@ -21,7 +21,7 @@ PRE_ARGPARSE_INHERITED_FLAGS: list[tuple[str, bool]] = [("--profile", True), ("-
 # snapshot lacks AND derivation regresses.
 _VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({
     "-z", "--oneshot", "-m", "--model", "--provider", "--reasoning", "-t", "--toolsets",
-    "-r", "--resume", "-s", "--skills", "--usage-file", "--in",
+    "-r", "--resume", "-s", "--skills", "--usage-file", "--in", "--frontend",
 })
 _OPTIONAL_VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({"-c", "--continue"})
 
@@ -141,6 +141,9 @@ For more help on a command:
 """
 
 
+_FRONTEND_HELP = "Run the TUI through the frontend a plugin registered as NAME (implies --tui)"
+
+
 def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
     """Top-level (pre-subcommand) flags; ``-m/--provider`` pair with ``-z`` without ``chat``."""
     add, inherited = parser.add_argument, _inherited_flag
@@ -213,6 +216,7 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
               help="Force the classic prompt_toolkit REPL (overrides display.interface=tui)")
     inherited(parser, "--dev", dest="tui_dev", action="store_true", default=False,
               help="With --tui: run TypeScript sources via tsx (skip dist build)")
+    inherited(parser, "--frontend", dest="tui_frontend", metavar="NAME", default=None, help=_FRONTEND_HELP)
 
 
 def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
@@ -228,6 +232,13 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
     chat_parser = subparsers.add_parser(
         "chat", help="Interactive chat with the agent",
         description="Start an interactive chat session with Hermes Agent")
+    add_chat_arguments(chat_parser)
+    return chat_parser
+
+
+def add_chat_arguments(chat_parser: argparse.ArgumentParser) -> None:
+    """Every ``hermes chat`` flag, on *chat_parser*: the ``chat`` subparser and each plugin TUI
+    frontend's ``hermes <name>`` shorthand (``plugins_tui_frontend.py``) share one flag set."""
     add, inherited, SUPPRESS = chat_parser.add_argument, _inherited_flag, argparse.SUPPRESS
     _query_group = chat_parser.add_mutually_exclusive_group()
     _query_group.add_argument("-q", "--query", help=(
@@ -324,7 +335,8 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
               help="Force the classic prompt_toolkit REPL (overrides display.interface=tui)")
     inherited(chat_parser, "--dev", dest="tui_dev", action="store_true", default=SUPPRESS,
               help="With --tui: run TypeScript sources via tsx (skip dist build)")
-    return chat_parser
+    inherited(chat_parser, "--frontend", dest="tui_frontend", metavar="NAME", default=SUPPRESS,
+              help=_FRONTEND_HELP)
 
 
 def _plugin_command_install_hint(prog: str, value: str):

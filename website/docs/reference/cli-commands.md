@@ -37,6 +37,7 @@ hermes [global-options] <command> [subcommand/options]
 | `--tui` | Launch the [TUI](../user-guide/tui.md) instead of the classic CLI. Equivalent to `HERMES_TUI=1`. Always wins over `display.interface`. |
 | `--cli` | Force the classic prompt_toolkit REPL. Use this to override `display.interface: tui` for a single invocation. |
 | `--dev` | With `--tui`: run the TypeScript sources directly via `tsx` instead of the prebuilt bundle (for TUI contributors). |
+| `--frontend <name>` | Run the TUI through the frontend a plugin registered as `<name>` (implies `--tui`; also `hermes <name>`). Exit code 75 from the frontend starts the built-in TUI instead. See [Plugin frontends](../user-guide/tui.md#plugin-frontends). |
 
 ### `hermes-agent` (legacy single-query runner)
 

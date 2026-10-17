@@ -573,16 +573,8 @@ class PluginContext:
     def _tool_override_allowed(self, tool_name: str) -> bool:
         """Whether this plugin may override built-in tools: bundled plugins are trusted (a maintainer
         choice, not privilege escalation); others need ``tools.override`` via
-        :func:`plugin_capability_granted` (granted_capabilities OR legacy ``allow_tool_override: true``).
-
-        Bundled plugins (shipped with Hermes core) are trusted by default — an override there is a
-        deliberate maintainer choice, not a third-party plugin trying to elevate privilege. For every other
-        source, the canonical check is :func:`plugin_capability_granted` with the ``tools.override``
-        capability — satisfied by EITHER the consent-flow grant
-        (``plugins.entries.<plugin_id>.granted_capabilities``) OR the deprecated legacy key
-        ``allow_tool_override: true`` (still honored for backward compatibility; #64228 reference
-        migration).
-        """
+        :func:`plugin_capability_granted` (``plugins.entries.<plugin_id>.granted_capabilities`` OR the
+        deprecated ``allow_tool_override: true``, still honored; #64228)."""
         if self.manifest.source == "bundled":
             return True
         try:
@@ -640,6 +632,14 @@ class PluginContext:
         }
         return self._register_entry("cli_command", name, self._manager._cli_commands, entry,
                                     "Plugin %s registered CLI command: %s", name)
+
+    @_serialized_replacement
+    def register_tui_frontend(self, name: str, bundle_dir, *, help: str = "") -> PluginRegistration:
+        """Register a TUI frontend (``<bundle_dir>/dist/entry.js``) run by ``hermes chat --tui
+        --frontend <name>`` and ``hermes <name>``. Contract: plugins_tui_frontend.py, plugin docs."""
+        from hermes_cli.plugins_tui_frontend import tui_frontend_entry
+        return self._register_entry("cli_command", name, self._manager._cli_commands, tui_frontend_entry(
+            self, name, bundle_dir, help), "Plugin %s registered TUI frontend: %s", name)
 
     @_serialized_replacement
     def register_command(

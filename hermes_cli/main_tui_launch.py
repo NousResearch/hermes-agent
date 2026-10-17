@@ -266,6 +266,48 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     return [node, "--expose-gc", str(tui_dir / "dist/entry.js")], tui_dir
 
 
+def _resolve_tui_frontend(name: str, tui_dev: bool) -> dict:
+    """The plugin frontend registered as *name*; exits, before any launch work, when it cannot run.
+    ``--frontend`` outranks ``HERMES_TUI_DIR``, which still picks the built-in TUI a fallback runs."""
+    if tui_dev:
+        print(f"Error: --dev is incompatible with --frontend {name}\n"
+              "A plugin frontend is a prebuilt bundle; it has no source code to hot-reload.", file=sys.stderr)
+        sys.exit(1)
+    from hermes_cli.plugins_tui_frontend import find_tui_frontend
+    entry, names = find_tui_frontend(name)
+    if entry is None:
+        known = f"Registered frontends: {', '.join(names)}." if names else "No enabled plugin registers one."
+        print(f"Error: no TUI frontend named '{name}'. {known}\n"
+              "  `hermes plugins list` shows installed plugins; `hermes plugins enable <plugin>` turns one on.",
+              file=sys.stderr)
+        sys.exit(2)
+    if not (entry["tui_frontend"] / "dist" / "entry.js").is_file():
+        print(f"Error: the '{name}' TUI frontend (plugin {entry['plugin']}) is missing "
+              f"{entry['tui_frontend'] / 'dist' / 'entry.js'}; rebuild or reinstall the plugin.", file=sys.stderr)
+        sys.exit(1)
+    return entry
+
+
+def _run_tui_child(tui_dir: Path, tui_dev: bool, frontend: Optional[dict], env: dict) -> int:
+    """Run the TUI child process and return its exit code. A plugin frontend that exits
+    ``FRONTEND_UNAVAILABLE_EXIT`` (75: it cannot run in this terminal) is replaced by one run of the
+    built-in TUI."""
+    if frontend is not None:
+        from hermes_cli.plugins_tui_frontend import FRONTEND_UNAVAILABLE_EXIT
+        bundle = frontend["tui_frontend"]
+        code = _call_tui([_tui_node_bin("node"), "--expose-gc", str(bundle / "dist" / "entry.js")], bundle, env)
+        if code != FRONTEND_UNAVAILABLE_EXIT:
+            return code
+        print(f"hermes: the '{frontend['name']}' TUI frontend cannot run in this terminal; "
+              "starting the built-in TUI", file=sys.stderr)
+    return _call_tui(*_make_tui_argv(tui_dir, tui_dev), env)
+
+
+def _call_tui(argv: list[str], cwd: Path, env: dict) -> int:
+    # health: allow HX006 -- the interactive TUI child lives as long as the user's session
+    return subprocess.call(argv, cwd=str(cwd), env=env)
+
+
 def _split_comma_items(items, *, split_non_str: bool = True) -> list[str]:
     """Flatten str / list (comma-separated) input into stripped non-empty parts."""
     raw_items = [items] if isinstance(items, str) else items
@@ -433,10 +475,12 @@ def _launch_tui(
     provider: Optional[str] = None, toolsets: object = None, skills: object = None,
     verbose: Optional[bool] = None, quiet: bool = False, query: Optional[str] = None,
     image: Optional[str] = None, worktree: bool = False, checkpoints: bool = False,
-    pass_session_id: bool = False, max_turns: Optional[int] = None, accept_hooks: bool = False):
-    """Replace current process with the TUI."""
+    pass_session_id: bool = False, max_turns: Optional[int] = None, accept_hooks: bool = False,
+    frontend: Optional[str] = None):
+    """Replace current process with the TUI (*frontend*: a plugin-registered TUI frontend's name)."""
     from hermes_cli.main import PROJECT_ROOT
     tui_dir = PROJECT_ROOT / "ui-tui"
+    frontend_entry = _resolve_tui_frontend(frontend, tui_dev) if frontend else None
 
     import tempfile
     # TUI child is a hermes process: propagate the profile-home contract via
@@ -530,11 +574,10 @@ def _launch_tui(
     if resume_session_id:
         env["HERMES_TUI_RESUME"] = resume_session_id
 
-    argv, cwd = _make_tui_argv(tui_dir, tui_dev)
     code: Optional[int] = None
     try:
         try:
-            code = subprocess.call(argv, cwd=str(cwd), env=env)
+            code = _run_tui_child(tui_dir, tui_dev, frontend_entry, env)
         except KeyboardInterrupt:
             code = 130
 
@@ -601,7 +644,7 @@ def _resolve_use_tui(args) -> bool:
     """
     if getattr(args, "cli", False):
         return False
-    if getattr(args, "tui", False) or getattr(args, "tui_native", False):
+    if getattr(args, "tui", False) or getattr(args, "tui_native", False) or getattr(args, "tui_frontend", None):
         return True
     try:
         if not (sys.stdin.isatty() and sys.stdout.isatty()):

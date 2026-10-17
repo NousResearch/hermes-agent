@@ -781,6 +781,7 @@ def register(ctx):
 - `ctx.register_tool()` puts your tool in the registry — the model sees it immediately
 - `ctx.register_hook()` subscribes to lifecycle events
 - `ctx.register_cli_command()` registers a CLI subcommand (e.g. `hermes my-plugin <subcommand>`)
+- `ctx.register_tui_frontend()` registers an alternative TUI frontend bundle — see [Register a TUI frontend](#register-a-tui-frontend) below
 - `ctx.register_command()` registers an in-session slash command (e.g. `/myplugin <args>` inside CLI / gateway chat) — see [Register slash commands](#register-slash-commands) below
 - `ctx.dispatch_tool(name, arguments)` — call any other tool (built-in or from another plugin) with the parent agent's context (approvals, credentials, task_id) wired up automatically. Useful from slash-command handlers that need to invoke `terminal`, `read_file`, or any other tool as if the model had called it directly.
 - `ctx.get_config()` / `ctx.set_config()` access only this plugin's settings namespace; `ctx.state` stores plugin-owned runtime data under the active profile.
@@ -1517,6 +1518,43 @@ After registration, users can run `hermes my-plugin status`, `hermes my-plugin c
 **Memory provider plugins** use a convention-based approach instead: add a `register_cli(subparser)` function to your plugin's `cli.py` file. The memory plugin discovery system finds it automatically — no `ctx.register_cli_command()` call needed. See the [Memory Provider Plugin guide](../memory-provider-plugin.md#adding-cli-commands) for details.
 
 **Active-provider gating:** Memory plugin CLI commands only appear when their provider is the active `memory.provider` in config. If a user hasn't set up your provider, your CLI commands won't clutter the help output.
+
+### Register a TUI frontend
+
+A plugin can ship its own terminal frontend: a Node bundle that speaks the same stdio gateway protocol as the built-in TUI (`ui-tui`) but draws the chat its own way. Hermes runs the bundle through its normal TUI launcher, so the profile, working directory, `--resume` / `-c`, `--worktree`, the shared-gateway attach and the exit summary all work as they do for `hermes --tui`. Your plugin does not run `hermes` again or import Hermes internals.
+
+```python
+from pathlib import Path
+
+def register(ctx):
+    ctx.register_tui_frontend(
+        "my-ui",                                # also the `hermes my-ui` command
+        Path(__file__).parent / "frontend",     # must contain dist/entry.js
+        help="Chat in My UI",
+    )
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | `str` | Lowercase letters, digits, `-` and `_` (up to 64 characters). It must not be a built-in `hermes` command. |
+| `bundle_dir` | `str` or `Path` | Directory that holds `dist/entry.js`. Hermes runs `node --expose-gc <bundle_dir>/dist/entry.js` with `<bundle_dir>` as the working directory and the same environment the built-in TUI gets. |
+| `help` | `str` | Shown by `hermes --help` for `hermes <name>`. Optional. |
+
+Users start the frontend in either of two ways. They are the same launch:
+
+```bash
+hermes chat --tui --frontend my-ui -c     # or: hermes --tui --frontend my-ui
+hermes my-ui -c                           # shorthand; every `hermes chat` flag works
+```
+
+**Fallback contract.** If your frontend cannot run in the current terminal (for example, the terminal does not support a protocol it needs), exit with code **75** (`EX_TEMPFAIL`) before you start a session. Hermes then prints one line on stderr that names your frontend and runs the built-in TUI once with the same flags. Every other exit code is final: `0` and `130` print the exit summary, `42` starts `hermes update`, as for the built-in TUI.
+
+**Rules.**
+
+- `--frontend` and `--dev` are mutually exclusive: a frontend is a prebuilt bundle with no source to hot-reload.
+- `--frontend` wins over `HERMES_TUI_DIR`. `HERMES_TUI_DIR` still selects the built-in TUI that the exit-75 fallback runs.
+- An unknown name exits with code 2 and lists the registered frontends. A registered frontend whose `dist/entry.js` is missing exits with code 1 and names the plugin.
+- `--safe-mode` disables plugins, so `--frontend` reports an unknown name there.
 
 ### Register slash commands
 

@@ -98,6 +98,17 @@ hermes --tui
 
 The directory must contain `dist/entry.js`.
 
+### Plugin frontends
+
+A plugin can register its own TUI frontend (see [Register a TUI frontend](../developer-guide/plugins/index.md#register-a-tui-frontend)). Choose it with `--frontend`, or use the command the plugin adds:
+
+```bash
+hermes --tui --frontend <name>
+hermes <name> [chat flags]      # the same launch
+```
+
+If the frontend cannot run in your terminal, Hermes prints one line on stderr and starts the built-in TUI instead. `--frontend` wins over `HERMES_TUI_DIR`, and it cannot be combined with `--dev`.
+
 ## Keybindings
 
 Keybindings match the [Classic CLI](cli.md#keybindings) exactly. The only behavioral differences:

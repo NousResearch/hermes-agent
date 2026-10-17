@@ -567,7 +567,7 @@ Supported models: `MiniMax-M2.7` (main) and `MiniMax-M2.7-highspeed` (wired as t
 
 Use the NVIDIA NIM provider to access Nemotron and other open-source models through NVIDIA’s hosted service or a local NIM endpoint. Model identifiers for hosted endpoints and instructions for local deployment are available at [build.nvidia.com/models](https://build.nvidia.com/models).
 
-:::note The examples below use Nemotron 3.5 Super VL, which supports text and image inputs, reasoning, and tool calls.
+:::note The examples below use Nemotron 3.5 Super VL, which supports text, image, and video inputs, reasoning, and tool calls.
 
 #### Cloud (build.nvidia.com)
 

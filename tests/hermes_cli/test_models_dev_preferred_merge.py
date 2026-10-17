@@ -59,6 +59,11 @@ class TestMergeHelper:
 
 class TestProviderModelIdsPreferred:
 
+    def test_nvidia_curated_models_replace_retired_super(self):
+        nvidia_models = _PROVIDER_MODELS["nvidia"]
+        assert nvidia_models[0] == "nvidia/nemotron-3.5-super-vl-120b-a12b"
+        assert "nvidia/nemotron-3-super-120b-a12b" not in nvidia_models
+
     def test_k3_live_discovery_is_scoped_to_kimi_coding_endpoint(self):
         """Coding keys discover K3; legacy Moonshot keys must not advertise it."""
 

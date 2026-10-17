@@ -1,0 +1,26 @@
+name: rtk-rewrite
+repo: https://github.com/kerrz2020/hermes-rtk-rewrite
+sha: 4c5f8a5abdfd7980cba5ef02df86b8efe52c00d6
+description: >-
+  Community (non-official) plugin that rewrites Hermes terminal commands through
+  RTK (rtk-ai/rtk, Apache-2.0) before execution, so the model sees compact output
+  instead of raw command spam — cutting tokens on common dev commands. Adds a
+  fail-open pre_tool_call hook (2s timeout, unexpected exits leave the command
+  untouched), an optional desktop pane, and update scripts. Disclosure — every
+  terminal tool command is passed to the rtk binary found on PATH (rtk-ai/rtk,
+  installed separately) and replaced with rtk's rewrite before approval and
+  execution; fail-open when rtk is missing or errors. Community mirror of
+  upstream's hooks/hermes/rtk-rewrite, not affiliated with rtk-ai.
+  scripts/update.sh downloads the pinned RTK release binary (v0.49.0,
+  checksum-verified).
+maintainer: kerrz2020
+tier: community
+category: tools
+version: "1.0.1"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

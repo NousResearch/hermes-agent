@@ -14,6 +14,8 @@ import logging
 import os
 from typing import Optional
 
+from cron.env_settings import cron_env_setting
+
 # Log-record parity with the origin module.
 logger = logging.getLogger("cron.scheduler")
 
@@ -83,10 +85,11 @@ def _cron_preflight_enabled(cfg: dict) -> bool:
 
 def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
     """READ-ONLY probe: would provider resolution fail for lack of a key? Mirrors run_job's
-    requested-provider computation. Skipped when a fallback chain exists — auth-fallback may
-    legitimately rescue a missing primary key, so blocking here would break that contract."""
+    requested-provider computation. Skipped when the job has a fallback chain — auth-fallback may
+    legitimately rescue a missing primary key. A pinned job has none (``_job_fallback_chain``), so
+    its missing key blocks even when the global chain is configured."""
     try:
-        if _sched.get_fallback_chain(cfg):
+        if _sched._job_fallback_chain(job, cfg):
             return None
     except Exception:
         return None  # fail-open: never block on a preflight-internal error
@@ -94,9 +97,9 @@ def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
     _cron_cfg = cfg.get("cron") if isinstance(cfg.get("cron"), dict) else {}
     requested = (
         job.get("provider") or str((_cron_cfg or {}).get("model_provider") or "").strip() or None)
-    model = job.get("model") or os.getenv("HERMES_MODEL") or ""
+    model = job.get("model") or cron_env_setting("HERMES_MODEL") or ""
 
-    from hermes_cli.auth import AuthError
+    from hermes_cli.auth import AuthError, is_rate_limited_auth_error
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
         kwargs = {"requested": requested, "target_model": model}
@@ -104,9 +107,13 @@ def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
             kwargs["explicit_base_url"] = job.get("base_url")
         resolve_runtime_provider(**kwargs)
     except AuthError as exc:
+        if is_rate_limited_auth_error(exc):
+            # Quota/rate-limit is not a missing credential: let the real path report it and hold
+            # the job through the provider's window (cron/quota_hold.py, #89376).
+            return None
         return (
-            f"provider credential missing: {exc}. "
-            "Set the provider API key in .env (or `hermes setup`), or pin a "
+            f"provider credential missing: {exc} {_credential_store_scope_label()}. "
+            "Set the provider API key in .env (or `hermes setup`) for that home, or pin a "
             "working provider via `hermes cron edit "
             f"{job.get('id')} --provider <p>`."
         )
@@ -115,13 +122,26 @@ def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
     return None
 
 
+def _credential_store_scope_label() -> str:
+    """``[profile '<name>', HERMES_HOME <path>]`` for the home this preflight read credentials from.
+
+    The verdict must name the store it judged: a scheduler process whose home differs from the
+    shell where "the same credential works" (Docker HOME vs HERMES_HOME, a multiplexed satellite
+    profile, a gateway launched without the shell's env) otherwise reports a bare "No credentials
+    stored" that cannot be told apart from a real login gap (#116213).
+    """
+    from hermes_cli.profiles import get_active_profile_name
+    from hermes_constants import get_hermes_home
+    return f"[profile '{get_active_profile_name() or 'default'}', HERMES_HOME {get_hermes_home()}]"
+
+
 def _primary_profile_routes_for_current_home() -> list:
     """Primary gateway ``profile_routes`` targeting the profile being served; ``[]`` if this IS the
     primary home. Satellite crons are ticked and delivered by the primary gateway (a satellite
-    holding its own token is a ``duplicate_credential`` fatal). Reads the primary config.yaml
-    directly (top-level or nested ``gateway.``) instead of ``load_gateway_config()`` so no primary
-    platform config leaks into this process. Shared by preflight rescue and delivery-time
-    resolution so they cannot drift.
+    holding its own token is a ``duplicate_credential`` fatal). Reads the primary home's YAML
+    layers (user file + managed-scope overlay, top-level or nested ``gateway.``) through the same
+    loader ``load_gateway_config()`` uses, without bridging platform config into this process.
+    Shared by preflight rescue and delivery-time resolution so they cannot drift.
 
     Under ``gateway.multiplex_profiles`` a satellite profile's cron jobs are ticked by the primary gateway's
     in-process ticker (#69377) and delivered through the primary gateway's live adapters — the satellite
@@ -137,15 +157,15 @@ def _primary_profile_routes_for_current_home() -> list:
             == current_home.expanduser().resolve(strict=False)
         ):
             return []  # this IS the primary home — nothing to consult
-        config_path = primary_home.expanduser() / "config.yaml"
-        if not config_path.exists():
-            return []
 
-        from hermes_cli.config import read_user_config_raw
-        raw = read_user_config_raw(config_path)  # raw primary file, not the merged current-profile config
-        routes_raw = raw.get("profile_routes")
-        if routes_raw is None and isinstance(raw.get("gateway"), dict):
-            routes_raw = raw["gateway"].get("profile_routes")
+        # Same layers the primary gateway's own loader reads: routes pinned in the managed scope
+        # (/etc/hermes/config.yaml) never reached the raw user-file read (#121212), so preflight
+        # false-blocked and routed delivery failed closed on centrally-managed installs.
+        from gateway.config_loader import read_yaml_layers
+        layered = read_yaml_layers(primary_home.expanduser())
+        routes_raw = layered.get("profile_routes")
+        if routes_raw is None and isinstance(layered.get("gateway"), dict):
+            routes_raw = layered["gateway"].get("profile_routes")
         if not isinstance(routes_raw, list):
             return []
 
@@ -198,12 +218,17 @@ class SharedRouteAdapters:
         chat_id = str(target.get("chat_id") or "") or None
         thread_id = target.get("thread_id")
         thread_id = str(thread_id) if thread_id else None
+        # A cron target carries no inbound guild anchor, so a route's guild_id is matched against
+        # itself — the target-exact discriminators (chat_id/thread_id) authorize the send. Without
+        # this the documented ``guild_id + chat_id`` Discord route never authorized cron output.
         for route in self._routes:
             if str(route.platform).lower() != platform_key:
                 continue
             if not (route.chat_id or route.thread_id):
                 continue  # guild-only routes are not target-exact
-            if route.matches(str(route.platform), chat_id=chat_id, thread_id=thread_id):
+            if route.matches(
+                str(route.platform), guild_id=route.guild_id, chat_id=chat_id, thread_id=thread_id,
+            ):
                 return adapter
         return default
 
@@ -305,6 +330,60 @@ def _preflight_check_skills(job: dict) -> Optional[str]:
     return None
 
 
+# (job id, server name) pairs already warned about as reconnecting; see _empty_requested_mcp_toolsets.
+_RECONNECTING_WARNED: set = set()
+
+
+def _empty_requested_mcp_toolsets(job: dict, cfg: dict) -> Optional[str]:
+    """Reason when an MCP server the job's own ``enabled_toolsets`` names resolves to zero tools.
+
+    Runs AFTER cron MCP discovery. The server's toolset alias is process-global while its tools
+    are registered per profile overlay, so under a multiplexer a job can name a server that is
+    connected for another profile and build a tool-less agent that ``quiet_mode`` never reports.
+    Only servers the job explicitly asked for count; the implicit enabled-server merge does not.
+    """
+    requested = [str(name) for name in (job.get("enabled_toolsets") or [])]
+    if not requested:
+        return None
+    from hermes_cli.tools_config import enabled_mcp_server_names
+    from toolsets import resolve_toolset
+    from tools.mcp_tool_discovery import mcp_server_reconnecting
+    missing = [name for name in requested
+               if name in enabled_mcp_server_names(cfg) and not resolve_toolset(name)]
+    # A server that worked in this process and is parked/self-probing after a network blip
+    # (router reboot, DNS failure) is recovering, not misconfigured: the job runs with the tools
+    # that did resolve rather than losing a whole tick to a minute of downtime (#112871). Only a
+    # server that never connected for this profile is judged below.
+    reconnecting = sorted(name for name in missing if mcp_server_reconnecting(name))
+    job_id = str(job.get("id", "?"))
+    # One WARNING per job+server per outage (like the one-shot blocked_config alert), not one per
+    # tick; the entry drops once the server is back so the next outage warns again.
+    _RECONNECTING_WARNED.difference_update(
+        key for key in list(_RECONNECTING_WARNED) if key[0] == job_id and key[1] not in reconnecting)
+    unwarned = [name for name in reconnecting if (job_id, name) not in _RECONNECTING_WARNED]
+    if unwarned:
+        _RECONNECTING_WARNED.update((job_id, name) for name in unwarned)
+        logger.warning(
+            "Job '%s': MCP server(s) %s named in enabled_toolsets are reconnecting — running "
+            "without their tools until they recover (a server parked on a permanent error blocks "
+            "the job instead)", job_id, ", ".join(unwarned))
+    if reconnecting:
+        missing = [name for name in missing if name not in reconnecting]
+    if not missing:
+        return None
+    # The reason is what the operator reads in the gateway log and the alert. It must say the
+    # block is not sticky: a server whose first connection failed on a network blip is parked and
+    # self-probed by the MCP layer, and this check re-runs on every dispatch, so the job resumes
+    # on its own — two operators misread the old text as a config error to repair by hand (#112871).
+    return (
+        f"MCP server(s) {', '.join(sorted(missing))} named in this job's enabled_toolsets "
+        "resolved to zero tools for this profile (never connected for this profile, or connected "
+        "for another profile only). If the server is only temporarily unreachable this clears by itself — "
+        "the check re-runs on every dispatch and the job resumes once the server reconnects. "
+        "If the name is wrong or belongs to another profile, fix the server or remove it from "
+        "the job's toolsets.")
+
+
 def _preflight_job_config(job: dict, cfg: dict) -> Optional[str]:
     """Pre-dispatch validation: return a reason (missing key, unconfigured delivery, unready skill)
     so the caller refuses BEFORE building agent machinery or burning an LLM call. Every check fails
@@ -329,5 +408,5 @@ def _preflight_job_config(job: dict, cfg: dict) -> Optional[str]:
 
 # Late-bound origin namespace (see module docstring). Imported LAST so this module is fully
 # populated before ``scheduler`` re-exports from it.
-from cron import scheduler as _sched  # noqa: E402
-from cron import scheduler_delivery as _delivery  # noqa: E402
+from cron import scheduler as _sched
+from cron import scheduler_delivery as _delivery

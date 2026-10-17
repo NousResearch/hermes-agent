@@ -14,7 +14,7 @@ def available_backends() -> list[str]:
     """Names of usable rasterizer backends, in preference order."""
     backends = []
     try:
-        import pypdfium2  # noqa: F401
+        import pypdfium2
         backends.append("pypdfium2")
     except ImportError:
         pass
@@ -66,7 +66,7 @@ def _via_pdftoppm(pdf_path: str, page: int, dpi: int, password: str | None):
         if password:
             cmd += ["-upw", password]
         cmd += [pdf_path, prefix]
-        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", check=False)
         if proc.returncode != 0:
             raise ValueError(f"pdftoppm failed: {proc.stderr.strip()}")
         produced = sorted(Path(tmp).glob("page*.png"))

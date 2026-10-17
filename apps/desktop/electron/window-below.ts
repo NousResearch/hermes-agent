@@ -145,8 +145,32 @@ export interface EnumerationFailure {
 export const enumerationFailed = <T>(result: EnumerationFailure | T): result is EnumerationFailure =>
   typeof result === 'object' && result !== null && 'reason' in result
 
+// Keep the native provider's failure detail shared by the tool and HUD log.
+export function getWindowsFailureReason(detail: string, platform: string, arch: string): string {
+  if (platform === 'win32' && arch === 'arm64') {
+    return (
+      `${detail}. On Windows ARM64, check that the installed get-windows package includes a working ` +
+      'win32-arm64 native binding. If that binding is unavailable, use the x64 desktop build under Windows emulation, ' +
+      'or a build with a matching native binding. This affects both read_window_below and HUD window context.'
+    )
+  }
+
+  return detail
+}
+
 const describeError = (error: unknown): string =>
   error instanceof Error ? error.message : String(error ?? 'unknown error')
+
+/**
+ * Redirect a resolved module specifier out of `app.asar` so its files exist on
+ * the real filesystem. `app.asar` only ever appears as a complete path
+ * segment in a packaged build (electron-builder names the archive exactly
+ * that), so in dev — where nothing is archived — this is a no-op. The segment
+ * is matched against either separator because the staged specifier comes from
+ * `path.join`, which on Windows yields backslashes; same regex as main.ts.
+ */
+export const resolveOutsideAsar = (specifier: string): string =>
+  specifier.replace(/app\.asar(?=$|[\\/])/, 'app.asar.unpacked')
 
 let getWindowsModule: Promise<GetWindowsModule | EnumerationFailure> | null = null
 
@@ -169,7 +193,17 @@ const loadGetWindows = (): Promise<GetWindowsModule | EnumerationFailure> => {
   // scripts/stage-native-deps.mjs writes a staged lib/windows.js that requires
   // the binding directly, so it is the more reliable of the two everywhere.
   getWindowsModule ??= (async () => {
-    const staged = path.join(app.getAppPath(), 'dist', 'node_modules', 'get-windows', 'index.js')
+    // Both specifiers are redirected out of app.asar in a packaged build.
+    // get-windows does its real work by exec'ing a helper binary whose path it
+    // derives from its own module URL, so a module imported through an
+    // `/app.asar/` path derives an in-archive helper path and the spawn fails
+    // ENOTDIR: the kernel sees app.asar as a file. Electron rewrites asar
+    // paths for child_process only once that module has been pulled through
+    // the CJS loader, which this ESM main process never does (every import
+    // here is `from 'node:child_process'`). Pointing the import at the
+    // unpacked copy gives get-windows a real path to derive from.
+    const staged = resolveOutsideAsar(path.join(app.getAppPath(), 'dist', 'node_modules', 'get-windows', 'index.js'))
+
     let stagedError = 'not staged in this build'
 
     if (fs.existsSync(staged)) {
@@ -181,7 +215,7 @@ const loadGetWindows = (): Promise<GetWindowsModule | EnumerationFailure> => {
     }
 
     try {
-      return (await import('get-windows')) as GetWindowsModule
+      return (await import(resolveOutsideAsar(import.meta.resolve('get-windows')))) as GetWindowsModule
     } catch (error) {
       return {
         reason:
@@ -263,7 +297,11 @@ export async function enumerateWindowsFrontToBack(
   selfPid: number,
   titlesAvailable: boolean
 ): Promise<EnumeratedWindow[] | EnumerationFailure> {
-  return (await readHyprlandWindows(selfPid)) ?? (await enumerateViaGetWindows(titlesAvailable))
+  const result = (await readHyprlandWindows(selfPid)) ?? (await enumerateViaGetWindows(titlesAvailable))
+
+  return enumerationFailed(result)
+    ? { reason: getWindowsFailureReason(result.reason, process.platform, process.arch) }
+    : result
 }
 
 export async function readWindowBelow(

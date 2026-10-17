@@ -1,6 +1,6 @@
 from pathlib import Path
 
-import tui_gateway.server as server
+from tui_gateway import server
 
 
 def test_model_options_binds_requested_profile_home(monkeypatch, tmp_path):

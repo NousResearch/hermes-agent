@@ -12,14 +12,16 @@ import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 import { useCallback, useMemo, useRef } from 'react'
 
 import type { ClientSessionState } from '@/app/types'
+import type { WorkspaceMode } from '@/contrib/types'
 import { useI18n } from '@/i18n'
-import { textPart } from '@/lib/chat-messages'
-import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
+import { type ChatMessage, textPart } from '@/lib/chat-messages'
+import { isSlashCommandText } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { clearClarifyRequest } from '@/store/clarify'
 import type { ComposerAttachment } from '@/store/composer'
 import { resetSessionBackground } from '@/store/composer-status'
-import { notifyError } from '@/store/notifications'
+import { confirm } from '@/store/confirm'
+import { notify, notifyError } from '@/store/notifications'
 import { clearPreviewArtifacts } from '@/store/preview-status'
 import { clearAllPrompts } from '@/store/prompts'
 import { $sessions, knownSessionOwner, ownerLookupSessionRows, sessionMatchesStoredId } from '@/store/session'
@@ -30,6 +32,7 @@ import {
 } from '@/store/session-request-router'
 import {
   $sessionStates,
+  $sessionTiles,
   isSessionRemote,
   patchSessionTile,
   sessionTileDelegate,
@@ -43,22 +46,26 @@ import type { SessionInfo } from '@/types/hermes'
 
 import type { GatewayRequester } from '../contrib/types'
 import { uploadComposerAttachment } from '../session/hooks/use-prompt-actions'
+import { isStaleTargetError } from '../session/hooks/use-prompt-actions'
 import {
   appendMidTurnUserMessage,
   applyBranchVisibility,
   applyReloadOptimistic,
   applyRewindOptimistic,
+  deepCutConfirmRequest,
   durableRowIdsForRebind,
-  finalizeInterruptedMessages,
-  planEdit,
-  planReload,
+  finalizeStoppedMessages,
+  planConfirmedEdit,
+  planConfirmedReload,
   planRestore,
   rebindSurvivorRowIds,
+  revalidateEditPlan,
   runRewindSubmit,
   type SurvivorUserRowIds
 } from '../session/hooks/use-prompt-actions/rewind'
 import { useSubmitPrompt } from '../session/hooks/use-prompt-actions/submit'
 import {
+  isDeepTruncateRefusal,
   markSessionRecentlyInterrupted,
   shouldInterruptBeforeRewind,
   type SubmitTextOptions,
@@ -89,7 +96,16 @@ export function listTileSessionRow(deps: {
   runtimeId: string
   sessions: readonly SessionInfo[]
   storedSessionId: string
+  workspaceMode?: WorkspaceMode
 }): boolean {
+  // Bot Mode tabs mirror hidden relationship chats (canonical Bot Chats stay
+  // off the Sessions list by design — the bot row is the only door), so a
+  // first send must not seed a flagless row the refresh keep-list would then
+  // hold forever (#113273).
+  if (deps.workspaceMode === 'bots') {
+    return false
+  }
+
   const preview = deps.preview.trim()
 
   if (!preview || deps.sessions.some(session => sessionMatchesStoredId(session, deps.storedSessionId))) {
@@ -203,7 +219,8 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       preview,
       runtimeId,
       sessions: $sessions.get(),
-      storedSessionId: storedIdRef.current
+      storedSessionId: storedIdRef.current,
+      workspaceMode: $sessionTiles.get().find(tile => tile.storedSessionId === storedIdRef.current)?.workspaceMode
     })
   }, [])
 
@@ -252,6 +269,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
                 attachedSessionId: next.attachedSessionId,
                 label: next.label,
                 path: next.path,
+                mime: next.mime,
                 refText: next.refText,
                 uploadState: next.uploadState
               })
@@ -312,7 +330,17 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
 
       listTileSession(visibleText)
 
-      if (!attachments.length && SLASH_COMMAND_RE.test(visibleText)) {
+      if (isSlashCommandText(visibleText)) {
+        if (attachments.length) {
+          notify({
+            kind: 'warning',
+            title: copy.slashCommandIgnoredTitle,
+            message: copy.slashCommandIgnoredBody
+          })
+
+          return false
+        }
+
         triggerHaptic('selection')
         await sessionTileDelegate()?.executeSlash(visibleText, runtimeIdRef.current)
 
@@ -332,7 +360,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
 
     update(state => ({
       ...state,
-      messages: finalizeInterruptedMessages(state.messages, state.streamId),
+      messages: finalizeStoppedMessages(state.messages, state.streamId),
       busy: false,
       awaitingResponse: false,
       streamId: null,
@@ -363,8 +391,39 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
     }
   }, [bindRecoveredRuntime, copy.stopFailed, requestSessionGateway, update])
 
-  const steerPrompt = useCallback(
+  // A hidden note mid-turn rides session.steer into the model's next tool
+  // result: no optimistic bubble, no user turn. The main composer has the same
+  // primitive in use-prompt-actions.
+  const injectHiddenPrompt = useCallback(
     async (rawText: string): Promise<boolean> => {
+      const text = rawText.trim()
+      const sessionId = runtimeIdRef.current
+
+      if (!text || !sessionId) {
+        return false
+      }
+
+      try {
+        const { result } = await withSessionNotFoundResume(
+          sessionId,
+          storedIdRef.current,
+          liveId => requestSessionGateway<{ status?: string }>('session.steer', { session_id: liveId, text }),
+          {
+            requestGateway: requestSessionGateway,
+            onRecovered: bindRecoveredRuntime
+          }
+        )
+
+        return result?.status === 'queued'
+      } catch {
+        return false
+      }
+    },
+    [bindRecoveredRuntime, requestSessionGateway]
+  )
+
+  const steerPrompt = useCallback(
+    async (rawText: string, mode: 'interrupt' | 'steer' = 'interrupt'): Promise<boolean> => {
       const text = rawText.trim()
       const sessionId = runtimeIdRef.current
 
@@ -377,20 +436,13 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       const mutate = (updater: (state: ClientSessionState) => ClientSessionState) =>
         sessionTileDelegate()?.updateSession(sessionId, updater)
 
-      // Match the primary composer: record the correction in arrival order —
-      // sealed already-streamed output above, correction below, post-redirect
-      // deltas below that — before awaiting the redirect RPC, whose completion
-      // can race us. The old insert-before-the-active-reply splice put the
-      // bubble above output the user had already read (#73793), and its
-      // last-assistant fallback could land it mid-thread when the stream id
-      // was missing or stale (#83151).
-      mutate(state =>
-        appendMidTurnUserMessage(state, {
-          id: messageId,
-          role: 'user' as const,
-          parts: [textPart(text)]
-        })
-      )
+      // Reserve the correction's arrival position without sealing the stream.
+      // Deltas arriving during a refused RPC must keep their live bubble.
+      mutate(state => {
+        const message = { id: messageId, role: 'user' as const, parts: [textPart(text)] }
+
+        return { ...state, messages: [...state.messages, message] }
+      })
 
       const discardOptimisticMessage = () =>
         mutate(state => ({
@@ -411,7 +463,11 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         const { result } = await withSessionNotFoundResume(
           sessionId,
           storedIdRef.current,
-          liveId => requestSessionGateway<{ status?: string }>('session.redirect', { session_id: liveId, text }),
+          liveId =>
+            requestSessionGateway<{ status?: string }>(mode === 'steer' ? 'session.steer' : 'session.redirect', {
+              session_id: liveId,
+              text
+            }),
           {
             requestGateway: requestSessionGateway,
             onRecovered: bindRecoveredRuntime
@@ -419,29 +475,48 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         )
 
         if (result?.status === 'redirected') {
+          if (mode === 'interrupt') {
+            mutate(state => {
+              const message = state.messages.find(candidate => candidate.id === messageId)
+
+              // A newer reply may precede this ACK; it already owns its boundary.
+              const hasNewReply = state.messages.slice(state.messages.findIndex(candidate => candidate.id === messageId) + 1)
+                .some(candidate => candidate.role === 'assistant')
+
+              return message && state.streamId && !hasNewReply
+                ? appendMidTurnUserMessage(
+                    { ...state, messages: state.messages.filter(candidate => candidate.id !== messageId) },
+                    message
+                  )
+                : state
+            })
+          }
+
           triggerHaptic('submit')
 
           return true
         }
 
         if (result?.status === 'queued') {
-          moveOptimisticMessageToEnd()
+          if (mode === 'interrupt') {
+            moveOptimisticMessageToEnd()
+          }
+
           triggerHaptic('submit')
 
           return true
         }
-      } catch {
+      } catch (err) {
         discardOptimisticMessage()
-        // Swallow — the caller queues the text so nothing is lost.
-
-        return false
+        notifyError(err, copy.promptFailed)
+        throw err
       }
 
       discardOptimisticMessage()
 
       return false
     },
-    [bindRecoveredRuntime, requestSessionGateway]
+    [bindRecoveredRuntime, copy.promptFailed, requestSessionGateway]
   )
 
   // Rewind primitive (interrupt-first for live turns, busy-retry) — shared with
@@ -454,7 +529,8 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       truncateMessageId?: string,
       truncateRowId?: number,
       sourceText?: string,
-      rebindRowIds?: readonly number[]
+      rebindRowIds?: readonly number[],
+      confirmDeepTruncate?: boolean
     ) =>
       runRewindSubmit(
         requestSessionGateway,
@@ -469,7 +545,8 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         },
         truncateRowId,
         sourceText,
-        rebindRowIds
+        rebindRowIds,
+        confirmDeepTruncate
       ),
     [bindRecoveredRuntime, requestSessionGateway]
   )
@@ -490,17 +567,26 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
     [update]
   )
 
-  const reloadFromMessage = useCallback(
-    async (parentId: string | null) => {
+  // answeredFor is internal (the 4033 re-run); assistant-ui calls onReload(parentId, config).
+  const runReload = useCallback(
+    async (parentId: string | null, answeredFor?: ChatMessage[]): Promise<void> => {
       const state = readState()
+      const runtimeId = runtimeIdRef.current
 
       if (!state || state.busy) {
         return
       }
 
-      const plan = planReload(state.messages, parentId)
+      const confirmDeep = () => confirm(deepCutConfirmRequest(t.assistant.thread))
+      // The user's answer to a 4033 covers only the transcript they answered for: any change asks again.
+      const forceDeep = answeredFor !== undefined && answeredFor === state.messages
+      const planned = await planConfirmedReload(state.messages, parentId, forceDeep ? async () => true : confirmDeep)
+      const plan = planned && forceDeep ? { ...planned, confirmDeepTruncate: true } : planned
+      const after = readState()
 
-      if (!plan) {
+      // The confirm is a wait of user length: a turn that started or output that landed meanwhile
+      // makes the plan (and the rollback snapshot) stale, so drop it rather than cut a live turn.
+      if (!plan || !after || after.busy || after.messages !== state.messages) {
         return
       }
 
@@ -520,7 +606,8 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
             plan.truncateMessageId,
             plan.truncateRowId,
             plan.sourceText,
-            durableRowIdsForRebind(messages)
+            durableRowIdsForRebind(messages),
+            plan.confirmDeepTruncate
           )
         )
       } catch (err) {
@@ -534,11 +621,22 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
           turnStartedAt: null,
           messages
         }))
-        notifyError(err, copy.regenerateFailed)
+
+        if (!isDeepTruncateRefusal(err) || plan.confirmDeepTruncate) {
+          notifyError(err, copy.regenerateFailed)
+        } else if ((await confirmDeep()) && runtimeIdRef.current === runtimeId) {
+          // Re-run from the top: the session is re-read and re-validated after this wait. The answer
+          // belongs to this runtime: a rebind during the dialog drops it.
+          await runReloadRef.current(parentId, messages)
+        }
       }
     },
-    [applySurvivorRowIds, copy.regenerateFailed, readState, submitRewind, update]
+    [applySurvivorRowIds, copy.regenerateFailed, readState, submitRewind, t, update]
   )
+
+  const runReloadRef = useRef(runReload)
+  runReloadRef.current = runReload
+  const reloadFromMessage = useCallback((parentId: string | null) => runReload(parentId), [runReload])
 
   const restoreToMessage = useCallback(
     async (messageId: string, target?: { text?: string; userOrdinal?: number | null }) => {
@@ -566,10 +664,55 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
             plan.truncateMessageId,
             plan.truncateRowId,
             plan.sourceText,
-            durableRowIdsForRebind(messages)
+            durableRowIdsForRebind(messages),
+            true
           )
         )
       } catch (err) {
+        // Same stale-target hazard as the primary chat's restore (#107593): a
+        // tile's cached durable row ids go stale after optimistic sends, resume
+        // drift, or session.branch remapping, and the gateway refuses with 4018.
+        // Mirror edit's recovery: refresh the transcript from the stored
+        // session, recompute the restore plan against fresh history, retry once.
+        if ((plan.truncateMessageId || plan.truncateRowId !== undefined) && isStaleTargetError(err)) {
+          try {
+            const refreshed = await sessionTileDelegate()!.resumeTile(storedIdRef.current, {
+              refreshTranscript: true
+            })
+
+            if (typeof refreshed === 'string' && refreshed && refreshed !== sessionId) {
+              runtimeIdRef.current = refreshed
+            }
+
+            const freshMessages = readMessages()
+
+            const retryPlan = planRestore(freshMessages, messageId, {
+              text: target?.text ?? plan.sourceText,
+              userOrdinal: target?.userOrdinal ?? plan.truncateOrdinal
+            })
+
+            if (retryPlan.truncateMessageId || retryPlan.truncateRowId !== undefined) {
+              applySurvivorRowIds(
+                await submitRewind(
+                  retryPlan.text,
+                  retryPlan.truncateOrdinal,
+                  interruptFirst,
+                  retryPlan.truncateMessageId,
+                  retryPlan.truncateRowId,
+                  retryPlan.sourceText,
+                  durableRowIdsForRebind(freshMessages),
+                  true
+                )
+              )
+
+              return
+            }
+          } catch {
+            // Fall through to the rollback below: the optimistic truncation
+            // must never survive a failed retry.
+          }
+        }
+
         update(state => ({
           ...state,
           busy: false,
@@ -584,12 +727,28 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
     [applySurvivorRowIds, readMessages, readState, submitRewind, update]
   )
 
-  const editMessage = useCallback(
-    async (edited: AppendMessage) => {
-      const messages = readMessages()
-      const plan = planEdit(messages, edited)
+  const runEdit = useCallback(
+    async (edited: AppendMessage, answeredFor?: ChatMessage[]): Promise<void> => {
+      const planning = readMessages()
+      const runtimeAtPlan = runtimeIdRef.current
+      const confirmDeep = () => confirm(deepCutConfirmRequest(t.assistant.thread))
+      const forceDeep = answeredFor !== undefined && answeredFor === planning
+      const planned = await planConfirmedEdit(planning, edited, forceDeep ? async () => true : confirmDeep)
+      const forced = planned && forceDeep ? { ...planned, confirmDeepTruncate: true } : planned
+
+      // A confirm is a wait of user length: an answer given after a runtime rebind is not for this one.
+      if (!forced || runtimeIdRef.current !== runtimeAtPlan) {
+        return
+      }
+
+      // Same re-aim as the primary edit: a stream may have grown the transcript during the confirm.
+      const messages = forced.confirmDeepTruncate ? readMessages() : planning
+      const plan = messages === planning ? forced : revalidateEditPlan(forced, planning, messages, edited)
 
       if (!plan) {
+        // The edited turn moved while the confirm was open: nothing was sent.
+        notify({ kind: 'warning', message: copy.editFailed })
+
         return
       }
 
@@ -615,7 +774,8 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
             plan.truncateMessageId,
             plan.truncateRowId,
             plan.sourceText,
-            durableRowIdsForRebind(messages)
+            durableRowIdsForRebind(messages),
+            plan.confirmDeepTruncate
           )
         )
       } catch (err) {
@@ -627,11 +787,22 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
           turnStartedAt: null,
           messages
         }))
-        notifyError(err, copy.editFailed)
+
+        if (!isDeepTruncateRefusal(err) || plan.confirmDeepTruncate) {
+          notifyError(err, copy.editFailed)
+        } else if ((await confirmDeep()) && runtimeIdRef.current === sessionId) {
+          // Re-run from the top: the session is re-read and re-validated after this wait. The answer
+          // belongs to this runtime: a rebind during the dialog drops it.
+          await runEditRef.current(edited, planning)
+        }
       }
     },
-    [applySurvivorRowIds, copy.editFailed, readMessages, readState, submitRewind, update]
+    [applySurvivorRowIds, copy.editFailed, readMessages, readState, submitRewind, t, update]
   )
+
+  const runEditRef = useRef(runEdit)
+  runEditRef.current = runEdit
+  const editMessage = useCallback((edited: AppendMessage) => runEdit(edited), [runEdit])
 
   // Branch-visibility sync (assistant-ui hides non-active branches).
   const handleThreadMessagesChange = useCallback(
@@ -646,22 +817,33 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
     [update]
   )
 
+  const branchInNewChat = useCallback(
+    (messageId: string) =>
+      sessionTileDelegate()?.branchSessionAtMessage(storedIdRef.current, runtimeIdRef.current, messageId) ??
+      Promise.resolve(false),
+    []
+  )
+
   return useMemo(
     () => ({
+      branchInNewChat,
       cancelRun,
       dismissError,
       editMessage,
       handleThreadMessagesChange,
+      injectHiddenPrompt,
       reloadFromMessage,
       restoreToMessage,
       steerPrompt,
       submitText
     }),
     [
+      branchInNewChat,
       cancelRun,
       dismissError,
       editMessage,
       handleThreadMessagesChange,
+      injectHiddenPrompt,
       reloadFromMessage,
       restoreToMessage,
       steerPrompt,

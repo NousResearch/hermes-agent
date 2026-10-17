@@ -77,13 +77,11 @@ class TestResolverWithMultiplexOff:
 class TestMultiplexOnUnchanged:
     def test_served_profile_resolves(self, adapter, monkeypatch):
         adapter.gateway_runner = SimpleNamespace(
-            config=SimpleNamespace(
-                multiplex_profiles=True, multiplex_profile_allowlist=None
-            )
+            config=SimpleNamespace(multiplex_profiles=True)
         )
         monkeypatch.setattr(
             "hermes_cli.profiles.profiles_to_serve",
-            lambda multiplex, profile_allowlist: [("worker", object())],
+            lambda multiplex: [("worker", object())],
         )
         assert adapter._resolve_request_profile(_request("worker")) == "worker"
         assert adapter._resolve_request_profile(_request("ghost")) is _PROFILE_REJECTED

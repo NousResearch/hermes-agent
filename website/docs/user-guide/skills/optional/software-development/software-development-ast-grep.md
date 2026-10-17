@@ -15,13 +15,13 @@ AST-aware structural code search and rewrite via ast-grep.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/software-development/ast-grep` |
-| Path | `optional-skills/software-development\ast-grep` |
+| Path | `optional-skills/software-development/ast-grep` |
 | Version | `1.0.0` |
 | Author | Yeongyu Kim (code-yeongyu), adapted by Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `ast`, `codemod`, `refactoring`, `structural-search`, `code-search`, `rewrite`, `tree-sitter` |
-| Related skills | [`simplify-code`](/docs/user-guide/skills/bundled/software-development/software-development-simplify-code), [`systematic-debugging`](/docs/user-guide/skills/bundled/software-development/software-development-systematic-debugging) |
+| Related skills | [`simplify-code`](../../bundled/software-development/software-development-simplify-code.md), [`systematic-debugging`](../../bundled/software-development/software-development-systematic-debugging.md) |
 
 ## Reference: full SKILL.md
 

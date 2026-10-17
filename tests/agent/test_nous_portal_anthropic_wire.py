@@ -90,7 +90,7 @@ class TestRuntimeResolution:
 
     @pytest.fixture(autouse=True)
     def _stub_portal_credentials(self, monkeypatch):
-        monkeypatch.setattr(rp, "load_config", lambda: {})
+        monkeypatch.setattr(rp, "load_config", dict)
         monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "nous")
         monkeypatch.setattr(rp, "load_pool", lambda p: SimpleNamespace(
             has_credentials=lambda: False,
@@ -144,7 +144,7 @@ class TestPoolRuntimeResolution:
     def _pool(self, entry):
         return SimpleNamespace(
             has_credentials=lambda: True,
-            select=lambda: entry,
+            select=lambda **_kw: entry,
         )
 
     @pytest.fixture
@@ -212,12 +212,15 @@ class TestClientShape:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-should-not-leak")
         client = build_anthropic_client("portal-invoke-jwt", PORTAL_URL)
 
+        from tests.agent.test_anthropic_client_auth import wire_headers
+
         assert client.auth_token == "portal-invoke-jwt"
-        assert client.api_key is None
-        assert "X-Api-Key" not in client.auth_headers
-        assert client.auth_headers.get("Authorization", "").startswith(
-            "Bearer portal-invoke-jwt"
-        )
+        # The guard is a copy-safe Omit() default header, so assert what reaches the wire —
+        # on the client and on a with_options() copy (which re-reads ANTHROPIC_API_KEY).
+        for wire_client in (client, client.with_options(timeout=30)):
+            headers = wire_headers(wire_client)
+            assert "x-api-key" not in headers
+            assert headers.get("authorization", "").startswith("Bearer portal-invoke-jwt")
 
 
 
@@ -408,13 +411,13 @@ class TestPortalThinkingReplay:
         self._assert_thinking_kept(STAGING_URL)
 
     def test_other_third_party_gateways_still_strip_thinking(self):
-        """The Portal carve-out must not leak into MiniMax-style proxies."""
+        """The Portal carve-out must not leak into unknown Anthropic-compatible relays."""
         from agent.anthropic_message_convert import convert_messages_to_anthropic
 
         _system, converted = convert_messages_to_anthropic(
             self._messages(),
-            base_url="https://api.minimax.io/anthropic",
-            model="MiniMax-M2.7",
+            base_url="https://relay.example.com/anthropic",
+            model="claude-opus-4-8",
         )
         assistant = next(m for m in converted if m["role"] == "assistant")
         thinking = [

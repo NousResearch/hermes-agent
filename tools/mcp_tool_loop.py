@@ -67,12 +67,18 @@ def _try_acquire_mcp_discovery_lock() -> Any:
     """``_LockCookie`` (acquired), ``None`` (held by another process) or ``_LOCK_UNAVAILABLE``
     (locking broken: run discovery unguarded)."""
     # The cached path lives on the ORIGIN module (tests reset ``tools.mcp_tool._MCP_DISCOVERY_LOCK_PATH``).
+    # A routed profile (multiplexed gateway) locks under ITS home: the launch profile's lock file
+    # would serialize discovery across profiles and never coordinate with B's own single-profile processes.
     from tools import mcp_tool as _origin
     try:
-        from hermes_constants import get_hermes_home
-        if _origin._MCP_DISCOVERY_LOCK_PATH is None:
-            _origin._MCP_DISCOVERY_LOCK_PATH = str(get_hermes_home() / ".mcp-discovery.lock")
-        fh = open(_origin._MCP_DISCOVERY_LOCK_PATH, "w", encoding="utf-8")
+        from hermes_constants import get_hermes_home, get_hermes_home_override
+        if get_hermes_home_override() is not None:
+            lock_path = str(get_hermes_home() / ".mcp-discovery.lock")
+        else:
+            if _origin._MCP_DISCOVERY_LOCK_PATH is None:
+                _origin._MCP_DISCOVERY_LOCK_PATH = str(get_hermes_home() / ".mcp-discovery.lock")
+            lock_path = _origin._MCP_DISCOVERY_LOCK_PATH
+        fh = open(lock_path, "w", encoding="utf-8")
     except Exception:
         return _core._LOCK_UNAVAILABLE
     try:
@@ -94,7 +100,7 @@ def _mcp_loop_exception_handler(loop, context):
         loop.default_exception_handler(context)
 
 
-def _wrap_with_home_override(coro: "Coroutine") -> "Coroutine":
+def _wrap_with_home_override(coro: Coroutine) -> Coroutine:
     """Carry the caller's context-local HERMES_HOME override into ``coro`` (task-local on the MCP
     loop, so concurrent scopes don't interfere)."""
     try:
@@ -194,8 +200,9 @@ def _signal_reconnect(server: Any) -> bool:
 
 def reconnect_mcp_server(server_name: str) -> bool:
     """Ask a currently-live MCP server to rebuild after external re-auth."""
+    from tools.mcp_tool_scope import _resolve_server_key
     with _core._lock:
-        server = _core._servers.get(server_name)
+        server = _core._servers.get(_resolve_server_key(server_name))
     return server is not None and _signal_reconnect(server)
 
 

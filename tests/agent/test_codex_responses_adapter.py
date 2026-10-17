@@ -1047,3 +1047,43 @@ def test_role_message_phase_is_kept_only_for_assistant_values_the_api_accepts():
     ])
 
     assert [item.get("phase") for item in wire] == ["final_answer", None, None, None]
+
+
+@pytest.mark.parametrize(
+    "base_url", ["https://api.stepfun.com/step_plan/v1", "https://chatgpt.com/backend-api/codex", None],
+)
+def test_typed_text_only_routes_emit_typed_content_parts(base_url):
+    """StepFun's Step Plan /responses 400s on the string shorthand
+    (``ResponseOutputTextParam … Input should be a valid dictionary``), the same class of rejection
+    the Codex backend gives #51512. Both must go out as typed parts; every other route keeps the
+    string shorthand it has always received, so prompt-cache prefixes stay byte-identical."""
+    from agent.codex_responses_adapter import _typed_text_only_route
+
+    is_codex_backend = base_url == "https://chatgpt.com/backend-api/codex"
+    assert _typed_text_only_route(base_url, is_codex_backend=is_codex_backend) is (base_url is not None)
+    assert _typed_text_only_route("https://api.stepfun.com/step_plan/v1/") is True
+    assert _typed_text_only_route("https://api.openai.com/v1") is False
+    assert _typed_text_only_route("http://127.0.0.1:8080/v1") is False
+
+    history = [
+        {"role": "user", "content": "fix the lens model"},
+        {"role": "assistant", "content": "Looking."},
+        {"role": "assistant", "content": "", "codex_reasoning_items": [
+            {"type": "reasoning", "encrypted_content": "opaque", "summary": []}]},
+        {"role": "user", "content": "go on"},
+    ]
+    items = _chat_messages_to_responses_input(
+        history, current_issuer_kind="codex_backend" if is_codex_backend else None, base_url=base_url,
+    )
+    role_items = [i for i in items if i.get("role") == "assistant"]
+    assert role_items, items
+    if base_url is None:
+        # Legacy wire: plain strings, untouched for cache stability.
+        assert [i["content"] for i in role_items] == ["Looking.", " "]
+        return
+    assert all(isinstance(i["content"], list) for i in role_items)
+    assert [p["type"] for i in role_items for p in i["content"]] == ["output_text", "output_text"]
+    # The empty follower after reasoning stays non-empty: strict validators reject "".
+    assert role_items[-1]["content"][0]["text"] == " "
+    user_items = [i for i in items if i.get("role") == "user"]
+    assert all(p["type"] == "input_text" for i in user_items for p in i["content"])

@@ -212,6 +212,29 @@ def _text_type_for(role: str) -> str:
     return "output_text" if role == "assistant" else "input_text"
 
 
+# Responses-compatible routes that accept ONLY typed content parts (never the string shorthand).
+# The ChatGPT Codex backend rejects a plain-string ``content`` with
+# ``{"detail": "Unsupported content type"}`` even on a bare user turn (#51512); StepFun's Step Plan
+# /responses rejects it with a pydantic ``ResponseOutputTextParam … Input should be a valid
+# dictionary`` 400. Both are listed here by host so a custom_providers entry gets the typed wire
+# without re-deriving the predicate inline (exact host-or-subdomain, never substring).
+_TYPED_TEXT_ONLY_HOSTS = ("chatgpt.com", "api.stepfun.com", "api.stepfun.ai")
+
+
+def _host_or_subdomain_is(hostname: str, domain: str) -> bool:
+    return hostname == domain or hostname.endswith("." + domain)
+
+
+def _typed_text_only_route(base_url: Any, *, is_codex_backend: bool = False) -> bool:
+    """Whether this Responses route requires typed ``input_text``/``output_text`` parts."""
+    if is_codex_backend:
+        return True
+    from utils import base_url_hostname
+
+    hostname = base_url_hostname(str(base_url or "")).lower()
+    return any(_host_or_subdomain_is(hostname, domain) for domain in _TYPED_TEXT_ONLY_HOSTS)
+
+
 def _coerce_arguments(arguments: Any) -> str:
     """Normalize replayed tool-call arguments to a non-empty JSON string."""
     if isinstance(arguments, dict):
@@ -612,8 +635,13 @@ def _chat_messages_to_responses_input(
     messages: list[dict[str, Any]], *, is_xai_responses: bool = False, is_github_responses: bool = False,
     replay_encrypted_reasoning: bool = True, current_issuer_kind: Optional[str] = None,
     current_issuer_model: Optional[str] = None, native_compaction_eligible: bool = False,
+    base_url: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """Convert internal chat-style messages to Responses input items.
+
+    ``base_url``: the endpoint this request goes to; selects the typed-text-only wire (see
+    :func:`_typed_text_only_route`). Optional — callers that cannot know it (tests, ad-hoc
+    ``convert_messages``) keep the legacy string shorthand.
 
     ``is_xai_responses``: signature compatibility only (xAI DOES replay encrypted reasoning).
     ``replay_encrypted_reasoning``: per-session kill switch, threaded False by
@@ -663,7 +691,11 @@ def _chat_messages_to_responses_input(
     # ``{"detail": "Unsupported content type"}`` (400) — even a single user turn with no replay state
     # (#51512). It accepts only typed parts, so string text goes out as ``input_text``/``output_text``
     # there; other Responses routes keep the string shorthand they have always received.
-    typed_text_only = current_issuer_kind == "codex_backend"
+    # StepFun's Step Plan /responses rejects the same shorthand with a pydantic
+    # ``ResponseOutputTextParam … Input should be a valid dictionary`` 400, so the typed wire is
+    # decided per route (host-based), not per issuer kind — a custom_providers entry pointing at
+    # api.stepfun.com gets it too. ``typed_text_only`` also gates the fallback follower below.
+    typed_text_only = _typed_text_only_route(base_url, is_codex_backend=current_issuer_kind == "codex_backend")
     def emit(new_items: list[dict[str, Any]], msg: dict[str, Any]) -> None:
         items.extend(new_items)
         item_sources.extend([msg] * len(new_items))
@@ -779,6 +811,7 @@ def _native_responses_replay_items(
             current_issuer_kind=_classify_responses_issuer(base_url=getattr(agent, "base_url", None), **route),
             current_issuer_model=_wire_model_identity(effective_model),
             native_compaction_eligible=True,
+            base_url=getattr(agent, "base_url", None),
         )
     except Exception:
         logger.debug(

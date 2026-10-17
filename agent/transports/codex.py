@@ -693,6 +693,7 @@ class ResponsesApiTransport(ProviderTransport):
             current_issuer_kind=self._resolve_issuer_kind(kwargs),
             current_issuer_model=self._last_issuer_model,
             native_compaction_eligible=_native_compaction_active(kwargs.get("context_management")),
+            base_url=kwargs.get("base_url"),
         )
 
     def convert_tools(self, tools: Optional[list[dict[str, Any]]]) -> Any:

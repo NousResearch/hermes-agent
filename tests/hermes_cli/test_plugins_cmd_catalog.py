@@ -538,3 +538,41 @@ def test_catalog_rows_maps_resolves_the_live_catalog_once(monkeypatch):
 
     monkeypatch.setattr(cat, "load_catalog_live", boom)
     assert cat.catalog_rows_maps() == ({}, {}, {})
+
+
+def test_same_version_off_pin_update_is_labeled_as_a_sync_to_pin(world, monkeypatch):
+    """Update detection stays SHA-based: an off-pin install carrying the pin's own version still gets
+    the update affordance (the pin may have moved commits without a version bump). Label honesty: the
+    version label drops so surfaces show the target commit ref instead of "Update to <same version>".
+    A real version bump reads as a version update, and an unknown installed version keeps the
+    SHA-only signal with the label intact."""
+    world["state"]["version"] = "1.0.0"
+    monkeypatch.setattr(pc_cat, "load_catalog", lambda catalog_dir=None: [
+        pc_cat.PluginCatalogEntry(name="cat-plugin", repo=world["repo"].as_uri(), sha=world["state"]["pin"],
+                                  description="d", maintainer="t", version=world["state"]["version"])])
+    entry = pc_cat.get_live_catalog_entry("cat-plugin")
+    target, _m, _n = cat.install_catalog_entry(entry, force=False, ref=world["sha2"])
+    assert _head(target) == world["sha2"]  # off-pin by a commit, same declared version
+    row = cat.catalog_row_fields(target, cat.catalog_pins(), cat.catalog_versions(),
+                                 installed_version="1.0.0")
+    assert row["update_available"] is True
+    assert row["catalog_version"] != "1.0.0"  # presented target differs from the installed version
+    # A pin advance that keeps the same version label keeps the affordance too (honcho pattern: a new
+    # commit, same declared version).
+    repo = world["repo"]
+    (repo / "plugin.yaml").write_text("name: cat-plugin\nversion: 1.0.0\ndescription: d (rev)\n")
+    world["state"]["pin"] = _commit(repo, "advance")
+    row = cat.catalog_row_fields(target, cat.catalog_pins(), cat.catalog_versions(),
+                                 installed_version="1.0.0")
+    assert row["update_available"] is True and row["catalog_version"] != "1.0.0"
+    # The pin moving to a genuinely newer version is labeled as a version update.
+    repo = world["repo"]
+    (repo / "plugin.yaml").write_text("name: cat-plugin\nversion: 2.0.0\ndescription: d\n")
+    world["state"]["pin"] = _commit(repo, "bump")
+    world["state"]["version"] = "2.0.0"
+    row = cat.catalog_row_fields(target, cat.catalog_pins(), cat.catalog_versions(),
+                                 installed_version="1.0.0")
+    assert row["update_available"] is True and row["catalog_version"] == "2.0.0"
+    # Unknown installed version: the SHA-only signal stands, label untouched.
+    row = cat.catalog_row_fields(target, cat.catalog_pins(), cat.catalog_versions())
+    assert row["update_available"] is True and row["catalog_version"] == "2.0.0"

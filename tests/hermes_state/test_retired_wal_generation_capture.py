@@ -10,6 +10,7 @@ the writer process has exited.
 
 import hashlib
 import json
+import logging
 import os
 import shutil
 import sqlite3
@@ -19,9 +20,12 @@ from pathlib import Path
 import pytest
 
 import hermes_state
+import hermes_state_dbfile
 from hermes_state import DeletedWalGenerationError, SessionDB
 from hermes_state_dbfile import (
-    RETIRED_GENERATION_MANIFEST, RetiredGenerationCaptureError, capture_retired_wal_generation,
+    RETIRED_GENERATION_MANIFEST, RETIRED_GENERATION_MAIN_IMAGE_MAX_BYTES,
+    RetiredGenerationCaptureError, capture_retired_wal_generation,
+    resolve_retired_generation_main_image_max_bytes,
 )
 from tests.hermes_state._wal_generation_harness import (
     gateway_writer, integrity_ok_conn, lose_sidecars, make_db, pin_wal, require_wal, write_second_generation,
@@ -307,3 +311,66 @@ def test_retired_rows_recoverable_after_process_exit(tmp_path):
 @pytest.mark.platforms("macos")
 def test_retired_rows_recoverable_after_process_exit_with_renamed_sidecars(tmp_path):
     _assert_retired_rows_recoverable_after_exit(tmp_path, rename=True)
+
+
+# ── The header-only degradation above the cap (#139724) ─────────────────────────────────────────────
+#
+# Above the configured cap the main image degrades to its 100-byte header on purpose (a multi-GB copy
+# inside a shutdown path is a worse failure), but the degradation must not be silent: a WARNING names
+# the size and the cap, and the manifest records both the mode and the cap that decided it.
+
+
+@not_windows
+def test_header_only_capture_warns_and_records_the_cap(tmp_path, force_wal, monkeypatch, caplog):
+    monkeypatch.setattr(hermes_state_dbfile, "resolve_retired_generation_main_image_max_bytes", lambda: 1)
+    path = tmp_path / "state.db"
+    db = make_db(path, "gw-0", "seed")
+    require_wal(db)
+    _wal_only_sentinel(db, "gw-0")
+    identity = db._db_sidecar_identity["-wal"]
+    lose_sidecars(path, rename=False)
+    original = _descriptor_contents(_descriptor_for(identity))
+
+    with caplog.at_level("WARNING"):
+        with pytest.raises(DeletedWalGenerationError):
+            db.append_message("gw-0", role="user", content="after the loss")
+
+    artifact = db._retired_generation_capture
+    main = _manifest(artifact)["main"]
+    assert main["mode"] == "header_only" and main["cap_bytes"] == 1
+    header_bytes = (artifact / "state.db.header").read_bytes()
+    assert len(header_bytes) == main["bytes"] == 100
+    assert header_bytes.startswith(b"SQLite format 3\x00") and main["header"]["valid"]
+    assert not (artifact / "state.db").exists()
+    # the WAL itself is still captured whole: the retired frames are not lost with the header-only pass
+    assert (artifact / "state.db-wal").read_bytes() == original
+    warning = next(r for r in caplog.records if "header_only" in r.getMessage())
+    assert "over the 1-byte cap" in warning.getMessage() and str(path) in warning.getMessage()
+    assert warning.levelno == logging.WARNING
+    db.close()
+
+
+def test_cap_resolver_reads_database_config(monkeypatch, caplog):
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(config_mod, "load_config_readonly",
+                        lambda: {"database": {"retired_generation_max_bytes": 4096}})
+    assert resolve_retired_generation_main_image_max_bytes() == 4096
+
+    # absent / unreadable / non-dict config: the compiled-in default, silently
+    for readback in (lambda: None, lambda: {"database": "not-a-dict"}, dict):
+        monkeypatch.setattr(config_mod, "load_config_readonly", readback)
+        assert resolve_retired_generation_main_image_max_bytes() == RETIRED_GENERATION_MAIN_IMAGE_MAX_BYTES
+
+    # present but not a positive integer: the default again, but never silently
+    with caplog.at_level("WARNING"):
+        for bad in ("not-a-number", -1, 0, True):
+            monkeypatch.setattr(config_mod, "load_config_readonly",
+                                lambda bad=bad: {"database": {"retired_generation_max_bytes": bad}})
+            assert resolve_retired_generation_main_image_max_bytes() == RETIRED_GENERATION_MAIN_IMAGE_MAX_BYTES
+    assert "not a positive integer" in caplog.text
+
+    # numeric strings are accepted the way yaml ints are
+    monkeypatch.setattr(config_mod, "load_config_readonly",
+                        lambda: {"database": {"retired_generation_max_bytes": "8192"}})
+    assert resolve_retired_generation_main_image_max_bytes() == 8192

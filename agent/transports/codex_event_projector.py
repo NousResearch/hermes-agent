@@ -58,6 +58,10 @@ class CodexEventProjector:
             self._pending_reasoning.extend(item.get("summary") or [])
             self._pending_reasoning.extend(item.get("content") or [])
             return ProjectionResult()
+        if item_type == "contextCompaction":
+            # The app-server session consumes this as its native compaction boundary.
+            # It is protocol bookkeeping, not durable assistant transcript content.
+            return ProjectionResult()
         if item_type == "userMessage":
             return self._project_user_message(item)
         tool_projection = self._TOOL_PROJECTIONS.get(item_type)

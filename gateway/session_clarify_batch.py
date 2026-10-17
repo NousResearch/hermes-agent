@@ -5,8 +5,10 @@ at once, one active, answers revisitable until all are locked, ``{answers: {qid:
 outcome}``. The messaging path asks one card per question. For a classic-CLI local viewer the owner
 sends the batch as the existing ``clarify`` server→client request (``ClarifyRequestParams`` →
 ``ClarifyResult``) through the same request/response machinery as the sudo prompt, so main's own panel
-answers it unchanged, and blocks until it answers, the turn is interrupted, or the clarify timeout
-(the same config both sides read) passes.
+answers it unchanged. Desktop and Ink lock the same request one question at a time with
+``clarify.lock``; the last lock resolves it. A timeout, an interrupt, or a closing frame keeps the
+answers locked so far. The owner blocks until an answer arrives, the turn is interrupted, or the
+clarify timeout (the same config both sides read) passes.
 """
 from __future__ import annotations
 

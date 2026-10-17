@@ -22,13 +22,16 @@ _POLL_S = 0.25
 
 
 class _Pending:
-    __slots__ = ("event", "result", "session_id", "value")
+    __slots__ = ("event", "locked", "qids", "result", "session_id", "value")
 
-    def __init__(self, session_id):
+    def __init__(self, session_id, qids=None):
         self.event = threading.Event()
         self.session_id = session_id
         self.value = ""
         self.result = None
+        # A batch ``clarify``: its question ids, and the answers ``clarify.lock`` has locked so far.
+        self.qids = qids
+        self.locked = {}
 
 
 _lock = threading.Lock()
@@ -41,6 +44,22 @@ def is_response_frame(frame) -> bool:
             and frame["id"].startswith("srq-") and ("result" in frame or "error" in frame))
 
 
+def _merge_clarify_result(locked, result):
+    """Lay a closing frame over answers already locked. The frame wins per question.
+
+    A frame with no answers dict is cancel-all (Ink Esc, Desktop Skip): the locks stand and the
+    outcome is cancelled. A classic CLI panel's ``timed_out`` is kept when the frame names it.
+    """
+    if isinstance(result, dict) and isinstance(result.get("answers"), dict):
+        merged = dict(locked)
+        merged.update(result["answers"])
+        outcome = result.get("outcome")
+        if outcome not in ("submitted", "timed_out", "cancelled"):
+            outcome = "submitted"
+        return {**result, "answers": merged, "outcome": outcome}
+    return {"answers": dict(locked), "outcome": "cancelled"}
+
+
 def resolve(frame, *, session_ok=lambda session_id: True) -> bool:
     """Settle the open request *frame* answers; False when nothing (here) waits for that id.
     ``session_ok`` lets the caller refuse an answer from a connection not entitled to that session."""
@@ -49,12 +68,41 @@ def resolve(frame, *, session_ok=lambda session_id: True) -> bool:
         if pending is None or not session_ok(pending.session_id):
             return False
         _open.pop(frame["id"], None)
-    result = frame.get("result") if "error" not in frame else None
+        locked = dict(pending.locked) if pending.qids is not None else None
+    if "error" in frame:
+        result = None
+    else:
+        result = frame.get("result")
+        if locked is not None:
+            result = _merge_clarify_result(locked, result)
     value = result.get("value") if isinstance(result, dict) else ""
     pending.value = value if isinstance(value, str) else ""
     pending.result = result if isinstance(result, dict) else None
     pending.event.set()
     return True
+
+
+def lock_answer(request_id, question_id, answer, *, session_ok=lambda session_id: True):
+    """Lock one answer of an open batch ``clarify`` (``answer`` None means skipped).
+
+    Answers stay editable until every question is locked. The last lock resolves the request
+    with the whole ``{answers}`` set. Returns the question ids still unanswered, or None when
+    no batch with that id is open here or ``session_ok`` refuses its session. Raises ValueError
+    for a question the batch did not ask.
+    """
+    with _lock:
+        pending = _open.get(request_id)
+        if pending is None or pending.qids is None or not session_ok(pending.session_id):
+            return None
+        if question_id not in pending.qids:
+            raise ValueError(f"unknown question_id {question_id!r}")
+        pending.locked[question_id] = answer
+        remaining = [qid for qid in pending.qids if qid not in pending.locked]
+        if not remaining:
+            _open.pop(request_id, None)
+            pending.result = {"answers": dict(pending.locked), "outcome": "submitted"}
+            pending.event.set()
+    return remaining
 
 
 def ask_sudo(events, session_id, command, *, cancelled=lambda: False, timeout=SUDO_TIMEOUT_S) -> str:
@@ -72,7 +120,8 @@ def ask_viewer(events, session_id, method, params, *, cancelled=lambda: False, t
 
 def ask_viewer_result(events, session_id, method, params, *, cancelled=lambda: False, timeout=SUDO_TIMEOUT_S):
     """The same round trip for a structured answer (``clarify``: ``ClarifyResult``): the viewer's
-    ``result`` dict, or None on interrupt, timeout, an error response or no attached viewer."""
+    ``result`` dict, or None on an error response or no attached viewer. A batch clarify that ends
+    on interrupt or timeout returns the answers locked so far, with that outcome."""
     pending = _ask(events, session_id, method, params, cancelled=cancelled, timeout=timeout)
     return pending.result if pending is not None else None
 
@@ -81,7 +130,8 @@ def _ask(events, session_id, method, params, *, cancelled, timeout):
     if not events.fanout.transports():
         return None
     request_id = f"srq-{uuid.uuid4().hex[:12]}"
-    pending = _Pending(session_id)
+    qids = [question["qid"] for question in params["questions"]] if method == "clarify" else None
+    pending = _Pending(session_id, qids)
     with _lock:
         _open[request_id] = pending
     events.fanout.write({"jsonrpc": "2.0", "id": request_id, "method": method,
@@ -97,13 +147,19 @@ def _ask(events, session_id, method, params, *, cancelled, timeout):
             break
     with _lock:
         still_open = _open.pop(request_id, None) is pending
+        if still_open and pending.qids is not None:
+            # The sidecar keeps every answer locked before the deadline. Sudo and secret have
+            # no question ids and still return None.
+            outcome = "cancelled" if reason == "interrupted" else "timed_out"
+            pending.result = {"answers": dict(pending.locked), "outcome": outcome}
     if still_open:
         # The same teardown main's renderers key on (``request.cancel``): the card closes and a
         # timed-out password prompt says so.
         with contextlib.suppress(Exception):
             events.publish(session_id, {"id": request_id, "method": method, "reason": reason},
                            event_type="request.cancel")
-        return None
+        if pending.qids is None:
+            return None
     return pending
 
 

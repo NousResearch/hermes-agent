@@ -1,5 +1,6 @@
 """Authenticated WS projection of the gateway authority; no TUI execution fallback."""
 import asyncio
+import json
 import logging
 import re
 from dataclasses import asdict
@@ -158,7 +159,8 @@ class AuthorityConnection:
                     'prompt.receipt': self.receipt, 'prompt.cancel': self.cancel,
                     'prompt.resolve_unknown': self.resolve_unknown,
                     'session.interrupt': self.interrupt, 'session.events.since': self.events_since,
-                    'approval.respond': self.respond, 'clarify.respond': self.respond_clarify}
+                    'approval.respond': self.respond, 'clarify.respond': self.respond_clarify,
+                    'clarify.lock': self.lock_clarify}
         from gateway.session_busy_controls import handlers as busy_handlers
         handlers.update(busy_handlers(self))
         from gateway.session_config import handlers as config_handlers
@@ -691,18 +693,43 @@ class AuthorityConnection:
             return asdict(self.authority._handle(ref))
         return asdict(await self.authority.interrupt(self.actor, ref, params.get('execution_generation')))
 
+    def _may_respond(self, session_id):
+        """True when this viewer may answer a server request the owner opened on *session_id*."""
+        try:
+            self.authority.authorize(self.actor, SessionRef(self.actor.profile_id, session_id), 'session:respond')
+        except RuntimeStoreError:
+            return False
+        return True
+
     def _resolve_response(self, frame):
         from gateway.session_sudo_prompt import resolve
-
-        def entitled(session_id):
-            try:
-                self.authority.authorize(self.actor, SessionRef(self.actor.profile_id, session_id), 'session:respond')
-            except RuntimeStoreError:
-                return False
-            return True
-        if not resolve(frame, session_ok=entitled):
+        if not resolve(frame, session_ok=self._may_respond):
             import logging
             logging.getLogger(__name__).debug('dropping response for unknown server request id=%r', frame.get('id'))
+
+    async def lock_clarify(self, _ref, params):
+        """Per-question ``clarify.lock`` for a batch ``clarify`` the owner fanned out.
+
+        Desktop and Ink lock one question at a time on that ``srq-`` id. The last lock resolves
+        the request. Only a viewer entitled to ``session:respond`` on the pending request's own
+        session may lock it, the same check a response frame gets.
+        """
+        from gateway.session_sudo_prompt import lock_answer
+        request_id = str(params.get('request_id') or '')
+        question_id = str(params.get('question_id') or '')
+        if not request_id or not question_id:
+            raise RuntimeStoreError('invalid_params')
+        answer = params.get('answer', '')
+        if answer is not None and not isinstance(answer, str):
+            answer = json.dumps(answer, ensure_ascii=False)
+        try:
+            remaining = lock_answer(request_id, question_id, answer, session_ok=self._may_respond)
+        except ValueError:
+            raise RuntimeStoreError('invalid_params') from None
+        # ``expired``: the wait already ended while the card was still up.
+        if remaining is None:
+            return {'status': 'expired'}
+        return {'status': 'ok', 'remaining': remaining}
 
     async def respond(self, ref, params):
         if set(params) != {"session_id", "execution_generation", "prompt_id", "choice"}:

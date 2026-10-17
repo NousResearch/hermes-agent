@@ -185,6 +185,12 @@ async def test_restart_wait_ws_serves_the_parked_turn_and_refuses_every_other_ve
         answered = await call("approval.respond", execution_generation=1, prompt_id="gone", choice="once")
         # Reached the authority: a stale prompt is its own verdict, never the drain's refusal.
         assert answered.get("error", {}).get("message") != "runtime_draining"
+        # A batch lock has no session_id; the allowlist is what lets it past the drain.
+        locked = await viewer.dispatch({
+            "id": "lock", "method": "clarify.lock",
+            "params": {"request_id": "srq-none", "question_id": "q0", "answer": "red"}})
+        assert locked.get("error", {}).get("message") != "runtime_draining"
+        assert locked["result"]["status"] == "expired"
         for method, params in [("config.set", {"key": "model", "value": "x"}), ("session.save", {}),
                                ("process.kill", {"pid": 1}), ("reload.mcp", {}), ("rollback.restore", {})]:
             refused = await call(method, **params)

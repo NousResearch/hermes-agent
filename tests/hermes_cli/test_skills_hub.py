@@ -125,6 +125,27 @@ def test_do_list_platform_env_is_ignored(three_source_env, monkeypatch):
     assert seen["platform"] is None
 
 
+def test_do_list_piped_output_keeps_full_names(hub_env, monkeypatch, capsys):
+    """Rich sizes a non-TTY console to 80 columns and ellipsis-truncates the Name
+    column, so a piped `hermes skills list | grep <full-name>` reads a correctly
+    installed skill as missing (#140555). With no explicit console and a non-TTY
+    stdout (pytest's capture qualifies), the render must widen to fit the
+    longest name instead."""
+    from agent import skill_utils
+    from tools import skills_tool
+
+    long_name = "receiving-code-reviews-and-summarizing-them"
+
+    monkeypatch.setattr(skills_tool, "_skill_catalog",
+                        lambda **_kwargs: [{"name": long_name, "load_name": long_name,
+                                            "category": "x", "description": "d", "tier": None}])
+    monkeypatch.setattr(skill_utils, "get_disabled_skill_names", lambda **_kwargs: set())
+
+    do_list()
+
+    assert long_name in capsys.readouterr().out
+
+
 # ---------------------------------------------------------------------------
 # Cross-registry hijack regression tests
 #

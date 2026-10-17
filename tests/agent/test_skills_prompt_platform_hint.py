@@ -163,3 +163,91 @@ def test_skills_prompt_forwards_agent_platform(skills_home):
     prompt_builder.clear_skills_system_prompt_cache(clear_snapshot=False)
     parent_channel = _skills_body(system_prompt._skills_prompt(_Agent("telegram")))
     assert "child-only-skill" in parent_channel
+
+
+def test_skill_view_denies_by_name_for_delegated_child(skills_home):
+    """The access gate, not just the index: inside a delegated child's execution context
+    skill_view refuses by name a skill listed in skills.platform_disabled.subagent, while
+    the same call on the parent's context still serves it (the second call site in #140537:
+    hiding from the index without denying the load made the list advisory)."""
+    import json
+
+    from agent.delegation_context import delegated_child_context
+    from tools import skills_tool
+
+    skills_tool._SKILLS_CACHE.clear()
+    parent = json.loads(skills_tool.skill_view("child-only-skill"))
+    assert parent["success"] is True
+
+    with delegated_child_context("sess"):
+        denied = json.loads(skills_tool.skill_view("child-only-skill"))
+    assert denied["success"] is False
+    assert "disabled" in denied["error"].lower()
+
+    with delegated_child_context("sess"):
+        allowed = json.loads(skills_tool.skill_view("parent-skill"))
+    assert allowed["success"] is True
+
+
+def test_plugin_skill_view_denies_for_delegated_child(tmp_path, monkeypatch):
+    """The plugin registry path (skill_view "plugin:skill") gates through the same child
+    platform — the qualified form the end-to-end report in #140537 actually hit."""
+    import json
+
+    skill_md = tmp_path / "plugin_skills" / "child-only-skill" / "SKILL.md"
+    skill_md.parent.mkdir(parents=True)
+    skill_md.write_text(
+        "---\nname: child-only-skill\ndescription: d\n---\nbody\n", encoding="utf-8")
+    (tmp_path / "config.yaml").write_text(
+        "skills:\n"
+        "  platform_disabled:\n"
+        "    subagent:\n"
+        "      - plugin-x:child-only-skill\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_PLATFORM", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+
+    import hermes_cli.plugins
+
+    class _FakePM:
+        @staticmethod
+        def find_plugin_skill(name):
+            return skill_md if name == "plugin-x:child-only-skill" else None
+
+    monkeypatch.setattr(hermes_cli.plugins, "discover_plugins", lambda: None)
+    monkeypatch.setattr(hermes_cli.plugins, "get_plugin_manager", lambda: _FakePM())
+
+    from agent import skill_utils
+    from agent.delegation_context import delegated_child_context
+    from tools import skills_tool
+
+    skill_utils._raw_config_cache_clear()
+    parent = json.loads(skills_tool.skill_view("plugin-x:child-only-skill"))
+    assert parent["success"] is True
+
+    with delegated_child_context("sess"):
+        denied = json.loads(skills_tool.skill_view("plugin-x:child-only-skill"))
+    assert denied["success"] is False
+    assert "disabled" in denied["error"].lower()
+
+
+def test_disabled_resolution_prefers_child_platform_over_parent_env(
+    skills_home, monkeypatch
+):
+    """On a child's execution chain the subagent platform wins even when the process env
+    carries the parent's channel: the listing-side resolution and the skill_view gate both
+    answer for the asking agent, not the inherited environment."""
+    from agent.delegation_context import delegated_child_context
+    from agent.skill_utils import get_disabled_skill_names
+    from tools.skills_tool import _is_skill_disabled
+
+    monkeypatch.setenv("HERMES_PLATFORM", "telegram")  # the parent's channel
+    with delegated_child_context("sess"):
+        assert get_disabled_skill_names() == {"child-only-skill"}
+        assert _is_skill_disabled("child-only-skill") is True
+        assert _is_skill_disabled("parent-skill") is False
+    # Outside the child context the parent's channel (and nothing) applies as before.
+    assert get_disabled_skill_names() == set()
+    assert _is_skill_disabled("child-only-skill") is False

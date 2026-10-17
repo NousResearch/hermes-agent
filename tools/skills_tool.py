@@ -175,12 +175,21 @@ def _parse_tags(tags_value) -> list[str]:
 
 def _is_skill_disabled(*names: str, platform: str | None = None) -> bool:
     """Any of *names* disabled in config (one config load)? Platform precedence: explicit arg,
-    ``HERMES_PLATFORM``, session ``HERMES_SESSION_PLATFORM``. A globally-disabled skill stays disabled on every platform
+    the delegated child's own ``subagent`` platform, ``HERMES_PLATFORM``, session
+    ``HERMES_SESSION_PLATFORM`` — env/session only ever carry the parent's channel, so without
+    the child check skill_view would serve by name what ``platform_disabled.subagent`` hid from
+    the child's index (#140537). A globally-disabled skill stays disabled on every platform
     (keep in sync with agent.skill_utils.get_disabled_skill_names)."""
     try:
         from hermes_cli.config import load_config
         skills_cfg = load_config().get("skills", {})
-        resolved_platform = platform or os.getenv("HERMES_PLATFORM")
+        resolved_platform = platform
+        if not resolved_platform:
+            from agent.delegation_context import delegated_child_platform
+
+            resolved_platform = delegated_child_platform()
+        if not resolved_platform:
+            resolved_platform = os.getenv("HERMES_PLATFORM")
         if not resolved_platform:
             with suppress(Exception):
                 from gateway.session_context import get_session_env

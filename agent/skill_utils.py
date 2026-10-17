@@ -265,12 +265,21 @@ ESSENTIAL_SKILLS: frozenset = frozenset({"hermes-agent"})
 
 def get_disabled_skill_names(platform: str | None = None) -> set[str]:
     """Disabled skill names from config.yaml: global list ∪ platform list
-    (*platform* defaults to ``HERMES_PLATFORM`` / ``HERMES_SESSION_PLATFORM``)."""
+    (*platform* defaults to the delegated child's own ``subagent`` when running for one, then
+    ``HERMES_PLATFORM`` / ``HERMES_SESSION_PLATFORM`` — env/session only reflect the parent's
+    channel, so a child must be resolved from its execution context, #140537)."""
     skills_cfg = _skills_cfg()
     if skills_cfg is None:
         return set()
+    from agent.delegation_context import delegated_child_platform
     from gateway.session_context import get_session_env
-    resolved_platform = platform or os.getenv("HERMES_PLATFORM") or get_session_env("HERMES_SESSION_PLATFORM")
+
+    resolved_platform = (
+        platform
+        or delegated_child_platform()
+        or os.getenv("HERMES_PLATFORM")
+        or get_session_env("HERMES_SESSION_PLATFORM")
+    )
     disabled = _normalize_string_set(skills_cfg.get("disabled"))
     platform_disabled = (skills_cfg.get("platform_disabled") or {}).get(resolved_platform) if resolved_platform else None
     if platform_disabled is not None:

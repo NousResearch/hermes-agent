@@ -211,6 +211,9 @@ class FileSyncManager:
         self._pushed_hashes: dict[str, str] = {}  # remote_path -> sha256 hex digest
         self._upload_only_host_paths: set[str] = set()
         self._last_sync_time: float = 0.0  # monotonic; 0 ensures first sync runs
+        # Wall-clock time of the first successful push. It separates remote files created by this
+        # manager from stale files left by an earlier session when sync_back infers a new host path.
+        self._first_sync_time: float | None = None
         self._sync_interval = sync_interval
 
     def sync(self, *, force: bool = False) -> None:
@@ -242,6 +245,7 @@ class FileSyncManager:
             if not to_upload and not to_delete:
                 self._synced_files = new_files  # content-confirmed keys, nothing to push
                 self._last_sync_time = _monotonic()
+                self._first_sync_time = self._first_sync_time or time.time()
                 return
 
             # Hash and upload the same bytes: the original may be saved while
@@ -262,6 +266,7 @@ class FileSyncManager:
                 self._pushed_hashes.pop(p, None)
             self._synced_files = new_files
             self._last_sync_time = _monotonic()
+            self._first_sync_time = self._first_sync_time or time.time()
         except Exception as exc:
             self._synced_files = prev_files
             self._pushed_hashes = prev_hashes
@@ -458,6 +463,12 @@ class FileSyncManager:
 
         host_path = self._resolve_host_path(remote_path, file_mapping)
         if host_path is None:
+            # A new manager cannot distinguish a remote file created in this session from an
+            # orphan that a previous manager left behind. Do not recreate a host file from an
+            # orphan older than this manager's initial push; later remote creations still sync back.
+            if pushed_hash is None and self._first_sync_time is not None and os.path.getmtime(staged_file) < self._first_sync_time:
+                logger.debug("sync_back: skipping stale remote file %s", remote_path)
+                return 0
             host_path = self._infer_host_path(remote_path, file_mapping, upload_only_host_paths=upload_only_host_paths)
             if host_path is None:
                 logger.debug("sync_back: skipping %s (no host mapping)", remote_path)

@@ -197,10 +197,18 @@ def _steer_line(monitor, columns):
     """The one-line steer input painted under the rows while ``s`` is composing."""
     prompt = "  " + t("cli.subagents.steer_prompt")
     room = max(1, columns - get_cwidth(prompt) - 1)
-    draft = monitor.steer_draft
-    while draft and get_cwidth(draft) > room:
-        draft = draft[1:]  # keep the tail (where typing happens) in view
-    return [("class:live-dock.hint", prompt), ("", draft), ("reverse", " ")]
+    return [("class:live-dock.hint", prompt), ("", _tail_fitting(monitor.steer_draft, room)), ("reverse", " ")]
+
+
+def _tail_fitting(text, width):
+    """The longest suffix of ``text`` at most ``width`` cells wide (the tail, where typing happens,
+    stays in view). One backward pass: a long paste must not cost a re-measure per dropped char."""
+    used = 0
+    for index in range(len(text) - 1, -1, -1):
+        used += get_cwidth(text[index])
+        if used > width:
+            return text[index + 1:]
+    return text
 
 
 def _row_budget(rows):
@@ -383,16 +391,28 @@ def steer_cancel(cli):
     _end_steer(_monitor(cli))
 
 
+def _notice(result):
+    return str(result.get("error") or result.get("note") or result.get("status") or "")
+
+
+def _send_control(monitor, action, target, message=None):
+    """Steer / stop ``target`` off the UI thread (a gateway RPC or a shell's shutdown grace must
+    not freeze typing); the outcome lands in the pill's notice."""
+    def done(result):
+        monitor.notice = _notice(result)
+    monitor.run_control(action, target=target, message=message, done=done)
+
+
 def steer_send(cli):
-    """Enter: queue the draft as guidance for the target subagent; an empty draft does nothing."""
+    """Enter: queue the draft as guidance for the target subagent; an empty draft does nothing.
+    The target is the row ``s`` opened the input on, read once: a refresh that closed the input
+    meanwhile (the child finished) leaves nothing to send, never the newly selected row."""
     monitor = _monitor(cli)
-    message = monitor.steer_draft.strip()
-    if not message:
+    target, message = monitor.steer_target, monitor.steer_draft.strip()
+    if target is None or not message:
         return
-    target = monitor.steer_target
     _end_steer(monitor)
-    result = monitor.control("steer", message=message, target=target)
-    monitor.notice = str(result.get("error") or result.get("note") or result.get("status") or "")
+    _send_control(monitor, "steer", target, message)
 
 
 def open_selected(cli, key=None):
@@ -405,15 +425,17 @@ def open_selected(cli, key=None):
 
 
 def stop_selected(cli):
+    """``x`` arms a stop on the selected row, a second ``x`` on that same row sends it. The key is
+    read once, so a refresh that moves the selection meanwhile can never redirect the stop."""
     monitor = _monitor(cli)
-    if monitor.selected is None:
+    key = monitor.selected_id
+    if key is None:
         return
-    if monitor.confirm_key != monitor.selected_id:
-        monitor.confirm_key = monitor.selected_id
+    if monitor.confirm_key != key:
+        monitor.confirm_key = key
         return
-    result = monitor.control("stop", target=monitor.confirm_key)
     monitor.confirm_key = None
-    monitor.notice = str(result.get("error") or result.get("note") or result.get("status") or "")
+    _send_control(monitor, "stop", key)
 
 
 def click_actions(cli):
@@ -445,16 +467,37 @@ def click_actions(cli):
     return {"pill": pill, "badge": badge, "row": row}
 
 
+def _chrome_reaches_bottom(renderer, screen) -> bool:
+    """Whether the chrome sits on the terminal's bottom rows: it fills the screen, startup pinned it
+    there, a refill left its top at a known row, or the output recorded since the last clear fills
+    every row above it. After a clear (``/clear``, a scrollback rebuild) a short chrome sits under
+    the top rows with blank ones below, where a click mapped from the bottom row lands on the wrong
+    line, so clicks are dropped until the transcript fills those rows. Not covered: blank rows a
+    print leaves when the chrome shrinks at the same time (no CPR tells), which ``_transcript_room``
+    assumes away too."""
+    from hermes_cli.cli_render import _chrome_floor, _chrome_pinned, _cli, _output_history_rows, _terminal_reflows
+    size = renderer.output.get_size()
+    room = size.rows - screen.height
+    if room <= 0 or _chrome_pinned() or _chrome_floor() is not None:
+        return True
+    if not _cli()._OUTPUT_HISTORY_ENABLED:
+        return False
+    return _output_history_rows(room, size.columns, _terminal_reflows() is not True) is None
+
+
 def _bottom_anchored_mouse(pt_handler):
     """prompt_toolkit drops clicks until it knows the rows above its layout, which only a cursor
-    position report tells it, and Hermes turns CPR off (delayed replies leak into the input). The
-    chrome is painted down to the terminal's bottom row (``_transcript_room`` counts the same way),
-    so map the click from there; the guess is restored at once and never changes a paint."""
+    position report tells it, and Hermes turns CPR off (delayed replies leak into the input). Once
+    the transcript has pushed the chrome down to the terminal's bottom row (``_transcript_room``
+    counts the same way), map the click from there; until then clicks are dropped as before (the
+    keyboard still reaches every row). The guess is restored at once and never changes a paint."""
     def handler(event):
         renderer = event.app.renderer
         screen = renderer._last_screen
         if renderer.height_is_known or screen is None:
             return pt_handler(event)
+        if not _chrome_reaches_bottom(renderer, screen):
+            return NotImplemented
         renderer._min_available_height = screen.height
         try:
             return pt_handler(event)

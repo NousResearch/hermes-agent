@@ -75,3 +75,54 @@ def test_saved_mouse_setting_is_what_the_next_cli_starts_with(monkeypatch):
     monkeypatch.setattr(cli_mod, "CLI_CONFIG", load_cli_config())
     fresh = cli_mod.HermesCLI(model="test-model", toolsets=[], provider="auto")
     assert fresh._mouse_enabled is True
+
+
+def test_cpr_less_clicks_map_from_the_bottom_row_only_while_the_chrome_sits_there(monkeypatch):
+    """Without CPR, clicks are mapped from the terminal's bottom row. That holds once startup or
+    the transcript pushed the chrome there; right after a clear the chrome sits under the top rows
+    with blanks below, so a click on a blank bottom row must not land on the chrome's rows."""
+    import io
+    from types import SimpleNamespace
+    from prompt_toolkit.application import Application
+    from prompt_toolkit.data_structures import Size
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.layout import HSplit, Layout, Window
+    from prompt_toolkit.layout.controls import FormattedTextControl
+    from prompt_toolkit.output.vt100 import Vt100_Output
+    from prompt_toolkit.widgets import TextArea
+    import cli as cli_mod
+    from hermes_cli import cli_render
+    from hermes_cli.cli_dock_footer import bind_keys
+    from tests.waiting import async_wait_until
+
+    monkeypatch.setattr(cli_mod, "_OUTPUT_HISTORY", type(cli_mod._OUTPUT_HISTORY)())
+    cli_render._set_chrome_floor(None)  # /clear: the chrome is at the top, the rows below blank
+    monkeypatch.setattr(cli_render, "_CHROME_FLOOR", None)
+    clicks = []
+    pill = Window(FormattedTextControl(lambda: [("", "pill", lambda event: clicks.append(event.event_type))]),
+                  height=1)
+    output = Vt100_Output(io.StringIO(), lambda: Size(rows=40, columns=80), enable_cpr=False)
+
+    async def run():
+        with create_pipe_input() as pipe:
+            kb = KeyBindings()
+            bind_keys(SimpleNamespace(_subagent_monitor=None), kb)
+            app = Application(layout=Layout(HSplit([TextArea(height=1), pill])), key_bindings=kb,
+                              input=pipe, output=output, mouse_support=True)
+            task = asyncio.create_task(app.run_async())
+            try:
+                await async_wait_until(lambda: app.renderer._last_screen is not None, what="first paint")
+                assert not app.renderer.height_is_known  # CPR off: prompt_toolkit cannot map clicks
+                pipe.send_text("\x1b[<0;2;40Mx")  # the blank bottom row, then a key to sync on
+                await async_wait_until(lambda: app.layout.current_buffer.text == "x", what="click handled")
+                assert clicks == []
+                cli_render._pin_chrome()  # startup / a full transcript: the chrome reaches the bottom
+                pipe.send_text("\x1b[<0;2;40M")  # now the bottom row is the pill
+                await async_wait_until(lambda: clicks, what="pill clicked")
+                assert len(clicks) == 1
+            finally:
+                cli_render._pin_chrome(False)
+                app.exit()
+                await task
+    asyncio.run(run())

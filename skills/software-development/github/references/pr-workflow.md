@@ -352,3 +352,4 @@ git push -u origin HEAD
 | Request review | `gh pr edit N --add-reviewer user` | `curl -X POST .../pulls/N/requested_reviewers -d '{"reviewers":["user"]}'` |
 | Close PR | `gh pr close N` | `curl -X PATCH .../pulls/N -d '{"state":"closed"}'` |
 | Check out someone's PR | `gh pr checkout N` | `git fetch origin pull/N/head:pr-N && git checkout pr-N` |
+| Run someone's PR tests | `hermes sandbox run --pr N -- <test command>` | same; no Docker/Podman (exit 69) means review statically, never run it on the host |

@@ -61,6 +61,8 @@ class GatewaySessionStore:
     """Truthy until the viewer's gateway connection is final (main's ``if self._session_db:`` guards);
     a gateway hang-up stays truthy, and the next call redials."""
 
+    current: dict | None = None  # the opened session's snapshot; never ``__getattr__``'s refusal
+
     def __init__(self, connection=None):
         self.connection = connection or GatewayConnection.shared()
         self.snapshots: dict[str, dict] = {}

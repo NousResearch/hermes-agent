@@ -104,6 +104,8 @@ class ClientLifecycleMixin:
     def _close_task_resources(self, task_id: str) -> None:
         """Release task resources without treating a shared environment as process ownership."""
         from run_agent import _quietly, cleanup_browser, cleanup_vm
+        from agent.agent_close_hooks import run_on_agent_close
+        _quietly(lambda: run_on_agent_close(task_id))
 
         def kill_processes() -> None:
             from tools.process_registry import process_registry

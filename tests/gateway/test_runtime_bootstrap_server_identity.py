@@ -8,8 +8,9 @@ cannot ``OpenProcess`` an elevated gateway, so every Desktop/CLI attach failed w
 These tests drive that entry on any host by injecting the Win32 calls, never ``sys.platform``:
 ``ctypes.WinDLL`` answers the ULONG-out queries (server PID and session, own session),
 ``_process_sid`` stands in for OpenProcess + token (raising for an elevated server),
-``_pipe_security`` for ``GetSecurityInfo`` on the pipe handle, and ``process_is_elevated`` for
-this client's token. ``test_runtime_bootstrap.py`` reads a real pipe's facts on Windows, and
+``_pipe_security`` for ``GetSecurityInfo`` on the pipe handle, ``process_elevation`` for a
+readable server's ``TokenElevation``, and ``process_is_elevated`` for this client's token.
+``test_runtime_bootstrap.py`` reads a real pipe's facts on Windows, and
 ``tests/e2e/core/windows_update/test_elevated_gateway_attach.py`` runs the real
 elevated-server / standard-user-client attach.
 """
@@ -53,7 +54,7 @@ def pipe(monkeypatch):
     import hermes_dir_acl
 
     def install(*, process_sid, owner=OWN, aces=((0, OWN),), readable=True, own_elevated=False,
-                own_session=1, server_session=1, client_pid=None):
+                own_session=1, server_session=1, client_pid=None, server_elevated=None):
         kernel = _Kernel32({"GetNamedPipeServerProcessId": SERVER_PID, "GetNamedPipeClientProcessId": client_pid,
                             "GetNamedPipeServerSessionId": server_session, "ProcessIdToSessionId": own_session})
         monkeypatch.setattr(ctypes, "WinDLL", lambda name, use_last_error=False: kernel, raising=False)
@@ -73,6 +74,12 @@ def pipe(monkeypatch):
             return owner, tuple(aces)
         monkeypatch.setattr(native, "_pipe_security", security, raising=False)
         monkeypatch.setattr(hermes_dir_acl, "process_is_elevated", lambda: own_elevated)
+
+        def elevation(pid=None):
+            # TokenElevation of the server's token; None (the probe failed) unless a test says otherwise.
+            assert pid == SERVER_PID and process_sid is not None, "elevation probed for an unreadable server"
+            return server_elevated
+        monkeypatch.setattr(hermes_dir_acl, "process_elevation", elevation)
     return install
 
 
@@ -102,6 +109,26 @@ def test_an_unopenable_same_user_pipe_is_the_elevation_boundary(pipe):
     reads an unopenable owner token."""
     pipe(process_sid=None, owner=OWN)
     assert getattr(_refusal(), "reason_code", None) == "gateway_elevated"
+
+
+def test_a_readable_elevated_server_is_named_whatever_owns_its_pipe(pipe):
+    """Under the 'Object creator' owner policy an elevated gateway's pipe is owned by the user, so
+    the owner says nothing. The server's own token (``TokenElevation``, readable whenever the
+    process is) says it is elevated and this client is not: the named refusal, not an attach."""
+    pipe(process_sid=OWN, owner=OWN, server_elevated=True)
+    refused = _refusal()
+    assert getattr(refused, "reason_code", None) == "gateway_elevated", refused
+    assert str(refused) == native.refused_owner_remedy("gateway_elevated", SERVER_PID, 1)
+
+
+@pytest.mark.parametrize(("owner", "attached"), [(ADMINS, False), (OWN, True)])
+def test_a_failing_elevation_probe_falls_back_to_the_pipe_owner(pipe, owner, attached):
+    """The server is readable but its token's elevation is not: the owner inference decides, as before."""
+    pipe(process_sid=OWN, owner=owner, server_elevated=None)
+    if attached:
+        assert native._peer_subject(HANDLE, server=True) == "sid:" + OWN
+    else:
+        assert getattr(_refusal(), "reason_code", None) == "gateway_elevated"
 
 
 def test_an_unopenable_gateway_in_another_session_is_named_as_such(pipe):
@@ -261,6 +288,17 @@ def test_another_users_readable_server_is_refused(pipe):
 ])
 def test_a_same_user_server_at_the_clients_level_is_attached(pipe, owner, own_elevated, readable):
     pipe(process_sid=OWN, owner=owner, own_elevated=own_elevated, readable=readable)
+    assert native._peer_subject(HANDLE, server=True) == "sid:" + OWN
+
+
+@pytest.mark.parametrize(("owner", "own_elevated", "server_elevated"), [
+    (OWN, True, True),        # both elevated, user-owned pipe
+    (ADMINS, True, True),     # both elevated
+    (OWN, False, False),      # neither elevated
+    (ADMINS, False, False),   # the server's token says not elevated: it decides over the owner
+])
+def test_a_readable_server_at_the_clients_elevation_is_attached(pipe, owner, own_elevated, server_elevated):
+    pipe(process_sid=OWN, owner=owner, own_elevated=own_elevated, server_elevated=server_elevated)
     assert native._peer_subject(HANDLE, server=True) == "sid:" + OWN
 
 

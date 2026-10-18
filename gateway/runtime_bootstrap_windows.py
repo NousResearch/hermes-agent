@@ -452,17 +452,21 @@ class RefusedOwner(PermissionError):
 
 
 def judge_pipe_server(*, own_sid: str, process_sid: str | None, pipe: tuple[str, tuple] | None, pid: int,
-                      own_elevated: bool, own_session: int | None, server_session: int | None) -> str:
+                      own_elevated: bool, own_session: int | None, server_session: int | None,
+                      server_elevated: bool | None = None) -> str:
     """``sid:<own>`` when this client may talk to the pipe's server; raises otherwise. Pure: the
     Win32 facts are passed in (#140706).
 
     *process_sid* is the server process's token user, None when this client cannot open the
     process; *pipe* is the pipe object's ``(owner, dacl)`` (:func:`_pipe_security`), None when
-    unreadable.
+    unreadable; *server_elevated* is the readable server token's ``TokenElevation``, None when
+    that probe failed.
 
-    * Server process readable: its token user must be this user. A pipe owned by
-      BUILTIN\\Administrators was made by an elevated process, and a non-elevated client never
-      hands its requests to one (its tools would run with the full administrator token).
+    * Server process readable: its token user must be this user, and a non-elevated client never
+      hands its requests to an elevated server (its tools would run with the full administrator
+      token). The server token's elevation says so whatever owns the pipe (the 'Object creator'
+      owner policy gives an elevated process's pipe to the user); only when that probe fails does
+      the owner decide: BUILTIN\\Administrators means an elevated process made the pipe.
     * Server process unreadable (an elevated server seen from a filtered token): never attached.
       The pipe object says who made it: owner this user or BUILTIN\\Administrators, and a DACL
       granting exactly this user, the gateway's own private shape (``_create_pipe``). Another
@@ -473,7 +477,9 @@ def judge_pipe_server(*, own_sid: str, process_sid: str | None, pipe: tuple[str,
     if process_sid is not None:
         if process_sid != own_sid:
             raise PermissionError('named-pipe peer belongs to another user')
-        if owner != _ADMINISTRATORS_SID or own_elevated:
+        if server_elevated is None:
+            server_elevated = owner == _ADMINISTRATORS_SID
+        if own_elevated or not server_elevated:
             return 'sid:' + own_sid
         owner_elevated = True
     else:
@@ -487,25 +493,28 @@ def judge_pipe_server(*, own_sid: str, process_sid: str | None, pipe: tuple[str,
     if reason is None:
         raise PermissionError('cannot verify bootstrap peer process')
     logger.info('control pipe server PID %s refused as %s: pipe owner %s, server process %s, '
-                'server session %s, own session %s', pid, reason, owner,
-                'readable' if process_sid else 'unreadable', server_session, own_session)
+                'server elevated %s, server session %s, own session %s', pid, reason, owner,
+                'readable' if process_sid else 'unreadable', server_elevated, server_session, own_session)
     raise RefusedOwner(reason, pid, refused_owner_remedy(reason, pid, server_session))
 
 
 def _server_subject(handle, pid: int) -> str:
     """The client half of the pipe identity check: the Win32 facts for :func:`judge_pipe_server`."""
-    from hermes_dir_acl import process_is_elevated
+    from hermes_dir_acl import process_elevation, process_is_elevated
     try:
         process_sid = _process_sid(pid)
     except PermissionError:
         process_sid = None
+    # A readable process's token answers TokenElevation too (the same OpenProcess + TOKEN_QUERY);
+    # None, the probe failing, leaves the pipe owner to decide.
+    server_elevated = process_elevation(pid) if process_sid is not None else None
     try:
         pipe = _pipe_security(handle)
     except PermissionError:
         pipe = None
     return judge_pipe_server(own_sid=_process_sid(os.getpid()), process_sid=process_sid, pipe=pipe, pid=pid,
                              own_elevated=process_is_elevated(), own_session=_session_of(os.getpid()),
-                             server_session=_pipe_server_session(handle))
+                             server_session=_pipe_server_session(handle), server_elevated=server_elevated)
 
 
 def _session_of(pid: int) -> int | None:

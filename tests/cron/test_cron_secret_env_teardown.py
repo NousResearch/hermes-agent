@@ -86,6 +86,17 @@ def _locked(script) -> bool:
         return True
 
 
+class _InjectedBaseException(BaseException):
+    """Not an Exception: what an `except Exception` lets through (SystemExit, KeyboardInterrupt)."""
+
+
+@pytest.fixture
+def uncaught_thread_errors(monkeypatch):
+    errors = []
+    monkeypatch.setattr(threading, "excepthook", errors.append)
+    return errors
+
+
 def _wait(predicate, timeout=20.0) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -301,9 +312,9 @@ def test_member_never_held_is_not_taken_for_gone_when_the_listing_drops_it(
 
 
 @pytest.mark.platforms("windows")
-@pytest.mark.parametrize("fault", ["unexpected_error", "retry_not_started"])
+@pytest.mark.parametrize("fault", ["unexpected_error", "base_exception", "retry_not_started"])
 def test_held_run_keeps_its_retry_through_faults_and_is_released_once(
-        secret_run, monkeypatch, fault):
+        secret_run, monkeypatch, uncaught_thread_errors, fault):
     from cron import scheduler, scheduler_script
     from hermes_cli.local_runtime import processes
 
@@ -318,6 +329,8 @@ def test_held_run_keeps_its_retry_through_faults_and_is_released_once(
         attempts.append(fault)
         if fault == "unexpected_error" and len(attempts) > 1:
             raise RuntimeError("injected: unexpected teardown error")
+        if fault == "base_exception" and len(attempts) > 1:
+            raise _InjectedBaseException("injected: teardown raised a BaseException")
         raise processes.JobShutdownError("injected: teardown did not run")
 
     monkeypatch.setattr(processes._WindowsJob, "terminate", terminate)
@@ -343,6 +356,7 @@ def test_held_run_keeps_its_retry_through_faults_and_is_released_once(
         scheduler.tick(verbose=False)
     assert _wait(lambda: len(attempts) >= 4), "the held run is no longer retried"
     assert scheduler_script._held_secret_worker.is_alive()
+    worker = scheduler_script._held_secret_worker
     assert exits == []
     assert _locked(script)
     assert len(scheduler_script._held_secret_runs) == 1
@@ -353,11 +367,15 @@ def test_held_run_keeps_its_retry_through_faults_and_is_released_once(
     scheduler.tick(verbose=False)
     assert exits == [{"alive": [False, False], "processes": 2, "locked": True}]
     assert not _locked(script)
+    # The worker that met the faults lived through them and did the release itself.
+    assert _wait(lambda: not worker.is_alive())
+    assert uncaught_thread_errors == []
 
 
 @pytest.mark.platforms("windows")
+@pytest.mark.parametrize("error", [RuntimeError, _InjectedBaseException])
 def test_resolver_exit_failure_after_confirmation_drops_the_run_once(
-        secret_run, monkeypatch, caplog):
+        secret_run, monkeypatch, caplog, uncaught_thread_errors, error):
     from cron import scheduler_script
     from hermes_cli.local_runtime import processes
 
@@ -372,11 +390,14 @@ def test_resolver_exit_failure_after_confirmation_drops_the_run_once(
 
     monkeypatch.setattr(processes._WindowsJob, "terminate", terminate)
 
+    closes = []
+
     @contextlib.contextmanager
     def failing_exit(path):
         with resolver(path) as values:
             yield values
-        raise RuntimeError("injected: resolver exit failed")
+        closes.append(path)
+        raise error("injected: resolver exit failed")
 
     success, _output = scheduler_script._run_job_script(
         str(script), secret_env_resolver=failing_exit)
@@ -386,5 +407,7 @@ def test_resolver_exit_failure_after_confirmation_drops_the_run_once(
     assert _wait(lambda: not scheduler_script._held_secret_runs)
     assert _wait(lambda: scheduler_script._held_secret_worker is None)
     assert exits == [{"alive": [False, False], "processes": 2, "locked": True}]
+    assert len(closes) == 1
     assert not _locked(script)
-    assert "leaving its resolver context failed" in caplog.text
+    assert "its cleanup ran, but leaving its resolver context failed" in caplog.text
+    assert uncaught_thread_errors == []

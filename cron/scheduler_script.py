@@ -418,23 +418,26 @@ def _retry_held_secret_runs() -> None:
 
 def _retry_held_secret_run(run: _SecretRun) -> None:
     """One attempt. Any failure to confirm the tree gone keeps the run held for the next one;
-    once confirmed, the resolver context is left exactly once and only then the run dropped."""
+    once confirmed, the resolver context is left exactly once and only then the run dropped.
+    Nothing escapes, BaseException included: this runs on the one worker retrying every held
+    run, and once it is gone nothing restarts it short of a scheduler tick or a new hold."""
     from hermes_cli.local_runtime.processes import JobShutdownError
 
     try:
         run.end_tree()
     except JobShutdownError:
         return
-    except Exception:
+    except BaseException:
         logger.error("unexpected error confirming a held secret_env script tree stopped; "
                      "still holding its secret values and script lock", exc_info=True)
         return
     try:
         run.stack.close()
-    except Exception:
-        # ExitStack unwinds every callback before re-raising, so there is nothing to retry.
-        logger.error("secret_env script tree confirmed stopped, but leaving its resolver "
-                     "context failed", exc_info=True)
+    except BaseException:
+        # ExitStack pops and runs every callback before re-raising, BaseException included, so
+        # the cleanup has run: closing again would release nothing, and the run is dropped.
+        logger.error("secret_env script tree confirmed stopped and its cleanup ran, but leaving "
+                     "its resolver context failed", exc_info=True)
     else:
         logger.info("secret_env script tree confirmed stopped; secret values and script lock released")
     with _held_secret_lock:

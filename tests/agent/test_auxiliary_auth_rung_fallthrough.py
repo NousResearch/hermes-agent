@@ -192,6 +192,7 @@ def test_explicit_provider_auth_uses_its_configured_task_fallback(monkeypatch, s
         return client, FALLBACK_MODEL, label
 
     monkeypatch.setattr(auxiliary_egress_recovery, "try_configured_fallback_chain", configured_chain)
+    route_info = {"provider": "vertex", "model": AUX_MODEL}
     ladder = aux._aux_recovery_ladder(
         _auth_error(),
         client=_ExplicitProviderClient(),
@@ -207,7 +208,7 @@ def test_explicit_provider_auth_uses_its_configured_task_fallback(monkeypatch, s
         final_model=AUX_MODEL,
         max_tokens=None,
         main_runtime=None,
-        route_info={},
+        route_info=route_info,
     )
 
     def perform(step):
@@ -222,6 +223,9 @@ def test_explicit_provider_auth_uses_its_configured_task_fallback(monkeypatch, s
     else:
         with pytest.raises(_ApiError, match="Unauthorized"):
             aux._drive_ladder(ladder, perform)
+        # The PRIMARY error is raised, so route_info must name the primary route, not the
+        # last fallback candidate tried (the compressor blames whatever route_info names).
+        assert route_info == {"provider": "vertex", "model": AUX_MODEL}
     assert not chain
 
 

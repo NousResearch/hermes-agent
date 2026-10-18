@@ -656,6 +656,42 @@ def test_runtime_provenance_is_independent_of_aliases_and_virtual_env(child_env,
     assert base["VIRTUAL_ENV"] == str(user_venv)
 
 
+@pytest.mark.usefixtures("child_env")
+def test_sealed_payload_venv_is_runtime_provenance_without_facts(tmp_path, monkeypatch):
+    """A sealed payload boots its store interpreter (not a venv) on its shipped venv
+    before PM commits a generation; that venv's site-packages must never reach a child."""
+    from pm.environments import site_packages
+    shipped = tmp_path / "payload/venv"
+    shipped.mkdir(parents=True)
+    (shipped / "pyvenv.cfg").write_text("version = 3.14\n", encoding="utf-8")
+    monkeypatch.setattr("pm.environments.install_state_dir", lambda repo: tmp_path / "payload/state")
+    monkeypatch.setattr("pm.environments.payload_venv", lambda repo: shipped)
+    monkeypatch.setattr(local, "_in_venv", False)
+    monkeypatch.setattr(local, "_hermes_site_packages", None)
+    user_site = tmp_path / "user-site"
+    result = local._sanitize_subprocess_env(
+        {"PYTHONPATH": os.pathsep.join([str(site_packages(shipped)), str(user_site)])})
+    assert result["PYTHONPATH"] == str(user_site)
+
+
+@pytest.mark.usefixtures("child_env")
+@pytest.mark.parametrize("shipped", ["phantom", "escapes-root"])
+def test_payload_venv_that_is_not_real_is_not_provenance(tmp_path, monkeypatch, shipped):
+    """A stray manifest.json can name a venv that does not exist, or one that escapes its root:
+    neither may be trusted (a phantom path would shadow the user's own venv) or raise."""
+    def payload_venv(repo):
+        if shipped == "escapes-root":
+            raise RuntimeError("payload environment escapes its root")
+        return tmp_path / "no-such-venv"
+
+    monkeypatch.setattr("pm.environments.install_state_dir", lambda repo: tmp_path / "payload/state")
+    monkeypatch.setattr("pm.environments.payload_venv", payload_venv)
+    monkeypatch.setattr(local, "_hermes_repo_root_aliases", ())
+    from tools.environments.local_pythonpath import _validated_runtime_venv
+
+    assert _validated_runtime_venv({}) is None
+
+
 @pytest.mark.parametrize("existing,expected", [
     (["/usr/bin", "/bin"], ["/opt/hermes/bin", "/usr/bin", "/bin"]),
     (["/usr/bin", "/opt/hermes/bin"], ["/usr/bin", "/opt/hermes/bin"]),
@@ -709,6 +745,7 @@ def _make_directory_link(link: Path, target: Path) -> None:
     result = subprocess.run(
         ["cmd", "/c", "mklink", "/J", str(link), str(target)],
         capture_output=True,
+        check=False,
     )
     if result.returncode != 0:
         detail = result.stderr.decode("utf-8", errors="replace").strip()

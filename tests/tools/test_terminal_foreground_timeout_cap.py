@@ -53,7 +53,7 @@ class TestForegroundTimeoutCap:
         deadline = time.time() + 10
         while not marker.exists() and time.time() < deadline:
             time.sleep(0.05)
-        assert marker.read_text().count("x") == 1  # ran exactly once, in the background
+        assert marker.read_text(encoding="utf-8-sig").count("x") == 1  # ran exactly once, in the background
 
     def test_zero_timeout_rejected(self):
         """timeout=0 must be rejected, not silently coerced to the default."""
@@ -152,7 +152,7 @@ class TestPromotionKeepsTheDetachmentGuard:
 
         with patch("tools.terminal_tool._get_env_config", return_value=_make_env_config()), \
              patch("tools.terminal_tool._start_cleanup_thread"):
-            result = json.loads(terminal_tool(command="sleep 5 &", timeout=9999))
+            result = json.loads(terminal_tool(command="sleep 5 & echo started", timeout=9999))
             result2 = json.loads(terminal_tool(command="nohup make test", timeout=9999))
         assert "'&' backgrounding" in result["error"]
         assert "nohup" in result2["error"]

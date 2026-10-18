@@ -314,6 +314,16 @@ class TestRuntimeMode:
         assert mode.toolset_selection() is None
         assert mode.system_blocks() == []
 
+    def test_resolved_focus_ignores_an_on_disk_auto(self, tmp_path, monkeypatch):
+        # The focus decision is the mode's own config_mode, not a re-read of the user's config.
+        _git_init(tmp_path)
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / "config.yaml").write_text(json.dumps({"agent": {"coding_context": "auto"}}))
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        mode = cc.resolve_runtime_mode(platform="cli", cwd=tmp_path, config={"agent": {"coding_context": "focus"}})
+        assert mode.toolset_selection() == [cc.CODING_TOOLSET]
+
 
 
 

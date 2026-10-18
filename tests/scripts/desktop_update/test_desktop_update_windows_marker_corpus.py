@@ -71,6 +71,7 @@ def run_corpus(powershell: str, work: Path) -> dict[tuple[str, str], dict]:
         [powershell, '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(harness),
          '-Corpus', str(CORPUS), '-MarkerPs1', str(MARKER_PS1), '-Work', str(work)],
         capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=300,
+        check=False,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     rows = [json.loads(line) for line in proc.stdout.splitlines() if line.strip()]

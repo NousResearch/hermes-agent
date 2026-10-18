@@ -39,7 +39,7 @@ def pair():
 
 
 def test_unbounded_reply_retains_late_attachment_for_consumer_cleanup(pair):
-    server, registry, sup, handle = pair
+    server, _registry, _sup, handle = pair
     abandoned = threading.Event()
     outcomes = []
     def worker():
@@ -58,7 +58,7 @@ def test_unbounded_reply_retains_late_attachment_for_consumer_cleanup(pair):
 
 
 def test_dispatch_deadline_refuses_queued_command_after_timeout(pair):
-    server, registry, sup, handle = pair
+    server, _registry, sup, handle = pair
     entered = threading.Event()
     def block():
         # Stall the loop past the caller's deadline but inside its +1s result grace.
@@ -73,7 +73,7 @@ def test_dispatch_deadline_refuses_queued_command_after_timeout(pair):
 
 
 def test_before_send_checks_cancellation_on_supervisor_loop(pair):
-    server, registry, sup, handle = pair
+    server, _registry, sup, handle = pair
     entered, release, abandoned = threading.Event(), threading.Event(), threading.Event()
     failures = []
     def block():
@@ -100,7 +100,7 @@ def test_before_send_checks_cancellation_on_supervisor_loop(pair):
 
 
 def test_unbounded_reply_fails_promptly_on_socket_close(pair):
-    server, registry, sup, handle = pair
+    server, _registry, _sup, handle = pair
     failures = []
     # This fixture replies to ordinary methods; block the connection handler on attach instead.
     def attach():
@@ -119,8 +119,8 @@ def test_unbounded_reply_fails_promptly_on_socket_close(pair):
 
 
 def test_unbounded_wait_ends_when_loop_closes_with_dispatch_queued(pair, monkeypatch):
-    server, registry, sup, handle = pair
-    import agent.async_utils as async_utils
+    _server, registry, _sup, handle = pair
+    from agent import async_utils
     # A stop racing call() can close the loop before its queued dispatch runs; the
     # scheduled future then never resolves.
     real = async_utils.safe_schedule_threadsafe

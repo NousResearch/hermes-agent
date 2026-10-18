@@ -308,7 +308,6 @@ def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
         config, env_type, image=_select_image(env_type, overrides, config), cwd=cwd,
         timeout=config["timeout"], task_id=task_id,
         host_cwd=host_cwd,
-        local_config={"persistent": config.get("local_persistent", False)} if env_type == "local" else None,
     )
     return env_type, terminal_env
 
@@ -693,6 +692,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         # Failed reads cannot establish whole-file knowledge.
         _err = result_dict.get("error") or ""
         if isinstance(_err, str) and _err.startswith("File not found:"):
+            from tools.tool_result_storage import expired_archive_fields
+            result_dict.update(expired_archive_fields(path))
             _record_not_found("read", resolved_str, task_id, json.dumps(result_dict, ensure_ascii=False))
         if _err or result_dict.get("is_binary"):
             return json.dumps(result_dict, ensure_ascii=False)
@@ -1342,11 +1343,19 @@ def _handle_write_file(args, **kw):
         )
     from hermes_cli.observability.shared_metrics_harness import record_file_edit
 
-    return record_file_edit("write_file", "whole_file", lambda: write_file_tool(
+    return record_file_edit("write_file", "whole_file", lambda: _owned(kw.get("session_id") or tid, write_file_tool,
         path=args["path"], content=args["content"], task_id=tid,
         cross_profile=bool(args.get("cross_profile", False)),
         session_id=kw.get("session_id"),
     ))
+
+
+def _owned(owner: str, fn, **call_kwargs):
+    """Run an edit tool with its late LSP verdicts attributed to ``owner``, the calling session
+    (``agent.lsp.deferred``): they ride that session's next tool result."""
+    from agent.lsp.deferred import bind_owner
+    with bind_owner(owner):
+        return fn(**call_kwargs)
 
 
 def _handle_patch(args, **kw):
@@ -1354,7 +1363,7 @@ def _handle_patch(args, **kw):
 
     tid = kw.get("task_id") or "default"
     mode = args.get("mode", "replace")
-    return record_file_edit("patch", mode, lambda: patch_tool(
+    return record_file_edit("patch", mode, lambda: _owned(kw.get("session_id") or tid, patch_tool,
         mode=mode, path=args.get("path"),
         old_string=args.get("old_string"), new_string=args.get("new_string"),
         replace_all=args.get("replace_all", False), patch=args.get("patch"), task_id=tid,

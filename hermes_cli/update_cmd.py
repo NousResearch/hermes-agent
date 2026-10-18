@@ -104,7 +104,7 @@ from hermes_cli.update_cmd_git import (
     _prune_orphan_rescue_refs, _push_synced_fork, _should_skip_upstream_prompt, _sync_fork_with_upstream,
     _sync_with_upstream_if_needed, UpstreamTargetBroken)
 from hermes_cli.update_cmd_maint import (
-    _PRE_UPDATE_SNAPSHOT_KEEP, _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE, _clear_stale_sqlite_sidecars,
+    _PRE_UPDATE_SNAPSHOT_KEEP, _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
     _checkout_version, _ensure_acp_launcher, _ensure_fhs_path_guard, _finish_dashboard_update_cleanup,
     _format_time_ago, _post_update_sqlite_runtime_status, _print_bundled_skills_sync_report,
     _print_curator_first_run_notice, _print_curator_recent_run_notice,
@@ -1265,6 +1265,11 @@ def _refuse_before_commit_point(git_cmd, target_ref, _windows_gateway_resume) ->
     """Preconditions that used to fail AFTER the swap: refuse with the install untouched."""
     reason = _commit.preflight_refusal(git_cmd, _m().PROJECT_ROOT, target_ref, _UPDATE_CRITICAL_FILES)
     if reason is None:
+        from hermes_cli.update_downgrade_guard import downgrade_refusal
+        reason = downgrade_refusal(git_cmd, _m().PROJECT_ROOT, target_ref)
+        if reason is not None:
+            _record_stop("downgrade_refused")
+    if reason is None:
         return
     print(reason)
     print("  No update was applied; your install is unchanged.")
@@ -1854,47 +1859,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
         had_desktop_app_before_update, gateway_mode)
     branch = _m()._resolve_update_branch(args)
     completion_request["branch"] = branch
-    target_ref = f"origin/{branch}"
-    release_sha = None
-    target_repository = None
-    selected_channel = _update_run_channel(args)
-    if not getattr(args, "branch", None):
-        from hermes_cli.release_channels import retrying_reads
-        from hermes_cli.source_releases import resolve_source_target
-
-        from copy import deepcopy
-        from hermes_cli.config import require_readable_config_before_write
-        from hermes_cli.update_channel import channel_record
-
-        original_record = deepcopy(channel_record(require_readable_config_before_write(
-            Path(completion_request["home"]) / "config.yaml"), _m().PROJECT_ROOT))
-        print(f"→ Update channel: {selected_channel}")
-        try:
-            with retrying_reads():
-                target = resolve_source_target(
-                    selected_channel, None if use_zip_update else git_cmd, _m().PROJECT_ROOT)
-        except (OSError, ValueError, subprocess.SubprocessError) as exc:
-            print(f"✗ Could not resolve the {selected_channel} source channel: {exc}. No update was applied.")
-            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
-            _record_stop("channel_unresolved")
-            sys.exit(1)
-        if target.retired:
-            print(f"→ {selected_channel} retired; source destination: {target.channel}")
-            if (not getattr(args, "channel", None)
-                    and original_record.get("channel", "main") == selected_channel):
-                completion_request["channel_retirement"] = {
-                    "original": original_record, "destination": target.channel}
-        target_repository = target.repository
-        release_sha = target.commit
-        if release_sha:
-            print(f"→ Latest release: {target.label}")
-            target_ref = release_sha
-            completion_request["expected_sha"] = release_sha
-        else:
-            assert target.branch is not None  # a SourceTarget without a commit names its branch
-            branch = target.branch
-            completion_request["branch"] = branch
-            target_ref = f"origin/{branch}"
+    target_ref, release_sha, target_is_head, target_repository = _check.select_apply_target(
+        args, branch, completion_request, git_cmd=None if use_zip_update else git_cmd,
+        stop=lambda: _m()._resume_windows_gateways_after_update(_windows_gateway_resume))
+    branch = completion_request["branch"]
 
     if use_zip_update:
         try:
@@ -1929,15 +1897,21 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # (#123346, #124645). Unshallow it (commits only) first.
         _heal_stale_shallow_checkout(_m().PROJECT_ROOT, branch)
 
-        print("→ Fetching updates...")
-        if release_sha:
+        if release_sha and target_is_head:
+            # Forward-only default: the checkout already contains the release; nothing to fetch.
+            fetch_args = None
+        elif release_sha:
             fetch_args = ["fetch", "--no-tags", "origin", target_ref]
         else:
             fetch_args = ["fetch", "origin", _check.tracking_refspec("origin", branch)]
         from hermes_cli.gitlock import fetch_with_partial_clone_recovery, is_partial_clone_pack_objects_crash
         # Marking the unmarked packs clears the git 2.53+ partial-clone pack-objects crash (#124272).
-        fetch_result = fetch_with_partial_clone_recovery(
-            lambda gc, a: _git_run(gc, a, network=True), git_cmd, fetch_args, _m().PROJECT_ROOT)
+        if fetch_args is None:
+            fetch_result = subprocess.CompletedProcess([], 0)
+        else:
+            print("→ Fetching updates...")
+            fetch_result = fetch_with_partial_clone_recovery(
+                lambda gc, a: _git_run(gc, a, network=True), git_cmd, fetch_args, _m().PROJECT_ROOT)
         if fetch_result.returncode != 0:
             if is_partial_clone_pack_objects_crash(fetch_result.stderr or ""):
                 print("✗ git still crashed after marking this checkout's packs. See 'Fetch fails with"

@@ -231,5 +231,5 @@ def test_rendered_wrapper_dispatches_to_the_entry_module(tmp_path):
     env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME", "PYTHONPYCACHEPREFIX")}
     env["LOCALAPPDATA"] = str(tmp_path / "lad")
     python = Path(sys.base_prefix) / "python.exe" if sys.platform == "win32" else sys.executable
-    proc = subprocess.run([str(python), str(wrapper), "--version"], capture_output=True, text=True, env=env)
+    proc = subprocess.run([str(python), str(wrapper), "--version"], capture_output=True, text=True, env=env, check=False)
     assert proc.returncode == 7, proc.stderr

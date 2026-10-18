@@ -386,13 +386,14 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
                 if _active is not None:
                     _active.data["runtime_outcomes"] = _runtime_outcomes
 
-    if not _gateway_owed:
+    if not restart.incomplete:
         with _best_effort('Owed-gateway check failed: %s'):
+            # Only on an otherwise-complete run: the check can settle (clear) the host obligation,
+            # which an incomplete run must not do mid-verification. An incomplete run keeps the
+            # obligation armed anyway, and the startup warning names any older owed gateway.
             if _named_gateways_still_owed():
                 # A gateway a previous run could not restart is still not serving HEAD (nothing
                 # live to restart this time): keep owing it rather than clearing the obligation.
-                # Checked even when a serve unit already made the run incomplete, so the follow-up
-                # still names the gateway (#141021).
                 print("  ⚠ A gateway owed a restart by a previous update is still not serving this checkout.")
                 restart.incomplete = _gateway_owed = True
     if getattr(restart, "stopped_unmapped_pids", None):

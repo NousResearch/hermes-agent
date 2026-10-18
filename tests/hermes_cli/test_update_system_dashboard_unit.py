@@ -195,11 +195,14 @@ def test_dashboard_stopped_and_not_brought_back_is_not_called_still_running(monk
     assert "still run pre-update code" not in reason and "hermes gateway restart" not in reason
 
 
-def test_previously_owed_gateway_is_still_named_beside_a_failed_dashboard_unit(monkeypatch):
-    monkeypatch.setattr(fleet_verify, "_named_gateways_still_owed", lambda: True)
-    _refreshed, receipt = _verify(monkeypatch, _restart())
-    reason = receipt["followups"][0]["reason"]
-    assert "hermes gateway restart" in reason and "hermes-dashboard" in reason
+def test_incomplete_run_never_settles_the_host_obligation_mid_verification(monkeypatch):
+    """The owed-gateway check can clear the host obligation; on a run a failed dashboard unit already
+    made incomplete it must not run (round-2 review): the obligation stays exactly as armed."""
+    calls = []
+    monkeypatch.setattr(fleet_verify, "_named_gateways_still_owed", lambda: calls.append(1) or False)
+    _verify(monkeypatch, _restart())
+    assert calls == []
+    assert update_cmd_fleet._fleet_restart_obligation_armed() is True
 
 
 def _unit_dashboard_plan():

@@ -14,27 +14,40 @@ export async function downloadViaTokenToFile(url, token, ctx, finalizeGatewayDow
     throw new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`)
   }
 
-  const res: http.IncomingMessage = await withRetry(async () => {
-    const headers = options.gatewayDescriptor
-      ? await nativeGatewayHttpHeaders(options.gatewayDescriptor, url)
-      : options.bearer ? { Authorization: `Bearer ${options.bearer}` } : { 'X-Hermes-Session-Token': token }
+  const res: http.IncomingMessage = await withRetry(
+    async () => {
+      const headers = options.gatewayDescriptor
+        ? await nativeGatewayHttpHeaders(options.gatewayDescriptor, url)
+        : options.bearer
+          ? { Authorization: `Bearer ${options.bearer}` }
+          : { 'X-Hermes-Session-Token': token }
 
-    return new Promise<http.IncomingMessage>((resolve, reject) => {
-      const client = parsed.protocol === 'https:' ? https : http
-      const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
+      return new Promise<http.IncomingMessage>((resolve, reject) => {
+        const client = parsed.protocol === 'https:' ? https : http
+        const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
-      const req = client.request(parsed, {
-        agent: downloadAgentFor(parsed.protocol), method: 'GET', headers
-      }, response => {
-        req.setTimeout(0)
-        resolve(response)
+        const req = client.request(
+          parsed,
+          {
+            agent: downloadAgentFor(parsed.protocol),
+            method: 'GET',
+            headers
+          },
+          response => {
+            req.setTimeout(0)
+            resolve(response)
+          }
+        )
+
+        req.on('error', reject)
+        req.setTimeout(timeoutMs, () =>
+          req.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
+        )
+        req.end()
       })
-
-      req.on('error', reject)
-      req.setTimeout(timeoutMs, () => req.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`)))
-      req.end()
-    })
-  }, { method: 'GET' })
+    },
+    { method: 'GET' }
+  )
 
   // Node does not follow redirects: never send a one-use grant to a new target.
   if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400) {
@@ -45,6 +58,7 @@ export async function downloadViaTokenToFile(url, token, ctx, finalizeGatewayDow
   destroyStalledBody(res, resolveTimeoutMs(options.bodyIdleTimeoutMs, DEFAULT_FETCH_TIMEOUT_MS))
 
   return finalizeGatewayDownload(res, res.statusCode || 500, res.headers || {}, {
-    ...ctx, abort: () => res.destroy()
+    ...ctx,
+    abort: () => res.destroy()
   })
 }

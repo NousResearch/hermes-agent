@@ -294,12 +294,13 @@ def _two_seeded_boards(tmp_path, monkeypatch):
     kb._INITIALIZED_PATHS.clear()
     with kbc.connect_closing() as conn:
         for i in range(2):
-            kb.create_task(conn, title=f"done-{i}", assignee="dev", initial_status="done")
+            kb.create_task(conn, title=f"done-{i}", assignee="dev")
+        conn.execute("UPDATE tasks SET status = 'done'")
     kb.create_board("proj-b")
     with kbc.connect_closing(board="proj-b") as conn:
-        kb.create_task(conn, title="run-1", assignee="dev", initial_status="running")
+        kb.create_task(conn, title="run-1", assignee="dev")
+        conn.execute("UPDATE tasks SET status = 'running'")
     return home
-
 
 def _worker_fence(monkeypatch, home):
     """Simulate a dispatcher-spawned worker: its own board's DB pin + task marker."""

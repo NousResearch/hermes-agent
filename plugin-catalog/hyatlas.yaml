@@ -51,4 +51,4 @@ known_issues:
   - "After enabling, select the provider with `hermes memory setup` (memory.provider: hyatlas) — installing and enabling alone does not activate memory."
   - "The agent tools and hooks arrive through the MemoryProvider interface, not ctx.register_tool, so they do not appear in the plugin tool list."
   - "Requires the separate hyatlas-go server binary (installed by the user); without a reachable server the provider reports unavailable and memory features degrade rather than fail."
-  - "Updating the plugin does not update the server: install hyatlas-go v4.9.0 too. A store written by an earlier version can be cleaned with the server's maintenance endpoints (see after-install.md, 'Upgrading a store written before 4.5.0')."
+  - "Updating the plugin does not update the server: install hyatlas-go v4.9.1 too. A store written by an earlier version can be cleaned with the server's maintenance endpoints (see after-install.md, 'Upgrading a store written before 4.5.0')."

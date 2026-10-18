@@ -9,6 +9,7 @@ import math
 import time
 
 from hermes_state_runtime import RuntimeStoreError
+from hermes_process_identity import matches_process_birth, valid_process_birth
 
 _TASK_KEYS = {'goal', 'goals', 'context', 'toolsets', 'role', 'model', 'is_batch', 'task_indexes'}
 _ROUTE = {'session_key': 'origin_session', 'parent_session_id': 'parent_session_id',
@@ -69,7 +70,7 @@ def _dispatch(db, conn, session_id, payload, *, execution_id, worker_pid, worker
     import psutil
     from gateway.status import get_process_start_time
     try:
-        if psutil.Process(worker_pid).create_time() != worker_birth:
+        if not matches_process_birth(psutil.Process(worker_pid), worker_birth):
             raise RuntimeStoreError('permission_denied')
         owner_started_at = get_process_start_time(worker_pid)
     except psutil.Error as exc:
@@ -177,7 +178,8 @@ def worker_delegation_handlers(execution_id, worker_pid, worker_birth):
     _text(execution_id)
     if type(worker_pid) is not int or worker_pid <= 0:
         raise RuntimeStoreError('invalid_params')
-    _number(worker_birth)
+    if not valid_process_birth(worker_birth):
+        raise RuntimeStoreError('invalid_params')
     handlers = {name: partial(fn, execution_id=execution_id) for name, fn in {
         'complete': _complete, 'child': _child, 'read': _read, 'claim': _claim,
         'unscheduled': _unscheduled}.items()}

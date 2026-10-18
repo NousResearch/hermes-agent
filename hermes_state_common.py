@@ -13,6 +13,7 @@ from typing import Any
 from hermes_cli.timefmt import EPOCH_MAX, EPOCH_MIN
 from hermes_state_keys import CRON_PRINCIPAL_ID
 from hermes_state_pidns import persistent_record_pidns_checkable, pid_namespace_id
+from hermes_process_identity import _proc_start_ticks
 from agent.skill_commands import AUTO_LOAD_SCAFFOLD_SQL_LIKE, SKILL_EXCERPT_JOINT, SKILL_SCAFFOLD_SQL_LIKE, describe_skill_invocation
 from agent.context_compressor import (LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX, _MERGED_PRIOR_CONTEXT_HEADER,
     _MERGED_SUMMARY_DELIMITER, _SUMMARY_END_MARKER)
@@ -1230,17 +1231,6 @@ _LOCK_CONTENTION_ERRNOS = {errno.EAGAIN, errno.EACCES, errno.EWOULDBLOCK, errno.
 def is_advisory_lock_contention(exc: BaseException) -> bool:
     """True when *exc* means another process holds the lock; on any other ``OSError`` fail closed at once."""
     return isinstance(exc, BlockingIOError) or (isinstance(exc, OSError) and exc.errno in _LOCK_CONTENTION_ERRNOS)
-
-
-def _proc_start_ticks(pid: int):
-    """Kernel start time of *pid* (field 22 of ``/proc/<pid>/stat``; with the PID it identifies a process
-    uniquely).  None off Linux or on any failure — callers must treat None as unknowable and FAIL CLOSED."""
-    try:
-        # comm (field 2) may contain spaces/parens; split after the LAST ')'.
-        with open(f"/proc/{pid}/stat", "rb") as fh:
-            return int(fh.read().rsplit(b")", 1)[1].split()[19])
-    except (OSError, ValueError, IndexError):
-        return None
 
 
 def _read_lock_holder_record(handle):

@@ -319,12 +319,12 @@ class GatewayRolloverMixin:
             if old_agent is None:
                 raise RolloverBlocked("The old agent's resource ownership is unavailable")
             # Await actual completion; timeout/failure is not permission to replace the owner.
+            # Successful cleanup still finalizes providers; a later failure must not reopen this owner.
             cleanup_started = True
             await self._run_housekeeping_in_executor(
                 close_for_rollover, old_agent, lambda process: _process_callback_settled(self, process),
             )
             self._evict_cached_agent(key)
-            cleanup_started = False
             blocker = await asyncio.to_thread(_blocking_obligation, self, key, entry.session_id)
             await asyncio.to_thread(verify_packet_binding, receipt)
             from gateway.run import _load_gateway_config
@@ -332,7 +332,7 @@ class GatewayRolloverMixin:
             if current_policy != lane.policy:
                 raise RolloverBlocked("Rollover was disabled or reconfigured before commit")
             if blocker or not self._is_session_run_current(key, generation) or not _queue_is_empty(self, key, source):
-                raise RolloverBlocked(blocker or "lane state changed before commit; refresh the handoff")
+                raise RolloverBlocked(blocker or "lane state changed after cleanup; reconcile before continuing")
             # NO await between final emptiness check and clearing OLD empty conversation scope.
             # Arrivals after this point belong to the existing FIFO and are never cleared again.
             overrides = self._session_state(key).conversation

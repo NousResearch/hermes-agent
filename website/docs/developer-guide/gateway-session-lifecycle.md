@@ -680,7 +680,8 @@ supply a new directive mode under the old receipt.
 The authoring turn also captures the active-transcript watermark before releasing
 its durable turn lease. The receipt binds that watermark; the ownership transaction
 rejects a changed transcript even if an intervening writer has already released
-its lease. The old owner remains live and the handoff must be refreshed.
+its lease. The old owner is not retired; a failure after cleanup begins remains
+blocked for reconciliation rather than reusing an already-finalized session.
 
 ```mermaid
 stateDiagram-v2
@@ -706,6 +707,9 @@ Recognized slash commands keep their native bypass; unknown slash-prefixed text
 remains ordinary queued input.
 After bootstrap, retained input is processed before automatic admission of the
 still-authorized directive, including newer stops or cancellations.
+Cleanup can finalize external memory providers even when it succeeds. Once it
+begins, any later failure before commit (including new input, changed packet or
+changed policy) blocks the predecessor instead of automatically retrying it.
 
 The commit ends the predecessor with `session_reset`, creates a fresh child with
 `parent_session_id`/`_reset_from`, and publishes native fresh-reset semantics. It

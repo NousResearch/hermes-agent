@@ -276,6 +276,45 @@ async def test_cleanup_failure_blocks_before_identity_commit(lane, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_input_after_memory_finalization_blocks_predecessor_reuse(lane, monkeypatch):
+    import agent.rollover_cleanup as cleanup
+
+    finalized = []
+    lane.agent._memory_manager = SimpleNamespace(
+        flush_pending=lambda **_: True,
+        on_session_end=lambda *_args, **_kwargs: finalized.append("end"),
+        shutdown_all=lambda **_: finalized.append("shutdown"),
+        shutdown_drain_state={"status": "drained"},
+    )
+    incoming = MessageEvent(text="New work after finalization", source=lane.source)
+    close = cleanup.close_for_rollover
+
+    def close_then_arrival(agent, callback):
+        close(agent, callback)
+        lane.adapter._pending_messages[lane.key] = incoming
+
+    monkeypatch.setattr(cleanup, "close_for_rollover", close_then_arrival)
+    await _claim(lane)
+    try:
+        reply = await _rotate(lane)
+        receipt = lane.store.get_rollover(lane.key)
+        assert finalized == ["end", "shutdown"]
+        assert receipt["phase"] == "blocked"
+        assert receipt["owner_committed"] is False
+        assert lane.store.peek_session_id(lane.key) == lane.entry.session_id
+        assert lane.db.get_session(receipt["new_session_id"]) is None
+        turns = list(lane.calls)
+        handled, followup = await lane.runner._rollover_recover_before_turn(
+            incoming, lane.source, lane.entry, lane.key, lane.generation,
+        )
+        assert handled and "blocked" in followup
+        assert lane.calls == turns
+        assert "blocked" in reply
+    finally:
+        lane.runner._release_turn_lease(lane.key, lane.generation)
+
+
+@pytest.mark.asyncio
 async def test_pending_worker_completion_prevents_cutover(lane):
     lane.db._conn.execute(
         "INSERT INTO async_delegations(delegation_id, origin_session, parent_session_id, state, "

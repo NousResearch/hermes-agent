@@ -365,7 +365,9 @@ def _check_approval_required_write(paths: list[str], task_id: str = "default") -
     except Exception:
         return None
 
-    targets = [p for p in paths if is_write_approval_required(p)]
+    # Resolve against the task's cwd, not the process's: a gateway-hosted turn runs in a
+    # process whose cwd is not the session workspace, so a relative path would miss the gate.
+    targets = [p for p in paths if is_write_approval_required(_resolved_or_raw(p, task_id))]
     if not targets:
         return None
 

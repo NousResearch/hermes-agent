@@ -1176,9 +1176,9 @@ function CatalogEntryCard(props: CatalogEntryCardProps) {
 
   const caps = entry.capabilities;
   const chips: string[] = [];
-  if (caps.provides_tools.length) chips.push(`${caps.provides_tools.length} tools`);
-  if (caps.provides_hooks.length) chips.push(`${caps.provides_hooks.length} hooks`);
-  if (caps.provides_middleware.length) chips.push(`${caps.provides_middleware.length} middleware`);
+  if (caps.provides_tools.length) chips.push(t.pluginsPage.catalogTools.replace("{count}", String(caps.provides_tools.length)));
+  if (caps.provides_hooks.length) chips.push(t.pluginsPage.catalogHooks.replace("{count}", String(caps.provides_hooks.length)));
+  if (caps.provides_middleware.length) chips.push(t.pluginsPage.catalogMiddleware.replace("{count}", String(caps.provides_middleware.length)));
   if (caps.requires_env.length) chips.push(`env: ${caps.requires_env.join(", ")}`);
 
   const isRemoved = removed !== null;
@@ -1190,7 +1190,10 @@ function CatalogEntryCard(props: CatalogEntryCardProps) {
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3">
             <span className="truncate font-semibold">{entry.name}</span>
 
-            <Badge tone={entry.tier === "official" ? "success" : "secondary"}>{entry.tier}</Badge>
+            <Badge tone={entry.tier === "community" ? "secondary" : "success"}>
+              {{ official: t.pluginsPage.catalogTierOfficial, verified: t.pluginsPage.catalogTierVerified,
+                 community: t.pluginsPage.catalogTierCommunity }[entry.tier]}
+            </Badge>
 
             {entry.installed && entry.runtime_status ? <Badge tone="outline">{entry.runtime_status}</Badge> : null}
 

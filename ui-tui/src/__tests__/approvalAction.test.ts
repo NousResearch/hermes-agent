@@ -80,9 +80,13 @@ describe('approvalAction — pure key dispatch for ApprovalPrompt', () => {
         description: 'blocked'
       })
     ).toEqual(['once', 'deny'])
+    // Canonical owners send ['once', 'deny', 'session', 'always']: allowed set, not numbering.
+    expect(
+      approvalOptions({ choices: ['once', 'deny', 'session', 'always'], command: 'rm -rf /', description: 'blocked' })
+    ).toEqual(['once', 'session', 'always', 'deny'])
   })
 
-  it('falls back safely when gateway choices contain no supported option', () => {
+  it('offers no local permission when gateway choices contain no supported option', () => {
     const req = {
       allowPermanent: false,
       choices: ['later', 'never'],
@@ -90,7 +94,7 @@ describe('approvalAction — pure key dispatch for ApprovalPrompt', () => {
       description: 'unsupported choices'
     }
 
-    expect(approvalOptions(req)).toEqual(['once', 'session', 'deny'])
+    expect(approvalOptions(req)).toEqual([])
     expect(approvalAction('', { return: true }, 0, [])).toEqual({ kind: 'noop' })
   })
 })

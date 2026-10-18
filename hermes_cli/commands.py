@@ -126,11 +126,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("pause", "Pause new work globally (emergency stop); '/pause off' resumes", "Session",
                gateway_only=True, args_hint="[reason | off]", busy_policy="dispatch"),
     CommandDef("approve", "Approve a pending dangerous command", "Session",
-               gateway_only=True, args_hint="[session|always]", busy_policy="dispatch",
-               desktop="messaging"),
+               gateway_only=True, args_hint="[session|always]", busy_policy="dispatch"),
     CommandDef("deny", "Deny a pending dangerous command (optionally with a reason)", "Session",
-               gateway_only=True, args_hint="[all] [reason]", busy_policy="dispatch",
-               desktop="messaging"),
+               gateway_only=True, args_hint="[all] [reason]", busy_policy="dispatch"),
     CommandDef("bg", "Run a prompt in a separate background session", "Session",
                args_hint="<prompt>", busy_policy="dispatch"),
     CommandDef("btw", "Ask a side question about the current conversation without interrupting it", "Session",
@@ -240,6 +238,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[queue|steer|interrupt|status]",
                subcommands=("queue", "steer", "interrupt", "status"),
                busy_policy="dispatch", desktop="terminal"),
+    CommandDef("autoprune", "Turn automatic pruning of old sessions on or off", "Configuration",
+               args_hint="[on|off|later|status]", subcommands=("on", "off", "later", "status"),
+               busy_policy="dispatch", execute="autoprune", argument_mode="options"),
 
     # Tools & Skills
     CommandDef("tools", "Manage tools: /tools [list|disable|enable] [name...]", "Tools & Skills",

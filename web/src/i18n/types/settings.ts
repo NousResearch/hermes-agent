@@ -95,6 +95,12 @@ export interface SettingsTranslations {
     catalogInstallBtn: string
     catalogInstalledBadge: string
     catalogUpdateBtn: string
+    catalogTierOfficial: string
+    catalogTierVerified: string
+    catalogTierCommunity: string
+    catalogTools: string
+    catalogHooks: string
+    catalogMiddleware: string
     catalogRemovedBadge: string
     catalogConfirmTitle: string
     catalogConfirmInstallNote: string

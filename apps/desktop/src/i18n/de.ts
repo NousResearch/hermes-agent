@@ -1215,9 +1215,7 @@ export const deOverrides = {
         maxLines: 'Datei-Seitenlimit',
         maxLineLength: 'Zeilenlängenlimit'
       },
-      codeExecution: {
-        mode: 'Code-Ausführungsmodus'
-      },
+      codeExecution: { mode: 'Code-Ausführungsmodus' },
       approvals: {
         mode: 'Genehmigungsmodus',
         timeout: 'Genehmigungs-Timeout',
@@ -1487,12 +1485,6 @@ export const deOverrides = {
             'ALLES – die Chat-Oberfläche, den Hermes-Agent sowie Ihre gesamte Konfiguration, Chats, Geheimnisse und Logs'
         }
       }
-    },
-    poolLimits: {
-      warmBotBackendsAria: 'Bot-Backends vorwärmen',
-      warmBotBackendsTitle: 'Bot-Backends vorwärmen',
-      backendIdleTimeoutAria: 'Leerlauf-Timeout des Backends in Millisekunden',
-      backendIdleTimeoutTitle: 'Leerlauf-Timeout des Backends'
     },
     customEndpoints: {
       active: 'Aktiv',
@@ -2593,8 +2585,6 @@ export const deOverrides = {
       pinnedProvenance: sha =>
         `An Commit ${sha} gepinnt. Updates werden abgelehnt, bis es mit einem neuen Pin neu installiert wird.`,
       pinnedBadge: sha => `gepinnt @ ${sha}`,
-      tierOfficial: 'offiziell',
-      tierCommunity: 'Community',
       updateToPin: sha => `Auf ${sha} aktualisieren`,
       updateFailed: name => `${name} konnte nicht aktualisiert werden`,
       updated: name =>
@@ -3834,6 +3824,7 @@ export const deOverrides = {
     openDirective: 'Öffnen',
     queueMessage: 'Nachricht einreihen',
     steer: 'Laufenden Lauf steuern',
+    redirect: 'Laufenden Lauf umleiten',
     stop: 'Stopp',
     send: 'Senden',
     speaking: 'Spricht',
@@ -3982,6 +3973,12 @@ export const deOverrides = {
     queueDelete: 'Löschen',
     queueResume: 'Fortsetzen',
     queueResumeTip: 'Durch Stopp pausiert — fortsetzen, um die eingereihten Turns zu senden',
+    queueLostNote: 'Turn beim Neustart verloren',
+    restoreImageDraft: 'Bildentwurf wiederherstellen',
+    queueCancelFailed: 'Der wartende Zug konnte nicht entfernt werden',
+    queueLostDiscard: 'Verwerfen',
+    queueLostDiscardTip:
+      'Das Gateway wurde mitten im Turn neu gestartet und kann ihn nicht abschließen. Verwirf ihn, damit die eingereihten Turns dahinter laufen.',
     queueStuckTitle: 'Eingereihte Nachricht nicht gesendet',
     queueStuckBody:
       'Ein eingereihter Turn konnte nicht gesendet werden. Er ist noch in der Warteschlange — versuchen Sie, ihn erneut zu senden.',
@@ -4155,7 +4152,7 @@ export const deOverrides = {
       heartbeatEveryHours: hours => `alle ${hours}h`,
       heartbeatEverySeconds: seconds => `alle ${seconds}s`,
       heartbeatNext: time => `nächstes ${time}`,
-      heartbeatDueWaitingForIdle: 'fällig — wartet auf Ruhezustand',
+      dueWaitingForIdle: 'fällig — wartet auf Ruhezustand',
       heartbeatActions: 'Heartbeat-Aktionen',
       pauseHeartbeat: 'Heartbeat pausieren',
       resumeHeartbeat: 'Heartbeat fortsetzen',
@@ -5261,10 +5258,7 @@ export const deOverrides = {
         plugin: 'Plugin',
         skill: 'Skill'
       },
-      tier: {
-        official: 'offiziell',
-        community: 'Community'
-      },
+      tier: { official: 'offiziell', verified: 'verifiziert', community: 'Community' },
       targetProfile: (profile: string) => `Wird in Ihr Profil ${profile} installiert`,
       sendFailed: 'Ihre Antwort konnte nicht gesendet werden. Versuchen Sie es erneut.',
       commitLabel: 'Commit',

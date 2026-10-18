@@ -6,7 +6,7 @@ import { activateZh } from './localeFixture.js'
 afterEach(resetLocale)
 import { describe, expect, it } from 'vitest'
 
-import { formatCompressionSummary } from '../app/slash/commands/session.js'
+import { formatCompressionSummary } from '../app/slash/compressionSummary.js'
 
 describe('manual compression localization', () => {
   it('preserves the refusal reason when the proposed summary would grow the conversation', () => {

@@ -22,7 +22,8 @@
     "./reconnect-backoff": "./src/reconnect-backoff.ts",
     "./skin": "./src/skin.ts",
     "./slash": "./src/slash.ts",
-    "./theme-presets": "./src/theme-presets.ts"
+    "./theme-presets": "./src/theme-presets.ts",
+    "./usage-tick": "./src/usage-tick.ts"
   },
   "types": "./src/index.ts",
   "scripts": {

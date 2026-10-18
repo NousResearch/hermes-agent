@@ -9,7 +9,6 @@ import contextlib
 import sys
 from pathlib import Path
 
-from .methods_tools_catalog import Catalog
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
@@ -428,110 +427,18 @@ def _(rid, params: dict) -> dict:
 
 
 # ─── Command catalog / dispatch ──────────────────────────────────────────────
-def _catalog_registry(cat: Catalog) -> None:
-    commands = _tools_mod("hermes_cli.commands")
-    for cmd in commands.COMMAND_REGISTRY:
-        meta = commands.command_desktop_meta(cmd)
-        cat.commands.update({f"/{key}": dict(meta) for key in (cmd.name, *cmd.aliases)})
-        if cmd.name in _TUI_HIDDEN or cmd.gateway_only:
-            continue
-        cat.add(
-            f"/{cmd.name}",
-            commands._build_description(cmd),
-            cmd.category,
-            description_key=cmd.name,
-        )
-        for a in cmd.aliases:
-            cat.canon[f"/{a}".lower()] = f"/{cmd.name}"
-    for name, desc, category in _TUI_EXTRA:
-        # Registry command/alias wins over a colliding TUI extra (e.g. /compact, /sessions).
-        if name.lower() not in cat.canon:
-            cat.add(name, desc, category, description_key=name.lstrip("/"))
-
-
-def _catalog_quick_commands(cat: Catalog) -> None:
-    qcmds = _load_cfg().get("quick_commands", {}) or {}
-    if not (isinstance(qcmds, dict) and qcmds):
-        return
-    cat.cat_map.setdefault("User commands", [])  # category exists even when every entry is malformed
-    for qname, qc in sorted(qcmds.items()):
-        if not isinstance(qc, dict):
-            continue
-        qtype = qc.get("type", "")
-        default_desc = {"exec": f"exec: {qc.get('command', '')}", "alias": f"alias → {qc.get('target', '')}"}
-        desc = str(qc.get("description") or default_desc.get(qtype, qtype or "quick command"))
-        cat.add(f"/{qname}", desc, "User commands")
-
-
-def _catalog_plugin_commands(cat: Catalog) -> None:
-    plugin_cmds = _tools_mod("hermes_cli.plugins").get_plugin_commands() or {}
-    if plugin_cmds:
-        cat.cat_map.setdefault("Plugin commands", [])
-    for pname, info in sorted(plugin_cmds.items()):
-        key = f"/{pname}"
-        if not isinstance(info, dict) or key.lower() in cat.canon:
-            continue
-        cat.add(key, str(info.get("description") or "Plugin command"), "Plugin commands")
-        mode = info.get("argument_mode")
-        if mode not in {"options", "text", "mixed"}:
-            mode = "text" if str(info.get("args_hint") or "").strip() else None
-        cat.commands[key] = {"argument_mode": mode, "desktop": None}
-
-
-def _catalog_skills(cat: Catalog, skills: dict[str, dict]) -> str:
-    """Append skill pairs and fill ``skills`` = ``{key: {usage, origin}}`` (every consumer ranks by them).
-    Returns the one-line notice for skills whose name is a built-in command (no ``/<name>`` entry;
-    ``agent.skill_commands`` guard), ``""`` when none."""
-    usage, origin_of = _skill_usage_lookup()
-    sc = _tools_mod("agent.skill_commands")
-    for k, info in sorted(sc.get_interactive_skill_commands().items()):
-        cat.pairs.append([k, str(info.get("description", "Skill"))])
-        name = str(info.get("name") or k.lstrip("/"))
-        skills[k] = {"usage": usage(name), "origin": origin_of(name)}
-    names = sorted(s["name"] for s in _tools_mod("tools.skills_tool")._find_all_skills())
-    return "; ".join(filter(None, map(sc.skill_command_collision_note, names)))
-
-
 @_rpc("commands.catalog", 5020)
 def _(rid, params: dict) -> dict:
-    """Registry-backed slash metadata, categorized, no aliases. Discovery failures land in ``warning``
-    (skills' message wins, then quick commands', then plugins'); only with no failure does it carry
-    the built-in-name collision notice for skills that have no ``/<name>`` (empty when none). Quick
-    command, plugin command and skill discovery are all home-keyed, so every loader runs bound to the
-    calling session's profile and workspace (``_completion_cwd``: its record, else the cwd a new
-    session would be seeded with) so project-local skills register for the repo the session is
-    actually in (#114359); a session-less draft is bound to ``params['profile']`` (#124651), and an
-    unknown profile is 4064 like ``complete.slash`` — never a launch-profile palette."""
-    from .methods_tools_catalog import Catalog, _command_category_key
-    cat = Catalog()
-    _catalog_registry(cat)
-    warning = ""
-    skills: dict[str, dict] = {}
-    with _session_home_scope(_sessions.get(params.get("session_id", "")), cwd=_completion_cwd(params),
-                             profile=params.get("profile")):
-        try:
-            _catalog_quick_commands(cat)
-        except Exception as e:
-            warning = f"quick_commands discovery unavailable: {e}"
-        try:
-            _catalog_plugin_commands(cat)
-        except Exception as e:
-            warning = warning or f"plugin command discovery unavailable: {e}"
-        try:
-            collision_note = _catalog_skills(cat, skills)  # always runs: skills must list even when a loader failed
-            warning = warning or collision_note
-        except Exception as e:
-            warning = f"skill discovery unavailable: {e}"
-    return _ok(rid, {
-        "pairs": cat.pairs, "sub": {k: v[:] for k, v in _tools_mod("hermes_cli.commands").SUBCOMMANDS.items()},
-        "canon": cat.canon,
-        "commands": cat.commands,
-        "categories": [
-            {"name": c, "key": _command_category_key(c), "pairs": rows}
-            for c, rows in cat.cat_map.items()
-        ],
-        "description_keys": cat.description_keys,
-        "skills": skills, "skill_count": len(skills), "warning": warning})
+    """Registry-backed slash metadata, categorized, no aliases (shared builder in command_discovery). Skill
+    discovery is bound to the calling session's profile and workspace (``_completion_cwd``: its record,
+    else the cwd a new session would be seeded with) so project-local skills register for the repo the
+    session is actually in (#114359); a session-less draft is bound to ``params['profile']`` (#124651) and
+    an unknown profile is 4064 like ``complete.slash`` — never a launch-profile palette.
+    Every loader (quick, plugin, skill) runs inside the scope."""
+    from tui_gateway.command_discovery import command_catalog
+    scope = _session_home_scope(_sessions.get(params.get("session_id", "")), cwd=_completion_cwd(params),
+                                profile=params.get("profile"))
+    return _ok(rid, command_catalog(load_cfg=_load_cfg, module_loader=_tools_mod, scope=scope))
 
 
 @method("cli.exec")
@@ -958,7 +865,8 @@ def _cmd_undo(rid, params, session, name, arg):
             lambda: hasattr(agent, "_invalidate_system_prompt") and agent._invalidate_system_prompt(),
             lambda: hasattr(agent, "_last_flushed_db_idx") and setattr(agent, "_last_flushed_db_idx", len(active)),
         ):
-            with contextlib.suppress(Exception):
+            # The session's profile scope: a multiplexed manager refuses a hook naming no profile (#140058).
+            with contextlib.suppress(Exception), _session_profile_runtime_scope(session):
                 step()
     _tui_model_friction("undo", session, turns_undone)
     turn_word = "turn" if turns_undone == 1 else "turns"
@@ -1219,6 +1127,9 @@ def _(rid, params: dict, session) -> dict:
     target, file_path = params.get("hash", ""), params.get("file_path", "")
     if not target:
         return _err(rid, 4014, "hash required")
+    if params.get("all") is not None and not isinstance(params["all"], bool):  # the owner's rule: null is omitted
+        return _err(rid, 4001, "invalid_params",
+                    data={"reason": "invalid_params", "field": "all", "detail": "must be a boolean"})
     # Full-history rollback mutates session history → rejected mid-turn (prompt.submit
     # would drop the agent's output or clobber it). File-scoped only touches disk.
     if not file_path and session.get("running"):
@@ -1227,7 +1138,9 @@ def _(rid, params: dict, session) -> dict:
     def go(mgr, cwd):
         if reason := _container_checkpoint_refusal(session, mgr, cwd):
             return {"success": False, "error": reason}
-        result = mgr.restore(cwd, _resolve_checkpoint_hash(mgr, cwd, target), file_path=file_path or None)
+        # A whole-tree restore keeps the user's hand-edits unless ``all`` (main's --all), as on the owner.
+        result = mgr.restore(cwd, _resolve_checkpoint_hash(mgr, cwd, target), file_path=file_path or None,
+                             safe=not file_path and params.get("all") is not True)
         if result.get("success") and not file_path:
             removed = 0
             with session["history_lock"]:

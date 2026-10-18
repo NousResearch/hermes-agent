@@ -1,5 +1,5 @@
 import { resetTuiLocaleSync } from '../i18n/loader.js'
-import { $locale, resetLocale } from '../i18n/runtime.js'
+import { $locale, resetLocale, t } from '../i18n/runtime.js'
 
 import { activateZh, zhMessages } from './localeFixture.js'
 beforeEach(() => {
@@ -8,7 +8,7 @@ beforeEach(() => {
 })
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $uiState, resetUiState } from '../app/uiStore.js'
+import { $uiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import {
   applyDisplay,
   hydrateFullConfig,
@@ -471,6 +471,54 @@ describe('syncMcpReload (revision-aware ack)', () => {
 // + apply body is now shared as ``hydrateFullConfig()``, exercised
 // directly from both the initial hydration and the poll-tick body.
 describe('hydrateFullConfig', () => {
+  it('hydrates the session busy preference instead of profile defaults and preserves it on read failure', async () => {
+    patchUiState({ sid: 'owner', busyInputMode: 'queue' })
+
+    const request = vi.fn(async (_method: string, params: any) =>
+      params.key === 'busy' ? { value: 'steer' } : { config: { display: { busy_input_mode: 'interrupt' } } }
+    )
+
+    const gw = { isCanonical: true, request } as any
+    const scope = { sid: 'owner', isCurrent: () => true }
+    await hydrateFullConfig(gw, vi.fn(), undefined, undefined, scope)
+    expect(request).toHaveBeenCalledWith('config.get', { key: 'full', session_id: 'owner' })
+    expect(request).toHaveBeenCalledWith('config.get', { key: 'busy', session_id: 'owner' })
+    expect($uiState.get().busyInputMode).toBe('steer')
+    request.mockImplementation(async (_method, params) => {
+      if (params.key === 'busy') {
+        throw new Error('disconnected')
+      }
+
+      return { config: { display: { busy_input_mode: 'interrupt' } } }
+    })
+    await hydrateFullConfig(gw, vi.fn(), undefined, undefined, scope)
+    expect($uiState.get().busyInputMode).toBe('steer')
+  })
+
+  it('discards delayed full and busy hydration after focus changes', async () => {
+    patchUiState({ sid: 'old', busyInputMode: 'queue' })
+    let current = true
+    const replies: Array<(value: any) => void> = []
+
+    const gw = {
+      isCanonical: true,
+      request: vi.fn(() => new Promise(resolve => replies.push(resolve)))
+    } as any
+
+    const setBell = vi.fn()
+    const pending = hydrateFullConfig(gw, setBell, undefined, undefined, { sid: 'old', isCurrent: () => current })
+    current = false
+    patchUiState({ sid: 'new', busyInputMode: 'interrupt' })
+
+    for (const reply of replies) {
+      reply({ config: { display: { busy_input_mode: 'steer' } }, value: 'steer' })
+    }
+
+    await pending
+    expect(setBell).not.toHaveBeenCalled()
+    expect($uiState.get().busyInputMode).toBe('interrupt')
+  })
+
   beforeEach(() => {
     resetUiState()
   })
@@ -594,10 +642,36 @@ it('ignores config returned after its session display subscription ended', async
   } as any
 
   const setBell = vi.fn()
-  const hydration = hydrateFullConfig(gw, setBell, undefined, undefined, controller.signal)
+
+  const hydration = hydrateFullConfig(gw, setBell, undefined, undefined, {
+    sid: 'cancelled',
+    isCurrent: () => !controller.signal.aborted,
+    signal: controller.signal
+  })
+
   controller.abort()
   resolve({ config: { display: { language: 'zh', bell_on_complete: true } } })
   expect(await hydration).toBeNull()
   expect($locale.get()).toBe('en')
   expect(setBell).not.toHaveBeenCalled()
+})
+
+it('a new config revision refreshes a same-language overlay without reloading tools', async () => {
+  let label = '第一版'
+
+  const gw = {
+    request: vi.fn(async (method: string) =>
+      method === 'i18n.catalog'
+        ? { lang: 'zh', surface: 'tui', messages: { 'status.ready': label } }
+        : { config: { display: { language: 'zh' } } }
+    )
+  } as any
+
+  const scope = { sid: 'owner', isCurrent: () => true, signal: new AbortController().signal }
+  await hydrateFullConfig(gw, vi.fn(), undefined, undefined, scope)
+  expect(t('status.ready')).toBe('第一版')
+  label = '第二版'
+  expect(await syncConfigRevision(gw, 1, vi.fn(), undefined, { mtime: 2 }, undefined, scope)).toBe(2)
+  expect(t('status.ready')).toBe('第二版')
+  expect(gw.request.mock.calls.every(([method]: [string]) => method !== 'reload.mcp')).toBe(true)
 })

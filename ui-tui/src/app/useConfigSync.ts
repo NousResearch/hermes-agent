@@ -4,7 +4,7 @@ import { useEffect, useRef } from 'react'
 import { resolveDetailsMode, resolveSections } from '../domain/details.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { ConfigFullResponse, ConfigMtimeResponse, ReloadMcpResponse } from '../gatewayTypes.js'
-import { syncTuiLocale } from '../i18n/loader.js'
+import { resetTuiLocaleSync, syncTuiLocale } from '../i18n/loader.js'
 import { t } from '../i18n/runtime.js'
 import { DEFAULT_VOICE_RECORD_KEY, type ParsedVoiceRecordKey, parseVoiceRecordKey } from '../lib/platform.js'
 import { asRpcResult } from '../lib/rpc.js'
@@ -18,7 +18,7 @@ import {
   type StatusBarMode
 } from './interfaces.js'
 import { turnController } from './turnController.js'
-import { patchUiState } from './uiStore.js'
+import { getUiState, patchUiState } from './uiStore.js'
 
 const STATUSBAR_ALIAS: Record<string, StatusBarMode> = {
   bottom: 'bottom',
@@ -255,21 +255,31 @@ export async function hydrateFullConfig(
   setBell: (v: boolean) => void,
   setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void,
   setBellOnPrompt?: (v: boolean) => void,
-  signal?: AbortSignal
+  scope?: { sid: string; isCurrent: () => boolean; signal?: AbortSignal }
 ): Promise<ConfigFullResponse | null> {
-  const cfg = await quietRpc<ConfigFullResponse>(gw, 'config.get', { key: 'full' })
+  const params = scope ? { session_id: scope.sid } : {}
 
-  if (signal?.aborted || !cfg) {
+  const [cfg, busy] = await Promise.all([
+    quietRpc<ConfigFullResponse>(gw, 'config.get', { key: 'full', ...params }),
+    gw.isCanonical && scope ? quietRpc(gw, 'config.get', { key: 'busy', ...params }) : null
+  ])
+
+  if ((scope && !scope.isCurrent()) || !cfg) {
     return null
   }
 
   // A transient read failure must preserve every last-good display value,
   // not only locale and voice.record_key. The mtime poll deliberately keeps
   // the previous revision in this case so the same edit is retried.
-  applyDisplay(cfg, setBell, setVoiceRecordKey, setBellOnPrompt)
-  const loaded = await syncTuiLocale(gw, cfg.config?.display?.language, signal)
+  applyDisplay(cfg, setBell, setVoiceRecordKey, setBellOnPrompt, !gw.isCanonical)
 
-  return signal?.aborted || !loaded ? null : cfg
+  if (gw.isCanonical && BUSY_MODES.has(busy?.value)) {
+    patchUiState({ busyInputMode: busy!.value })
+  }
+
+  const loaded = await syncTuiLocale(gw, cfg.config?.display?.language, scope?.signal)
+
+  return (scope && !scope.isCurrent()) || !loaded ? null : cfg
 }
 
 /** Refresh a changed config revision and acknowledge it only after the full
@@ -282,20 +292,24 @@ export async function syncConfigRevision(
   setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void,
   observedRevision?: ConfigMtimeResponse | null,
   setBellOnPrompt?: (v: boolean) => void,
-  signal?: AbortSignal
+  scope?: { sid: string; isCurrent: () => boolean; signal?: AbortSignal }
 ): Promise<number> {
   const revision =
     observedRevision === undefined
-      ? await quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' })
+      ? await quietRpc<ConfigMtimeResponse>(gw, 'config.get', {
+          key: 'mtime',
+          ...(scope ? { session_id: scope.sid } : {})
+        })
       : observedRevision
 
   const next = Number(revision?.mtime ?? 0)
 
-  if (!next || next === previousMtime) {
+  if (!next || next === previousMtime || (scope && !scope.isCurrent())) {
     return previousMtime
   }
 
-  const cfg = await hydrateFullConfig(gw, setBell, setVoiceRecordKey, setBellOnPrompt, signal)
+  resetTuiLocaleSync()
+  const cfg = await hydrateFullConfig(gw, setBell, setVoiceRecordKey, setBellOnPrompt, scope)
 
   return cfg ? next : previousMtime
 }
@@ -304,7 +318,8 @@ export const applyDisplay = (
   cfg: ConfigFullResponse | null,
   setBell: (v: boolean) => void,
   setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void,
-  setBellOnPrompt?: (v: boolean) => void
+  setBellOnPrompt?: (v: boolean) => void,
+  applyBusy = true
 ) => {
   if (!cfg) {
     return
@@ -325,7 +340,7 @@ export const applyDisplay = (
 
   patchUiState({
     battery: !!d.battery,
-    busyInputMode: normalizeBusyInputMode(d.busy_input_mode),
+    ...(applyBusy ? { busyInputMode: normalizeBusyInputMode(d.busy_input_mode) } : {}),
     compact: !!d.tui_compact,
     // Fail safe: only YAML boolean false disables the prompt. A transient
     // config RPC failure (cfg=null) preserves the last known policy instead
@@ -375,17 +390,24 @@ export function useConfigSync({
     mcpRevRef.current = { accepted: '', inFlight: false }
     setVoiceEnabled(process.env.HERMES_VOICE === '1')
     const controller = new AbortController()
+
+    const scope = {
+      sid,
+      signal: controller.signal,
+      isCurrent: () => !controller.signal.aborted && getUiState().sid === sid
+    }
+
     syncInFlightRef.current = true
     void (async () => {
-      const revision = await quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' })
+      const revision = await quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime', session_id: sid })
 
-      if (controller.signal.aborted) {
+      if (!scope.isCurrent()) {
         return
       }
 
-      const cfg = await hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey, setBellOnPrompt, controller.signal)
+      const cfg = await hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey, setBellOnPrompt, scope)
 
-      if (!controller.signal.aborted) {
+      if (scope.isCurrent()) {
         mcpRevRef.current.accepted = String(revision?.mcp_rev ?? '')
 
         if (cfg) {
@@ -393,7 +415,7 @@ export function useConfigSync({
         }
       }
     })().finally(() => {
-      if (!controller.signal.aborted) {
+      if (scope.isCurrent()) {
         syncInFlightRef.current = false
       }
     })
@@ -411,6 +433,12 @@ export function useConfigSync({
 
     const controller = new AbortController()
 
+    const scope = {
+      sid,
+      signal: controller.signal,
+      isCurrent: () => !controller.signal.aborted && getUiState().sid === sid
+    }
+
     const id = setInterval(() => {
       if (syncInFlightRef.current) {
         return
@@ -418,9 +446,9 @@ export function useConfigSync({
 
       syncInFlightRef.current = true
       void (async () => {
-        const revision = await quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' })
+        const revision = await quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime', session_id: sid })
 
-        if (controller.signal.aborted || !revision) {
+        if (!scope.isCurrent() || !revision) {
           return
         }
 
@@ -431,9 +459,9 @@ export function useConfigSync({
           // current revision is already loaded by the gateway, so it must not
           // be mistaken for a new MCP edit.
           mcpRevRef.current.accepted = nextMcpRev
-        } else if (nextMcpRev) {
+        } else if (nextMcpRev && !gw.isCanonical) {
           void syncMcpReload(gw, sid, nextMcpRev, mcpRevRef.current, () => {
-            if (!controller.signal.aborted) {
+            if (scope.isCurrent()) {
               turnController.pushActivity(t('status.mcpReloaded'))
             }
           })
@@ -446,14 +474,14 @@ export function useConfigSync({
           setVoiceRecordKey,
           revision,
           setBellOnPrompt,
-          controller.signal
+          scope
         )
 
-        if (!controller.signal.aborted) {
+        if (scope.isCurrent()) {
           mtimeRef.current = next
         }
       })().finally(() => {
-        if (!controller.signal.aborted) {
+        if (scope.isCurrent()) {
           syncInFlightRef.current = false
         }
       })

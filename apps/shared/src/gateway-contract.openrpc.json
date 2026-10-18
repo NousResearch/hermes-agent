@@ -2528,7 +2528,7 @@
     },
     {
       "name": "process.stop",
-      "summary": "Kill every background process in the registry (``/stop``), answering the count killed.",
+      "summary": "``/stop``: on the shared owner, kill the background processes ``session_id`` owns (required); a standalone sidecar kills every process it holds. Answers the count killed.",
       "params": [
         {
           "name": "params",
@@ -4635,6 +4635,123 @@
   ],
   "components": {
     "schemas": {
+      "A2aForwardParams": {
+        "additionalProperties": false,
+        "properties": {
+          "agent": {
+            "title": "Agent",
+            "type": "string"
+          },
+          "tenant": {
+            "title": "Tenant",
+            "type": "string"
+          },
+          "peer": {
+            "title": "Peer",
+            "type": "string"
+          },
+          "context_id": {
+            "title": "Context Id",
+            "type": "string"
+          },
+          "input_id": {
+            "title": "Input Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent",
+          "tenant",
+          "peer",
+          "context_id",
+          "input_id",
+          "text"
+        ],
+        "title": "A2aForwardParams",
+        "type": "object"
+      },
+      "A2aForwardResult": {
+        "additionalProperties": false,
+        "properties": {
+          "admission_id": {
+            "title": "Admission Id",
+            "type": "string"
+          },
+          "ref": {
+            "$ref": "#/components/schemas/CanonicalSessionRef"
+          },
+          "sequence": {
+            "title": "Sequence",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "started",
+              "unknown",
+              "terminal"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "authority_epoch": {
+            "title": "Authority Epoch",
+            "type": "integer"
+          },
+          "execution_generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Generation"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "result": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result"
+          }
+        },
+        "required": [
+          "admission_id",
+          "ref",
+          "sequence",
+          "status",
+          "outcome",
+          "authority_epoch",
+          "execution_generation",
+          "session_id",
+          "result"
+        ],
+        "title": "A2aForwardResult",
+        "type": "object"
+      },
       "AccountOwner": {
         "additionalProperties": false,
         "properties": {
@@ -4790,6 +4907,70 @@
           "subagent_id"
         ],
         "title": "ActiveSubagent",
+        "type": "object"
+      },
+      "AdmissionStatus": {
+        "additionalProperties": false,
+        "description": "``gateway/session_contract.py::AdmissionReceipt`` as ``dataclasses.asdict`` sends it.",
+        "properties": {
+          "admission_id": {
+            "title": "Admission Id",
+            "type": "string"
+          },
+          "ref": {
+            "$ref": "#/components/schemas/CanonicalSessionRef"
+          },
+          "sequence": {
+            "title": "Sequence",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "started",
+              "unknown",
+              "terminal"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "authority_epoch": {
+            "title": "Authority Epoch",
+            "type": "integer"
+          },
+          "execution_generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Generation"
+          }
+        },
+        "required": [
+          "admission_id",
+          "ref",
+          "sequence",
+          "status",
+          "outcome",
+          "authority_epoch",
+          "execution_generation"
+        ],
+        "title": "AdmissionStatus",
         "type": "object"
       },
       "AgentPluginRow": {
@@ -4952,6 +5133,21 @@
           "servers"
         ],
         "title": "AgentPluginRow",
+        "type": "object"
+      },
+      "AgentPrintPayload": {
+        "additionalProperties": false,
+        "description": "A session-authority local-viewer turn: one line the agent printed through ``_print_fn``\n(subagent completion, compaction, errors, budget notices), which main's classic CLI rendered\nthrough ``_agent_status_print``.",
+        "properties": {
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "AgentPrintPayload",
         "type": "object"
       },
       "AgentProcessRow": {
@@ -7619,6 +7815,3539 @@
         "title": "BrowserProgressPayload",
         "type": "object"
       },
+      "CanonicalApprovalParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "execution_generation": {
+            "title": "Execution Generation",
+            "type": "integer"
+          },
+          "prompt_id": {
+            "title": "Prompt Id",
+            "type": "string"
+          },
+          "choice": {
+            "title": "Choice",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "execution_generation",
+          "prompt_id",
+          "choice"
+        ],
+        "title": "CanonicalApprovalParams",
+        "type": "object"
+      },
+      "CanonicalAttachedImageResult": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          },
+          "width": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Width"
+          },
+          "height": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Height"
+          },
+          "token_estimate": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Token Estimate"
+          },
+          "attached": {
+            "title": "Attached",
+            "type": "boolean"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Path"
+          },
+          "count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Count"
+          },
+          "remainder": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Remainder"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Text"
+          },
+          "bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Bytes"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Message"
+          },
+          "mime": {
+            "title": "Mime",
+            "type": "string"
+          }
+        },
+        "required": [
+          "attached",
+          "mime"
+        ],
+        "title": "CanonicalAttachedImageResult",
+        "type": "object"
+      },
+      "CanonicalAttachment": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "mime": {
+            "title": "Mime",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "mime"
+        ],
+        "title": "CanonicalAttachment",
+        "type": "object"
+      },
+      "CanonicalBotDeliverParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "author": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Author"
+          },
+          "notification_category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Notification Category"
+          }
+        },
+        "required": [
+          "message",
+          "id"
+        ],
+        "title": "CanonicalBotDeliverParams",
+        "type": "object"
+      },
+      "CanonicalBotDeliverResult": {
+        "additionalProperties": false,
+        "description": "A delivery's receipt. It names its admission, unless ``refused``: the FIFO refused the\ndelivery before anything was committed (``gateway/session_bot.py``), a terminal ``failed``\nreceipt with no admission that the relay settles as the sender's answer.",
+        "properties": {
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "delivery_id": {
+            "title": "Delivery Id",
+            "type": "string"
+          },
+          "profile_home": {
+            "title": "Profile Home",
+            "type": "string"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "admission_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Admission Id"
+          },
+          "refused": {
+            "anyOf": [
+              {
+                "const": true,
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Refused"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "reply": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reply"
+          },
+          "retry_admission_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Retry Admission Id"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "status",
+          "delivery_id",
+          "profile_home",
+          "session_id",
+          "message"
+        ],
+        "title": "CanonicalBotDeliverResult",
+        "type": "object"
+      },
+      "CanonicalConfigGetResult": {
+        "additionalProperties": false,
+        "properties": {
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Value"
+          },
+          "display": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display"
+          },
+          "tool_progress": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tool Progress"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Provider"
+          },
+          "providers": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ConfigProviderRef"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Providers"
+          },
+          "home": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Home"
+          },
+          "cwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cwd"
+          },
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Branch"
+          },
+          "config": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Config"
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Prompt"
+          },
+          "mtime": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Mtime"
+          },
+          "mcp_rev": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Mcp Rev"
+          },
+          "key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Key"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Scope"
+          }
+        },
+        "title": "CanonicalConfigGetResult",
+        "type": "object"
+      },
+      "CanonicalConfigSetParams": {
+        "additionalProperties": false,
+        "description": "Session controls (``busy`` / ``verbose`` / ``yolo`` / ``show_reasoning`` / ``service_tier``, which\nneed ``session_id``) and the TUI's profile preferences (``gateway/session_tui_config.py``;\n``session_id`` optional). ``model`` is recognised only to be refused with\n``use_session_mutation_model``: a model pick is the revision-fenced ``session.mutate`` operation,\nnever a config write.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "value": {
+            "default": null,
+            "title": "Value"
+          },
+          "confirm_expensive_model": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Confirm Expensive Model"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "enum": [
+                  "session",
+                  "global"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Scope"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "title": "CanonicalConfigSetParams",
+        "type": "object"
+      },
+      "CanonicalControlParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "execution_generation": {
+            "title": "Execution Generation",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "session_id",
+          "execution_generation"
+        ],
+        "title": "CanonicalControlParams",
+        "type": "object"
+      },
+      "CanonicalCorrectionParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "execution_generation": {
+            "title": "Execution Generation",
+            "type": "integer"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "execution_generation",
+          "text"
+        ],
+        "title": "CanonicalCorrectionParams",
+        "type": "object"
+      },
+      "CanonicalCorrectionResult": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "enum": [
+              "queued",
+              "redirected",
+              "rejected"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "execution_generation": {
+            "title": "Execution Generation",
+            "type": "integer"
+          },
+          "authority_epoch": {
+            "title": "Authority Epoch",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status",
+          "text",
+          "execution_generation",
+          "authority_epoch"
+        ],
+        "title": "CanonicalCorrectionResult",
+        "type": "object"
+      },
+      "CanonicalCreateParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Request Id"
+          },
+          "source": {
+            "default": "cli",
+            "enum": [
+              "cli",
+              "tui",
+              "gui",
+              "acp",
+              "tool",
+              "oneshot"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "cwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cwd"
+          },
+          "row_cwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Row Cwd"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Provider"
+          },
+          "base_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Base Url"
+          },
+          "api_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Api Key"
+          },
+          "toolsets": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Toolsets"
+          },
+          "reasoning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reasoning"
+          },
+          "max_turns": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Max Turns"
+          },
+          "ignore_rules": {
+            "default": false,
+            "title": "Ignore Rules",
+            "type": "boolean"
+          },
+          "yolo": {
+            "default": false,
+            "title": "Yolo",
+            "type": "boolean"
+          },
+          "safe_mode": {
+            "default": false,
+            "title": "Safe Mode",
+            "type": "boolean"
+          },
+          "ignore_user_config": {
+            "default": false,
+            "title": "Ignore User Config",
+            "type": "boolean"
+          },
+          "skills": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Skills"
+          },
+          "checkpoints": {
+            "default": false,
+            "title": "Checkpoints",
+            "type": "boolean"
+          },
+          "accept_hooks": {
+            "default": false,
+            "title": "Accept Hooks",
+            "type": "boolean"
+          },
+          "pass_session_id": {
+            "default": false,
+            "title": "Pass Session Id",
+            "type": "boolean"
+          },
+          "editor": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Editor"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Title"
+          },
+          "hidden": {
+            "default": false,
+            "title": "Hidden",
+            "type": "boolean"
+          },
+          "follow_profile_config": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Follow Profile Config"
+          },
+          "service_tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Service Tier"
+          },
+          "cwd_explicit": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cwd Explicit"
+          },
+          "run_budget": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Run Budget"
+          },
+          "verbose": {
+            "default": false,
+            "title": "Verbose",
+            "type": "boolean"
+          },
+          "client_env": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Client Env"
+          }
+        },
+        "title": "CanonicalCreateParams",
+        "type": "object"
+      },
+      "CanonicalEventsParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "last_sequence": {
+            "default": 0,
+            "title": "Last Sequence",
+            "type": "integer"
+          },
+          "last_seen": {
+            "default": 0,
+            "title": "Last Seen",
+            "type": "integer"
+          },
+          "replay_epoch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Replay Epoch"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "CanonicalEventsParams",
+        "type": "object"
+      },
+      "CanonicalEventsResult": {
+        "additionalProperties": false,
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/CanonicalReplayEvent"
+            },
+            "title": "Events",
+            "type": "array"
+          },
+          "latest_seq": {
+            "title": "Latest Seq",
+            "type": "integer"
+          },
+          "last_sequence": {
+            "title": "Last Sequence",
+            "type": "integer"
+          },
+          "epoch": {
+            "title": "Epoch",
+            "type": "string"
+          },
+          "replay_epoch": {
+            "title": "Replay Epoch",
+            "type": "string"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          },
+          "snapshot_required": {
+            "title": "Snapshot Required",
+            "type": "boolean"
+          },
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "events",
+          "latest_seq",
+          "last_sequence",
+          "epoch",
+          "replay_epoch",
+          "truncated",
+          "snapshot_required",
+          "count"
+        ],
+        "title": "CanonicalEventsResult",
+        "type": "object"
+      },
+      "CanonicalListParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "scope": {
+            "default": "live",
+            "enum": [
+              "live",
+              "stored"
+            ],
+            "title": "Scope",
+            "type": "string"
+          },
+          "limit": {
+            "default": 200,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Title"
+          },
+          "include_hidden": {
+            "default": false,
+            "title": "Include Hidden",
+            "type": "boolean"
+          }
+        },
+        "title": "CanonicalListParams",
+        "type": "object"
+      },
+      "CanonicalListResult": {
+        "additionalProperties": false,
+        "properties": {
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/CanonicalSessionListRow"
+            },
+            "title": "Sessions",
+            "type": "array"
+          },
+          "scope": {
+            "enum": [
+              "stored",
+              "live"
+            ],
+            "title": "Scope",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessions",
+          "scope"
+        ],
+        "title": "CanonicalListResult",
+        "type": "object"
+      },
+      "CanonicalModelOverride": {
+        "additionalProperties": false,
+        "properties": {
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Provider"
+          }
+        },
+        "required": [
+          "model"
+        ],
+        "title": "CanonicalModelOverride",
+        "type": "object"
+      },
+      "CanonicalPendingAdmission": {
+        "additionalProperties": false,
+        "properties": {
+          "admission_id": {
+            "title": "Admission Id",
+            "type": "string"
+          },
+          "ref": {
+            "$ref": "#/components/schemas/CanonicalSessionRef"
+          },
+          "sequence": {
+            "title": "Sequence",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "started",
+              "unknown",
+              "terminal"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "authority_epoch": {
+            "title": "Authority Epoch",
+            "type": "integer"
+          },
+          "execution_generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Generation"
+          },
+          "input_id": {
+            "title": "Input Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "controls": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "steer",
+                    "replace"
+                  ],
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Controls"
+          },
+          "steering": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Steering"
+          }
+        },
+        "required": [
+          "admission_id",
+          "ref",
+          "sequence",
+          "status",
+          "outcome",
+          "authority_epoch",
+          "execution_generation",
+          "input_id",
+          "text"
+        ],
+        "title": "CanonicalPendingAdmission",
+        "type": "object"
+      },
+      "CanonicalPendingPrompt": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "enum": [
+              "approval",
+              "clarify"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "prompt_id": {
+            "title": "Prompt Id",
+            "type": "string"
+          },
+          "execution_generation": {
+            "title": "Execution Generation",
+            "type": "integer"
+          },
+          "choices": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Choices",
+            "type": "array"
+          },
+          "command": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Command"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Description"
+          },
+          "edit": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Edit"
+          },
+          "question": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Question"
+          },
+          "multi_select": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Multi Select"
+          },
+          "timeout_s": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Timeout S"
+          }
+        },
+        "required": [
+          "kind",
+          "prompt_id",
+          "execution_generation",
+          "choices"
+        ],
+        "title": "CanonicalPendingPrompt",
+        "type": "object"
+      },
+      "CanonicalProfileRow": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "is_default": {
+            "default": false,
+            "title": "Is Default",
+            "type": "boolean"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Provider"
+          },
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          },
+          "display_name": {
+            "default": "",
+            "title": "Display Name",
+            "type": "string"
+          },
+          "skill_count": {
+            "default": 0,
+            "title": "Skill Count",
+            "type": "integer"
+          },
+          "previous_names": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Previous Names",
+            "type": "array"
+          },
+          "last_session": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProfileCanonicalSession"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "worker_session": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProfileWorkerSession"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "canonical_session": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProfileCanonicalSession"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "ui_meta_revisions": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Ui Meta Revisions",
+            "type": "object"
+          },
+          "ui_meta": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Ui Meta"
+          },
+          "has_avatar": {
+            "default": false,
+            "title": "Has Avatar",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "path"
+        ],
+        "title": "CanonicalProfileRow",
+        "type": "object"
+      },
+      "CanonicalProfilesParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "include_sessions": {
+            "default": true,
+            "title": "Include Sessions",
+            "type": "boolean"
+          }
+        },
+        "title": "CanonicalProfilesParams",
+        "type": "object"
+      },
+      "CanonicalProfilesResult": {
+        "additionalProperties": false,
+        "properties": {
+          "profiles": {
+            "items": {
+              "$ref": "#/components/schemas/CanonicalProfileRow"
+            },
+            "title": "Profiles",
+            "type": "array"
+          },
+          "bot_mode_protocol": {
+            "default": true,
+            "title": "Bot Mode Protocol",
+            "type": "boolean"
+          },
+          "install_id": {
+            "default": "",
+            "title": "Install Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "profiles"
+        ],
+        "title": "CanonicalProfilesResult",
+        "type": "object"
+      },
+      "CanonicalReplaceQueuedParams": {
+        "additionalProperties": false,
+        "description": "The edited prompt: admitted as a NEW admission (``submission_id``) at the FIFO tail.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "admission_id": {
+            "title": "Admission Id",
+            "type": "string"
+          },
+          "submission_id": {
+            "title": "Submission Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "attachments": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/CanonicalAttachment"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Attachments"
+          },
+          "display_kind": {
+            "anyOf": [
+              {
+                "const": "hidden",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display Kind"
+          },
+          "title_preview": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Title Preview"
+          }
+        },
+        "required": [
+          "session_id",
+          "admission_id",
+          "submission_id",
+          "text"
+        ],
+        "title": "CanonicalReplaceQueuedParams",
+        "type": "object"
+      },
+      "CanonicalReplayEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "title": "Type",
+            "type": "string"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          },
+          "replay_epoch": {
+            "title": "Replay Epoch",
+            "type": "string"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
+          "authority_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Authority Epoch"
+          },
+          "execution_generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Execution Generation"
+          },
+          "admission_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Admission Id"
+          }
+        },
+        "required": [
+          "type",
+          "session_id",
+          "payload",
+          "replay_epoch",
+          "seq"
+        ],
+        "title": "CanonicalReplayEvent",
+        "type": "object"
+      },
+      "CanonicalResumeParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "default": "",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Title"
+          },
+          "latest": {
+            "anyOf": [
+              {
+                "enum": [
+                  "cli",
+                  "tui"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Latest"
+          },
+          "workspace": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Workspace"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source"
+          },
+          "editor": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Editor"
+          },
+          "api_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Api Key"
+          },
+          "defer_history": {
+            "default": false,
+            "title": "Defer History",
+            "type": "boolean"
+          },
+          "omit_messages": {
+            "default": false,
+            "title": "Omit Messages",
+            "type": "boolean"
+          },
+          "cols": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cols"
+          },
+          "display_projection": {
+            "default": false,
+            "title": "Display Projection",
+            "type": "boolean"
+          }
+        },
+        "title": "CanonicalResumeParams",
+        "type": "object"
+      },
+      "CanonicalRoomApproveParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "member_id": {
+            "title": "Member Id",
+            "type": "string"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "execution_generation": {
+            "title": "Execution Generation",
+            "type": "integer"
+          },
+          "choice": {
+            "enum": [
+              "once",
+              "deny"
+            ],
+            "title": "Choice",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id",
+          "member_id",
+          "task_id",
+          "execution_generation",
+          "choice",
+          "request_id"
+        ],
+        "title": "CanonicalRoomApproveParams",
+        "type": "object"
+      },
+      "CanonicalRoomAttemptParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "member_id": {
+            "title": "Member Id",
+            "type": "string"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "execution_generation": {
+            "title": "Execution Generation",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "room_id",
+          "member_id",
+          "task_id",
+          "execution_generation"
+        ],
+        "title": "CanonicalRoomAttemptParams",
+        "type": "object"
+      },
+      "CanonicalRoomCreateParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/RoomMemberInput"
+            },
+            "title": "Members",
+            "type": "array"
+          }
+        },
+        "required": [
+          "room_id",
+          "name",
+          "members"
+        ],
+        "title": "CanonicalRoomCreateParams",
+        "type": "object"
+      },
+      "CanonicalSessionHandle": {
+        "additionalProperties": false,
+        "properties": {
+          "ref": {
+            "$ref": "#/components/schemas/CanonicalSessionRef"
+          },
+          "instance_id": {
+            "title": "Instance Id",
+            "type": "string"
+          },
+          "authority_epoch": {
+            "title": "Authority Epoch",
+            "type": "integer"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "execution_generation": {
+            "title": "Execution Generation",
+            "type": "integer"
+          },
+          "execution_state": {
+            "enum": [
+              "idle",
+              "running",
+              "waiting",
+              "unknown",
+              "terminal"
+            ],
+            "title": "Execution State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref",
+          "instance_id",
+          "authority_epoch",
+          "revision",
+          "execution_generation",
+          "execution_state"
+        ],
+        "title": "CanonicalSessionHandle",
+        "type": "object"
+      },
+      "CanonicalSessionInfo": {
+        "additionalProperties": true,
+        "description": "``gateway/session_local_inventory.py::snapshot_info``: ``local_session_info`` + the inventory.",
+        "properties": {
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Provider"
+          },
+          "tools": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tools"
+          },
+          "skills": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Skills"
+          },
+          "mcp_servers": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/McpServerStatus"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Mcp Servers"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Version"
+          },
+          "release_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Release Date"
+          },
+          "update_behind": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Update Behind"
+          },
+          "update_command": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Update Command"
+          },
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Branch"
+          },
+          "project": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProjectRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "system_prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "System Prompt"
+          },
+          "context_length": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Context Length"
+          },
+          "enabled_toolsets": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Enabled Toolsets"
+          },
+          "tool_availability": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tool Availability"
+          },
+          "tool_availability_warnings": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tool Availability Warnings"
+          },
+          "browser_backend_notice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Browser Backend Notice"
+          },
+          "unknown_toolsets": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Unknown Toolsets"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model"
+          },
+          "lazy": {
+            "title": "Lazy",
+            "type": "boolean"
+          },
+          "profile_id": {
+            "title": "Profile Id",
+            "type": "string"
+          },
+          "desktop_protocol": {
+            "title": "Desktop Protocol",
+            "type": "string"
+          },
+          "profile_name": {
+            "title": "Profile Name",
+            "type": "string"
+          },
+          "cwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cwd"
+          },
+          "launch_request": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Launch Request"
+          },
+          "reasoning_effort": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reasoning Effort"
+          },
+          "reasoning_effort_wire": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reasoning Effort Wire"
+          },
+          "service_tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Service Tier"
+          },
+          "fast": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Fast"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Title"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Started At"
+          },
+          "last_active_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Last Active At"
+          },
+          "yolo": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Yolo"
+          },
+          "api_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Api Mode"
+          },
+          "tool_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tool Count"
+          },
+          "credential_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Credential Hint"
+          },
+          "config_warning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Config Warning"
+          }
+        },
+        "required": [
+          "source",
+          "lazy",
+          "profile_id",
+          "desktop_protocol",
+          "profile_name"
+        ],
+        "title": "CanonicalSessionInfo",
+        "type": "object"
+      },
+      "CanonicalSessionInfoParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "CanonicalSessionInfoParams",
+        "type": "object"
+      },
+      "CanonicalSessionListRow": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "message_count": {
+            "title": "Message Count",
+            "type": "integer"
+          },
+          "running": {
+            "title": "Running",
+            "type": "boolean"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model"
+          },
+          "resolved_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Resolved Id"
+          },
+          "root_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Root Title"
+          }
+        },
+        "required": [
+          "session_id",
+          "id",
+          "title",
+          "source",
+          "started_at",
+          "message_count",
+          "running"
+        ],
+        "title": "CanonicalSessionListRow",
+        "type": "object"
+      },
+      "CanonicalSessionRef": {
+        "additionalProperties": false,
+        "properties": {
+          "profile_id": {
+            "title": "Profile Id",
+            "type": "string"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile_id",
+          "session_id"
+        ],
+        "title": "CanonicalSessionRef",
+        "type": "object"
+      },
+      "CanonicalShellExecParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "command": {
+            "title": "Command",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "session_id",
+          "command"
+        ],
+        "title": "CanonicalShellExecParams",
+        "type": "object"
+      },
+      "CanonicalSnapshot": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "stored_session_id": {
+            "title": "Stored Session Id",
+            "type": "string"
+          },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/TranscriptMessage"
+            },
+            "title": "Messages",
+            "type": "array"
+          },
+          "display_messages": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/TranscriptMessage"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display Messages"
+          },
+          "message_count": {
+            "title": "Message Count",
+            "type": "integer"
+          },
+          "running": {
+            "title": "Running",
+            "type": "boolean"
+          },
+          "authority_epoch": {
+            "title": "Authority Epoch",
+            "type": "integer"
+          },
+          "replay_epoch": {
+            "title": "Replay Epoch",
+            "type": "string"
+          },
+          "last_sequence": {
+            "title": "Last Sequence",
+            "type": "integer"
+          },
+          "subscription_id": {
+            "title": "Subscription Id",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "execution_generation": {
+            "title": "Execution Generation",
+            "type": "integer"
+          },
+          "pending": {
+            "items": {
+              "$ref": "#/components/schemas/CanonicalPendingAdmission"
+            },
+            "title": "Pending",
+            "type": "array"
+          },
+          "prompts": {
+            "items": {
+              "$ref": "#/components/schemas/CanonicalPendingPrompt"
+            },
+            "title": "Prompts",
+            "type": "array"
+          },
+          "info": {
+            "$ref": "#/components/schemas/CanonicalSnapshotInfo"
+          }
+        },
+        "required": [
+          "session_id",
+          "stored_session_id",
+          "messages",
+          "message_count",
+          "running",
+          "authority_epoch",
+          "replay_epoch",
+          "last_sequence",
+          "subscription_id",
+          "revision",
+          "execution_generation",
+          "pending",
+          "prompts",
+          "info"
+        ],
+        "title": "CanonicalSnapshot",
+        "type": "object"
+      },
+      "CanonicalSnapshotInfo": {
+        "additionalProperties": false,
+        "properties": {
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Provider"
+          },
+          "tools": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tools"
+          },
+          "skills": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Skills"
+          },
+          "mcp_servers": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/McpServerStatus"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Mcp Servers"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Version"
+          },
+          "release_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Release Date"
+          },
+          "update_behind": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Update Behind"
+          },
+          "update_command": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Update Command"
+          },
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Branch"
+          },
+          "project": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProjectRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "system_prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "System Prompt"
+          },
+          "context_length": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Context Length"
+          },
+          "enabled_toolsets": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Enabled Toolsets"
+          },
+          "tool_availability": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tool Availability"
+          },
+          "tool_availability_warnings": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tool Availability Warnings"
+          },
+          "browser_backend_notice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Browser Backend Notice"
+          },
+          "unknown_toolsets": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Unknown Toolsets"
+          },
+          "desktop_protocol": {
+            "const": "hermes-gateway-v1",
+            "title": "Desktop Protocol",
+            "type": "string"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model"
+          },
+          "lazy": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Lazy"
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile Id"
+          },
+          "profile_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile Name"
+          },
+          "cwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cwd"
+          },
+          "launch_request": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Launch Request"
+          },
+          "reasoning_effort": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reasoning Effort"
+          },
+          "reasoning_effort_wire": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reasoning Effort Wire"
+          },
+          "service_tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Service Tier"
+          },
+          "fast": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Fast"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Title"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Started At"
+          },
+          "last_active_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Last Active At"
+          },
+          "yolo": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Yolo"
+          },
+          "api_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Api Mode"
+          },
+          "tool_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tool Count"
+          },
+          "credential_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Credential Hint"
+          },
+          "config_warning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Config Warning"
+          }
+        },
+        "required": [
+          "desktop_protocol"
+        ],
+        "title": "CanonicalSnapshotInfo",
+        "type": "object"
+      },
+      "CanonicalSteerQueuedParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "admission_id": {
+            "title": "Admission Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "admission_id"
+        ],
+        "title": "CanonicalSteerQueuedParams",
+        "type": "object"
+      },
+      "CanonicalSubmitParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "submission_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Submission Id"
+          },
+          "input_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Input Id"
+          },
+          "queued": {
+            "default": false,
+            "title": "Queued",
+            "type": "boolean"
+          },
+          "attachments": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/CanonicalAttachment"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Attachments"
+          },
+          "finite": {
+            "default": false,
+            "title": "Finite",
+            "type": "boolean"
+          },
+          "unattended": {
+            "default": false,
+            "title": "Unattended",
+            "type": "boolean"
+          },
+          "surface": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Surface"
+          },
+          "voice_context": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Voice Context"
+          },
+          "interrupted": {
+            "default": false,
+            "title": "Interrupted",
+            "type": "boolean"
+          },
+          "voice_turn": {
+            "default": false,
+            "title": "Voice Turn",
+            "type": "boolean"
+          },
+          "display_kind": {
+            "anyOf": [
+              {
+                "const": "hidden",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display Kind"
+          },
+          "title_preview": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Title Preview"
+          },
+          "turn_author": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CanonicalTurnAuthor"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "api_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Api Text"
+          },
+          "model_override": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CanonicalModelOverride"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "clarify_batch": {
+            "default": false,
+            "title": "Clarify Batch",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "session_id",
+          "text"
+        ],
+        "title": "CanonicalSubmitParams",
+        "type": "object"
+      },
+      "CanonicalTurnAuthor": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          },
+          "is_bot": {
+            "default": false,
+            "title": "Is Bot",
+            "type": "boolean"
+          },
+          "origin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Origin"
+          }
+        },
+        "title": "CanonicalTurnAuthor",
+        "type": "object"
+      },
       "CapabilityEntry": {
         "additionalProperties": false,
         "properties": {
@@ -7766,6 +11495,7 @@
       "CatalogTier": {
         "enum": [
           "official",
+          "verified",
           "community"
         ],
         "title": "CatalogTier",
@@ -7934,9 +11664,38 @@
         "title": "ClarifyRequestParams",
         "type": "object"
       },
+      "ClarifyRespondParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "execution_generation": {
+            "title": "Execution Generation",
+            "type": "integer"
+          },
+          "prompt_id": {
+            "title": "Prompt Id",
+            "type": "string"
+          },
+          "answer": {
+            "title": "Answer",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "execution_generation",
+          "prompt_id",
+          "answer"
+        ],
+        "title": "ClarifyRespondParams",
+        "type": "object"
+      },
       "ClarifyResult": {
         "additionalProperties": false,
-        "description": "``{answers}`` for the whole set (early locks go through the ``clarify.lock`` RPC); a response\nwithout ``answers`` is cancel-all.",
+        "description": "``{answers}`` for the whole set (early locks go through the ``clarify.lock`` RPC); a response\nwithout ``answers`` is cancel-all. ``outcome`` (optional): how the viewer's own panel ended, as\nmain's classic CLI reports it (``timed_out`` keeps the answers locked before its deadline).",
         "properties": {
           "answers": {
             "anyOf": [
@@ -7959,6 +11718,23 @@
             ],
             "default": null,
             "title": "Answers"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "enum": [
+                  "submitted",
+                  "timed_out",
+                  "cancelled"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Outcome"
           }
         },
         "title": "ClarifyResult",
@@ -8330,6 +12106,63 @@
         "title": "CommandDispatchResult",
         "type": "object"
       },
+      "CommandObserveParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "arg": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Arg"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "session_id",
+          "name"
+        ],
+        "title": "CommandObserveParams",
+        "type": "object"
+      },
+      "CommandObserveResult": {
+        "additionalProperties": false,
+        "properties": {
+          "queued": {
+            "title": "Queued",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "queued"
+        ],
+        "title": "CommandObserveResult",
+        "type": "object"
+      },
       "CommandResolveParams": {
         "additionalProperties": false,
         "properties": {
@@ -8483,6 +12316,18 @@
             "default": "",
             "title": "Warning",
             "type": "string"
+          },
+          "plugin_discovery_error": {
+            "default": "",
+            "title": "Plugin Discovery Error",
+            "type": "string"
+          },
+          "plugin_commands": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Plugin Commands",
+            "type": "object"
           }
         },
         "title": "CommandsCatalogResult",
@@ -11759,6 +15604,39 @@
         "title": "CronAction",
         "type": "string"
       },
+      "CronAdmissionParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "admission_id": {
+            "title": "Admission Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "admission_id"
+        ],
+        "title": "CronAdmissionParams",
+        "type": "object"
+      },
+      "CronCancelResult": {
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "CronCancelResult",
+        "type": "object"
+      },
       "CronJobRow": {
         "additionalProperties": true,
         "description": "``tools/cronjob_job_args.py::_format_job``.",
@@ -12521,6 +16399,110 @@
           "id"
         ],
         "title": "CronRemovedJob",
+        "type": "object"
+      },
+      "CronRunParams": {
+        "additionalProperties": false,
+        "properties": {
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "extra_prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extra Prompt"
+          }
+        },
+        "required": [
+          "job_id",
+          "request_id",
+          "extra_prompt"
+        ],
+        "title": "CronRunParams",
+        "type": "object"
+      },
+      "CronStatusResult": {
+        "additionalProperties": true,
+        "description": "``result`` is the ``run_job`` tuple once terminal; ``recover`` adds the frozen ``job`` and\nanswers ``status='missing'`` for a firing that was never admitted.",
+        "properties": {
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result"
+          },
+          "job_flags": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Job Flags"
+          },
+          "job": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Job"
+          }
+        },
+        "required": [
+          "status",
+          "result"
+        ],
+        "title": "CronStatusResult",
+        "type": "object"
+      },
+      "CronSubmitResult": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "admission_id": {
+            "title": "Admission Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "admission_id"
+        ],
+        "title": "CronSubmitResult",
         "type": "object"
       },
       "CurrentSubscription": {
@@ -14812,6 +18794,18 @@
             ],
             "default": null,
             "title": "Heartbeat"
+          },
+          "session_authority": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Authority"
           }
         },
         "required": [
@@ -15104,6 +19098,93 @@
         "title": "GroupsApproveResult",
         "type": "object"
       },
+      "GroupsAttachmentDownloadParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "event_id": {
+            "title": "Event Id",
+            "type": "string"
+          },
+          "attachment_id": {
+            "title": "Attachment Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id",
+          "event_id",
+          "attachment_id"
+        ],
+        "title": "GroupsAttachmentDownloadParams",
+        "type": "object"
+      },
+      "GroupsAttachmentUploadParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "upload_id": {
+            "title": "Upload Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "mime": {
+            "title": "Mime",
+            "type": "string"
+          },
+          "data_base64": {
+            "title": "Data Base64",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id",
+          "upload_id",
+          "kind",
+          "name",
+          "mime",
+          "data_base64"
+        ],
+        "title": "GroupsAttachmentUploadParams",
+        "type": "object"
+      },
       "GroupsCapabilitiesParams": {
         "additionalProperties": false,
         "properties": {
@@ -15355,6 +19436,65 @@
           "tombstone"
         ],
         "title": "GroupsDisbandResult",
+        "type": "object"
+      },
+      "GroupsDiscardParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "member_id": {
+            "title": "Member Id",
+            "type": "string"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "execution_generation": {
+            "title": "Execution Generation",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "room_id",
+          "member_id",
+          "task_id",
+          "execution_generation"
+        ],
+        "title": "GroupsDiscardParams",
+        "type": "object"
+      },
+      "GroupsDiscardResult": {
+        "additionalProperties": false,
+        "properties": {
+          "discarded": {
+            "default": true,
+            "title": "Discarded",
+            "type": "boolean"
+          },
+          "task": {
+            "$ref": "#/components/schemas/RoomTaskReceipt"
+          }
+        },
+        "required": [
+          "task"
+        ],
+        "title": "GroupsDiscardResult",
         "type": "object"
       },
       "GroupsListParams": {
@@ -17240,6 +21380,65 @@
         "title": "InterruptStatus",
         "type": "string"
       },
+      "KanbanRunParams": {
+        "additionalProperties": false,
+        "properties": {
+          "board": {
+            "title": "Board",
+            "type": "string"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "integer"
+          },
+          "claim_lock": {
+            "title": "Claim Lock",
+            "type": "string"
+          },
+          "db": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Db"
+          }
+        },
+        "required": [
+          "board",
+          "task_id",
+          "run_id",
+          "claim_lock"
+        ],
+        "title": "KanbanRunParams",
+        "type": "object"
+      },
+      "KanbanRunResult": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/AdmissionStatus"
+          }
+        },
+        "required": [
+          "session_id",
+          "receipt"
+        ],
+        "title": "KanbanRunResult",
+        "type": "object"
+      },
       "LanguageOption": {
         "additionalProperties": false,
         "description": "``agent.i18n_languages.language_options`` row. ``source`` is ``bundled``, ``overlay`` or\n``plugin:<name>`` \u2014 the highest layer that supplies the language.",
@@ -17773,6 +21972,66 @@
           "enabled": {
             "title": "Enabled",
             "type": "boolean"
+          },
+          "key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Key"
+          },
+          "tools": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tools"
+          },
+          "hooks": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Hooks"
+          },
+          "commands": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Commands"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
           }
         },
         "required": [
@@ -19404,6 +23663,52 @@
         "title": "MessageCompletePayload",
         "type": "object"
       },
+      "MessageDeltaPayload": {
+        "additionalProperties": false,
+        "description": "``message.delta``. A session-authority local-viewer turn also publishes ``text: null``: the\nreply segment boundary (the agent's ``stream_delta_callback(None)``, before tool lines) that\ncloses the classic CLI's reply box. Every other viewer ignores an empty chunk.",
+        "properties": {
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          },
+          "rendered": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Rendered"
+          },
+          "verbose": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Verbose"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "MessageDeltaPayload",
+        "type": "object"
+      },
       "MessageInterimPayload": {
         "additionalProperties": false,
         "description": "``prompt_turn._interim_assistant_cb`` / ``agent_callbacks`` interim_assistant_callback.",
@@ -19590,6 +23895,62 @@
           "role"
         ],
         "title": "MessageReactionPayload",
+        "type": "object"
+      },
+      "MessageStartPayload": {
+        "additionalProperties": false,
+        "description": "``message.start``. Empty from the TUI gateway's emitters and for an ordinary admission;\n``gateway/session_authority._stamp_claim`` adds an automation admission's async-result card\n(``session_automation.admission_display``: a background-process completion) and its model\ntext, so a viewer that did not submit the turn paints the same header the submitter would.",
+        "properties": {
+          "display_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display Kind"
+          },
+          "display_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display Text"
+          },
+          "notification_category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Notification Category"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Text"
+          }
+        },
+        "title": "MessageStartPayload",
         "type": "object"
       },
       "MoaAggregatingPayload": {
@@ -20312,7 +24673,7 @@
       },
       "NotificationShowPayload": {
         "additionalProperties": false,
-        "description": "``agent/credits_tracker.py::AgentNotice`` via notice_callback, and ``server._await_agent_ready``'s\nslow-build notice. ``level``: info | warn | error | success; ``kind``: sticky | ttl | agent.",
+        "description": "``agent/credits_tracker.py::AgentNotice`` via notice_callback, and ``server._await_agent_ready``'s\nslow-build notice. ``level``: info | warn | error | success; ``kind``: sticky | ttl | agent.\n``detail``: the full text behind a short ``text`` (the low-disk auto-prune question): Desktop shows\nit in the toast's expandable body, the Ink TUI prints it into the transcript.",
         "properties": {
           "text_key": {
             "anyOf": [
@@ -20398,6 +24759,18 @@
             ],
             "default": null,
             "title": "Id"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Detail"
           }
         },
         "required": [
@@ -21216,6 +25589,33 @@
             ],
             "default": null,
             "title": "Final Assistant Row Id"
+          },
+          "user_row_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "User Row Ids"
+          },
+          "submission_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Submission Id"
           }
         },
         "required": [
@@ -23142,6 +27542,30 @@
         "title": "PluginSettingFieldType",
         "type": "string"
       },
+      "PluginToolsetRow": {
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "description"
+        ],
+        "title": "PluginToolsetRow",
+        "type": "object"
+      },
       "PluginsAction": {
         "enum": [
           "list",
@@ -23171,6 +27595,36 @@
             },
             "title": "Plugins",
             "type": "array"
+          },
+          "toolsets": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PluginToolsetRow"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Toolsets"
+          },
+          "portable_mcp_servers": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Portable Mcp Servers"
           }
         },
         "required": [
@@ -24120,6 +28574,18 @@
             "default": null,
             "title": "Exited At"
           },
+          "started_epoch": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Started Epoch"
+          },
           "completion_reason": {
             "anyOf": [
               {
@@ -24366,6 +28832,11 @@
         "properties": {
           "killed": {
             "title": "Killed",
+            "type": "integer"
+          },
+          "delegations": {
+            "default": 0,
+            "title": "Delegations",
             "type": "integer"
           }
         },
@@ -27195,6 +31666,190 @@
         "title": "ProjectsUpdateParams",
         "type": "object"
       },
+      "PromptCancelParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "admission_id": {
+            "title": "Admission Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "admission_id"
+        ],
+        "title": "PromptCancelParams",
+        "type": "object"
+      },
+      "PromptReceiptParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "admission_id": {
+            "title": "Admission Id",
+            "type": "string"
+          },
+          "include_result": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Include Result"
+          }
+        },
+        "required": [
+          "session_id",
+          "admission_id"
+        ],
+        "title": "PromptReceiptParams",
+        "type": "object"
+      },
+      "PromptReceiptResult": {
+        "additionalProperties": false,
+        "description": "``result`` / ``usage``: the structured turn result committed at settlement, only with\n``include_result`` on a terminal admission that saved one.",
+        "properties": {
+          "admission_id": {
+            "title": "Admission Id",
+            "type": "string"
+          },
+          "ref": {
+            "$ref": "#/components/schemas/CanonicalSessionRef"
+          },
+          "sequence": {
+            "title": "Sequence",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "started",
+              "unknown",
+              "terminal"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "authority_epoch": {
+            "title": "Authority Epoch",
+            "type": "integer"
+          },
+          "execution_generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Generation"
+          },
+          "result": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Result"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Usage"
+          }
+        },
+        "required": [
+          "admission_id",
+          "ref",
+          "sequence",
+          "status",
+          "outcome",
+          "authority_epoch",
+          "execution_generation"
+        ],
+        "title": "PromptReceiptResult",
+        "type": "object"
+      },
+      "PromptResolveUnknownParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "admission_id": {
+            "title": "Admission Id",
+            "type": "string"
+          },
+          "execution_generation": {
+            "title": "Execution Generation",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "session_id",
+          "admission_id",
+          "execution_generation"
+        ],
+        "title": "PromptResolveUnknownParams",
+        "type": "object"
+      },
+      "PromptResponseResult": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "enum": [
+              "resolved",
+              "already_resolved"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "prompt_id": {
+            "title": "Prompt Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "prompt_id"
+        ],
+        "title": "PromptResponseResult",
+        "type": "object"
+      },
       "PromptSubmitParams": {
         "additionalProperties": false,
         "description": "``text`` is normally a string; the relay / hosted paths may hand a structured (parts list)\npayload, and the busy path renders it. Truncation (rewind / edit / regenerate) needs explicit\nconsent: ``confirm_truncate`` plus one durable target (``truncate_before_row_id`` preferred,\n``truncate_before_message_id``, or the legacy ``truncate_before_user_ordinal``).",
@@ -27925,7 +32580,33 @@
       },
       "ReloadEnvParams": {
         "additionalProperties": false,
-        "properties": {},
+        "description": "The shared owner serves ``/reload`` for one session the caller controls (``session_id``).",
+        "properties": {
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
         "title": "ReloadEnvParams",
         "type": "object"
       },
@@ -27987,6 +32668,7 @@
       },
       "ReloadMcpResult": {
         "additionalProperties": false,
+        "description": "``session``: what the calling local session's MCP servers did (a new policy generation, nothing to\nchange, or deferred while a turn runs or waits); ``unavailable``: configured servers that did not connect\nbeside what did apply; ``session_servers``: the MCP servers that session's committed policy runs.",
         "properties": {
           "status": {
             "$ref": "#/components/schemas/ReloadMcpStatus"
@@ -28048,6 +32730,47 @@
             ],
             "default": null,
             "title": "Host Ack"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReloadMcpSession"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "unavailable": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Unavailable"
+          },
+          "session_servers": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Servers"
           }
         },
         "required": [
@@ -28055,6 +32778,15 @@
         ],
         "title": "ReloadMcpResult",
         "type": "object"
+      },
+      "ReloadMcpSession": {
+        "enum": [
+          "applied",
+          "unchanged",
+          "busy"
+        ],
+        "title": "ReloadMcpSession",
+        "type": "string"
       },
       "ReloadMcpStatus": {
         "enum": [
@@ -28443,6 +33175,18 @@
             ],
             "default": null,
             "title": "Profile"
+          },
+          "all": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "All"
           }
         },
         "required": [
@@ -28609,6 +33353,84 @@
         "title": "RollbackRestoreResult",
         "type": "object"
       },
+      "RollbackSessionDiffParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "RollbackSessionDiffParams",
+        "type": "object"
+      },
+      "RollbackSessionDiffResult": {
+        "additionalProperties": false,
+        "description": "``gateway/session_tui_ops.py::_session_diff``: ``CheckpointManager.session_diff`` under the\nsession's frozen checkpoint policy (``enabled: false`` when that policy does not checkpoint).\n``diff`` is bounded to fit one frame; ``diff_lines`` counts the whole body.",
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "success": {
+            "default": false,
+            "title": "Success",
+            "type": "boolean"
+          },
+          "stat": {
+            "default": "",
+            "title": "Stat",
+            "type": "string"
+          },
+          "diff": {
+            "default": "",
+            "title": "Diff",
+            "type": "string"
+          },
+          "diff_lines": {
+            "default": 0,
+            "title": "Diff Lines",
+            "type": "integer"
+          },
+          "empty": {
+            "default": false,
+            "title": "Empty",
+            "type": "boolean"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "RollbackSessionDiffResult",
+        "type": "object"
+      },
       "Room": {
         "additionalProperties": false,
         "description": "``gateway/hosted_rooms.py::_room_from_row`` plus the branch-only keys ``create`` (legacy\nadoption), ``state`` (``authority_claim``) and ``rename`` (``event``) add.",
@@ -28753,6 +33575,143 @@
           "id"
         ],
         "title": "RoomActor",
+        "type": "object"
+      },
+      "RoomAttachment": {
+        "additionalProperties": true,
+        "properties": {
+          "attachment_id": {
+            "title": "Attachment Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "mime": {
+            "title": "Mime",
+            "type": "string"
+          },
+          "sha256": {
+            "title": "Sha256",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "number"
+          },
+          "idempotent": {
+            "title": "Idempotent",
+            "type": "boolean"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Event Id"
+          }
+        },
+        "required": [
+          "attachment_id",
+          "kind",
+          "name",
+          "size",
+          "mime",
+          "sha256",
+          "state",
+          "created_at",
+          "idempotent"
+        ],
+        "title": "RoomAttachment",
+        "type": "object"
+      },
+      "RoomAttachmentBytes": {
+        "additionalProperties": true,
+        "properties": {
+          "attachment_id": {
+            "title": "Attachment Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "mime": {
+            "title": "Mime",
+            "type": "string"
+          },
+          "sha256": {
+            "title": "Sha256",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "number"
+          },
+          "idempotent": {
+            "title": "Idempotent",
+            "type": "boolean"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Event Id"
+          },
+          "data_base64": {
+            "title": "Data Base64",
+            "type": "string"
+          }
+        },
+        "required": [
+          "attachment_id",
+          "kind",
+          "name",
+          "size",
+          "mime",
+          "sha256",
+          "state",
+          "created_at",
+          "idempotent",
+          "data_base64"
+        ],
+        "title": "RoomAttachmentBytes",
         "type": "object"
       },
       "RoomAuthority": {
@@ -29336,6 +34295,59 @@
         "title": "RoomTombstone",
         "type": "object"
       },
+      "RuntimeDescribeParams": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "RuntimeDescribeParams",
+        "type": "object"
+      },
+      "RuntimeDescribeResult": {
+        "additionalProperties": false,
+        "properties": {
+          "instance_id": {
+            "title": "Instance Id",
+            "type": "string"
+          },
+          "profile_id": {
+            "title": "Profile Id",
+            "type": "string"
+          },
+          "authority_epoch": {
+            "title": "Authority Epoch",
+            "type": "integer"
+          },
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Capabilities",
+            "type": "array"
+          },
+          "session_create": {
+            "$ref": "#/components/schemas/SessionCreateDescriptor"
+          },
+          "skin": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SkinPayload"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "instance_id",
+          "profile_id",
+          "authority_epoch",
+          "capabilities",
+          "session_create"
+        ],
+        "title": "RuntimeDescribeResult",
+        "type": "object"
+      },
       "SecretRequestParams": {
         "additionalProperties": false,
         "properties": {
@@ -29860,6 +34872,108 @@
           "session_key"
         ],
         "title": "SessionArchiveResult",
+        "type": "object"
+      },
+      "SessionAutomationParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "goal",
+              "loop",
+              "heartbeat"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "call": {
+            "title": "Call",
+            "type": "string"
+          },
+          "args": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Args"
+          },
+          "kwargs": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Kwargs"
+          }
+        },
+        "required": [
+          "session_id",
+          "kind",
+          "call"
+        ],
+        "title": "SessionAutomationParams",
+        "type": "object"
+      },
+      "SessionAutomationResult": {
+        "additionalProperties": false,
+        "description": "``gateway/session_viewer_automation.py``: the manager's persisted state after the call (its own\nJSON, ``null`` when none) and the call's value, or the refusal main's manager raised.",
+        "properties": {
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "value": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Value"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "SessionAutomationResult",
         "type": "object"
       },
       "SessionBranchParams": {
@@ -30848,6 +35962,31 @@
         "title": "SessionCorrectionResult",
         "type": "object"
       },
+      "SessionCreateDescriptor": {
+        "additionalProperties": false,
+        "properties": {
+          "sources": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "parameters": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Parameters",
+            "type": "array"
+          }
+        },
+        "required": [
+          "sources",
+          "parameters"
+        ],
+        "title": "SessionCreateDescriptor",
+        "type": "object"
+      },
       "SessionCreateParams": {
         "additionalProperties": false,
         "properties": {
@@ -31391,6 +36530,61 @@
           "deleted"
         ],
         "title": "SessionDeleteResult",
+        "type": "object"
+      },
+      "SessionDetachParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "subscription_id": {
+            "title": "Subscription Id",
+            "type": "string"
+          },
+          "end_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "End Reason"
+          }
+        },
+        "required": [
+          "session_id",
+          "subscription_id"
+        ],
+        "title": "SessionDetachParams",
+        "type": "object"
+      },
+      "SessionDetachResult": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "subscription_id": {
+            "title": "Subscription Id",
+            "type": "string"
+          },
+          "detached": {
+            "title": "Detached",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "session_id",
+          "subscription_id",
+          "detached"
+        ],
+        "title": "SessionDetachResult",
         "type": "object"
       },
       "SessionEventsSinceParams": {
@@ -32307,6 +37501,86 @@
         "title": "SessionMostRecentResult",
         "type": "object"
       },
+      "SessionMutateParams": {
+        "additionalProperties": false,
+        "description": "``operation`` + ``payload`` are validated by ``hermes_state_mutations.validate_action``;\n``expected_generation`` is required for delete/rewind/reset/branch/model/compress/reasoning/workspace.\n``reasoning`` (``{effort}``) and ``workspace`` (``{cwd}``, refused ``session_busy`` mid-turn) rewrite\nthe session's frozen policy: session-scope ``/reasoning`` and Desktop's Move to project.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "expected_revision": {
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "operation": {
+            "title": "Operation",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          },
+          "expected_generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Generation"
+          }
+        },
+        "required": [
+          "session_id",
+          "request_id",
+          "expected_revision",
+          "operation",
+          "payload"
+        ],
+        "title": "SessionMutateParams",
+        "type": "object"
+      },
+      "SessionMutateResult": {
+        "additionalProperties": true,
+        "description": "The committed mutation receipt plus the operation's projection (``title``, ``archived``,\n``branched_session_id``, compress ``status``/``lines``, \u2026). ``revision`` is absent only on a\nread-only compress preview.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "operation": {
+            "title": "Operation",
+            "type": "string"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Revision"
+          }
+        },
+        "required": [
+          "session_id",
+          "operation"
+        ],
+        "title": "SessionMutateResult",
+        "type": "object"
+      },
       "SessionOwner": {
         "additionalProperties": false,
         "properties": {
@@ -32353,6 +37627,77 @@
           "session_id"
         ],
         "title": "SessionParams",
+        "type": "object"
+      },
+      "SessionPruneParams": {
+        "additionalProperties": false,
+        "description": "Exactly one of ``filters`` (``SessionDB.prune_sessions`` keyword filters, as\n``hermes sessions prune`` builds them) or ``never_active_days`` (``--never-active``).",
+        "properties": {
+          "filters": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Filters"
+          },
+          "never_active_days": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Never Active Days"
+          }
+        },
+        "title": "SessionPruneParams",
+        "type": "object"
+      },
+      "SessionPruneResult": {
+        "additionalProperties": false,
+        "properties": {
+          "deleted": {
+            "title": "Deleted",
+            "type": "integer"
+          },
+          "routing_deleted": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Routing Deleted"
+          },
+          "skipped": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Skipped"
+          }
+        },
+        "required": [
+          "deleted"
+        ],
+        "title": "SessionPruneResult",
         "type": "object"
       },
       "SessionReclaimedPayload": {
@@ -32821,6 +38166,195 @@
         "title": "SessionSetHiddenResult",
         "type": "object"
       },
+      "SessionStats": {
+        "additionalProperties": false,
+        "description": "``gateway/session_usage.py::usage_stats``: session-cumulative counters (the agent's ``session_*``),\ncontext / compressor figures, rolling latency and throughput, rate-limit state, live subagents.",
+        "properties": {
+          "input_tokens": {
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "output_tokens": {
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "cache_read_tokens": {
+            "title": "Cache Read Tokens",
+            "type": "integer"
+          },
+          "cache_write_tokens": {
+            "title": "Cache Write Tokens",
+            "type": "integer"
+          },
+          "prompt_tokens": {
+            "title": "Prompt Tokens",
+            "type": "integer"
+          },
+          "completion_tokens": {
+            "title": "Completion Tokens",
+            "type": "integer"
+          },
+          "total_tokens": {
+            "title": "Total Tokens",
+            "type": "integer"
+          },
+          "reasoning_tokens": {
+            "title": "Reasoning Tokens",
+            "type": "integer"
+          },
+          "api_calls": {
+            "title": "Api Calls",
+            "type": "integer"
+          },
+          "last_prompt_tokens": {
+            "title": "Last Prompt Tokens",
+            "type": "integer"
+          },
+          "context_tokens": {
+            "title": "Context Tokens",
+            "type": "integer"
+          },
+          "context_length": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Context Length"
+          },
+          "config_context_length": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Config Context Length"
+          },
+          "context_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Context Source"
+          },
+          "compression_count": {
+            "title": "Compression Count",
+            "type": "integer"
+          },
+          "avg_latency_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Avg Latency S"
+          },
+          "tokens_per_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tokens Per S"
+          },
+          "last_turn_tokens": {
+            "title": "Last Turn Tokens",
+            "type": "integer"
+          },
+          "rate_limit": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Rate Limit"
+          },
+          "active_subagents": {
+            "title": "Active Subagents",
+            "type": "integer"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "fallback_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Fallback Model"
+          }
+        },
+        "required": [
+          "input_tokens",
+          "output_tokens",
+          "cache_read_tokens",
+          "cache_write_tokens",
+          "prompt_tokens",
+          "completion_tokens",
+          "total_tokens",
+          "reasoning_tokens",
+          "api_calls",
+          "last_prompt_tokens",
+          "context_tokens",
+          "compression_count",
+          "last_turn_tokens",
+          "active_subagents",
+          "model",
+          "provider"
+        ],
+        "title": "SessionStats",
+        "type": "object"
+      },
+      "SessionStatsParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "SessionStatsParams",
+        "type": "object"
+      },
       "SessionStatusDetails": {
         "additionalProperties": false,
         "properties": {
@@ -33106,15 +38640,297 @@
       },
       "SessionUsagePayload": {
         "additionalProperties": false,
-        "description": "``server._start_usage_ticker``.",
+        "description": "``usage``: the status-bar view (``server._get_usage``), sent by the embedded backend's ticker\n(``server._start_usage_ticker``) and by a canonical local viewer's gateway after every API call\nand at turn end (``gateway/session_usage.py::usage_frame``). Read this.\n\nDeprecated: the top-level session-cumulative counters (``usage_stats``, the ``session.stats``\ndict) that the gateway frame also carries. They are kept for existing readers; new readers use\n``usage``, or ``session.stats`` for the raw counters. The embedded ticker never sends them.",
         "properties": {
           "usage": {
-            "$ref": "#/components/schemas/Usage"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Usage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "input_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Input Tokens"
+          },
+          "output_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Output Tokens"
+          },
+          "cache_read_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cache Read Tokens"
+          },
+          "cache_write_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cache Write Tokens"
+          },
+          "prompt_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Prompt Tokens"
+          },
+          "completion_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Completion Tokens"
+          },
+          "total_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Total Tokens"
+          },
+          "reasoning_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reasoning Tokens"
+          },
+          "api_calls": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Api Calls"
+          },
+          "last_prompt_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Last Prompt Tokens"
+          },
+          "context_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Context Tokens"
+          },
+          "context_length": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Context Length"
+          },
+          "config_context_length": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Config Context Length"
+          },
+          "context_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Context Source"
+          },
+          "compression_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Compression Count"
+          },
+          "avg_latency_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Avg Latency S"
+          },
+          "tokens_per_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tokens Per S"
+          },
+          "last_turn_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Last Turn Tokens"
+          },
+          "rate_limit": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Rate Limit"
+          },
+          "active_subagents": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Active Subagents"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Provider"
+          },
+          "fallback_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Fallback Model"
           }
         },
-        "required": [
-          "usage"
-        ],
         "title": "SessionUsagePayload",
         "type": "object"
       },
@@ -41028,6 +46844,217 @@
         "title": "WakeStopResult",
         "type": "object"
       },
+      "WorkerExecution": {
+        "additionalProperties": true,
+        "description": "A ``worker_executions`` row without its adoption digest.",
+        "properties": {
+          "execution_id": {
+            "title": "Execution Id",
+            "type": "string"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "owner_epoch": {
+            "title": "Owner Epoch",
+            "type": "integer"
+          },
+          "generation": {
+            "title": "Generation",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "last_sequence": {
+            "title": "Last Sequence",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "execution_id",
+          "session_id",
+          "kind",
+          "owner_epoch",
+          "generation",
+          "status",
+          "last_sequence"
+        ],
+        "title": "WorkerExecution",
+        "type": "object"
+      },
+      "WorkerPersistParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile_id": {
+            "title": "Profile Id",
+            "type": "string"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "execution_id": {
+            "title": "Execution Id",
+            "type": "string"
+          },
+          "generation": {
+            "title": "Generation",
+            "type": "integer"
+          },
+          "pid": {
+            "title": "Pid",
+            "type": "integer"
+          },
+          "birth": {
+            "title": "Birth",
+            "type": "number"
+          },
+          "secret": {
+            "title": "Secret",
+            "type": "string"
+          },
+          "epoch": {
+            "title": "Epoch",
+            "type": "integer"
+          },
+          "sequence": {
+            "title": "Sequence",
+            "type": "integer"
+          },
+          "operation": {
+            "title": "Operation",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          }
+        },
+        "required": [
+          "profile_id",
+          "session_id",
+          "execution_id",
+          "generation",
+          "pid",
+          "birth",
+          "secret",
+          "epoch",
+          "sequence",
+          "operation",
+          "payload"
+        ],
+        "title": "WorkerPersistParams",
+        "type": "object"
+      },
+      "WorkerPersistResult": {
+        "additionalProperties": true,
+        "description": "The operation's durable receipt (``message_id`` for an append, delegation results, \u2026).",
+        "properties": {},
+        "title": "WorkerPersistResult",
+        "type": "object"
+      },
+      "WorkerRegisterParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile_id": {
+            "title": "Profile Id",
+            "type": "string"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "execution_id": {
+            "title": "Execution Id",
+            "type": "string"
+          },
+          "generation": {
+            "title": "Generation",
+            "type": "integer"
+          },
+          "pid": {
+            "title": "Pid",
+            "type": "integer"
+          },
+          "birth": {
+            "title": "Birth",
+            "type": "number"
+          },
+          "secret": {
+            "title": "Secret",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile_id",
+          "session_id",
+          "execution_id",
+          "generation",
+          "pid",
+          "birth",
+          "secret",
+          "kind"
+        ],
+        "title": "WorkerRegisterParams",
+        "type": "object"
+      },
+      "WorkerScopeParams": {
+        "additionalProperties": false,
+        "description": "The producer claim every worker verb proves (``gateway/session_worker.py::_SCOPE``).",
+        "properties": {
+          "profile_id": {
+            "title": "Profile Id",
+            "type": "string"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "execution_id": {
+            "title": "Execution Id",
+            "type": "string"
+          },
+          "generation": {
+            "title": "Generation",
+            "type": "integer"
+          },
+          "pid": {
+            "title": "Pid",
+            "type": "integer"
+          },
+          "birth": {
+            "title": "Birth",
+            "type": "number"
+          },
+          "secret": {
+            "title": "Secret",
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile_id",
+          "session_id",
+          "execution_id",
+          "generation",
+          "pid",
+          "birth",
+          "secret"
+        ],
+        "title": "WorkerScopeParams",
+        "type": "object"
+      },
       "_SessionScoped": {
         "additionalProperties": false,
         "description": "Handlers that look a live session up with ``_sessions.get(params.get(\"session_id\"))``: an\nabsent / unknown id falls back to the launch profile's config, so it is never required.",
@@ -41079,6 +47106,854 @@
       }
     }
   },
+  "x-canonical-methods": [
+    {
+      "name": "a2a.forward",
+      "summary": "Forward one A2A input into the conversation its identity tuple names.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/A2aForwardParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/A2aForwardResult"
+        }
+      }
+    },
+    {
+      "name": "approval.respond",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalApprovalParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/PromptResponseResult"
+        }
+      }
+    },
+    {
+      "name": "bot_relay.deliver",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalBotDeliverParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CanonicalBotDeliverResult"
+        }
+      }
+    },
+    {
+      "name": "bot_relay.settle",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalBotDeliverParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CanonicalBotDeliverResult"
+        }
+      }
+    },
+    {
+      "name": "clarify.lock",
+      "summary": "Lock one answer of the owner's batch clarify request (editable until every question is locked); only a viewer attached to that session with session:respond may lock.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ClarifyLockParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ClarifyLockResult"
+        }
+      }
+    },
+    {
+      "name": "clarify.respond",
+      "summary": "Generation-fenced answer to a pending clarify prompt (empty answer = skipped).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ClarifyRespondParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/PromptResponseResult"
+        }
+      }
+    },
+    {
+      "name": "command.observe",
+      "summary": "Fire-only: a recognized command the classic CLI or the TUI runs itself; the gateway fires `pre_command` for it in the session's profile after replying (`queued` false: not fired).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CommandObserveParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CommandObserveResult"
+        }
+      }
+    },
+    {
+      "name": "config.get",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ConfigGetParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CanonicalConfigGetResult"
+        }
+      }
+    },
+    {
+      "name": "config.set",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalConfigSetParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ConfigSetResult"
+        }
+      }
+    },
+    {
+      "name": "cron.cancel",
+      "summary": "Cancel a queued cron admission or latch cancellation on a started one.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CronAdmissionParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CronCancelResult"
+        }
+      }
+    },
+    {
+      "name": "cron.recover",
+      "summary": "Re-observe a firing after a scheduler restart (same request identity).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CronRunParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CronStatusResult"
+        }
+      }
+    },
+    {
+      "name": "cron.status",
+      "summary": "Status and, once terminal, the result of one cron admission.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CronAdmissionParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CronStatusResult"
+        }
+      }
+    },
+    {
+      "name": "cron.submit",
+      "summary": "Admit one cron firing into the owning profile's durable FIFO.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CronRunParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CronSubmitResult"
+        }
+      }
+    },
+    {
+      "name": "groups.approve",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalRoomApproveParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsApproveResult"
+        }
+      }
+    },
+    {
+      "name": "groups.attachment.download",
+      "summary": "Read one committed attachment for a live room viewer.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsAttachmentDownloadParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/RoomAttachmentBytes"
+        }
+      }
+    },
+    {
+      "name": "groups.attachment.upload",
+      "summary": "Store one attachment for a later groups.send manifest (idempotent per upload_id).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsAttachmentUploadParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/RoomAttachment"
+        }
+      }
+    },
+    {
+      "name": "groups.create",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalRoomCreateParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsCreateResult"
+        }
+      }
+    },
+    {
+      "name": "groups.discard",
+      "summary": "Discard one indeterminate room task after explicit user confirmation.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsDiscardParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsDiscardResult"
+        }
+      }
+    },
+    {
+      "name": "groups.retry",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalRoomAttemptParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsRetryResult"
+        }
+      }
+    },
+    {
+      "name": "image.attach_bytes",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ImageAttachBytesParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CanonicalAttachedImageResult"
+        }
+      }
+    },
+    {
+      "name": "kanban.run",
+      "summary": "Native-owner only: admit the dispatcher's current claim on a kanban task.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/KanbanRunParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/KanbanRunResult"
+        }
+      }
+    },
+    {
+      "name": "profiles.list",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalProfilesParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CanonicalProfilesResult"
+        }
+      }
+    },
+    {
+      "name": "prompt.cancel",
+      "summary": "Retire a still-queued admission; a started one is unaffected.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/PromptCancelParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AdmissionStatus"
+        }
+      }
+    },
+    {
+      "name": "prompt.receipt",
+      "summary": "Current receipt of one admission the caller submitted (or controls).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/PromptReceiptParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/PromptReceiptResult"
+        }
+      }
+    },
+    {
+      "name": "prompt.replace_queued",
+      "summary": "Cancel a still-queued admission and admit the edited prompt as a new admission at the back of the FIFO, in one write bound to the replaced admission. Refusals: admission_started, admission_conflict (the submission_id replaced another admission), queue_full, unsupported_control, not_found.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalReplaceQueuedParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AdmissionStatus"
+        }
+      }
+    },
+    {
+      "name": "prompt.resolve_unknown",
+      "summary": "Acknowledge a turn lost across an owner restart; the FIFO behind it resumes. Never requeues the lost input.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/PromptResolveUnknownParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AdmissionStatus"
+        }
+      }
+    },
+    {
+      "name": "prompt.steer_queued",
+      "summary": "Hand a still-queued admission's text to the running turn's agent as a steer. The admission reads 'started' with that turn (pending snapshots mark it 'steering') and never runs on its own; it settles terminal 'steered' when the turn completes with its text, else 'interrupted' (its completion frame says 'cancelled', as an interrupted turn's does); a text the turn never consumed goes back to its queue place. Refusals: admission_started, session_idle, steer_unavailable (no agent to take it: the admission stays queued), unsupported_control, not_found.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalSteerQueuedParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AdmissionStatus"
+        }
+      }
+    },
+    {
+      "name": "prompt.submit",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalSubmitParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AdmissionStatus"
+        }
+      }
+    },
+    {
+      "name": "rollback.session_diff",
+      "summary": "The classic CLI's /diff session: everything changed since the session's earliest retained checkpoint, as data for its terminal renderer.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/RollbackSessionDiffParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/RollbackSessionDiffResult"
+        }
+      }
+    },
+    {
+      "name": "runtime.describe",
+      "summary": "Owner identity and the canonical capabilities a client may rely on.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/RuntimeDescribeParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/RuntimeDescribeResult"
+        }
+      }
+    },
+    {
+      "name": "session.automation",
+      "summary": "The classic CLI's /goal, /subgoal, /loop, /heartbeat manager calls (state writes, the goal judge, quality gates), run by the owner on the session's row.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionAutomationParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionAutomationResult"
+        }
+      }
+    },
+    {
+      "name": "session.create",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalCreateParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CanonicalSnapshot"
+        }
+      }
+    },
+    {
+      "name": "session.detach",
+      "summary": "Drop this connection's subscription; a stale subscription id answers detached=false. end_reason (snake_case): the viewer is closing the conversation; the last viewer leaving an idle local session ends its row with that reason.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionDetachParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionDetachResult"
+        }
+      }
+    },
+    {
+      "name": "session.events.since",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalEventsParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CanonicalEventsResult"
+        }
+      }
+    },
+    {
+      "name": "session.info",
+      "summary": "Frozen launch policy projection of one local session.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalSessionInfoParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CanonicalSessionInfo"
+        }
+      }
+    },
+    {
+      "name": "session.interrupt",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalControlParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CanonicalSessionHandle"
+        }
+      }
+    },
+    {
+      "name": "session.list",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalListParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CanonicalListResult"
+        }
+      }
+    },
+    {
+      "name": "session.mutate",
+      "summary": "Revision-fenced, retry-idempotent session edit (rename, archive, sidebar, branch, delete, rewind, reset, model, reasoning, workspace, compress, import).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionMutateParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionMutateResult"
+        }
+      }
+    },
+    {
+      "name": "session.prune",
+      "summary": "Local operator only: the owner deletes the ended sessions `hermes sessions prune` selected, skipping busy sessions and retained reset owners.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionPruneParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionPruneResult"
+        }
+      }
+    },
+    {
+      "name": "session.redirect",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalCorrectionParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CanonicalCorrectionResult"
+        }
+      }
+    },
+    {
+      "name": "session.resume",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalResumeParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CanonicalSnapshot"
+        }
+      }
+    },
+    {
+      "name": "session.stats",
+      "summary": "The session.usage dict on demand: what main's classic CLI read off its agent.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionStatsParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionStats"
+        }
+      }
+    },
+    {
+      "name": "session.steer",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalCorrectionParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CanonicalCorrectionResult"
+        }
+      }
+    },
+    {
+      "name": "shell.exec",
+      "summary": "Ink ``!cmd`` / ``{!cmd}`` on the shared owner: one safe command for a local session, in its frozen launch cwd (``gateway/session_shell.py``).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalShellExecParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ShellExecResult"
+        }
+      }
+    },
+    {
+      "name": "worker.adopt",
+      "summary": "Adopt a registered execution after verifying the live producer claim.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/WorkerScopeParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/WorkerExecution"
+        }
+      }
+    },
+    {
+      "name": "worker.persist",
+      "summary": "Sequence-fenced typed persistence write from an adopted worker.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/WorkerPersistParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/WorkerPersistResult"
+        }
+      }
+    },
+    {
+      "name": "worker.register",
+      "summary": "Register a compute worker execution on an idle session.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/WorkerRegisterParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/WorkerExecution"
+        }
+      }
+    }
+  ],
   "x-server-requests": [
     {
       "name": "approval",
@@ -41371,6 +48246,18 @@
   ],
   "x-notifications": [
     {
+      "name": "agent.print",
+      "summary": "A status line the agent printed during a local viewer's turn.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/AgentPrintPayload"
+          }
+        }
+      ]
+    },
+    {
       "name": "agent.terminal.output",
       "summary": "Output chunk from an agent-owned background process.",
       "params": [
@@ -41612,12 +48499,12 @@
     },
     {
       "name": "message.delta",
-      "summary": "One streamed chunk of the assistant reply.",
+      "summary": "One streamed chunk of the assistant reply (null text: segment boundary).",
       "params": [
         {
           "name": "payload",
           "schema": {
-            "$ref": "#/components/schemas/StreamDeltaPayload"
+            "$ref": "#/components/schemas/MessageDeltaPayload"
           }
         }
       ]
@@ -41648,13 +48535,12 @@
     },
     {
       "name": "message.start",
-      "summary": "A turn began streaming; no payload.",
+      "summary": "A turn began streaming; an automation turn carries its async-result card.",
       "params": [
         {
           "name": "payload",
           "schema": {
-            "type": "object",
-            "additionalProperties": false
+            "$ref": "#/components/schemas/MessageStartPayload"
           }
         }
       ]
@@ -42039,6 +48925,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/SetupReadyPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "skills.changed",
+      "summary": "A skill root moved (installed/removed elsewhere); refetch commands.catalog from the gateway.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/ChangeSignalPayload"
           }
         }
       ]

@@ -1,9 +1,10 @@
+import type { ConfigRevisionResponse } from '../lib/api-config'
 import { mergeTranslations } from '@hermes/shared/i18n'
 import { createContext } from 'react'
 
 import { DEFAULT_LOCALE, LOCALE_METADATA, LOCALES, normalizeLocaleInput } from '@hermes/shared/locale-registry'
 
-import { api, getManagementProfile, type ConfigRevisionResponse } from '../lib/api'
+import { api, getManagementProfile } from '../lib/api'
 import { af } from './af'
 import { ar } from './ar'
 import { de } from './de'

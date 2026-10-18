@@ -61,7 +61,6 @@ import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint
 import { useSidebarStatus } from "@/hooks/useSidebarStatus";
 import { AuthWidget } from "@/components/AuthWidget";
 import { PageHeaderProvider } from "@/contexts/PageHeaderProvider";
-import { ProfileProvider } from "@/contexts/ProfileProvider";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { ProfileSwitcher } from "@/components/ProfileSwitcher";
 import { ProfileScopeBanner } from "@/components/ProfileScopeBanner";
@@ -367,7 +366,8 @@ const SIDEBAR_COLLAPSED_KEY = "hermes-sidebar-collapsed";
 export default function App() {
   const { t } = useI18n();
   const { pathname } = useLocation();
-  const { manifests, loading: pluginsLoading } = usePlugins();
+  const { profile } = useProfileScope();
+  const { manifests, loading: pluginsLoading } = usePlugins(profile);
   const { theme } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
   const closeMobile = useCallback(() => setMobileOpen(false), []);
@@ -494,7 +494,6 @@ export default function App() {
   }, []);
 
   return (
-    <ProfileProvider>
       <div
         data-layout-variant={layoutVariant}
         className="flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-background-base text-text-primary antialiased"
@@ -765,7 +764,6 @@ export default function App() {
 
         <PluginSlot name="overlay" />
       </div>
-    </ProfileProvider>
   );
 }
 

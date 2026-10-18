@@ -40,14 +40,15 @@ hermes chat --provider openrouter  # Force OpenRouter
 # With specific toolsets
 hermes chat --toolsets "web,terminal,skills"
 
-# Start with one or more skills preloaded
-hermes -s hermes-agent-dev,github-auth
-hermes chat -s github-pr-workflow -q "open a draft PR"
+# Start with one or more skills preloaded (rendered once into the session's prompt)
+hermes chat -s hermes-agent-dev,github-auth
 
 # Resume previous sessions
-hermes --continue             # Resume the most recent CLI session (-c)
 hermes --resume <session_id>  # Resume a specific session by ID (-r)
-hermes --resume latest        # Resume the most recent session (same as -c)
+hermes --resume "my thread"   # Resume by title (latest "#N" continuation in the lineage)
+hermes -c "my thread" --create-if-missing  # Resume that titled session, creating it if absent
+hermes --continue             # Resume the most recent session (bare -c)
+hermes --resume latest        # Same as bare -c
 hermes --resume latest --in ./dir  # Resume ./dir's latest session, staying in ./dir
 
 # Verbose mode (debug output)
@@ -61,16 +62,23 @@ hermes -w -z "Fix issue #123"     # Single query in worktree
 ### Worktree cleanup
 
 `hermes -w` sessions create disposable worktrees under `<repo>/.worktrees/`.
-A conservative pruner runs automatically at startup (it only removes clean,
-fully-merged scratch trees past an age threshold), but preserved trees and
-merged local branches still accumulate on busy machines. Reclaim them
-explicitly:
+With `hermes --tui -w`, closing the terminal detaches from the gateway-owned
+session. Its worktree is retained even when clean: the turn may still be running
+there, and resuming the session uses the same working directory. Review and prune
+it after the session's work is finished.
+A sweep runs automatically at `hermes -w` startup and every 6 hours from the
+cron ticker: idle clean+merged trees are removed, and idle trees with
+uncommitted changes or unpushed commits are **archived, then removed**
+(restorable with `hermes worktree restore <name>`; see
+[Stale worktree sweep](./git-worktrees.md#stale-worktree-sweep-and-restore)).
+Reclaim or inspect explicitly:
 
 ```bash
-hermes worktree list              # audit: age, size, verdict, reason per tree
-hermes worktree list --json       # machine-readable audit (trees, external trees, branches)
-hermes worktree prune             # remove safe trees + delete merged branches
-hermes worktree prune --dry-run   # show the plan without changing anything
+hermes worktree list              # audit: age, size, verdict, reason per tree + archives
+hermes worktree list --json       # machine-readable audit (trees, external trees, branches, archives)
+hermes worktree prune             # run the sweep now + delete merged branches
+hermes worktree prune --dry-run   # print every archive/remove/skip decision and why; changes nothing
+hermes worktree restore <name>    # recreate an archived tree (add --path DIR to put it elsewhere)
 hermes worktree prune --older-than 7   # only reap trees idle for 7+ days
 hermes worktree prune --trees-only     # leave local branches alone
 hermes worktree prune --branches-only  # leave worktrees alone
@@ -80,16 +88,18 @@ Worktrees registered **outside** `.worktrees/` (created by hand or by another
 tool) are reported read-only in `list` output and are never removed. The one
 exception is metadata: registrations whose directory no longer exists are
 dropped via `git worktree prune` (no files are touched). `--older-than DAYS`
-only ever narrows what gets reaped — a tree carrying real work is kept at any
-age regardless of the flag.
+only ever narrows what gets reaped, including what the stale-worktree sweep
+archives and removes during that run: a tree idle for less than DAYS is
+never touched.
 
 Inside a session, `/worktree prune [--dry-run]` does the same (and never
 touches the tree the session is running in).
 
 Safety guarantees (all modes, any age):
 
-- Uncommitted **tracked** changes are never deleted.
-- **Unique unpushed commits** are never deleted — commits that were
+- Uncommitted changes and **unique unpushed commits** are never deleted
+  without a restorable archive (`refs/hermes/archive/<tree>`); with
+  `worktrees.archive_dirty: false` they are never deleted at all — commits that were
   rebase/squash-merged upstream are detected via `git cherry`
   patch-equivalence and count as merged, which is what lets the dominant
   "merged PR, tree preserved forever" leak finally reclaim.
@@ -104,18 +114,28 @@ Safety guarantees (all modes, any age):
   removed but its **branch ref is kept**, so the lane is one
   `git worktree add .worktrees/<name> <branch>` away from restored. If the
   remote can't be reached, the tree is preserved.
-- Trees **in use by a running hermes session** are never touched.
+- Trees **in use** are never touched: a running hermes session's lock, or any
+  live process whose working directory (or, on Linux, an open file) is inside
+  the tree. Each tree is checked again right before it is archived or removed,
+  and again after its archive is built; a tree that changed meanwhile is kept.
 - **Untracked-only scratch** (PR body drafts, notes) is archived to
   `~/.hermes/archive/worktree-prune/` before its tree is removed — never
   destroyed.
+- **Nothing irreproducible is deleted unarchived**: a tree is kept when it holds
+  an embedded repository (even a gitignored one), a commit only a per-worktree
+  ref (`refs/worktree/*`, `refs/bisect/*`) reaches, an untracked file over the
+  archive size cap. Ignored files (`.env` copies, caches, build output) are not
+  archived and are deleted with the tree; a nested git repository inside an
+  ignored folder keeps it. See
+  [ignored files](./git-worktrees.md#stale-worktree-sweep-and-restore).
 - Branch deletion is content-gated, not name-gated: any local branch whose
   commits are all on upstream is safe to delete; branches with unique work,
   checked-out branches, and `main`/`master`/`develop` are always kept.
 
-The same conservative pruner also runs from the cron scheduler (at most once
-every 6 hours, in the background), so gateway-only machines — where nobody
-launches `hermes -w` for days — no longer accumulate merged scratch trees
-between CLI sessions.
+The same sweep also runs from the cron scheduler (at most once every 6 hours
+per profile, in the background) over every repository the profile created a
+worktree in, so gateway-only machines — where nobody launches `hermes -w` for
+days — no longer accumulate scratch trees between CLI sessions.
 
 When `.worktrees/` grows past 10 trees or 5 GB, startup prints a one-line
 notice pointing at these commands.
@@ -140,6 +160,15 @@ loads portable Agent Skills and stdio MCP entries. See the
 for the exact supported subset and trust boundary.
 
 ## Interface Layout
+
+:::info The classic CLI is a gateway client
+`hermes chat` (and the bare `hermes` prompt when `display.interface` is `cli`) no longer runs the agent inside your terminal process. It discovers or starts the profile's gateway (`hermes gateway ensure`), creates or resumes the session there, and attaches over the gateway's local WebSocket — the same session a Desktop window, the TUI, or a Telegram topic can open at the same time. Closing the terminal detaches (`Detached; accepted work continues at the gateway.`); it does not cancel the turn. Your working directory, `--model`, `--provider`, `--reasoning`, `--toolsets`, `--max-turns`, `--skills`, `--checkpoints`, `--yolo`, `--accept-hooks`, `--pass-session-id`, `--ignore-rules`, `--base-url`/`--api-key`, and `--safe-mode`/`--ignore-user-config` are frozen into the session at creation; `--resume` may repeat the same values but cannot change them. `--resume <id-or-title>` and `-c <title>` name the session; the gateway resolves the title (exact id first, then the latest `"<title> #N"` continuation, followed to its live tip) among the sessions you may read, and reports `No session found matching '…'` (exit 1) otherwise. Bare `-c` and `--resume latest` resume this workspace's most recent CLI session through the gateway. `-c <title> --create-if-missing` creates a session with that title when none exists and resumes it when one does, so programmatic callers (Bot Mode's `Bot Chat` turns) get a deterministic thread. Options that only make sense for an in-process agent — `--image`, `--worktree`/`-w`, `--no-restore-cwd`, `--run-budget`, `--verbose`/`-v`, `--compact`, and `--create-if-missing` without `-c <name>` — are refused up front (`Unsupported gateway CLI options: …`, exit 2); the refusal lists, per flag, where that capability lives now (the TUI flag, the `config.yaml` key, or the `hermes` subcommand), and nothing falls back to a local agent. A `--safe-mode` / `--ignore-user-config` launch reads no profile default model, so it must name one; the refusal prints a complete example such as `hermes chat --safe-mode --provider openrouter --model anthropic/claude-sonnet-4 -q "hello"`. In this mode the slash surface is `/stop`, `/approve <id> <choice>`, `/answer <id> <text>`, `/discard <admission_id>`, `/branch [title]`, `/model <model> [--provider name]`, `/compress [here [N] | <focus>] [--preview]`, `/yolo [on|off]`, `/help` and `/quit`; other slash commands print `Unsupported gateway CLI command; use /help.` Use the TUI (`hermes --tui`) for the full slash registry.
+:::
+
+If a running turn loses its owner while your finite CLI query is queued, the CLI
+exits with code `3`. Your accepted input stays queued. Resume the printed session
+interactively, inspect the unknown turn, and use `/discard <admission_id>` to
+acknowledge it before continuing. Do not resend the queued input.
 
 <img className="docs-terminal-figure" src="/docs/img/docs/cli-layout.svg" alt="Stylized preview of the Hermes CLI layout showing the banner, conversation area, and fixed input prompt." />
 <p className="docs-figure-caption">The Hermes CLI banner, conversation stream, and fixed input prompt rendered as a stable docs figure instead of fragile text art.</p>
@@ -204,7 +233,7 @@ On macOS, `F6`/`F7` mean the physical function keys, not the media/system contro
 | `Ctrl+C` | Clear a typed draft first (even while the agent works); with an empty prompt, interrupt the agent (double-press within 2s to force exit) |
 | `Ctrl+T` / `F6` | Open the full-screen live work monitor (subagents and background processes) without losing the composer draft. The live dock appears automatically above the status bar; arrows select a worker or process, `Enter` shows its recent log, `s` steers a worker, and `x` requests stop with confirmation. See [Monitoring subagents](./features/delegation.md#monitoring-running-subagents-agents). |
 | `Ctrl+R` / `F7` | Toggle the live work dock between its multi-row preview and a single summary line without moving composer focus. `Ctrl+R` is the reliable fallback when macOS reserves the function-key row. Besides subagents and background processes, the dock shows a standing `/goal` (active, parked or paused, with turns used) on its top row and the prompts waiting in `/queue` on its bottom rows. |
-| `Ctrl+D` | Exit |
+| `Ctrl+D` | Exit (on an empty prompt; with text it deletes under the cursor). While the gateway runs a turn, it exits and leaves the turn running: the gateway finishes it, ends the session afterwards, and `hermes --resume` shows the reply. A turn that asks a question (approval or clarify) meanwhile waits for its timeout or for you to resume. Use `Ctrl+C` to stop the turn instead. |
 | `Ctrl+Z` | Suspend Hermes to background (Unix only). Run `fg` in the shell to resume. |
 | `Tab` | Accept auto-suggestion (ghost text) or autocomplete slash commands |
 | `!<command>` | **Shell mode** — run a shell command yourself without spending a model turn (e.g. `!git status`, `!pytest -x`). See below. |
@@ -402,7 +431,7 @@ The `display.busy_input_mode` config key controls what happens when you press En
 | Mode | Behavior |
 |------|----------|
 | `"interrupt"` (default) | Your message redirects the active turn. Model generation restarts with displayed reasoning and completed work preserved. A running foreground terminal command is moved to the background (not killed — you get a completion notification) so your message is read immediately; other running tools finish first |
-| `"queue"` | Your message is silently queued and sent as the next turn after the agent finishes |
+| `"queue"` | Your message is queued as the next turn after the agent finishes. The queue lives on the gateway (crash-durable, visible to every attached client). Classic `hermes chat` always behaves this way: every line typed during a turn queues at the gateway, whatever this key says; `interrupt` and `steer` are TUI and Desktop behaviours |
 | `"steer"` | Your message is injected into the current run via `/steer`, arriving at the agent after the next tool call — no interrupt, no new turn |
 
 ```yaml
@@ -493,6 +522,7 @@ Resume options:
 hermes --continue                          # Resume the most recent CLI session
 hermes -c                                  # Short form
 hermes -c "my project"                     # Resume a named session (latest in lineage)
+hermes -c "my project" --create-if-missing # Same, creating the titled session if none exists
 hermes --resume 20260225_143052_a1b2c3     # Resume a specific session by ID
 hermes --resume "refactoring auth"         # Resume by title
 hermes --resume latest                     # Resume the most recent session (same as -c)

@@ -1,8 +1,6 @@
 import { activityEn } from './en/activity.js'
 import { appEn } from './en/app.js'
 import { billingEn } from './en/billing.js'
-import { chatBitsEn } from './en/chatBits.js'
-import { chromeEn } from './en/chrome.js'
 // Bundled English catalog for the TUI — the only bundled TUI locale. Every
 // other language arrives as a pack over `i18n.catalog {surface: 'tui'}` and is
 // merged over this object at runtime (see runtime.ts).
@@ -13,6 +11,9 @@ import { chromeEn } from './en/chrome.js'
 // function leaves as strings with positional `{0}`, `{1}` placeholders.
 //
 // `locales/_keys.tui.json` is generated from this object by `npm run i18n:keys`.
+import { canonicalEn } from './en/canonical.js'
+import { chatBitsEn } from './en/chatBits.js'
+import { chromeEn } from './en/chrome.js'
 import { commandsEn } from './en/commands.js'
 import { connectionEn } from './en/connection.js'
 import { connectorsEn } from './en/connectors.js'
@@ -57,6 +58,7 @@ export const en = {
   ...billingEn,
   ...subscriptionEn,
   ...connectionEn,
+  ...canonicalEn,
   ...connectorsEn
 }
 
@@ -85,5 +87,6 @@ export const EN_SIBLINGS: readonly Record<string, unknown>[] = [
   billingEn,
   subscriptionEn,
   connectionEn,
+  canonicalEn,
   connectorsEn
 ]

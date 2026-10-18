@@ -819,6 +819,14 @@ def _session_has_active_delegations(sid: str, session: dict | None = None) -> bo
             session = _sessions.get(sid)
     if not session:
         return False
+    try:
+        from tools.process_registry import process_registry
+        if process_registry.has_pending_completions_owned_by(
+                getattr(session.get("agent"), "_process_owner_task_ids", ())):
+            return True
+    except Exception:
+        logger.debug("Failed to query pending process completions for UI session %s", sid, exc_info=True)
+        return True
     own_sid = _lifecycle_own_sid(session, sid)
     owned_session_key = session_key = str(session.get("session_key") or "")
     session_id = getattr(session.get("agent"), "session_id", None) or session_key

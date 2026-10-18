@@ -6,15 +6,16 @@ because they run on the same GCP platform under the same ADC auth. The
 wire transport is chosen at ``resolve_runtime_provider`` time based on the
 requested model:
 
-* ``anthropic/claude-*`` (or bare ``claude-*``) → ``anthropic_messages``
-  runtime, backed by the ``AnthropicVertex`` SDK client.
+* ``anthropic/claude-*`` → ``anthropic_messages`` runtime, backed by the
+  ``AnthropicVertex`` SDK client. A bare ``claude-*`` is rejected with an
+  ``AuthError`` (missing publisher prefix).
 * ``google/gemini-*`` (or anything else) → ``chat_completions`` runtime,
   backed by Vertex's OpenAI-compat aggregator.
 
 The tests below cover:
 
-1. The classifier (``is_anthropic_vertex_model``) recognises both prefixed
-   and bare Claude forms and rejects Gemini + empty strings.
+1. The classifier (``is_anthropic_vertex_model``) recognises only the
+   ``anthropic/``-prefixed form and rejects bare Claude, Gemini + empty strings.
 2. ``resolve_runtime_provider(requested="vertex", target_model=<claude>)``
    returns the expected ``anthropic_messages`` runtime dict shape that
    ``agent_init``, ``agent_runtime_helpers``, and ``run_agent`` consume.
@@ -25,7 +26,9 @@ The tests below cover:
    ``gcp-vertex``, ``vertexai``) still resolve to the ``vertex`` provider
    AND still route Claude models through the Anthropic path.
 5. Friendly ``AuthError`` messages when Vertex credentials or project_id
-   cannot be resolved.
+   cannot be resolved, or when ``model.default`` lacks a publisher prefix.
+6. ``normalize_model_for_provider(..., "vertex")`` preserves ``anthropic/``
+   so ``/model ... --global`` round-trips through ``model.default``.
 
 Distinct from ``test_anthropic_vertex_adapter.py``, which mocks at the
 SDK seam to test client construction; this file exercises the
@@ -46,16 +49,16 @@ import pytest
     "model_id, expected",
     [
         # Vendor-prefixed Anthropic is the ONLY accepted form.
-        ("anthropic/claude-opus-4-8", True),
+        ("anthropic/claude-opus-5-5", True),
         ("anthropic/claude-sonnet-4-5", True),
         ("anthropic/claude-haiku-4-5", True),
         # Case-insensitive + whitespace-tolerant.
-        ("ANTHROPIC/Claude-Opus-4-8", True),
-        ("  anthropic/claude-opus-4-8  ", True),
+        ("ANTHROPIC/Claude-Opus-5-5", True),
+        ("  anthropic/claude-opus-5-5  ", True),
         # Bare Claude names DO NOT match — vendor prefix is required.
         # See ``is_anthropic_vertex_model`` docstring: strict form is
         # deliberate because Vertex is multi-vendor.
-        ("claude-opus-4-8", False),
+        ("claude-opus-5-5", False),
         ("claude-fable-5", False),
         # Gemini and other models are False for the same reason (wrong
         # vendor prefix or no prefix at all).
@@ -81,7 +84,7 @@ def test_is_anthropic_vertex_model(model_id, expected):
 @pytest.mark.parametrize(
     "model",
     [
-        "anthropic/claude-opus-4-8",
+        "anthropic/claude-opus-5-5",
         "anthropic/claude-sonnet-4-5",
         # Version-suffixed IDs (Vertex's ``@YYYYMMDD`` form).
         "anthropic/claude-opus-4-5@20250929",
@@ -136,7 +139,7 @@ def test_all_vertex_aliases_route_claude_through_anthropic(alias, monkeypatch):
     )
 
     rt = rp.resolve_runtime_provider(
-        requested=alias, target_model="anthropic/claude-opus-4-8"
+        requested=alias, target_model="anthropic/claude-opus-5-5"
     )
     assert rt["api_mode"] == "anthropic_messages"
     assert rt["provider"] == "vertex"
@@ -150,7 +153,7 @@ def test_all_vertex_aliases_route_claude_through_anthropic(alias, monkeypatch):
     "cfg_default, expect_api_mode",
     [
         # Claude in config.yaml + no explicit target_model → anthropic path.
-        ("anthropic/claude-opus-4-8", "anthropic_messages"),
+        ("anthropic/claude-opus-5-5", "anthropic_messages"),
         # Gemini in config.yaml + no explicit target_model → chat_completions.
         ("google/gemini-3.1-pro-preview", "chat_completions"),
     ],
@@ -197,18 +200,19 @@ def test_vertex_dispatch_when_target_model_is_none(
 
 
 def test_vertex_provider_rejects_bare_claude_to_openai_compat(monkeypatch):
-    """Regression: bare ``claude-*`` under ``provider=vertex`` must go
-    through the OpenAI-compat aggregator, NOT the Anthropic path.
+    """Regression: bare ``claude-*`` under ``provider=vertex`` is refused
+    at runtime resolution with an actionable ``AuthError``.
 
     Vertex is a multi-vendor surface, so a bare Claude name is ambiguous
-    intent. The design deliberately routes it through the aggregator so
-    Vertex 404s with an actionable error ("publisher google — model
-    claude-opus-4-8 not found") rather than silently guessing at the
-    intended wire protocol. This test locks that behavior in.
+    intent. ``_resolve_vertex_runtime`` used to let it fall through to the
+    OpenAI-compat aggregator (and a later, misleading Vertex 404); it now
+    raises up front naming the missing publisher prefix. Neither the
+    Anthropic-Vertex nor the OpenAI-compat config may be touched.
     """
     import agent.anthropic_vertex_adapter as ava
     import agent.vertex_adapter as va
     from hermes_cli import runtime_provider as rp
+    from hermes_cli.auth import AuthError
 
     monkeypatch.setattr(
         ava, "has_anthropic_vertex_credentials",
@@ -220,18 +224,13 @@ def test_vertex_provider_rejects_bare_claude_to_openai_compat(monkeypatch):
     )
     monkeypatch.setattr(
         va, "get_vertex_config",
-        lambda: (
-            "stub-oauth-token",
-            "https://aiplatform.googleapis.com/v1beta1/projects/proj/locations/global/endpoints/openapi",
-        ),
+        lambda: pytest.fail("OpenAI-compat vertex config must not be read for bare claude names"),
     )
 
-    rt = rp.resolve_runtime_provider(
-        requested="vertex", target_model="claude-opus-4-8"
-    )
-    assert rt["api_mode"] == "chat_completions"
-    assert rt["provider"] == "vertex"
-    assert rt.get("vertex_anthropic") is not True
+    with pytest.raises(AuthError, match="missing its publisher prefix"):
+        rp.resolve_runtime_provider(
+            requested="vertex", target_model="claude-opus-5-5"
+        )
 
 
 def test_vertex_provider_still_dispatches_gemini_to_chat_completions(monkeypatch):
@@ -314,7 +313,7 @@ def test_missing_credentials_raises_actionable_autherror(monkeypatch):
 
     with pytest.raises(AuthError) as exc:
         rp.resolve_runtime_provider(
-            requested="vertex", target_model="anthropic/claude-opus-4-8"
+            requested="vertex", target_model="anthropic/claude-opus-5-5"
         )
     msg = str(exc.value)
     assert "OAuth2" in msg
@@ -334,7 +333,7 @@ def test_missing_project_id_raises_autherror(monkeypatch):
 
     with pytest.raises(AuthError) as exc:
         rp.resolve_runtime_provider(
-            requested="vertex", target_model="anthropic/claude-opus-4-8"
+            requested="vertex", target_model="anthropic/claude-opus-5-5"
         )
     msg = str(exc.value)
     assert "project_id" in msg
@@ -347,26 +346,97 @@ def test_missing_project_id_raises_autherror(monkeypatch):
 @pytest.mark.parametrize(
     "input_model, expected",
     [
-        # Claude on Vertex: strip ``anthropic/`` so the AnthropicVertex SDK
-        # gets the bare model name it needs for URL construction.
-        ("anthropic/claude-opus-4-8", "claude-opus-4-8"),
-        ("anthropic/claude-sonnet-4-5", "claude-sonnet-4-5"),
-        ("ANTHROPIC/claude-opus-4-8", "claude-opus-4-8"),
-        # Bare Claude passes through unchanged.
-        ("claude-opus-4-8", "claude-opus-4-8"),
+        # Claude on Vertex: keep the canonical ``anthropic/`` publisher prefix
+        # (``_resolve_vertex_runtime`` / ``is_anthropic_vertex_model`` need
+        # it); only Claude version dots become hyphens.
+        ("anthropic/claude-opus-5-5", "anthropic/claude-opus-5-5"),
+        ("anthropic/claude-opus-5.5", "anthropic/claude-opus-5-5"),
+        ("anthropic/claude-sonnet-4-5", "anthropic/claude-sonnet-4-5"),
+        # Prefix is canonicalised to lowercase ``anthropic/``.
+        ("ANTHROPIC/claude-opus-5-5", "anthropic/claude-opus-5-5"),
+        # Bare Claude passes through unchanged (runtime resolution rejects it).
+        ("claude-opus-5-5", "claude-opus-5-5"),
         # Gemini keeps its ``google/`` prefix (required by the OpenAI-compat
         # aggregator wire).
         ("google/gemini-3.1-pro-preview", "google/gemini-3.1-pro-preview"),
-        # Bare Gemini too — Vertex will 404 with a clear hint, that's the
-        # user-facing failure mode.
+        # Bare Gemini passes through unchanged too.
         ("gemini-3.1-pro-preview", "gemini-3.1-pro-preview"),
     ],
 )
-def test_normalize_model_for_vertex_strips_anthropic_prefix_only(
+def test_normalize_model_for_vertex_preserves_publisher_prefix(
     input_model, expected
 ):
-    """Normalization contract for ``vertex``: strip ``anthropic/`` (needed
-    for AnthropicVertex SDK URL construction), preserve everything else."""
+    """Normalization contract for ``vertex``: return the canonical
+    ``<publisher>/<model>`` config/session ID — never strip ``anthropic/``."""
     from hermes_cli.model_normalize import normalize_model_for_provider
 
     assert normalize_model_for_provider(input_model, "vertex") == expected
+
+
+@pytest.mark.parametrize(
+    "input_model, expected",
+    [
+        ("anthropic/claude-opus-5-5", "claude-opus-5-5"),
+        ("anthropic/claude-opus-5.5", "claude-opus-5-5"),
+        ("ANTHROPIC/claude-opus-5-5", "claude-opus-5-5"),
+    ],
+)
+def test_normalize_model_name_strips_anthropic_prefix_at_wire(input_model, expected):
+    """The ``anthropic/`` prefix is stripped at the wire boundary instead:
+    AnthropicVertex substitutes ``model`` verbatim into
+    ``publishers/anthropic/models/{model}:rawPredict``."""
+    from agent.anthropic_message_convert import normalize_model_name
+
+    assert normalize_model_name(input_model) == expected
+
+
+def test_vertex_claude_model_round_trips_through_global_persist(tmp_path, monkeypatch):
+    """Regression: ``/model anthropic/claude-opus-5-5 --provider vertex --global``.
+
+    ``_validate_switch`` overwrites ``new_model`` with the normalized ID,
+    ``persist_model_selection`` writes it as ``model.default``, and the next
+    launch resolves it via ``_resolve_vertex_runtime``. When normalization
+    stripped ``anthropic/``, the persisted bare ``claude-*`` was rejected on
+    the next start. The whole chain must preserve the publisher prefix.
+    """
+    import agent.anthropic_vertex_adapter as ava
+    from hermes_cli import runtime_provider as rp
+    from hermes_cli.config import read_user_config_raw
+    from hermes_cli.model_normalize import normalize_model_for_provider
+    from hermes_cli.model_switch import (
+        ModelSwitchResult,
+        model_selection_config_updates,
+        persist_model_selection,
+    )
+
+    normalized = normalize_model_for_provider("anthropic/claude-opus-5-5", "vertex")
+    assert normalized == "anthropic/claude-opus-5-5"
+
+    result = ModelSwitchResult(
+        success=True,
+        new_model=normalized,
+        target_provider="vertex",
+        api_mode="anthropic_messages",
+        is_global=True,
+    )
+    updates = model_selection_config_updates(result, {})
+    assert updates["default"] == "anthropic/claude-opus-5-5"
+    assert updates["provider"] == "vertex"
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("model:\n  default: google/gemini-3.1-pro-preview\n  provider: vertex\n")
+    persist_model_selection(result, config_path=config_path)
+    persisted = read_user_config_raw(config_path)["model"]
+    assert persisted["default"] == "anthropic/claude-opus-5-5"
+    assert persisted["provider"] == "vertex"
+
+    # Next launch: no explicit target_model, so ``model.default`` drives dispatch.
+    monkeypatch.setattr(rp, "_get_model_config", lambda: read_user_config_raw(config_path)["model"])
+    monkeypatch.setattr(ava, "has_anthropic_vertex_credentials", lambda: True)
+    monkeypatch.setattr(
+        ava, "get_anthropic_vertex_config", lambda: ("my-gcp-project", "global")
+    )
+
+    rt = rp._resolve_vertex_runtime("vertex")
+    assert rt["api_mode"] == "anthropic_messages"
+    assert rt["vertex_anthropic"] is True

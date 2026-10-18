@@ -281,11 +281,13 @@ def is_anthropic_vertex_model(model_id: str) -> bool:
     acceptance is a legacy shortcut. Vertex Model Garden is
     multi-vendor from day one (Anthropic + Google + more coming), so
     the classifier accepts *only* the fully-qualified
-    ``anthropic/<model>`` form. This surfaces a loud, actionable error
-    when someone writes ``default: "claude-opus-4-8"`` under
-    ``provider: vertex``: the request goes down the aggregator path
-    and Vertex 404s with "publisher google — model claude-opus-4-8 not
-    found", telling the user exactly what to fix.
+    ``anthropic/<model>`` form. A bare ``default: "claude-opus-5-5"``
+    under ``provider: vertex`` never reaches Vertex on the main agent:
+    :func:`hermes_cli.runtime_provider._resolve_vertex_runtime` refuses
+    publisher-less ``model.default`` values at startup with a "missing
+    its publisher prefix" error that suggests the prefixed ID. (Aux
+    dispatch in ``agent.auxiliary_client._build_vertex_client``
+    separately widens detection to bare ``claude-*``.)
 
     Case-insensitive. Whitespace is stripped.
     """

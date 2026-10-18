@@ -9,7 +9,7 @@ description: "Use Hermes Agent with Anthropic Claude models on Vertex AI — OAu
 Hermes Agent supports **Anthropic Claude models on Google Cloud Vertex AI**. This is the third way to run Claude from Hermes, alongside the native [Anthropic provider](/guides/anthropic) (API key from `console.anthropic.com`, billed by Anthropic) and the [AWS Bedrock provider](/guides/aws-bedrock) (Claude via AWS, billed by AWS). Same Anthropic Messages API surface as native Anthropic — same feature set (prompt caching, adaptive thinking, tool-use streaming, xhigh effort) — but authenticated with a Google Cloud OAuth2 token and billed through your GCP account.
 
 :::info Vertex is one Hermes provider hosting two model families
-Anthropic Claude on Vertex uses the **same `vertex` provider** as Gemini on Vertex — they run on the same GCP platform under the same ADC auth and share every routing config. Hermes chooses the correct wire (AnthropicVertex vs. Vertex's OpenAI-compat aggregator) automatically based on the model name: `anthropic/…` and bare `claude-…` names go through Anthropic's SDK; everything else routes to the aggregator. You never paste a Claude API key when using this provider.
+Anthropic Claude on Vertex uses the **same `vertex` provider** as Gemini on Vertex — they run on the same GCP platform under the same ADC auth and share every routing config. Hermes chooses the correct wire (AnthropicVertex vs. Vertex's OpenAI-compat aggregator) automatically based on the model name: `anthropic/…` names go through Anthropic's SDK; `google/…` and other publisher-prefixed names route to the aggregator. The `<publisher>/` prefix is **required** — a bare `claude-…` is rejected at startup. You never paste a Claude API key when using this provider.
 :::
 
 ## Prerequisites
@@ -33,7 +33,7 @@ gcloud auth application-default login
 # Set the routing config
 cat >> ~/.hermes/config.yaml <<'YAML'
 model:
-  default: anthropic/claude-opus-4-8
+  default: anthropic/claude-opus-5-5
   provider: vertex
 
 vertex:
@@ -64,7 +64,7 @@ GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
 
 ```yaml
 model:
-  default: anthropic/claude-opus-4-8   # ``anthropic/`` prefix picks the AnthropicVertex path
+  default: anthropic/claude-opus-5-5   # ``anthropic/`` prefix picks the AnthropicVertex path
   provider: vertex
 
 vertex:
@@ -72,7 +72,7 @@ vertex:
   region: global               # or a regional endpoint that serves the model
 ```
 
-The `anthropic/` prefix is what Hermes uses to dispatch the request onto the AnthropicVertex SDK. The prefix is **required** — Vertex Model Garden is a multi-vendor surface, so a bare `claude-opus-4-8` has no unambiguous meaning and Hermes deliberately does not guess. Names without the `anthropic/` prefix fall through to the OpenAI-compat aggregator path, where Vertex will 404 with a message pointing at the missing prefix. Gemini models continue to use the `google/gemini-…` naming (required by Vertex's OpenAI-compat aggregator) on the same provider.
+The `anthropic/` prefix is what Hermes uses to dispatch the request onto the AnthropicVertex SDK. The prefix is **required** — Vertex Model Garden is a multi-vendor surface, so a bare `claude-opus-5-5` has no unambiguous meaning and Hermes deliberately does not guess. If `model.default` has no publisher prefix, Hermes refuses to start the session with a `missing its publisher prefix` error (suggesting the prefixed ID, e.g. `anthropic/claude-opus-5-5`) instead of sending a request that would later 404 on Vertex. Gemini models continue to use the `google/gemini-…` naming (required by Vertex's OpenAI-compat aggregator) on the same provider.
 
 :::tip Environment variables win over config.yaml
 `VERTEX_PROJECT_ID` and `VERTEX_REGION` override the `vertex.project_id` / `vertex.region` values in `config.yaml`. Use them for per-shell overrides; keep the durable settings in `config.yaml`.
@@ -86,9 +86,9 @@ Hermes classifies the requested model at runtime:
 |------------------------------------|-----------------------------------------------|------------------------------|
 | `anthropic/claude-…`               | `publishers/anthropic/models/<model>:rawPredict` | `anthropic.AnthropicVertex` |
 | `google/gemini-…`, everything else | `endpoints/openapi/…` (OpenAI-compat)         | OpenAI SDK against Vertex   |
-| bare `claude-…` (missing prefix)   | falls through to OpenAI-compat, Vertex 404s   | user-facing error            |
+| bare `claude-…` (missing prefix)   | rejected at startup (no request is sent)      | `missing its publisher prefix` error |
 
-The `anthropic/` vendor prefix is stripped internally before hitting the wire — the AnthropicVertex SDK constructs its URL as `.../publishers/anthropic/models/{model}:rawPredict` and expects a bare model name in the request body.
+The `anthropic/` prefix stays in your config and session (`/model anthropic/claude-opus-5-5 --provider vertex --global` persists it as-is) and is stripped only when the request is built — the AnthropicVertex SDK constructs its URL as `.../publishers/anthropic/models/{model}:rawPredict` and expects a bare model name in the request body.
 
 ### How authentication works
 
@@ -103,7 +103,7 @@ Vertex uses Anthropic's own model IDs, with or without a `@YYYYMMDD` version suf
 
 | Model | `model.default` value in `config.yaml`      |
 |-------|----------------------------------------------|
-| Claude Opus 4.8 | `anthropic/claude-opus-4-8`        |
+| Claude Opus 5.5 | `anthropic/claude-opus-5-5`        |
 | Claude Opus 4.5 | `anthropic/claude-opus-4-5`        |
 | Claude Opus 4.1 | `anthropic/claude-opus-4-1`        |
 | Claude Opus 4 | `anthropic/claude-opus-4`            |
@@ -139,7 +139,7 @@ Hermes deliberately does not attach the header on the Vertex path — sending a 
 ## Switching Models Mid-Session
 
 ```text
-/model anthropic/claude-opus-4-8
+/model anthropic/claude-opus-5-5
 /model anthropic/claude-sonnet-4-5
 /model anthropic/claude-haiku-4-5
 ```

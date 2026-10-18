@@ -376,6 +376,9 @@ def retire_live_sessions(authority, session_ids, *, require_fence=False):
                 logger.warning('could not strip retired routes from sessions.json', exc_info=True)
     from gateway.session_policy import release_launch_secrets, release_session_workspaces
     release_launch_secrets(authority, session_ids)
+    from agent.vault_backends.unlock import release_session
+    for sid in session_ids:
+        release_session(sid)
     release_session_workspaces(authority, session_ids)
     from tools.async_delegation import allow_for_session
     for sid in session_ids:

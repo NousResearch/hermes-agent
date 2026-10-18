@@ -25,8 +25,12 @@ def end_idle_acp_session(authority, session_id):
     if receipt.get('policy', {}).get('source') != 'acp':
         return False
     try:
-        return bool(end_idle_local_session(authority.db, epoch=authority.epoch, session_id=session_id,
-                                           target_id=receipt['entry']['session_id'], reason=ACP_END_REASON))
+        ended = bool(end_idle_local_session(authority.db, epoch=authority.epoch, session_id=session_id,
+                                            target_id=receipt['entry']['session_id'], reason=ACP_END_REASON))
+        if ended:
+            from agent.vault_backends.unlock import release_session
+            release_session(session_id)
+        return ended
     except (RuntimeStoreError, KeyError, TypeError):
         logging.getLogger(__name__).warning('ACP session %s not ended', session_id, exc_info=True)
         return False
@@ -46,8 +50,12 @@ def end_idle_viewer_session(authority, session_id, reason):
     if receipt.get('policy', {}).get('source') == 'acp':
         return end_idle_acp_session(authority, session_id)
     try:
-        return bool(end_idle_local_session(authority.db, epoch=authority.epoch, session_id=session_id,
-                                           target_id=receipt['entry']['session_id'], reason=reason))
+        ended = bool(end_idle_local_session(authority.db, epoch=authority.epoch, session_id=session_id,
+                                            target_id=receipt['entry']['session_id'], reason=reason))
+        if ended:
+            from agent.vault_backends.unlock import release_session
+            release_session(session_id)
+        return ended
     except (RuntimeStoreError, KeyError, TypeError):
         logging.getLogger(__name__).warning('local session %s not ended', session_id, exc_info=True)
         return False

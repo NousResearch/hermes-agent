@@ -15,6 +15,7 @@ approvals take where nobody can answer.
 
 from __future__ import annotations
 
+import contextvars
 import threading
 import time
 from typing import Callable, Dict, Optional
@@ -76,12 +77,17 @@ _generation: dict[tuple[str, str], int] = {}
 # Which gateway session performed the unlock; the token is released when THAT session ends,
 # not when any sibling session in the profile is torn down.
 _owner_session: dict[tuple[str, str], Optional[str]] = {}
-_current_session_tls = threading.local()
+_current_session_id = contextvars.ContextVar("vault_owner_session_id", default=None)
 
 
 def set_current_session_id(session_id: Optional[str]) -> None:
     """Gateway surfaces bind the session running on this thread so an unlock records its owner."""
-    _current_session_tls.sid = session_id
+    _current_session_id.set(session_id)
+
+
+def get_current_session_id() -> Optional[str]:
+    """Owner of an unlock, inherited by tool workers through their copied context."""
+    return _current_session_id.get()
 
 
 def _live(backend: str, *, touch: bool) -> Optional[str]:
@@ -117,7 +123,7 @@ def store_session_token(backend: str, token: str, generation: Optional[int] = No
         if generation is not None and generation != _generation.get(key, 0):
             return False
         _sessions[key] = (token, time.monotonic())
-        _owner_session[key] = getattr(_current_session_tls, "sid", None)
+        _owner_session[key] = get_current_session_id()
         return True
 
 

@@ -210,7 +210,7 @@ TEAMS_CLIENT_KEY_PATH=/path/to/key.pem
 # TEAMS_CLIENT_CERT_THUMBPRINT=<sha1-or-sha256-hex>
 ```
 
-The same keys live under `platforms.teams.extra` as `client_cert_path`, `client_key_path`, and `client_cert_thumbprint`. A single PEM that contains both the certificate and the private key only needs `client_cert_path` / `TEAMS_CLIENT_CERT_PATH`. Hermes builds the OAuth `client_assertion` (RS256 JWT, `x5t` or `x5t#S256` thumbprint) and uses it for Bot Framework tokens, including the Teams SDK's outbound calls, attachment downloads, and cron sends.
+The same keys live under `platforms.teams.extra` as `client_cert_path`, `client_key_path`, and `client_cert_thumbprint`. A single PEM that contains both the certificate and the private key only needs `client_cert_path` / `TEAMS_CLIENT_CERT_PATH`. The private key must be RSA, and it must match the certificate when both are set — the assertion is an RS256 JWT (`x5t` or `x5t#S256` thumbprint). A non-RSA key or a mismatched pair is rejected when the adapter starts, before any token request. Hermes uses that assertion for Bot Framework tokens, including the Teams SDK's outbound calls, attachment downloads, and cron sends.
 
 `hermes gateway setup` asks whether to use a certificate. Choosing one clears a previously saved client secret, and choosing a secret clears previously saved certificate settings, so the two methods do not stay stacked.
 

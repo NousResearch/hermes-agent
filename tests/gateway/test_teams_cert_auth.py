@@ -15,7 +15,7 @@ import jwt
 import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.x509.oid import NameOID
 
 from gateway.config import PlatformConfig
@@ -47,6 +47,10 @@ def _material(tmp_path):
         serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
     cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
     return key_path, cert_path, hashlib.sha1(der, usedforsecurity=False).digest(), hashlib.sha256(der).digest(), key
+
+
+def _ec_key():
+    return ec.generate_private_key(ec.SECP256R1())
 
 
 def _b64(raw: bytes) -> str:
@@ -124,6 +128,42 @@ class TestClientAssertion:
     def test_missing_file_names_the_path(self, tmp_path):
         with pytest.raises(ValueError, match="TEAMS_CLIENT_CERT_PATH"):
             cert_auth.prepare_certificate(str(tmp_path / "missing.pem"), "", "")
+
+    @pytest.mark.parametrize("private_format", [
+        serialization.PrivateFormat.TraditionalOpenSSL,  # -----BEGIN EC PRIVATE KEY-----
+        serialization.PrivateFormat.PKCS8,
+    ])
+    def test_non_rsa_key_names_the_setting(self, tmp_path, private_format):
+        path = tmp_path / "ec.pem"
+        path.write_bytes(_ec_key().private_bytes(
+            serialization.Encoding.PEM, private_format, serialization.NoEncryption()))
+        with pytest.raises(ValueError, match="TEAMS_CLIENT_KEY_PATH") as exc:
+            cert_auth.prepare_certificate("", str(path), "ab" * 20)
+        assert "RSA" in str(exc.value)
+
+    def test_key_must_match_the_certificate(self, tmp_path):
+        _key_path, cert_path, _sha1, _sha256, _key = _material(tmp_path)
+        other = tmp_path / "other"
+        other.mkdir()
+        other_key, _other_cert, _sha1b, _sha256b, _other = _material(other)
+        with pytest.raises(ValueError, match="TEAMS_CLIENT_KEY_PATH") as exc:
+            cert_auth.prepare_certificate(str(cert_path), str(other_key), "")
+        assert "TEAMS_CLIENT_CERT_PATH" in str(exc.value)
+
+    def test_combined_pem_key_must_match_its_certificate(self, tmp_path):
+        _key_path, cert_path, _sha1, _sha256, _key = _material(tmp_path)
+        other = tmp_path / "other"
+        other.mkdir()
+        other_key, _other_cert, _sha1b, _sha256b, _other = _material(other)
+        combined = tmp_path / "combined.pem"
+        combined.write_bytes(cert_path.read_bytes() + b"\n" + other_key.read_bytes())
+        with pytest.raises(ValueError, match="TEAMS_CLIENT_CERT_PATH"):
+            cert_auth.prepare_certificate(str(combined), "", "")
+
+    def test_signing_with_a_non_rsa_key_is_a_value_error(self):
+        prepared = cert_auth.PreparedCertificate(_ec_key(), "x5t", "abc")
+        with pytest.raises(ValueError, match="RSA"):
+            cert_auth.build_client_assertion(prepared, tenant_id="tenant", client_id="client")
 
 
 class TestTokenForm:
@@ -296,6 +336,43 @@ class TestConnectAndTokens:
         assert adapter._app is None
 
     @pytest.mark.asyncio
+    async def test_non_rsa_key_fails_connect_before_the_sdk(self, monkeypatch, tmp_path):
+        import plugins.platforms.teams.adapter as teams
+
+        key_path = tmp_path / "ec.pem"
+        key_path.write_bytes(_ec_key().private_bytes(
+            serialization.Encoding.PEM, serialization.PrivateFormat.TraditionalOpenSSL,
+            serialization.NoEncryption()))
+        _patch_connect(monkeypatch, teams, {})
+        adapter = TeamsAdapter(PlatformConfig(enabled=True, extra={
+            "client_id": "id", "tenant_id": "tenant",
+            "client_key_path": str(key_path), "client_cert_thumbprint": "ab" * 20,
+        }))
+        assert await adapter.connect() is False
+        assert adapter._fatal_error_code == "MISSING_CREDENTIALS"
+        assert "TEAMS_CLIENT_KEY_PATH" in adapter._fatal_error_message
+        assert "RSA" in adapter._fatal_error_message
+        assert adapter._app is None
+
+    @pytest.mark.asyncio
+    async def test_mismatched_key_fails_connect_before_the_sdk(self, monkeypatch, tmp_path):
+        import plugins.platforms.teams.adapter as teams
+
+        _key_path, cert_path, _sha1, _sha256, _key = _material(tmp_path)
+        other = tmp_path / "other"
+        other.mkdir()
+        other_key, _other_cert, _sha1b, _sha256b, _other = _material(other)
+        _patch_connect(monkeypatch, teams, {})
+        adapter = TeamsAdapter(PlatformConfig(enabled=True, extra={
+            "client_id": "id", "tenant_id": "tenant",
+            "client_cert_path": str(cert_path), "client_key_path": str(other_key),
+        }))
+        assert await adapter.connect() is False
+        assert "TEAMS_CLIENT_KEY_PATH" in adapter._fatal_error_message
+        assert "TEAMS_CLIENT_CERT_PATH" in adapter._fatal_error_message
+        assert adapter._app is None
+
+    @pytest.mark.asyncio
     async def test_attachment_token_posts_the_assertion(self, monkeypatch, tmp_path):
         key_path, cert_path, _sha1, _sha256, _key = _material(tmp_path)
         adapter = TeamsAdapter(PlatformConfig(enabled=True, extra={
@@ -390,6 +467,25 @@ class TestConnectAndTokens:
         assert "client_secret" not in token_kwargs["data"]
         assert token_kwargs["data"]["client_assertion"]
         assert seen["calls"][1][1]["headers"]["Authorization"] == "Bearer the-token"
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_rejects_a_non_rsa_key(self, monkeypatch, tmp_path):
+        import plugins.platforms.teams.adapter as teams
+
+        key_path = tmp_path / "ec.pem"
+        key_path.write_bytes(_ec_key().private_bytes(
+            serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+        _clear_teams_env(monkeypatch)
+        monkeypatch.setattr(teams, "AIOHTTP_AVAILABLE", True)
+        result = await _standalone_send(
+            PlatformConfig(enabled=True, extra={
+                "client_id": "client-id", "tenant_id": "tenant",
+                "client_key_path": str(key_path), "client_cert_thumbprint": "ab" * 20,
+            }),
+            "19:abc@thread.skype", "hi")
+        assert "error" in result
+        assert "TEAMS_CLIENT_KEY_PATH" in result["error"]
+        assert "RSA" in result["error"]
 
     @pytest.mark.asyncio
     async def test_standalone_send_names_both_options_when_unconfigured(self, monkeypatch):

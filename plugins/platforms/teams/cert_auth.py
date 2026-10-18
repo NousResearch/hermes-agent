@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import jwt
+from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.serialization import Encoding, load_pem_private_key
 from cryptography.x509 import load_pem_x509_certificate
 
@@ -26,13 +27,16 @@ _ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
 _ASSERTION_TTL_SECONDS = 600
 _HEX_THUMBPRINT = re.compile(r"[^0-9a-fA-F]")
 # A combined PEM starts with the certificate; pull the key block out so the loader
-# does not have to accept the whole buffer.
+# does not have to accept the whole buffer. EC blocks stay in the pattern so a
+# non-RSA key is rejected by name (RS256) instead of looking like a missing key.
 _PRIVATE_KEY_BLOCK = re.compile(
     rb"-----BEGIN ((?:ENCRYPTED |RSA |EC )?)PRIVATE KEY-----"
     rb".*?"
     rb"-----END \1PRIVATE KEY-----",
     re.DOTALL,
 )
+_KEY_LABEL = "TEAMS_CLIENT_KEY_PATH"
+_CERT_LABEL = "TEAMS_CLIENT_CERT_PATH"
 
 
 @dataclass(frozen=True)
@@ -51,17 +55,13 @@ def certificate_configured(cert_path: str, key_path: str, thumbprint: str) -> bo
 
 def prepare_certificate(cert_path: str, key_path: str, thumbprint: str) -> PreparedCertificate:
     """Load the PEM key and resolve ``x5t`` / ``x5t#S256``. Raises ``ValueError`` with the
-    env var to fix when the material cannot sign an assertion."""
-    cert_pem = _read_pem(cert_path, "TEAMS_CLIENT_CERT_PATH") if cert_path else b""
-    key_pem = _read_pem(key_path, "TEAMS_CLIENT_KEY_PATH") if key_path else b""
-    private_key = _load_private_key(key_pem, "TEAMS_CLIENT_KEY_PATH") if key_pem else None
-    if private_key is None:
-        private_key = _load_private_key(cert_pem, "TEAMS_CLIENT_CERT_PATH")
-    if private_key is None:
-        raise ValueError(
-            "Teams certificate auth needs a PEM private key "
-            "(TEAMS_CLIENT_KEY_PATH, or a private key inside TEAMS_CLIENT_CERT_PATH)")
-    header, value = _x5t_header(cert_pem, thumbprint)
+    env var to fix when the material cannot sign an RS256 assertion."""
+    cert_pem = _read_pem(cert_path, _CERT_LABEL) if cert_path else b""
+    key_pem = _read_pem(key_path, _KEY_LABEL) if key_path else b""
+    cert = _load_certificate(cert_pem)
+    private_key, key_label = _signing_key(cert_pem, key_pem)
+    _require_certificate_match(private_key, cert, key_label)
+    header, value = _x5t_header(cert, thumbprint)
     return PreparedCertificate(private_key, header, value)
 
 
@@ -75,9 +75,17 @@ def build_client_assertion(
         "iss": client_id, "sub": client_id, "jti": str(uuid.uuid4()),
         "nbf": issued, "exp": issued + _ASSERTION_TTL_SECONDS,
     }
-    token = jwt.encode(
-        claims, prepared.private_key, algorithm="RS256",
-        headers={prepared.x5t_header: prepared.x5t_value})
+    try:
+        token = jwt.encode(
+            claims, prepared.private_key, algorithm="RS256",
+            headers={prepared.x5t_header: prepared.x5t_value})
+    except (TypeError, jwt.InvalidKeyError) as exc:
+        # prepare_certificate rejects a non-RSA key. This keeps a later mint
+        # (cron, attachments, the SDK callback) from surfacing a raw TypeError
+        # if a PreparedCertificate is built some other way.
+        raise ValueError(
+            "Teams certificate auth could not sign the client assertion with RS256. "
+            f"{_KEY_LABEL} or the key inside {_CERT_LABEL} must be an RSA private key") from exc
     return token if isinstance(token, str) else token.decode("ascii")
 
 
@@ -104,13 +112,31 @@ def _private_key_pem(pem: bytes) -> bytes | None:
     return match.group(0) if match else None
 
 
+def _signing_key(cert_pem: bytes, key_pem: bytes):
+    """(RSA key, env var it was loaded from). The key file wins over a key embedded in the cert PEM."""
+    if key_pem:
+        loaded = _load_private_key(key_pem, _KEY_LABEL)
+        if loaded is not None:
+            return loaded, _KEY_LABEL
+    loaded = _load_private_key(cert_pem, _CERT_LABEL)
+    if loaded is None:
+        raise ValueError(
+            "Teams certificate auth needs a PEM private key "
+            f"({_KEY_LABEL}, or a private key inside {_CERT_LABEL})")
+    return loaded, _CERT_LABEL
+
+
 def _load_private_key(pem: bytes, label: str):
-    """The key object, or ``None`` when ``pem`` has no private-key block."""
+    """An RSA key, or ``None`` when ``pem`` has no private-key block.
+
+    A non-RSA key (EC, including ``EC PRIVATE KEY``) raises ``ValueError`` naming
+    ``label``. Entra client assertions from this adapter are RS256 only.
+    """
     block = _private_key_pem(pem)
     if block is None:
         return None
     try:
-        return load_pem_private_key(block, password=None)
+        key = load_pem_private_key(block, password=None)
     except TypeError as exc:
         raise ValueError(f"{label} is an encrypted private key; provide an unencrypted PEM") from exc
     except ValueError as exc:
@@ -118,16 +144,35 @@ def _load_private_key(pem: bytes, label: str):
         if "password" in message or "encrypted" in message:
             raise ValueError(f"{label} is an encrypted private key; provide an unencrypted PEM") from exc
         raise ValueError(f"{label} is not a usable PEM private key") from exc
+    if not isinstance(key, rsa.RSAPrivateKey):
+        raise ValueError(f"{label} must be an RSA private key; Entra certificate auth signs with RS256")
+    return key
 
 
-def _cert_der(pem: bytes) -> bytes | None:
-    if b"CERTIFICATE" not in pem:
+def _load_certificate(pem: bytes):
+    """The certificate in ``pem``, or ``None`` when it has no certificate block."""
+    if not pem or b"CERTIFICATE" not in pem:
         return None
     try:
-        cert = load_pem_x509_certificate(pem)
+        return load_pem_x509_certificate(pem)
     except ValueError as exc:
-        raise ValueError("TEAMS_CLIENT_CERT_PATH is not a usable PEM certificate") from exc
-    return cert.public_bytes(Encoding.DER)
+        raise ValueError(f"{_CERT_LABEL} is not a usable PEM certificate") from exc
+
+
+def _require_certificate_match(private_key, cert, key_label: str) -> None:
+    """The signing key and the certificate must be the same pair when a cert PEM is set.
+
+    A rotated key left next to the previous certificate otherwise signs assertions
+    Entra rejects (AADSTS700027) on every token request.
+    """
+    if cert is None:
+        return
+    cert_public = cert.public_key()
+    if isinstance(cert_public, rsa.RSAPublicKey) and cert_public == private_key.public_key():
+        return
+    if key_label == _CERT_LABEL:
+        raise ValueError(f"The private key inside {_CERT_LABEL} does not match the certificate")
+    raise ValueError(f"{key_label} does not match the certificate in {_CERT_LABEL}")
 
 
 def _decode_thumbprint(value: str) -> bytes:
@@ -139,9 +184,9 @@ def _decode_thumbprint(value: str) -> bytes:
     return bytes.fromhex(hex_str)
 
 
-def _x5t_header(cert_pem: bytes, thumbprint: str) -> tuple[str, str]:
+def _x5t_header(cert, thumbprint: str) -> tuple[str, str]:
     supplied = _decode_thumbprint(thumbprint) if thumbprint else None
-    der = _cert_der(cert_pem) if cert_pem else None
+    der = cert.public_bytes(Encoding.DER) if cert is not None else None
     if supplied is None and der is None:
         raise ValueError(
             "Teams certificate auth needs TEAMS_CLIENT_CERT_PATH or TEAMS_CLIENT_CERT_THUMBPRINT "

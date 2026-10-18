@@ -31,7 +31,7 @@ optional_env:
     prompt: "Certificate PEM path (or empty)"
     password: false
   - name: TEAMS_CLIENT_KEY_PATH
-    description: "PEM private key for certificate auth, when it is not inside TEAMS_CLIENT_CERT_PATH"
+    description: "RSA PEM private key for certificate auth, when it is not inside TEAMS_CLIENT_CERT_PATH. Must match the certificate."
     prompt: "Private key PEM path (or empty)"
     password: false
   - name: TEAMS_CLIENT_CERT_THUMBPRINT

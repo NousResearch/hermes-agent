@@ -14,10 +14,10 @@ source: https://github.com/sweetrb/apple-notes-mcp
 # auditable); bump the pin via PR after validating a new release.
 #
 # How this pin was validated (catalog policy: "version validated on macOS").
-# On macOS, `npx -y apple-notes-mcp@2.9.32`:
+# On macOS, `npx -y apple-notes-mcp@2.15.2`:
 #   - completes an MCP `initialize` handshake reporting serverInfo.version
-#     2.9.32 — i.e. the bytes npx resolved are the bytes pinned here;
-#   - returns a full `tools/list` of 83 tools, every one carrying a description;
+#     2.15.2 — i.e. the bytes npx resolved are the bytes pinned here;
+#   - returns a full `tools/list` of 88 tools, every one carrying a description;
 #   - resolves all 20 `tools.default_enabled` entries below against that
 #     list, so no allow-listed name went stale across the bump.
 # Tools added since the previous pin are deliberately left OUT of
@@ -159,25 +159,40 @@ source: https://github.com/sweetrb/apple-notes-mcp
 # apple-mail pin carries the same fix via 2.19.20.) Same validation, run
 # against both 2.9.31 and 2.9.32: 83 tools, all described, all 20
 # default_enabled entries resolve.
-# Declined, newest first: 2.15.0 adds an opt-in signed permission broker
-# (`setup --broker`) that changes nothing unless installed, so the default
-# in-process surface is untouched (validated: 88 tools, all 20
-# default_enabled entries still resolve); 2.14.3/2.14.2 fix verification bugs
-# in `append-to-note`/`append-native`, outside default_enabled; 2.14.1 bumps
-# the bundled SDK for an OAuth-client advisory not reachable from this
-# stdio-only bundle, plus a dev-only `source-map-js` floor; 2.10.0-2.14.0 add
-# tools and options outside default_enabled (`query-notes` facets, HTML
-# vector drawings, a permissions CLI, a template editor CLI, paragraph
-# anchors); 2.9.35 is an `add-attachment` verification fix; 2.9.34 is
-# dev-toolchain only; 2.9.33 moves the bundled MCP SDK 1.30.0 -> 1.30.1
-# (Dependabot). None fixes a defect in a default_enabled tool or ships a
-# security fix reachable regardless of default_enabled.
+# 2.15.2 (2026-10-13) is re-pinned on the same footing — a defect in a
+# default_enabled tool: `get-note-content` collapsed Automation refusals,
+# timeouts and malformed metadata on the initial exact-ID read into a bare
+# "note not found" result. Those failure modes now report their own
+# diagnostics instead of being misread as a missing note. (The same release
+# also hardens CLI argument validation and the `doctor`/capability report's
+# Shortcut-consent wording, neither reachable as a default-enabled MCP tool
+# call.) No tool surface change since 2.15.0: still 88 tools, all 20
+# default_enabled entries resolve.
+# Declined, newest first: 2.15.9/2.15.6 are Dependabot dependency bumps
+# (2.15.9 automated, 2.15.6 unrelated to any shipped tool); 2.15.8 is a CLI
+# `setup --gemini-spark` printer, not a tool call; 2.15.7 fixes
+# `batch-move-notes` preconditions, outside default_enabled; 2.15.5/2.15.4/
+# 2.15.3/2.15.1 are native-tag/native-write/checklist verification fixes
+# confined to `add-native-tags`/`append-native`/`append-to-note` and the new
+# (deliberately non-default-enabled) `native-checklist-state` tool; 2.15.0
+# adds an opt-in signed permission broker (`setup --broker`) that changes
+# nothing unless installed, so the default in-process surface is untouched;
+# 2.14.3/2.14.2 fix verification bugs in `append-to-note`/`append-native`,
+# outside default_enabled; 2.14.1 bumps the bundled SDK for an OAuth-client
+# advisory not reachable from this stdio-only bundle, plus a dev-only
+# `source-map-js` floor; 2.10.0-2.14.0 add tools and options outside
+# default_enabled (`query-notes` facets, HTML vector drawings, a permissions
+# CLI, a template editor CLI, paragraph anchors); 2.9.35 is an
+# `add-attachment` verification fix; 2.9.34 is dev-toolchain only; 2.9.33
+# moves the bundled MCP SDK 1.30.0 -> 1.30.1 (Dependabot). None fixes a
+# defect in a default_enabled tool or ships a security fix reachable
+# regardless of default_enabled.
 transport:
   type: stdio
   command: "npx"
   args:
     - "-y"
-    - "apple-notes-mcp@2.9.32"
+    - "apple-notes-mcp@2.15.2"
 
 # Drives Apple Notes locally via AppleScript; no credentials.
 auth:

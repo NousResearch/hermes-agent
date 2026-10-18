@@ -1578,7 +1578,7 @@ After registration, users can type `/mystatus` in any session. The command appea
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `name` | `str` | Command name without the leading slash (e.g. `"lcm"`, `"mystatus"`) |
-| `handler` | `Callable[[str], str \| None]` | Called with the raw argument string. May also be `async`. |
+| `handler` | `Callable[[str], str \| None]` | Called with the raw argument string, plus any calling-session keywords it declares (see below). May also be `async`. |
 | `description` | `str` | Shown in `/help`, autocomplete, and Telegram bot menu |
 
 **Key differences from `register_cli_command()`:**
@@ -1587,27 +1587,32 @@ After registration, users can type `/mystatus` in any session. The command appea
 |---|---|---|
 | Invoked as | `/name` in a session | `hermes name` in a terminal |
 | Where it works | CLI sessions, Telegram, Discord, etc. | Terminal only |
-| Handler receives | Raw args string | argparse `Namespace` |
+| Handler receives | Raw args string (+ opt-in session context) | argparse `Namespace` |
 | Use case | Diagnostics, status, quick actions | Complex subcommand trees, setup wizards |
 
 **Conflict protection:** If a plugin tries to register a name that conflicts with a built-in command (`help`, `model`, `new`, etc.), the registration is silently rejected with a log warning. Built-in commands always take precedence.
 
-**Gateway source context:** A gateway handler may opt into the adapter-derived `gateway.session.SessionSource` as a keyword-only `source` argument (or accept it through `**kwargs`). Sync handlers keep running in the gateway executor, and coroutine or returned-awaitable handlers are awaited as before:
+**Calling-session context:** a handler can learn which chat and session invoked it by declaring any of these keyword parameters (or `**kwargs` for all of them). Handlers that declare none keep the one-argument `handler(raw_args)` call, so existing plugins are unaffected:
+
+| Keyword | Value |
+|---|---|
+| `session_id` | The calling session's id (the one `on_session_reset` later reports as `old_session_id`). Empty when the chat has no session yet. |
+| `session_key` | The routing key of the calling chat. |
+| `platform` | Where the command came from: `telegram`, `discord`, …, `local` (CLI/Desktop sessions owned by the gateway), `cli`, `tui`, `desktop`. |
+| `source` | The adapter-derived `gateway.session.SessionSource` (`user_id`, `chat_id`, `chat_type`, `thread_id`, …) when the gateway dispatched the command, else `None`. |
+
+Every surface passes them: messaging platforms, the classic CLI, the TUI and Desktop. Sync handlers run in the gateway executor and async handlers are awaited, as before.
 
 ```python
-from gateway.session import SessionSource
+def _handle_whoami(raw_args: str, *, session_id: str = "", platform: str = "", source=None) -> str:
+    user = source.user_id if source is not None else "local user"
+    return f"{user} on {platform}, session {session_id or '(none yet)'}"
 
-
-def _handle_admin(raw_args: str, *, source: SessionSource | None = None) -> str:
-    # Non-gateway invocation does not supply a source. Sensitive work must fail closed.
-    if source is None or source.user_id is None:
-        return "This command requires gateway identity context."
-    # Apply plugin-owned policy using stable transport identifiers; do not authorize
-    # from user_name/chat_name or command arguments.
-    if not plugin_policy.allows(source.platform, source.user_id, source.chat_id):
-        return "Not authorized."
-    return perform_allowed_action(raw_args)
+def register(ctx):
+    ctx.register_command("whoami", handler=_handle_whoami, description="Show the calling session")
 ```
+
+`source` is transport identity, not an authorization grant: authorize from stable ids (`source.user_id`, `source.chat_id`), never from display names or the command text, and fail closed when a sensitive command gets `source=None`. Handler exceptions propagate; Hermes never retries the call with fewer arguments.
 
 **Where handlers run:** a slash command handler runs in the gateway process that owns the session, also when the user types the command in the classic `hermes chat` CLI. The handler is not running in the user's terminal or directory, so:
 
@@ -1622,7 +1627,6 @@ def _handle_todo(raw_args: str) -> str:
     todo = resolve_agent_cwd() / "TODO.md"  # the session's folder, not the gateway's
     return todo.read_text() if todo.exists() else "No TODO.md here."
 ```
-The example's `plugin_policy` and action function are illustrative plugin-owned code, not Hermes APIs. The gateway preserves the existing session-context binding and sync-handler executor behavior. Legacy `handler(raw_args)` callbacks continue receiving only the raw argument string; CLI/non-gateway invocation also retains its existing one-argument contract. Hermes supplies `source=` only when the handler signature accepts that keyword (including `**kwargs`). A parameter named `source` that is positional-only does not opt in. The source describes transport/routing identity and is not an authorization grant: plugin policy remains responsible for each action, and display names are untrusted labels, not authorization evidence. If a sensitive operation requires gateway identity, reject a missing source rather than treating the non-gateway call as authorized. Exceptions raised inside a handler propagate through normal dispatch error handling; Hermes does not retry the callback as a legacy call.
 
 ### Dispatch tools from slash commands
 

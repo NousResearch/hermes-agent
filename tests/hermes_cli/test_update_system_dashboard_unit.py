@@ -58,6 +58,7 @@ def _systemd_owned_dashboard(monkeypatch, systemctl_calls: list):
     monkeypatch.setattr(main_dashboard, "_find_stale_dashboard_pids", lambda **k: [DASH_PID])
 
 
+@pytest.mark.platforms("linux")  # systemd/cgroup paths are Linux-only (sys.platform gates)
 def test_dashboard_pass_skips_a_unit_the_fleet_loop_already_declined(monkeypatch, capsys):
     calls: list = []
     _systemd_owned_dashboard(monkeypatch, calls)
@@ -74,6 +75,7 @@ def test_dashboard_pass_skips_a_unit_the_fleet_loop_already_declined(monkeypatch
     assert "failed to restart" not in out and "Restarting managed dashboard" not in out
 
 
+@pytest.mark.platforms("linux")  # systemd/cgroup paths are Linux-only (sys.platform gates)
 def test_dashboard_pass_still_restarts_the_unit_when_the_fleet_loop_never_saw_it(monkeypatch, capsys):
     """Negative control: without the fleet loop's verdict the managed restart still runs."""
     calls: list = []
@@ -82,6 +84,7 @@ def test_dashboard_pass_still_restarts_the_unit_when_the_fleet_loop_never_saw_it
     assert ["systemctl", "restart", UNIT] in calls
 
 
+@pytest.mark.platforms("linux")  # systemd/cgroup paths are Linux-only (sys.platform gates)
 def test_systemd_owned_ledger_dashboard_is_classified_systemd(monkeypatch):
     calls: list = []
     _systemd_owned_dashboard(monkeypatch, calls)
@@ -96,6 +99,7 @@ def test_systemd_owned_ledger_dashboard_is_classified_systemd(monkeypatch):
     assert (row.detail["systemd_unit"], row.detail["systemd_scope"]) == (UNIT, "system")
 
 
+@pytest.mark.platforms("linux")  # systemd/cgroup paths are Linux-only (sys.platform gates)
 def test_hand_started_dashboard_in_a_foreign_cgroup_stays_manual(monkeypatch):
     """Started from a shell inside cron.service: the cgroup names a unit, but its MainPID is another
     process, so the real ownership rule keeps the row manual-serve (its respawn reminder applies)."""
@@ -211,24 +215,69 @@ def _unit_dashboard_plan():
         detail={"create_time": 1000.0, "systemd_unit": UNIT, "systemd_scope": "system"})])
 
 
-def test_unrestarted_unit_dashboard_keeps_a_startup_reminder_until_it_exits(monkeypatch, capsys):
-    """The fleet obligation names only gateways, so once they are current the stale dashboard unit
-    would never be mentioned again; it keeps its own reminder with the unit's command instead."""
+def _unit_row():
+    from dataclasses import asdict
+
+    return asdict(_unit_dashboard_plan().runtimes[0])
+
+
+@pytest.mark.parametrize("how", ["after-verification", "aborted-before-verification"])
+def test_unrestarted_unit_dashboard_keeps_a_receipt_backed_reminder(monkeypatch, capsys, how):
+    """The fleet obligation names only gateways, so once they are current a stale dashboard unit would
+    never be mentioned again. It rides the same receipt-backed reminder flow as a manual serve, so the
+    startup warning recovers it from the receipt's plan even when verification never ran (an aborted
+    run, ``--no-gateway-restart``), names the unit's command, and clears once the process exits."""
     from hermes_cli import process_identity
-    from hermes_cli.update_serve_obligations import warn_pending_manual_serves
 
     monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: True)
-    survivor = {"pid": DASH_PID, "kind": "dashboard", "profile": "default", "supervisor": "systemd",
-                "systemd_unit": UNIT, "systemd_scope": "system"}
-    _verify(monkeypatch, _restart(), plan=_unit_dashboard_plan(), survivors=[survivor])
+    if how == "after-verification":
+        survivor = {"pid": DASH_PID, "kind": "dashboard", "profile": "default", "supervisor": "systemd",
+                    "systemd_unit": UNIT, "systemd_scope": "system"}
+        plan = _unit_dashboard_plan()
+        real_begin = update_receipt.begin_update_receipt
+
+        def begin_with_plan(*a, **k):
+            real_begin(*a, **k)
+            update_inventory.record_plan_in_receipt(plan)
+
+        monkeypatch.setattr(update_receipt, "begin_update_receipt", begin_with_plan)
+        _verify(monkeypatch, _restart(), plan=plan, survivors=[survivor])
+    else:
+        with update_receipt.update_receipt_scope():
+            update_receipt.begin_update_receipt()
+            update_inventory.record_plan_in_receipt(_unit_dashboard_plan())
+            update_receipt.finalize_update_receipt("failed")
     capsys.readouterr()
-    warn_pending_manual_serves(startup=True, pending_manual=[])
+    update_cmd_fleet._warn_pending_fleet_restart_on_startup()
     err = capsys.readouterr().err
     assert f"dashboard [default] pid {DASH_PID}: unit restart still pending" in err
     assert f"`sudo systemctl restart {UNIT}`" in err and "Ask its owner" not in err
     monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: False)
-    warn_pending_manual_serves(startup=True, pending_manual=[])
+    update_cmd_fleet._warn_pending_fleet_restart_on_startup()
     assert str(DASH_PID) not in capsys.readouterr().err
+
+
+def test_unit_reminder_that_cannot_be_saved_stays_in_the_receipt_with_its_command(monkeypatch, capsys):
+    from hermes_cli import process_identity
+    from hermes_cli.update_serve_obligations import retain_receipt_manual_serves, warn_pending_manual_serves
+    from hermes_constants import get_hermes_home
+
+    monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: True)
+    (get_hermes_home() / "serve_restart_pending").write_text("not a directory")
+    pending = retain_receipt_manual_serves({"plan": {"runtimes": [_unit_row()]}})
+    assert [row["pid"] for row in pending] == [DASH_PID]
+    warn_pending_manual_serves(startup=True, pending_manual=pending)
+    err = capsys.readouterr().err
+    assert f"`sudo systemctl restart {UNIT}`" in err and "Ask its owner" not in err
+
+
+def test_receipt_carries_unit_rows_forward_like_manual_ones():
+    from hermes_cli.update_serve_obligations import is_reminder_row
+
+    assert is_reminder_row(_unit_row())
+    assert is_reminder_row({"kind": "serve", "supervisor": "manual-serve"})
+    assert not is_reminder_row({"kind": "dashboard", "supervisor": "systemd", "detail": {}})
+    assert not is_reminder_row({"kind": "gateway", "supervisor": "systemd", "detail": {"systemd_unit": "x"}})
 
 
 def test_unaccounted_unit_dashboard_hint_names_its_unit(capsys):
@@ -241,3 +290,16 @@ def test_unaccounted_unit_dashboard_hint_names_its_unit(capsys):
     assert update_inventory.report_unaccounted_runtimes(outcomes) is True
     out = capsys.readouterr().out
     assert f"sudo systemctl restart {UNIT}" in out and "hermes-serve.service" not in out
+
+
+def test_next_run_carries_a_unit_row_forward_from_the_previous_receipt(monkeypatch):
+    """A run killed before finalize must not lose the previous receipt's unit row: the next run's
+    running record snapshots it into ``carried_manual_serves`` like a manual one."""
+    with update_receipt.update_receipt_scope():
+        update_receipt.begin_update_receipt()
+        update_inventory.record_plan_in_receipt(_unit_dashboard_plan())
+        update_receipt.finalize_update_receipt("failed")
+    with update_receipt.update_receipt_scope():
+        update_receipt.begin_update_receipt()
+        carried = update_receipt._current.get().data["carried_manual_serves"]
+    assert [row["pid"] for row in carried] == [DASH_PID]

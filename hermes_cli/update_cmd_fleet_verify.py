@@ -365,16 +365,11 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
                 live_gateway_pids=_live_gateway_pids,
             )
             from dataclasses import asdict
-            from hermes_cli.update_serve_obligations import defer_manual_serve, remind_unit_serve
+            from hermes_cli.update_serve_obligations import defer_manual_serve
 
-            _stale_pids = {row.get("pid") for row in _stale_serve_rows or ()}
             for runtime, outcome in zip(_pre_update_plan.runtimes, _runtime_outcomes):
                 if outcome["outcome"] == "unaccounted" and defer_manual_serve(asdict(runtime), require_alive=True):
                     outcome["outcome"] = "deferred"
-                elif runtime.pid in _stale_pids and runtime.supervisor == "systemd":
-                    # A unit the update could not restart keeps a startup reminder with its exact
-                    # command; the gateway obligation never names it (#141021).
-                    remind_unit_serve(asdict(runtime))
             if report_unaccounted_runtimes(_runtime_outcomes):
                 restart.incomplete = True
                 _missed_gateway, _missed_serves = _split_unaccounted(_runtime_outcomes)

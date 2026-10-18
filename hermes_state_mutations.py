@@ -125,6 +125,17 @@ def _rewind(db, conn, session_id, payload):
     # A background review of this transcript is asked to yield, never refused: the rewrite
     # invalidates its replay basis (``rewind_in_transaction`` stamps it the same way).
     require_idle(db, conn, list({session_id, physical}), review_lease_policy=REVIEW_LEASE_YIELD)
+    # The client names the row: like a branch boundary it must be an active row of the physical
+    # target. A row compaction archived (still shown, still carrying its id) would deactivate the
+    # summary and every later turn, since both have larger ids. That refusal says so (``compacted:``
+    # detail); a row a rewind or undo already took back, an assistant row or an unknown id does not.
+    row = conn.execute('SELECT role FROM messages WHERE id=? AND session_id=? AND active=1',
+                       (payload['target_message_id'], physical)).fetchone()
+    if row is None or row['role'] != 'user':
+        if _summarized_by_compaction(conn, physical, payload['target_message_id']):
+            raise RuntimeStoreError('invalid_params', field='target_message_id', detail=COMPACTED_TARGET_DETAIL)
+        raise RuntimeStoreError('invalid_params', field='target_message_id',
+                                detail='target user message is no longer in session history')
     # A composite compaction carrier (summary + the next ask in one row) keeps its handoff, as
     # main's rewind does; the receipt reports the live ask, so /retry resubmits it, not the summary.
     live = _carrier_live_view(db, conn, physical, payload['target_message_id'])
@@ -138,6 +149,36 @@ def _rewind(db, conn, session_id, payload):
     conn.execute('UPDATE sessions SET runtime_generation=runtime_generation+1 WHERE id=?', (session_id,))
     return {session_id, physical}, {'rewound_count': len(ids), 'target_message': target,
         'new_head_id': head, 'replacement_message_id': replacement}
+
+
+# The refusal's ``detail`` for a target compaction summarized: ``compacted:`` is the machine-readable
+# prefix clients match (Desktop's restore/edit toast); the rest is the log line.
+COMPACTED_TARGET_DETAIL = 'compacted: target user message was summarized when the session was compressed'
+
+
+def _summarized_by_compaction(conn, physical, message_id):
+    """Whether *message_id* is a user turn compaction took out of *physical*'s live transcript, as
+    opposed to one a rewind/undo deactivated, an assistant row, or no row at all. In-place compaction
+    archives with ``active=0, compacted=1`` (``_ARCHIVE_ACTIVE_SQL``) while rewind, undo and replace
+    mark ``active=0, compacted=0``; a rotating compaction leaves the turn on a compression ancestor of
+    *physical*, still displayed (``active=1 OR compacted=1``)."""
+    row = conn.execute('SELECT session_id, role, active, compacted FROM messages WHERE id=?',
+                       (message_id,)).fetchone()
+    if row is None or row['role'] != 'user':
+        return False
+    if row['session_id'] == physical:
+        return row['active'] == 0 and row['compacted'] == 1
+    if not (row['active'] == 1 or row['compacted'] == 1):
+        return False
+    from hermes_state_sessions import _expand_compression_lineage_ids
+    from hermes_state_compression import _CHAIN_CAP
+    lineage, frontier = {physical}, [physical]
+    for _ in range(_CHAIN_CAP):
+        frontier = [sid for sid in _expand_compression_lineage_ids(conn, frontier) if sid not in lineage]
+        if not frontier:
+            break
+        lineage.update(frontier)
+    return row['session_id'] in lineage
 
 
 def _carrier_live_view(db, conn, session_id, message_id):

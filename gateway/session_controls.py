@@ -103,6 +103,13 @@ def display_projection(history, profile_home):
     return server._history_to_messages(rows, profile_home=profile_home)
 
 
+def model_only(row):
+    """A live row the model reads but nobody typed as one message (a micro-compaction merge): never rendered."""
+    from agent.context_compressor import MODEL_ONLY_DISPLAY_METADATA_KEY
+    metadata = row.get('display_metadata')
+    return isinstance(metadata, dict) and bool(metadata.get(MODEL_ONLY_DISPLAY_METADATA_KEY))
+
+
 class AuthorityConnection:
     def __init__(self, authority, transport, identity, *, operator=False):
         self.authority = authority
@@ -219,6 +226,8 @@ class AuthorityConnection:
         handlers['message.react'] = partial(react, self)
         from gateway.session_clarify_lock import clarify_lock
         handlers['clarify.lock'] = partial(clarify_lock, self)
+        from gateway.session_connections import handlers as connection_handlers
+        handlers.update(connection_handlers(self))
         from gateway.session_control_actions import control
         handlers['session.control'] = partial(control, self)
         return handlers
@@ -288,12 +297,14 @@ class AuthorityConnection:
             # launch profile's config into a served secondary's session. Under a single profile
             # the scope is that profile's own home, so behaviour is unchanged.
             from gateway.session_authorities import owner_scope
+            from gateway.session_connections import METHODS as CONNECTION_METHODS, session_owned
             with owner_scope(self.authority):
                 if method in GROUP_METHODS or method == 'profiles.list':
                     result = await dispatch_group_control(self, method, params)
-                elif method not in handlers:
+                elif method not in handlers or (method in CONNECTION_METHODS and not session_owned(params)):
                     # JSON-RPC's own verdict: clients key compat fallbacks on -32601, and a
                     # 4001 'invalid_params' would read as a bad argument on a method that exists.
+                    # An account-owned connector call (the Connectors page) keeps its legacy handler.
                     return {'jsonrpc': '2.0', 'id': rid, 'error': {
                         'code': -32601, 'message': f'unknown method: {method}',
                         'data': {'reason': 'unknown_method'}}}
@@ -307,8 +318,10 @@ class AuthorityConnection:
             return {'jsonrpc': '2.0', 'id': rid, 'result': result}
         except RuntimeStoreError as exc:
             _log_refusal(getattr(self.actor, 'profile_id', None), method, exc)
+            # A connector refusal keeps the legacy handlers' code and message (gateway/session_connections.py).
             return {'jsonrpc': '2.0', 'id': rid, 'error': {
-                'code': 4001, 'message': exc.reason, 'data': _refusal_data(exc)}}
+                'code': getattr(exc, 'wire_code', 4001), 'message': getattr(exc, 'wire_message', exc.reason),
+                'data': _refusal_data(exc)}}
         except sqlite3.Error as exc:
             _log_storage_failure(getattr(self.actor, 'profile_id', None), method,
                                  params.get('session_id'), exc)
@@ -610,9 +623,12 @@ class AuthorityConnection:
             from gateway.session_policy import policy_for_source, refresh_profile_hooks
             await asyncio.to_thread(refresh_profile_hooks, policy_for_source(self.authority.runner, source))
             info = await snapshot_info(self.authority, snapshot.handle.ref)
+        from gateway.session_connections import pending_connection
         display = {}
         if params.get('display_projection'):
-            display['display_messages'] = display_projection(snapshot.history, self.authority.profile_id)
+            # A micro-compaction merge stays in ``messages`` (an undo target); its originals are what shows.
+            display['display_messages'] = display_projection(
+                [row for row in snapshot.history if not model_only(row)], self.authority.profile_id)
         return {'session_id': ref.session_id, 'stored_session_id': ref.session_id,
                 'messages': list(snapshot.history), **display, 'message_count': len(snapshot.history),
                 'running': snapshot.handle.execution_state == 'running',
@@ -621,7 +637,8 @@ class AuthorityConnection:
                 'subscription_id': snapshot.subscription_id, 'revision': snapshot.handle.revision,
                 'execution_generation': snapshot.handle.execution_generation,
                 'pending': [asdict(r) for r in snapshot.pending],
-                'prompts': list(snapshot.prompts), 'info': info}
+                'prompts': list(snapshot.prompts), 'info': info,
+                'pending_connection': pending_connection(self.authority, ref.session_id)}
 
     def _spawn_notice(self, ref):
         """Low-disk auto-prune question for this viewer, off the resume reply's path."""

@@ -10595,6 +10595,17 @@
           },
           "info": {
             "$ref": "#/components/schemas/CanonicalSnapshotInfo"
+          },
+          "pending_connection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConnectionRequestPayload"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -31969,6 +31980,30 @@
             ],
             "default": null,
             "title": "Turn Isolation"
+          },
+          "admission_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Admission Id"
+          },
+          "forwarded": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Forwarded"
           }
         },
         "title": "PromptSubmitResult",

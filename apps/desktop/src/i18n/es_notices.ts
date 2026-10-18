@@ -24,6 +24,9 @@ export const esNotices = {
       'Este chat está ocupado: el cambio de MCP se aplica cuando termine su turno y MCP se recargue de nuevo, o al volver a abrir el chat',
     mcpReloadNotInChat: server => `${server} no está activado en este chat`,
     mcpReloadUnavailable: servers => `No se conectó: ${servers}`,
+    compactedTurnUnavailable:
+      'Ese mensaje se resumió al comprimir el chat, así que ya no se puede restaurar ni editar.',
+    staleTurnUnavailable: 'Ese mensaje ya no está en el historial de este chat.',
     sessionCommands: esSessionCommands
   },
   keepAwakeOffer: {

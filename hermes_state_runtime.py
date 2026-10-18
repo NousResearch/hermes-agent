@@ -404,6 +404,43 @@ def rehome_queued_inputs(db, *, epoch: int, old_session_id: str, new_session_id:
     return db._execute_write(write)
 
 
+def retarget_local_automation(db, *, epoch: int, session_id: str, principal_id: str,
+                               old_targets, new_target: str) -> list[str]:
+    """Point a LOCAL owner's still-queued ``principal_id`` automation rows (a Bot Chat's queued
+    ``hermes peer dm`` turns, plugin and completion notices) that name a pre-reset transcript in
+    ``old_targets`` at ``new_target``, in one transaction (the compression-exhaustion auto-reset).
+    A LOCAL FIFO's owner is its receipt id and survives the reset; only the descriptor's ``target``
+    goes stale, and the drain refuses a stale one (``admission_conflict``), pausing the FIFO for
+    good. Admission id, request id and seq are kept; the digest is re-keyed to the new payload.
+    Nothing moves behind an ``unknown`` head. Returns the retargeted admission ids in FIFO order."""
+    for value in (session_id, principal_id, new_target, *old_targets):
+        _text(value)
+    old_targets = set(old_targets)
+
+    def write(conn):
+        _epoch(conn, epoch)
+        _session(conn, new_target)
+        if conn.execute("SELECT 1 FROM session_admissions WHERE target_session_id=? AND status='unknown'",
+                        (session_id,)).fetchone():
+            return []
+        moved = []
+        for row in conn.execute("SELECT * FROM session_admissions WHERE target_session_id=? AND status='queued' "
+                                "AND principal_id=? ORDER BY seq", (session_id, principal_id)).fetchall():
+            payload = json.loads(row['payload_json'])
+            descriptor = payload.get('local_automation_v1') if isinstance(payload, dict) else None
+            if not isinstance(descriptor, dict) or descriptor.get('target') not in old_targets:
+                continue
+            descriptor['target'] = new_target
+            digest = admission_fingerprint(canonical_target=session_id, payload={'input': payload, 'intent': row['intent']})
+            conn.execute("UPDATE session_admissions SET payload_json=?,payload_digest=? WHERE admission_id=? AND status='queued'",
+                         (_json(payload), digest, row['admission_id']))
+            moved.append(row['admission_id'])
+        if moved:
+            conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (session_id,))
+        return moved
+    return db._execute_write(write)
+
+
 def recover_session_inputs(db, *, epoch: int) -> int:
     """Never replay started work. Live worker adoption is a separate explicit operation."""
     def write(conn):

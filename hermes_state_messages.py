@@ -23,8 +23,9 @@ from hermes_state_common import (
     _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _ended_by_compression,
     _json_or, _legacy_reset_child_sql, _placeholders, _sql_json_extract)
 from hermes_state_detached_results import SessionDetachedResultsMixin
+from hermes_state_todo import SessionTodoResultMixin
 from hermes_state_identity import (
-    _absorbed_uids_json, _restore_identity_columns, _stable_tool_key, _tool_call_uid_map, _tool_call_uid_or_none, _tool_call_uids_json)
+    _absorbed_uids_json, _restore_identity_columns, _stable_tool_key, _tool_call_uid_map, _tool_call_uid_or_none, _tool_call_uids_json, _uid_list)
 from hermes_state_write_guards import REVIEW_LEASE_YIELD
 
 logger = logging.getLogger("hermes_state")  # caplog tests pin the origin module's name
@@ -111,7 +112,7 @@ def _scrub_surrogates(value: Any) -> Any:
     return _sanitize_surrogates(value) if isinstance(value, str) else value
 
 
-class SessionMessagesMixin(SessionDetachedResultsMixin):
+class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
     """Message append/replace/rewind, reactions, resume conversations, replay dedupe (detached results: the base)."""
 
     def _bump_conversation_generation(self, conn, session_id: str, end_reason: str) -> None:
@@ -524,79 +525,6 @@ class SessionMessagesMixin(SessionDetachedResultsMixin):
                     conn.execute(_SET_DISPLAY_META_SQL, (self._encode_display_metadata(meta), row["id"]))
             return pending
         return self._execute_write(_do)
-
-    def get_latest_todo_result(self, session_id: str, *, max_chars: Optional[int] = None) -> Optional[str]:
-        """Newest visible, paired and valid Todo result in the resume display scope.
-
-        Search indexed, bounded pages rather than loading a potentially long transcript. A branch owns its
-        copied history; compression continuations also show their ancestors' archived rows. Invalid results
-        are skipped just as the model's Todo hydration does, and explicit empty results are retained.
-        """
-        if not session_id:
-            return None
-        if max_chars is None:
-            from tools.todo_tool import MAX_TODO_RESULT_CHARS
-            max_chars = MAX_TODO_RESULT_CHARS
-        session_ids = self._resume_lineage_ids(session_id)
-        with self._read_ctx() as conn:
-            for sid in reversed(session_ids):
-                before_id = 2**63 - 1
-                while True:
-                    rows = conn.execute(
-                        "SELECT id, content, tool_call_id FROM messages INDEXED BY idx_messages_session_id "
-                        "WHERE session_id = ? AND id < ? AND role = 'tool' "
-                        "AND tool_name IN ('todo_list', 'todo') AND (active = 1 OR compacted = 1) "
-                        "AND length(content) <= ? ORDER BY id DESC LIMIT 100",
-                        (sid, before_id, max_chars),
-                    ).fetchall()
-                    if not rows:
-                        break
-                    for row in rows:
-                        call_id = row["tool_call_id"]
-                        if not call_id:
-                            continue
-                        prior = conn.execute(
-                            "SELECT role, tool_calls FROM messages INDEXED BY idx_messages_session_id "
-                            "WHERE session_id = ? AND id < ? AND role IN ('assistant', 'user', 'system') "
-                            "AND (active = 1 OR compacted = 1) ORDER BY id DESC LIMIT 1",
-                            (sid, row["id"]),
-                        ).fetchone()
-                        if prior is None or prior["role"] != "assistant":
-                            continue
-                        try:
-                            calls = json.loads(prior["tool_calls"]) if prior["tool_calls"] else []
-                            def is_todo_call(call):
-                                if not isinstance(call, dict) or call.get("id") != call_id:
-                                    return False
-                                function = call.get("function")
-                                if not isinstance(function, dict):
-                                    return False
-                                if function.get("name") in ("todo_list", "todo"):
-                                    return True
-                                if function.get("name") != "tool_call":
-                                    return False
-                                arguments = function.get("arguments")
-                                if isinstance(arguments, str):
-                                    arguments = json.loads(arguments)
-                                if not isinstance(arguments, dict):
-                                    return False
-                                inner_calls = arguments.get("calls")
-                                return isinstance(inner_calls, list) and any(
-                                    isinstance(inner, dict) and inner.get("name") in ("todo_list", "todo")
-                                    for inner in inner_calls)
-
-                            paired = isinstance(calls, list) and any(is_todo_call(call) for call in calls)
-                            if not paired:
-                                continue
-                            data = json.loads(row["content"])
-                            if not isinstance(data, dict) or not isinstance(data.get("todos"), list):
-                                continue
-                            int(data.get("revision") or 0)
-                        except (ValueError, TypeError):
-                            continue
-                        return row["content"]
-                    before_id = rows[-1]["id"]
-        return None
 
     def latest_message_row_id(self, session_id: str, *, role: str = "user", offset: int = 0,
                               require_text: bool = True) -> Optional[int]:
@@ -1139,23 +1067,55 @@ class SessionMessagesMixin(SessionDetachedResultsMixin):
         """Fixed-width durable identity for indexed display-generation lookup."""
         return hashlib.sha256(repr(key).encode("utf-8", "surrogatepass")).digest()
 
-    def _dedupe_display_generations(self, rows):
+    def _dedupe_display_generations(self, rows, *, drop_removed: bool = False):
         """Collapse compaction generations so each logical message appears once (the protected tail is copied
         into each generation: same role/content/timestamp, different ``active``/id); prefer the live row, then
-        the newest. The ONE definition every display projection shares. *rows* must be ordered by ``id``."""
+        the newest. The ONE definition every display projection shares. *rows* must be ordered by ``id``.
+
+        *drop_removed*: *rows* also hold the removed rows (``active=0, compacted=0``: rewound, or replaced by a
+        newer copy) and ``compacted``. A message whose newest copy is removed is not shown, so a rewind in a
+        compression child never brings back the parent's copy. Copies share the display key or ``message_uid``
+        (a micro-compaction merge also stands for the rows it absorbed)."""
         seen: dict[tuple[Any, ...], Any] = {}
         first_id: dict[tuple[Any, ...], int] = {}
+        removed: dict[Any, bool] = {}  # copy identity -> its newest copy is removed (rows come in id order)
+        identities: dict[tuple[Any, ...], list[Any]] = {}
+        removed_ts: set[Any] = set()
+        if drop_removed:
+            rows = rows if isinstance(rows, list) else list(rows)
+            # Every display key carries the row's timestamp third, so a live row can share a removed row's identity
+            # only at one of the removed rows' timestamps; hash just those (a sha256 per live row cost a warm
+            # 30k-row resume ~0.17 s, RT-39). No removed row at all: nothing can hide a copy.
+            removed_ts = {row["timestamp"] for row in rows if not row["active"] and not row["compacted"]}
+            drop_removed = bool(removed_ts)
         for row in rows:
+            copies, key = None, None
+            if drop_removed:
+                # A removed row is read without its body (``_removed_identity_rows``): its stored display identity.
+                gone = not row["active"] and not row["compacted"]
+                stored = row["display_identity"] if gone else None
+                key = None if stored else self._display_dedupe_key(row)
+                hashed = stored or (self._display_identity(key) if key is not None and (
+                    gone or row["timestamp"] in removed_ts) else None)
+                copies = [*((hashed,) if hashed else ()), *(
+                    ("uid", uid) for uid in (row["message_uid"], *_uid_list(row["absorbed_message_uids"])) if uid)]
+                removed.update(dict.fromkeys(copies, gone))
+                if gone:
+                    continue
             if self._is_model_only_row(row):
                 continue
-            key = self._display_dedupe_key(row)
+            key = key or self._display_dedupe_key(row)
             cur = seen.get(key)
             if cur is None or (row["active"], row["id"]) > (cur["active"], cur["id"]):
                 seen[key] = row
+                identities[key] = copies
             first_id[key] = min(first_id.get(key, row["id"]), row["id"])
         # Order by the logical message's FIRST row, not the chosen representative's: a protected-tail
         # copy in a newer generation has a higher id than messages emitted after the original.
-        return [seen[key] for key in sorted(seen, key=first_id.__getitem__)]
+        keys = sorted(seen, key=first_id.__getitem__)
+        if drop_removed:
+            keys = [key for key in keys if not any(removed[copy] for copy in identities[key])]
+        return [seen[key] for key in keys]
 
     def _reconcile_display_orders(self, conn, session_id: str) -> None:
         """Re-fold split display generations by the recomputed display key.
@@ -1348,8 +1308,11 @@ class SessionMessagesMixin(SessionDetachedResultsMixin):
             # canonical multi-segment projection in get_messages_as_conversation(include_ancestors=True).
             # (display_order is per-segment and not comparable across segments, so the per-segment
             # display_order paging below does not apply across a lineage.)
-            rows = self._dedupe_display_generations(self._read_all(
-                f"SELECT * FROM messages WHERE session_id IN ({_placeholders(session_ids)})" + active_clause + " ORDER BY id ASC", session_ids))
+            display = include_compacted and not include_inactive  # removed rows too: see drop_removed
+            rows = self._read_all(f"SELECT * FROM messages WHERE session_id IN ({_placeholders(session_ids)})"
+                                  + active_clause + " ORDER BY id ASC", session_ids)
+            rows = self._dedupe_display_generations(
+                self._with_removed_identities(rows, session_ids) if display else rows, drop_removed=display)
             rows = rows[::-1][offset:][:limit][::-1] if latest else rows[offset:][:limit]
         elif include_compacted and not include_inactive and self._ensure_display_order(session_id):
             # _read_retrying_ioerr: mode=ro pooled readers see a transient IOERR mid-checkpoint (#100871).
@@ -1445,13 +1408,29 @@ class SessionMessagesMixin(SessionDetachedResultsMixin):
                 seen.add(current)
             return best if best is not None else session_id
 
-    def _fetch_conversation_rows(self, session_ids: list[str], active_clause: str, *, with_session_id: bool):
+    def _fetch_conversation_rows(self, session_ids: list[str], active_clause: str, *, with_session_id: bool,
+                                 with_compacted: bool = False):
         """``_CONVERSATION_ROW_COLUMNS`` rows for *session_ids* ORDER BY id (timestamps are not monotonic
-        and would break tool-call adjacency)."""
-        return self._read_all(
-            f"SELECT {'session_id, ' if with_session_id else ''}{self._CONVERSATION_ROW_COLUMNS} "
+        and would break tool-call adjacency). ``with_compacted``: the display set (``active_clause`` is
+        ignored) with the ``compacted`` column, plus the removed rows' identities for ``drop_removed``."""
+        rows = self._read_all(
+            f"SELECT {'session_id, ' if with_session_id else ''}{'compacted, ' if with_compacted else ''}"
+            f"{self._CONVERSATION_ROW_COLUMNS} "
             f"FROM messages WHERE session_id IN ({_placeholders(session_ids)})"
-            f"{active_clause} ORDER BY id", tuple(session_ids))
+            f"{_DISPLAY_ACTIVE_CLAUSE if with_compacted else active_clause} ORDER BY id", tuple(session_ids))
+        return self._with_removed_identities(rows, session_ids) if with_compacted else rows
+
+    def _with_removed_identities(self, rows, session_ids: list[str]) -> list[Any]:
+        """*rows* (ordered by id) merged with the identities of the lineage's removed rows (``active=0,
+        compacted=0``), which ``_dedupe_display_generations(drop_removed=True)`` needs only to hide a copy, never
+        to show: no body (a legacy row without a stored display identity keeps its content for the key)."""
+        removed = self._read_all(
+            "SELECT session_id, id, role, timestamp, tool_call_id, tool_calls, tool_name, display_kind, display_metadata, "
+            "message_uid, absorbed_message_uids, display_identity, active, compacted, "
+            "CASE WHEN display_identity IS NULL THEN content END AS content "
+            f"FROM messages WHERE session_id IN ({_placeholders(session_ids)}) AND active = 0 AND compacted = 0 "
+            "ORDER BY id", tuple(session_ids))
+        return sorted([*rows, *removed], key=lambda row: row["id"]) if removed else list(rows)
 
     def get_messages_as_conversation(self, session_id: str, include_ancestors: bool = False,
                                      include_inactive: bool = False, repair_alternation: bool = False,
@@ -1462,14 +1441,28 @@ class SessionMessagesMixin(SessionDetachedResultsMixin):
         repairs the loaded list for LIVE REPLAY callers (a durable ``user;user`` pair would re-trigger the
         per-request repair forever), preserving summary markers before repair so derivative context
         cannot merge with an original user turn; the stored transcript is never mutated."""
+        display = include_compacted and not include_inactive  # removed rows too: see drop_removed
         rows = self._fetch_conversation_rows(
             self._resume_lineage_ids(session_id) if include_ancestors else [session_id],
-            self._active_clause(include_inactive, include_compacted), with_session_id=False)
+            self._active_clause(include_inactive, include_compacted), with_session_id=False, with_compacted=display)
         if include_compacted:
-            rows = self._dedupe_display_generations(rows)
+            rows = self._dedupe_display_generations(rows, drop_removed=display)
         return self._rows_to_conversation(rows, session_id=session_id, include_ancestors=include_ancestors,
             repair_alternation=repair_alternation, include_row_ids=include_row_ids,
             include_summary_markers=repair_alternation)
+
+    def conversation_revision(self, session_id: str, include_ancestors: bool = False) -> tuple:
+        """A cheap fingerprint of what ``get_messages_as_conversation`` (live rows) would load: the
+        lineage ids, the active rows' count and highest id, and the sessions' write-side
+        ``transcript_revision`` (bumped by a trigger on every in-place row rewrite). Any append,
+        rewind, undo, compaction or rewrite moves it, so a payload derived from the transcript can be
+        reused while it holds."""
+        ids = self._resume_lineage_ids(session_id) if include_ancestors else [session_id]
+        marks = _placeholders(ids)
+        row = self._read_one(
+            f"SELECT COUNT(*), COALESCE(MAX(id), 0), (SELECT COALESCE(SUM(transcript_revision), 0) FROM sessions"
+            f" WHERE id IN ({marks})) FROM messages WHERE session_id IN ({marks}) AND active = 1", (*ids, *ids))
+        return (tuple(ids), int(row[0]), int(row[1]), int(row[2]))
 
     def _dedupe_replayed_user(self, messages, msg, exact_user_clones) -> tuple[bool, Any]:
         """Ancestor-lineage dedupe of one decoded user *msg* -> ``(skip, exact_clone_key)``. Rotation
@@ -1600,7 +1593,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin):
         always included them) disagreed with this one about the same session (#92080).
         """
         rows = self._fetch_conversation_rows(
-            self._resume_lineage_ids(session_id), _DISPLAY_ACTIVE_CLAUSE, with_session_id=True)
+            self._resume_lineage_ids(session_id), "", with_session_id=True, with_compacted=True)
         # The model projection stays active-only: it is the compressed working context. The gateway's
         # first-turn ``session_meta`` marker (tools/model/platform bookkeeping) is transcript logging,
         # never LLM input: a resuming surface that fed it to the agent would count it in the history
@@ -1610,7 +1603,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin):
             session_id=session_id,
             include_ancestors=False, repair_alternation=True, include_row_ids=True, include_summary_markers=True)
         display_history = self._rows_to_conversation(
-            self._dedupe_display_generations(rows), session_id=session_id,
+            self._dedupe_display_generations(rows, drop_removed=True), session_id=session_id,
             include_ancestors=True, repair_alternation=False, include_row_ids=True)
         return model_history, display_history
 
@@ -1682,8 +1675,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin):
         session_ids = self._resume_lineage_ids(session_id)
         if len(session_ids) <= 1:
             return []
-        rows = self._dedupe_display_generations(
-            self._fetch_conversation_rows(session_ids, _DISPLAY_ACTIVE_CLAUSE, with_session_id=True))
+        rows = self._dedupe_display_generations(self._fetch_conversation_rows(
+            session_ids, "", with_session_id=True, with_compacted=True), drop_removed=True)
         ancestor_ids = {int(row["id"]) for row in rows if row["session_id"] != session_id and row["id"] is not None}
         if not ancestor_ids:
             return []

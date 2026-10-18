@@ -113,6 +113,20 @@ def _compression_descendant(session_db, session_id):
     return resolved_id if resolved_id and resolved_id != session_id else None
 
 
+def _gateway_owned_id(session_db, session_id):
+    """The id the gateway answers for physical row *session_id*: ``session.resume``'s
+    ``stored_session_id``. A canonical local compression segment holds the transcript, but its creation
+    receipt lives on the conversation's logical owner, which every turn and mutation must name (as Ink
+    and ``session.resume`` do). Unchanged off the gateway store or when the resume is refused."""
+    from hermes_cli.gateway_session_store import GatewaySessionStore
+    if not isinstance(session_db, GatewaySessionStore):
+        return session_id
+    try:
+        return session_db.attach(session_id).get("stored_session_id") or session_id
+    except Exception:  # health: allow BLE001 -- a refused attach leaves main's own resume path to report it
+        return session_id
+
+
 def _user_display_text(content) -> str:
     """Recap text for a user row; multimodal lists become text parts + ``[image]`` markers."""
     if isinstance(content, list):
@@ -529,11 +543,19 @@ class CLIAgentSetupMixin:
     def _follow_compression_chain(self, session_meta, announce):
         """If the resumed id is an empty compression-chain head, announce and switch to
         the descendant holding the messages; returns the (possibly refreshed) meta."""
+        self._resume_read_id = self.session_id
         resolved_id = _compression_descendant(self._session_db, self.session_id)
         if resolved_id:
-            announce(resolved_id)
-            self.session_id = resolved_id
-            session_meta = self._session_db.get_session(self.session_id) or session_meta
+            session_meta = self._session_db.get_session(resolved_id) or session_meta
+            self._resume_read_id = resolved_id
+            owner = _gateway_owned_id(self._session_db, resolved_id)
+            if owner != resolved_id:
+                # The transcript is read from the tip segment; the session stays addressed by the
+                # id the gateway holds its receipt for (a segment id is refused storage_unavailable).
+                self.session_id = owner
+            else:
+                announce(resolved_id)
+                self.session_id = resolved_id
         return session_meta
 
     def _restore_session_state(self, session_meta, *, quiet: bool = False) -> None:
@@ -590,7 +612,7 @@ class CLIAgentSetupMixin:
                 t("cli.resume.cannot_resume", error=resume_limit_error),
                 f"[bold red]{_escape(t('cli.resume.cannot_resume_prefix'))}[/] {_escape(resume_limit_error)}")
             return False
-        restored = self._session_db.get_messages_as_conversation(self.session_id, repair_alternation=True)
+        restored = self._session_db.get_messages_as_conversation(self._resume_read_id, repair_alternation=True)
         if restored:
             restored = [m for m in restored if m.get("role") != "session_meta"]
             self.conversation_history = restored
@@ -761,7 +783,8 @@ class CLIAgentSetupMixin:
             safety_check = getattr(self._session_db, "assert_resume_safe", None)
             if not callable(safety_check):
                 return None
-            safety_check(self.session_id, **({"tip_only": True} if tip_only else {}))
+            safety_check(getattr(self, "_resume_read_id", None) or self.session_id,
+                         **({"tip_only": True} if tip_only else {}))
         except SessionResumeTooLargeError as exc:
             return str(exc)
         except Exception as exc:
@@ -790,7 +813,7 @@ class CLIAgentSetupMixin:
         # an ordinary CLI resume would be a live writer the board cannot observe. Refuse AND
         # fall back to a fresh session id, so this process never appends to the worker row.
         from hermes_cli.kanban_resume_guard import kanban_resume_refusal
-        if (kanban_refusal := kanban_resume_refusal(self._session_db, self.session_id)):
+        if (kanban_refusal := kanban_resume_refusal(self._session_db, self._resume_read_id)):
             self._console_print(f"[bold red]{_escape(kanban_refusal)}[/]")
             self._resumed = False
             from hermes_state_ids import new_session_id
@@ -801,7 +824,7 @@ class CLIAgentSetupMixin:
             self._resume_history_error = resume_limit_error
             self._console_print(f"[bold red]{_escape(t('cli.resume.cannot_resume_prefix'))}[/] {resume_limit_error}")
             return False
-        restored, display_history = self._session_db.get_resume_conversations(self.session_id)
+        restored, display_history = self._session_db.get_resume_conversations(self._resume_read_id)
         accent_color = _accent_hex()
         if not restored:
             self._console_print(

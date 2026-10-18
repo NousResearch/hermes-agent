@@ -927,6 +927,58 @@ def policy_scope(policy, *, authority=None):
         _TURN_PROFILE.reset(profile_token)
 
 
+def bind_turn_workspace(policy, task_id):
+    """Make the session's frozen workspace its terminal cwd override for this turn's tools (#140665).
+
+    The client's cwd (or ``--in DIR``) is frozen into the policy at admission, but the terminal tool
+    mounts ``resolve_task_overrides(task_id)['cwd']`` into a per-session Docker container. Before the
+    one-gateway runtime each ``hermes chat`` was its own process with its own ``TERMINAL_CWD``; now the
+    turn runs here, so register it under the turn's own task id (inside the turn's routed scope, which
+    qualifies the key). Docker mounting the host cwd only: the local backend already runs in the
+    policy's ``TERMINAL_CWD``, and ssh and the other sandboxes keep their own cwd. Re-registered only
+    when the workspace changed, so an agent's ``cd`` inside the session survives later turns.
+    """
+    if policy is None or not task_id:
+        return
+    terminal = json.loads(policy.terminal_json)
+    if str(terminal.get('TERMINAL_ENV') or '').strip().lower() != 'docker' or not terminal_uses_host_cwd(terminal):
+        # The session moved off a host-cwd Docker mount (e.g. to SSH with its own terminal.cwd): the
+        # binding an earlier turn registered would otherwise win in _plan_execution on the new backend.
+        unbind_turn_workspace(task_id)
+        return
+    from tools.terminal_tool import register_task_env_overrides, resolve_task_overrides, workspace_key_for
+    current = resolve_task_overrides(task_id)
+    if current.get('cwd') == policy.cwd and current.get('cwd_source') == 'session':
+        return
+    register_task_env_overrides(task_id, {**current, 'cwd': policy.cwd, 'cwd_source': 'session',
+                                          'workspace_key': workspace_key_for(policy.cwd)})
+
+
+def unbind_turn_workspace(task_id):
+    """Drop the workspace override :func:`bind_turn_workspace` registered for *task_id*, and the cwd
+    record it seeded. Only its own entry (tagged ``workspace_key``): an ACP/TUI workspace or an RL
+    image override registered by someone else under the same id stays."""
+    if not task_id:
+        return
+    from tools.terminal_tool import _qualify_task_key, _task_env_overrides, clear_session_cwd, get_session_cwd
+    key = _qualify_task_key(task_id)
+    current = _task_env_overrides.get(key) or {}
+    if 'workspace_key' not in current:
+        return
+    _task_env_overrides.pop(key, None)
+    if get_session_cwd(task_id) == current.get('cwd'):
+        clear_session_cwd(task_id)
+
+
+def release_session_workspaces(authority, session_ids):
+    """Session teardown: drop each session's workspace binding under its owning profile's scope (the
+    key the turn bound it under), so the override table does not grow with every closed session."""
+    from gateway.session_authorities import owner_scope
+    with owner_scope(authority):
+        for sid in session_ids:
+            unbind_turn_workspace(sid)
+
+
 @contextmanager
 def profile_read_scope(policy, authority):
     """Hold ONE read of a following session's profile for every resolution inside, as a turn's

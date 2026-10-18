@@ -237,9 +237,12 @@ def _drop_terminal(authority, ref):
     from tools.terminal_tool_lifecycle import cleanup_vm
     ids = {ref.session_id, local_receipt(authority.db, ref.session_id)['entry']['session_id']}
     route = authority.sessions[ref.session_id].route
+    from gateway.session_policy import unbind_turn_workspace
     with owner_scope(authority):
         keys = {_qualify_task_key(key) for key in (f'session:{route}', *ids)}
         for key in (route, *ids):
+            # The turn's workspace binding goes with them: it wins over the new binding's cwd too.
+            unbind_turn_workspace(key)
             clear_session_cwd(key)
     for key in keys:
         cleanup_vm(key)

@@ -18,7 +18,7 @@ import time
 import uuid
 
 from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
-from hermes_cli.gateway_connection import DISCONNECTED, lost_before
+from hermes_cli.gateway_connection import DISCONNECTED, CallStopped, lost_before
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +62,30 @@ class _TodoView:
 
     def read(self):
         return list(self.items)
+
+
+class _Turn:
+    """One ``run_conversation``; what each consumer got of the reply's current segment (``shown``: the
+    terminal, ``spoken``: ``stream_callback``) and the closed segments and interims (``seen``), for the
+    settlement after a replay gap."""
+
+    def __init__(self, session_id):
+        self.session_id, self.admission = session_id, None
+        # Parts, joined on read: ``+=`` on an attribute copies the whole segment per delta (quadratic).
+        self._shown, self._spoken = [], []
+        self.seen, self.answered, self.gapped = set(), set(), False
+
+    @property
+    def shown(self):
+        return "".join(self._shown)
+
+    @property
+    def spoken(self):
+        return "".join(self._spoken)
+
+    def close_segment(self):
+        self.seen |= {self.shown.strip(), self.spoken.strip()}
+        self._shown, self._spoken = [], []
 
 
 class GatewayAgent:
@@ -152,6 +176,7 @@ class GatewayAgent:
         self._todo_store = _TodoView()
         self._generation = None
         self._admission = None
+        self._turn = None  # a turn a later one replaced stops taking frames
         self._epoch = None  # the connection epoch this turn was submitted on
         self._interrupt_sent_at = None
         self._rate_limit_state = None
@@ -500,7 +525,8 @@ class GatewayAgent:
         compressor.compression_count += 1
         compressor.last_prompt_tokens = -1
         self._turn_base_usage_anchor = None
-        return [{k: v for k, v in m.items() if k != "row_id"} for m in after.get("messages") or []], system_message
+        return [{k: v for k, v in m.items() if k != "row_id"} for m in after.get("messages") or []
+                if not m.get("archived")], system_message
 
     def steer(self, text):
         return self._correct("steer", text)
@@ -568,6 +594,7 @@ class GatewayAgent:
 
     def run_conversation(self, user_message, conversation_history=None, stream_callback=None,
                          task_id=None, persist_user_message=None, turn_author=None, **_kw):
+        turn = self._turn = _Turn(self.session_id)  # first: a turn main gave up on stops consuming
         history = list(conversation_history or [])
         self._turn_ask_index = len(history)  # the staged ask's row in this turn's transcript
         self._turn_api_calls = None
@@ -584,8 +611,15 @@ class GatewayAgent:
         else:
             self._drain_stale()
             try:
-                receipt = self.connection.call("prompt.submit", **self._submit_params(
-                    user_message, persist_user_message, turn_author))
+                state = self._state()
+                if state.gaps != state.attached_gaps:  # a replay gap between turns retired the subscription
+                    self.connection.reattach(turn.session_id, abandon=self._stop(turn))
+                params = self._submit_params(user_message, persist_user_message, turn_author)
+                if self._stop(turn)():
+                    raise CallStopped("prompt.submit")
+                receipt = self.connection.call("prompt.submit", **{**params, "session_id": turn.session_id})
+            except CallStopped:  # main moved on (a later turn, /new, Ctrl-C's bound) before the submit
+                return self._failed(history, user_message, "Stopped before the prompt was sent; nothing was sent.")
             except GatewayRPCError as exc:
                 # The owner answered and refused: not a lost connection. Only its own site code
                 # (session_busy: send again) is a verdict; any other refusal stays unclassified.
@@ -595,18 +629,24 @@ class GatewayAgent:
             except GatewayClientError as exc:
                 return self._failed(history, user_message, str(exc), failure_reason="gateway_connection")
         self._epoch = getattr(self.connection, "epoch", None)
-        self._admission = (receipt or {}).get("admission_id")
+        turn.admission = self._admission = (receipt or {}).get("admission_id")
         if receipt and receipt.get("execution_generation") is not None:
             self._generation = receipt["execution_generation"]
         starts: dict = {}
         try:
-            outcome = self._pump(stream_callback, starts)
+            outcome = self._pump(stream_callback, starts, turn)
         finally:
-            self._generation_done()
-        if isinstance(outcome, Exception):
+            if self._owns(turn):
+                self._generation_done()
+        if isinstance(outcome, Exception) and self._owns(turn):
             return self._failed(history, user_message, str(outcome) or DISCONNECTED,
                                 failure_reason="gateway_connection")
-        return self._result(history, user_message, outcome)
+        result = self._result(history, user_message, outcome, turn) if self._owns(turn) else None
+        if not self._owns(turn):  # a later turn or a session switch took over: it reads and paints nothing
+            return self._failed(history, user_message, "A later turn took over this terminal.")
+        if turn.gapped:
+            self._paint_owed(turn, result, outcome, stream_callback)
+        return result
 
     def _drain_stale(self):
         """Frames left from an earlier turn of this viewer (a late settlement) are not this turn's."""
@@ -624,18 +664,36 @@ class GatewayAgent:
     def _generation_done(self):
         self._generation = None
 
-    def _pump(self, stream_callback, starts):
+    def _expired(self):
+        return self._interrupt_sent_at is not None and time.monotonic() - self._interrupt_sent_at > INTERRUPT_SETTLE_SECONDS
+
+    def _owns(self, turn):
+        return self._turn is turn and self.session_id == turn.session_id
+
+    def _stop(self, turn):
+        """The ``abandon`` of a turn's blocking reads: it lost the terminal, or Ctrl-C's settle bound passed."""
+        return lambda: not self._owns(turn) or self._expired()
+
+    def _lost(self, turn):
+        """The ``abandon`` of a turn's end-of-turn reads (its receipt, the cumulative stats): only losing the
+        terminal stops them. Past Ctrl-C's settle bound they still run, bounded by their own timeouts."""
+        return lambda: not self._owns(turn)
+
+    def _pump(self, stream_callback, starts, turn):
         """Dispatch frames until this admission's ``message.complete``; returns its payload, or the
         transport error (disconnect)."""
         events = self.connection.events
-        while True:
-            if (self._interrupt_sent_at is not None
-                    and time.monotonic() - self._interrupt_sent_at > INTERRUPT_SETTLE_SECONDS):
+        while self._owns(turn):
+            if self._expired():
                 return {"status": "interrupted", "outcome": "cancelled", "_settle_timeout": True}
             try:
                 frame = events.get(timeout=_POLL)
             except queue.Empty:
                 continue
+            if not self._owns(turn):
+                with events.mutex:  # the later turn's frame goes back where it was
+                    events.queue.appendleft(frame)
+                break
             if isinstance(frame, Exception):
                 if lost_before(frame, self._epoch):
                     continue  # the previous connection's loss, already reported; this turn is live
@@ -656,11 +714,45 @@ class GatewayAgent:
             if kind == "message.complete":
                 return payload
             if kind == "session.replay_gap":
-                return GatewayClientError("session_replay_gap: " + DISCONNECTED)
+                outcome = self._recover(turn)
+                if outcome is not None:
+                    return outcome
+                continue
             try:
                 self._dispatch(kind, payload, stream_callback, starts)
             except Exception:
                 logger.debug("event %s dispatch failed", kind, exc_info=True)
+        return None
+
+    def _recover(self, turn):
+        """``gateway_replay_gap``: re-attach, answer the controls the hole hid, stop painting live text. A
+        turn the snapshot no longer lists settles from its receipt; None waits for the live completion."""
+        from hermes_cli.gateway_replay_gap import settled
+        lost, stop = GatewayClientError("session_replay_gap: " + DISCONNECTED), self._stop(turn)
+        try:
+            snapshot = self.connection.reattach(turn.session_id, abandon=stop)
+            row = next((r for r in snapshot.get("pending") or [] if r.get("admission_id") == turn.admission), {})
+            if row.get("status") == "unknown":
+                return lost  # its completion was the one the hole lost: no other is owed
+            turn.gapped |= row.get("status") != "queued"  # one still queued lost nothing
+            for prompt in snapshot.get("prompts") or []:
+                if row.get("status") == "started" and prompt.get("execution_generation") == row.get("execution_generation") \
+                        and prompt.get("prompt_id") not in turn.answered and not stop():
+                    turn.answered.add(prompt.get("prompt_id"))
+                    try:
+                        self._dispatch(f"{prompt.get('kind')}.request", prompt, None, {})
+                    except Exception:  # a broken modal is a skipped answer, never a failed turn
+                        logger.debug("control %s dispatch failed", prompt.get("prompt_id"), exc_info=True)
+            if row or not turn.admission or stop():
+                return None
+            receipt = self.connection.call("prompt.receipt", session_id=turn.session_id, admission_id=turn.admission,
+                                           include_result=True, abandon=stop)
+        except CallStopped:
+            return None
+        except GatewayClientError:
+            return lost
+        verdict = settled(receipt or {})
+        return {"_receipt": receipt} if verdict else lost if verdict is None else None
 
     def _dispatch(self, kind, payload, stream_callback, starts):
         handler = _HANDLERS.get(kind)
@@ -669,14 +761,29 @@ class GatewayAgent:
 
     # event handlers (agent thread) ------------------------------------------------------------
     def _on_delta(self, payload, stream_callback, starts):
-        text = payload.get("text")
+        text, turn = payload.get("text"), self._turn
+        if not isinstance(text, str):
+            return self._close_segment(starts, separator=True)
+        if turn.gapped:
+            return  # live text stopped at the replay gap; the settlement shows the reply once
         if self.stream_delta_callback is not None:
             self.stream_delta_callback(text)
-        if stream_callback is not None and isinstance(text, str):
+            turn._shown.append(text)
+        if stream_callback is not None:
             stream_callback(text)
+            turn._spoken.append(text)
+
+    def _close_segment(self, starts, separator=False):
+        """A segment boundary: the ``text: None`` separator, or a later boundary when it fell in a gap."""
+        turn = self._turn
+        if self.stream_delta_callback is not None and (separator or any(turn._shown)):
+            self.stream_delta_callback(None)
+        turn.close_segment()
 
     def _on_interim(self, payload, stream_callback, starts):
         text = payload.get("text")
+        self._close_segment(starts)
+        self._turn.seen.add(str(text or "").strip())
         if self.interim_assistant_callback is not None:
             self.interim_assistant_callback(text, already_streamed=bool(payload.get("already_streamed")))
         elif text and str(text).strip():
@@ -687,6 +794,7 @@ class GatewayAgent:
             self.tool_gen_callback(payload.get("name"))
 
     def _on_tool_start(self, payload, stream_callback, starts):
+        self._close_segment(starts)
         name = payload.get("name") or payload.get("tool_name") or "tool"
         args = payload.get("args") if isinstance(payload.get("args"), dict) else {}
         call_id = payload.get("tool_id") or payload.get("tool_call_id") or ""
@@ -908,12 +1016,14 @@ class GatewayAgent:
             out.update(failure_reason=failure_reason, failure_retryable=retryable)
         return out
 
-    def _result(self, history, user_message, complete):
-        receipt = {}
-        if self._admission:
+    def _result(self, history, user_message, complete, turn):
+        receipt = (complete or {}).get("_receipt") or {}
+        if receipt:  # settled from it after a replay gap
+            complete = {"outcome": receipt.get("outcome")}
+        elif turn.admission:
             try:
-                receipt = self.connection.call("prompt.receipt", session_id=self.session_id,
-                                               admission_id=self._admission, include_result=True) or {}
+                receipt = self.connection.call("prompt.receipt", session_id=turn.session_id, abandon=self._lost(turn),
+                                               admission_id=turn.admission, include_result=True) or {}
             except GatewayClientError as exc:
                 logger.debug("prompt.receipt failed: %s", exc)
         stored = dict(receipt.get("result") or {})
@@ -935,11 +1045,28 @@ class GatewayAgent:
         if not suffix and out.get("final_response") and not out.get("failed"):
             out["messages"].append({"role": "assistant", "content": out["final_response"]})
         out["session_id"] = self.session_id
+        if not self._owns(turn):  # taken over during that read: the newer turn's state stays untouched
+            return out
         self._session_messages = out["messages"]
         calls = stored.get("api_calls")
         self._turn_api_calls = calls if isinstance(calls, int) and not isinstance(calls, bool) else None
-        self._apply_usage(stored, usage)
+        self._apply_usage(stored, usage, turn)
         return out
+
+    def _paint_owed(self, turn, out, complete, stream_callback):
+        """After a replay gap, the reply once (``owed_reply``): a reuse this terminal showed whole stays
+        the only copy; otherwise main's panel shows what streaming did not."""
+        from hermes_cli.gateway_replay_gap import owed_reply
+        reply = out.get("pre_transform_response") if out.get("response_transformed") else None
+        reply = reply if isinstance(reply, str) else out.get("final_response")
+        if out.get("failed") or not isinstance(reply, str) or not reply.strip():
+            return
+        reused = out.get("response_previewed") or out.get("response_reused") or complete.get("response_reused")
+        out["response_previewed"] = bool(reused) and reply.strip() in turn.seen | {turn.shown.strip(), turn.spoken.strip()}
+        for consumer, got in ((self.stream_delta_callback, turn.shown), (stream_callback, turn.spoken)):
+            owed = owed_reply(got, reply) if consumer is not None and not out["response_previewed"] else ""
+            if owed:  # each consumer completes what it got itself, never twice
+                consumer(owed)
 
     def _anchor_display(self):
         """Main's bar shows the anchored ``context_tokens`` by re-deriving it from
@@ -979,23 +1106,25 @@ class GatewayAgent:
         estimate = estimate_messages_tokens_rough(delta, charge_stale_thinking=False) if delta else 0
         self._turn_base_usage_anchor = capture_usage_anchor(max(1, tokens - estimate), 0, messages[:base])
 
-    def _refresh_stats(self):
+    def _refresh_stats(self, turn=None):
         """``session.stats`` → the same attributes ``session.usage`` sets; False when unavailable."""
         try:
-            stats = self.connection.call("session.stats", session_id=self.session_id, timeout=10)
+            stats = self.connection.call("session.stats", session_id=self.session_id, timeout=10,
+                                         abandon=turn and self._lost(turn))
         except GatewayClientError as exc:
             logger.debug("session.stats unavailable: %s", exc)
             return False
         stats = stats.get("usage") if isinstance(stats, dict) and isinstance(stats.get("usage"), dict) else stats
         if not (isinstance(stats, dict) and isinstance(stats.get("api_calls"), int)):
             return False
-        self._state().apply_usage(stats)
+        if turn is None or self._owns(turn):
+            self._state().apply_usage(stats)
         return True
 
-    def _apply_usage(self, stored, receipt_usage):
+    def _apply_usage(self, stored, receipt_usage, turn):
         """Turn end: the session-cumulative ``session.stats`` (the same dict ``session.usage`` carries);
         a gateway without the verb leaves the per-turn receipt figures as before."""
-        if self._refresh_stats():
+        if self._refresh_stats(turn) or not self._owns(turn):
             return
         # Fallback: the classic-CLI result carries the gateway agent's session_* counters
         # (turn_finalizer _SESSION_TOKEN_KEYS); per-turn receipt usage only accumulates what is missing.

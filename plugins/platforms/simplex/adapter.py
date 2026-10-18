@@ -429,7 +429,7 @@ class SimplexAdapter(BasePlatformAdapter):
             return None
 
         corr_id = self._make_corr_id()
-        fut: asyncio.Future = asyncio.get_event_loop().create_future()
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
         self._pending_responses[corr_id] = fut
         try:
             await ws.send(json.dumps({"corrId": corr_id, "cmd": command}))
@@ -560,7 +560,7 @@ class SimplexAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("SimpleX: failed to download image: %s", e)
                 return SendResult(success=False, error=str(e))
-        if not file_path or not Path(file_path).exists():
+        if not file_path or not await asyncio.to_thread(Path(file_path).exists):
             return SendResult(success=False, error="Image file not found")
         try:
             png_path, thumb_uri = self._prepare_image(file_path)
@@ -582,7 +582,7 @@ class SimplexAdapter(BasePlatformAdapter):
 
     async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None,
                             filename: Optional[str] = None, **kwargs) -> SendResult:
-        if not Path(file_path).exists():
+        if not await asyncio.to_thread(Path(file_path).exists):
             return SendResult(success=False, error="File not found")
         item = {"filePath": file_path, "msgContent": {"type": "file", "text": caption or ""}}
         return await self._send_items(chat_id, [item], "Failed to send document")
@@ -590,7 +590,7 @@ class SimplexAdapter(BasePlatformAdapter):
     async def send_voice(self, chat_id: str, audio_path: str, caption: Optional[str] = None,
                          reply_to: Optional[str] = None, duration: int = 0, **kwargs) -> SendResult:
         """Send an audio file as an inline SimpleX voice note (``msgContent.type == "voice"``)."""
-        if not Path(audio_path).exists():
+        if not await asyncio.to_thread(Path(audio_path).exists):
             return SendResult(success=False, error="Voice file not found")
         item = {"msgContent": {"type": "voice", "text": caption or "", "duration": duration},
                 "fileSource": {"filePath": audio_path}}

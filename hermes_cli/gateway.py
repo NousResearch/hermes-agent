@@ -5302,7 +5302,8 @@ def _cmd_start(args):
 
 def _cmd_stop(args):
     _refuse_from_inside_gateway("stop", "restart loops")
-    from hermes_cli.gateway_profile_lifecycle import host_scope_for_all_verb, profile_lifecycle, separate_gateway_pids
+    from hermes_cli.gateway_profile_lifecycle import (
+        host_scope_for_all_verb, profile_lifecycle, report_profile_stop_failure, separate_gateway_pids)
     if profile_lifecycle("stop", args):
         return
     stop_all = getattr(args, "all", False)
@@ -5345,7 +5346,7 @@ def _cmd_stop(args):
     elif stop_profile_gateway():
         print("✓ Stopped gateway for this profile")
     else:
-        print("✗ No gateway running for this profile")
+        report_profile_stop_failure()
 
 
 def _stop_host_multiplexer(owner) -> int:

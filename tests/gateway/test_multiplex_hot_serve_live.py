@@ -84,12 +84,12 @@ def mux(tmp_path, peer):
     return {'root': root, 'boot': boot, 'env': env, 'config': config, 'log': tmp_path / 'gateway.log'}
 
 
-def start_daemon(mux, timeout=90):
+def start_daemon(mux, timeout=90, *, extra_args=()):
     """Boot the multiplexer the way ``hermes gateway run`` does; the canonical gateway command-line
     matcher (``gateway.status.looks_like_gateway_command_line``) is what the CLI's liveness probes
     apply to the recorded PID, so the fixture must spawn a recognisable launcher."""
     log = mux['log'].open('a+', encoding='utf-8', errors='replace')
-    proc = subprocess.Popen([sys.executable, '-m', 'hermes_cli.main', 'gateway', 'run', '--quiet'], cwd=ROOT,
+    proc = subprocess.Popen([sys.executable, '-m', 'hermes_cli.main', 'gateway', 'run', '--quiet', *extra_args], cwd=ROOT,
                             env=mux['env'], stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
     desc = {}
     deadline = time.monotonic() + timeout
@@ -412,3 +412,16 @@ def test_standalone_secondary_stops_without_stopping_host(mux):
         if child is not None:
             stop(child, expect=None)
         stop(host, expect=None)
+
+
+def test_unsupervised_host_without_profile_flag_can_stop(mux):
+    proc, _ = start_daemon(mux, extra_args=('--no-supervise',))
+    try:
+        result = subprocess.run(
+            [sys.executable, '-m', 'hermes_cli.main', 'gateway', 'stop'],
+            cwd=ROOT, env=mux['env'], capture_output=True, text=True, timeout=45, check=False)
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        assert 'Stopped gateway for this profile' in result.stdout, (result.stdout, result.stderr)
+        proc.wait(timeout=30)
+    finally:
+        stop(proc, expect=None)

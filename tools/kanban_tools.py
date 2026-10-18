@@ -496,8 +496,21 @@ def _goal_gate(tool_name: str, task, tid: str, evidence: str) -> None:
         from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
         affinity_token = None if get_affinity_scope() else set_affinity_scope(f"kanban:{tid}")
         try:
+            goal = f"{task.title}\n\n{task.body or ''}".strip()
+            if tool_name == "kanban_request_review":
+                # Handoff is NOT final completion. In particular, a task whose
+                # acceptance contract requires independent approval cannot have
+                # that approval until the reviewer is allowed to start.
+                goal = (
+                    "PHASE: IMPLEMENTATION READINESS FOR INDEPENDENT REVIEW. "
+                    "Judge whether the implementer has supplied enough evidence "
+                    "to START review. Do NOT demand that the independent reviewer "
+                    "has already approved, that the card is done, or that post-review "
+                    "delivery has occurred. Those are checked at final completion.\n\n"
+                    + goal
+                )
             verdict, reason, _, _, transport_failed = judge_goal(
-                goal=f"{task.title}\n\n{task.body or ''}".strip(), last_response=evidence.strip())
+                goal=goal, last_response=evidence.strip())
         finally:
             if affinity_token is not None:
                 reset_affinity_scope(affinity_token)

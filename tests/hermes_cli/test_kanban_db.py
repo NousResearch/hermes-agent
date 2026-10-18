@@ -321,12 +321,12 @@ def _exited_status(code: int) -> int:
 
 
 
-def test_rate_limit_exit_requeues_without_counting_failure(
+def test_rate_limit_exit_stops_at_budget_without_counting_failure(
     kanban_home, monkeypatch,
 ):
     """A rate-limit sentinel exit releases the task to ``ready`` and leaves
     ``consecutive_failures`` untouched — the breaker must never trip on a
-    transient throttle, even across many quota-wall hits."""
+    transient throttle; a separate quota budget eventually parks the task."""
     import hermes_cli.kanban_db as _kb
     from hermes_cli import kanban_db_dispatch as _kbd
 
@@ -337,9 +337,9 @@ def test_rate_limit_exit_requeues_without_counting_failure(
         host = _kb._claimer_id().split(":", 1)[0]
         tid = kb.create_task(conn, title="rl", assignee="a")
 
-        # Simulate FAR more quota-wall hits than DEFAULT_FAILURE_LIMIT (2).
-        # If any of these counted as a failure the task would be blocked.
-        for i in range(6):
+        # Simulate the independent three-attempt quota circuit breaker.
+        # The third attempt blocks on quota budget, without task failure counting.
+        for i in range(3):
             pid = 70000 + i
             # Claim to open a real run (so detect_crashed_workers can close
             # it with a rate_limited outcome), then point the claim at this
@@ -362,8 +362,8 @@ def test_rate_limit_exit_requeues_without_counting_failure(
             assert tid in rl
 
             task = kb.get_task(conn, tid)
-            assert task.status == "ready", (
-                f"hit {i}: should requeue ready, got {task.status}"
+            assert task.status == ("blocked" if i == 2 else "ready"), (
+                f"hit {i}: unexpected quota-phase status {task.status}"
             )
             assert task.consecutive_failures == 0, (
                 f"hit {i}: rate-limit must not count a failure, "
@@ -372,7 +372,7 @@ def test_rate_limit_exit_requeues_without_counting_failure(
 
         # Last failure error stamped so the respawn guard recognizes the
         # quota wall.
-        assert task.last_failure_error and "rate-limited" in task.last_failure_error
+        assert task.last_failure_error and "retry budget exhausted" in task.last_failure_error
 
         # A ``rate_limited`` run outcome was recorded (not ``crashed``).
         outcomes = [

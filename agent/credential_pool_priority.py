@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from agent.credential_pool import PooledCredential
@@ -46,3 +46,18 @@ def _normalize_pool_priorities(provider: str, entries: list[PooledCredential]) -
             entries[id_to_idx[entry.id]] = replace(entry, priority=new_priority)
             changed = True
     return changed
+
+
+def adopt_disk_priorities(entries: list[PooledCredential], rows: dict[str, dict[str, Any]]) -> list[PooledCredential]:
+    """Returns *entries* with the priorities of the written *rows*, sorted by them.
+
+    A write may keep another process's newer order (``writer_kept_order``); adopting it keeps
+    this pool's selection and its next write in line with the store.
+    """
+    def _kept(entry: PooledCredential) -> PooledCredential:
+        priority = rows.get(entry.id, {}).get("priority")
+        if not isinstance(priority, int) or priority == entry.priority:
+            return entry
+        return replace(entry, priority=priority)
+
+    return sorted(map(_kept, entries), key=lambda entry: entry.priority)

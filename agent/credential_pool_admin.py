@@ -146,9 +146,10 @@ class CredentialPoolAdminMixin:
                 self._entries = [entry]
                 written = write_credential_pool(
                     self.provider, [entry.to_dict()],
-                    token_bases=self._persisted_token_pairs,
+                    token_bases=self._persisted_token_pairs, priority_bases=self._persisted_priorities,
                 )
                 self._persisted_token_pairs = pool_rows._token_pairs_by_id(written)
+                self._persisted_priorities = pool_rows.priorities_by_id(written)
                 self._borrowed_root_ids = set()
             else:
                 self._persist()

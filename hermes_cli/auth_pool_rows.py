@@ -39,12 +39,37 @@ def _token_pairs_by_id(rows: Iterable[Any]) -> dict[str, tuple[Any, Any]]:
     return {row_id: _credential_token_pair(row) for row_id, row in _entry_ids(rows).items()}
 
 
+def priorities_by_id(rows: Iterable[Any]) -> dict[str, Any]:
+    """Priority base per row id: the order this writer last read or wrote."""
+    return {row_id: row.get("priority") for row_id, row in _entry_ids(rows).items()}
+
+
+def writer_kept_order(
+    rows: Iterable[Any], disk_by_id: dict[str, dict[str, Any]], priority_bases: Optional[dict[str, Any]],
+) -> bool:
+    """Whether a writer changed no row's priority, so the order on disk stands.
+
+    Priority is one order across rows, so it is merged per write, not per row. A row is
+    unchanged when its priority is the one this writer last read (*priority_bases*) or the
+    one already on disk (a peer's row the writer adopted, such as a refresh sync). A writer
+    with no changed row keeps the disk order, so a ``hermes auth priority`` run in another
+    process survives its flushes; a writer that changed any row writes its whole order.
+    """
+    if priority_bases is None:
+        return False
+    return all(
+        row.get("priority") in (priority_bases.get(row_id), disk_by_id.get(row_id, {}).get("priority"))
+        for row_id, row in _entry_ids(rows).items()
+    )
+
+
 def _merge_pool_row_generation(
     entry: dict[str, Any],
     disk_entry: Optional[dict[str, Any]],
     provider_id: str,
     *,
     base_pair: Optional[tuple[Any, Any]] = None,
+    keep_disk_priority: bool = False,
     status_cleared: bool = False,
 ) -> dict[str, Any]:
     """Keep a newer on-disk token generation authoritative during stale writes.
@@ -52,9 +77,12 @@ def _merge_pool_row_generation(
     Only a terminal auth verdict (``last_status == dead``) is scoped to the token pair
     it was observed on; account-wide cooldowns (402 billing, 429 throttle) from the
     stale writer still apply to the rotated pair and go through the ordinary recency
-    merge in ``_merge_disk_cooldown_state``."""
+    merge in ``_merge_disk_cooldown_state``. *keep_disk_priority* comes from
+    ``writer_kept_order``."""
     from agent.credential_pool import STATUS_DEAD
 
+    if keep_disk_priority and isinstance(disk_entry, dict) and "priority" in disk_entry:
+        entry = {**entry, "priority": disk_entry["priority"]}
     merge_disk = None if status_cleared else disk_entry
     disk_pair = _credential_token_pair(disk_entry)
     if base_pair is None or not any(disk_pair) or disk_pair == base_pair:

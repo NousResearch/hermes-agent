@@ -44,7 +44,7 @@ from hermes_cli.auth_device_flow import (
     _poll_device_token_generic, _poll_for_token, _print_device_code_instructions,
     _print_login_success, _print_loopback_ssh_hint, _prompt_yes_no, _request_device_code,
     _resolve_verify, _ssh_user_at_host)
-from hermes_cli.auth_pool_rows import _entry_ids, _merge_pool_row_generation
+from hermes_cli.auth_pool_rows import _entry_ids, _merge_pool_row_generation, writer_kept_order
 from hermes_cli.auth_oauth_grants import (
     SINGLE_USE_REFRESH_POOL_PROVIDERS, _oauth_heal_clean_marks, _oauth_heal_notices,
     consume_oauth_heal_notices, heal_forked_single_use_oauth_grants,
@@ -978,6 +978,7 @@ def write_credential_pool(
     removed_ids: Optional[Iterable[str]] = None,
     status_cleared_ids: Optional[Iterable[str]] = None,
     token_bases: Optional[dict[str, tuple[Any, Any]]] = None,
+    priority_bases: Optional[dict[str, Any]] = None,
 ) -> list[dict[str, Any]]:
     """Persist one provider's credential pool under auth.json.
 
@@ -1000,10 +1001,11 @@ def write_credential_pool(
         existing_by_id = _entry_ids(existing_list)
         new_ids = set(_entry_ids(sanitized))
         status_cleared = {cid for cid in (status_cleared_ids or ()) if cid}
+        keep_disk_order = writer_kept_order(sanitized, existing_by_id, priority_bases)
         merged: list[dict[str, Any]] = [
             _merge_pool_row_generation(
                 e, existing_by_id.get(e.get("id")), provider_id,
-                base_pair=bases.get(e.get("id")),
+                base_pair=bases.get(e.get("id")), keep_disk_priority=keep_disk_order,
                 status_cleared=e.get("id") in status_cleared,
             )
             if isinstance(e, dict) else e

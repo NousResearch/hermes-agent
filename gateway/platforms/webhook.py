@@ -163,6 +163,29 @@ def check_webhook_requirements() -> bool:
     return AIOHTTP_AVAILABLE
 
 
+def ensure_webhook_requirements() -> bool:
+    """ACTIVE lazy-installer (runs from gateway start, never from status/config probes): when
+    aiohttp is missing, try ``pm.ensure_import("messaging")`` and rebind the module-level ``web``
+    symbol, mirroring the plugin adapters' ``check_telegram_requirements`` (#79812's active/passive
+    split — ``check_webhook_requirements`` above stays a passive probe). Fixes #136990: a gateway
+    that boots onto a PM generation without the ``messaging`` extra previously disabled this
+    adapter permanently instead of self-healing like the plugin platforms do."""
+    global AIOHTTP_AVAILABLE, web
+    if AIOHTTP_AVAILABLE:
+        return True
+    try:
+        from pm import ensure_import as _lazy_ensure
+        _lazy_ensure("messaging")
+    except Exception:  # health: allow BLE001 -- install failure faces are unenumerable (InstallError, subprocess, network, platform gates); this is a gateway-start degrade boundary, any failure must land on "skip with warning", never crash startup
+        return False
+    try:
+        from aiohttp import web as _web
+    except ImportError:
+        return False
+    web, AIOHTTP_AVAILABLE = _web, True
+    return True
+
+
 def _validate_svix_signature(body: bytes, secret: str, msg_id: str, timestamp: str, signature_header: str) -> bool:
     """Svix-compatible signatures (AgentMail): base64 HMAC-SHA256 of "{id}.{timestamp}.{body}"."""
     if not (msg_id and timestamp and signature_header and secret):

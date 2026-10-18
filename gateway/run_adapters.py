@@ -784,7 +784,8 @@ class GatewayAdapterLifecycleMixin:
         change: retrying it re-warns forever at the backoff cap (#5196 fleet nodes). Shared by startup and
         the reconnect watcher so both classify the same platform the same way."""
         from gateway.platform_registry import platform_registry
-        from gateway.run import _BUILTIN_ADAPTERS, _platform_has_bot_credential
+        from gateway.builtin_adapters import _BUILTIN_ADAPTERS
+        from gateway.run import _platform_has_bot_credential
         return (
             platform not in _BUILTIN_ADAPTERS
             and not platform_registry.is_registered(platform.value)
@@ -1901,7 +1902,7 @@ class GatewayAdapterLifecycleMixin:
 
     def _instantiate_adapter(self, platform: Platform, config: Any) -> Optional[BasePlatformAdapter]:
         """Instantiate the adapter for a platform: plugin registry first, then built-ins."""
-        from gateway.run import _instantiate_builtin_adapter
+        from gateway.builtin_adapters import _instantiate_builtin_adapter
         if hasattr(config, "extra") and isinstance(config.extra, dict):
             config.extra.setdefault("group_sessions_per_user", self.config.group_sessions_per_user)
             config.extra.setdefault(

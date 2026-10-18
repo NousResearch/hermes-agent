@@ -1525,7 +1525,7 @@ class GatewayStartupMixin:
         # profile served by this gateway can resolve name-based targets as well as the launch home can.
         with _log_suppressed(logging.WARNING, "Served profile channel directory build failed: %s"):
             from gateway.run import _refresh_served_profile_channel_directories
-            rebuilt = await _refresh_served_profile_channel_directories(self, self.adapters)
+            rebuilt = await _refresh_served_profile_channel_directories(self)
             if rebuilt:
                 logger.info("Channel directory rebuilt for %d served profile(s)", rebuilt)
         # Restarting after a /update still in progress: keep watching so we notify when it finishes.

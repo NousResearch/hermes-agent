@@ -497,3 +497,54 @@ class TestMultiplexServedProfileRefresh:
         assert [entry["name"] for entry in written["platforms"]["slack"]] == ["just-joined"]
         assert written["updated_at"]
 
+    @pytest.mark.asyncio
+    async def test_startup_call_site_rebuilds_each_served_profile(self, tmp_path, monkeypatch):
+        """The startup pass must actually REACH the per-profile rebuild.
+
+        The helper takes the runner alone. A second argument at this call site raises before the
+        body runs, and the surrounding ``_log_suppressed`` swallows the ``TypeError``: startup
+        then logs a misleading warning and no served profile is rebuilt until the 5-minute
+        housekeeping tick. Every other test here calls the helper directly, so the call site
+        itself was uncovered.
+        """
+        from gateway.run import GatewayRunner
+
+        for name in ("launch", "seo", "mubeen"):
+            (tmp_path / name).mkdir()
+        seo_adapter, mubeen_adapter = object(), object()
+        calls = self._record_builds(monkeypatch)
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = SimpleNamespace(
+            multiplex_profiles=True,
+            _runtime_profile_homes=[
+                ("default", tmp_path / "launch"), ("seo", tmp_path / "seo"),
+                ("mubeen", tmp_path / "mubeen")],
+        )
+        runner._profile_adapters = {
+            "seo": {Platform.TELEGRAM: seo_adapter},
+            "mubeen": {Platform.TELEGRAM: mubeen_adapter},
+        }
+        runner.adapters = {}
+        runner._heartbeat_watch = {}
+        runner._background_tasks = set()
+        runner._ensure_hosted_room_worker = AsyncMock()
+        runner._hosted_room_worker_watcher = AsyncMock()
+        runner._spawn_supervised = lambda *args: None
+        runner._start_loop_heartbeat_task = lambda: None
+        runner.hooks = SimpleNamespace(loaded_hooks=[], emit=AsyncMock())
+        runner._send_update_notification = AsyncMock(return_value=True)
+        runner.session_store = SimpleNamespace(list_sessions=list)
+        runner._run_in_executor_with_context = asyncio.to_thread
+
+        await runner._start_post_connect_services(0)
+        task = getattr(runner, "_heartbeat_poll_task", None)
+        try:
+            # The launch build happens first (unscoped), then one build per served profile, each
+            # in ITS OWN home — the startup path used to raise here and rebuild neither.
+            assert [home for home, _adapters in calls if home in ("seo", "mubeen")] == ["seo", "mubeen"]
+        finally:
+            if task is not None:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+

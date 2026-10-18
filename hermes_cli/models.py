@@ -1949,6 +1949,13 @@ def _provider_models_cache_path() -> Path:
     return get_hermes_home() / "provider_models_cache.json"
 
 
+# Providers whose /v1/models catalog is not entitlement-scoped and whose OAuth credentials live in
+# files that are rewritten on every token refresh (auth.json pool, ~/.claude/.credentials.json,
+# ~/.hermes/.anthropic_oauth.json). Without this, the first chat ``/model`` after each rotation read
+# a cold row (fingerprint mismatch -> ``[]``) and showed the short curated list, missing newer models.
+_MTIME_INSENSITIVE_FINGERPRINT_PROVIDERS = frozenset({"anthropic"})
+
+
 def _credential_fingerprint(provider: str) -> str:
     """Short hash of the credentials ``provider_model_ids(provider)`` would see right now.
 
@@ -2031,6 +2038,11 @@ def _credential_fingerprint(provider: str) -> str:
         from hermes_cli.codex_models import codex_catalog_credential_identity
 
         parts.append(f"codex_identity={codex_catalog_credential_identity()}")
+    elif provider in _MTIME_INSENSITIVE_FINGERPRINT_PROVIDERS:
+        # OAuth token rotation (and any other provider's refresh) rewrites these files without
+        # changing the catalog, so their mtimes would cold-start this provider's picker row on
+        # every rotation. The env-var/base-url parts above still bust it for a real key change.
+        pass
     else:
         try:
             from hermes_constants import get_hermes_home

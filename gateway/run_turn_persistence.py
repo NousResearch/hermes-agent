@@ -41,6 +41,16 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
+def _acp_launch(runner, source) -> bool:
+    """An editor session: ACP shows no reasoning event yet, so its reply keeps the projected block."""
+    from gateway.session_setting_commands import local_policy
+    from hermes_state_runtime import RuntimeStoreError
+    try:
+        return getattr(local_policy(runner, source), "source", None) == "acp"
+    except RuntimeStoreError:  # a local route with no restored policy is not an editor launch
+        return False
+
+
 class GatewayTurnPersistenceMixin:
     async def _hmwa_shape_agent_response(
         self, agent_result, source, history, session_entry, session_key,
@@ -143,6 +153,10 @@ class GatewayTurnPersistenceMixin:
     def _hmwa_prepend_reasoning(self, agent_result, response, source, _intentional_silence):
         """Prepend the last reasoning block when show_reasoning is on for this platform. Mattermost
         requires an explicit per-platform opt-in (scratch text, not final-answer content)."""
+        if source.platform == Platform.LOCAL and not _acp_launch(self, source):
+            # Local viewers receive reasoning.delta through their event stream; projecting it into
+            # the final response duplicates it and leaks messaging-platform formatting into Desktop.
+            return response
         from gateway.run import _load_gateway_config, _platform_config_key, _resolve_gateway_display_bool
         try:
             _show_reasoning_effective = _resolve_gateway_display_bool(
@@ -183,8 +197,12 @@ class GatewayTurnPersistenceMixin:
 
     def _hmwa_runtime_footer_line(self, agent_result, source, _turn_seconds):
         """Runtime-metadata footer for the FINAL message of the turn; off by default
-        (display.runtime_footer.enabled=false)."""
+        (display.runtime_footer.enabled=false). Never on a finite (`-z`, `chat -q`) turn: its reply is
+        the printed answer itself."""
         from gateway.run import _load_gateway_config, _platform_config_key, _terminal_scope_cwd
+        from gateway.session_finite import finite_turn_required
+        if finite_turn_required() is True:
+            return ""
         try:
             from gateway.runtime_footer import build_footer_line as _bfl
             return _bfl(
@@ -327,8 +345,13 @@ class GatewayTurnPersistenceMixin:
             try:
                 await move_route_wakes(self, session_key, session_entry.session_id)
                 self._evict_cached_agent(session_key)
+                # The /queue overflow behind the deferred head slot is queued user input, like the
+                # re-homed native rows: it survives the boundary the funnel below otherwise clears.
+                queued = list(self._overflow_queue(session_key) or ())
                 # Conversation boundary: the funnel clears every conversation-scoped per-session dict.
                 self._clear_conversation_scope(session_key, reason="compression_exhausted_reset")
+                if queued:
+                    self._session_state(session_key).conversation.queued_events.extend(queued)
                 if new_entry is not None:
                     # Re-point the Telegram topic binding at the fresh session, or the binding-heal walk
                     # switches the next message back onto the bloated child and re-triggers exhaustion

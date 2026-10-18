@@ -54,6 +54,11 @@ def resolve_local_target(authority, actor, sid):
         from hermes_state_local_migration import LEGACY_PREFIX
         bound = conn.execute('SELECT 1 FROM state_meta WHERE key IN (?,?)',
             (POLICY_PREFIX + (row.get('chat_id') or sid), LEGACY_PREFIX + (row.get('chat_id') or sid))).fetchone()
+        if bound and row.get('chat_id'):
+            from hermes_state_local import local_lineage_owner
+            # A copied chat_id is not evidence that this row belongs to the owner's lineage.
+            if local_lineage_owner(conn, sid) != row['chat_id']:
+                raise RuntimeStoreError('storage_unavailable')
     if bound or str(row.get('chat_id') or '').startswith('local-'):
         ref = SessionRef(authority.profile_id, row['chat_id'])
         authority.authorize(actor, ref, 'session:read')
@@ -80,8 +85,9 @@ def legacy_launch_params(row):
     billing_base_url = row.get('billing_base_url')
     if 'base_url' not in route and isinstance(billing_base_url, str) and billing_base_url.strip():
         route['base_url'] = billing_base_url.strip()
-        # The reader drops a bare ``custom``/``auto`` billing provider: that endpoint is a custom
-        # route, never one to pair with the profile's provider.
+        # The reader returns a bare ``custom`` billing provider with its endpoint and drops ``auto``:
+        # an endpoint left without a provider is a custom route, never one to pair with the
+        # profile's provider.
         route.setdefault('provider', 'custom')
     if row['source'] == 'acp' and 'cwd' not in params and Path(str(saved.get('cwd') or '')).is_absolute():
         params['cwd'] = saved['cwd']
@@ -105,6 +111,34 @@ def legacy_launch_params(row):
     return params, route.get('api_mode')
 
 
+def _route_is_usage_stamp(row):
+    """True when the row's only route record is the ``billing_provider='custom'`` + ``billing_base_url``
+    usage stamp: no ``gateway_runtime`` and no top-level ``provider``/``base_url`` in ``model_config``.
+    That stamp records which endpoint billed the last turn (the profile's route at the time), not a
+    route the user picked for this session."""
+    from hermes_state_sessions import _parse_model_config
+    saved = _parse_model_config(row.get('model_config'))
+    runtime = saved.get('gateway_runtime')
+    if isinstance(runtime, dict) and runtime.get('provider'):
+        return False
+    if any(isinstance(saved.get(k), str) and saved[k].strip() for k in ('provider', 'base_url')):
+        return False
+    return str(row.get('billing_provider') or '').strip().lower() == 'custom'
+
+
+def _configured_owner(saved, config):
+    """The configured named entry (``providers:``/``custom_providers:``) serving the saved URL, or None."""
+    from gateway.session_route_identity import resolved_route, same_route
+    names = list(config.get('providers') or {}) if isinstance(config.get('providers'), dict) else []
+    legacy = config.get('custom_providers')
+    names += [e.get('name') for e in legacy if isinstance(e, dict)] if isinstance(legacy, list) else []
+    for name in names:
+        owner, url = resolved_route({'provider': str(name or '')}, config)
+        if url and same_route(saved, {'provider': owner, 'base_url': url}, config):
+            return owner
+    return None
+
+
 def _endpoint_owner(saved, config):
     """The provider whose credential may serve the saved endpoint. A named entry that now points
     elsewhere owns a credential for THAT host: rebind to the entry still serving the saved URL, or
@@ -113,13 +147,9 @@ def _endpoint_owner(saved, config):
     identity, entry_url = resolved_route({'provider': saved['provider']}, config)
     if not entry_url or same_route(saved, {'provider': identity, 'base_url': entry_url}, config):
         return saved['provider']
-    names = list(config.get('providers') or {}) if isinstance(config.get('providers'), dict) else []
-    legacy = config.get('custom_providers')
-    names += [e.get('name') for e in legacy if isinstance(e, dict)] if isinstance(legacy, list) else []
-    for name in names:
-        owner, url = resolved_route({'provider': str(name or '')}, config)
-        if url and same_route(saved, {'provider': owner, 'base_url': url}, config):
-            return owner
+    owner = _configured_owner(saved, config)
+    if owner:
+        return owner
     raise RuntimeStoreError('launch_credentials_unavailable', field='provider',
                             detail=f'{identity} no longer serves the saved endpoint; select a model to continue')
 
@@ -131,7 +161,7 @@ def adopt_legacy_session(authority, actor, row):
             or not {'session:read', 'session:create'} <= actor.capabilities):
         raise RuntimeStoreError('not_found')
     from hermes_state_local_migration import LEGACY_CREATION_SOURCES, validate_legacy_row
-    validate_legacy_row(authority.db, row)
+    validate_legacy_row(authority.db, row, subject=actor.subject)
     authority._require_admission_open()
     from gateway.run import _load_gateway_config, _resolve_gateway_model
     from gateway.session_policy import build_policy, bind_launch_key
@@ -154,6 +184,14 @@ def adopt_legacy_session(authority, actor, row):
                 and same_route(saved, model_cfg, config)):
             # The profile still selects this endpoint: resume on the profile's route, so its own
             # credential (inline key, ${ENV} key, key_env) keeps its normal precedence.
+            params.pop('provider', None)
+            params.pop('base_url', None)
+        elif (_route_is_usage_stamp(row) and saved['base_url']
+                and resolved_route(saved, config)[0] == 'custom' and not _configured_owner(saved, config)):
+            # T21/F1: the only record is the usage stamp of a bare custom endpoint that no configured
+            # entry serves any more (the profile's server moved). Pre-authority resume healed that stamp
+            # to nothing and used the profile route; do the same rather than freeze a dead endpoint into
+            # the policy, where every turn retries it until the cycle gives up.
             params.pop('provider', None)
             params.pop('base_url', None)
         else:

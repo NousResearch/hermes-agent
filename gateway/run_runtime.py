@@ -81,6 +81,13 @@ def unpark_profile(runner, name):
         _record_parked_profiles(parked)
 
 
+def profile_parked(runner, name):
+    """True when *name* is parked: not served now, but a rescan serves it again, so its ingress is
+    temporarily unavailable (retry it), never an invalid route (refuse it for good)."""
+    descriptor = getattr(runner, 'session_runtime_descriptor', None) or {}
+    return bool(name) and name in (descriptor.get('parked_profiles') or {})
+
+
 def parked_profile_map(runner):
     descriptor = getattr(runner, 'session_runtime_descriptor', None)
     if descriptor is None:
@@ -174,11 +181,17 @@ def release_profile_home(runner, home):
     registry = getattr(runner, 'session_authorities', None)
     if registry is not None and registry.for_home(home) is not None:
         raise RuntimeError('Profile authority must retire before ownership is released')
+    _withdraw_profile_home(runner, home)
+    process_ownership.release(home)
+
+
+def _withdraw_profile_home(runner, home):
+    """Drop *home* from the served set every startup consumer reads (adapters, served status, cron
+    ticks, ingress, spool recovery) without releasing its ``gateway.lock``."""
     reserved = getattr(runner.config, '_runtime_profile_homes', None)
     if reserved is not None:
         runner.config._runtime_profile_homes = tuple(
             entry for entry in reserved if Path(entry[1]).resolve() != home)
-    process_ownership.release(home)
 
 
 def _authority_tasks(authority):
@@ -264,6 +277,8 @@ async def _retire_profile_authority(authority, timeout=None):
     if getattr(authority.runner, 'session_ticket_store', None) is not None:
         _publish_served_set(authority.runner)  # discovery and tickets stop naming it now
     stop_authority_work(authority)
+    from gateway.session_llm_oneshot import stop as stop_oneshots
+    stop_oneshots(authority)
     service = getattr(authority, 'hosted_room_service', None)
     rooms = None if service is None else asyncio.ensure_future(asyncio.to_thread(service.stop, timeout=timeout))
     try:
@@ -305,9 +320,9 @@ class ProfileOwnershipRetained(RuntimeError):
 async def serve_profile_runtime(runner, name, home):
     """Hot-serve one reserved profile's runtime: build its authority, recover its durable state and
     publish it in the descriptor/ticket store — the steps boot performs per secondary. Raises when
-    the profile's store is unusable; the caller parks it (and releases the reservation)."""
+    the profile's store is unusable; the caller parks it (and releases the reservation). Its
+    queued native rows are recovered once its adapters connect (``recover_served_profile_native``)."""
     from gateway.session_authorities import owner_scope
-    from gateway.session_bot import recover_bot_deliveries
     from gateway.session_hosted_service import _ensure_hosted_service, start_ready_hosted_services
     from gateway.session_local_recovery import recover_local_sessions
     from gateway.platforms.webhook_ingress import recover_webhook_finalizations
@@ -326,9 +341,11 @@ async def serve_profile_runtime(runner, name, home):
     authority = await _build_profile_authority(runner, name, home, register=False)
     try:
         with owner_scope(authority):
-            await recover_bot_deliveries(authority)
+            _drop_retired_local_adapter(authority)
+            await recover_bot_mailbox(authority)
             recover_local_sessions(authority, schedule=True)
             await recover_webhook_finalizations(authority)
+            _recover_published_api_turns(runner, authority)
         if getattr(runner, 'session_control_server', None) is not None:
             await _ensure_hosted_service(runner, authority)
     except BaseException:
@@ -338,6 +355,45 @@ async def serve_profile_runtime(runner, name, home):
     _publish_served_set(runner)
     start_ready_hosted_services(runner)
     return authority
+
+
+def _drop_retired_local_adapter(authority):
+    """A LOCAL adapter still bound to this profile's previous authority, once that authority fully
+    retired, gives way to *authority*'s own: restore and create otherwise refuse every local session
+    of the served profile as ``runtime_draining``. A retained writer never gets here (the serve is
+    refused while the previous authority is still retiring)."""
+    from gateway.config import Platform
+    from gateway.session_local_recovery import local_adapter_map
+    adapters = local_adapter_map(authority)
+    previous = getattr(adapters.get(Platform.LOCAL), 'authority', None)
+    if previous is not None and previous is not authority and getattr(previous, 'retired', False):
+        del adapters[Platform.LOCAL]
+
+
+def _recover_published_api_turns(runner, authority):
+    """Boot recovers queued API turns when the launch API adapter is published
+    (``recover_api_turns``); a profile served after that runs the same pass on its own store."""
+    from gateway.config import Platform
+    api = (getattr(runner, 'adapters', None) or {}).get(Platform.API_SERVER)
+    if api is not None:
+        from gateway.session_api_turn import recover_authority_api_turns
+        recover_authority_api_turns(api, authority)
+
+
+async def recover_served_profile_native(runner, home):
+    """Boot's native-row recovery for one hot-served profile, run once its adapters connected (boot
+    runs it after every adapter connects). A store that cannot answer leaves the rows queued for
+    the next start and never stops the reconcile of the other profiles."""
+    registry = getattr(runner, 'session_authorities', None)
+    if registry is None:
+        return
+    authority = registry.for_home(await asyncio.to_thread(Path(home).resolve))
+    if authority is None or getattr(authority, 'retiring', False):
+        return
+    try:
+        await recover_profile_native_sessions(runner, authority)
+    except Exception:  # health: allow BLE001 -- logged; the rows stay queued for the next start
+        logger.error('Native session recovery failed for %s', authority.profile_id, exc_info=True)
 
 
 async def unserve_profile_runtime(runner, home):
@@ -362,15 +418,59 @@ def _authorities(runner):
     return all_authorities(runner)
 
 
+async def recover_bot_mailbox(authority):
+    """Owner-startup Bot Chat recovery, skipped when this token cannot use the mailbox dir.
+
+    An elevated install/update can leave ``runtime/bot_live_delivery`` owned by Administrators with
+    no entry for the user (#139485, #138872): the gateway cannot even open its ``.lock``. Bot Chat
+    deliveries pause (``_locked`` already logged the dir, its owner and the remedy); every other
+    client keeps working instead of the whole gateway refusing to start. Any other failure still
+    aborts startup."""
+    from gateway.session_bot import recover_bot_deliveries
+    from tools.bot_live_delivery import MailboxUnusable
+    try:
+        await recover_bot_deliveries(authority)
+    except MailboxUnusable as exc:
+        logger.warning('Bot Chat recovery skipped for %s: %s', authority.db.db_path, exc)
+
+
 async def start_gateway_runtime_api(runner):
     from gateway.run_api import start_gateway_api
-    from gateway.session_authorities import owner_scope
     runner.session_api = await start_gateway_api(runner)
     runner.session_runtime_descriptor['api_origin'] = runner.session_api.api_origin
-    from gateway.session_bot import recover_bot_deliveries
     for authority in _authorities(runner):
+        await _recover_profile_bot_mailbox(runner, authority)
+
+
+async def _recover_profile_bot_mailbox(runner, authority):
+    """Startup Bot Chat recovery of one served profile. A secondary whose durable leftovers cannot
+    be recovered is parked like one whose store cannot be opened (retired, unreserved, named under
+    ``parked_profiles``): under multiplex it would otherwise take every other profile down with it,
+    on every restart (#140018). The launch profile's failure still aborts the start."""
+    from gateway.session_authorities import owner_scope
+    try:
         with owner_scope(authority):
-            await recover_bot_deliveries(authority)
+            await recover_bot_mailbox(authority)
+    except Exception as exc:
+        registry = getattr(runner, 'session_authorities', None)
+        name = None if registry is None else registry.profile_name(authority)
+        if name is None:
+            raise  # the launch profile's store is the process's own; nothing to park it behind
+        logger.error("[MULTIPLEX] Profile '%s' not served: startup recovery failed: %s", name, exc,
+                     exc_info=True)
+        home = await asyncio.to_thread(Path(authority.profile_id).resolve)
+        if not await _retire_profile_authority(authority):
+            # A writer outlived Stop: the lock and the retiring authority stay for shutdown to
+            # settle, but the profile leaves the served set, so later boot never starts it.
+            _withdraw_profile_home(runner, home)
+            park_profile(runner, name, f'startup recovery failed; ownership retained (a control-socket rescan, '
+                                       f'`hermes -p {name} gateway run`, serves it once its writer stops): {exc}')
+            return
+        registry.remove(home)
+        _publish_served_set(runner)
+        release_profile_home(runner, home)
+        park_profile(runner, name, f'startup recovery failed (a control-socket rescan, '
+                                   f'`hermes -p {name} gateway run`, serves it again): {exc}')
 
 
 async def recover_gateway_native_sessions(runner):
@@ -379,31 +479,36 @@ async def recover_gateway_native_sessions(runner):
     Stored envelopes are input, not authority to create a route or reconnect a
     transport. The authority preflights every queued sender before any claim.
     """
-    import logging
-    from gateway.session_authorities import owner_scope
-    authorities = _authorities(runner)
+    from gateway.session_authorities import owner_scope, serving_authorities
+    authorities = serving_authorities(runner)
     if not authorities:
         return {}
     from gateway.session_hosted_service import ensure_hosted_service
     await ensure_hosted_service(runner)
     from gateway.session_local_recovery import recover_local_sessions
     from gateway.platforms.webhook_ingress import recover_webhook_finalizations
-    logger = logging.getLogger(__name__)
     results = {}
     for authority in authorities:
         with owner_scope(authority):
             recover_local_sessions(authority, schedule=True)
             await recover_webhook_finalizations(authority)
-            pending = {row['target_session_id'] for row in authority.db._read_all(
-                "SELECT DISTINCT target_session_id FROM session_admissions WHERE status IN ('queued','unknown')")}
-            bindings = [(owner, entry.origin, runner._adapter_for_source(entry.origin))
-                        for entry in runner.session_store.list_sessions() if entry.origin is not None
-                        for owner in [authority.logical_owner(entry.session_id)] if owner in pending]
-            outcome = await authority.recover_native_sessions(bindings)
-        for sid, verdict in outcome.items():
-            logger.info('Native session startup recovery %s (%s): %s', sid, authority.profile_id, verdict)
-        results.update(outcome)
+        results.update(await recover_profile_native_sessions(runner, authority))
     return results
+
+
+async def recover_profile_native_sessions(runner, authority):
+    """Bind one authority's queued native rows to the adapters connected now."""
+    from gateway.session_authorities import owner_scope
+    with owner_scope(authority):
+        pending = {row['target_session_id'] for row in authority.db._read_all(
+            "SELECT DISTINCT target_session_id FROM session_admissions WHERE status IN ('queued','unknown')")}
+        bindings = [(owner, entry.origin, runner._adapter_for_source(entry.origin))
+                    for entry in runner.session_store.list_sessions() if entry.origin is not None
+                    for owner in [authority.logical_owner(entry.session_id)] if owner in pending]
+        outcome = await authority.recover_native_sessions(bindings)
+    for sid, verdict in outcome.items():
+        logger.info('Native session startup recovery %s (%s): %s', sid, authority.profile_id, verdict)
+    return outcome
 
 
 def publish_gateway_runtime_ready(runner):
@@ -465,6 +570,9 @@ async def settle_gateway_runtime(runner, budget=None):
     the ownership lock, so raising here would only skip teardown and disarm the watchdog."""
     authorities = _authorities(runner)
     stop_managed_turns(runner)
+    from gateway.session_llm_oneshot import stop as stop_oneshots
+    for authority in authorities:
+        stop_oneshots(authority)  # an answer is no durable settlement: never waited for
     tasks = [task for authority in authorities for task in _authority_tasks(authority)]
     wait = TURN_SETTLE_SECONDS if budget is None else max(0.0, min(TURN_SETTLE_SECONDS,
                                                                    budget - STOP_TAIL_RESERVE_SECONDS))

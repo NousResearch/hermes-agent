@@ -2629,8 +2629,6 @@ export const deOverrides = {
       pinnedProvenance: sha =>
         `An Commit ${sha} gepinnt. Updates werden abgelehnt, bis es mit einem neuen Pin neu installiert wird.`,
       pinnedBadge: sha => `gepinnt @ ${sha}`,
-      tierOfficial: 'offiziell',
-      tierCommunity: 'Community',
       updateToPin: sha => `Auf ${sha} aktualisieren`,
       updateFailed: name => `${name} konnte nicht aktualisiert werden`,
       updated: name =>
@@ -5304,10 +5302,7 @@ export const deOverrides = {
         plugin: 'Plugin',
         skill: 'Skill'
       },
-      tier: {
-        official: 'offiziell',
-        community: 'Community'
-      },
+      tier: { official: 'offiziell', verified: 'verifiziert', community: 'Community' },
       targetProfile: (profile: string) => `Wird in Ihr Profil ${profile} installiert`,
       sendFailed: 'Ihre Antwort konnte nicht gesendet werden. Versuchen Sie es erneut.',
       commitLabel: 'Commit',

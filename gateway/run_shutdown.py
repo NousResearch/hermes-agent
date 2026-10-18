@@ -1387,7 +1387,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             try:
                 from gateway import host_rendezvous as hr
                 record = hr.read_record(hr.ROLE_GATEWAY)
-                if record is not None and hr.liveness_is_proven(record) and len(record.profiles) > 1:
+                if record is not None and hr.record_names_live_owner(record) and len(record.profiles) > 1:
                     multiplex = True
             except Exception:
                 multiplex = False

@@ -8984,6 +8984,21 @@
             "default": false,
             "title": "Verbose",
             "type": "boolean"
+          },
+          "client_env": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Client Env"
           }
         },
         "title": "CanonicalCreateParams",
@@ -9248,6 +9263,37 @@
           "text": {
             "title": "Text",
             "type": "string"
+          },
+          "controls": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "steer",
+                    "replace"
+                  ],
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Controls"
+          },
+          "steering": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Steering"
           }
         },
         "required": [
@@ -9550,6 +9596,88 @@
           "profiles"
         ],
         "title": "CanonicalProfilesResult",
+        "type": "object"
+      },
+      "CanonicalReplaceQueuedParams": {
+        "additionalProperties": false,
+        "description": "The edited prompt: admitted as a NEW admission (``submission_id``) at the FIFO tail.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "admission_id": {
+            "title": "Admission Id",
+            "type": "string"
+          },
+          "submission_id": {
+            "title": "Submission Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "attachments": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/CanonicalAttachment"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Attachments"
+          },
+          "display_kind": {
+            "anyOf": [
+              {
+                "const": "hidden",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display Kind"
+          },
+          "title_preview": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Title Preview"
+          }
+        },
+        "required": [
+          "session_id",
+          "admission_id",
+          "submission_id",
+          "text"
+        ],
+        "title": "CanonicalReplaceQueuedParams",
         "type": "object"
       },
       "CanonicalReplayEvent": {
@@ -10146,6 +10274,21 @@
             "default": null,
             "title": "Browser Backend Notice"
           },
+          "unknown_toolsets": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Unknown Toolsets"
+          },
           "source": {
             "title": "Source",
             "type": "string"
@@ -10334,6 +10477,18 @@
             ],
             "default": null,
             "title": "Credential Hint"
+          },
+          "config_warning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Config Warning"
           }
         },
         "required": [
@@ -10820,6 +10975,21 @@
             "default": null,
             "title": "Browser Backend Notice"
           },
+          "unknown_toolsets": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Unknown Toolsets"
+          },
           "desktop_protocol": {
             "const": "hermes-gateway-v1",
             "title": "Desktop Protocol",
@@ -11041,12 +11211,55 @@
             ],
             "default": null,
             "title": "Credential Hint"
+          },
+          "config_warning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Config Warning"
           }
         },
         "required": [
           "desktop_protocol"
         ],
         "title": "CanonicalSnapshotInfo",
+        "type": "object"
+      },
+      "CanonicalSteerQueuedParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "admission_id": {
+            "title": "Admission Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "admission_id"
+        ],
+        "title": "CanonicalSteerQueuedParams",
         "type": "object"
       },
       "CanonicalSubmitParams": {
@@ -11427,6 +11640,7 @@
       "CatalogTier": {
         "enum": [
           "official",
+          "verified",
           "community"
         ],
         "title": "CatalogTier",
@@ -12138,6 +12352,63 @@
         "title": "CommandDispatchResult",
         "type": "object"
       },
+      "CommandObserveParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "arg": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Arg"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "session_id",
+          "name"
+        ],
+        "title": "CommandObserveParams",
+        "type": "object"
+      },
+      "CommandObserveResult": {
+        "additionalProperties": false,
+        "properties": {
+          "queued": {
+            "title": "Queued",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "queued"
+        ],
+        "title": "CommandObserveResult",
+        "type": "object"
+      },
       "CommandResolveParams": {
         "additionalProperties": false,
         "properties": {
@@ -12284,6 +12555,18 @@
             "default": "",
             "title": "Warning",
             "type": "string"
+          },
+          "plugin_discovery_error": {
+            "default": "",
+            "title": "Plugin Discovery Error",
+            "type": "string"
+          },
+          "plugin_commands": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Plugin Commands",
+            "type": "object"
           }
         },
         "title": "CommandsCatalogResult",
@@ -21820,6 +22103,66 @@
           "enabled": {
             "title": "Enabled",
             "type": "boolean"
+          },
+          "key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Key"
+          },
+          "tools": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tools"
+          },
+          "hooks": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Hooks"
+          },
+          "commands": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Commands"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
           }
         },
         "required": [
@@ -24461,7 +24804,7 @@
       },
       "NotificationShowPayload": {
         "additionalProperties": false,
-        "description": "``agent/credits_tracker.py::AgentNotice`` via notice_callback, and ``server._await_agent_ready``'s\nslow-build notice. ``level``: info | warn | error | success; ``kind``: sticky | ttl | agent.",
+        "description": "``agent/credits_tracker.py::AgentNotice`` via notice_callback, and ``server._await_agent_ready``'s\nslow-build notice. ``level``: info | warn | error | success; ``kind``: sticky | ttl | agent.\n``detail``: the full text behind a short ``text`` (the low-disk auto-prune question): Desktop shows\nit in the toast's expandable body, the Ink TUI prints it into the transcript.",
         "properties": {
           "text": {
             "title": "Text",
@@ -24510,6 +24853,18 @@
             ],
             "default": null,
             "title": "Id"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Detail"
           }
         },
         "required": [
@@ -27281,6 +27636,30 @@
         "title": "PluginSettingFieldType",
         "type": "string"
       },
+      "PluginToolsetRow": {
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "description"
+        ],
+        "title": "PluginToolsetRow",
+        "type": "object"
+      },
       "PluginsAction": {
         "enum": [
           "list",
@@ -27310,6 +27689,36 @@
             },
             "title": "Plugins",
             "type": "array"
+          },
+          "toolsets": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PluginToolsetRow"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Toolsets"
+          },
+          "portable_mcp_servers": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Portable Mcp Servers"
           }
         },
         "required": [
@@ -32432,6 +32841,7 @@
       },
       "ReloadMcpResult": {
         "additionalProperties": false,
+        "description": "``session``: what the calling local session's MCP servers did (a new policy generation, nothing to\nchange, or deferred while a turn runs or waits); ``unavailable``: configured servers that did not connect\nbeside what did apply; ``session_servers``: the MCP servers that session's committed policy runs.",
         "properties": {
           "status": {
             "$ref": "#/components/schemas/ReloadMcpStatus"
@@ -32493,6 +32903,47 @@
             ],
             "default": null,
             "title": "Host Ack"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReloadMcpSession"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "unavailable": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Unavailable"
+          },
+          "session_servers": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Servers"
           }
         },
         "required": [
@@ -32500,6 +32951,15 @@
         ],
         "title": "ReloadMcpResult",
         "type": "object"
+      },
+      "ReloadMcpSession": {
+        "enum": [
+          "applied",
+          "unchanged",
+          "busy"
+        ],
+        "title": "ReloadMcpSession",
+        "type": "string"
       },
       "ReloadMcpStatus": {
         "enum": [
@@ -32888,6 +33348,18 @@
             ],
             "default": null,
             "title": "Profile"
+          },
+          "all": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "All"
           }
         },
         "required": [
@@ -38326,7 +38798,7 @@
       },
       "SessionUsagePayload": {
         "additionalProperties": false,
-        "description": "``server._start_usage_ticker`` (``usage``), or a canonical local viewer's session-cumulative\ncounters (``gateway/session_usage.py::usage_stats``, the ``session.stats`` dict) at the top level:\npublished after every API call and at turn end, what main's classic CLI read off its agent.",
+        "description": "``usage``: the status-bar view (``server._get_usage``), sent by the embedded backend's ticker\n(``server._start_usage_ticker``) and by a canonical local viewer's gateway after every API call\nand at turn end (``gateway/session_usage.py::usage_frame``). Read this.\n\nDeprecated: the top-level session-cumulative counters (``usage_stats``, the ``session.stats``\ndict) that the gateway frame also carries. They are kept for existing readers; new readers use\n``usage``, or ``session.stats`` for the raw counters. The embedded ticker never sends them.",
         "properties": {
           "usage": {
             "anyOf": [
@@ -47101,6 +47573,42 @@
       }
     },
     {
+      "name": "bot_relay.settle",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalBotDeliverParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CanonicalBotDeliverResult"
+        }
+      }
+    },
+    {
+      "name": "clarify.lock",
+      "summary": "Lock one answer of the owner's batch clarify request (editable until every question is locked); only a viewer attached to that session with session:respond may lock.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ClarifyLockParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ClarifyLockResult"
+        }
+      }
+    },
+    {
       "name": "clarify.respond",
       "summary": "Generation-fenced answer to a pending clarify prompt (empty answer = skipped).",
       "params": [
@@ -47115,6 +47623,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/PromptResponseResult"
+        }
+      }
+    },
+    {
+      "name": "command.observe",
+      "summary": "Fire-only: a recognized command the classic CLI or the TUI runs itself; the gateway fires `pre_command` for it in the session's profile after replying (`queued` false: not fired).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CommandObserveParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CommandObserveResult"
         }
       }
     },
@@ -47425,6 +47951,24 @@
       }
     },
     {
+      "name": "prompt.replace_queued",
+      "summary": "Cancel a still-queued admission and admit the edited prompt as a new admission at the back of the FIFO, in one write bound to the replaced admission. Refusals: admission_started, admission_conflict (the submission_id replaced another admission), queue_full, unsupported_control, not_found.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalReplaceQueuedParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AdmissionStatus"
+        }
+      }
+    },
+    {
       "name": "prompt.resolve_unknown",
       "summary": "Acknowledge a turn lost across an owner restart; the FIFO behind it resumes. Never requeues the lost input.",
       "params": [
@@ -47432,6 +47976,24 @@
           "name": "params",
           "schema": {
             "$ref": "#/components/schemas/PromptResolveUnknownParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AdmissionStatus"
+        }
+      }
+    },
+    {
+      "name": "prompt.steer_queued",
+      "summary": "Hand a still-queued admission's text to the running turn's agent as a steer. The admission reads 'started' with that turn (pending snapshots mark it 'steering') and never runs on its own; it settles terminal 'steered' when the turn completes with its text, else 'interrupted' (its completion frame says 'cancelled', as an interrupted turn's does); a text the turn never consumed goes back to its queue place. Refusals: admission_started, session_idle, steer_unavailable (no agent to take it: the admission stays queued), unsupported_control, not_found.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalSteerQueuedParams"
           }
         }
       ],
@@ -48774,6 +49336,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/SetupReadyPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "skills.changed",
+      "summary": "A skill root moved (installed/removed elsewhere); refetch commands.catalog from the gateway.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/ChangeSignalPayload"
           }
         }
       ]

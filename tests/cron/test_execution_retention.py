@@ -1,6 +1,7 @@
 """Cron outcome retention is a time floor, not a volume-dependent window."""
 
 from datetime import UTC, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -78,3 +79,32 @@ def test_high_volume_retains_recent_outcomes_and_inflight(tmp_path, monkeypatch)
     assert executions.get_execution(old["id"]) is None
     assert executions.get_execution(inflight["id"])["status"] == "running"
     assert executions.get_execution(trigger["id"])["status"] == "completed"
+
+
+@pytest.mark.parametrize("month,day", [(3, 20), (11, 15)])
+@pytest.mark.parametrize("age_seconds", [30 * 86400 - 1, 30 * 86400, 30 * 86400 + 1])
+def test_retention_measures_elapsed_days_across_dst(
+    tmp_path, monkeypatch, month, day, age_seconds
+):
+    from cron import executions
+
+    monkeypatch.setattr(executions, "EXECUTIONS_FILE", tmp_path / "executions.db")
+    monkeypatch.setattr(executions, "MAX_TERMINAL_EXECUTIONS", 0)
+    zone = ZoneInfo("America/Los_Angeles")
+    now = datetime(2026, month, day, 12, tzinfo=zone)
+    finished = (now.astimezone(UTC) - timedelta(seconds=age_seconds)).astimezone(zone)
+    monkeypatch.setattr(executions, "_hermes_now", lambda: finished)
+    row = executions.create_execution("dst-boundary", source="builtin")
+    executions.mark_execution_running(row["id"])
+    executions.finish_execution(row["id"], success=False, error="provider error")
+    original = executions.get_execution(row["id"])
+    assert original is not None
+    monkeypatch.setattr(executions, "_hermes_now", lambda: now)
+
+    with executions._transaction() as conn:
+        executions._prune_unlocked(conn)
+
+    if age_seconds > 30 * 86400:
+        assert executions.get_execution(row["id"]) is None
+    else:
+        assert executions.get_execution(row["id"]) == original

@@ -15,7 +15,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -200,7 +200,9 @@ def touch_execution_progress(execution_id: str) -> bool:
 
 
 def _prune_unlocked(conn: sqlite3.Connection) -> None:
-    cutoff = (_hermes_now() - timedelta(days=MIN_TERMINAL_RETENTION_DAYS)).isoformat()
+    cutoff = (
+        _hermes_now().astimezone(UTC) - timedelta(days=MIN_TERMINAL_RETENTION_DAYS)
+    ).isoformat()
     conn.execute(
         """DELETE FROM executions
            WHERE julianday(finished_at) < julianday(?) AND id IN (

@@ -75,6 +75,11 @@ class TestBuildPayload:
         payload = dh.build_payload(kind="final", platform="Discord", chat_id="1")
         assert payload["message_ids"] == [] and payload["last_message_id"] is None
         assert payload["thread_id"] is None and payload["text"] is None and payload["platform"] == "discord"
+        assert payload["session_id"] is None
+
+    def test_session_id_is_a_bounded_string(self):
+        payload = dh.build_payload(kind="final", platform="telegram", chat_id="1", session_id="s" * 300)
+        assert payload["session_id"] == "s" * 128
 
 
 class TestDispatch:
@@ -199,6 +204,15 @@ class TestNonStreamedFinal:
         assert payload["message_ids"] == ["11", "12"] and payload["last_message_id"] == "12"
         assert payload["chat_id"] == "8" and payload["thread_id"] == "77"
         assert payload["text"] == "final answer" and payload["session_key"] == "sess-1"
+        assert payload["session_id"] is None   # no turn stamped on this event
+
+    def test_carries_the_turn_session_id_the_runner_stamped(self, fired):
+        adapter = _Adapter(SendResult(success=True, message_id="11"))
+        event = _event(adapter)
+        event._delivered_turn_session_id = "20261017_101500_ab12cd"   # set by _handle_message_with_agent
+        _send(adapter, event, "sess-1", "final answer", {}, reply_to=None)
+        (_, payload), = fired
+        assert payload["session_id"] == "20261017_101500_ab12cd" and payload["session_key"] == "sess-1"
 
     def test_failed_send_does_not_fire(self, fired):
         adapter = _Adapter(SendResult(success=False, error="Forbidden: bot was blocked", error_kind="forbidden"))
@@ -253,11 +267,11 @@ class _Harness(GatewayTurnMixin):
         return self._confirmed
 
 
-def _mark(consumer, *, confirmed, response=None):
+def _mark(consumer, *, confirmed, response=None, turn_session_id="sid-start"):
     turn_ctx = SimpleNamespace(
         stream_consumer_holder=[consumer],
         source=SimpleNamespace(platform=Platform.TELEGRAM, chat_id="c1", thread_id="t1"),
-        session_key="sess-s")
+        session_key="sess-s", session_id=turn_session_id)
     response = response or {"final_response": "complete answer"}
 
     async def main():
@@ -283,6 +297,13 @@ class TestStreamedFinal:
         assert payload["streamed"] is True and payload["kind"] == "final"
         assert payload["message_ids"] == ["55"] and payload["text"] == "complete answer (as shown)"
         assert payload["chat_id"] == "c1" and payload["thread_id"] == "t1" and payload["session_key"] == "sess-s"
+        assert payload["session_id"] == "sid-start"   # no session_id in the result: the turn's own
+
+    def test_session_id_follows_the_agent_result_after_compression(self, fired):
+        _mark(_consumer(), confirmed=True,
+              response={"final_response": "complete answer", "session_id": "sid-rotated"})
+        (_, payload), = fired
+        assert payload["session_id"] == "sid-rotated"   # what post_llm_call reported
 
     def test_ambiguous_fallback_resend_is_not_reported_as_delivered(self, fired):
         response = _mark(_consumer(_delivery_ambiguous=True), confirmed=True)
@@ -294,6 +315,7 @@ class TestStreamedFinal:
         _mark(consumer, confirmed=False)
         (_, payload), = fired
         assert payload["text"] == "complete answer" and payload["message_ids"] == ["55"]
+        assert payload["session_id"] == "sid-start"
 
     def test_failed_reconcile_edit_does_not_fire(self, fired):
         adapter = SimpleNamespace(edit_message=AsyncMock(return_value=SimpleNamespace(success=False, error="x")))

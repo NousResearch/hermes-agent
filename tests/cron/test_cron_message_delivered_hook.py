@@ -55,7 +55,7 @@ def _run(job, content, send_result, standalone_result=None):
         future = Future()
         try:
             future.set_result(asyncio.run(coro))
-        except BaseException as e:  # noqa: BLE001
+        except BaseException as e:
             future.set_exception(e)
         return future
 
@@ -91,6 +91,7 @@ def test_live_lane_fires_once_with_job_and_all_ids(fired):
     assert payload["platform"] == "telegram" and payload["chat_id"] == CHAT_ID and payload["thread_id"] == "5"
     assert payload["message_ids"] == ["100", "101"] and payload["last_message_id"] == "101"
     assert payload["text"] == "ACTION_REQUIRED: apply" and payload["streamed"] is False
+    assert payload["session_id"] is None   # cron correlates by job_id
 
 
 def test_unconfirmed_live_send_fires_only_from_the_standalone_lane(fired):

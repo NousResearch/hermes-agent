@@ -269,7 +269,7 @@ def compress_after_tool_results(
     guard = getattr(agent, "_session_rollover", None)
     if guard is not None:
         rollover = guard.inspect(agent, messages, system_prompt=active_system_prompt or "")
-        if rollover.skip_proactive_compaction:
+        if rollover is not None and rollover.skip_proactive_compaction:
             from agent.session_rollover import SESSION_ROLLOVER_REQUESTED_RESPONSE
             final_response = SESSION_ROLLOVER_REQUESTED_RESPONSE if rollover.rollover_requested else final_response
             turn_exit_reason = "session_rollover_requested" if rollover.rollover_requested else turn_exit_reason

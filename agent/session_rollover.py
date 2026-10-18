@@ -251,8 +251,10 @@ class RolloverGuard:
         system_prompt: Optional[str] = None,
         request_pressure_tokens: Any = None,
         pending_message: Any = None,
-    ) -> RolloverSnapshot:
-        """Inspect pressure; ``pending_message`` is counted only when not already in ``messages``."""
+    ) -> Optional[RolloverSnapshot]:
+        """Inspect pressure, or return no decision when native recovery owns an invalidated turn."""
+        if self.phase == "invalidated":
+            return None
         if self.phase not in _PHASES:
             raise RuntimeError(f"invalid rollover phase: {self.phase!r}")
         budget = resolve_rollover_budget(agent, self)

@@ -387,3 +387,23 @@ def test_unanchored_measurement_without_resolved_system_prompt_fails_closed():
 
     with pytest.raises(RolloverBudgetUnavailable, match="requires the resolved system prompt"):
         measure_rollover_pressure(runtime, [{"role": "user", "content": "hello"}])
+
+
+def test_invalidated_guard_allows_native_turn_after_runtime_budget_shrinks(session_db):
+    agent = _agent(session_db=session_db)
+    guard = RolloverGuard(1_000, 500, 18_000, 100)
+    agent._session_rollover = guard
+    guard.invalidate("native_overflow", agent=agent)
+    agent.context_compressor.context_length = 1_000
+    agent.context_compressor.threshold_tokens = 850
+    agent.client.chat.completions.create.return_value = _response()
+
+    with patch("agent.turn_context._maybe_title_session_at_turn_start"):
+        result = agent.run_conversation("preserve this input during recovery", conversation_history=[])
+
+    assert result["completed"] is True
+    assert result["api_calls"] == 1
+    assert result["rollover_requested"] is False
+    assert result["rollover_fallback"] is True
+    assert any(message["role"] == "user" and message["content"] == "preserve this input during recovery"
+               for message in session_db.get_messages(agent.session_id))

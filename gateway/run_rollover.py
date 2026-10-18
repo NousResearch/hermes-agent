@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from pathlib import Path
 
 from gateway.rollover_packet import (
     RolloverBlocked, RolloverPolicy, RolloverPreflightBlocked,
@@ -37,8 +36,10 @@ def queue_during_rollover(runner, event, key) -> bool:
     lane = lane_rollover(runner, key)
     if lane is None or lane.phase not in {"authoring", "committing", "bootstrapping"}:
         return False
-    # Slash control keeps its native bypass; this fence only owns ordinary arrivals.
-    if event.get_command():
+    from hermes_cli.commands import resolve_command
+    # Unknown slash-prefixed text is ordinary input, not control authority.
+    command = event.get_command()
+    if command and resolve_command(command):
         return False
     adapter = runner._delivery_adapter_for(event.source)
     if adapter is None:
@@ -431,6 +432,7 @@ class GatewayRolloverMixin:
     async def _rollover_admit(self, source, entry, key, generation, receipt, event):
         try:
             history = await self.async_session_store.load_transcript(entry.session_id)
+            await asyncio.to_thread(verify_packet_binding, receipt)
             if not self._is_session_run_current(key, generation):
                 raise RolloverBlocked("A newer stop or reset superseded continuation")
             if not _queue_is_empty(self, key, source):
@@ -493,7 +495,7 @@ class GatewayRolloverMixin:
                 raise RolloverBlocked("Successor bootstrap did not complete; reconcile this same successor")
             if not self._is_session_run_current(key, generation):
                 raise RolloverBlocked("A newer stop or reset superseded bootstrap")
-            bound = await asyncio.to_thread(validate_packet, Path(receipt["packet_path"]), receipt["restart_message"])
+            bound = await asyncio.to_thread(verify_packet_binding, receipt)
             if bound["mode"] in {"await-user", "idle"}:
                 await self._rollover_complete(key, entry, "bootstrapping")
             else:
@@ -541,22 +543,24 @@ class GatewayRolloverMixin:
         )
         for receipt in receipts:
             key = receipt["session_key"]
-            entry = await self.async_session_store.lookup_by_session_key(key)
-            if entry is None or entry.origin is None or self._is_session_running(key):
-                continue
-            source = self._restored_source(entry)
-            if platform is not None and source.platform != platform:
-                continue
-            adapter = self._delivery_adapter_for(source)
-            if adapter is None or not self._resume_owner_authorized(key, source):
-                continue
-            # Let the adapter claim its native ingress guard. Pre-claiming the runner
-            # sentinel makes its own wake look busy and queues it behind itself.
-            # A concurrent ordinary arrival sees the same receipt and must bootstrap first.
-            event = MessageEvent(
-                text="", source=source, internal=True, allow_gateway_control=False,
-                metadata={"gateway_session_key": key},
-            )
-            event._rollover_recovery_wake = True
-            async with self._async_profile_scope_for_source(source):
-                await self._run_startup_resume_event(adapter, event, key)
+            try:
+                entry = await self.async_session_store.lookup_by_session_key(key)
+                if entry is None or entry.origin is None or self._is_session_running(key):
+                    continue
+                source = self._restored_source(entry)
+                if platform is not None and source.platform != platform:
+                    continue
+                adapter = self._delivery_adapter_for(source)
+                if adapter is None or not self._resume_owner_authorized(key, source):
+                    continue
+                # The adapter owns ingress; a preclaimed runner sentinel queues its own wake.
+                # A concurrent ordinary arrival sees the receipt and must bootstrap first.
+                event = MessageEvent(
+                    text="", source=source, internal=True, allow_gateway_control=False,
+                    metadata={"gateway_session_key": key},
+                )
+                event._rollover_recovery_wake = True
+                async with self._async_profile_scope_for_source(source):
+                    await self._run_startup_resume_event(adapter, event, key)
+            except Exception:
+                logger.exception("Rollover recovery failed for %s; continuing other lanes", key)

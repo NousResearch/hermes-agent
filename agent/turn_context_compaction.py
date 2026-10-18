@@ -140,10 +140,10 @@ def run_turn_start_compaction(
     guard = getattr(agent, "_session_rollover", None)
     if guard is not None:
         snapshot = guard.inspect(agent, messages, system_prompt=active_system_prompt or "")
-        if snapshot.rollover_requested:
+        if snapshot is not None and snapshot.rollover_requested:
             out.rollover_requested = True
             return out
-        if snapshot.skip_proactive_compaction:
+        if snapshot is not None and snapshot.skip_proactive_compaction:
             return out
     _idle_compaction(agent, out, system_message, user_message, effective_task_id)
     _preflight_compression(agent, out, system_message, user_message, effective_task_id)

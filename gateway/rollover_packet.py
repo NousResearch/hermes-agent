@@ -113,10 +113,11 @@ def validate_packet(packet: Path, restart_message: str) -> dict:
             "restart_message": restart_message, "mode": mode}
 
 
-def verify_packet_binding(receipt: dict) -> None:
-    packet = Path(receipt["packet_path"])
-    if packet.is_symlink() or hashlib.sha256(packet.read_bytes()).hexdigest() != receipt["packet_sha256"]:
+def verify_packet_binding(receipt: dict) -> dict:
+    binding = validate_packet(Path(receipt["packet_path"]), receipt["restart_message"])
+    if binding["packet_sha256"] != receipt["packet_sha256"]:
         raise RolloverBlocked("The committed handoff packet changed; reconcile before continuing")
+    return binding
 
 
 def handoff_instruction(policy: RolloverPolicy, packet: Path, session_id: str) -> str:

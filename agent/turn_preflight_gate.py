@@ -49,7 +49,7 @@ def run_preflight_gate(
             agent, messages, system_prompt=active_system_prompt or "",
             request_pressure_tokens=request_pressure_tokens,
         )
-        if rollover.rollover_requested:
+        if rollover is not None and rollover.rollover_requested:
             from agent.session_rollover import SESSION_ROLLOVER_REQUESTED_RESPONSE
 
             if v.api_call_count > 0:

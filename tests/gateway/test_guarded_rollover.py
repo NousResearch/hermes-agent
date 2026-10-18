@@ -144,10 +144,13 @@ async def test_arrivals_during_offloop_commit_survive_and_wait_for_bootstrap(lan
     try:
         assert await asyncio.to_thread(entered.wait, 10), "cutover never reached the native store"
         # This runs while the DB worker is deliberately held: no event-loop blocking.
-        one = MessageEvent(text="cancel the old task", source=lane.source)
+        one = MessageEvent(text="/unrecognized ordinary input", source=lane.source)
         two = MessageEvent(text="keep monitoring only", source=lane.source)
         assert queue_during_rollover(lane.runner, one, lane.key)
         assert queue_during_rollover(lane.runner, two, lane.key)
+        assert not queue_during_rollover(
+            lane.runner, MessageEvent(text="/stop", source=lane.source), lane.key,
+        )
         release.set()
         reply = await task
         receipt = lane.store.get_rollover(lane.key)
@@ -361,7 +364,7 @@ async def test_pending_approval_prevents_cutover_without_answering_it(lane, monk
 
 
 @pytest.mark.asyncio
-async def test_startup_recovers_committed_successor_through_native_ingress(lane, monkeypatch):
+async def test_startup_recovers_healthy_successor_despite_other_lane_failure(lane, monkeypatch):
     import hermes_constants
     from gateway.config import PlatformConfig
     from gateway.platforms.base import BasePlatformAdapter, SendResult
@@ -385,22 +388,28 @@ async def test_startup_recovers_committed_successor_through_native_ingress(lane,
             return {"id": chat_id}
 
     home = lane.authority.parent
-    packet = home / "recovery-packet.md"
-    message = _packet(packet, lane.authority, mode="await-user")
-    receipt = lane.store.begin_rollover(
-        lane.key, lane.entry.session_id, lane.generation, profile_home=str(home), packet_path=str(packet),
+    broken = lane.store.get_or_create_session(
+        SessionSource(platform=Platform.TELEGRAM, chat_id="broken-route", user_id=lane.source.user_id),
     )
-    binding = validate_packet(packet, message)
-    binding.pop("mode")
-    binding.update(profile_home=str(home), bootstrap_prompt="Read the bound packet.\n\n" + message)
-    lane.store.prepare_rollover(
-        lane.key, lane.entry.session_id, lane.generation, binding,
-        expected_new_session_id=receipt["new_session_id"],
-    )
-    successor = lane.store.commit_rollover(
-        lane.key, lane.entry.session_id, lane.generation,
-        expected_new_session_id=receipt["new_session_id"],
-    )
+    successors = {}
+    for entry in (broken, lane.entry):
+        packet = home / f"recovery-{entry.session_id}.md"
+        message = _packet(packet, lane.authority, mode="await-user")
+        receipt = lane.store.begin_rollover(
+            entry.session_key, entry.session_id, lane.generation, profile_home=str(home), packet_path=str(packet),
+        )
+        binding = validate_packet(packet, message)
+        binding.pop("mode")
+        binding.update(profile_home=str(home), bootstrap_prompt="Read the bound packet.\n\n" + message)
+        lane.store.prepare_rollover(
+            entry.session_key, entry.session_id, lane.generation, binding,
+            expected_new_session_id=receipt["new_session_id"],
+        )
+        successors[entry.session_key] = lane.store.commit_rollover(
+            entry.session_key, entry.session_id, lane.generation,
+            expected_new_session_id=receipt["new_session_id"],
+        )
+    successor = successors[lane.key]
     config = GatewayConfig(sessions_dir=home / "sessions")
     runner = GatewayRunner(config)
     runner.session_store = lane.store
@@ -410,6 +419,19 @@ async def test_startup_recovers_committed_successor_through_native_ingress(lane,
     runner.adapters[Platform.TELEGRAM] = adapter
     runner._is_user_authorized_for_source = lambda source: source.user_id == lane.source.user_id
     monkeypatch.setattr(hermes_constants, "get_routing_process_hermes_home", lambda: home)
+    list_pending = lane.store.list_pending_rollovers
+    restore_source = runner._restored_source
+
+    def ordered_pending(**kwargs):
+        return sorted(list_pending(**kwargs), key=lambda row: row["session_key"] != broken.session_key)
+
+    def restore_available_source(entry):
+        if entry.session_key == broken.session_key:
+            raise RuntimeError("The first lane's source is unavailable")
+        return restore_source(entry)
+
+    monkeypatch.setattr(lane.store, "list_pending_rollovers", ordered_pending)
+    monkeypatch.setattr(runner, "_restored_source", restore_available_source)
     calls = []
 
     async def model_boundary(**kwargs):
@@ -424,6 +446,7 @@ async def test_startup_recovers_committed_successor_through_native_ingress(lane,
         assert lane.store.get_rollover(lane.key)["phase"] == "complete"
         assert lane.store.peek_session_id(lane.key) == successor.session_id
         assert calls == [(successor.session_id, [])]
+        assert lane.store.get_rollover(broken.session_key)["phase"] == "committed"
         await runner._restore_rollover_sessions(recover_interrupted=False)
         assert calls == [(successor.session_id, [])]
     finally:
@@ -515,4 +538,40 @@ async def test_cancelled_transition_blocks_its_owner_without_replay(lane, phase)
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
+        lane.runner._release_turn_lease(lane.key, lane.generation)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed_during", ["bootstrap", "before_admission"])
+async def test_changed_packet_blocks_same_successor_before_continuation(lane, changed_during):
+    def change_packet():
+        receipt = lane.store.get_rollover(lane.key)
+        packet = Path(receipt["packet_path"])
+        packet.write_text(packet.read_text().replace("`continue-authorized`", "`idle`"))
+
+    original_model = lane.runner._rollover_internal_turn
+    original_admit = lane.runner._rollover_admit
+
+    async def model(*args, **kwargs):
+        result = await original_model(*args, **kwargs)
+        if changed_during == "bootstrap" and lane.store.get_rollover(lane.key)["phase"] == "bootstrapping":
+            change_packet()
+        return result
+
+    async def admit(*args, **kwargs):
+        if changed_during == "before_admission":
+            change_packet()
+        return await original_admit(*args, **kwargs)
+
+    lane.runner._rollover_internal_turn = model
+    lane.runner._rollover_admit = admit
+    await _claim(lane)
+    try:
+        await _rotate(lane)
+        receipt = lane.store.get_rollover(lane.key)
+        assert receipt["phase"] == "blocked"
+        assert receipt["owner_committed"] is True
+        assert lane.store.peek_session_id(lane.key) == receipt["new_session_id"]
+        assert not any(phase == "admitting" for phase, *_ in lane.calls)
+    finally:
         lane.runner._release_turn_lease(lane.key, lane.generation)

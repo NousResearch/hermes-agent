@@ -669,7 +669,9 @@ uncertain outcomes; automatic delivery does not create approvals.
 `gateway/run_rollover.py` owns the transition; `gateway/session_rollover.py` and
 `hermes_state_rollover.py` persist its receipt in the owning `SessionDB`. The receipt
 binds the route/profile, old and sole successor IDs, generation, packet path/hash,
-exact restart message and bootstrap text.
+exact restart message and bootstrap text. The packet hash is checked again after
+tool-capable bootstrap and before continuation admission; changed content cannot
+supply a new directive mode under the old receipt.
 
 ```mermaid
 stateDiagram-v2
@@ -690,6 +692,8 @@ prevent cutover. Independent infrastructure remains running. A final empty-input
 check and clearing the **old empty** conversation scope have no await between
 them. The native lane lease remains held through off-loop DB commit and compulsory
 bootstrap; later arrivals stay in the native FIFO and are never cleared again.
+Recognized slash commands keep their native bypass; unknown slash-prefixed text
+remains ordinary queued input.
 After bootstrap, retained input is processed before automatic admission of the
 still-authorized directive, including newer stops or cancellations.
 
@@ -698,6 +702,7 @@ The commit ends the predecessor with `session_reset`, creates a fresh child with
 does not copy the prior transcript. Recovery of a committed, not-yet-started
 bootstrap uses the **same successor**. Interrupted authoring, bootstrap or
 continuation is visibly blocked for reconciliation, never blindly replayed.
+A lane's recovery-dispatch failure is logged without skipping subsequent receipts.
 
 After compulsory bootstrap, native busy-input policy still applies. With the
 default `interrupt` mode, an ordinary message can interrupt a retained-input or
@@ -713,6 +718,8 @@ ingress durability. Ambiguous input/action outcomes are not certified lossless.
 If an oversized result exhausts the handoff runway, the attempt is invalidated
 before ordinary native compaction/overflow recovery runs; the fresh handoff records
 that exception instead of claiming a zero-compaction rollover.
+An invalidated pressure guard stays inert during native recovery, including when
+the provider changes its effective context budget or route.
 
 Disabling the opt-in stops new attempts and aborts an uncommitted live attempt at
 its final configuration check. It does **not** erase a committed or uncertain

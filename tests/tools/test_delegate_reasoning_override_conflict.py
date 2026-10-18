@@ -134,6 +134,23 @@ def test_launch_strips_only_reasoning_overrides():
         child.close()
 
 
+def test_launch_strips_top_level_reasoning_controls():
+    """Top-level reasoning carriers are stripped too; unrelated keys survive."""
+    overrides = {
+        "reasoning": {"enabled": True},
+        "reasoning_effort": "high",
+        "thinking": {"type": "enabled"},
+        "service_tier": "priority",
+    }
+    parent = _make_parent(request_overrides=overrides)
+    parent.reasoning_config = {"enabled": True, "effort": "medium"}
+    child = _launch_child(parent, reasoning_config_override={"enabled": False})
+    try:
+        assert child.request_overrides == {"service_tier": "priority"}
+    finally:
+        child.close()
+
+
 def test_no_launch_override_keeps_parent_reasoning_override():
     """Omitted launch effort keeps the existing inheritance path untouched."""
     parent = _make_parent(request_overrides=dict(CONFLICTING_OVERRIDES))

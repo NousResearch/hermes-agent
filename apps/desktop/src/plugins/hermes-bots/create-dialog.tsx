@@ -20,6 +20,7 @@ import {
   DialogHeader,
   DialogTitle,
   DisclosureCaret,
+  gatewayActivationEpoch,
   GlyphSpinner,
   host,
   Input,
@@ -47,7 +48,8 @@ import { createCanonicalChat } from './canonical-chat'
 import { groupCreationSource, groupExecutionMode } from './canonical-group-capabilities'
 import { registerCanonicalGroup } from './canonical-group-registry'
 import type { CanonicalGroupOrigin } from './canonical-group-registry'
-import { canonicalGroupRequest, captureCanonicalGroupRoute, createCanonicalGroup } from './canonical-groups'
+import { canonicalGroupRequest, createCanonicalGroup } from './canonical-groups'
+import type { CanonicalGroupRoute } from './canonical-groups'
 import { $botMeta, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
 import { labeled, ResizableFrame } from './dialog-parts'
 import { GROUP_CHAT_MAX_MEMBERS, mintGroupRoomId, uniqueGroupChatName, updateGroupChat } from './group-chat'
@@ -1180,14 +1182,56 @@ interface CreateGroupChatDialogProps {
   roster: RosterRow[]
 }
 
-/** Discord-style group chat creation: pick 2+ bots via checkboxes (with
- *  search), name the group, create. Assignment appends to each local bot's
- *  group membership list, so the room appears in the roster and syncs
- *  cross-machine via ui_meta without replacing its other groups. */
+type GroupCapabilityState = {
+  activationEpoch: number
+  mode: ReturnType<typeof groupExecutionMode>
+  source: string
+}
+
+async function revalidateGroupCreationMode(
+  route: CanonicalGroupRoute,
+  capability: GroupCapabilityState | null,
+  source: string,
+  unavailableMessage: string
+) {
+  const sourceCurrent = groupCreationSource(route, capability?.activationEpoch ?? -1)
+
+  if (!capability || capability.source !== source || !sourceCurrent()) {
+    throw new Error(unavailableMessage)
+  }
+
+  const mode = capability.mode
+
+  if (mode !== 'canonical' && mode !== 'legacy') {
+    throw new Error(unavailableMessage)
+  }
+
+  const freshMode = groupExecutionMode(await canonicalGroupRequest<unknown>(route, 'groups.capabilities'))
+
+  if (!sourceCurrent() || freshMode !== mode) {
+    throw new Error(unavailableMessage)
+  }
+
+  return { mode, sourceCurrent }
+}
+
+/** Discord-style group chat creation: pick 2+ routable bots via checkboxes
+ *  (with search), name the group, create. Legacy assignments append to each
+ *  local bot's group membership list and sync through ui_meta; canonical groups
+ *  keep members on their authority connection. */
 export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: CreateGroupChatDialogProps) {
   const { t } = useI18n()
   const b = useBots()
   const allMeta: Record<string, BotMeta> = useValue($botMeta)
+  const connectionId = useValue(host.state.connectionId)
+  const profile = useValue(host.state.profile)
+  const gateway = useValue(host.state.gateway)
+  const activationEpoch = gatewayActivationEpoch()
+  const source = JSON.stringify([connectionId, profile, gateway, activationEpoch])
+  const observedRoute = connectionId ? { connectionId, profile } : null
+
+  const [capability, setCapability] = useState<GroupCapabilityState | null>(null)
+
   const [query, setQuery] = useState('')
   const [checked, setChecked] = useState<Record<string, boolean>>({})
   const [name, setName] = useState('')
@@ -1203,9 +1247,67 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     }
   }, [open])
 
+  useEffect(() => {
+    let cancelled = false
+    setCapability(null)
+
+    if (!open || gateway !== 'open' || !connectionId) {
+      return
+    }
+
+    const route = { connectionId, profile }
+    const sourceCurrent = groupCreationSource(route, activationEpoch)
+
+    void canonicalGroupRequest<unknown>(route, 'groups.capabilities')
+      .then(result => {
+        if (!cancelled && sourceCurrent()) {
+          setCapability({
+            activationEpoch,
+            mode: groupExecutionMode(result),
+            source
+          })
+        }
+      })
+      .catch(() => {
+        if (!cancelled && sourceCurrent()) {
+          setCapability({
+            activationEpoch,
+            mode: 'unavailable',
+            source
+          })
+        }
+      })
+
+    return () => { cancelled = true }
+  }, [activationEpoch, connectionId, gateway, open, profile, source])
+
+  const mode = capability?.source === source ? capability.mode : 'checking'
+
+  const currentConnection = String(connectionId || '').trim()
+
+  const belongsToCurrentConnection = (bot: RosterRow) => {
+    if (!currentConnection) {
+      return false
+    }
+
+    if (bot.connectionId) {
+      return bot.connectionId === currentConnection &&
+        (!bot.route?.connectionId || bot.route.connectionId === currentConnection)
+    }
+
+    return !bot.remoteSource && (!bot.route?.connectionId || bot.route.connectionId === currentConnection)
+  }
+
   // An outage placeholder preserves one selected owner's identity in the
   // sidebar, but it is not a routable room member. Never offer it here.
-  const selectableRoster = roster.filter(bot => !bot?.ghost)
+  const selectableRoster = roster.filter(bot => {
+    if (bot?.ghost) {
+      return false
+    }
+
+    return mode === 'legacy' || belongsToCurrentConnection(bot)
+  })
+
   const selected = selectableRoster.filter(bot => checked[botRosterKey(bot)])
   const visible: RosterRow[] = filterBots(selectableRoster, allMeta, query)
   const atCap = selected.length >= GROUP_CHAT_MAX_MEMBERS
@@ -1214,7 +1316,8 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     ? selected.map(bot => displayName(bot, botRosterMeta(bot, allMeta))).join(', ')
     : b.group.nameLabel
 
-  const canCreate = selected.length >= 2 && Boolean(name.trim() || selected.length)
+  const canCreate = selected.length >= 2 && Boolean(name.trim() || selected.length) &&
+    (mode === 'canonical' || mode === 'legacy')
 
   const creating = useRef(false)
 
@@ -1229,17 +1332,23 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       return
     }
 
-    const route = captureCanonicalGroupRoute()
-    const sourceCurrent = groupCreationSource(route)
+    const route = observedRoute
 
-    const capabilities = await canonicalGroupRequest<unknown>(route, 'groups.capabilities')
-    const mode = groupExecutionMode(capabilities)
-
-    if (!sourceCurrent() || mode === 'unavailable') {
+    if (!route) {
       throw new Error(b.canonical.driverUnavailable)
     }
 
-    if (mode === 'canonical') {
+    const { mode: currentMode, sourceCurrent } = await revalidateGroupCreationMode(route, capability, source, b.canonical.driverUnavailable)
+
+    if (!sourceCurrent()) {
+      throw new Error(b.canonical.driverUnavailable)
+    }
+
+    if (currentMode === 'canonical') {
+      if (!sourceCurrent()) {
+        throw new Error(b.canonical.driverUnavailable)
+      }
+
       const created = await createCanonicalGroup(route, base, durableGroupChatMembers(selected))
 
       // Creation already succeeded; leave it on its owner without adopting a stale result.
@@ -1269,6 +1378,10 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
 
     const groupName = uniqueGroupChatName(base, taken)
     const roomId = mintGroupRoomId()
+
+    if (!sourceCurrent()) {
+      throw new Error(b.canonical.driverUnavailable)
+    }
 
     for (const bot of selected) {
       void saveBotMeta(bot, groupMembershipPatch(botRosterMeta(bot, allMeta), groupName, true))
@@ -1313,6 +1426,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
           <DialogTitle>{b.group.newTitle}</DialogTitle>
           <DialogDescription>{`Pick 2–${GROUP_CHAT_MAX_MEMBERS} bots. Local memberships sync through each Bot profile; cross-machine members stay scoped to this room.`}</DialogDescription>
         </DialogHeader>
+        {mode === 'unavailable' && <p role="status">{b.canonical.driverUnavailable}</p>}
         {/* TODO(bot-mode-types): this search box never takes focus when the dialog
             opens — SearchField accepts no `autoFocus` prop and forwards no extra
             props, so the `autoFocus` that used to sit here was inert. */}

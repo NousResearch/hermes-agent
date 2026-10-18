@@ -1,4 +1,6 @@
 """Restore only private, profile-bound local policy into the existing authority."""
+import asyncio
+import json
 import logging
 from pathlib import Path
 
@@ -110,6 +112,28 @@ def owned_receipt(authority, sid):
     return receipt, source, route, _checked_entry(authority, receipt, source, route)
 
 
+def _stray_route_target(authority, receipt, session_id):
+    """*session_id* is a replacement the SessionStore's stale-route self-heal minted on this local
+    route before #140642: outside the receipt's lineage, never admitted, no transcript. The receipt
+    is the route's truth, so restoring it drops that entry instead of refusing the conversation
+    forever (``admission_conflict`` on every resume). Anything with history or ledger rows still
+    refuses: it is not provably a stray."""
+    if not session_id or session_id in receipt.get('lineage', [receipt['session_id']]):
+        return False
+    with authority.db._read_ctx() as conn:
+        busy = conn.execute(
+            'SELECT 1 FROM messages WHERE session_id=? UNION ALL SELECT 1 FROM session_admissions '
+            'WHERE target_session_id=? UNION ALL SELECT 1 FROM worker_executions WHERE session_id=? '
+            'UNION ALL SELECT 1 FROM sessions WHERE parent_session_id=? LIMIT 1',
+            (session_id, session_id, session_id, session_id)).fetchone()
+    if busy is not None:
+        return False
+    logging.getLogger(__name__).warning(
+        'Local route for %s named an empty replacement %s outside its lineage; restoring the receipt target',
+        receipt['session_id'], session_id)
+    return True
+
+
 def restore_local_session(authority, sid):
     from gateway.session_authority import LiveSession
     from gateway.session_local import LocalSessionAdapter
@@ -147,7 +171,9 @@ def restore_local_session(authority, sid):
             store._ensure_loaded_locked()
             current = store._entries.get(route)
             if current is not None and current.session_id != target:
-                raise RuntimeStoreError('admission_conflict')
+                if not _stray_route_target(authority, receipt, current.session_id):
+                    raise RuntimeStoreError('admission_conflict')
+                current = None
             # The receipt is the creation copy; a persisted entry for the same target keeps the
             # route's explicit ``/yolo`` toggle (an OFF over a ``--yolo`` launch must survive a
             # cold restore). An untoggled entry stays None and keeps following the launch policy.
@@ -165,7 +191,8 @@ def restore_local_session(authority, sid):
     else:
         with store._lock:
             current = store._entry_locked(route)
-            if current is None or current.session_id not in receipt.get('lineage', [sid]):
+            if current is None or (current.session_id not in receipt.get('lineage', [sid])
+                                   and not _stray_route_target(authority, receipt, current.session_id)):
                 raise RuntimeStoreError('admission_conflict')
             current.session_id = target
     return SessionRef(authority.profile_id, sid)
@@ -180,16 +207,112 @@ def transcript_target(authority, ref):
     return authority.physical_target(ref)
 
 
-def local_history(authority, ref):
-    """Display history from the current physical transcript; *ref* stays the logical root.
+# A resume reply's rows reach Ink twice (``messages`` and ``display_messages``). Archived rows are display-only
+# and fill only what the live rows leave of this budget, so they keep the reply well under the gateway clients'
+# 8 MiB WebSocket frame cap (``hermes_cli/gateway_client.py``) and never push a reply main could send past it.
+# Live rows are never dropped.
+RESUME_HISTORY_BYTES = 3 * 1024 * 1024
+
+
+def display_rows(db, target):
+    """``(live row ids, display rows, truncated)`` of physical *target*, the live ids read first
+    (``local_history``'s fence). The display rows are the compression lineage as main's resume and the
+    REST transcript show it: every live row, and the newest compaction-archived rows that fit what the
+    live rows leave of ``RESUME_HISTORY_BYTES`` (``truncated`` when older ones were left out). A lineage
+    over the resume cap shows only the live rows."""
+    from hermes_state import SessionResumeTooLargeError
+    live_rows = db.get_messages_as_conversation(target, include_row_ids=True)
+    live = {row['_row_id'] for row in live_rows}
+    try:
+        db.assert_resume_safe(target)
+    except SessionResumeTooLargeError:
+        return live, [], False
+    kept, truncated = _fit_archive(live_rows, db.get_messages_as_conversation(
+        target, include_ancestors=True, include_compacted=True, include_row_ids=True))
+    return live, kept, truncated
+
+
+def _fit_archive(live_rows, display):
+    """``(display rows kept, truncated)``: every live row of *display*, and its newest archived rows that fit
+    what *live_rows* leave of ``RESUME_HISTORY_BYTES``."""
+    live = {row['_row_id'] for row in live_rows}
+    kept, used, truncated = [], sum(len(json.dumps(row, default=str)) for row in live_rows), False
+    for row in reversed(display):
+        if row['_row_id'] not in live:
+            used += len(json.dumps(row, default=str))
+            truncated = truncated or used > RESUME_HISTORY_BYTES
+            if truncated:
+                continue
+        kept.append(row)
+    return kept[::-1], truncated
+
+
+async def prepare_history(authority, ref):
+    """``local_history``'s lineage read, off the owner loop; the locked part re-reads only the live tip."""
+    target = transcript_target(authority, ref)
+    return target, await asyncio.to_thread(display_rows, authority.db, target)
+
+
+def _merge_live_in_stored_order(display, live):
+    """The live rows in stored (``row_id``) order, each archived display row placed before the live
+    row it preceded in display order.
+
+    Display deduplication keeps a carried message at its FIRST copy's position, so after a rotated
+    compression the copied tail sits before the new summary. Clients take the live rows of a resume
+    as the transcript (the CLI's ``conversation_history``, ``/undo``'s prefix, rollback, ACP replay),
+    so the live subsequence must be the stored one; archived rows only anchor between live rows."""
+    current = {row['_row_id'] for row in live}
+    groups, pending, shown = [], [], 0
+    for row in display:
+        if row['_row_id'] in current:
+            groups.append(pending)
+            pending, shown = [], shown + 1
+        else:
+            pending.append({**row, 'archived': True})
+    shown_ids = {row['_row_id'] for row in display} & current
+    rows, seen = [], 0
+    for row in sorted(live, key=lambda r: r['_row_id']):
+        if row['_row_id'] in shown_ids:
+            rows.extend(groups[seen])
+            seen += 1
+        rows.append(row)
+    return rows + pending
+
+
+def local_history(authority, ref, prepared=None):
+    """Display history of logical *ref*: every stored row the user saw, in display order.
+
+    A row outside the current physical transcript's active set (summarized away by a compression)
+    carries ``archived: true``: it is shown, never live, so no undo, retry or rewind may target it.
+    The rows without it are exactly the live transcript's, so a client choosing among live rows sees
+    what it saw before. That includes a micro-compaction merge (``display_metadata.model_only``): its
+    originals are the archived rows renderers show, so renderers skip the merge itself.
 
     Each row carries its durable ``messages.id`` as ``row_id`` (the ``TranscriptMessage`` field
     Desktop hydration and the legacy ``session.history`` already use): a ``session.mutate`` rewind
     addresses its ``target_message_id`` by it, so a snapshot without it leaves no way to undo/retry.
+    *prepared* (``prepare_history``) is kept while every row it read as live still is; a rewind or
+    compaction since then re-reads the lineage here. When the byte budget left older archived rows out
+    (``display_rows``), the first row carries ``archived_truncated: true``.
     """
-    rows = authority.db.get_messages_as_conversation(transcript_target(authority, ref), include_row_ids=True)
-    return [{**{k: v for k, v in row.items() if k != '_row_id'}, 'row_id': row['_row_id']}
-            if '_row_id' in row else row for row in rows]
+    db = authority.db
+    target = transcript_target(authority, ref)
+    read_live, display, truncated = (prepared[1] if prepared is not None and prepared[0] == target
+                                     else display_rows(db, target))
+    live = db.get_messages_as_conversation(target, include_row_ids=True)
+    live_ids = {row['_row_id'] for row in live}
+    if not read_live <= live_ids:
+        read_live, display, truncated = display_rows(db, target)
+        live = db.get_messages_as_conversation(target, include_row_ids=True)
+    elif live_ids - read_live:
+        # Rows appended since the prepare count against the archive budget too (no lineage re-read).
+        display, cut = _fit_archive(live, display)
+        truncated = truncated or cut
+    rows = [{**{k: v for k, v in row.items() if k != '_row_id'}, 'row_id': row['_row_id']}
+            for row in _merge_live_in_stored_order(display, live)]
+    if truncated and rows:
+        rows[0]['archived_truncated'] = True  # earlier archived history was left out (the byte budget)
+    return rows
 
 
 def reopen_local_session(authority, ref):

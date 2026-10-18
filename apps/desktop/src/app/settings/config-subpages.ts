@@ -14,7 +14,13 @@ const CONFIG_SUBPAGE_DEFINITIONS: Record<string, ConfigSubpageDefinition[]> = {
     {
       id: 'main',
       labelKey: 'modelMain',
-      fields: ['model', 'model_context_length', 'agent.reasoning_effort', 'agent.service_tier'],
+      fields: [
+        'model',
+        'model_context_length',
+        'model_lmstudio_unload_policy',
+        'agent.reasoning_effort',
+        'agent.service_tier'
+      ],
       prefixes: ['model.']
     },
     { id: 'fallbacks', labelKey: 'modelFallbacks', fields: ['fallback_providers'] },

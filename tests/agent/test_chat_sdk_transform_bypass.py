@@ -134,6 +134,7 @@ def test_iteration_summary_path_hands_the_sdk_only_the_placeholder(monkeypatch):
     """The iteration-limit summary builds the full main-loop kwargs (``_build_api_kwargs``) and calls
     ``chat.completions.create`` itself — the same multi-MB payload, so the same bypass."""
     from agent import chat_completion_helpers
+    from agent.chat_completion_helpers_summary import chat_summary_attempt
 
     seen = _capture_sdk_create(monkeypatch)
     client = _Recorder().client
@@ -146,7 +147,7 @@ def test_iteration_summary_path_hands_the_sdk_only_the_placeholder(monkeypatch):
     agent._interruptible_api_call = lambda request: chat_completion_helpers._dispatch_nonstreaming_api_request(
         agent, request, make_client=lambda *args, **kwargs: client)
 
-    assert chat_completion_helpers._chat_summary_attempt(agent, body["messages"], "req-1")(0) == "ok"
+    assert chat_summary_attempt(agent, body["messages"], "req-1")(0) == "ok"
     assert len(seen) == 1
     assert seen[0]["messages"] == [] and seen[0]["tools"] == []
     assert seen[0]["extra_body"]["messages"] == body["messages"]

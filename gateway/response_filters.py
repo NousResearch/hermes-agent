@@ -35,6 +35,9 @@ INTERNAL_NOTIFICATION_DISPLAY_KIND = "internal_notification"
 # display_text) persists as that row kind instead of internal_notification.
 PRODUCER_NOTICE_DISPLAY_KINDS = frozenset({"process_complete", "async_delegation_complete"})
 MACHINERY_DISPLAY_KINDS = frozenset({INTERNAL_NOTIFICATION_DISPLAY_KIND, *PRODUCER_NOTICE_DISPLAY_KINDS})
+# Loop exit the agent stamps when a machinery turn ends with the model adding nothing
+# (agent/turn_empty_response.py NOTIFICATION_NO_REPLY_EXIT mirrors this; agent/ cannot import gateway/).
+NOTIFICATION_NO_REPLY_EXIT = "notification_no_reply"
 # What a gateway producer's card may name (a liveness tick names internal_notification for its CLI
 # receipt). Closed, and kept apart from the silence set above so a kind added there never becomes
 # nameable; never a client-chosen presentation such as ``hidden``.
@@ -116,7 +119,6 @@ def is_intentional_silence_agent_result(agent_result: dict | None, response: Any
         return False
     if is_intentional_silence_response(response):
         return True
-    from agent.turn_empty_response import NOTIFICATION_NO_REPLY_EXIT
     return agent_result.get("turn_exit_reason") == NOTIFICATION_NO_REPLY_EXIT and not (
         isinstance(response, str) and response.strip()
     )

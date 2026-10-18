@@ -6,6 +6,7 @@ from typing import Literal
 
 from .base import JsonValue, Params, Result
 from .common import ProfileParams, TranscriptMessage
+from .connectors_operation import ConnectionRequestPayload
 from .canonical import AdmissionStatus, CanonicalSessionRef, PromptResponseResult, SessionInventoryFields
 from .registry import canonical_method
 from .sessions import InflightTurn
@@ -148,6 +149,8 @@ class CanonicalSnapshot(Result):
     pending: list[CanonicalPendingAdmission]
     prompts: list[CanonicalPendingPrompt]
     info: CanonicalSnapshotInfo
+    # The open ``manage_connections`` card, so a resume restores it while the tool waits.
+    pending_connection: ConnectionRequestPayload | None = None
 
 
 class CanonicalListParams(ProfileParams):

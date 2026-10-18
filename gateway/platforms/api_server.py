@@ -2875,9 +2875,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         """GET /v1/skills — deterministic JSON listing of installed skills (name, description,
         category), the same set ``/skills list`` shows."""
         try:
-            from tools.skills_tool import _find_all_skills, _sort_skills
-            skills = _sort_skills(
-                _find_all_skills(
+            from tools.skills_tool import find_all_skills, sort_skills
+            skills = sort_skills(
+                find_all_skills(
                     skip_disabled=False, include_editorial=True
                 )
             )
@@ -4165,7 +4165,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         session_history_delivery: str = "", turn_author: Optional[dict[str, Any]] = None,
         relay_metadata: Optional[dict[str, Any]] = None, notification_category: str = "result",
         resume_unanswered_turn: bool = False, approval_notify_callback=None,
-        approval_session_key: Optional[str] = None) -> tuple:
+        approval_session_key: Optional[str] = None, walked_from: Optional[str] = None) -> tuple:
         """Create an agent and run one turn in a thread executor -> ``(result, usage)``.
         ``approval_notify_callback`` (with ``approval_session_key``) routes dangerous-command
         approval requests to the caller's stream, keyed like ``/v1/runs`` approvals (#51871).
@@ -4187,7 +4187,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 stream_delta_callback=stream_delta_callback, tool_progress_callback=tool_progress_callback,
                 tool_start_callback=tool_start_callback, tool_complete_callback=tool_complete_callback,
                 interim_assistant_callback=interim_assistant_callback, reasoning_callback=reasoning_callback,
-                status_callback=status_callback,
+                status_callback=status_callback, walked_from=walked_from,
                 agent_ref=agent_ref, active_run_id=active_run_id, gateway_session_key=gateway_session_key,
                 requested_model=requested_model, requested_provider=requested_provider, model_options=model_options,
                 route=route, session_model=session_model, requested_runtime=requested_runtime,

@@ -4937,6 +4937,7 @@ export interface CanonicalSnapshot {
   pending: CanonicalPendingAdmission[]
   prompts: CanonicalPendingPrompt[]
   info: CanonicalSnapshotInfo
+  pending_connection?: ConnectionRequestPayload | null
 }
 export interface CanonicalPendingAdmission {
   admission_id: string

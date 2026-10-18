@@ -78,8 +78,18 @@ function legacyParams(method: string, params: Record<string, unknown>): Record<s
   return Object.fromEntries(Object.entries(params).filter(([key]) => !strip.includes(key)))
 }
 
+// A caller timeout of 0 (or less) means no deadline, as in the shared channel, which arms no timer
+// for it. Callers that wait on a way-out offer instead (onboarding.state / onboarding.start) pass 0.
+function requestDeadline(timeoutMs: number | undefined): number {
+  const budget = timeoutMs ?? DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS
+
+  return budget > 0 ? Date.now() + budget : Number.POSITIVE_INFINITY
+}
+
 function remainingRequestBudget(deadline: number, signal?: AbortSignal): number {
   signal?.throwIfAborted()
+
+  if (deadline === Number.POSITIVE_INFINITY) { return 0 }
   const remaining = deadline - Date.now()
 
   if (remaining <= 0) { throw new Error('Hermes gateway request timed out') }
@@ -376,7 +386,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
   override async request<T>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number, signal?: AbortSignal): Promise<T> {
     if (!this.canonical) { return super.request<T>(method, legacyParams(method, params), timeoutMs, signal) }
     const generation = this.connectionGeneration
-    const deadline = Date.now() + (timeoutMs ?? DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS)
+    const deadline = requestDeadline(timeoutMs)
     // A truncating submit (edit / regenerate / restore) is the owner's rewind, then the submit.
     const rewind = method === 'prompt.submit' ? splitRewindSubmit(params) : null
 

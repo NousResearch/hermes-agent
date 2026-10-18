@@ -199,14 +199,65 @@ class TestCoerceToolArgs:
             args = {"command": "[INFO] something"}
             assert coerce_tool_args("test_tool", args) == args
 
-    def test_nested_corrupt_string_still_passes_through(self):
-        """Documented limitation: corruption nested inside an already-parsed
-        container is not detected (no refusal), so the tool still sees it."""
+    def test_no_null_anyof_union_refused(self):
+        """Review gap 1: a type-less ``anyOf`` (array|object) must not bypass refusal.
+
+        Pydantic model fields serialize as bare ``anyOf`` with no top-level
+        ``type``; the ``not expected`` early return previously let both bracket
+        prefixes dispatch unchanged.
+        """
+        schema = self._mock_schema({"payload": {"anyOf": [{"type": "array"}, {"type": "object"}]}})
+        for corrupt in ('["cut off', '{"cut off'):
+            with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+                with pytest.raises(ToolArgUnparseableError):
+                    coerce_tool_args("test_tool", {"payload": corrupt})
+
+    def test_string_accepting_union_still_passes_through(self):
+        """anyOf(array|string) with corrupt bracket text stays a valid string member."""
+        schema = self._mock_schema({"opts": {"anyOf": [{"type": "array"}, {"type": "string"}]}})
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            assert coerce_tool_args("test_tool", {"opts": '["cut off'}) == {"opts": '["cut off'}
+
+    def test_native_array_malformed_element_refused(self):
+        """Review gap 2: corrupt JSON-encoded element inside a native list is refused."""
+        schema = self._mock_schema({"items": {"type": "array", "items": {"type": "object"}}})
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            with pytest.raises(ToolArgUnparseableError) as exc_info:
+                coerce_tool_args("test_tool", {"items": ['{"note": "cut off']})
+        assert exc_info.value.param == "items[0]"
+        assert exc_info.value.expected_kind == "object"
+
+    def test_nested_dict_field_refused_at_dotted_path(self):
+        """Corrupt values in nested objects are refused with the dotted path."""
+        schema = self._mock_schema({
+            "outer": {"type": "object", "properties": {"inner": {"type": "object"}}},
+        })
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            with pytest.raises(ToolArgUnparseableError) as exc_info:
+                coerce_tool_args("test_tool", {"outer": {"inner": '{"a": '}})
+        assert exc_info.value.param == "outer.inner"
+
+    def test_outer_encoded_array_recursively_normalized(self):
+        """Review gap 2 (second half): an outer JSON-encoded array string is parsed
+        AND its JSON-encoded elements normalized, not left as strings."""
+        schema = self._mock_schema({"items": {"type": "array", "items": {"type": "object"}}})
+        outer = json.dumps([json.dumps({"note": "ok"})])  # '["{\\"note\\": \\"ok\\"}"]'
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            result = coerce_tool_args("test_tool", {"items": outer})
+        assert result == {"items": [{"note": "ok"}]}
+
+    def test_nested_corrupt_string_is_refused(self):
+        """Corruption nested inside a native container IS refused, at its path.
+
+        (Formerly a documented limitation — a corrupt nested string passed
+        through untouched; review flagged it, the normalizer now refuses.)
+        """
         schema = self._mock_schema({"items": {"type": "array", "items": {"type": "object",
                                                                         "properties": {"note": {"type": "string"}}}}})
         with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
-            result = coerce_tool_args("test_tool", {"items": ['{"note": "cut off']})
-            assert result["items"] == ['{"note": "cut off']
+            with pytest.raises(ToolArgUnparseableError) as exc_info:
+                coerce_tool_args("test_tool", {"items": ['{"note": "cut off']})
+        assert exc_info.value.param == "items[0]"
 
     def test_coerces_integer_arg(self):
         schema = self._mock_schema({"limit": {"type": "integer"}})

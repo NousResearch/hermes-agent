@@ -105,6 +105,13 @@ def coerce_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
         if not prop_schema:
             continue
         prop_schema = resolve_local_schema_ref(prop_schema, parameters)
+        # Normalize first, coerce second: refusal then covers EVERY container
+        # position — type-less anyOf/oneOf unions, nested dict fields, native-list
+        # elements — rather than only top-level typed params.
+        value = _normalize_json_strings_for_schema(
+            value, prop_schema, root_schema=parameters,
+            tool_name=tool_name, path=key,
+        )
         expected = prop_schema.get("type")
         is_container = isinstance(value, (list, tuple))
 
@@ -186,12 +193,21 @@ def _normalize_json_strings_for_schema(
     value: Any,
     schema: Any,
     root_schema: Any = None,
+    *,
+    tool_name: str | None = None,
+    path: str | None = None,
 ) -> Any:
     """Recursively parse JSON-encoded strings where the schema expects array/object.
 
     Schema-guided: a string is only parsed when its schema position expects a
     container, so legitimate JSON-looking ``type: string`` fields survive.
     Returns the same object when nothing changed (identity = cheap no-op check).
+
+    When *tool_name* is threaded in, a bracket-prefixed string whose parse fails at
+    a container-REQUIRING position raises ToolArgUnparseableError (with the true
+    *path*, e.g. ``items[0]``) instead of leaving the corrupt string in place —
+    unless the position's schema also accepts a plain string, where the raw string
+    is schema-valid and passes through untouched.
 
     Ported from cline/cline#11803, adapted to hermes-agent's coercion layer.
     """
@@ -210,6 +226,12 @@ def _normalize_json_strings_for_schema(
         try:
             parsed = json.loads(trimmed)
         except (ValueError, TypeError):
+            if tool_name is not None and not _schema_accepts_kind(schema, "string", root_schema):
+                # Bracket-prefixed + container-required + parse failed = a corrupt
+                # emission at a position that cannot accept a string. Refuse so the
+                # model re-issues, instead of dispatching the corrupt string.
+                kind = "array" if trimmed.startswith("[") else "object"
+                raise _unparseable_container_error(tool_name, path or "?", kind, trimmed) from None
             return value
         if not ((isinstance(parsed, list) and expects_array) or (isinstance(parsed, dict) and expects_object)):
             return value
@@ -221,9 +243,11 @@ def _normalize_json_strings_for_schema(
             return value
         out = [
             _normalize_json_strings_for_schema(
-                item, items_schema, root_schema=root_schema
+                item, items_schema, root_schema=root_schema,
+                tool_name=tool_name,
+                path=f"{path}[{i}]" if path is not None else None,
             )
-            for item in value
+            for i, item in enumerate(value)
         ]
         return out if any(n is not o for n, o in zip(out, value)) else value
 
@@ -235,7 +259,9 @@ def _normalize_json_strings_for_schema(
         for k, prop_schema in props.items():
             if k in value and isinstance(prop_schema, dict):
                 out[k] = _normalize_json_strings_for_schema(
-                    value[k], prop_schema, root_schema=root_schema
+                    value[k], prop_schema, root_schema=root_schema,
+                    tool_name=tool_name,
+                    path=f"{path}.{k}" if path is not None else None,
                 )
         return out if any(out[k] is not v for k, v in value.items()) else value
 

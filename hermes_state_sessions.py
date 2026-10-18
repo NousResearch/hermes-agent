@@ -14,7 +14,6 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 from agent.session_activity import (
     ActivityProvenance, bound_activity_description, normalize_activity_provenance,
 )
-from hermes_startup_watchdog import report_startup_progress
 from hermes_state_errors import SessionActiveWriteGuardError
 from hermes_state_common import (
     _LISTABLE_CHILD_SQL, _RECOVERABLE_END_REASONS,
@@ -1978,34 +1977,3 @@ class SessionSessionsMixin:
         for row in rows:
             self.set_session_archived(row["id"], True)
         return len(rows)
-
-    def maybe_auto_archive(
-        self, idle_days: float = 3, min_interval_hours: int = 24, exclude_pinned: bool = True,
-    ) -> dict[str, Any]:
-        """Idempotent, non-destructive auto-archive of sessions idle for ``idle_days``; state_meta
-        ``last_auto_archive`` gates runs within ``min_interval_hours``. Never raises."""
-        result: dict[str, Any] = {"skipped": False, "archived": 0}
-        try:
-            now = time.time()
-            try:
-                last = float(self.get_meta("last_auto_archive") or 0.0)
-            except (TypeError, ValueError):
-                last = 0.0  # corrupt meta; treat as no prior run
-            if last and now - last < min_interval_hours * 3600:
-                result["skipped"] = True
-                return result
-            # Startup-watchdog lease: the archive sweep is I/O-bound (near-zero CPU),
-            # which the watchdog's CPU fallback misreads as a parked deadlock.
-            # No-op when the watchdog is not armed; never raises.
-            report_startup_progress(900.0, phase="state_db_auto_archive")
-            archived = result["archived"] = self.archive_stale_sessions(idle_days, exclude_pinned=exclude_pinned)
-            # Record even a zero-archive run so we don't re-sweep every call.
-            self.set_meta("last_auto_archive", str(now))
-            if archived > 0:
-                logger.info(
-                    "state.db auto-archive: archived %d session(s) idle >= %s days", archived, idle_days,
-                )
-        except Exception as exc:
-            logger.warning("state.db auto-archive failed: %s", exc)
-            result["error"] = str(exc)
-        return result

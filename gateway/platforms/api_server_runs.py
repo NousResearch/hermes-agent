@@ -397,14 +397,16 @@ def _check_run_auth(self, request: web.Request, *, permission: str, _api_server)
 
 
 def _owner_alive(owner_pid: int, owner_started: int) -> bool:
-    """True when the recorded owner pid still exists and is the same process incarnation."""
+    """True while the recorded owner pid still exists.
+
+    The recorded start-time fingerprint (``owner_started``) is never treated as a death signal: a
+    live owner's reading drifts without bound (see ``gateway.status.start_time_fingerprints_match``),
+    so a mismatch is as likely drift as PID reuse. Only pid absence proves death here."""
     try:
-        from gateway.status import _pid_exists, get_process_start_time, start_time_fingerprints_match
-        return owner_pid > 0 and bool(_pid_exists(owner_pid)) and (
-            not owner_started
-            or start_time_fingerprints_match(owner_started, get_process_start_time(owner_pid) or 0))
+        from gateway.status import _pid_exists
+        return owner_pid > 0 and bool(_pid_exists(owner_pid))
     except Exception:
-        return False
+        return True  # cannot prove death -> do not reclaim
 
 
 def _durable_run_status(self, request: web.Request, run_id: str) -> dict[str, Any] | None:

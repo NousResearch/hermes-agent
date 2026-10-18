@@ -266,16 +266,22 @@ def _recovered_results(task: dict[str, Any], result_json: Optional[str], error: 
 
 
 def _owner_liveness() -> Optional[Callable[[Any, Any], bool]]:
-    """``alive(owner_pid, owner_started_at)`` over the shared drift-tolerant start-time comparator,
-    or None when the liveness probes cannot be imported."""
+    """``alive(owner_pid, owner_started_at)`` over the shared fail-safe owner-liveness probe,
+    or None when the liveness probe cannot be imported."""
     try:
-        from gateway.status import _pid_exists, get_process_start_time, start_time_fingerprints_match
+        from gateway.status import _pid_exists
     except Exception:
         return None
 
     def alive(pid, started) -> bool:
-        return bool(pid) and _pid_exists(int(pid)) and (
-            started is None or start_time_fingerprints_match(started, get_process_start_time(int(pid)) or 0))
+        # Fail-safe owner-liveness: the recorded start-time fingerprint is NOT a death signal —
+        # same-host readings of a live owner drift without bound, so a mismatch is as likely drift
+        # as PID reuse. Only pid absence proves death; a genuinely wedged claim is released by the
+        # stale-idle bound elsewhere, never by a drifted fingerprint.
+        try:
+            return bool(pid) and _pid_exists(int(pid))
+        except Exception:
+            return True
     return alive
 
 

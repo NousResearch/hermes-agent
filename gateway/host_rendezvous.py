@@ -328,7 +328,17 @@ def _record_incarnation_matches(record: HostRecord) -> Optional[bool]:
         from gateway.status import get_process_start_time, start_time_fingerprints_match
 
         current = get_process_start_time(record.pid)
-        matched = None if current is None else start_time_fingerprints_match(record.start_time, current)
+        if current is None:
+            matched = None  # unreadable while alive -> unprovable, not dead
+        elif start_time_fingerprints_match(record.start_time, current):
+            matched = True
+        else:
+            # The pid is alive but the start fingerprint differs. That is NOT proof of PID
+            # reuse: same-host readings of a live owner drift without bound (see
+            # gateway.status.start_time_fingerprints_match), so a mismatch is as likely drift
+            # as reuse. Treat it as unprovable — the record survives as a candidate and must
+            # prove itself via ``probe_owner``'s dial + token, never be dropped as stale.
+            matched = None
     if matched is not True:
         return matched
     if record.role == ROLE_GATEWAY and not recorded_epoch and record.create_time is not None:

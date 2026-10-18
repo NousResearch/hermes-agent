@@ -457,7 +457,16 @@ START_TIME_DRIFT_TOLERANCE = 200
 def start_time_fingerprints_match(recorded: Any, current: Any, tolerance: int = START_TIME_DRIFT_TOLERANCE) -> bool:
     """Liveness-reconciliation comparator for :func:`get_process_start_time` fingerprints: the
     recorded owner and the current reading are the same incarnation when they agree within
-    ``tolerance``. Raises on junk; callers decide what an unreadable (``None``) side means."""
+    ``tolerance``. Raises on junk; callers decide what an unreadable (``None``) side means.
+
+    NOTE: a ``False`` here only means "the two readings are more than ``tolerance`` apart", NOT
+    "the pid was recycled". Same-host readings of a LIVE process drift without bound on macOS
+    (psutil's ``create_time()`` adds a reader-dependent boot-time adjustment, so the stored value
+    climbs ~2 s per day of reader age — measured 2026-10-17: 1064 of 1073 live-owner rows
+    mismatched the 2 s tolerance, one pid spanning +4400 centiseconds in 13 days). A fixed
+    tolerance therefore cannot separate "drifted" from "recycled", and treating a mismatch as
+    death is how the dead-owner sweeps falsely terminalized live work. Liveness callers must
+    fail safe on mismatch: only pid absence proves death."""
     return abs(int(current) - int(recorded)) <= tolerance
 
 
@@ -478,14 +487,18 @@ def _get_process_start_time(pid: int) -> Optional[int]:
 
     On Linux this is field 22 of ``/proc/<pid>/stat`` (start time in clock
     ticks since boot, an int).  On platforms without ``/proc`` (macOS, Windows)
-    we fall back to ``psutil.Process(pid).create_time()`` — a float epoch
-    timestamp — quantized to an int (centiseconds) for stable equality.
+    we fall back to psutil's creation time, quantized to centiseconds for stable
+    equality. On macOS we prefer the *reader-independent* kernel value: psutil's
+    public ``create_time()`` adds a boot-time adjustment captured when the READING
+    process imported psutil, so a live pid reads back a drifting value in readers
+    of different ages (~1 s per 7 h — the source of #117505). ``monotonic=True``
+    returns the raw kernel value, which is stable across readers.
 
-    The two sources are never mixed on a single platform: ``/proc`` always
-    succeeds first on Linux, and always fails on macOS/Windows so psutil is
-    always used there.  Because the guard only compares the value recorded at
-    spawn against the live value *on the same host*, the differing units across
-    platforms are irrelevant — only same-source equality matters.
+    The sources are never mixed on a single platform: ``/proc`` always succeeds
+    first on Linux, and always fails on macOS/Windows so psutil is always used
+    there.  Because the guard only compares the value recorded at spawn against
+    the live value *on the same host*, the differing units across platforms are
+    irrelevant — only same-source equality matters.
     """
     stat_path = Path(f"/proc/{pid}/stat")
     try:
@@ -499,6 +512,14 @@ def _get_process_start_time(pid: int) -> Optional[int]:
     # of the same process compare equal without float-precision fragility.
     try:
         import psutil  # type: ignore
+        platform_proc = getattr(psutil.Process(pid), "_proc", None)
+        create_time = getattr(platform_proc, "create_time", None)
+        if create_time is not None:
+            try:
+                # Reader-independent kernel value on macOS (and Linux); TypeError elsewhere.
+                return int(round(float(create_time(monotonic=True)) * 100))
+            except TypeError:
+                pass  # platform object has no monotonic flag -> fall through to the public API
         return round(psutil.Process(pid).create_time() * 100)
     except Exception:
         return None

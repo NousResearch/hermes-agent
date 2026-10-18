@@ -17,10 +17,16 @@ from agent.file_safety import _BLOCKED_PROJECT_ENV_BASENAMES as _ENV_FILE_BASENA
 
 logger = logging.getLogger(__name__)
 
+# Browser and CDP results can be a page-controlled JSON tree. The walkers stop
+# at this depth and replace the remainder, so a nested payload cannot raise
+# RecursionError on the way to the model.
+REDACT_WALK_MAX_DEPTH = 320
+REDACT_WALK_DEPTH_MARKER = "[redacted: nesting limit]"
+
 # ---------------------------------------------------------------------------
 # Vault-value redaction registry (profile-scoped, bounded)
 # ---------------------------------------------------------------------------
-# Exact secret values that transited a server-side vault fill (browser_vault_fill). Generic
+# Exact secret values that transited a server-side vault fill (browser_vault). Generic
 # credential-shaped regexes cannot catch an arbitrary user password, so the fill path registers
 # the exact bytes and every browser_* tool result (including browser_cdp Runtime.evaluate
 # passthrough) is scrubbed against them before it can reach the model. Memory only: never

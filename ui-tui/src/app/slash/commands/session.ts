@@ -19,12 +19,38 @@ import type { PanelSection } from '../../../types.js'
 import { applyConfiguredTuiTheme } from '../../createGatewayEventHandler.js'
 import { DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES, type IndicatorStyle } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
-import { patchUiState } from '../../uiStore.js'
-import type { SlashCommand } from '../types.js'
+import { getUiState, patchUiState } from '../../uiStore.js'
+import { canonicalReasoning, canonicalUsage } from '../canonicalSessionCommands.js'
+import { runCanonicalSessionControl } from '../canonicalSessionControls.js'
+import type { SlashCommand, SlashRunCtx } from '../types.js'
+import { usageTotalsSections } from '../usagePanel.js'
 
 const TUI_SESSION_MODEL_RE = new RegExp(`(?:^|\\s)${TUI_SESSION_MODEL_FLAG}(?:\\s|$)`)
 const REASONING_SESSION_FLAGS = new Set(['--session'])
 const REASONING_GLOBAL_FLAGS = new Set(['--global'])
+
+const COMPRESS_AUTHORITY_KEYS = [
+  'stored_session_id',
+  'execution_epoch',
+  'execution_generation',
+  'execution_state',
+  'running'
+] as const
+
+// Compression is not attachment: a delayed reply cannot replace a
+// newer turn/owner, nor replace its transcript with an old snapshot.
+function isStaleCompressReply(r: SessionCompressResponse, current: ReturnType<typeof getUiState>, ctx: SlashRunCtx) {
+  if (current.busy !== ctx.ui.busy || COMPRESS_AUTHORITY_KEYS.some(key => current.info?.[key] !== ctx.ui.info?.[key])) {
+    return true
+  }
+
+  return (
+    current.info?.execution_generation !== undefined &&
+    (r.info?.execution_epoch !== current.info.execution_epoch ||
+      !Number.isSafeInteger(r.info?.execution_generation) ||
+      (r.info?.execution_generation ?? -1) < current.info.execution_generation)
+  )
+}
 
 type FastModeWord = 'fast' | 'normal' | 'ultrafast'
 
@@ -141,6 +167,10 @@ export const sessionCommands: SlashCommand[] = [
         return patchOverlayState({ modelPicker: { refresh: true } })
       }
 
+      if (ctx.gateway.gw.isCanonical) {
+        return runCanonicalSessionControl('model', arg, ctx)
+      }
+
       const switchModel = (confirmExpensiveModel = false) =>
         ctx.gateway
           .rpc<ConfigSetResponse>('config.set', {
@@ -227,6 +257,14 @@ export const sessionCommands: SlashCommand[] = [
     help: 'switch personality for this session',
     name: 'personality',
     run: (arg, ctx) => {
+      // The bare form is the owner's /personality listing (one behaviour on every surface).
+      if (!arg && ctx.gateway.gw?.isCanonical) {
+        return ctx.gateway.gw
+          .request<SlashExecResponse>('slash.exec', { command: 'personality', session_id: ctx.sid })
+          .then(ctx.guarded<SlashExecResponse>(r => r.output && ctx.transcript.sys(r.output)))
+          .catch(ctx.guardedErr)
+      }
+
       if (!arg) {
         return
       }
@@ -253,6 +291,10 @@ export const sessionCommands: SlashCommand[] = [
     help: 'compress transcript',
     name: 'compress',
     run: (arg, ctx) => {
+      if (ctx.gateway.gw.isCanonical) {
+        return runCanonicalSessionControl('compress', arg, ctx)
+      }
+
       ctx.gateway
         .rpc<SessionCompressResponse>('session.compress', {
           session_id: ctx.sid,
@@ -260,14 +302,22 @@ export const sessionCommands: SlashCommand[] = [
         })
         .then(
           ctx.guarded<SessionCompressResponse>(r => {
+            const current = getUiState()
+
+            if (isStaleCompressReply(r, current, ctx)) {
+              return
+            }
+
+            const info = r.info ? { ...current.info, ...r.info } : current.info
+
             if (Array.isArray(r.messages)) {
               const rows = toTranscriptMessages(r.messages)
 
-              ctx.transcript.setHistoryItems(r.info ? [introMsg(r.info), ...rows] : rows)
+              ctx.transcript.setHistoryItems(info ? [introMsg(info), ...rows] : rows)
             }
 
             if (r.info) {
-              patchUiState({ info: r.info })
+              patchUiState({ info })
             }
 
             if (r.usage) {
@@ -314,7 +364,9 @@ export const sessionCommands: SlashCommand[] = [
     help: 'branch the session',
     name: 'branch',
     run: (arg, ctx) => {
-      const prevSid = ctx.sid
+      if (ctx.gateway.gw.isCanonical) {
+        return runCanonicalSessionControl('branch', arg, ctx)
+      }
 
       ctx.gateway.rpc<SessionBranchResponse>('session.branch', { name: arg, session_id: ctx.sid }).then(
         ctx.guarded<SessionBranchResponse>(r => {
@@ -322,9 +374,9 @@ export const sessionCommands: SlashCommand[] = [
             return
           }
 
-          void ctx.session.closeSession(prevSid)
-          patchUiState({ sid: r.session_id })
-          ctx.session.setSessionStartedAt(Date.now())
+          // Resume hydrates destination authority/history before closing the
+          // source; changing only sid would inherit the source owner's epoch.
+          ctx.session.resumeById(r.session_id)
           ctx.transcript.sys(t('slashCmd.session.branch.branched', r.title ?? ''))
         })
       )
@@ -341,6 +393,15 @@ export const sessionCommands: SlashCommand[] = [
         normalized === 'on' || normalized === 'off' || normalized === 'tts' || normalized === 'status'
           ? normalized
           : 'status'
+
+      // `/voice tts` is the session's voice state, held by the owner's `/voice` handler (one behaviour
+      // on every surface); recording and playback stay in this terminal.
+      if (action === 'tts' && ctx.gateway.gw?.isCanonical) {
+        return ctx.gateway.gw
+          .request<SlashExecResponse>('slash.exec', { command: 'voice tts', session_id: ctx.sid })
+          .then(ctx.guarded<SlashExecResponse>(r => r.output && ctx.transcript.sys(r.output)))
+          .catch(ctx.guardedErr)
+      }
 
       ctx.gateway.rpc<VoiceToggleResponse>('voice.toggle', { action }).then(
         ctx.guarded<VoiceToggleResponse>(r => {
@@ -573,6 +634,8 @@ export const sessionCommands: SlashCommand[] = [
     name: 'reasoning',
     run: (arg, ctx) => {
       if (!arg) {
+        ctx.ran?.()
+
         return ctx.gateway
           .rpc<ConfigGetValueResponse>('config.get', { key: 'reasoning', session_id: ctx.sid })
           .then(
@@ -584,7 +647,15 @@ export const sessionCommands: SlashCommand[] = [
           )
       }
 
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', reasoningConfigPayload(arg, ctx.sid ?? '')).then(
+      const payload = reasoningConfigPayload(arg, ctx.sid ?? '')
+
+      // The shared owner sets a session level through its frozen-policy mutation; `--global`, `reset`
+      // and the display words are the owner's `/reasoning` handler behind `config.set reasoning`.
+      if (ctx.gateway.gw?.isCanonical && canonicalReasoning(payload, ctx)) {
+        return
+      }
+
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', payload).then(
         ctx.guarded<ConfigSetResponse>(r => {
           if (!r.value) {
             return
@@ -667,7 +738,10 @@ export const sessionCommands: SlashCommand[] = [
 
       if (!mode || mode === 'status') {
         return ctx.gateway
-          .rpc<ConfigGetValueResponse>('config.get', { key: 'busy' })
+          .rpc<ConfigGetValueResponse>('config.get', {
+            key: 'busy',
+            ...(ctx.gateway.gw.isCanonical ? { session_id: ctx.sid } : {})
+          })
           .then(
             ctx.guarded<ConfigGetValueResponse>(r => {
               const current = r.value || 'interrupt'
@@ -678,10 +752,19 @@ export const sessionCommands: SlashCommand[] = [
       }
 
       ctx.gateway
-        .rpc<ConfigSetResponse>('config.set', { key: 'busy', value: mode })
+        .rpc<ConfigSetResponse>('config.set', {
+          key: 'busy',
+          value: mode,
+          ...(ctx.gateway.gw.isCanonical ? { session_id: ctx.sid } : {})
+        })
         .then(
           ctx.guarded<ConfigSetResponse>(r => {
             const next = r.value || mode
+
+            if (next === 'queue' || next === 'steer' || next === 'interrupt') {
+              patchUiState({ busyInputMode: next })
+            }
+
             ctx.transcript.sys(t('slashCmd.session.busy.mode', next))
           })
         )
@@ -707,6 +790,12 @@ export const sessionCommands: SlashCommand[] = [
     help: 'session usage + Nous credits',
     name: 'usage',
     run: (_arg, ctx) => {
+      if (ctx.sid && ctx.gateway.gw?.isCanonical) {
+        ctx.ran?.()
+
+        return canonicalUsage(ctx)
+      }
+
       ctx.gateway.rpc<SessionUsageResponse>('session.usage', { session_id: ctx.sid }).then(r => {
         if (ctx.stale()) {
           return
@@ -778,35 +867,7 @@ export const sessionCommands: SlashCommand[] = [
           return
         }
 
-        const f = (v: number | undefined) => (v ?? 0).toLocaleString()
-
-        const rows: [string, string][] = [
-          [t('slashCmd.session.usage.rowModel'), r.model ?? ''],
-          [t('slashCmd.session.usage.rowInputTokens'), f(r.input)],
-          [t('slashCmd.session.usage.rowOutputTokens'), f(r.output)],
-          [t('slashCmd.session.usage.rowTotalTokens'), f(r.total)],
-          [t('slashCmd.session.usage.rowApiCalls'), f(r.calls)]
-        ]
-
-        const sections: PanelSection[] = [{ rows }]
-
-        if (r.context_max) {
-          const mark = r.context_estimated ? '~' : ''
-          sections.push({
-            text: t(
-              'slashCmd.session.usage.context',
-              `${mark}${f(r.context_used)}`,
-              f(r.context_max),
-              `${mark}${r.context_percent}`
-            )
-          })
-        }
-
-        if (r.compressions) {
-          sections.push({ text: t('slashCmd.session.usage.compressions', String(r.compressions)) })
-        }
-
-        ctx.transcript.panel(t('slashCmd.session.usage.usageTitle'), sections)
+        ctx.transcript.panel(t('slashCmd.session.usage.usageTitle'), usageTotalsSections(r))
 
         sys(t('slashCmd.session.usage.cta'))
       })

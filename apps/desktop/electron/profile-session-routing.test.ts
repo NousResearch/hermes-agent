@@ -5,14 +5,19 @@ import { test } from 'vitest'
 import {
   assembleSidebarSessionSlices,
   buildSidebarSessionSliceParams,
+  fetchAllProfilesAggregatePerProfile,
+  fetchAllProfilesSessionsPerProfile,
   fetchPrimaryProfileSessions,
   fetchRegistrySessionRows,
   fetchRemoteProfileSessions,
   findRemoteOwnerProfileForSession,
   hasPinnedRegistrySessionSource,
+  isAllProfilesAggregateRequest,
   isAllProfilesSessionListRequest,
+  isRemoteSessionRequestPath,
   mergeProfileSessionWindow,
   pathWithRemoteOwnerScope,
+  remoteOwnerRoutePath,
   remoteProfileQueryScope,
   settleRemoteProfileSessions,
   shouldIncludeLocalRegistrySessionSource,
@@ -20,6 +25,31 @@ import {
   tagRegistrySessionResponse,
   tagRemoteSessionRows
 } from './profile-session-routing'
+
+test('remote session routing includes the mutation snapshot and session reads, no other child route', () => {
+  assert.equal(isRemoteSessionRequestPath('/api/sessions/stored-session'), true)
+  assert.equal(isRemoteSessionRequestPath('/api/sessions/stored-session/messages'), true)
+  assert.equal(isRemoteSessionRequestPath('/api/sessions/stored-session/mutation-snapshot'), true)
+  assert.equal(isRemoteSessionRequestPath('/api/sessions/stored-session/timeline'), true)
+  assert.equal(isRemoteSessionRequestPath('/api/sessions/stored-session/messages/around'), true)
+  assert.equal(isRemoteSessionRequestPath('/api/sessions/stored-session/export'), false)
+  assert.equal(isRemoteSessionRequestPath('/api/sessions/stored-session/messages/extra'), false)
+  assert.equal(isRemoteSessionRequestPath('/api/sessions/stored-session/mutation-snapshot/extra'), false)
+})
+
+test('legacy remote owner route keeps the mutation identity query for the paired DELETE', () => {
+  const deletePath = '/api/sessions/s1?profile=alpha&request_id=r1&expected_revision=4&expected_generation=2'
+  const { pathname, searchParams } = new URL(deletePath, 'http://x')
+  const routed = new URL(remoteOwnerRoutePath(pathname, searchParams, 'alpha'), 'http://x')
+  assert.equal(routed.pathname, '/api/sessions/s1')
+  assert.equal(routed.searchParams.get('request_id'), 'r1')
+  assert.equal(routed.searchParams.get('expected_revision'), '4')
+  assert.equal(routed.searchParams.get('expected_generation'), '2')
+  assert.equal(routed.searchParams.get('profile'), 'alpha')
+  const snapshot = new URL('/api/sessions/s1/mutation-snapshot?profile=alpha', 'http://x')
+  assert.equal(remoteOwnerRoutePath(snapshot.pathname, snapshot.searchParams, 'alpha'), '/api/sessions/s1/mutation-snapshot?profile=alpha')
+  assert.equal(remoteOwnerRoutePath(snapshot.pathname, snapshot.searchParams, ''), '/api/sessions/s1/mutation-snapshot')
+})
 
 test('all-profiles session routing is limited to read-only list endpoints', () => {
   assert.equal(isAllProfilesSessionListRequest('GET', '/api/profiles/sessions?profile=all'), true)
@@ -828,4 +858,344 @@ test('remoteProfileQueryScope resolves the wire scope for a profile override', (
   assert.equal(remoteProfileQueryScope('default'), 'default')
   assert.equal(remoteProfileQueryScope('default', 'dixie'), 'dixie')
   assert.equal(remoteProfileQueryScope(''), '')
+})
+
+// A native gateway grant names one profile and the gateway refuses `all`, so a local native
+// backend's unified lists are read profile by profile and merged like the backend's own scan.
+test('all-profiles session list is merged from one read per profile', async () => {
+  const reads: string[] = []
+
+  const pages: Record<string, unknown> = {
+    default: {
+      sessions: [
+        { id: 'd-new', profile: 'default', last_active: 30 },
+        { id: 'd-old', profile: 'default', last_active: 10 },
+        { id: 'd-pin', profile: 'default', last_active: 1, pinned: true }
+      ],
+      total: 3,
+      profile_totals: { default: 3 },
+      errors: [],
+      storage: {}
+    },
+    work: {
+      sessions: [{ id: 'w-mid', profile: 'work', last_active: 20 }],
+      total: 1,
+      profile_totals: { work: 1 },
+      errors: [],
+      storage: { work: 'corrupt' }
+    }
+  }
+
+  const result = (await fetchAllProfilesSessionsPerProfile(
+    '/api/profiles/sessions?limit=2&offset=0&min_messages=1&profile=all',
+    ['default', 'work', 'gone'],
+    async (profile, path) => {
+      reads.push(path)
+
+      if (!(profile in pages)) {
+        throw new Error('403: profile_scope_mismatch')
+      }
+
+      return pages[profile]
+    }
+  )) as any
+
+  assert.deepEqual(reads.sort(), [
+    '/api/profiles/sessions?limit=2&offset=0&min_messages=1&profile=default',
+    '/api/profiles/sessions?limit=2&offset=0&min_messages=1&profile=gone',
+    '/api/profiles/sessions?limit=2&offset=0&min_messages=1&profile=work'
+  ])
+  // Recency across profiles, window of 2, pinned rows past the window back-filled.
+  assert.deepEqual(result.sessions.map((s: any) => s.id), ['d-new', 'w-mid', 'd-pin'])
+  assert.equal(result.total, 4)
+  assert.deepEqual(result.profile_totals, { default: 3, work: 1 })
+  assert.deepEqual(result.storage, { work: 'corrupt' })
+  // A profile that cannot be read is a named failure, never a silent empty list.
+  assert.deepEqual(result.errors, [{ profile: 'gone', error: '403: profile_scope_mismatch' }])
+})
+
+test('all-profiles session list over-fetches each profile for a later page', async () => {
+  const reads: string[] = []
+
+  await fetchAllProfilesSessionsPerProfile('/api/profiles/sessions?limit=20&offset=40&order=created', ['default'], async (_p, path) => {
+    reads.push(path)
+
+    return { sessions: [], total: 0, profile_totals: {} }
+  })
+
+  assert.deepEqual(reads, ['/api/profiles/sessions?limit=60&offset=0&order=created&profile=default'])
+})
+
+test('all-profiles sidebar is merged from one batched read per profile', async () => {
+  const pages: Record<string, unknown> = {
+    default: {
+      recents: {
+        sessions: [{ id: 'd1', profile: 'default', last_active: 5 }],
+        profiles_truncated: { default: false },
+        profiles_usage: { default: { cost_usd: 1, tokens: 10 } }
+      },
+      cron: { sessions: [{ id: 'dc', profile: 'default', started_at: 3 }] },
+      messaging: { sessions: [{ id: 'dm', profile: 'default', last_active: 2 }], total: 1 },
+      errors: [],
+      storage: {}
+    },
+    work: {
+      recents: {
+        sessions: [{ id: 'w1', profile: 'work', last_active: 9 }],
+        profiles_truncated: { work: true },
+        profiles_usage: { work: { cost_usd: 2, tokens: 20 } }
+      },
+      cron: { sessions: [] },
+      messaging: { sessions: [{ id: 'wm', profile: 'work', last_active: 4 }], total: 3 },
+      errors: [],
+      storage: {}
+    },
+    broken: {
+      recents: { failed: true, retry: true, errors: [{ profile: 'broken', error: 'database is locked' }] },
+      cron: { failed: true, retry: true, errors: [{ profile: 'broken', error: 'database is locked' }] },
+      messaging: { failed: true, retry: true, errors: [{ profile: 'broken', error: 'database is locked' }], total: 0 },
+      errors: [{ profile: 'broken', error: 'database is locked' }],
+      storage: {}
+    }
+  }
+
+  const reads: string[] = []
+
+  const result = (await fetchAllProfilesSessionsPerProfile(
+    '/api/profiles/sessions/sidebar?recents_profile=all&recents_limit=40&cron_limit=5&messaging_limit=5',
+    ['default', 'work', 'broken'],
+    async (profile, path) => {
+      reads.push(path)
+
+      return pages[profile]
+    }
+  )) as any
+
+  assert.ok(reads.includes('/api/profiles/sessions/sidebar?recents_profile=work&recents_limit=40&cron_limit=5&messaging_limit=5'))
+  assert.deepEqual(result.recents.sessions.map((s: any) => s.id), ['w1', 'd1'])
+  assert.deepEqual(result.cron.sessions.map((s: any) => s.id), ['dc'])
+  assert.deepEqual(result.messaging.sessions.map((s: any) => s.id), ['wm', 'dm'])
+  assert.equal(result.messaging.total, 4)
+  assert.deepEqual(result.recents.profiles_truncated, { default: false, work: true })
+  assert.deepEqual(result.recents.profiles_usage, {
+    default: { cost_usd: 1, tokens: 10 },
+    work: { cost_usd: 2, tokens: 20 }
+  })
+  // The failed profile keeps Retry while its siblings' rows still render.
+  const failed = { broken: { failed: true, retry: true, error: 'database is locked' } }
+  assert.deepEqual(result.profiles_failed, failed)
+  assert.deepEqual(result.recents.profiles_failed, failed)
+  assert.deepEqual(result.errors, [{ profile: 'broken', error: 'database is locked' }])
+})
+
+test('all-profiles sidebar reads name only the profile they read, even on a registry route', async () => {
+  const reads: string[] = []
+
+  await fetchAllProfilesSessionsPerProfile(
+    '/api/profiles/sessions/sidebar?recents_profile=all&recents_limit=40&profile=default',
+    ['default', 'work'],
+    async (_profile, path) => {
+      reads.push(path)
+
+      return { recents: { sessions: [] }, cron: { sessions: [] }, messaging: { sessions: [], total: 0 } }
+    }
+  )
+
+  assert.deepEqual(reads.sort(), [
+    '/api/profiles/sessions/sidebar?recents_profile=default&recents_limit=40&profile=default',
+    '/api/profiles/sessions/sidebar?recents_profile=work&recents_limit=40&profile=work'
+  ])
+})
+
+test('all-profiles sidebar reports a failed load when every profile fails', async () => {
+  const result = (await fetchAllProfilesSessionsPerProfile(
+    '/api/profiles/sessions/sidebar?recents_profile=all',
+    ['default'],
+    async () => {
+      throw new Error('Gateway ticket bootstrap failed')
+    }
+  )) as any
+
+  assert.equal(result.recents.failed, true)
+  assert.equal('sessions' in result.recents, false)
+  assert.deepEqual(result.errors, [{ profile: 'default', error: 'Gateway ticket bootstrap failed' }])
+})
+
+test('all-profiles session list pages a deep per-profile read under the backend cap', async () => {
+  const reads: string[] = []
+
+  const result = (await fetchAllProfilesSessionsPerProfile('/api/profiles/sessions?limit=200&offset=400', ['default'], async (_p, path) => {
+    reads.push(path)
+    const params = new URL(path, 'http://x').searchParams
+    const start = Number(params.get('offset'))
+    const count = Math.min(Number(params.get('limit')), 650 - start)
+
+    return {
+      sessions: Array.from({ length: count }, (_, i) => ({ id: `s${start + i}`, profile: 'default', last_active: 1000 - start - i })),
+      total: 650,
+      profile_totals: { default: 650 }
+    }
+  })) as any
+
+  assert.deepEqual(reads, [
+    '/api/profiles/sessions?limit=500&offset=0&profile=default',
+    '/api/profiles/sessions?limit=100&offset=500&profile=default'
+  ])
+  assert.equal(result.sessions.length, 200)
+  assert.equal(result.sessions[0].id, 's400')
+  assert.equal(result.total, 650)
+})
+
+test('the project tree and PR scan are all-profiles reads whatever route scope they carry', () => {
+  assert.equal(isAllProfilesAggregateRequest('GET', '/api/profiles/projects/tree?preview_limit=3'), true)
+  assert.equal(isAllProfilesAggregateRequest('GET', '/api/profiles/projects/tree?preview_limit=3&profile=default'), true)
+  assert.equal(isAllProfilesAggregateRequest('POST', '/api/profiles/sessions/pull-requests'), true)
+  assert.equal(isAllProfilesAggregateRequest('GET', '/api/profiles/sessions/pull-requests'), false)
+  assert.equal(isAllProfilesAggregateRequest('POST', '/api/profiles/projects/tree'), false)
+  assert.equal(isAllProfilesAggregateRequest('GET', '/api/profiles/sessions?profile=all'), false)
+})
+
+test('all-profiles project tree merges one read per profile by folder', async () => {
+  const reads: string[] = []
+  const session = (id: string, profile: string, last: number) => ({ id, profile, last_active: last })
+
+  const pages: Record<string, unknown> = {
+    default: {
+      projects: [
+        {
+          id: 'auto:/repo', mergeKey: '/repo', path: '/repo', label: 'repo', isAuto: true, sessionCount: 2,
+          totalTokens: 10, totalCostUsd: 1, lastActive: 5,
+          previewSessions: [session('d1', 'default', 5), session('d2', 'default', 1)],
+          repos: [{ id: 'r', sessionCount: 2, groups: [{ id: 'main', sessionCount: 2, sessions: [session('d1', 'default', 5)] }] }]
+        },
+        { id: '__no_project__', mergeKey: '__no_project__', isNoProject: true, sessionCount: 1, lastActive: 2, previewSessions: [session('d3', 'default', 2)] }
+      ],
+      active_id: null,
+      scoped_session_ids: ['d1'],
+      errors: []
+    },
+    work: {
+      projects: [
+        {
+          id: 'p_abc', mergeKey: '/repo', path: '/repo', label: 'Declared', isAuto: false, sessionCount: 1,
+          totalTokens: 5, totalCostUsd: 0.5, lastActive: 9,
+          previewSessions: [session('w1', 'work', 9)],
+          repos: [{ id: 'r', sessionCount: 1, groups: [{ id: 'main', sessionCount: 1, sessions: [session('w1', 'work', 9)] }] }]
+        }
+      ],
+      active_id: null,
+      scoped_session_ids: ['w1'],
+      errors: []
+    }
+  }
+
+  const result = (await fetchAllProfilesAggregatePerProfile(
+    '/api/profiles/projects/tree?preview_limit=2&profile=default',
+    ['default', 'work', 'broken'],
+    async (profile, path) => {
+      reads.push(path)
+
+      if (profile === 'broken') {
+        throw new Error('403: denied')
+      }
+
+      return structuredClone(pages[profile])
+    }
+  )) as any
+
+  // Each read names only the profile it reads, replacing the route's own scope.
+  assert.deepEqual(reads.sort(), [
+    '/api/profiles/projects/tree?preview_limit=2&profile=broken',
+    '/api/profiles/projects/tree?preview_limit=2&profile=default',
+    '/api/profiles/projects/tree?preview_limit=2&profile=work'
+  ])
+  assert.deepEqual(result.projects.map((p: any) => p.label ?? p.id), ['Declared', '__no_project__'])
+  const repo = result.projects[0]
+  assert.equal(repo.sessionCount, 3)
+  assert.equal(repo.totalTokens, 15)
+  assert.equal(repo.totalCostUsd, 1.5)
+  assert.equal(repo.lastActive, 9)
+  assert.deepEqual(repo.previewSessions.map((s: any) => s.id), ['w1', 'd1'])
+  assert.equal(repo.repos.length, 1)
+  assert.equal(repo.repos[0].sessionCount, 3)
+  assert.deepEqual(repo.repos[0].groups[0].sessions.map((s: any) => s.id), ['w1', 'd1'])
+  assert.deepEqual(result.scoped_session_ids, ['d1', 'w1'])
+  assert.equal(result.active_id, null)
+  assert.deepEqual(result.errors, [{ profile: 'broken', error: '403: denied' }])
+})
+
+test('all-profiles project tree fails when no profile can be read', async () => {
+  await assert.rejects(
+    fetchAllProfilesAggregatePerProfile('/api/profiles/projects/tree', ['default'], async () => {
+      throw new Error('Gateway ticket bootstrap failed')
+    }),
+    /default: Gateway ticket bootstrap failed/
+  )
+})
+
+test('all-profiles PR scan unions the profiles and settles only what it could read', async () => {
+  const pr = (n: number) => ({ number: n, url: `https://github.com/o/r/pull/${n}` })
+
+  const complete = (await fetchAllProfilesAggregatePerProfile(
+    '/api/profiles/sessions/pull-requests',
+    ['default', 'work'],
+    async profile => ({
+      pull_requests: profile === 'default' ? { a: pr(1) } : { b: pr(2) },
+      scanned: ['a', 'b', 'c']
+    })
+  )) as any
+
+  assert.deepEqual(complete, { pull_requests: { a: pr(1), b: pr(2) }, scanned: ['a', 'b', 'c'] })
+
+  const partial = (await fetchAllProfilesAggregatePerProfile(
+    '/api/profiles/sessions/pull-requests',
+    ['default', 'work'],
+    async profile => {
+      if (profile === 'work') {
+        throw new Error('timeout')
+      }
+
+      return { pull_requests: { a: pr(1) }, scanned: ['a', 'b', 'c'] }
+    }
+  )) as any
+
+  assert.deepEqual(partial, { pull_requests: { a: pr(1) }, scanned: ['a'] })
+})
+
+test('the cron job list is an all-profiles read only for `all` or no profile', () => {
+  assert.equal(isAllProfilesAggregateRequest('GET', '/api/cron/jobs'), true)
+  assert.equal(isAllProfilesAggregateRequest('GET', '/api/cron/jobs?profile=all'), true)
+  assert.equal(isAllProfilesAggregateRequest('GET', '/api/cron/jobs?profile=work'), false)
+  assert.equal(isAllProfilesAggregateRequest('POST', '/api/cron/jobs'), false)
+  assert.equal(isAllProfilesAggregateRequest('GET', '/api/cron/jobs/abc?profile=all'), false)
+})
+
+test('all-profiles cron list merges one read per profile like the gateway', async () => {
+  const reads: string[] = []
+
+  const pages: Record<string, unknown> = {
+    work: [
+      { id: 'shared', profile: 'work', is_default_profile: false },
+      { id: 'w', profile: 'work' },
+      { id: 'unknown', name: 'w-orphan' }
+    ],
+    default: [
+      { id: 'shared', profile: 'default', is_default_profile: true },
+      { id: 'unknown', name: 'd-orphan' }
+    ]
+  }
+
+  const jobs = (await fetchAllProfilesAggregatePerProfile('/api/cron/jobs?profile=all', ['work', 'default', 'broken'], async (profile, path) => {
+    reads.push(path)
+
+    if (profile === 'broken') {
+      throw new Error('denied')
+    }
+
+    return structuredClone(pages[profile])
+  })) as any[]
+
+  assert.deepEqual(reads.sort(), ['/api/cron/jobs?profile=broken', '/api/cron/jobs?profile=default', '/api/cron/jobs?profile=work'])
+  // A duplicate keeps its first position but the default profile's copy; id-less jobs never fold.
+  assert.deepEqual(jobs.map(job => `${job.id}:${job.profile ?? job.name}`), ['shared:default', 'w:work', 'unknown:w-orphan', 'unknown:d-orphan'])
 })

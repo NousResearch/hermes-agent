@@ -300,7 +300,9 @@ export function isSessionBusyError(error: unknown): boolean {
 
 /** A busy refusal because another writer holds the compression lock (`field: 'compression'`). */
 export function isCompressionBusyError(error: unknown): boolean {
-  return error instanceof JsonRpcGatewayError && (error.data as { field?: unknown } | undefined)?.field === 'compression'
+  const data = error instanceof JsonRpcGatewayError ? (error.data as { field?: unknown; reason?: unknown } | undefined) : null
+
+  return data?.reason === 'session_busy' && data.field === 'compression'
 }
 
 // prompt.submit refused because another surface (TUI, messaging gateway)

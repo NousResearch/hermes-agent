@@ -58,7 +58,7 @@ def _log_refusal(profile, method, exc: RuntimeStoreError) -> None:
     args = (method, _profile_label(profile), exc.reason,
             f' field={exc.field}' if getattr(exc, 'field', None) else '',
             f' detail={exc.detail}' if getattr(exc, 'detail', None) else '')
-    if getattr(exc, 'field', None) or getattr(exc, 'detail', None):
+    if exc.reason != 'session_busy' and (getattr(exc, 'field', None) or getattr(exc, 'detail', None)):
         logger.warning(line, *args)
     else:
         logger.debug(line, *args)
@@ -719,16 +719,13 @@ class AuthorityConnection:
 
     async def mutate(self, ref, params):
         from gateway.session_mutations import mutate_session
-        from hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
+        from hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS, busy_refusal
         try:
             result = await mutate_session(self.authority, self.actor, ref, params)
         except MUTATION_GUARD_REFUSALS as exc:
             # A live turn lease / compression lock is the same retryable busy verdict a
-            # running admission gets (REST maps it to 409), not an internal error. A held
-            # compression lock is named: Stop does not end it, so clients say to wait instead.
-            from hermes_state_errors import SessionCompressionInProgressError
-            compressing = isinstance(exc, SessionCompressionInProgressError)
-            raise RuntimeStoreError('session_busy', field='compression' if compressing else None) from exc
+            # running admission gets (REST maps it to 409), not an internal error.
+            raise busy_refusal(exc) from exc
         except RuntimeStoreError as exc:
             if exc.reason in {'revision_conflict', 'stale_generation'}:
                 # The fresh fences ride on the refusal, so the client retries once without a re-read.

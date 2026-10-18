@@ -114,7 +114,7 @@ function looksLikeArtifact(value: string, explicit = false): boolean {
 }
 
 function artifactSessionTitle(session: SessionInfo): string {
-  return session.title?.trim() || session.preview?.trim() || translateNow('sidebar.untitledPlaceholder')
+  return session.title?.trim() || session.preview?.trim() || translateNow('sidebar.row.untitledPlaceholder')
 }
 
 function normalizeValue(value: string): string {

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
+import { TRANSLATIONS } from '@/i18n'
 import type { ChatMessage, ChatMessagePart } from '@/lib/chat-messages'
 import type { ComposerAttachment } from '@/store/composer'
 
@@ -12,8 +13,10 @@ import {
   createToolMergeCache,
   isSlashCommandText,
   messageCreatedAt,
+  newSessionTitle,
   optimisticAttachmentRef,
   personalityNamesFromConfig,
+  sessionTitle,
   stripAttachmentRefs,
   toRuntimeMessage
 } from './chat-runtime'
@@ -358,5 +361,18 @@ describe('isSlashCommandText', () => {
 
   it('rejects a ref-only message (no command)', () => {
     expect(isSlashCommandText('@image:/tmp/foo.png')).toBe(false)
+  })
+})
+
+// The tab-title helpers must resolve against the live catalog — a wrong key
+// path makes translateNow return the raw key string, which then renders on
+// every tab surface in every locale (caught in #138962 review).
+describe('session title localization', () => {
+  it('newSessionTitle resolves the command palette newChat title, not a key path', () => {
+    expect(newSessionTitle()).toBe(TRANSLATIONS.en.commandCenter.nav.newChat.title)
+  })
+
+  it('sessionTitle falls back to the sidebar row placeholder for unnamed sessions', () => {
+    expect(sessionTitle({ title: '  ', preview: '' } as never)).toBe(TRANSLATIONS.en.sidebar.row.untitledPlaceholder)
   })
 })

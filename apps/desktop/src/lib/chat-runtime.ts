@@ -64,13 +64,13 @@ export function markReasoningEffortPending(state: ClientSessionState): ClientSes
 }
 
 export function sessionTitle(session: SessionInfo): string {
-  return session.title?.trim() || session.preview?.trim() || translateNow('sidebar.untitledPlaceholder')
+  return session.title?.trim() || session.preview?.trim() || translateNow('sidebar.row.untitledPlaceholder')
 }
 
 /** What a session is called before it has been sent — and before its composer
  *  has been typed into, which is the only thing that can name it earlier. */
 export function newSessionTitle(): string {
-  return translateNow('commandCenter.newChat.title')
+  return translateNow('commandCenter.nav.newChat.title')
 }
 
 export function coerceGatewayText(value: unknown): string {

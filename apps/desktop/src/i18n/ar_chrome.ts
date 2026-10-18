@@ -384,6 +384,7 @@ export const arChrome = {
       poolAccount: (number: number) => `الحساب ${number}`,
       poolUnknown: 'بيانات الاستخدام غير متاحة',
       poolUnavailable: 'سجّل الدخول مجددًا',
+      poolIdle: 'خامل: انتهت صلاحية الرمز',
       usageTip: (provider: string) => `${provider} يقترب من حد الاستخدام.`,
       usageWindow: (label: string, percent: number, time: null | string) =>
         time ? `${label}: متبقٍ ${percent}%، يُعاد الضبط ${time}` : `${label}: متبقٍ ${percent}%`

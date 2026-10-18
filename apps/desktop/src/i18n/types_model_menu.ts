@@ -26,6 +26,7 @@ export interface ModelMenuTranslations {
   poolAccount: (number: number) => string
   poolUnknown: string
   poolUnavailable: string
+  poolIdle: string
   usageTip: (provider: string) => string
   usageWindow: (label: string, percent: number, time: null | string) => string
 }

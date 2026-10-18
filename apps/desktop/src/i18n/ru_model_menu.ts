@@ -35,6 +35,7 @@ export const ruModelMenu = {
   poolAccount: (number: number) => `Аккаунт ${number}`,
   poolUnknown: 'Данные об использовании недоступны',
   poolUnavailable: 'Войдите снова',
+  poolIdle: 'Неактивен: токен истёк',
   usageTip: (provider: string) => `${provider} почти исчерпал лимит использования.`,
   usageWindow: (label: string, percent: number, time: null | string) =>
     time ? `${label}: осталось ${percent}%, сброс в ${time}` : `${label}: осталось ${percent}%`

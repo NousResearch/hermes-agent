@@ -40,7 +40,7 @@ def build_plan(args):
     payload = None
     if getattr(args, "file", None) is not None:
         try:
-            payload = json.loads(args.file.read_text(encoding="utf-8"))
+            payload = json.loads(args.file.read_text(encoding="utf-8-sig"))
         except (OSError, UnicodeError, ValueError):
             raise ValueError("--file must be a readable UTF-8 JSON object") from None
         if not isinstance(payload, dict):

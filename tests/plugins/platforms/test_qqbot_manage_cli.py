@@ -43,10 +43,28 @@ def test_read_list_and_apply(tmp_path, capsys):
     client.request.assert_awaited_with("PUT", "/v2/menu", {"future": True})
 
 
-@pytest.mark.parametrize("body", ["[]", "not json"])
-def test_bad_input_is_local_error(body, tmp_path, capsys):
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
+def test_unicode_payload_with_or_without_bom_previews_offline(encoding, tmp_path, monkeypatch, capsys):
+    def forbidden():
+        pytest.fail("offline payload parsing opened management resources")
+
+    monkeypatch.setattr(manage, "open_management_client", forbidden)
+    payload = {"label": "菜单选项", "future": {"empty": []}}
     path = tmp_path / "body.json"
-    path.write_text(body, encoding="utf-8")
+    path.write_bytes(json.dumps(payload, ensure_ascii=False).encode(encoding))
+    assert manage.main(["menu-put", "--file", str(path)]) == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert json.loads(captured.out) == {
+        "dry_run": True, "method": "PUT", "path": "/v2/menu", "payload": payload,
+    }
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
+@pytest.mark.parametrize("body", ["[]", "not json"])
+def test_bad_input_is_local_error(body, encoding, tmp_path, capsys):
+    path = tmp_path / "body.json"
+    path.write_bytes(body.encode(encoding))
     assert manage.main(["menu-put", "--file", str(path)]) == 2
     assert "JSON object" in capsys.readouterr().err
 

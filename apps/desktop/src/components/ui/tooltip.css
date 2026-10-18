@@ -59,10 +59,6 @@
   text-wrap: pretty;
 }
 
-.tooltip-bubble [data-slot='tooltip-arrow'] {
-  fill: var(--foreground);
-}
-
 .tooltip-bubble-label pre {
   white-space: pre-wrap;
   overflow-wrap: anywhere;

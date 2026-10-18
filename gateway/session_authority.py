@@ -32,6 +32,11 @@ _MARKER_RELEASE_WAIT_S = 60.0
 # True in the admitting task once ``admit_native``'s shielded ledger write began: a caller cancelled
 # after that may still see the row commit, so it must not release the media the write commits.
 native_write_started = ContextVar('native_write_started', default=False)
+# Set by the messaging ingress around ``admit_native``: True, or the busy caller's acceptance future.
+# Such an input is fenced by a later /stop or /new of its route (``fence_route``), and the future is
+# released once the input queues behind an earlier one of its chat, so a serial reader moves on
+# while acceptance itself still waits for the commit.
+messaging_admission = ContextVar('messaging_admission', default=None)
 
 
 @dataclass
@@ -87,6 +92,25 @@ def _log_drain_failure(task):
     logging.getLogger(__name__).error('Session drain task died: %r', task.exception())
 
 
+
+@contextlib.asynccontextmanager
+async def keyed_turn(table, key, *, queued=None):
+    """One FIFO turn per *key*: ``table[key]`` is ``[asyncio.Lock(), holder + waiters]``, created on
+    first use and deleted when the last one leaves. asyncio's Lock is FIFO and a cancelled waiter gives
+    up only its own place. *queued* runs (before waiting) when an earlier turn holds or awaits the key."""
+    entry = table.setdefault(key, [asyncio.Lock(), 0])
+    entry[1] += 1
+    if queued is not None and entry[1] > 1:
+        queued()
+    try:
+        async with entry[0]:
+            yield
+    finally:
+        entry[1] -= 1
+        if not entry[1]:
+            del table[key]
+
+
 class SessionAuthority:
     def __init__(self, runner, *, profile_id, instance_id, db, epoch):
         self.runner = runner
@@ -133,6 +157,12 @@ class SessionAuthority:
         # Logical owner rotated away by the exhaustion auto-reset -> its session key: an admission
         # that reserved it before the rotation commits on that key's current route instead.
         self.rotated_owners = {}
+        # Route key -> [lock, holder + waiters] of the native admissions in flight (``_route_turn``, ``keyed_turn``).
+        self._route_turns = {}
+        # Per route: how many messaging /stop and /new fenced it (``fence_route``). Kept for the
+        # owner's life (one int per chat that ever got one): an input or command turn holding an older
+        # value never commits, and a reset entry could read as an old epoch again.
+        self._route_epochs = {}
         # route -> the compression-exhaustion auto-reset its LOCAL turn deferred: the store refuses a
         # reset while that turn's admission is started, so the drain runs it once the turn settles.
         self.deferred_resets = {}
@@ -420,11 +450,59 @@ class SessionAuthority:
 
     async def admit_native(self, event):
         """Await current connector policy, then commit before ACK or scheduling execution."""
-        from gateway.session_ingress_media import capture_lease
-        with capture_lease():  # captured bytes are held from capture until commit or refusal
-            return await self._admit_native(event)
+        from gateway.session_ingress_media import abandon_capture, capture_lease
+        async with self._route_turn(event) as fence:
+            with capture_lease(self) as scope:  # captured bytes are held until commit or refusal
+                try:
+                    return await self._admit_native(event, fence)
+                except BaseException:
+                    # Before the shielded write starts, no row can own these bytes. A cancelled copy
+                    # arranges its own completion cleanup in prepare_native; other failures clean here.
+                    if not scope.write_started:
+                        await abandon_capture(scope)
+                    raise
 
-    async def _admit_native(self, event):
+    @contextlib.asynccontextmanager
+    async def _route_turn(self, event):
+        """One route's inputs commit in the order they entered ``admit_native``: a photo's off-loop
+        capture must not let the chat's next text take the earlier FIFO position. asyncio's Lock is
+        FIFO and a cancelled waiter gives up only its own place, so a later input never overtakes an
+        earlier one still in flight. Other routes never wait; an unroutable event (refused by
+        ``prepare_native``) is not held. Yields the messaging input's fence check (else None)."""
+        ingress = messaging_admission.get()
+        messaging_admission.set(None)  # not inherited by the drain this admission schedules
+        try:
+            key = self.runner.session_store._generate_session_key(event.source)
+        except AttributeError:  # no source, or a duck-typed one without routing fields
+            key = None
+        if key is None:
+            yield None
+            return
+        arrived = self.route_epoch(key)
+
+        def fence(_conn=None):
+            if self.route_epoch(key) != arrived:
+                raise RuntimeStoreError('stale_generation', field='route',
+                                        detail='a /stop or /new of this chat came after this message')
+
+        def queued():  # its FIFO position is fixed behind the earlier input
+            if isinstance(ingress, asyncio.Future) and not ingress.done():
+                ingress.set_result(None)
+        async with keyed_turn(self._route_turns, key, queued=queued):
+            if ingress is not None:
+                fence()
+            yield fence if ingress is not None else None
+
+    def route_epoch(self, route):
+        """How many messaging /stop and /new fenced *route* (``fence_route``)."""
+        return self._route_epochs.get(route, 0)
+
+    def fence_route(self, route):
+        """/stop and /new: the route's messaging input still capturing or waiting, and a slash command's
+        turn read before it (``_stop_epoch``), never commit."""
+        self._route_epochs[route] = self.route_epoch(route) + 1
+
+    async def _admit_native(self, event, fence=None):
         import json
         from gateway.session_envelope import prepare_native, restore_native_source
         self._require_admission_open()
@@ -448,11 +526,14 @@ class SessionAuthority:
             if rewrite is not None and rewrite.applied:
                 rewrite.on_commit()
             return self._admitted(committed[0], event, row)
+        from gateway.session_ingress_media import _lease_scope
+        if (scope := _lease_scope.get()) is not None:
+            scope.write_started = True
         native_write_started.set(True)  # shielded from here: a cancelled caller may still commit
         return await tracked_write(self, partial(
             self._admit_native_write, principal_id='messaging:' + identity, session_id=ref.session_id,
             request_id=request_id, payload=payload,
-            authorize=session_retry_admission.compose(rewrite, self._admission_gate()),
+            authorize=session_retry_admission.compose(rewrite, self._admission_gate(fence)),
             raw=getattr(event, 'raw_message', None)),
             then=admitted, ordered=True, after=lambda _receipt: self._schedule_admitted(committed[0]))
 
@@ -486,6 +567,8 @@ class SessionAuthority:
     def _admitted(self, ref, event, row):
         if event is not None:
             event._gateway_accepted = True
+            if row['status'] == 'queued' and (committed := getattr(event, '_on_commit', None)) is not None:
+                committed()  # a queued slash command's ack follows its commit (``_queue_command_turn``)
         self._publish_pending(ref)
         return self._receipt(row)
 

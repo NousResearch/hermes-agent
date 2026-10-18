@@ -206,9 +206,9 @@ def sync_from_config(load_cfg: Callable[[], dict[str, Any]]) -> None:
                 wanted.append(spec)
             elif (home_key, spec.event, spec.command) not in _skip_logged:  # once per process, not per open
                 _skip_logged.add((home_key, spec.event, spec.command))
-                logger.warning("shell hook for %s (%s) not allowlisted — skipped. Approve it at a CLI prompt, "
-                               "or use --accept-hooks / HERMES_ACCEPT_HOOKS=1 / hooks_auto_accept: true.",
-                               spec.event, spec.command)
+                logger.warning("shell hook for %s (%s) not allowlisted in %s — skipped. Approve it at a CLI "
+                               "prompt for this profile, or use --accept-hooks / HERMES_ACCEPT_HOOKS=1 / "
+                               "hooks_auto_accept: true.", spec.event, spec.command, allowlist_path())
         manager = get_plugin_manager()
         with _registered_lock:
             _wire(manager, home_key, wanted)

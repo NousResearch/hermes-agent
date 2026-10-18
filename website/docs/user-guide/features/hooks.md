@@ -2023,7 +2023,7 @@ Three escape hatches bypass the interactive prompt — any one is sufficient:
 2. `HERMES_ACCEPT_HOOKS=1` environment variable
 3. `hooks_auto_accept: true` in `~/.hermes/config.yaml`
 
-Non-TTY runs (gateway, cron, CI) need one of these three — otherwise any newly-added hook silently stays un-registered and logs a warning. `hermes gateway run --accept-hooks` (like `HERMES_ACCEPT_HOOKS=1` on the gateway) approves the hooks of every profile that gateway serves, including hooks added after it started.
+Only a foreground `hermes chat` (or `hermes rl`) ever asks. The gateway, cron, `hermes mcp serve`, `hermes acp` and CI never prompt, even when stdin looks like a terminal (a hidden console from a Windows login-item launcher does), so they need one of these three or an allowlist entry. Otherwise a newly-added hook stays un-registered and a warning names the profile's allowlist file it is missing from (`profiles/<name>/shell-hooks-allowlist.json` for a non-default profile). `hermes gateway run --accept-hooks` (like `HERMES_ACCEPT_HOOKS=1` on the gateway) approves the hooks of every profile that gateway serves, including hooks added after it started.
 
 **Script edits are silently trusted.** The allowlist keys on the exact command string, not the script's hash, so editing the script on disk does not invalidate consent. `hermes hooks doctor` flags mtime drift so you can spot edits and decide whether to re-approve.
 

@@ -1,13 +1,7 @@
 name: prompt-queue
 repo: https://github.com/vectorforge22/prompt-queue
 sha: "04314c08a9de003fbf5d58ab648a052a49b09b66"   # main, 2026-10-17 (v1.4.4)
-description: >-
-  Kanban-style prompt queue for the desktop: Play drains cards one at a
-  time into per-card target modes — new session, existing session, project,
-  or a profile's canonical Bot Chat — gated on the global model slot,
-  background-review completion, and context compaction. Queue/Done/Skipped/
-  Failed tabs, two-row target picker, markdown ingest (Windows), and a
-  trust-aware ::enqueue directive (ask-first by default).
+description: "Kanban-style prompt queue for the desktop: Play drains cards one at a time into per-card target modes — new session, existing session, project, or a profile's canonical Bot Chat — gated on the global model slot, background-review completion, and context compaction. Queue/Done/Skipped/ Failed tabs, two-row target picker, markdown ingest (Windows), and a trust-aware ::enqueue directive (ask-first by default). Disclosure — Desktop pane that runs queued prompts as full agent turns (all tools the session allows) in new or chosen existing sessions, projects it can create, or a hidden per-profile \"Bot Chat\" session while Play is on; reads recent agent.log lines to detect background reviews and context compaction; on Windows the markdown-ingest menu runs local shell commands (mkdir, dir, certutil, explorer, and python on a small bundled reader script it writes into the chosen folder) through Hermes's shell.exec; an opt-in Auto-add setting lets ::enqueue directives in a live assistant reply queue prompts that run without a click."
 maintainer: vectorforge22
 tier: community
 category: desktop

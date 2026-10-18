@@ -283,11 +283,13 @@ class GatewayInboundHooksMixin:
             _plugin_context.session_key = self._session_key_for_source(source)
         user_args = event.get_command_args().strip() if args is None else args
         from hermes_cli.plugin_command_dispatch import invoke_plugin_command
+        from gateway.plugin_messages import bind_live_source
         call = functools.partial(
             invoke_plugin_command, plugin_handler, user_args, source=source,
             session_id=_plugin_context.session_id or "", session_key=_plugin_context.session_key or "",
             platform=source.platform.value)
-        with self._session_env_scope(_plugin_context):
+        # ctx.post_message from the handler reaches this chat even before its session is stored.
+        with self._session_env_scope(_plugin_context), bind_live_source(source):
             if inspect.iscoroutinefunction(plugin_handler):
                 result = await call()
             else:

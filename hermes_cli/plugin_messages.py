@@ -144,7 +144,7 @@ _NO_SESSION = ("no session is bound in the calling context (a tool call, slash c
                "fired for a session)")
 
 
-async def _post_for(ctx: Any, text: str, session_key: str, route: dict) -> PluginMessage:
+async def _post_for(ctx: Any, text: str, session_key: str, route: Any) -> PluginMessage:
     plugin_id = ctx.plugin_id
     runner, _loop = _gateway_loop()
     result: dict[str, Any]

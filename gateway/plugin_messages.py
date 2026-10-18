@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import logging
 import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from gateway.config import Platform
 
@@ -60,41 +62,38 @@ def _supports_edit(adapter: Any) -> bool:
     return getattr(type(adapter), "edit_message", None) is not BasePlatformAdapter.edit_message
 
 
-# Every source field the gateway binds for a call (``GatewayRunner._set_session_env``), so a rebuilt
-# source keys exactly like the live one (Slack ``scope_id``, ``user_id_alt`` group keys, ...).
-_ROUTE_VARS = {field: "HERMES_SESSION_" + field.upper() for field in (
-    "platform", "chat_id", "chat_type", "chat_name", "thread_id", "user_id", "user_id_alt", "user_name",
-    "scope_id", "parent_chat_id", "message_id", "profile")}
+# The live inbound source of a call the gateway dispatches before its session is stored (a plugin
+# command that is the chat's first message), receiving-bot provenance included. Task-local, so the
+# executor thread a sync handler runs on inherits it and a concurrent chat never sees it.
+_LIVE_SOURCE: ContextVar = ContextVar("plugin_message_live_source", default=None)
 
 
-def bound_route() -> dict:
-    """The messaging route the gateway bound in THIS context (read on the caller's thread: the
-    gateway loop runs the send in its own context)."""
-    from gateway.session_context import get_session_env
-    return {field: get_session_env(var, "") for field, var in _ROUTE_VARS.items()}
+@contextmanager
+def bind_live_source(source) -> Iterator[None]:
+    token = _LIVE_SOURCE.set(source)
+    try:
+        yield
+    finally:
+        _LIVE_SOURCE.reset(token)
 
 
-def _bound_source(runner, route: dict, *, plugin_home, plugin_id: str):
-    """A source for a messaging chat whose session has no store entry yet (a plugin command that is
-    the chat's first message), rebuilt from the route the gateway bound for this call and given the
-    receiving bot's provenance by the same canonicalizer a plugin ``origin`` goes through."""
-    if not route.get("platform") or not route.get("chat_id") or route["platform"] == Platform.LOCAL.value:
-        return None
-    return runner._plugin_origin_source({k: v for k, v in route.items() if v}, plugin_home=plugin_home,
-                                        plugin_id=plugin_id)
+def bound_route():
+    """The live source bound in THIS context (read on the caller's thread: the gateway loop runs the
+    send in its own context), or ``None``."""
+    return _LIVE_SOURCE.get()
 
 
-def resolve(runner, *, session_key: str, route: dict, plugin_home, plugin_id: str):
-    """``(PostTarget, None)`` for the session *session_key* names, or ``(None, error dict)``."""
+def resolve(runner, *, session_key: str, route, plugin_home, plugin_id: str):
+    """``(PostTarget, None)`` for the session *session_key* names, or ``(None, error dict)``. *route*
+    is the live source the gateway bound for this call, used only while the session is not stored."""
     entry = runner.session_store.lookup_by_session_key(session_key)
     if entry is not None and entry.origin is not None:
         from gateway.session_identity import replace_source
         source = replace_source(runner._restored_source(entry))
+    elif route is not None and runner._session_key_for_source(route) == session_key:
+        source = route
     else:
-        source = _bound_source(runner, route, plugin_home=plugin_home, plugin_id=plugin_id)
-        # The bound route must be the chat this key names (both are bound by the gateway together).
-        if source is None or runner._session_key_for_source(source) != session_key:
-            return None, _err("no_conversation", f"session {session_key!r} is not known to this gateway")
+        return None, _err("no_conversation", f"session {session_key!r} is not known to this gateway")
     if source.platform == Platform.LOCAL:
         live = runner._plugin_local_session(source, session_key, plugin_home=plugin_home, plugin_id=plugin_id)
         if live is None:

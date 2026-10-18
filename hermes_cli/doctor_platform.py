@@ -584,6 +584,32 @@ def _check_gateway_supervision(should_fix: bool, f: Finding) -> None:
     _check_windows_gateway_autostart(should_fix, f)
 
 
+def _command_link_location(project_root: Path) -> tuple[Path, str]:
+    """Choose the active install's command directory, not the current UID's default.
+
+    A root/FHS installation remains at /usr/local/bin for non-root users.
+    Hermes may also replace HOME with a profile-local sandbox; only in that
+    case use the real home that subprocess setup recorded before isolation.
+    """
+    prefix = os.environ.get("PREFIX", "")
+    if prefix and (os.environ.get("TERMUX_VERSION") or "com.termux/files/usr" in prefix):
+        return Path(prefix) / "bin", "$PREFIX/bin"
+    if sys.platform == "linux" and project_root.resolve() == Path("/usr/local/lib/hermes-agent"):
+        return Path("/usr/local/bin"), "/usr/local/bin"
+
+    home = Path.home()
+    from hermes_constants import get_real_home, get_subprocess_home
+    profile_home = get_subprocess_home()
+    if profile_home:
+        try:
+            isolated = home.resolve() == Path(profile_home).resolve()
+        except OSError:
+            isolated = home == Path(profile_home)
+        if isolated:
+            home = Path(get_real_home())
+    return home / ".local" / "bin", "~/.local/bin"
+
+
 @doctor_check()
 def _check_command_installation(should_fix: bool, f: Finding) -> None:
     """Check the install-owned launch contract without replacing custom commands."""
@@ -616,10 +642,8 @@ def _check_command_installation(should_fix: bool, f: Finding) -> None:
         check_warn("Hermes entry point not found", f"({venv_bin})")
         return f.manual_issues.append("Repair or reinstall the Hermes launcher through the installation owner")
     check_ok(f"Hermes entry point exists ({venv_bin})")
-    # Expected command link directory (mirrors install.sh logic).
-    prefix = os.environ.get("PREFIX", "")
-    termux = prefix and (os.environ.get("TERMUX_VERSION") or "com.termux/files/usr" in prefix)
-    link_dir, display = (Path(prefix) / "bin", "$PREFIX/bin") if termux else (Path.home() / ".local" / "bin", "~/.local/bin")
+    # Match the installer's active layout, including root/FHS and isolated HOME.
+    link_dir, display = _command_link_location(PROJECT_ROOT)
     link = link_dir / "hermes"
     if link.is_symlink():
         target, expected = link.resolve(), venv_bin.resolve()

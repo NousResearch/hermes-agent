@@ -20,11 +20,17 @@ def _rebind(authority, prepared, old, policy, **extra):
 
 
 async def prepare_reasoning(authority, live, payload, prepared):
-    """``/reasoning <level>`` for this session: the level ``build_policy`` freezes at creation."""
-    from gateway.session_policy import pin_reasoning_effort, restore_policy
+    """``/reasoning <level>`` for this session: the level ``build_policy`` freezes at creation. ``None``
+    (``/reasoning reset``) gives the level back to the profile."""
+    from gateway.session_policy import pin_reasoning_effort, profile_config, restore_policy, unpin_reasoning
     old = restore_policy(prepared['snapshot']['receipt']['policy'])
     frozen = old.config()
-    pin_reasoning_effort(frozen, payload['effort'])
+    if payload['effort'] is not None:
+        pin_reasoning_effort(frozen, payload['effort'], session=True)
+    else:
+        # A bypass launch never reads the profile: its reset is the built-in default.
+        profile = {} if old.ignore_user_config else await asyncio.to_thread(profile_config, authority)
+        unpin_reasoning(frozen, profile)
     return _rebind(authority, prepared, old, replace(old, config_json=json.dumps(frozen)))
 
 

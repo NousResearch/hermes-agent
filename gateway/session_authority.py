@@ -58,8 +58,14 @@ class LiveSession:
     # (a contended SQLite writer must not stall loop-side lock takers); readers holding that lock
     # still see the claim as started, so no snapshot shows a terminal row without its completion.
     settling: dict = field(default_factory=dict)
+    # ``(revision key, payload)`` of the last ``session.context_breakdown``: Desktop re-polls it on
+    # every idle mount and reconnect, and a rebuild walks the whole stored transcript (#140667).
+    context_breakdown: tuple | None = None
     # A viewer attached while a guarded deferred pick awaits consent: the next boundary asks again.
     reask_pick: bool = False
+    # (principal, effort) of a ``/reasoning`` command that arrived while a turn ran: applied in memory at
+    # once, committed to the policy at the next boundary (gateway/session_setting_commands.py).
+    pending_reasoning: tuple | None = None
     # A historic messaging row mounted for reading after its lane moved on (``/new``): ``route`` is
     # the lane's CURRENT key, which names another conversation, so nothing route-keyed (agent, Stop,
     # turns, eviction) may act through it (gateway/session_route_recovery.py). The lane publishing
@@ -127,6 +133,9 @@ class SessionAuthority:
         # Logical owner rotated away by the exhaustion auto-reset -> its session key: an admission
         # that reserved it before the rotation commits on that key's current route instead.
         self.rotated_owners = {}
+        # route -> the compression-exhaustion auto-reset its LOCAL turn deferred: the store refuses a
+        # reset while that turn's admission is started, so the drain runs it once the turn settles.
+        self.deferred_resets = {}
 
     def authorize(self, actor, ref, capability):
         """Every handler calls this first, so a later ``self.sessions[ref.session_id]`` is
@@ -248,6 +257,8 @@ class SessionAuthority:
 
     def _handle(self, ref):
         row = self.db.get_session(ref.session_id)
+        if row is None:  # deleted after ``authorize``: the commit lands before the retirement runs
+            raise RuntimeStoreError('not_found')
         pending = self._pending_rows(ref)
         state = 'unknown' if any(r['status'] == 'unknown' for r in pending) else (
             'running' if any(r['status'] == 'started' for r in pending) else 'idle')
@@ -258,12 +269,27 @@ class SessionAuthority:
         self.authorize(actor, ref, 'session:read')
         return self._handle(ref)
 
+    def unless_deleted(self, ref, read):
+        """``read()``; a refusal because *ref* was deleted after ``authorize`` passed is ``not_found``.
+        A delete commits off the loop, so its rows can be gone while the live entry still waits for its
+        retirement, and readers meet the missing receipt instead."""
+        try:
+            return read()
+        except RuntimeStoreError:
+            if self.db.get_session(ref.session_id) is None:
+                raise RuntimeStoreError('not_found') from None
+            raise
+
     async def attach(self, actor, ref):
         self.authorize(actor, ref, 'session:read')
+        from gateway.session_local_recovery import local_history, prepare_history
+        prepared = await prepare_history(self, ref)  # the lineage read stays off the loop and the lock
+        # A delete or eviction can land during that await: re-check, so it answers not_found, never a KeyError.
+        self.authorize(actor, ref, 'session:read')
         live = self.sessions[ref.session_id]
-        from gateway.session_local_recovery import local_history
         from gateway.session_queued_controls import pending_rows
         with live.event_stream.lock:
+            handle = self._handle(ref)  # before the viewer joins: a delete committed meanwhile is not_found
             subscription = next((key for key, member in live.subscribers.items()
                                  if member == actor), None) or uuid.uuid4().hex
             live.subscribers[subscription] = actor
@@ -274,12 +300,11 @@ class SessionAuthority:
             if transport is not None:
                 live.event_stream.fanout.attach(transport)
                 live.event_stream.on_overflow = partial(self._retire_overflowed, ref.session_id)
-            handle = self._handle(ref)
             active_generation = handle.execution_generation if handle.execution_state == "running" else None
             prompts = live.controls.snapshot(ref.session_id, active_generation)
             epoch, sequence = live.event_stream.watermark()
-            snapshot = SubscriptionSnapshot(subscription, handle, epoch,
-                                        sequence, tuple(local_history(self, ref)),
+            history = self.unless_deleted(ref, lambda: tuple(local_history(self, ref, prepared)))
+            snapshot = SubscriptionSnapshot(subscription, handle, epoch, sequence, history,
                                         tuple(self._pending_receipt(r) for r in pending_rows(self, ref)), prompts)
         from gateway.session_viewer_close import cancel_persisted_close
         await asyncio.to_thread(cancel_persisted_close, self, ref.session_id)  # the viewer cancels it
@@ -876,8 +901,11 @@ class SessionAuthority:
             first = next((row for row in pending if row['status'] == 'queued'), None)
             from gateway.config import Platform
             if live.source.platform == Platform.LOCAL:
-                # A model pick made while the previous turn ran lands here, at the turn boundary.
+                # A reasoning command or a model pick made while the previous turn ran lands here, at the
+                # turn boundary.
                 from gateway.session_deferred_pick import apply_deferred_pick
+                from gateway.session_setting_commands import apply_pending_reasoning
+                await apply_pending_reasoning(self, ref, live)
                 await apply_deferred_pick(self, ref, live)
             if first is not None and live.source.platform == Platform.LOCAL:
                 from gateway.session_local_recovery import restore_local_session
@@ -1054,8 +1082,14 @@ class SessionAuthority:
             admission_id = row['admission_id']
             try:
                 response, outcome = await self._execute_claimed(ref, live, row)
-            except ManagedExecutionUnknown:
-                return
+            except BaseException as exc:
+                # No settlement follows (a lost managed worker, a cancelled drain): the turn is never
+                # replayed, so its deferred reset is dropped (the next turn re-detects the overflow),
+                # never left to fire after a later settled turn with a stale entry.
+                self.deferred_resets.pop(live.route, None)
+                if isinstance(exc, ManagedExecutionUnknown):
+                    return
+                raise
             settled = None
             settlement = {}
             try:
@@ -1130,9 +1164,23 @@ class SessionAuthority:
                     self.pending_deliveries.pop(admission_id, None)
                 from gateway.session_ingress import waiter_replies
                 waiter_replies(self).pop(admission_id, None)
+                # Taken on every exit, so a turn that never settled leaves no reset for a later one.
+                reset = self.deferred_resets.pop(live.route, None)
+            await self._run_deferred_reset(live.route, reset)
             from gateway.session_ingress import deliver_settled
             await deliver_settled(self, admission_id)
             await self._resolve_settled_waiter(admission_id, response)
+
+    @staticmethod
+    async def _run_deferred_reset(route, reset):
+        """The auto-reset the settled turn deferred (``_hmwa_defer_exhaustion_reset``), before its
+        waiter wakes: a delivery retry or the next DM then reads the fresh target."""
+        if reset is not None:
+            try:
+                await reset()
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception('Deferred auto-reset of %s failed', route)
 
     async def _resolve_settled_waiter(self, admission_id, response):
         """Hand the settled reply to its waiter. The adapter sending it adopted the turn's crash marker

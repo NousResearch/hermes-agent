@@ -291,7 +291,8 @@ class ManagedWorker:
             return
         try:
             proc = psutil.Process(self.worker[0])
-            if proc.create_time() == self.worker[1]:
+            from hermes_cli.process_identity import process_birth
+            if process_birth(proc) == self.worker[1]:
                 (proc.kill if kill else proc.terminate)()
         except psutil.Error:
             pass

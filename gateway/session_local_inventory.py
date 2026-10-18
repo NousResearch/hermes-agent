@@ -223,13 +223,45 @@ def agent_inventory(agent) -> dict:
 def publish_settled_info(turn, agent) -> None:
     """Main's end-of-turn ``session.info`` (``session_workdir._emit_settled_session_info``) for a local
     viewer: the first turn builds the agent, so this is when the banner's ``▸ System Prompt`` row, the
-    agent's tool list and provider first become known. Never breaks the turn."""
+    agent's tool list and provider first become known. Never breaks the turn.
+
+    A ``model_override`` admission (``/model --once``, ``/moa``) built its agent on the one-turn
+    route. That agent must not become the route Desktop, the TUI, and resume read. Drop it from
+    the cache (released once this turn's running slot clears) and publish the model and provider
+    of the policy route, both from one read of the profile."""
     if agent is None:
         return
     with contextlib.suppress(Exception):
+        from gateway.session_cli_turn import cli_turn
         from gateway.session_contract import SessionRef
         from gateway.session_local import local_session_info
+        from gateway.session_policy import policy_for_source
         authority, session_id, _generation = turn._approval_owner
-        info = {**agent_inventory(agent),
-                **local_session_info(authority, SessionRef(authority.profile_id, session_id))}
+        message_id = getattr(getattr(turn, "_ctx", None), "inbound_message_id", None)
+        one_turn = bool(cli_turn(message_id).get("model_override"))
+        live = None
+        if one_turn:
+            sessions = getattr(authority, "sessions", None)
+            live = sessions.get(session_id) if hasattr(sessions, "get") else None
+            evict = getattr(getattr(turn, "_runner", None), "_evict_cached_agent", None)
+            if live is not None and callable(evict):
+                try:
+                    evict(live.route, release_after_turn=True)
+                except Exception:
+                    logger.debug("one-turn agent cache drop failed", exc_info=True)
+        ref = SessionRef(authority.profile_id, session_id)
+        info = {**agent_inventory(agent), **local_session_info(authority, ref)}
+        if one_turn and live is not None:
+            try:
+                runner = getattr(authority, "runner", None) or turn._runner
+                policy = policy_for_source(runner, live.source)
+            except Exception:
+                logger.debug("one-turn policy route unavailable", exc_info=True)
+                policy = None
+            if policy is not None:
+                config, info["model"] = policy.effective(authority, secrets=False)
+                section = config.get("model")
+                provider = section.get("provider") if isinstance(section, dict) else None
+                if provider:
+                    info["provider"] = provider
         turn._publish_execution("session.info", info)

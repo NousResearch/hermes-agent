@@ -1056,3 +1056,96 @@ def test_a_stale_generation_held_without_row_ids_aborts_the_micro_compact(tmp_pa
 
     assert result is held
     assert [m["content"] for m in db.get_messages_as_conversation("s")] == before
+
+
+def _uid_rows(db, uid: str):
+    """Every active physical row currently sharing *uid*, oldest first (a carried or concurrent
+    compaction can clone a row back beside its archived twin, so one logical message_uid may have
+    several live rows; the loader's ``_active_logical_message_row`` always stamps the newest)."""
+    return db._execute_write(lambda conn: conn.execute(
+        "SELECT id, content FROM messages WHERE session_id = ? AND active = 1 AND message_uid = ? ORDER BY id",
+        ("s", uid)).fetchall())
+
+
+def test_the_uid_fence_cas_against_the_newest_active_copy(tmp_path):
+    """A held id-less dict is resolved by its logical ``message_uid``, and one uid can name several
+    active physical rows. The fence must CAS against the NEWEST active copy — the row the loader
+    would have stamped the held digest from — never whichever row the uid index returns first: a
+    bare ``fetchone()`` that lands on an older unchanged duplicate clears the held digest as
+    current while another writer rewrote the newest, and the lease-less fallback then republishes
+    the stale held payload over that newer generation (#124102)."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
+    db, cc, _held = _held_session(tmp_path, "micro")
+    held = db.get_messages_as_conversation("s", repair_alternation=True)
+    assert held and not any(m.get("_row_id") for m in held)
+    target = next(m for m in held if m.get("role") == "assistant" and m.get("content"))
+    uid = target["message_uid"]
+
+    # Another surface's carried compaction clones the row back beside its twin: two active rows,
+    # same uid, same payload. The clone is the newest (AUTOINCREMENT id).
+    newest = _uid_rows(db, uid)[-1]
+    db._execute_write(lambda conn: conn.execute(
+        "INSERT INTO messages (session_id, role, content, tool_call_id, tool_calls, tool_name, "
+        "effect_disposition, timestamp, token_count, finish_reason, reasoning, reasoning_content, "
+        "reasoning_details, codex_reasoning_items, codex_message_items, platform_message_id, observed, "
+        "_compressed_summary, active, api_content, display_kind, display_metadata, message_uid, "
+        "absorbed_message_uids, tool_call_uids, tool_call_uid) "
+        "SELECT session_id, role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
+        "timestamp, token_count, finish_reason, reasoning, reasoning_content, reasoning_details, "
+        "codex_reasoning_items, codex_message_items, platform_message_id, observed, _compressed_summary, "
+        "active, api_content, display_kind, display_metadata, message_uid, absorbed_message_uids, "
+        "tool_call_uids, tool_call_uid FROM messages WHERE id = ?", (newest["id"],)))
+    original_id, clone_id = (row["id"] for row in _uid_rows(db, uid))
+    assert clone_id > original_id and len(_uid_rows(db, uid)) == 2
+
+    # Then that surface prunes the NEWEST copy in place (the row-addressed projection materializes
+    # both active rows; its dict for the clone is the one its own pass rewrote). The older duplicate
+    # still holds the payload the held dict was stamped from.
+    resume = db.get_messages_as_conversation("s", include_row_ids=True, repair_alternation=False)
+    original = next(m for m in resume if m.get("message_uid") == uid and m["_row_id"] == clone_id)
+    db.rewrite_pruned_rows("s", [(dict(original), {**original, "content": "[pruned by the other surface]"})])
+
+    # The fence names the newest row: the held digest is stale even though an older duplicate
+    # still matches it, so publishing the held generation must be refused.
+    assert db.rewritten_held_row_ids("s", held) == [clone_id]
+    before = [m["content"] for m in db.get_messages_as_conversation("s")]
+    result = cc._micro_compact(held)
+    for msg in result:  # finalize_turn's persist flush appends every unpersisted dict
+        if not msg.get(_DB_PERSISTED_MARKER):
+            db.append_message("s", msg["role"], msg.get("content"))
+    assert result is held
+    assert [m["content"] for m in db.get_messages_as_conversation("s")] == before
+
+
+def test_the_uid_fence_lets_a_held_digest_stay_current_when_only_an_older_duplicate_moved(tmp_path):
+    """The newest-active rule cuts both ways: when the newest active copy still holds the payload
+    the held digest was stamped from, the held generation is the live winner even if an older
+    duplicate of the same uid was rewritten. The fence must report no mismatch there — resolving
+    whichever row the uid index happens to return first would false-abort a current generation
+    and refuse a legitimate compaction pass (#124102)."""
+    db, _cc, _held = _held_session(tmp_path, "micro")
+    held = db.get_messages_as_conversation("s", repair_alternation=True)
+    target = next(m for m in held if m.get("role") == "assistant" and m.get("content"))
+    uid = target["message_uid"]
+
+    newest = _uid_rows(db, uid)[-1]
+    db._execute_write(lambda conn: conn.execute(
+        "INSERT INTO messages (session_id, role, content, tool_call_id, tool_calls, tool_name, "
+        "effect_disposition, timestamp, token_count, finish_reason, reasoning, reasoning_content, "
+        "reasoning_details, codex_reasoning_items, codex_message_items, platform_message_id, observed, "
+        "_compressed_summary, active, api_content, display_kind, display_metadata, message_uid, "
+        "absorbed_message_uids, tool_call_uids, tool_call_uid) "
+        "SELECT session_id, role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
+        "timestamp, token_count, finish_reason, reasoning, reasoning_content, reasoning_details, "
+        "codex_reasoning_items, codex_message_items, platform_message_id, observed, _compressed_summary, "
+        "active, api_content, display_kind, display_metadata, message_uid, absorbed_message_uids, "
+        "tool_call_uids, tool_call_uid FROM messages WHERE id = ?", (newest["id"],)))
+    original_id, _clone_id = (row["id"] for row in _uid_rows(db, uid))
+
+    # Only the OLDER duplicate is rewritten in place; the newest (the one the loader stamps and the
+    # fence must compare against) still holds the held payload.
+    db._execute_write(lambda conn: conn.execute(
+        "UPDATE messages SET content = ? WHERE id = ?", ("[edited in place by another writer]", original_id)))
+
+    assert db.rewritten_held_row_ids("s", held) == []

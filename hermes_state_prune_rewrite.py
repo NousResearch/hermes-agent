@@ -97,8 +97,15 @@ class SessionPruneRewriteMixin:
                 stored[int(row["id"])] = row
         by_uid_row: dict[str, Any] = {}
         for uid, message in by_uid.items():
+            # Newest active row, same rule as the loader's _active_logical_message_row: a logical
+            # message_uid can have several active physical rows (a carried or concurrent compaction
+            # cloning one back beside its archived twin), and the loader stamps the held dict from
+            # the newest. A bare fetchone() could return an older copy whose payload still matches
+            # the held digest — the newest row was rewritten by another writer, and the lease-less
+            # fallback would republish the stale held payload over that newer generation (#124102).
             row = conn.execute(
-                "SELECT * FROM messages WHERE session_id = ? AND active = 1 AND role = ? AND message_uid = ?",
+                "SELECT * FROM messages WHERE session_id = ? AND active = 1 AND role = ? AND message_uid = ? "
+                "ORDER BY id DESC LIMIT 1",
                 (session_id, message.get("role"), uid)).fetchone()
             if row is not None:
                 by_uid_row[uid] = row

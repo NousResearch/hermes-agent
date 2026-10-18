@@ -44,7 +44,7 @@ SIGUSR1 不携带请求上下文，纯信号无法归因。协议：
 1. CLI 先做目标解析 + supervisor 能力预检 + 冷却预算检查
 2. CLI 原子写 `<hermes_home>/restart_requests/pending-<request_id>.json`
    （schema_version / request_id / service_identity / target_generation
-   （pid+start_time）/ requested_at / actor_ref（仅审计用）），
+   （pid+start_time）/ requested_at / actor_ref（自报线索，不作授权）），
    0700 目录 + 0600 文件 + tmp+rename+目录 fsync，拒符号链接/校验 owner
 3. SIGUSR1 仅作唤醒（保留既有语义兼容，见不变量 I3）
 4. gateway 侧：读请求文件 → 校验 generation/service identity/schema/授权 →
@@ -81,9 +81,8 @@ recover_pending_to_db() 恢复到会话历史。该机制保障已 flush 消息�
 ## 威胁模型（覆盖对象）
 
 普通 shell 用户、同一 hermes home 下其他 profile、cron 子进程、恶意本地进程、
-PID 复用、supervisor 配置变更。actor_ref 仅用于审计，授权不信任 CLI 自报；
-cron 判别依赖 gateway 侧 terminal tool 的可信执行上下文（session provenance），
-不依赖可伪造的环境变量/命令行标记。
+PID 复用、supervisor 配置变更。actor_ref 不作授权输入，授权不信任 CLI 自报；
+cron 覆盖是 v1 已知缺口（解耦 follow-up change 处理），冷却窗口为上界。
 
 ## Non-goals（明确不做）
 

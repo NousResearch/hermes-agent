@@ -27,7 +27,7 @@ task: gateway-deferred-restart
 - [ ] restart_requests/ 目录 0700 + 文件 0600 + tmp+rename+目录 fsync；
       拒符号链接、校验 owner/普通文件类型/路径边界
 - [ ] 请求文件 schema：schema_version / request_id / service_identity /
-      target_generation / requested_at / actor_ref（仅审计，不作授权）
+      target_generation / requested_at / actor_ref（自报线索，不作授权）
 - [ ] gateway 侧请求消费：校验代际/service identity/schema/授权 → 原子认领 →
       request_restart() 成功排程后才写 ACCEPTED（线性化点语义）
 - [ ] ACCEPTED 持久化先于最终退出；accepted_request_id 按 request_id 可查、
@@ -35,7 +35,7 @@ task: gateway-deferred-restart
 - [ ] 并发：每代际至多一个有效请求；并发请求显式结局（accepted/duplicate/
       cooldown/expired），不静默丢弃
 - [ ] 崩溃语义：写后未发信号 → 过期清理不触发重启；claim 前 gateway 崩溃 →
-      文件留给过期清理；过期清理不删 accepted/unknown 审计证据
+      文件留给过期清理；过期清理不删 accepted/unknown 结果记录
 - [ ] CLI 确认谓词：自身 request_id + 目标代际匹配 → exit 0；窗口 ~5s；
       陈旧/损坏 JSON 不当正常状态 → exit 6（禁止立即重试）
 
@@ -51,13 +51,11 @@ task: gateway-deferred-restart
 - [ ] signal handler 不做阻塞文件 I/O；读取/锁/状态提交在事件循环异步任务里
 
 ## T7 守卫扩展（不放松 G1/G2）
-- [ ] G3 创建/编辑/导入/重新启用：复用归一化 + token 分析 + 脚本递归扫描，
-      逐入口列出实际校验点与测试
-- [ ] 执行前复核 fail-closed（存量任务同样拒执行）
-- [ ] 运行时：gateway 侧 terminal tool 按 session provenance 拒 cron 上下文；
-      不经该守卫的执行路径显式记入覆盖缺口文档
+- [ ] （移出本 PR）G3 cron 三维禁用与 audit 日志：留 spike 分支，
+      作为解耦 follow-up change 独立送审
+- [ ] 覆盖缺口文档：cron payload 可驱动 deferred 通道为 v1 已知缺口，
+      冷却窗口为上界（每 service 每窗口至多一次）
 - [ ] 回归测试：G1/G2 现有 15 探针行为逐字节不变（拼接/折行/组合 fail-closed）
-- [ ] audit 日志（request_id/actor/时间/代际/结果）原子追加
 
 ## T8 重启链路测试
 - [ ] request_restart 幂等 + 异步排程不阻塞事件循环（回归，非新假设）

@@ -154,7 +154,7 @@ generation; concurrent pending requests SHALL receive explicit outcomes
 silently dropped. Requests whose target_generation does not match the consuming
 gateway SHALL NOT be consumed; a new generation SHALL NOT reinterpret a previous
 generation's pending request as a fresh restart instruction. Pending files SHALL
-have an expiry/cleanup rule, and cleanup SHALL NOT delete audit evidence for
+have an expiry/cleanup rule, and cleanup SHALL NOT delete result records for
 requests in accepted or outcome-unknown state. A crashed CLI after signaling
 leaves the request file which the gateway may still consume; a gateway crash
 before claiming leaves the file for expiry cleanup.
@@ -169,50 +169,20 @@ before claiming leaves the file for expiry cleanup.
 
 ### Requirement: Guard extensions without relaxing existing guards
 The existing terminal-tool lifecycle guard (G1) and CLI self-refusal (G2) SHALL
-remain unchanged in their interception semantics. The cron prohibition (G3) SHALL
-cover the deferred restart command at three layers: (1) cron definition
-create/edit/import/re-enable paths reject payloads referencing the deferred
-restart entrypoint, reusing the existing command normalization, token analysis,
-and referenced-script scanning (no bare regex); (2) pre-execution validation
-re-checks task payloads with the new rules, fail-closed, including pre-existing
-jobs; (3) at runtime, invocation from a cron execution context SHALL be refused
-using trusted in-process session provenance on the gateway side. The runtime
-denial SHALL cover every execution path that funnels through the terminal-tool
-execution guard; any path that does not SHALL be documented as an explicit
-coverage gap. Normal chat turns remain allowed subject to authorization,
-capability, and cooldown rules.
+remain unchanged in their interception semantics; this change adds no new guard
+surface and relaxes none. Normal chat turns remain allowed subject to
+authorization, capability, and cooldown rules. A cron payload MAY drive the
+deferred channel in v1: that is a KNOWN, documented coverage gap (the cross-
+process cooldown bounds it to at most one restart per cooldown window per
+service), left to a decoupled follow-up change.
 
-#### Scenario: cron job definition rejected
-- WHEN creating or editing a cron job whose payload references `hermes gateway defer-restart`
-- THEN creation/edit is refused with a clear error
-
-#### Scenario: pre-execution fail-closed
-- WHEN a pre-existing cron job payload containing the deferred restart command is dispatched
-- THEN execution is refused before any command runs
-
-#### Scenario: runtime context denial
-- WHEN a cron-spawned session attempts `hermes gateway defer-restart` via the terminal tool
-- THEN the gateway-side guard refuses using trusted session provenance
+#### Scenario: known coverage gap documented
+- WHEN a reader consults the deferred restart documentation
+- THEN the cron coverage gap and its cooldown bound are stated as a v1 limitation
 
 #### Scenario: existing guard behavior unchanged
 - WHEN any previously blocked command shape is submitted (restart/stop/uninstall forms, launchctl forms, kill forms, spliced/continuation/compound variants)
 - THEN the existing scanner behavior is unchanged (still blocked)
-
-### Requirement: Audit logging and request retention
-Every deferred restart request that passes resolution SHALL append a record to a
-protected audit file containing: request id, actor reference, timestamp, target
-generation identity, service identity, and outcome (accepted/duplicate/cooldown/
-unknown/refused/expired). Audit writes SHALL be atomic appends under the protected
-hermes home state directory. Accepted-request records SHALL be queryable by
-request_id and retained beyond generation lifetime per the retention rule.
-
-#### Scenario: accepted request audited and retained
-- WHEN a request is accepted
-- THEN an audit record with outcome=accepted and the request id is appended and remains queryable after the restart completes
-
-#### Scenario: refused request audited
-- WHEN a request is refused (cooldown or capability or validation)
-- THEN an audit record with the corresponding outcome is appended
 
 ### Requirement: Message recovery guarantee documentation
 Documentation SHALL state: gateway shutdown persists successfully flushed pending

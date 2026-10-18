@@ -15,6 +15,29 @@ import time
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
+def _completion_notes(home):
+    """Background-process completions the owner wrote into its sessions as notes."""
+    import sqlite3
+    if not (home / "state.db").exists():
+        return []
+    with sqlite3.connect(f"file:{home / 'state.db'}?mode=ro", uri=True) as db:
+        return db.execute("SELECT content, display_kind FROM messages WHERE role = 'user' AND content LIKE ?",
+                          ("[IMPORTANT: Background process %",)).fetchall()
+
+
+def _process_receipts(home):
+    return list((home / "logs" / "process-results").glob("*.json"))
+
+
+def _cli_closed(home):
+    """The gateway processed the one-shot CLI's exit: its ``session.detach`` stamped the idle row."""
+    import sqlite3
+    if not (home / "state.db").exists():
+        return False
+    with sqlite3.connect(f"file:{home / 'state.db'}?mode=ro", uri=True) as db:
+        return db.execute("SELECT 1 FROM sessions WHERE end_reason = 'cli_close'").fetchone() is not None
+
+
 def _new_background_notifications(messages, seen_counts):
     """Count new history occurrences, not positions shifted by request assembly."""
     counts = Counter(
@@ -40,7 +63,25 @@ def test_background_notification_history_replay_is_not_new_delivery():
     assert _new_background_notifications([*shifted, first[1]], seen_counts) == [notice]
 
 
-def test_headless_terminal_result_survives_cli_exit(tmp_path):
+def test_retained_result_lookup_does_not_initialize_session_store(tmp_path, monkeypatch):
+    import hermes_state
+    from gateway.session_context import scoped_current_session_id
+    from tools import process_registry_results as receipts
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(receipts, "get_hermes_home", lambda: tmp_path)
+    directory = tmp_path / "logs" / "process-results"
+    directory.mkdir(parents=True)
+    (directory / "proc_owned.json").write_text(json.dumps({
+        "id": "proc_owned", "parent_session_id": "departed-owner",
+    }), encoding="utf-8")
+    with scoped_current_session_id("unrelated-reader"):
+        assert receipts.load_completed_results() == {}
+    assert not db_path.exists(), "Reading retained results initialized canonical storage"
+
+
+def test_headless_terminal_result_survives_cli_exit(tmp_path, request):
     """Real CLI, tool dispatch, shell child and fresh reader; only the LLM is local."""
     home = tmp_path / "profile"
     home.mkdir()
@@ -54,7 +95,7 @@ def test_headless_terminal_result_survives_cli_exit(tmp_path):
     child = tmp_path / "review.py"
     child.write_text(textwrap.dedent('''
         import pathlib, sys, time
-        deadline = time.monotonic() + 15
+        deadline = time.monotonic() + 90
         while not pathlib.Path(sys.argv[1]).exists():
             if time.monotonic() > deadline:
                 sys.exit(91)
@@ -69,7 +110,6 @@ def test_headless_terminal_result_survives_cli_exit(tmp_path):
     seen_tool = set()
     seen_follow_up_counts = Counter()
     follow_ups = []
-    completed_during_provider_reply = threading.Event()
 
     class Provider(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
@@ -101,15 +141,6 @@ def test_headless_terminal_result_survives_cli_exit(tmp_path):
                     if key not in seen_tool:
                         seen_tool.add(key)
                         observed.append(json.loads(m["content"]))
-                release.touch()
-                # Hold the tool-result response until the real child has exited: on a
-                # loaded runner completion can race this provider request.
-                deadline = time.monotonic() + 25
-                receipt = home / "logs" / "process-results" / f"{observed[0]['session_id']}.json"
-                while not receipt.is_file() and time.monotonic() < deadline:
-                    time.sleep(0.01)
-                if receipt.is_file():
-                    completed_during_provider_reply.set()
             response = {
                 "id": "chatcmpl-local", "object": "chat.completion", "created": 1,
                 "model": "test-model", "choices": [{
@@ -144,6 +175,12 @@ def test_headless_terminal_result_survives_cli_exit(tmp_path):
            "USERPROFILE": str(tmp_path), "TERMINAL_CWD": str(tmp_path),
            "OPENAI_BASE_URL": url, "OPENAI_API_KEY": "local-test-only",
            "PYTHONPATH": str(REPO_ROOT)}
+    # The canonical CLI detaches from a long-lived daemon. Own that daemon in
+    # the fixture so it cannot outlive the temporary profile/SQLite files.
+    from tests.gateway.fixtures.local_recovery_probe import daemon
+    owner = daemon(REPO_ROOT, home, env, barrier=False)
+    owner.__enter__()
+    request.addfinalizer(lambda: owner.__exit__(None, None, None))
     try:
         producer = subprocess.run([
             sys.executable, "-c",
@@ -152,23 +189,40 @@ def test_headless_terminal_result_survives_cli_exit(tmp_path):
             f"base_url={url!r}, toolsets='terminal', max_turns=3, ignore_rules=True)",
         ], cwd=tmp_path, env=env, stdin=subprocess.DEVNULL,
             capture_output=True, text=True, encoding="utf-8", timeout=60, check=False)
+        # The canonical CLI is a finite client: it exits on its turn's terminal event while
+        # the daemon that owns the child keeps its watcher. The child finishes only once the
+        # gateway has processed the CLI's exit (its detach stamps the idle row ``cli_close``),
+        # so the completion arrives with no viewer: it is written into the session as a note,
+        # never an unattended follow-up turn (#134889 LC-7). The model stays reachable so a
+        # wrong turn would be seen.
+        exited_before_completion = not _process_receipts(home)
+        deadline = time.monotonic() + 30
+        while not _cli_closed(home) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        detached = _cli_closed(home)
+        release.touch()
+        deadline = time.monotonic() + 60
+        while not _completion_notes(home) and time.monotonic() < deadline:
+            time.sleep(0.1)
     finally:
         release.touch()
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
     assert producer.returncode == 0, producer.stdout + producer.stderr
-    assert completed_during_provider_reply.is_set(), producer.stdout + producer.stderr
+    assert exited_before_completion and detached, producer.stdout + producer.stderr
     assert "Coordinator finished." in producer.stdout
     assert len(observed) == 1, (observed, producer.stdout, producer.stderr)
     process_id = observed[0]["session_id"]
     assert observed[0].get("notify_on_complete") is True, observed
-    # A terminal completion is an [IMPORTANT: Background process ...] event,
-    # not an [ASYNC DELEGATION ...] event. The same history entry can appear in
-    # several provider requests without being delivered a second time.
-    assert len(follow_ups) == 1, follow_ups
-    assert follow_ups[0].startswith(f"[IMPORTANT: Background process {process_id} exited (exit code 7).")
-    assert "SYNTHETIC_REVIEW_COMPLETE" in follow_ups[0]
+    # The owned notify_on_complete completion is ONE note on the owning daemon session, carrying
+    # the child's real output and exit code for the next turn. It is an [IMPORTANT: Background
+    # process ...] event, not an [ASYNC DELEGATION ...] event, and no turn ran for it.
+    assert follow_ups == [], follow_ups
+    notes = _completion_notes(home)
+    assert len(notes) == 1, notes
+    assert notes[0][0].startswith(f"[IMPORTANT: Background process {process_id} exited (exit code 7).")
+    assert "SYNTHETIC_REVIEW_COMPLETE" in notes[0][0] and notes[0][1] == "process_complete"
 
     consumer = textwrap.dedent('''
         import json, sys

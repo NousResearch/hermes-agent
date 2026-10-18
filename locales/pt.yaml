@@ -73,6 +73,8 @@ gateway:
     next_turn_only: "    (apenas no próximo turno — volta ao normal após uma resposta)"
     switch_cancelled: "🟡 Troca de modelo cancelada. Modelo atual inalterado ({model})."
     guard_confirm: "⚠️ **{title}**\n\n{message}\n\n_Alternativa em texto: responda `{prefix}approve` para trocar ou `{prefix}cancel` para manter o modelo atual._"
+    err_once_local: "`--once` is not available in this session; use `/model <name>` and switch back after the turn."
+    local_next_turn: "Applies from your next message."
   agents:
     header: "🤖 **Agentes e tarefas ativos**"
     active_agents: "**Agentes ativos:** {count}"
@@ -184,8 +186,8 @@ gateway:
     choice_normal: "normal — processamento padrão"
     choice_auto: "auto — rápido nos primeiros segundos de cada turno"
     choice_cold: "cold — rápido apenas no primeiro turno de uma sessão"
-    choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, preço 6x)"
-    ultrafast_not_supported: "⚡ O Ultrafast só está disponível para o GPT-6 Astra (modelo atual: `{model}`)."
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast, preço 6x"
+    ultrafast_not_supported: "⚡ O Ultrafast não está disponível para `{model}` nesta conta ou rota."
   footer:
     status: "📎 Rodapé de execução: **{state}**\nCampos: `{fields}`\nPlataforma: `{platform}`"
     usage: "Uso: `/footer [on|off|status]`"
@@ -435,7 +437,6 @@ gateway:
     last_activity: "**Última atividade:** {timestamp}"
     model: "**Modelo:** `{model}`"
     model_provider: "**Modelo:** `{model}` ({provider})"
-    free_tier: "Nous · plano gratuito · nous/welcome · /login para entrar"
     context: "**Contexto:** {used} / {total} ({pct}%)"
     context_used: "**Contexto:** ~{used} tokens"
     tokens: "**Total acumulado de tokens faturados:** {tokens} _(não é o tamanho atual do contexto; usa `/context`)_"
@@ -779,8 +780,6 @@ gateway:
   plan:
     ack_task: "Planejando: {task}"
     ack_conversation: "Planejando a partir do contexto desta conversa…"
-  initiate_setup:
-    ack: "Iniciando a configuração…"
   init:
     start_failed: "Não foi possível iniciar /init — tente novamente."
     ack_update: "Atualizando AGENTS.md a partir de uma varredura do projeto…"
@@ -843,7 +842,6 @@ gateway:
   startup:
     handoff_thread_title: "Hermes — {title}"
     restarted: "♻ Gateway reiniciado com sucesso. Sua sessão continua."
-    free_tier_line: "Inferência: nível gratuito da Nous (nous/welcome). Entre para obter mais: /login"
     online: "♻️ Gateway online — o Hermes voltou e está pronto."
     db_corrupt: "⚠️ Corrupção detectada no banco de dados de sessões. As mensagens podem não ser persistidas. Opções de recuperação:\n1. Execute `hermes {profile_arg}doctor --fix`\n2. Pare o gateway e depois recupere com:\n   hermes {profile_arg}sessions recover --source {db_path} --inspect-only\n   (se indicar que é recuperável) hermes {profile_arg}sessions recover --source {db_path} --output recovered-state.db\n   — a recuperação cria um instantâneo do arquivo danificado primeiro; NÃO execute `sqlite3 ... \".recover\"` no state.db em uso, um CLI sqlite3 vulnerável pode corrompê-lo ainda mais\n3. Restaure a partir de um backup em {backups_dir}/\nExecute `hermes {profile_arg}doctor` para diagnósticos sanitizados."
     db_fts_corrupt: "⚠️ O banco de dados de sessões relatou um erro de corrupção restrito ao índice de busca (FTS5); as tabelas de mensagens não estão danificadas. As mensagens podem não ser persistidas até o reparo: execute `hermes {profile_arg}doctor --fix` e depois reinicie o gateway. Não execute ferramentas de recuperação nem restaure um backup a menos que `hermes {profile_arg}doctor` confirme o dano."
@@ -1558,8 +1556,6 @@ slash:
     description: "Reexecutar um prompt em intervalo recorrente nesta sessão"
   plan:
     description: "Escrever um plano de implementação em markdown em .hermes/plans/ sem executar nada"
-  initiate-setup:
-    description: "Executar a configuração inicial: conhecer você e ajustar o Hermes para você"
   moa:
     description: "Executar um prompt com a predefinição padrão de Mixture of Agents e depois restaurar seu modelo"
   subgoal:
@@ -1972,6 +1968,7 @@ cli:
     desc_switch_anyway: "Usar este modelo na sessão atual do Hermes."
     choice_cancel: "Cancelar"
     desc_keep_current_model: "Manter o modelo atual."
+    confirm_choice_prompt: "Escolha [1/2]: "
     switch_cancelled: "Troca de modelo cancelada."
     selection_failed: "✗ Falha na seleção de modelo: {error}"
     switch_failed: "⚠ Falha ao trocar para o modelo {model} ({error}); permanecendo em {old_model}."
@@ -2661,7 +2658,7 @@ cli:
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
       feature_ultrafast: "OpenAI Ultrafast"
-      ultrafast_not_supported: "(._.) O Ultrafast só está disponível para o GPT-6 Astra (modelo atual: {model})."
+      ultrafast_not_supported: "(._.) O Ultrafast não está disponível para {model} nesta conta ou rota."
       usage: "Uso: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature} definido como {value} {scope}"
@@ -2919,8 +2916,6 @@ cli:
     plan:
       planning: "📋 Planejando: {task}"
       from_conversation: "📋 Planejando a partir do contexto desta conversa..."
-    initiate_setup:
-      starting: "🧭 Iniciando a configuração..."
     init:
       updating: "⚡ Atualizando AGENTS.md a partir de uma varredura do projeto..."
       generating: "⚡ Gerando AGENTS.md a partir de uma varredura do projeto..."
@@ -3117,6 +3112,10 @@ cli:
     loaded: "(carregado)"
     not_found: "(não encontrado)"
     microsoft_entra_id: "Microsoft Entra ID"
+    google_vertex_oauth: "Google OAuth (Vertex AI)"
+    key_cmd_token: "key_cmd token (command)"
+    minimax_oauth: "MiniMax OAuth"
+    token_provider: "Token provider"
     api_key_not_set: "Não definida!"
     value_not_set: "não definido"
     section_model: "Modelo"

@@ -1,6 +1,6 @@
 """Model pickers under a Nous free-tier identity.
 
-A guest identity carrying inference shows one row, "Nous · free tier", with the single model
+A guest carrying the welcome trial shows one row, "Nous · free tier", with the single model
 ``nous/welcome``; the same guest with ``nous.guest: false`` shows no Nous row at all. The rule lives
 in one helper (``_free_tier_nous_row``) and this file exercises it through the real row builders
 against a temp ``HERMES_HOME`` with the network catalog fetch stubbed.
@@ -13,7 +13,9 @@ from pathlib import Path
 
 import pytest
 
+from hermes_cli.anon_auth import WELCOME_CLAIM_FLAG
 from hermes_cli.auth import _save_auth_store
+from tests.hermes_cli.anon_portal import as_local_desktop_backend
 
 GUEST_STATE = {
     "auth_method": "anonymous",
@@ -22,14 +24,16 @@ GUEST_STATE = {
     "access_token": "aaa.bbb.ccc",
     "expires_at": "2030-01-01T00:00:00+00:00",
     "inference_base_url": "https://welcome-api.nousresearch.com/v1",
+    WELCOME_CLAIM_FLAG: True,
 }
 
 
 @pytest.fixture
 def guest_home(monkeypatch, tmp_path):
-    """Seed a guest identity as the only Nous state and keep every row builder offline."""
+    """Seed a guest that claimed the welcome trial, read on the desktop's local backend, as the only
+    Nous state, and keep every row builder offline."""
     monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared-store"))
-    monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
+    as_local_desktop_backend(monkeypatch)
     for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "NOUS_API_KEY", "LM_API_KEY", "LM_BASE_URL"):
         monkeypatch.delenv(var, raising=False)
     _save_auth_store({"active_provider": "nous", "providers": {"nous": dict(GUEST_STATE)}})
@@ -84,7 +88,7 @@ def test_guest_identity_shows_free_tier_row_with_only_welcome_model(guest_home, 
 def test_guest_identity_with_guest_off_hides_the_nous_row(guest_home, monkeypatch):
     _write_config(monkeypatch, guest_home, "nous:\n  guest: false\n")
     from hermes_cli import anon_auth
-    assert anon_auth.has_guest() and not anon_auth.guest_enabled()
+    assert anon_auth.has_guest() and not anon_auth.free_inference_active()
 
     from hermes_cli.model_switch_providers import list_picker_providers
     assert _nous_rows(list_picker_providers("nous", "", None, None, 50, "nous/welcome")) == []

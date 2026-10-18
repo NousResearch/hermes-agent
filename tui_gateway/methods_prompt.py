@@ -43,7 +43,7 @@ def _mem_db_pair_agrees(mem, db_msg) -> bool:
         return False
     if mem.get("role") == "user":
         from agent.context_compressor import user_originated_turn_view
-        from agent.memory_manager import sanitize_context
+        from agent.memory_context import sanitize_context
         mem_view = user_originated_turn_view(mem)
         db_view = user_originated_turn_view(db_msg)
         if (mem_view is None) != (db_view is None):
@@ -174,7 +174,7 @@ def _merge_carrier_holds_target_text(carrier: dict, db_msg: dict) -> bool:
     content or appears in it as a whole ``"\\n\\n"``-delimited part. Both views are
     user-originated by construction (the caller only visits user turns)."""
     from agent.context_compressor import user_originated_turn_view
-    from agent.memory_manager import sanitize_context
+    from agent.memory_context import sanitize_context
     mem_view = user_originated_turn_view(carrier)
     db_view = user_originated_turn_view(db_msg)
     if mem_view is None or db_view is None:
@@ -728,8 +728,9 @@ def _lock_in_submit_turn(
     return None, fields
 
 
-# Per-turn client surfaces that carry a model-bound note (session_notifications._surface_note).
-_CLIENT_SURFACES = frozenset({"hud", "voice-live"})
+# Per-turn client surfaces that carry a model-bound note (session_notifications._hud_surface_note);
+# the canonical admission path shares the same set (gateway.session_surface).
+from gateway.session_surface import SURFACES as _CLIENT_SURFACES
 
 
 @method("prompt.submit")
@@ -1147,24 +1148,11 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4012, "url required")
     task_id = f"preview_{uuid.uuid4().hex[:6]}"
     parent = params.get("session_id", "")
-    parent_history = _preview_restart_history(session)
-    prompt = "\n".join(
-        line
-        for line in [
-            "The desktop preview pane cannot load a local server URL.",
-            f"Preview URL: {url}",
-            f"Current working directory: {cwd or '(unknown)'}",
-            f"Preview console:\n{context}" if context else "",
-            _PREVIEW_RESTART_HISTORY_NOTE if parent_history else None,
-            *_PREVIEW_RESTART_RULES]
-        if line)
-    # A malformed client path (embedded NUL, etc.) is "no validated cwd".
-    try:
-        preview_cwd = os.path.abspath(os.path.expanduser(cwd)) if cwd else ""
-        if preview_cwd and not os.path.isdir(preview_cwd):
-            preview_cwd = ""
-    except Exception:
-        preview_cwd = ""
+    with session.get("history_lock") or contextlib.nullcontext():
+        snapshot = list(session.get("history") or [])
+    parent_history = _preview_restart_history(snapshot)
+    prompt = _preview_restart_prompt(url, cwd, context, bool(parent_history))
+    preview_cwd = _validated_preview_cwd(cwd)
 
     def body():
         from run_agent import AIAgent
@@ -1332,6 +1320,28 @@ def _pdf_page_range(rid, params):
 
 def _final_response_text(result) -> str:
     return (result.get("final_response", str(result)) if isinstance(result, dict) else str(result))
+
+
+def _preview_restart_prompt(url: str, cwd: str, context: str, has_history: bool) -> str:
+    """The hidden restart agent's task, shared by this transport and the gateway's
+    (``gateway/session_tui_side.py``) so the two cannot drift."""
+    return "\n".join(line for line in [
+        "The desktop preview pane cannot load a local server URL.", f"Preview URL: {url.strip()}",
+        f"Current working directory: {cwd or '(unknown)'}",
+        f"Preview console:\n{context}" if context else "",
+        _PREVIEW_RESTART_HISTORY_NOTE if has_history else "", *_PREVIEW_RESTART_RULES] if line)
+
+
+def _validated_preview_cwd(cwd: str) -> str:
+    """The client's cwd as an existing absolute directory, else ``""``. A malformed client path
+    (embedded NUL, a missing dir) is "no validated cwd", never an error."""
+    import os  # this module's globals are bound by tui_gateway.server; the gateway calls it unbound
+
+    try:
+        preview_cwd = os.path.abspath(os.path.expanduser(cwd)) if cwd else ""
+        return preview_cwd if preview_cwd and os.path.isdir(preview_cwd) else ""
+    except (OSError, ValueError):
+        return ""
 
 
 def _spawn_side_agent(

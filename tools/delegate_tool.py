@@ -196,6 +196,47 @@ def _apply_child_compression_cap(child, delegation_cfg: dict) -> None:
         cc._apply_threshold_tokens_cap()
 
 
+# Raw reasoning controls a request override can carry. When a launch asks for an
+# explicit reasoning policy, these are the keys that would otherwise be applied
+# last by the transport and silently reverse it (F1).
+_LAUNCH_REASONING_TOP_LEVEL_KEYS = ("reasoning", "reasoning_effort", "thinking")
+_LAUNCH_REASONING_EXTRA_BODY_KEYS = ("reasoning", "reasoning_effort", "thinking", "enable_thinking")
+_LAUNCH_REASONING_CHAT_TEMPLATE_KEYS = ("enable_thinking", "thinking")
+
+
+def _without_conflicting_reasoning_overrides(overrides: dict[str, Any]) -> dict[str, Any]:
+    """Drop raw reasoning controls from request_overrides for an explicit launch effort.
+
+    ``request_overrides`` are applied AFTER the reasoning derived from the child's
+    ``reasoning_config`` (``agent/transports/chat_completions.py``), so an inherited
+    parent override or a custom-provider bundle can turn an explicit launch disable
+    into enabled/high on the wire. A launch-local policy is authoritative: strip the
+    known reasoning carriers and keep every unrelated override (speed, service_tier,
+    provider preferences, custom headers, ...).
+    """
+    cleaned = dict(overrides)
+    for key in _LAUNCH_REASONING_TOP_LEVEL_KEYS:
+        cleaned.pop(key, None)
+    extra_body = cleaned.get("extra_body")
+    if isinstance(extra_body, dict):
+        extra_body = {k: v for k, v in extra_body.items() if k not in _LAUNCH_REASONING_EXTRA_BODY_KEYS}
+        chat_template_kwargs = extra_body.get("chat_template_kwargs")
+        if isinstance(chat_template_kwargs, dict):
+            chat_template_kwargs = {
+                k: v for k, v in chat_template_kwargs.items()
+                if k not in _LAUNCH_REASONING_CHAT_TEMPLATE_KEYS
+            }
+            if chat_template_kwargs:
+                extra_body["chat_template_kwargs"] = chat_template_kwargs
+            else:
+                extra_body.pop("chat_template_kwargs", None)
+        if extra_body:
+            cleaned["extra_body"] = extra_body
+        else:
+            cleaned.pop("extra_body", None)
+    return cleaned
+
+
 def _build_child_agent(
     task_index: int,
     goal: str,
@@ -275,6 +316,12 @@ def _build_child_agent(
         request_overrides = dict(override_request_overrides)
     else:
         request_overrides = {} if override_provider else dict(getattr(parent_agent, "request_overrides", {}) or {})
+    if reasoning_config_override is not None:
+        # A launch-local effort is authoritative. The transport applies raw
+        # request_overrides after the reasoning derived from reasoning_config,
+        # so leaving a conflicting reasoning control here would let the parent
+        # or provider bundle reverse the caller's choice (F1).
+        request_overrides = _without_conflicting_reasoning_overrides(request_overrides)
     parent_sid = getattr(parent_agent, "session_id", None)
     child_session_db = _open_child_session_db(parent_agent)
     with delegated_child_context():

@@ -672,7 +672,7 @@ class PhotonAdapter(BasePlatformAdapter):
                 return False
         else:
             logger.warning("[photon] sidecar autostart disabled — inbound + outbound will fail")
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         self._inbound_running = True
         self._inbound_task = loop.create_task(self._inbound_loop())
         self._sidecar_health_task = loop.create_task(self._monitor_sidecar_health())
@@ -710,8 +710,12 @@ class PhotonAdapter(BasePlatformAdapter):
         tasks must NOT await ``_notify_fatal_error()`` inline: the gateway answers with
         ``disconnect()``, which cancels those very tasks (via its own wrapper task, so the
         ``current_task()`` guard can't help) — the CancelledError would kill the notifier
-        mid-handoff: no log, no reconnect. A fresh task can be cancelled freely."""
-        asyncio.create_task(self._notify_fatal_error_logged())
+        mid-handoff: no log, no reconnect. A fresh task can be cancelled freely. Held in
+        ``_detached_fatal_tasks`` (asyncio keeps only weak refs to tasks), not
+        ``_background_tasks``, which ``cancel_background_tasks()`` cancels on teardown."""
+        task = asyncio.create_task(self._notify_fatal_error_logged())
+        self._detached_fatal_tasks.add(task)
+        task.add_done_callback(self._detached_fatal_tasks.discard)
 
     async def _notify_fatal_error_logged(self) -> None:
         try:
@@ -1069,7 +1073,7 @@ class PhotonAdapter(BasePlatformAdapter):
                 retryable=False,
             ) from exc
         # Pump sidecar stderr/stdout into our logger so users see crashes.
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         self._sidecar_supervisor_task = loop.create_task(self._supervise_sidecar(self._sidecar_proc))
         deadline = time.time() + 15.0  # wait for /healthz — up to 15s on cold start
         last_err: Optional[Exception] = None
@@ -1095,7 +1099,7 @@ class PhotonAdapter(BasePlatformAdapter):
         if proc.stdout is None:  # launched without stdout=PIPE
             return
         stdout = proc.stdout
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             while True:
                 line = await loop.run_in_executor(None, stdout.readline)

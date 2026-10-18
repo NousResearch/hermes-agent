@@ -163,17 +163,23 @@ function sleep(ms) {
 }
 
 function sendWithTimeout(chatId, payload, options = {}, timeoutMs = SEND_TIMEOUT_MS) {
-  let timer;
-  const timeoutPromise = new Promise((_, reject) => {
-    timer = setTimeout(
-      () => reject(new Error(`sendMessage timed out after ${timeoutMs / 1000}s`)),
-      timeoutMs,
-    );
+  // The timeout timer is created INSIDE the throttled task, so the clock
+  // starts with the actual sock.sendMessage() call: the send-queue wait and
+  // the anti-ban delay are intentional backpressure, not lost socket time.
+  // Creating the timer before throttledSend let a WHATSAPP_SEND_DELAY_MS
+  // larger than SEND_TIMEOUT_MS reject every send before the socket call
+  // even began, while the underlying send kept transmitting (#139261).
+  return throttledSend(() => {
+    let timer;
+    const timeoutPromise = new Promise((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`sendMessage timed out after ${timeoutMs / 1000}s`)),
+        timeoutMs,
+      );
+    });
+    return Promise.race([sock.sendMessage(chatId, payload, options), timeoutPromise])
+      .finally(() => clearTimeout(timer));
   });
-  return throttledSend(() =>
-    Promise.race([sock.sendMessage(chatId, payload, options), timeoutPromise])
-      .finally(() => clearTimeout(timer))
-  );
 }
 
 function formatOutgoingMessage(message) {

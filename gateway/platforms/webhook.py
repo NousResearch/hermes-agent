@@ -45,6 +45,7 @@ from gateway.platforms.webhook_filters import DEFAULT_SCRIPT_TIMEOUT_SECONDS, We
 from gateway.platforms.webhook_mcp_events import (
     handle_mcp_event_control, mcp_event_delivery_id, render_mcp_event_prompt)
 from gateway.response_filters import is_autonomous_silence_response
+from gateway.platforms.webhook_response_policy import urgent_response_allowed, validate_response_policy
 from gateway.webhook_targets import is_dispatchable_target, is_known_platform as _is_known_platform
 
 logger = logging.getLogger(__name__)
@@ -252,6 +253,7 @@ class WebhookAdapter(BasePlatformAdapter):
 
     def _validate_route(self, name: str, route: dict) -> None:
         """Startup validation: secret required; INSECURE_NO_AUTH only on loopback (crash early on a public footgun)."""
+        validate_response_policy(route.get("response_policy"))
         secret = route.get("secret", self._global_secret)
         if not _is_usable_secret(secret):
             raise ValueError(f"[webhook] Route '{name}' HMAC secret is missing, blank, or not a string. Set 'secret' "
@@ -322,6 +324,20 @@ class WebhookAdapter(BasePlatformAdapter):
         # interactive exact-match rule would deliver.
         if is_autonomous_silence_response(content):
             logger.info("[webhook] Response for %s is a silence marker — not delivering", chat_id)
+            return SendResult(success=True)
+        # Replies from background gates reuse an older delivery_info entry. Read current
+        # route policy on EVERY send so a hot policy change also covers those continuations.
+        self._reload_dynamic_routes()
+        parts = str(chat_id).split(":", 2)
+        route = self._routes.get(parts[1], {}) if len(parts) == 3 and parts[0] == "webhook" else {}
+        policy = route.get("response_policy", self._delivery_info.get(chat_id, {}).get("response_policy"))
+        try:
+            validate_response_policy(policy)
+        except ValueError as exc:
+            logger.error("[webhook] Response policy rejected for %s: %s", chat_id, exc)
+            return SendResult(success=False, error=str(exc))
+        if policy == "urgent_only" and not urgent_response_allowed(content, metadata):
+            logger.info("[webhook] Response for %s retained locally: urgent_only policy suppressed delivery", chat_id)
             return SendResult(success=True)
         from gateway.platforms.webhook_delivery import retained_destination
         try:
@@ -814,6 +830,7 @@ class WebhookAdapter(BasePlatformAdapter):
         # THIS profile's adapter, home channel and secrets — not the first profile that has the platform.
         self._delivery_info[session_chat_id] = {
             "deliver": route_config.get("deliver", "log"), "profile": profile,
+            "response_policy": route_config.get("response_policy"),
             "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload),
             "route": route_name,
             "mirror": route_config.get("mirror_to_session") is True}

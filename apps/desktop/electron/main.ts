@@ -3,6 +3,7 @@ import { type ChildProcess, execFileSync, spawn } from 'node:child_process'
 import type { GatewayEndpoint } from './local-gateway'
 import { configurePythonGatewayTicketClient, createLocalGatewayDials, createStaleGatewayRestarter, ensureLocalGateway, gatewayOwnerProfile, localGatewayDial, nativeGatewayHttpHeaders, redialLocalGateway, runGatewayEnsure } from './local-gateway'
 import { closeGatewayTicketBridges, createGatewayTicketResolver } from './local-gateway-python'
+import { extensionForMimeType, mimeTypeForPath } from './media-mime'
 import { createPluginWsUrlHandler } from './plugin-ws-url'
 const localGatewayDials = createLocalGatewayDials()
 configurePythonGatewayTicketClient(createGatewayTicketResolver(
@@ -1689,28 +1690,6 @@ function applyTitleBarOverlay(win) {
     // Overlay not supported on this platform/build — leave the frameless
     // titlebar as-is.
   }
-}
-
-const MEDIA_MIME_TYPES = {
-  '.avi': 'video/x-msvideo',
-  '.bmp': 'image/bmp',
-  '.flac': 'audio/flac',
-  '.gif': 'image/gif',
-  '.jpeg': 'image/jpeg',
-  '.jpg': 'image/jpeg',
-  '.m4a': 'audio/mp4',
-  '.mkv': 'video/x-matroska',
-  '.mov': 'video/quicktime',
-  '.mp3': 'audio/mpeg',
-  '.mp4': 'video/mp4',
-  '.ogg': 'audio/ogg',
-  '.opus': 'audio/ogg; codecs=opus',
-  '.pdf': 'application/pdf',
-  '.png': 'image/png',
-  '.svg': 'image/svg+xml',
-  '.wav': 'audio/wav',
-  '.webm': 'video/webm',
-  '.webp': 'image/webp'
 }
 
 const PREVIEW_HTML_EXTENSIONS = new Set(['.html', '.htm'])
@@ -5587,45 +5566,6 @@ function fetchPublicJson(url, options: any = {}) {
       }),
     { method: options.method || 'GET' }
   )
-}
-
-function mimeTypeForPath(filePath) {
-  const ext = path.extname(filePath || '').toLowerCase()
-
-  return MEDIA_MIME_TYPES[ext] || 'application/octet-stream'
-}
-
-function extensionForMimeType(mimeType) {
-  const type = String(mimeType || '')
-    .split(';')[0]
-    .trim()
-    .toLowerCase()
-
-  if (type === 'image/png') {
-    return '.png'
-  }
-
-  if (type === 'image/jpeg') {
-    return '.jpg'
-  }
-
-  if (type === 'image/gif') {
-    return '.gif'
-  }
-
-  if (type === 'image/webp') {
-    return '.webp'
-  }
-
-  if (type === 'image/bmp') {
-    return '.bmp'
-  }
-
-  if (type === 'image/svg+xml') {
-    return '.svg'
-  }
-
-  return ''
 }
 
 function filenameFromUrl(rawUrl, fallback = 'image') {

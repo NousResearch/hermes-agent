@@ -332,7 +332,7 @@ def _read_bot_sessions(db, subject, operator):
                     'last_active': target['last_activity_at'] or target['started_at'] or 0,
                     'message_count': target['message_count'] or 0}
 
-        fields = {'last_session': None, 'worker_session': None, 'canonical_session': None}
+        fields: dict = {'last_session': None, 'worker_session': None, 'canonical_session': None}
         # The named registry is not a recency window and canonical chats are hidden.
         canonical = conn.execute(f'SELECT * FROM sessions WHERE title=? AND {_LOCAL_CHAT}',
                                  ('Bot Chat', LEGACY_PREFIX)).fetchone()
@@ -349,6 +349,18 @@ def _read_bot_sessions(db, subject, operator):
             fields['last_session'] = dict(fields['canonical_session'])
         elif latest:
             fields['last_session'] = summary(latest)
+        # The profile's freshest worker (#90268, #140977): workers are deny-listed out of every
+        # conversation listing, so a roster row that only carried conversation fields read "idle"
+        # while a kanban/tool run was heartbeating (#72016). Newest DENIED source wins, never an
+        # archived or hidden row; no owner filter -- a worker's ``user_id`` is the dispatch identity
+        # (a bot, the kanban dispatcher), not this reader, and the legacy roster read it the same way.
+        worker = conn.execute(
+            f"SELECT id, source, title, COALESCE(last_activity_at, started_at) AS last_active FROM sessions "
+            f"WHERE COALESCE(source,'') IN ({hidden_sources}) AND archived=0 AND hidden=0 "
+            "ORDER BY last_active DESC LIMIT 1", INTERNAL_LISTING_SOURCES).fetchone()
+        if worker:
+            fields['worker_session'] = {'id': worker['id'], 'source': (worker['source'] or '').strip().lower(),
+                                        'title': worker['title'] or '', 'last_active': worker['last_active'] or 0}
     return fields
 
 

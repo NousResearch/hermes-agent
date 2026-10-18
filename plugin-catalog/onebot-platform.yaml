@@ -1,0 +1,43 @@
+name: onebot-platform
+repo: https://github.com/mario841859784/hermes-plugin-onebot
+sha: 623ce54b48b2ae2dfb3028cab1a6ed435ac6aa29
+version: "1.1.0"
+title: QQ (OneBot)
+maintainer: mario841859784
+tier: community
+category: platform
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/mario841859784/hermes-plugin-onebot/blob/623ce54b48b2ae2dfb3028cab1a6ed435ac6aa29/README.md
+platforms: []
+description: >-
+  QQ bot via the OneBot 11 protocol: connects Hermes to your own self-hosted
+  NapCat, Lagrange, LLOneBot or go-cqhttp deployment over WebSocket — the
+  plugin hosts a reverse-WS server inside the Hermes gateway, or dials an
+  existing forward-WS endpoint — and adds the qq toolset (qq_send_image,
+  qq_send_voice, qq_send_video, qq_send_file, qq_send_forward, qq_napcat_api,
+  qq_group_history) for DM and group chats with admin allowlists, group
+  mention gating, per-member soft limits, and cron/notification delivery to a
+  configured home channel. Inbound images are downloaded and (with Pillow)
+  downscaled before the vision tool sees them; long replies are split at
+  sentence boundaries or rendered locally into a text image with
+  fonttools/Pillow. Disclosure — talks only to the user's own OneBot
+  deployment; the WebSocket listener is a long-running background process
+  that lives inside the Hermes gateway process; inbound message images are
+  downloaded from that deployment into the plugin's data directory for the
+  vision tool; text-to-image rendering runs locally (fonttools, Pillow,
+  system CJK fonts) with no third-party calls; credentials (the OneBot
+  access token, allowed-user lists, home channel) reach the plugin only
+  through Hermes's ONEBOT_* env/config channel and go nowhere but your own
+  OneBot deployment; no telemetry or usage reporting.
+capabilities:
+  provides_tools:
+    - qq_send_image
+    - qq_send_voice
+    - qq_send_video
+    - qq_send_file
+    - qq_send_forward
+    - qq_napcat_api
+    - qq_group_history
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

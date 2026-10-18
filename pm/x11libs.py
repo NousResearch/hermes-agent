@@ -25,6 +25,7 @@ from pathlib import Path
 _DEBIAN = {
     "libX11.so.6": "libx11-6",
     "libXau.so.6": "libxau6",
+    "libXcursor.so.1": "libxcursor1",
     "libXdmcp.so.6": "libxdmcp6",
     "libXext.so.6": "libxext6",
     "libXfixes.so.3": "libxfixes3",
@@ -36,23 +37,37 @@ _DEBIAN = {
     "libxkbcommon.so.0": "libxkbcommon0",
     "libxkbcommon-x11.so.0": "libxkbcommon-x11-0",
 }
+# Fedora/RHEL: same sonames, X.Org packages keep their upstream names (the
+# Debian table must never be reused here — dnf aborts the whole transaction
+# on a single unmatched spec). Verified on packages.fedoraproject.org:
+# libXrandr provides libXrandr.so.2, libXcursor provides libXcursor.so.1, …
+_FEDORA = {
+    "libX11.so.6": "libX11",
+    "libXau.so.6": "libXau",
+    "libXcursor.so.1": "libXcursor",
+    "libXdmcp.so.6": "libXdmcp",
+    "libXext.so.6": "libXext",
+    "libXfixes.so.3": "libXfixes",
+    "libXi.so.6": "libXi",
+    "libXinerama.so.1": "libXinerama",
+    "libXrandr.so.2": "libXrandr",
+    "libXrender.so.1": "libXrender",
+    "libXtst.so.6": "libXtst",
+    "libxkbcommon.so.0": "libxkbcommon",
+    "libxkbcommon-x11.so.0": "libxkbcommon-x11",
+}
 _FAMILIES: dict[str, dict[str, str]] = {
     "apt-get": _DEBIAN,
-    "dnf": {"libX11.so.6": "libX11", "libXi.so.6": "libXi", "libXtst.so.6": "libXtst",
-            "libxkbcommon.so.0": "libxkbcommon", "libxkbcommon-x11.so.0": "libxkbcommon-x11",
-            **{k: v for k, v in _DEBIAN.items() if k in {"libXrandr.so.2", "libXrender.so.1",
-                                                         "libXcursor.so.1", "libXinerama.so.1",
-                                                         "libXext.so.6", "libXfixes.so.3"}}},
-    "yum": {"libX11.so.6": "libX11", "libXi.so.6": "libXi", "libXtst.so.6": "libXtst",
-            "libxkbcommon.so.0": "libxkbcommon", "libxkbcommon-x11.so.0": "libxkbcommon-x11",
-            **{k: v for k, v in _DEBIAN.items() if k in {"libXrandr.so.2", "libXrender.so.1",
-                                                         "libXcursor.so.1", "libXinerama.so.1",
-                                                         "libXext.so.6", "libXfixes.so.3"}}},
-    "zypper": {"libX11.so.6": "libX11-6", "libXi.so.6": "libXi6", "libXtst.so.6": "libXtst6",
+    "dnf": _FEDORA,
+    "yum": _FEDORA,
+    "zypper": {"libX11.so.6": "libX11-6", "libXcursor.so.1": "libXcursor1",
+               "libXi.so.6": "libXi6", "libXtst.so.6": "libXtst6",
                "libxkbcommon.so.0": "libxkbcommon0", "libxkbcommon-x11.so.0": "libxkbcommon-x11-0"},
-    "pacman": {"libX11.so.6": "libx11", "libXi.so.6": "libxi", "libXtst.so.6": "libxtst",
+    "pacman": {"libX11.so.6": "libx11", "libXcursor.so.1": "libxcursor",
+               "libXi.so.6": "libxi", "libXtst.so.6": "libxtst",
                "libxkbcommon.so.0": "libxkbcommon", "libxkbcommon-x11.so.0": "libxkbcommon-x11"},
-    "apk": {"libX11.so.6": "libx11", "libXi.so.6": "libxi", "libXtst.so.6": "libxtst",
+    "apk": {"libX11.so.6": "libx11", "libXcursor.so.1": "libxcursor",
+            "libXi.so.6": "libxi", "libXtst.so.6": "libxtst",
             "libxkbcommon.so.0": "libxkbcommon"},
 }
 

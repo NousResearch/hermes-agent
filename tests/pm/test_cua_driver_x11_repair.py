@@ -103,3 +103,48 @@ class TestCuaDriverX11Repair:
             tmp_path, current_target(), "arch mismatch for this target")
         assert reason2 == "arch mismatch for this target"
         assert remedy == ""
+
+
+class TestFamilyTables:
+    """The dnf/yum tables must spell Fedora names — Debian names make dnf
+    abort the whole transaction ("Unable to find a match"), so a repair that
+    mixes families installs nothing on Fedora/RHEL."""
+
+    def test_dnf_yum_share_an_explicit_fedora_table(self):
+        from pm import x11libs
+        assert x11libs._FAMILIES["dnf"] is x11libs._FEDORA
+        assert x11libs._FAMILIES["yum"] is x11libs._FEDORA
+
+    def test_fedora_table_covers_every_debian_soname(self):
+        from pm import x11libs
+        assert set(x11libs._DEBIAN) <= set(x11libs._FEDORA)
+
+    def test_no_debian_name_leaks_into_dnf_or_yum(self):
+        from pm import x11libs
+        debian_names = set(x11libs._DEBIAN.values())
+        for family in ("dnf", "yum"):
+            names = set(x11libs._FAMILIES[family].values())
+            assert names.isdisjoint(debian_names), \
+                f"{family} reuses Debian names: {sorted(names & debian_names)}"
+
+    def test_dnf_command_uses_fedora_names(self, monkeypatch):
+        from pm import x11libs
+        monkeypatch.setattr("pm.libatomic._manager_order", lambda tokens: ["dnf", "apt-get"])
+        monkeypatch.setattr("pm.libatomic._release_tokens", lambda: ())
+        monkeypatch.setattr(x11libs.shutil, "which",
+                            lambda name: "/usr/bin/dnf" if name == "dnf" else None)
+        manager, pkgs = x11libs._packages_for(
+            ["libXrandr.so.2", "libXext.so.6", "libXfixes.so.3", "libXrender.so.1",
+             "libXinerama.so.1"])
+        assert manager == "dnf"
+        assert pkgs == ["libXrandr", "libXext", "libXfixes", "libXrender", "libXinerama"]
+        assert x11libs._install_command(manager, pkgs) == (
+            "dnf", "install", "-y", "libXrandr", "libXext", "libXfixes",
+            "libXrender", "libXinerama")
+
+    def test_libxcursor_maps_on_every_family(self):
+        """Xcursor was once a dead selector (looked handled, was not)."""
+        from pm import x11libs
+        for family, table in x11libs._FAMILIES.items():
+            assert "libXcursor.so.1" in table, f"{family} does not map libXcursor.so.1"
+            assert table["libXcursor.so.1"]

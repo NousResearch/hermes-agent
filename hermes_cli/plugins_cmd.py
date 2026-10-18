@@ -726,7 +726,7 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     changed = _activate_key(key, enable=True, console=console)
     if changed:
         from hermes_cli.plugins_activation import activate_plugin_now, activation_hint
-        console.print(f"[green]✓[/green] Plugin [bold]{key}[/bold] enabled. Takes effect on next session.")
+        console.print(f"[green]✓[/green] Plugin [bold]{key}[/bold] enabled.")  # the hint says when it applies
         console.print(f"[dim]{activation_hint(activate_plugin_now(key, in_process=False))}[/dim]")
     else:
         console.print(f"[dim]Plugin '{key}' is already enabled.[/dim]")
@@ -761,8 +761,9 @@ def cmd_disable(name: str) -> None:
         console.print(f"[dim]Plugin '{key}' is already disabled.[/dim]")
         return
     _toggle_plugin_toolset(key, enable=False, toolset_key=toolset_key)
-    console.print(
-        f"[yellow]\u2298[/yellow] Plugin [bold]{key}[/bold] disabled. Takes effect on next session.")
+    from hermes_cli.plugins_activation import gateway_reload_hint, reload_running_gateway
+    console.print(f"[yellow]⊘[/yellow] Plugin [bold]{key}[/bold] disabled.")
+    console.print(f"[dim]{gateway_reload_hint(reload_running_gateway(), key)}[/dim]")
 
 
 def _read_manifest_info(d: Path, prefix: str):

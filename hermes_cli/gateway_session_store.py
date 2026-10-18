@@ -19,6 +19,7 @@ import argparse
 import logging
 import os
 import re
+import sys
 import uuid
 
 from hermes_cli.gateway_client import GatewayClientError
@@ -60,11 +61,14 @@ class GatewaySessionStore:
     """Truthy until the viewer's gateway connection is final (main's ``if self._session_db:`` guards);
     a gateway hang-up stays truthy, and the next call redials."""
 
+    current: dict | None = None  # the opened session's snapshot; never ``__getattr__``'s refusal
+
     def __init__(self, connection=None):
         self.connection = connection or GatewayConnection.shared()
         self.snapshots: dict[str, dict] = {}
         self.current: dict | None = None
         self._reader = None
+        self._create_parameters = None
 
     def __bool__(self):
         return not self.connection.final
@@ -156,8 +160,21 @@ class GatewaySessionStore:
         params["row_cwd"] = os.getcwd() if record_cwd and local and params["source"] in CLI_FAMILY_SOURCES else ""
         if title:
             params["title"] = title
+        params.update(self.client_env())
         snapshot = self.call("session.create", request_id=uuid.uuid4().hex, **params)
+        warning = (snapshot.get("info") or {}).get("config_warning")
+        if warning:
+            print(f"Warning: {warning}", file=sys.stderr)
         return self._adopt(snapshot)
+
+    def client_env(self):
+        """This shell's ``client_env`` when the gateway takes it (one ``runtime.describe`` per store)."""
+        from hermes_cli.gateway_chat import client_env_policy
+        if self._create_parameters is None:
+            described = self.call("runtime.describe")
+            contract = described.get("session_create") if isinstance(described, dict) else None
+            self._create_parameters = list((contract or {}).get("parameters") or [])
+        return client_env_policy(self._create_parameters)
 
     def branch(self, session_id, title=None):
         """``session.mutate branch``: the gateway forks the whole active transcript into a child it
@@ -459,7 +476,9 @@ def create_titled_session(title):
     params["source"] = "cli"  # main's titled row is `cli` (hermes_cli.main._create_titled_session)
     params["row_cwd"] = ""
     try:
-        snapshot = session_store().call("session.create", request_id=uuid.uuid4().hex, title=title, **params)
+        store = session_store()
+        params.update(store.client_env())
+        snapshot = store.call("session.create", request_id=uuid.uuid4().hex, title=title, **params)
     except GatewayClientError as exc:
         logger.warning("Failed to create titled session %r on the gateway: %s", title, exc)
         return None

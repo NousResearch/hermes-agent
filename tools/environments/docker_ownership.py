@@ -3,8 +3,9 @@
 The Docker backend runs the image's default user (root) unless ``docker_run_as_host_user`` is set,
 so everything the container writes into the Hermes-created bind mounts (``<sandbox>/home`` at
 ``/root``, ``<sandbox>/workspace`` at ``/workspace``) lands on the host owned by uid 0, and the user
-cannot delete it. While the container still runs, root inside it can ``chown`` those trees back;
-once it is gone only ``sudo`` can.
+cannot delete it. Until the container is removed, a root container with its volumes can ``chown``
+those trees back; once it is gone only ``sudo`` can. The handback runs after it stopped, so files a
+process writes on shutdown are included.
 
 Persistent sandbox dirs outlive their container, and root refuses some host-owned files: git stops
 at "dubious ownership", ssh at "Bad owner" on ``~/.ssh/config``. So the handback records the exact
@@ -54,11 +55,11 @@ def _daemon_remaps_users(docker_exe: str) -> bool:
     return _remapping_cache[docker_exe]
 
 
-def handback_ids(docker_exe: str, runs_as_host_user: bool) -> Optional[tuple[int, int]]:
+def _handback_ids(docker_exe: str) -> Optional[tuple[int, int]]:
     """Host ``(uid, gid)`` to hand sandbox files to, or ``None`` when no handback applies: the
-    container already writes as the host user, the host is not Linux (Docker Desktop bind mounts
-    are not root-owned on the host), Hermes itself runs as root, or the daemon remaps users."""
-    if runs_as_host_user or sys.platform != "linux" or os.geteuid() == 0:  # windows-footgun: ok — linux-gated
+    host is not Linux (Docker Desktop bind mounts are not root-owned on the host), Hermes itself
+    runs as root, or the daemon remaps users."""
+    if sys.platform != "linux" or os.geteuid() == 0:  # windows-footgun: ok — linux-gated
         return None
     return None if _daemon_remaps_users(docker_exe) else (os.geteuid(), os.getegid())  # windows-footgun: ok
 
@@ -68,17 +69,22 @@ def _record_path(mounts: list[tuple[str, str]]) -> Optional[Path]:
     return Path(mounts[0][0]).parent / HANDBACK_RECORD if mounts else None
 
 
-def _container_mount_points(docker_exe: str, container_id: str) -> Optional[list[str]]:
-    """Destination of every mount the container really has, including ``docker_extra_args``
-    ``-v``/``--mount`` binds and named volumes, or ``None`` when Docker cannot say (then the
-    walk is skipped: a same-filesystem bind is invisible to ``find -xdev``)."""
+def _inspect(docker_exe: str, container_id: str) -> Optional[dict]:
+    """The container's ``docker inspect`` record (its real user, image id and every mount,
+    ``docker_extra_args`` binds and named volumes included), or ``None`` when Docker cannot say
+    (then nothing is walked: a same-filesystem bind is invisible to ``find -xdev``)."""
     try:
-        result = run_capture([docker_exe, "inspect", "--format", "{{json .Mounts}}", container_id], timeout=10)
+        result = run_capture([docker_exe, "inspect", container_id], timeout=10)
         if result.returncode == 0:
-            return [m["Destination"] for m in json.loads(result.stdout)]
-    except (subprocess.TimeoutExpired, OSError, ValueError, TypeError, KeyError) as e:
-        logger.debug("docker inspect mounts of %s failed: %s", container_id[:12], e)
+            return json.loads(result.stdout)[0]
+    except (subprocess.TimeoutExpired, OSError, ValueError, IndexError, KeyError) as e:
+        logger.debug("docker inspect of %s failed: %s", container_id[:12], e)
     return None
+
+
+def _runs_as_root(info: dict) -> bool:
+    """The container's effective user (``--user`` from any source, else the image ``USER``) is root."""
+    return ((info.get("Config") or {}).get("User") or "").split(":")[0] in ("", "root", "0")
 
 
 def walk_argv(mounts: list[tuple[str, str]], mount_points: list[str], owner: int) -> list[str]:
@@ -93,72 +99,78 @@ def walk_argv(mounts: list[tuple[str, str]], mount_points: list[str], owner: int
             "-user", str(owner), "-print0"]
 
 
-def _walk(docker_exe: str, container_id: str, mounts: list[tuple[str, str]], owner: int,
+def _walk(docker_exe: str, target: list[str], mounts: list[tuple[str, str]], info: dict, owner: int,
           deadline: float) -> Optional[list[bytes]]:
-    points = _container_mount_points(docker_exe, container_id)
-    if points is None:
-        return None
-    result = subprocess.run([docker_exe, "exec", "-u", "0:0", container_id, *walk_argv(mounts, points, owner)],
-                            capture_output=True, timeout=max(1.0, deadline - time.monotonic()),
-                            stdin=subprocess.DEVNULL, check=False)
+    """Entries owned by *owner*, or ``None`` when the walk failed (its output may be partial)."""
+    points = [m["Destination"] for m in info.get("Mounts") or []]
+    result = subprocess.run([docker_exe, *target, *walk_argv(mounts, points, owner)], capture_output=True,
+                            timeout=max(1.0, deadline - time.monotonic()), stdin=subprocess.DEVNULL, check=False)
     if result.returncode != 0:
-        logger.debug("ownership walk in %s exited %d: %s", container_id[:12], result.returncode,
+        logger.debug("ownership walk exited %d: %s", result.returncode,
                      result.stderr.decode("utf-8", "replace").strip()[:500])
+        return None
     return [p for p in result.stdout.split(b"\0") if p]
 
 
-def _chown(docker_exe: str, container_id: str, paths: list[bytes], owner: str, deadline: float) -> int:
-    result = subprocess.run(
-        [docker_exe, "exec", "-i", "-u", "0:0", container_id, "xargs", "-0", "-r", "chown", "-h", owner, "--"],
-        input=b"".join(p + b"\0" for p in paths), capture_output=True,
-        timeout=max(1.0, deadline - time.monotonic()), check=False)
-    return result.returncode
+def _chown(docker_exe: str, target: list[str], paths: list[bytes], owner: str, deadline: float) -> bool:
+    result = subprocess.run([docker_exe, *target, "xargs", "-0", "-r", "chown", "-h", owner, "--"],
+                            input=b"".join(p + b"\0" for p in paths), capture_output=True,
+                            timeout=max(1.0, deadline - time.monotonic()), check=False)
+    if result.returncode != 0:
+        logger.debug("ownership chown to %s exited %d", owner, result.returncode)
+    return result.returncode == 0
 
 
-def hand_back_sandbox_files(docker_exe: str, container_id: str, mounts: list[tuple[str, str]],
-                            ids: tuple[int, int]) -> None:
-    """Before the container is stopped: give its root-owned sandbox files (``mounts`` are
-    ``(host_dir, container_path)``) to the host user and record which. The paths are recorded
-    before any of them changes owner, so a timeout mid-chown still leaves a complete record.
-    Best-effort: a gone container, an image without ``find`` or a timeout logs at debug."""
+def hand_back_sandbox_files(docker_exe: str, container_id: str, mounts: list[tuple[str, str]]) -> None:
+    """After a root container has stopped (so nothing writes any more) and before it is removed:
+    give its root-owned sandbox files (``mounts`` are ``(host_dir, container_path)``) to the host
+    user from a throwaway container of the same local image with the same volumes, and record
+    which. The paths are recorded before any of them changes owner, so a timeout mid-chown still
+    leaves a complete record. Best-effort: a gone container, an image without ``find`` or a
+    timeout logs at debug."""
     record = _record_path(mounts)
-    if record is None:
+    ids = _handback_ids(docker_exe) if record else None
+    info = _inspect(docker_exe, container_id) if ids else None
+    if not info or not _runs_as_root(info):
         return
+    target = ["run", "--rm", "-i", "--pull", "never", "--network", "none", "--user", "0:0",
+              "--volumes-from", container_id, "--entrypoint", "", info["Image"]]
     deadline = time.monotonic() + _CHOWN_TIMEOUT_S
     try:
-        paths = _walk(docker_exe, container_id, mounts, 0, deadline)
+        paths = _walk(docker_exe, target, mounts, info, 0, deadline)
         if not paths:
             return
         with record.open("ab") as fh:  # append: an unreclaimed earlier record still applies
             fh.write(b"".join(p + b"\0" for p in paths))
-        _chown(docker_exe, container_id, paths, f"{ids[0]}:{ids[1]}", deadline)
-    except (subprocess.TimeoutExpired, OSError) as e:
-        logger.debug("ownership handback in %s failed: %s", container_id[:12], e)
+        _chown(docker_exe, target, paths, f"{ids[0]}:{ids[1]}", deadline)
+    except (subprocess.TimeoutExpired, OSError, KeyError) as e:
+        logger.debug("ownership handback of %s failed: %s", container_id[:12], e)
 
 
-def reclaim_sandbox_files(docker_exe: str, container_id: str, mounts: list[tuple[str, str]],
-                          runs_as_host_user: bool) -> None:
-    """After a container mounts sandbox dirs an earlier teardown handed back: return the recorded
-    paths to root (so git/ssh ownership checks pass again), then drop the record. A container that
-    runs as the host user already owns them, so the record is just dropped. Only recorded paths a
-    fresh no-symlink walk of this container's sandbox mounts still finds (outside every nested
-    mount) are touched, so a symlinked directory or a real host dir now bound inside is never chowned."""
+def reclaim_sandbox_files(docker_exe: str, container_id: str, mounts: list[tuple[str, str]]) -> None:
+    """After a container mounts sandbox dirs an earlier teardown handed back: when it runs as root,
+    return the recorded paths to root (so git/ssh ownership checks pass again), then drop the
+    record. A container running as any other user keeps the handed-back owner and just drops the
+    record. Only recorded paths a fresh no-symlink walk of this container's sandbox mounts still
+    finds (outside every nested mount) are touched, so a symlinked directory or a real host dir now
+    bound inside is never chowned. A failed walk or chown keeps the record for the next container."""
     record = _record_path(mounts)
     if record is None or not record.is_file():
         return
-    if runs_as_host_user or sys.platform != "linux":
+    info = _inspect(docker_exe, container_id) if sys.platform == "linux" else {}
+    if info is None:
+        return
+    if not info or not _runs_as_root(info):
         record.unlink(missing_ok=True)
         return
+    target = ["exec", "-i", "-u", "0:0", container_id]
+    deadline = time.monotonic() + _CHOWN_TIMEOUT_S
     try:
         recorded = set(record.read_bytes().split(b"\0"))
-        owned = _walk(docker_exe, container_id, mounts, os.geteuid(),  # windows-footgun: ok — linux-gated
-                      time.monotonic() + _CHOWN_TIMEOUT_S)
-        if owned is None:
-            return  # keep the record for the next container
-        paths = [p for p in owned if p in recorded]
-        if paths:
-            rc = _chown(docker_exe, container_id, paths, "0:0", time.monotonic() + _CHOWN_TIMEOUT_S)
-            logger.debug("ownership reclaim in %s exited %d", container_id[:12], rc)
+        owned = _walk(docker_exe, target, mounts, info, os.geteuid(), deadline)  # windows-footgun: ok — linux-gated
+        paths = [p for p in owned or [] if p in recorded]
+        if owned is None or (paths and not _chown(docker_exe, target, paths, "0:0", deadline)):
+            return
     except (subprocess.TimeoutExpired, OSError) as e:
         logger.debug("ownership reclaim in %s failed: %s", container_id[:12], e)
         return

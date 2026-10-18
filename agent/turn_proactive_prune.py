@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from agent.context_compressor import _DB_PERSISTED_MARKER
 from agent.conversation_compression import _reset_read_dedup_caches
 from agent.prompt_caching import provider_cache_expired
 
@@ -33,13 +34,17 @@ def run_proactive_prune(
 def turn_start_cold_prune(agent: Any, out: Any, effective_task_id: Any) -> None:
     """Turn-start prune, only on an already-expired provider cache (the rewrite then costs no cache break).
 
-    Runs on the history BEFORE this turn's user row, which is not persisted yet: the commit never writes it,
-    so the turn-start persist and ``api_content`` stamp handle it exactly as on an unpruned turn. The prune
-    replaces bodies in place and never drops rows, so ``current_turn_user_idx`` stays valid.
+    Runs on the history BEFORE this turn's user row and only while that row (and everything after it) is
+    still unwritten: the commit then cannot touch it, so the turn-start persist and ``api_content`` stamp
+    handle it exactly as on an unpruned turn. A row the TUI/Desktop already wrote at submit is skipped: the
+    commit would clone it under a new id while the live dict keeps the old ``_row_id``. The prune replaces
+    bodies in place and never drops rows, so ``current_turn_user_idx`` stays valid.
     """
     idx = out.current_turn_user_idx
     if (out.compressed or out.blocked or not agent.compression_enabled
             or not isinstance(idx, int) or not 0 < idx < len(out.messages)
+            or any(isinstance(m, dict) and (m.get("_row_id") or m.get(_DB_PERSISTED_MARKER))
+                   for m in out.messages[idx:])
             or not provider_cache_expired(agent, out.messages[:idx])):
         return
     from agent import turn_context as _tc

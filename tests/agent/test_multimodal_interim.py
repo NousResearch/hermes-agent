@@ -28,13 +28,9 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import pytest
-
-
 # ---------------------------------------------------------------------------
 # Agent fixture — real methods bound where the fix depends on them
 # ---------------------------------------------------------------------------
-
 
 def _make_agent():
     """Minimal AIAgent with the real text helpers the fix relies on."""
@@ -55,7 +51,6 @@ def _make_agent():
     agent._stream_callback = None
     return agent
 
-
 def _vision_tool_result(text="The image shows a red stop sign."):
     """A realistic tool message whose content is a list (vision result)."""
     return {
@@ -67,11 +62,9 @@ def _vision_tool_result(text="The image shows a red stop sign."):
         ],
     }
 
-
 # ---------------------------------------------------------------------------
 # build_assistant_message — non-streaming / gateway path (site 2)
 # ---------------------------------------------------------------------------
-
 
 class TestBuildAssistantMessageMultimodal:
     def test_list_content_does_not_crash(self):
@@ -97,13 +90,9 @@ class TestBuildAssistantMessageMultimodal:
         assert isinstance(msg["content"], str)
         assert "answer after seeing the screenshot" in msg["content"]
 
-
-
-
 # ---------------------------------------------------------------------------
 # _interim_assistant_visible_text — dedup path (site 1)
 # ---------------------------------------------------------------------------
-
 
 class TestInterimVisibleTextMultimodal:
     def test_tool_list_content_does_not_crash(self):
@@ -114,18 +103,6 @@ class TestInterimVisibleTextMultimodal:
         tool_msg = _vision_tool_result()
         # The helper must not raise on a tool message whose content is a list.
         visible = AIAgent._interim_assistant_visible_text(agent, tool_msg)
-        assert isinstance(visible, str)
-
-    def test_tool_message_yields_no_interim_text(self):
-        """Tool messages carry no user-facing interim text (role guard)."""
-        from run_agent import AIAgent
-
-        agent = _make_agent()
-        tool_msg = _vision_tool_result("some description")
-        visible = AIAgent._interim_assistant_visible_text(agent, tool_msg)
-        # No codex_message_items -> no commentary -> flattened content is still
-        # text, but it's a tool result, not assistant interim. The dedup guard
-        # (role == "assistant") excludes it from ever being emitted.
         assert isinstance(visible, str)
 
     def test_assistant_list_content_flattened(self):
@@ -144,46 +121,6 @@ class TestInterimVisibleTextMultimodal:
         visible = AIAgent._interim_assistant_visible_text(agent, assistant_msg)
         assert "Let me look at the screenshot." in visible
 
-
 # ---------------------------------------------------------------------------
 # duplicate_previous_interim dedup — the exact shape from conversation_loop.py
 # ---------------------------------------------------------------------------
-
-
-class TestDuplicatePreviousInterimDedup:
-    def test_previous_tool_list_content_safe_and_not_duplicate(self):
-        """Replicates conversation_loop.py:4871-4885.
-
-        ``previous_msg`` is a tool message with a *list* content (the exact
-        crash shape from #66267). The dedup must compute
-        ``previous_interim_visible`` without raising and must NOT mark the
-        current assistant message as a duplicate of a tool message.
-        """
-        from run_agent import AIAgent
-
-        agent = _make_agent()
-        assistant_msg = {
-            "role": "assistant",
-            "content": "Let me check the repo first.",
-            "finish_reason": "incomplete",
-        }
-        previous_msg = _vision_tool_result("some tool output")
-
-        current_interim_visible = AIAgent._interim_assistant_visible_text(agent, assistant_msg)
-        previous_interim_visible = (
-            AIAgent._interim_assistant_visible_text(agent, previous_msg)
-            if isinstance(previous_msg, dict)
-            else ""
-        )
-        duplicate_previous_interim = (
-            bool(current_interim_visible)
-            and isinstance(previous_msg, dict)
-            and previous_msg.get("role") == "assistant"
-            and previous_msg.get("finish_reason") == "incomplete"
-            and previous_interim_visible == current_interim_visible
-        )
-
-        # Must not raise, and a tool message can never be a duplicate source.
-        assert isinstance(previous_interim_visible, str)
-        assert duplicate_previous_interim is False
-

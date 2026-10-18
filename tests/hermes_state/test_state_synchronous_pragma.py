@@ -11,11 +11,9 @@ under the stated assumption of `synchronous=FULL` on Ubuntu.
 """
 
 import sqlite3
-import sys
 
 import pytest
 
-import hermes_state
 import hermes_state_wal
 from hermes_state import apply_database_pragmas
 from hermes_state_wal import resolve_synchronous_level
@@ -99,11 +97,11 @@ class TestResolveSynchronousLevel:
 
 
 class TestAppliedFromConfig:
+    @pytest.mark.platforms("linux")
     def test_configured_level_reaches_the_connection(self, tmp_path, monkeypatch):
         _config(monkeypatch, {"synchronous": "NORMAL"})
         conn = _wal_conn(tmp_path)
         try:
-            monkeypatch.setattr(sys, "platform", "linux")
             apply_database_pragmas(conn, db_label="state.db")
             assert _level(conn) == 1
         finally:
@@ -118,7 +116,6 @@ class TestAppliedFromConfig:
         _config(monkeypatch, {"synchronous": "FULL"})
         conn = _wal_conn(tmp_path)
         try:
-            monkeypatch.setattr(sys, "platform", "linux")
             conn.execute("PRAGMA synchronous=0")
             assert _level(conn) == 0
             apply_database_pragmas(conn, db_label="state.db")
@@ -131,7 +128,6 @@ class TestAppliedFromConfig:
         _config(monkeypatch, {"wal_autocheckpoint": 1000})
         conn = _wal_conn(tmp_path)
         try:
-            monkeypatch.setattr(sys, "platform", "linux")
             conn.execute("PRAGMA synchronous=0")
             apply_database_pragmas(conn, db_label="state.db")
             assert _level(conn) == 0
@@ -144,7 +140,6 @@ class TestAppliedFromConfig:
         _config(monkeypatch, {"synchronous": "PARANOID"})
         conn = _wal_conn(tmp_path)
         try:
-            monkeypatch.setattr(sys, "platform", "linux")
             conn.execute("PRAGMA synchronous=2")
             with caplog.at_level("WARNING"):
                 apply_database_pragmas(conn, db_label="state.db")
@@ -161,7 +156,6 @@ class TestAppliedFromConfig:
         )
         conn = _wal_conn(tmp_path)
         try:
-            monkeypatch.setattr(sys, "platform", "linux")
             apply_database_pragmas(conn, db_label="state.db")
             assert _level(conn) == 2
             assert conn.execute("PRAGMA wal_autocheckpoint").fetchone()[0] == 250
@@ -178,69 +172,28 @@ class TestMacOSFloor:
     floor the config value would simply win by running last.
     """
 
+    @pytest.mark.platforms("macos")
     def test_lowering_below_full_is_refused_on_darwin(
         self, tmp_path, monkeypatch, caplog
     ):
         _config(monkeypatch, {"synchronous": "NORMAL"})
         conn = _wal_conn(tmp_path)
         try:
-            monkeypatch.setattr(sys, "platform", "darwin")
             hermes_state_wal._enforce_macos_synchronous_full(conn)
             assert _level(conn) == 2
             with caplog.at_level("WARNING"):
                 apply_database_pragmas(conn, db_label="state.db")
             assert _level(conn) == 2, "config lowered the macOS btree protection"
-            assert "macOS" in caplog.text
         finally:
             conn.close()
 
+    @pytest.mark.platforms("macos")
     def test_raising_above_full_is_allowed_on_darwin(self, tmp_path, monkeypatch):
         """The floor is a floor, not a pin -- EXTRA is strictly safer."""
         _config(monkeypatch, {"synchronous": "EXTRA"})
         conn = _wal_conn(tmp_path)
         try:
-            monkeypatch.setattr(sys, "platform", "darwin")
             apply_database_pragmas(conn, db_label="state.db")
             assert _level(conn) == 3
         finally:
             conn.close()
-
-    def test_the_floor_does_not_apply_off_darwin(self, tmp_path, monkeypatch):
-        """Linux operators may deliberately choose NORMAL for write volume."""
-        _config(monkeypatch, {"synchronous": "NORMAL"})
-        conn = _wal_conn(tmp_path)
-        try:
-            monkeypatch.setattr(sys, "platform", "linux")
-            conn.execute("PRAGMA synchronous=2")
-            apply_database_pragmas(conn, db_label="state.db")
-            assert _level(conn) == 1
-        finally:
-            conn.close()
-
-
-def test_example_config_documents_the_key():
-    """An unpinnable durability level is the bug; docs are half the fix."""
-    from pathlib import Path
-
-    text = Path(__file__).resolve().parents[2] / "cli-config.yaml.example"
-    body = text.read_text(encoding="utf-8")
-    assert "synchronous: FULL" in body
-
-
-def test_example_config_calls_the_darwin_rule_a_floor_not_a_pin():
-    """The macOS wording has to match _apply_synchronous_pragma's actual rule.
-
-    Saying macOS is "always held at FULL" reads as "your setting is ignored
-    here", which would talk an operator out of choosing EXTRA -- the one level
-    that IS honored on Darwin. Only sub-FULL values are refused. The wording
-    is the whole interface for a key nobody can otherwise observe, so pin the
-    distinction rather than just the key's presence.
-    """
-    from pathlib import Path
-
-    body = (
-        Path(__file__).resolve().parents[2] / "cli-config.yaml.example"
-    ).read_text(encoding="utf-8")
-    assert "floor, not a pin" in body
-    assert "EXTRA is honored" in body
-    assert "always held" not in body

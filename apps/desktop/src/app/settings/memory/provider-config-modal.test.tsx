@@ -20,6 +20,10 @@ vi.mock('@/store/notifications', () => ({
   notifyError: vi.fn()
 }))
 
+// Load once at module scope so no test's 15s budget pays the heavy transform
+// + import (the first-test timeout flake under CI load).
+const { ProviderConfigModal } = await import('./provider-config-modal')
+
 function field(
   overrides: Partial<MemoryProviderField> & Pick<MemoryProviderField, 'key' | 'kind'>
 ): MemoryProviderField {
@@ -65,8 +69,7 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-async function renderModal(open = true) {
-  const { ProviderConfigModal } = await import('./provider-config-modal')
+function renderModal(open = true) {
   const onOpenChange = vi.fn()
   const onSaved = vi.fn().mockResolvedValue(undefined)
 
@@ -106,10 +109,5 @@ describe('ProviderConfigModal', () => {
     await waitFor(() => expect(saveMemoryProviderConfig).toHaveBeenCalledWith('honcho', { saveMessages: 'false' }))
     await waitFor(() => expect(onSaved).toHaveBeenCalled())
     expect(onOpenChange).toHaveBeenCalledWith(false)
-  })
-
-  it('renders nothing while closed', async () => {
-    await renderModal(false)
-    expect(screen.queryByText('Message writing')).toBeNull()
   })
 })

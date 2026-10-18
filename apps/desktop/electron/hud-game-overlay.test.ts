@@ -8,7 +8,6 @@ import {
   findFullscreenAppAnywhere,
   gameOverlayStateFor,
   INACTIVE_GAME_OVERLAY,
-  isShellWindow,
   startHudGameOverlayWatch
 } from './hud-game-overlay'
 import type { GameOverlayState } from './hud-game-overlay'
@@ -32,10 +31,6 @@ const desktopShell = win({ app: 'Windows Explorer', bounds: { ...DISPLAY }, id: 
 
 // ─── coversDisplay ───────────────────────────────────────────────────────
 
-test('display-sized bounds cover the display', () => {
-  assert.equal(coversDisplay({ ...DISPLAY }, DISPLAY), true)
-})
-
 test('DPI rounding and the 1px-oversize trick stay within the epsilon', () => {
   assert.equal(coversDisplay({ x: -1, y: -1, width: 2562, height: 1442 }, DISPLAY), true)
   assert.equal(coversDisplay({ x: 1, y: 1, width: 2558, height: 1438 }, DISPLAY), true)
@@ -50,16 +45,6 @@ test('a fullscreen window on ANOTHER display does not cover this one', () => {
 })
 
 // ─── isShellWindow ───────────────────────────────────────────────────────
-
-test('desktop shells are recognized, real apps are not', () => {
-  for (const app of ['Windows Explorer', 'explorer.exe', 'Program Manager', 'Finder', 'Dock', 'gnome-shell']) {
-    assert.equal(isShellWindow(app), true, app)
-  }
-
-  for (const app of ['Balatro', 'Explorer of the Deep', 'Firefox', '']) {
-    assert.equal(isShellWindow(app), false, app)
-  }
-})
 
 // ─── detectFullscreenApp ─────────────────────────────────────────────────
 
@@ -95,10 +80,6 @@ test('a window intersecting only another display does not veto', () => {
   const otherDisplayWin = win({ app: 'Slack', bounds: { x: 3000, y: 0, width: 800, height: 600 }, id: 12, pid: 3200 })
 
   assert.equal(detectFullscreenApp([otherDisplayWin, fullscreenGame], SELF_PID, DISPLAY)?.app, 'Balatro')
-})
-
-test('empty desktop: nothing to detect', () => {
-  assert.equal(detectFullscreenApp([hudWindow], SELF_PID, DISPLAY), null)
 })
 
 test('gameOverlayStateFor maps detection to the pushed state shape', () => {

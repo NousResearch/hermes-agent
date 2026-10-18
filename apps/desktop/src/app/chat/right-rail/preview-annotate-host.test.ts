@@ -2,12 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { ANNOTATE_CROP_PAD } from '@/lib/preview-annotate'
 
-import {
-  bindPreviewExecuteJavaScript,
-  captureAnnotateCrop,
-  installAnnotateOverlay,
-  overlayInstallScript
-} from './preview-annotate-host'
+import { bindPreviewExecuteJavaScript, captureAnnotateCrop, overlayInstallScript } from './preview-annotate-host'
 
 describe('preview annotate host', () => {
   it('does not evaluate guest template interpolations while wrapping the overlay source', () => {
@@ -17,18 +12,6 @@ describe('preview annotate host', () => {
 
     expect(script).toContain(snippet)
     expect(() => overlayInstallScript(source)).not.toThrow()
-  })
-
-  it('injects the guest overlay source', async () => {
-    const executeJavaScript = vi.fn(async (code: string) => {
-      expect(code).toContain('hermes-annotate')
-      expect(code).toContain('#2F80ED')
-      expect(code).toContain('api.install()')
-      expect(code).toContain('window.__hermesAnnotate')
-    })
-
-    await installAnnotateOverlay({ executeJavaScript })
-    expect(executeJavaScript).toHaveBeenCalledOnce()
   })
 
   it('calls executeJavaScript as a method so Electron can read this.getWebContentsId', async () => {

@@ -23,7 +23,6 @@ def test_boot_time_credential_injection_is_inside_the_frozen_launch_env(tmp_path
     # A two-profile host, without touching the live install's profiles/.
     monkeypatch.setattr(launch_profile_policy, "_servable_profile_homes",
                         lambda: {tmp_path / "a", tmp_path / "b"})
-    monkeypatch.setattr(launch_profile_policy, "_multiplex_disabled_explicitly", lambda: False)
 
     # Stand-ins for the boot steps that follow the old (top-of-function) activation point. A
     # provider key injected by the auth gate / keepalive / a lifespan hook is the real case.

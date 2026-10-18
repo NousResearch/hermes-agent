@@ -24,13 +24,14 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  gatewayActivationEpoch,
   host,
   Input,
   queryClient,
   relativeTime,
   RowButton,
-  Switch,
   Tip,
+  ToggleRow,
   useI18n,
   useValue
 } from '@hermes/plugin-sdk'
@@ -39,6 +40,11 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { avatarColor, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
+import { groupCreationSource, groupExecutionMode } from './canonical-group-capabilities'
+import type { GroupExecutionMode } from './canonical-group-capabilities'
+import { $canonicalGroupBindings, registerCanonicalGroup } from './canonical-group-registry'
+import { CanonicalGroupWorkspace } from './canonical-group-workspace'
+import { canonicalGroupRequest, createCanonicalGroup } from './canonical-groups'
 import {
   $botMeta,
   $lastRoster,
@@ -496,13 +502,12 @@ function GroupChatSettingsDialog({
             value={name}
           />
         </form>
-        <label className="flex items-center justify-between gap-3 text-sm">
-          <span>
-            <span className="block">{b.group.holdDetection}</span>
-            <span className="block text-xs text-(--ui-text-tertiary)">{b.group.holdDetectionHint}</span>
-          </span>
-          <Switch checked={holdDetection} onCheckedChange={setHoldDetection} />
-        </label>
+        <ToggleRow
+          checked={holdDetection}
+          description={b.group.holdDetectionHint}
+          label={b.group.holdDetection}
+          onChange={setHoldDetection}
+        />
         {(members || []).length > 0 ? (
           <ul className="flex flex-col gap-1" data-testid="group-settings-members">
             {(members || []).map(member => {
@@ -568,7 +573,77 @@ interface GroupChatWorkspaceProps {
   visible?: boolean
 }
 
-export function GroupChatWorkspace({ group, members, onBack, visible = true }: GroupChatWorkspaceProps) {
+export function GroupChatWorkspace(props: GroupChatWorkspaceProps) {
+  const bindings = useValue($canonicalGroupBindings)
+  const binding = bindings[props.group]
+
+  if (binding) {return <CanonicalGroupWorkspace binding={binding} onBack={props.onBack} visible={props.visible} />}
+
+  return <GroupExecutionGate {...props} />
+}
+
+function GroupExecutionGate(props: GroupChatWorkspaceProps) {
+  const b = useBots()
+  const connectionId = useValue(host.state.connectionId)
+  const profile = useValue(host.state.profile)
+  const gateway = useValue(host.state.gateway)
+  const activationEpoch = gatewayActivationEpoch()
+  const source = JSON.stringify([connectionId, profile, gateway, activationEpoch])
+  const [capability, setCapability] = useState<{ source: string; mode: GroupExecutionMode } | null>(null)
+  const mode = capability?.source === source ? capability.mode : 'checking'
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    let cancelled = false
+    setCapability(null)
+    setError('')
+
+    if (gateway !== 'open') {
+      setCapability({ source, mode: 'unavailable' })
+
+      return
+    }
+
+    void canonicalGroupRequest<unknown>({ connectionId: connectionId ?? '', profile }, 'groups.capabilities')
+      .then(result => { if (!cancelled) {setCapability({ source, mode: groupExecutionMode(result) })} })
+      .catch(e => {
+        if (!cancelled) {
+          setCapability({ source, mode: 'unavailable' })
+          setError(String(e))
+        }
+      })
+
+    return () => { cancelled = true }
+  }, [connectionId, profile, gateway, source])
+
+  if (mode === 'legacy') {return <LegacyGroupChatWorkspace {...props} />}
+
+  return <div className="grid gap-3 p-3">
+    <h2>{props.group}</h2>
+    <p>{mode === 'canonical' ? 'This is a legacy Desktop room. Start a gateway-owned group with these members; the old history stays here and is not replayed.' : mode === 'unavailable' ? b.canonical.driverUnavailable : 'Checking group driver…'}</p>
+    {error && <p role="alert">{error}</p>}
+    <Button disabled={mode !== 'canonical' || busy} onClick={() => {
+      const route = { connectionId: connectionId ?? '', profile }
+
+      const sourceCurrent = groupCreationSource(route, activationEpoch)
+
+      if (mode !== 'canonical' || !sourceCurrent()) {
+        setError(b.canonical.driverUnavailable)
+
+        return
+      }
+
+      setBusy(true)
+      void createCanonicalGroup(route, props.group, props.members)
+        .then(({ room }) => {
+          if (sourceCurrent()) {openGroupChat(registerCanonicalGroup(route, room))}
+        })
+        .catch(e => { if (sourceCurrent()) {setError(String(e))} }).finally(() => setBusy(false))
+    }}>Start gateway group</Button>
+  </div>
+}
+
+function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: GroupChatWorkspaceProps) {
   const b = useBots()
   const rooms: Record<string, GroupChatRoom> = useValue($groupChats)
   const allMeta: Record<string, BotMeta> = useValue($botMeta)
@@ -622,6 +697,124 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
       ...current,
       pendingAttachments: typeof value === 'function' ? value(current.pendingAttachments || {}) : value
     }))
+
+  // Browser Comment Mode can live in its own Electron pop-out on another
+  // monitor. The ordinary composer bus is window-local and this room uses its
+  // own New Thread composer anyway, so accept only batches explicitly pinned to
+  // THIS room + THIS renderer. Packaged Electron windows use the preload IPC
+  // relay; BroadcastChannel stays only as a browser/dev fallback. The protocol
+  // strings remain literal here to preserve the plugin fence (Bot Mode imports
+  // only the SDK + its own files). A stale route gets no ACK, leaving the
+  // annotations intact.
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+
+    const desktopBridge = window.hermesDesktop?.windowRelay
+
+    const channel =
+      !desktopBridge && typeof BroadcastChannel !== 'undefined'
+        ? new BroadcastChannel('hermes.desktop.preview-annotate-handoff.v1')
+        : null
+
+    if (!desktopBridge && !channel) {
+      return
+    }
+
+    const send = (payload: unknown) => {
+      if (desktopBridge) {
+        desktopBridge.send(payload)
+      } else {
+        channel?.postMessage(payload)
+      }
+    }
+
+    const onMessage = (data: unknown) => {
+      if (!data || typeof data !== 'object') {
+        return
+      }
+
+      const request = data as {
+        count?: unknown
+        destination?: { composerKey?: unknown; group?: unknown; kind?: unknown; windowId?: unknown }
+        images?: unknown
+        prompt?: unknown
+        requestId?: unknown
+        type?: unknown
+      }
+
+      const destination = request.destination
+      const sourceWindowId = window.sessionStorage.getItem('hermes.desktop.previewAnnotate.windowId')?.trim()
+
+      if (
+        !sourceWindowId ||
+        request.type !== 'preview-annotate-handoff' ||
+        typeof request.requestId !== 'string' ||
+        typeof request.prompt !== 'string' ||
+        !Array.isArray(request.images) ||
+        destination?.kind !== 'group' ||
+        destination.windowId !== sourceWindowId ||
+        destination.group !== group ||
+        destination.composerKey !== composerKeyRef.current
+      ) {
+        return
+      }
+
+      try {
+        const prompt = request.prompt
+
+        const attachments: Attachment[] = request.images
+          .filter((image): image is { dataUrl: string; name: string; number?: number } =>
+            Boolean(
+              image &&
+              typeof image === 'object' &&
+              typeof (image as { dataUrl?: unknown }).dataUrl === 'string' &&
+              typeof (image as { name?: unknown }).name === 'string'
+            )
+          )
+          .map(image => ({ data: image.dataUrl, kind: 'image' as const, name: image.name }))
+
+        const next = updateGroupComposerDraft(composerKeyRef.current, current => ({
+          ...current,
+          activeReplyThread: null,
+          main: current.main.trim() ? `${current.main.trimEnd()}\n\n${prompt}` : prompt,
+          pendingAttachments: {
+            ...(current.pendingAttachments || {}),
+            main: [...(current.pendingAttachments?.main || []), ...attachments]
+          }
+        }))
+
+        setComposerDraft(next)
+        host.notify({
+          kind: 'success',
+          message: `${Number(request.count) || attachments.length} Browser comment${Number(request.count) === 1 ? '' : 's'} added to ${group}. Review the New Thread draft before sending.`
+        })
+        send({
+          ok: true,
+          requestId: request.requestId,
+          type: 'preview-annotate-handoff-ack'
+        })
+      } catch (error) {
+        send({
+          error: error instanceof Error ? error.message : String(error),
+          ok: false,
+          requestId: request.requestId,
+          type: 'preview-annotate-handoff-ack'
+        })
+      }
+    }
+
+    const stopDesktop = desktopBridge?.onMessage(onMessage)
+    const onBroadcast = (event: MessageEvent<unknown>) => onMessage(event.data)
+    channel?.addEventListener('message', onBroadcast)
+
+    return () => {
+      stopDesktop?.()
+      channel?.removeEventListener('message', onBroadcast)
+      channel?.close()
+    }
+  }, [composerKey, group])
 
   const [confirmDisband, setConfirmDisband] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -881,7 +1074,6 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           aria-expanded={activityOpen}
           className="flex min-w-0 flex-1 items-center gap-1.5 px-2.5 py-1 text-left text-[0.7rem] text-(--ui-text-quaternary) transition-colors hover:text-foreground"
           onClick={() => setActivityOpen(prev => !prev)}
-          title={activityOpen ? b.group.hideActivity : b.group.showActivity}
         >
           <Codicon className="shrink-0 text-[0.65rem]" name={activityOpen ? 'chevron-down' : 'chevron-right'} />
           <span className="shrink-0 font-medium">{b.group.activity}</span>
@@ -918,7 +1110,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
                   {groupActivityLabel(event, group)}
                 </span>
                 <span className="shrink-0 text-[0.625rem] text-(--ui-text-quaternary)">{relativeTime(event.at)}</span>
-                {event.kind === 'working' ? (
+                {room.running && event.kind === 'working' ? (
                   <Tip label={b.group.stopHint}>
                     <Button
                       className="shrink-0 text-(--ui-accent)"
@@ -1088,6 +1280,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
 
     const seed = (current: string) =>
       current.includes(`@${tag}`) ? current : `@${tag} ${current}`.replace(/\s+$/, ' ')
+
     const thread = groupThreadOf(entry)
 
     if (replyThread === thread) {
@@ -1203,7 +1396,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
             ) : null}
           </div>
           <div
-            className="min-w-0 text-xs text-(--ui-text-secondary) [&_p]:mb-1 [&_p:last-child]:mb-0 [&_ul]:mb-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:mb-1 [&_ol]:list-decimal [&_ol]:pl-4 [&_pre]:overflow-x-auto" // The app shell sets user-select: none globally; message bodies opt
+            className="min-w-0 text-xs text-(--ui-text-secondary) [&_p]:mb-1 [&_p:last-child]:mb-0 [&_ul]:mb-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:mb-1 [&_ol]:list-decimal [&_ol]:pl-4 [&_pre]:whitespace-pre-wrap [&_pre]:wrap-anywhere" // The app shell sets user-select: none globally; message bodies opt
             // back in so drag-select and ⌘C work in group chat logs.
             data-selectable-text="true"
             data-slot="group-chat-message-content"
@@ -1314,6 +1507,10 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   return (
     <div
       className="relative flex h-full flex-col"
+      data-preview-annotate-composer-key={composerKey}
+      data-preview-annotate-destination="group"
+      data-preview-annotate-group={group}
+      data-preview-annotate-owner-key={groupWorkspaceOwnerKey(group)}
       onDragLeave={event => {
         // Only clear when leaving the room container itself, not when the
         // cursor moves between its children. React types relatedTarget as a
@@ -1512,8 +1709,10 @@ export function openGroupChat(group: string): void {
 
   if (typeof host.openWorkspace === 'function') {
     try {
+      const title = $canonicalGroupBindings.get()[group]?.roomName || group
+
       const close = host.openWorkspace(`${ID}:group:${slugifyProfileName(group)}`, {
-        title: group,
+        title,
         minWidth: '24rem',
         render: () => <GroupChatMainView group={group} />,
         onClose: () => {

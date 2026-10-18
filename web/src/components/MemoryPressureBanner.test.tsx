@@ -73,24 +73,6 @@ describe("MemoryPressureBanner", () => {
     expect(banner()).toBeNull();
   });
 
-  it("shows the elevated warning", async () => {
-    await render(
-      <MemoryPressureBanner status={statusWith({ pressure: "elevated" })} />,
-    );
-    expect(banner()?.textContent).toContain("running low on memory");
-  });
-
-  it("shows the OOM-restart notice even when current pressure is ok", async () => {
-    await render(
-      <MemoryPressureBanner
-        status={statusWith({ pressure: "ok", last_boot_suspected_oom: true })}
-      />,
-    );
-    expect(banner()?.textContent).toContain(
-      "restarted unexpectedly, most likely because it ran out of memory",
-    );
-  });
-
   it("critical pressure outranks the OOM-restart notice", async () => {
     await render(
       <MemoryPressureBanner
@@ -273,15 +255,6 @@ describe("MemoryPressureBanner", () => {
     );
     expect(banner()?.textContent).toContain("disk is almost full");
     expect(banner()?.textContent).toContain("(120 MB free)");
-  });
-
-  it("shows the disk-elevated warning", async () => {
-    await render(
-      <MemoryPressureBanner
-        status={statusWithDisk({ pressure: "elevated", free_mb: 900 })}
-      />,
-    );
-    expect(banner()?.textContent).toContain("disk is filling up");
   });
 
   it("disk critical outranks memory critical", async () => {

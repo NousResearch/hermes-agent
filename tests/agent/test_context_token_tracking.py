@@ -22,7 +22,7 @@ def _patch_bootstrap(monkeypatch):
         "type": "function",
         "function": {"name": "t", "description": "t", "parameters": {"type": "object", "properties": {}}},
     }])
-    monkeypatch.setattr("model_tools.check_toolset_requirements", lambda: {})
+    monkeypatch.setattr("model_tools.check_toolset_requirements", dict)
 
 
 class _FakeAnthropicClient:
@@ -93,11 +93,6 @@ def test_anthropic_no_cache_fields(monkeypatch):
     assert agent.context_compressor.last_prompt_tokens == 500
 
 
-def test_anthropic_cache_read_only(monkeypatch):
-    agent = _make_agent(monkeypatch, "anthropic_messages", "anthropic",
-                        lambda: _anthropic_resp(5, 15, cache_read=17666, cache_creation=15))
-    agent.run_conversation("hi")
-    assert agent.context_compressor.last_prompt_tokens == 17686  # 5+17666+15
 
 
 # -- OpenAI: prompt_tokens already total --

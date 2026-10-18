@@ -1,11 +1,13 @@
 name: hermes-subscription-meter
 repo: https://github.com/NealZhouPanda/hermes-subscription-meter
-sha: 5625e0c911b81f7a9b603439c8f2db96ea31fc4d
-description: Provider-neutral subscription quota matrix panel — each provider's subscription window as a single time x quota row (elapsed vs remaining at a glance), with UI-side show/hide per provider row.
+sha: 44f33fcb041096f159ebf72182ac633547926422
+description: "Provider-neutral subscription quota matrix panel — each provider's subscription window as a single time x quota row (elapsed vs remaining at a glance), with UI-side show/hide per provider row. Disclosure — reads provider keys from the current profile's .env and token presence from its auth.json, and calls each provider's own usage/balance API with that key (Kimi, GLM, MiniMax, Command Code, DeepSeek, xAI management, OpenRouter, Alibaba Cloud BSS, Grok, Codex via Hermes); an optional shared_sources setting reads another profile's .env/auth.json the same way; nothing is written outside this plugin's settings."
 maintainer: NealZhouPanda
 tier: community
 category: desktop
 docs_url: https://github.com/NealZhouPanda/hermes-subscription-meter#readme
+version: "0.6.0"
+image: https://raw.githubusercontent.com/NealZhouPanda/hermes-subscription-meter/44f33fcb041096f159ebf72182ac633547926422/docs/banner.png
 capabilities:
   provides_tools: []
   provides_hooks: []

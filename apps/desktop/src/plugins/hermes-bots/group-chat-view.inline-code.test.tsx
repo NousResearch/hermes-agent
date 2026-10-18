@@ -2,20 +2,18 @@ import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { cleanup, render } from '@testing-library/react'
+import { cleanup, render, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeAll, expect, it, vi } from 'vitest'
 
 import { translateBots } from './i18n-test-helper'
 
-// Room bodies render through the shell's message renderer, whose markdown
-// root is `aui-md prose` — the same container the 1:1 chat uses, minus the
-// `[data-slot='aui_assistant-message-content']` ancestor that scopes the
-// themed inline-code rule in styles.css. Without a room-owned hook the room's
-// `<code>` falls through to Tailwind Typography's fixed near-black ink, which
-// is invisible on every dark theme (#114086). The stubs below emit the two
-// shapes the room can produce (renderer path, raw Streamdown fallback) so the
-// real stylesheet's cascade decides, not a regex over the source text.
+// Without a room-owned hook the room's `<code>` falls through to Tailwind
+// Typography's fixed near-black ink, which is invisible on every dark theme
+// (#114086). The renderer stub emits a bare `<code>` with NO `.aui-md`
+// wrapper, so only the room's own `[data-slot='group-chat-message-content']`
+// rule in the real stylesheet can theme it: the cascade decides, not a regex
+// over the source text.
 vi.mock('@hermes/plugin-sdk', async () => {
   const { pluginSdkMock, createGroupGateway } = await import('./group-test-utils')
   const base = await pluginSdkMock(createGroupGateway().host)
@@ -33,7 +31,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
     cn: (...values: unknown[]) => values.filter(Boolean).join(' '),
     Codicon: () => null,
     CopyButton: () => null,
-    Switch: () => null,
+    ToggleRow: () => null,
     ConfirmDialog: () => null,
     Dialog: () => null,
     DialogContent: () => null,
@@ -43,11 +41,9 @@ vi.mock('@hermes/plugin-sdk', async () => {
     DialogTitle: () => null,
     Input: () => null,
     MessageTextContent: ({ text }: { text: string }) => (
-      <div className="aui-md prose">
-        <p>
-          set <code data-testid="renderer-code">{text}</code> first
-        </p>
-      </div>
+      <p>
+        set <code data-testid="renderer-code">{text}</code> first
+      </p>
     ),
     Tip: ({ children }: { children: ReactNode }) => children,
     relativeTime: () => 'now',
@@ -79,9 +75,12 @@ it('themes inline code in room message bodies with the chat inline-code tokens',
   const log = [
     { id: 'm1', thread: 'a', from: { kind: 'member' as const, name: 'builder' }, text: 'discover_models', at: 1 }
   ]
+
   $groupChats.set({ Room: { log, watermarks: {}, sessions: {} } })
 
   const { getByTestId } = render(<GroupChatWorkspace group="Room" members={[{ name: 'builder' }] as never} />)
+  // The room paints once the canonical `groups.capabilities` gate resolves.
+  await waitFor(() => expect(getByTestId('renderer-code')).toBeTruthy())
   const style = getComputedStyle(getByTestId('renderer-code'))
 
   expect(style.color).toBe('var(--ui-inline-code-foreground)')

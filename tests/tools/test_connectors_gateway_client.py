@@ -10,7 +10,7 @@ from dataclasses import replace as dataclass_replace
 
 import pytest
 
-from tools.connectors.gateway.bridge import connector_search_hits
+from tools.connectors.gateway.bridge import ConnectorLeg, connector_search_hits
 from tools.connectors.gateway.client import ConnectorClient
 from tools.connectors.gateway.errors import (
     GatewayAuthError,
@@ -89,31 +89,25 @@ def planned(calls=PLAN_CALLS):
 # ---------------------------------------------------------------------------
 
 
-def test_execute_sends_one_request_with_camelcase_body_and_key():
+def single_result(connector, tool, data):
+    return {"result": {"connector": connector, "tool": tool, "data": data}}
+
+
+def test_execute_sends_one_single_call_request_per_call_with_its_own_key():
     transport = FakeTransport(
-        FakeResponse(
-            200,
-            execute_envelope(
-                [
-                    {"index": 0, "connector": "gmail", "tool": "GMAIL_SEND_EMAIL", "data": {"id": "m1"}},
-                    {"index": 1, "connector": "slack", "tool": "SLACK_POST_MESSAGE", "data": "ok"},
-                ]
-            ),
-        )
+        FakeResponse(200, single_result("gmail", "GMAIL_SEND_EMAIL", {"id": "m1"})),
+        FakeResponse(200, single_result("slack", "SLACK_POST_MESSAGE", "ok")),
     )
     results = make_client(transport).execute(planned())
 
-    assert len(transport.requests) == 1
-    request = transport.requests[0]
-    assert request["url"].endswith("/v1/connectors/execute")
-    assert request["json"] == {
-        "tools": [
-            {"connector": "gmail", "tool": "GMAIL_SEND_EMAIL", "arguments": {"to": "x"}},
-            {"connector": "slack", "tool": "SLACK_POST_MESSAGE", "arguments": {}},
-        ]
-    }
-    assert request["headers"]["x-idempotency-key"]  # present, non-empty
-    assert request["headers"]["Authorization"] == "Bearer nous-token"
+    assert [r["url"] for r in transport.requests] == ["https://tool-gateway.test/v1/connectors/execute"] * 2
+    assert [r["json"] for r in transport.requests] == [
+        {"call": {"connector": "gmail", "tool": "GMAIL_SEND_EMAIL", "arguments": {"to": "x"}}},
+        {"call": {"connector": "slack", "tool": "SLACK_POST_MESSAGE", "arguments": {}}},
+    ]
+    keys = [r["headers"]["x-idempotency-key"] for r in transport.requests]
+    assert all(keys) and keys[0] != keys[1]
+    assert transport.requests[0]["headers"]["Authorization"] == "Bearer nous-token"
     assert results == [
         {"data": {"id": "m1"}, "error": None},
         {"data": "ok", "error": None},
@@ -123,12 +117,7 @@ def test_execute_sends_one_request_with_camelcase_body_and_key():
 def test_retry_on_5xx_reuses_the_same_idempotency_key():
     transport = FakeTransport(
         FakeResponse(502, {"error": {"code": "BAD_GATEWAY", "message": "upstream"}}),
-        FakeResponse(
-            200,
-            execute_envelope(
-                [{"index": 0, "connector": "gmail", "tool": "GMAIL_SEND_EMAIL", "data": "sent"}]
-            ),
-        ),
+        FakeResponse(200, single_result("gmail", "GMAIL_SEND_EMAIL", "sent")),
     )
     results = make_client(transport).execute(planned(PLAN_CALLS[:1]))
 
@@ -204,32 +193,27 @@ def test_401_raises_auth_error_and_missing_token_fails_fast():
     assert no_token.requests == []
 
 
-def test_connection_required_stays_inside_the_200_envelope():
+def test_connection_required_409_is_a_call_entry_with_link_and_account():
     transport = FakeTransport(
         FakeResponse(
-            200,
-            execute_envelope(
-                [
-                    {
-                        "index": 0,
-                        "connector": "gmail",
-                        "tool": "GMAIL_SEND_EMAIL",
-                        "error": {
-                            "code": "CONNECTION_REQUIRED",
-                            "message": "connect gmail",
-                            "connector": "gmail",
-                            "connectUrl": "https://example.test/connect/1",
-                            "connectionId": "ca_1",
-                        },
-                    }
-                ]
-            ),
+            409,
+            {
+                "code": "CONNECTION_REQUIRED",
+                "family": "product",
+                "message": "connect gmail",
+                "connector": "gmail",
+                "connectUrl": "https://example.test/connect/1",
+                "connectionId": "ca_1",
+                "requestId": "req_1",
+            },
         )
     )
     (result,) = make_client(transport).execute(planned(PLAN_CALLS[:1]))
+    assert len(transport.requests) == 1
     assert result["error"]["code"] == "CONNECTION_REQUIRED"
     assert result["error"]["connect_url"] == "https://example.test/connect/1"
     assert result["error"]["connection_id"] == "ca_1"
+    assert result["error"]["request_id"] == "req_1"
 
 
 # ---------------------------------------------------------------------------
@@ -237,10 +221,10 @@ def test_connection_required_stays_inside_the_200_envelope():
 # ---------------------------------------------------------------------------
 
 
-def test_search_hits_empty_on_unavailable_dark_gateway_and_exploding_client():
+def test_search_hits_empty_on_unavailable_dark_gateway_and_names_a_real_failure():
     assert connector_search_hits(
         [{"use_case": "send mail"}], availability=lambda: False
-    ) == {}
+    ) == ConnectorLeg()
 
     def dark_factory():
         raise GatewayUnavailable("dark", code="NOT_FOUND", status=404)
@@ -251,7 +235,7 @@ def test_search_hits_empty_on_unavailable_dark_gateway_and_exploding_client():
             availability=lambda: True,
             client_factory=dark_factory,
         )
-        == {}
+        == ConnectorLeg()
     )
 
     def boom_factory():
@@ -263,7 +247,31 @@ def test_search_hits_empty_on_unavailable_dark_gateway_and_exploding_client():
             availability=lambda: True,
             client_factory=boom_factory,
         )
-        == {}
+        == ConnectorLeg(failure="unreachable")
+    )
+
+    def rejected_factory():
+        raise GatewayAuthError("token rejected", code="UNAUTHORIZED", status=401)
+
+    assert (
+        connector_search_hits(
+            [{"use_case": "send mail"}],
+            availability=lambda: True,
+            client_factory=rejected_factory,
+        )
+        == ConnectorLeg(failure="sign_in_expired")
+    )
+
+    def forbidden_factory():
+        raise GatewayAuthError("no entitlement", code="FORBIDDEN", status=403)
+
+    assert (
+        connector_search_hits(
+            [{"use_case": "send mail"}],
+            availability=lambda: True,
+            client_factory=forbidden_factory,
+        )
+        == ConnectorLeg()
     )
 
 
@@ -273,12 +281,13 @@ def test_search_hits_pass_through_on_success():
             assert queries == [{"use_case": "send mail"}]
             return {"results": [{"index": 1, "use_case": "send mail"}]}
 
-    hits = connector_search_hits(
+    leg = connector_search_hits(
         [{"use_case": "send mail"}],
         availability=lambda: True,
         client_factory=lambda: FakeClient(),
     )
-    assert hits["results"][0]["use_case"] == "send mail"
+    assert leg.failure is None
+    assert leg.payload["results"][0]["use_case"] == "send mail"
 
 
 # ---------------------------------------------------------------------------

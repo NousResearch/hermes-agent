@@ -2,6 +2,8 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { refreshProjectTree } from '@/store/projects'
+
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 
 afterEach(cleanup)
@@ -62,6 +64,7 @@ vi.mock('@/i18n', () => ({
           renameTitle: 'Rename session',
           renamed: 'Renamed',
           sessionActions: 'Session actions',
+          unarchive: 'Unarchive',
           unpin: 'Unpin',
           untitledPlaceholder: 'Untitled'
         }
@@ -79,7 +82,8 @@ vi.mock('@/store/projects', () => ({
   $projectTree: atom<unknown[]>([]),
   moveSessionToProject: vi.fn(),
   projectIdForCwd: vi.fn(() => null),
-  projectRootCwd: vi.fn(() => '')
+  projectRootCwd: vi.fn(() => ''),
+  refreshProjectTree: vi.fn(() => Promise.resolve())
 }))
 vi.mock('@/store/session', () => ({
   $activeSessionId: atom<null | string>(null),
@@ -99,6 +103,7 @@ vi.mock('@/store/session-color', () => ({
   setSessionColorOverride: vi.fn()
 }))
 vi.mock('@/store/session-states', () => ({
+  $sessionStates: atom<Record<string, unknown>>({}),
   $sessionTiles: atom<unknown[]>([]),
   closeAllOpenSessionTiles: vi.fn(),
   openSessionTile: vi.fn()
@@ -123,12 +128,10 @@ function renderMenu() {
 }
 
 describe('SessionActionsMenu', () => {
-  it('opens the dropdown on click without a tooltip on the kebab', async () => {
+  it('opens the dropdown on click', async () => {
     renderMenu()
 
     const trigger = screen.getByRole('button', { name: 'Session actions' })
-
-    expect(trigger.closest('[data-slot="tooltip-trigger"]')).toBeNull()
 
     // Radix's dropdown trigger opens on pointerdown (not on the synthetic
     // 'click' fireEvent alone would dispatch), so fire the full mouse
@@ -164,6 +167,38 @@ describe('SessionActionsMenu', () => {
     await waitFor(() => expect(document.activeElement).toBe(input))
     // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
     expect(document.activeElement).not.toBe(trigger)
+  })
+
+  it('passes profile to renameSession when submitting from RenameSessionDialog', async () => {
+    const { renameSession } = await import('@/hermes')
+    vi.mocked(renameSession).mockResolvedValue({ ok: true, title: 'Prep Butler' })
+
+    render(
+      <SessionActionsMenu profile="personal" sessionId="s1" title="My session">
+        <button aria-label="Session actions" type="button">
+          ⋮
+        </button>
+      </SessionActionsMenu>
+    )
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+
+    const rename = await screen.findByRole('menuitem', { name: /rename/i })
+    fireEvent.click(rename)
+
+    const dialog = await screen.findByRole('dialog')
+    const input = within(dialog).getByRole('textbox')
+    fireEvent.change(input, { target: { value: 'Prep Butler' } })
+
+    const save = within(dialog).getByRole('button', { name: /save/i })
+    fireEvent.click(save)
+
+    await waitFor(() => {
+      expect(renameSession).toHaveBeenCalledWith('s1', 'Prep Butler', 'personal')
+    })
   })
 
   it('confirms before deleting — cancel keeps the session, confirm deletes it', async () => {
@@ -223,6 +258,32 @@ describe('SessionActionsMenu', () => {
 
     const deleteItem = await screen.findByRole('menuitem', { name: /delete/i })
     expect(deleteItem.getAttribute('aria-disabled')).toBe('true')
+  })
+
+  // The sidebar's Archived view reuses this menu; its rows must offer the
+  // restore verb instead of a no-op re-archive (#98813). The item still fires
+  // the shared onArchive callback — the wiring dispatches it to the restore
+  // path based on the row's archived state.
+  it('labels the archive verb Unarchive for an already-archived row and fires the shared callback', async () => {
+    const onArchive = vi.fn()
+    render(
+      <SessionActionsMenu archived onArchive={onArchive} sessionId="s1" title="My session">
+        <button aria-label="Session actions" type="button">
+          ⋮
+        </button>
+      </SessionActionsMenu>
+    )
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+
+    const restoreItem = await screen.findByRole('menuitem', { name: /^unarchive$/i })
+    expect(screen.queryByRole('menuitem', { name: /^archive$/i })).toBeNull()
+
+    fireEvent.click(restoreItem)
+    await waitFor(() => expect(onArchive).toHaveBeenCalledTimes(1))
   })
 
   it('confirms with the Enter key and cancels with Escape', async () => {
@@ -286,5 +347,53 @@ describe('SessionActionsMenu', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
     expect(await screen.findByText('Session deleted')).toBeTruthy()
     expect(onDelete).toHaveBeenCalledTimes(1)
+  })
+
+  // A canonical Bot Chat tab must not offer Rename: the write can never reach
+  // the caption it names (the caption is the roster label) and the backend
+  // guard refuses it anyway — the old flow toasted success over a no-op
+  // (#124857). The item is omitted, not disabled, so the menu shows only
+  // verbs whose result the user can observe.
+  it('omits Rename (and never mounts its dialog) when renameable is false', async () => {
+    const { unmount } = render(
+      <SessionContextMenu onDelete={vi.fn()} renameable={false} sessionId="bot-chat" title="Bot Chat">
+        <button aria-label="Session row" type="button">
+          Row
+        </button>
+      </SessionContextMenu>
+    )
+
+    const row = screen.getByRole('button', { name: 'Session row' })
+    fireEvent.contextMenu(row)
+
+    await screen.findByRole('menu')
+    expect(screen.queryByRole('menuitem', { name: /rename/i })).toBeNull()
+    // The other identity verbs stay available — only Rename is gated.
+    expect(screen.getByRole('menuitem', { name: /^pin$/i })).toBeTruthy()
+
+    // No rename dialog is mounted anywhere (portals included): the verb is
+    // unreachable even programmatically, not just hidden from pointer users.
+    expect(screen.queryByRole('dialog')).toBeNull()
+    unmount()
+  })
+
+  // $projectTree is only populated by a grouped-view visit or the flat view's
+  // background warm timer (PROJECT_TREE_WARM_MS). Opening this submenu before
+  // either fires must not silently show "No other projects" forever — it must
+  // pull the authoritative tree itself.
+  it('refreshes the project tree when the "Move to project" submenu opens', async () => {
+    renderMenu()
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+
+    await screen.findByRole('menu')
+    expect(refreshProjectTree).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Move to project' }))
+
+    await waitFor(() => expect(refreshProjectTree).toHaveBeenCalledTimes(1))
   })
 })

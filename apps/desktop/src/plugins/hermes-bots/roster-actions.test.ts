@@ -159,6 +159,7 @@ describe('new activity after the seed', () => {
     const toasts = hostMock.notify.mock.calls.filter(
       c => c[0].title.includes('has new activity') || c[0].title.includes('New message for')
     )
+
     expect(toasts.length).toBe(1)
   })
 
@@ -173,6 +174,7 @@ describe('new activity after the seed', () => {
     const toasts = hostMock.notify.mock.calls.filter(
       c => c[0].title.includes('has new activity') || c[0].title.includes('New message for')
     )
+
     expect(toasts.length).toBe(2)
   })
 

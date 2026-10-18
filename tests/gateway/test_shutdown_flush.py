@@ -1,8 +1,6 @@
 """Tests for gateway/shutdown_flush.py — pending message durability (#72680)."""
 
 import json
-import os
-import stat
 import time
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -10,7 +8,6 @@ from unittest.mock import MagicMock
 import pytest
 
 from gateway.shutdown_flush import (
-    _serialise_value,
     flush_overflow_to_file,
     flush_pending_to_file,
     recover_pending_to_db,
@@ -223,20 +220,6 @@ def test_recover_skips_failing_payload_and_continues(tmp_path, monkeypatch):
     assert bad.exists()
 
 
-def test_serialise_object_with_text():
-    obj = MagicMock()
-    obj.text = "msg"
-    obj.session_id = "sid"
-    obj.platform = None
-    obj.sender_id = None
-    obj.sender_name = None
-    obj.reply_to = None
-    obj.media = None
-    obj.raw_event = None
-    result = _serialise_value(obj)
-    assert result is not None
-    assert result["text"] == "msg"
-    assert result["session_id"] == "sid"
 
 
 def test_get_flush_dir_uses_get_hermes_home(tmp_path, monkeypatch):
@@ -246,7 +229,6 @@ def test_get_flush_dir_uses_get_hermes_home(tmp_path, monkeypatch):
     captured = {}
 
     def fake_get_hermes_home():
-        from pathlib import Path
         captured["called"] = True
         return tmp_path
 

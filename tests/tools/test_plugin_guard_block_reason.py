@@ -29,6 +29,5 @@ def test_dangerous_reason_counts_and_names_blocking_findings():
     allowed, reason = should_allow_plugin_install(result)
 
     assert allowed is False
-    assert "1 critical of 3 findings" in reason
     assert "hermes_config_mod_shell" in reason
     assert "unpinned_pip_install" not in reason

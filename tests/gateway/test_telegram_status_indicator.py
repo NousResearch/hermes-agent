@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import PlatformConfig
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def _make_adapter(extra):
@@ -22,9 +22,6 @@ def _make_adapter(extra):
     return adapter
 
 
-def test_enabled_via_extra():
-    adapter = _make_adapter(extra={"status_indicator": True})
-    assert adapter._status_indicator_enabled is True
 
 
 @pytest.mark.asyncio

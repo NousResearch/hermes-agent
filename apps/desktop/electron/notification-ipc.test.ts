@@ -50,6 +50,7 @@ it('returns native clicks and approval actions to the emitting window, not the p
     focusWindow,
     platform: 'darwin'
   })
+
   const notify = host.handle.mock.calls[0][1] as (
     event: IpcMainInvokeEvent,
     payload: HermesNotification
@@ -97,10 +98,12 @@ it('delivers plugin callbacks to their source and falls back only for navigation
     focusWindow,
     platform: 'darwin'
   })
+
   const notify = host.handle.mock.calls[0][1] as (
     event: IpcMainInvokeEvent,
     payload: HermesNotification
   ) => Promise<boolean>
+
   await notify({ sender: source.webContents } as unknown as IpcMainInvokeEvent, {
     kind: 'plugin',
     notifyId: 'source-callback',

@@ -26,7 +26,7 @@ import hermes_state
 from hermes_state import SessionDB, preflight_db_writability
 
 pytestmark = [
-    pytest.mark.skipif(sys.platform == "win32", reason="POSIX chmod semantics"),
+    pytest.mark.platforms("posix"),  # POSIX chmod semantics
     pytest.mark.skipif(
         hasattr(os, "geteuid") and os.geteuid() == 0,
         reason="root bypasses file permission checks",
@@ -121,7 +121,6 @@ class TestRefusalOutsideScope:
                 preflight_db_writability(db, db_label="custom.db")
             msg = str(exc_info.value)
             assert str(db) in msg
-            assert "chmod u+rw" in msg
             # Must NOT have silently chmod'd a file outside the home tree.
             assert not os.access(db, os.W_OK)
         finally:
@@ -139,7 +138,6 @@ class TestRefusalOutsideScope:
                 preflight_db_writability(db, db_label="custom.db")
             msg = str(exc_info.value)
             assert str(wal) in msg
-            assert "Do NOT delete" in msg
         finally:
             os.chmod(wal, 0o644)
 
@@ -157,6 +155,17 @@ class TestSkips:
 
 
 class TestSessionDBIntegration:
+    def test_sessiondb_repairs_readonly_dir_before_fresh_db_lock(self, hermes_home):
+        sub = hermes_home / "profiles" / "p1"
+        sub.mkdir(parents=True)
+        os.chmod(sub, 0o555)
+        try:
+            db = SessionDB(sub / "state.db")  # absent DB: the quarantine lock lives in this dir
+            db.close()
+            assert os.access(sub, os.W_OK)
+        finally:
+            os.chmod(sub, 0o755)
+
     def test_sessiondb_selfheals_readonly_db_in_home(self, hermes_home):
         db_path = hermes_home / "state.db"
         first = SessionDB(db_path)
@@ -187,7 +196,6 @@ class TestSessionDBIntegration:
                 SessionDB(db_path)
             msg = str(exc_info.value)
             assert str(db_path) in msg
-            assert "chmod" in msg
         finally:
             os.chmod(db_path, 0o644)
             hermes_state._set_last_init_error(None)

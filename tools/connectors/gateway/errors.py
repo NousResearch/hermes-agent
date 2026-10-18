@@ -7,7 +7,10 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Optional
 
+from tools.connectors.turn import CARD, LINK, SIDE
+
 __all__ = [
+    "SIDE_AGENT_HINT",
     "GatewayAuthError",
     "GatewayUnavailable",
     "IdempotencyConflict",
@@ -103,31 +106,72 @@ def parse_gateway_error(status: int, body: Any, headers: Optional[Mapping[str, A
     return ToolGatewayError(message, retryable=status >= 500, **kwargs)
 
 
+SIDE_AGENT_HINT = (
+    "This app is not connected. Only the main agent can connect it, so report that back "
+    "instead of trying to connect it here."
+)
+
+CARD_HINT = (
+    "This app is not connected. Call manage_connections to open a connection card for it; "
+    "there is no link to show the user."
+)
+
+# CONNECTION_EXPIRED: the account exists but the vendor no longer accepts it.
+EXPIRED_SIDE_AGENT_HINT = (
+    "This app's connection expired. Only the main agent can reconnect it, so report that back "
+    "instead of trying to reconnect it here."
+)
+
+EXPIRED_CARD_HINT = (
+    "This app's connection expired. Call manage_connections with action 'reconnect' to open a "
+    "connection card for it; there is no link to show the user."
+)
+
+EXPIRED_LINK_HINT = "The connection expired. Show the user the connect_url to reconnect, then retry the call."
+
+_HINTS = {
+    "CONNECTION_REQUIRED": {SIDE: SIDE_AGENT_HINT, CARD: CARD_HINT},
+    "CONNECTION_EXPIRED": {SIDE: EXPIRED_SIDE_AGENT_HINT, CARD: EXPIRED_CARD_HINT, LINK: EXPIRED_LINK_HINT},
+}
+
+
 def render_connection_required(
     *,
     connector: Optional[str] = None,
     message: Optional[str] = None,
     connect_url: Optional[str] = None,
     hint: Optional[str] = None,
-    card: bool = False,
+    surface: str = LINK,
+    code: str = "CONNECTION_REQUIRED",
 ) -> dict[str, Any]:
-    """Single shared CONNECTION_REQUIRED shape. With a card the link stays on the panel and the
-    model is told a connect card is available; without one the model relays the link."""
+    """The model-facing shape for an app the call cannot use until the user connects it.
+
+    ``code`` is CONNECTION_REQUIRED or CONNECTION_EXPIRED; both keep the card and link behaviour,
+    the expired one with reconnect wording."""
+    hints = _HINTS.get(code, _HINTS["CONNECTION_REQUIRED"])
     payload: dict[str, Any] = {
-        "code": "CONNECTION_REQUIRED",
-        "message": message
-        or (
-            f"The {connector} connector is not connected for this account."
-            if connector
-            else "This connector is not connected for this account."
-        ),
+        "code": code,
+        "message": message or _default_message(code, connector),
     }
     if connector:
         payload["connector"] = connector
-    if card:
+    if surface == SIDE:
+        payload["hint"] = hints[SIDE]
+        return payload
+    if surface == CARD:
         payload["connect_card_available"] = True
-    elif connect_url:
+        payload["hint"] = hints[CARD]
+        return payload
+    if connect_url:
         payload["connect_url"] = connect_url
+        hint = hint or hints.get(LINK)
     if hint:
         payload["hint"] = hint
     return payload
+
+
+def _default_message(code: str, connector: Optional[str]) -> str:
+    app = f"The {connector} connector" if connector else "This connector"
+    if code == "CONNECTION_EXPIRED":
+        return f"{app} connection for this account has expired and must be reconnected."
+    return f"{app} is not connected for this account."

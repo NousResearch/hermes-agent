@@ -200,6 +200,21 @@ def test_checkout_inside_a_guarded_root_is_not_hermes_state():
         guard.check(PROJECT_ROOT.parent / "config.yaml")
 
 
+def test_a_checkout_inside_the_home_can_ask_whether_it_is_a_sealed_payload(monkeypatch):
+    """A review worktree under <home>/cache/scratch (or a default install): every subprocess env
+    reads ``<checkout>/../manifest.json`` to learn whether the checkout is a sealed payload. That
+    read must reach the probe, not fail the caller; writing it is still refused."""
+    from pm.environments import payload_command_dir
+    from tests import conftest
+    from tests.home_io_guard import HomeIOGuard
+
+    monkeypatch.setattr(conftest, "_REAL_HERMES_ROOT_CANDIDATES", [PROJECT_ROOT.parent])
+    payload_command_dir(PROJECT_ROOT)
+    with pytest.raises(AssertionError, match="REAL hermes home"):
+        HomeIOGuard(lambda: [PROJECT_ROOT.parent]).check(
+            PROJECT_ROOT.parent / "manifest.json", destructive=True)
+
+
 def test_hermes_exported_scratch_tmp_is_not_the_test_temp_root(tmp_path):
     """A Hermes-launched shell hands pytest TMPDIR=<home>/cache/scratch (tagged by
     HERMES_SCRATCH_DIR). With that home guarded, honoring it would put the session

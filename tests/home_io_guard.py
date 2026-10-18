@@ -30,6 +30,12 @@ _INTERPRETER_PREFIXES = tuple({
 # resolve once at import, as before: they are fixed for the process lifetime.
 _normcase = os.path.normcase
 _INTERPRETER_PREFIX_STRS = tuple(_normcase(os.fspath(p)) for p in _INTERPRETER_PREFIXES)
+# Every subprocess env asks whether the checkout is a sealed payload's tree by reading
+# ``<checkout>/../manifest.json`` (pm.environments._payload_manifest). With the checkout inside
+# the home (default install, or a review worktree under <home>/cache/scratch) that probe lands
+# beside it: a read of the checkout's own layout, not Hermes state. Writing it stays refused.
+_CHECKOUT_PAYLOAD_MANIFEST = _normcase(os.fspath(Path(__file__).resolve().parent.parent.parent
+                                                 / "manifest.json"))
 
 
 def _within(path: str, prefix: str) -> bool:
@@ -100,6 +106,8 @@ class HomeIOGuard:
             for prefix in _INTERPRETER_PREFIX_STRS:
                 if _within(absolute, prefix) or (metadata and _contains(absolute, prefix)):
                     return
+            if not destructive and absolute == _CHECKOUT_PAYLOAD_MANIFEST:
+                return
             # Check the lexical path first: resolving must not probe a protected
             # tree merely to decide that the original path was forbidden.
             for root in roots:

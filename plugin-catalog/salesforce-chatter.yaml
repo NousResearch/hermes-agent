@@ -1,0 +1,23 @@
+name: salesforce-chatter
+repo: https://github.com/zenplace-system/hermes-plugin-salesforce-chatter
+sha: 16ff469ffb1484e37053315e799846d3c4d7c9d8
+subdir: salesforce_chatter
+title: Salesforce Chatter
+description: "Talk to Hermes from Salesforce Chatter: @mention the bot user in a post or comment, it Likes the message as an acknowledgement and replies in the same thread, keeping the thread as one session. Images and files on the post are passed to the model; MEDIA files are attached back. Community plugin, not affiliated with Salesforce. Disclosure — authenticates as a dedicated bot user with the OAuth 2.0 JWT bearer flow, reading the private key file at SF_CHATTER_PRIVATE_KEY_PATH; talks to the configured Salesforce login host and the org instance (attachment downloads follow Salesforce redirects); image URLs in the agent's replies are fetched from the gateway host over HTTPS (any public host; private, loopback and metadata addresses are refused) and uploaded to Chatter; polls the To Me feed every 60 s and, for allowlisted groups, runs a SOQL probe every 5 s by default (counts against the org API quota); writes Likes, comments, files in the bot user's Files and optional home-channel posts; keeps its ledger in plugin-data/salesforce-chatter/inbox.sqlite. dry_run defaults to true (no Salesforce writes, no outbound image fetch); with SF_CHATTER_ALLOWED_USERS unset nobody is answered. Optional, off by default: html_preview renders model-generated HTML to PNG with Chromium in a network-isolated Docker container (digest-pinned image, pulled if missing). No telemetry."
+maintainer: zenplace-system
+tier: community
+category: platform
+docs_url: https://github.com/zenplace-system/hermes-plugin-salesforce-chatter#readme
+version: "0.2.1"
+requires_hermes: ">=0.21.3"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - SF_CHATTER_LOGIN_URL
+  - SF_CHATTER_CLIENT_ID
+  - SF_CHATTER_USERNAME
+  - SF_CHATTER_PRIVATE_KEY_PATH
+  - SF_CHATTER_BOT_USER_ID

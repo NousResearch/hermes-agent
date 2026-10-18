@@ -47,6 +47,7 @@ describe('LanguageSwitcher', () => {
       { endonym: 'Polski', translations: { language: { switchTo: 'Zmień język' } } },
       'plugin:hermes-lang-pl'
     )
+
     const saveConfig = vi.fn().mockResolvedValue({ ok: true })
     const latestConfig: HermesConfigRecord = { display: { language: 'en' } }
 

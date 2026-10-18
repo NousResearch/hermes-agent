@@ -1,7 +1,8 @@
 """Per-platform display/verbosity resolver (``resolve_display_setting``).
 
 Resolution order, first non-None wins: ``display.platforms.<platform>.<key>`` →
-``display.<key>`` → ``_PLATFORM_DEFAULTS[platform][key]`` → ``_GLOBAL_DEFAULTS[key]``.
+``display.<key>`` → ``_PLATFORM_DEFAULTS[platform][key]`` (a plugin platform: its registered
+``display_tier`` + ``display_overrides``) → ``_GLOBAL_DEFAULTS[key]``.
 Exception: ``display.streaming`` is CLI-only; gateway streaming follows the top-level
 ``streaming`` config unless a per-platform override sets it. Legacy
 ``display.tool_progress_overrides`` is still read as a ``tool_progress`` fallback.
@@ -47,33 +48,30 @@ _TIER_LOW = {
 }
 _TIER_MINIMAL = {**_TIER_LOW, "tool_preview_length": 0}
 
+# Core-only surfaces. A plugin platform declares ``display_tier`` (+ optional ``display_overrides``)
+# on its ``PlatformEntry``; _platform_defaults() reads it from the registry.
 _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
-    # Mobile inbox: quiet tool_progress / busy-ack, but keep interim commentary and heartbeats so it
-    # doesn't look like "typing..." for 30 minutes.
-    "telegram": {**_TIER_HIGH, "tool_progress": "off", "busy_ack_detail": False},
-    "discord": {**_TIER_HIGH, "reasoning_style": "subtext"},  # "-# " subtext reads as metadata
-    # Slack: Bolt posts cannot be edited like CLI; "new"/"all" spam permanent lines.
-    "slack": {**_TIER_MEDIUM, "tool_progress": "off", "long_running_notifications": False, "busy_ack_detail": False},
-    "mattermost": _TIER_MEDIUM,
-    "matrix": _TIER_MEDIUM,
-    "feishu": _TIER_MEDIUM,
-    "buzz": _TIER_MEDIUM,  # Nostr: edits in place but channels are shared community spaces
-    "signal": _TIER_LOW,
-    "whatsapp": _TIER_MEDIUM,  # Baileys bridge supports /edit
-    "whatsapp_cloud": _TIER_LOW,  # adapter lacks edit_message; promote once it lands
-    "photon": _TIER_LOW,  # permanent-message iMessage inboxes (no edit)
-    "bluebubbles": _TIER_LOW,
-    "weixin": _TIER_LOW,
-    # Non-editable, but its native "stream" msgtype gives a typing animation + cumulative updates.
-    "wecom": {**_TIER_LOW, "streaming": True},
-    "wecom_callback": _TIER_LOW,
-    "dingtalk": _TIER_LOW,
-    "email": _TIER_MINIMAL,
-    "sms": _TIER_MINIMAL,
     "webhook": _TIER_MINIMAL,
-    "homeassistant": _TIER_MINIMAL,
     "api_server": {**_TIER_HIGH, "tool_preview_length": 0},
 }
+
+_TIERS = {"high": _TIER_HIGH, "medium": _TIER_MEDIUM, "low": _TIER_LOW, "minimal": _TIER_MINIMAL}
+
+
+def _platform_defaults(platform_key: str) -> dict[str, Any]:
+    """Built-in defaults for *platform_key*: the table above, else the ``display_tier`` a plugin
+    platform registered (``PlatformEntry.display_tier``) with its ``display_overrides`` on top."""
+    if platform_key in _PLATFORM_DEFAULTS:
+        return _PLATFORM_DEFAULTS[platform_key]
+    try:
+        from gateway.platform_registry import platform_registry
+        entry = platform_registry.get(platform_key)
+    except Exception:
+        return {}
+    tier = _TIERS.get(str(getattr(entry, "display_tier", "") or "").lower(), {})
+    overrides = getattr(entry, "display_overrides", None)
+    return {**tier, **overrides} if overrides else tier
+
 
 # Canonical set of per-platform overrideable keys (for validation).
 OVERRIDEABLE_KEYS = frozenset(_GLOBAL_DEFAULTS.keys())
@@ -88,7 +86,7 @@ def resolve_display_setting(user_config: dict, platform_key: str, setting: str, 
     configured = _configured_display_value(user_config, platform_key, setting)
     if configured is not None:
         return _normalise(setting, configured)
-    val = _PLATFORM_DEFAULTS.get(platform_key, {}).get(setting)
+    val = _platform_defaults(platform_key).get(setting)
     if val is None:
         val = _GLOBAL_DEFAULTS.get(setting)
     return fallback if val is None else val

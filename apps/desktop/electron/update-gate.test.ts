@@ -27,20 +27,20 @@ function deps(marker: boolean, inFlight: boolean, handoffActive = false) {
 // updateGateReason
 // ---------------------------------------------------------------------------
 
-test('gate open when neither marker nor flag is set', () => {
-  assert.equal(updateGateReason(deps(false, false)), null)
+test('gate open when neither marker nor flag is set', async () => {
+  assert.equal(await updateGateReason(deps(false, false)), null)
 })
 
-test('marker alone closes the gate', () => {
-  assert.equal(updateGateReason(deps(true, false)), 'marker')
+test('marker alone closes the gate', async () => {
+  assert.equal(await updateGateReason(deps(true, false)), 'marker')
 })
 
-test('updateInFlight alone closes the gate (#73822 — the pre-marker window)', () => {
-  assert.equal(updateGateReason(deps(false, true)), 'update-in-flight')
+test('updateInFlight alone closes the gate (#73822 — the pre-marker window)', async () => {
+  assert.equal(await updateGateReason(deps(false, true)), 'update-in-flight')
 })
 
-test('marker wins as the reported reason when both are set', () => {
-  assert.equal(updateGateReason(deps(true, true)), 'marker')
+test('marker wins as the reported reason when both are set', async () => {
+  assert.equal(await updateGateReason(deps(true, true)), 'marker')
 })
 
 test('handoff remains closed after the detached wrapper exits', async () => {
@@ -157,10 +157,10 @@ test('parks across the flag→marker handoff without a gap', async () => {
   assert.deepEqual(reasons, ['update-in-flight', 'update-in-flight', 'marker', 'marker', 'marker'])
 })
 
-test('returns timeout when the gate never opens', async () => {
+test('an in-process signal times out when it never clears', async () => {
   let clock = 0
 
-  const outcome = await waitForUpdateClearance(deps(true, false), {
+  const outcome = await waitForUpdateClearance(deps(false, true), {
     now: () => clock,
     pollMs: 10,
     sleep: async ms => {
@@ -170,4 +170,34 @@ test('returns timeout when the gate never opens', async () => {
   })
 
   assert.equal(outcome, 'timeout')
+})
+
+// A live marker owner is waited out, never aged out (C1 rule 3, desktop V3):
+// the old 20-minute deadline booted a backend into a half-replaced runtime.
+test('a live marker keeps parking past the deadline until its owner finishes', async () => {
+  let clock = 0
+  let marker = true
+  let ticks = 0
+
+  const outcome = await waitForUpdateClearance(
+    { hasLiveMarker: async () => marker, isUpdateInFlight: () => false, isHandoffActive: () => false },
+    {
+      now: () => clock,
+      onWaitTick: () => {
+        ticks += 1
+
+        if (ticks === 50) {
+          marker = false
+        }
+      },
+      pollMs: 10,
+      sleep: async ms => {
+        clock += ms
+      },
+      timeoutMs: 50
+    }
+  )
+
+  assert.equal(outcome, 'finished')
+  assert.equal(ticks, 50, 'parked ten times past the deadline')
 })

@@ -60,9 +60,15 @@ def defer_manual_serve(runtime: dict, *, require_alive: bool = False) -> bool:
 
 
 def retain_receipt_manual_serves(receipt: dict) -> list[dict]:
-    """Return transfers still owed so receipt rotation cannot discard failed writes."""
+    """Return transfers still owed so receipt rotation cannot discard failed writes.
+
+    ``carried_manual_serves`` is the durable running record's copy of the previous receipt's rows
+    (update_receipt.begin): read it too, or the warning vanishes while an update runs and after a
+    run killed before its ``plan`` stage.
+    """
     plan = receipt.get("plan") or {}
     rows = list(plan.get("runtimes") or []) + list(receipt.get("pending_manual_serves") or [])
+    rows += list(receipt.get("carried_manual_serves") or [])
     pending = []
     for row in rows:
         if not isinstance(row, dict) or row.get("kind") not in ("serve", "dashboard") or row.get("supervisor") != "manual-serve":

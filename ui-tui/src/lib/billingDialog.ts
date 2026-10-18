@@ -31,7 +31,9 @@ export function billingDialogCopy(block: BillingBlock): BillingDialogCopy {
 
   return {
     cancelLabel: t('libText.billingDialog.dismiss'),
-    confirmLabel: block.billing_url ? t('libText.billingDialog.openBillingPage') : t('libText.billingDialog.switchProvider'),
+    confirmLabel: block.billing_url
+      ? t('libText.billingDialog.openBillingPage')
+      : t('libText.billingDialog.switchProvider'),
     detail: t('libText.billingDialog.providerDetail', label),
     title: t('libText.billingDialog.providerTitle', label)
   }

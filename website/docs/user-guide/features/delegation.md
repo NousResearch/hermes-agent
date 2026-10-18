@@ -588,13 +588,40 @@ delegate_task(
 
 **One-shot runs are capped separately.** `hermes chat -q` / `--oneshot` sessions may spawn at most `delegation.oneshot_max_children` subagents in total (default `2`, `0` = unlimited). A one-shot run has no later turn to receive results, and in benchmark trajectories most of its spawns were "independently review my own work" rather than parallel work — each such child re-pays a cold system prompt and re-reads the repo. Interactive and gateway sessions are unaffected.
 
+## Finite chat runs
+
+When chat answers and exits (`-Q`, `chat --oneshot`, or a query with non-TTY
+stdio), `delegate_task` waits for its children and returns their results to the
+parent in the same turn. Batch children still run in parallel, subject to
+`delegation.max_concurrent_children`. The parent can use those results in its
+final response before the CLI exits.
+
+- **Automatic joining:** no opt-in or background-mode override is needed.
+  Interactive TTY chat and messaging sessions keep background delegation.
+- **Per-input policy:** the CLI records finite consumption with the admitted prompt,
+  including when resuming an interactive session. It does not change that session's
+  creation policy, sibling viewers, or the daemon environment.
+- **Existing safeguards:** delegation limits, timeouts, cancellation, and
+  `approvals.single_query_mode` (`-q` turns; `hermes -z` turns are unattended) still apply.
+  Joining does not auto-approve commands or guarantee successful child outcomes.
+  Inspect results and verify artifacts. Managed/safe workers still reject child
+  delegation until their child-registration contract is available.
+- **Separate limits:** `--run-budget` remains unsupported by gateway chat; it is not
+  required for joining. `terminal.oneshot_completion_wait_seconds` is not a
+  delegation timeout. Canonical terminal notifications remain gateway-owned.
+
+Closing the CLI detaches rather than terminating its gateway-owned turn. Child
+execution is still process-local to that owner: use a durable scheduler for work
+that must survive an owner restart.
+
 ## Lifetime and Durability
 
 :::warning Background completion durability is not durable execution
 Top-level model-facing `delegate_task` calls run in the background automatically where the session supports later delivery. Hermes returns a handle immediately, and the result re-enters the conversation after the child or batch finishes. Orchestrator subagents wait for their workers in the current turn because they must synthesize those results before returning. Stateless request/response endpoints fall back to synchronous execution when they cannot deliver a detached result later.
 
 - Normal follow-up messages do not cancel background children. `/stop` on any surface (gateway `/stop` — also when the session is idle after the dispatching turn ended — CLI `/stop`, the Desktop/TUI Stop button, an ACP cancel) ends the session's running background delegations, and closing or resetting the owning session does the same.
-- Explicit session close/reset interrupts that session's background children. Closing a TUI viewer of a gateway-owned session does not kill the gateway's work.
+- Explicit session close/reset interrupts that session's background children. In the CLI and TUI, the gateway owns the session and the client only views it: when the last viewer exits or runs `/new` (a TUI resume switch counts too), the gateway interrupts that session's background children at once and refuses new ones for it until a viewer opens the session again. A plain detach cancels nothing: closing Desktop, a dropped connection, or exiting while another viewer is still attached leaves the work running. Background processes (`terminal(background=True)`) keep running either way.
+- A completion for a CLI or TUI session — a background child's result (including an interrupted one), or a `notify_on_complete` process exit or watch-pattern notice — that reaches the head of the session's queue while no viewer is attached does not start a turn. It is written into the session as a note, and the next turn reads it (for example after `hermes chat --resume`). If a viewer is attached by then, including one that came back after the completion arrived, the completion runs as a turn as before. Messaging chats have no viewers and are unchanged: their completions still start a turn.
 - A Hermes process restart does **not** resume a running child. Its attempt becomes `unknown` because Hermes cannot prove which side effects happened.
 - A child that completed before restart but whose result was not delivered is restored and routed back through the owning session's normal checks.
 - Stopped children return a structured result (`status="interrupted"`, `exit_reason="interrupted"`) whose `summary` is the last text the child produced before the stop (the interrupt placeholder moves to `error`). The stop recurses down the spawn tree — an orchestrator child's synchronous workers are interrupted first and their partial results roll up into the child's own interrupted result — and each background unit's result re-enters the conversation right away as its normal completion notice (`Subagent Task Interrupted: …`), so nothing waits for the child to exhaust its budget.

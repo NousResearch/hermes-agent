@@ -61,7 +61,7 @@ def test_registry_sequential_delegation_joins_children_in_order(monkeypatch):
 
 def test_sequential_policy_follows_real_config_and_preserves_default(tmp_path, monkeypatch):
     from agent.agent_init import _load_tools
-    import hermes_cli.config as config
+    from hermes_cli import config
     from agent.secret_scope import set_multiplex_active, set_secret_scope, reset_secret_scope
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     monkeypatch.delenv("HERMES_IGNORE_USER_CONFIG", raising=False)

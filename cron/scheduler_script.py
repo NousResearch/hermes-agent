@@ -473,10 +473,11 @@ def _run_job_script(
                 "encoding": "utf-8",
                 "errors": "replace"}
         # The process env is the LAUNCH profile's. For a job owned by a routed profile, drop that
-        # profile's .env residue from the base first (no-op for the launch profile's own jobs);
-        # the sanitizer then overlays the names the owning profile declares in
-        # terminal.env_passthrough from its own secret scope (#114209). The factory snapshots the
-        # process env itself — no raw copy at the spawn site (test_subprocess_env_guard).
+        # profile's .env residue from the base first (no-op for the launch profile's own jobs), then
+        # overlay the routed profile's own scope (which never enters os.environ under multiplex
+        # semantics) before the sanitizer, which also overlays the names the owning profile declares
+        # in terminal.env_passthrough from that scope (#114209). The factory snapshots the process
+        # env itself — no raw copy at the spawn site (test_subprocess_env_guard).
         env = build_subprocess_env(strip_launch_profile=True)
         env.update(env_overlay)
         # Subprocess cwd only (default: scripts-dir parent). NEVER os.chdir() the process.
@@ -595,4 +596,4 @@ def _run_job_script_with_claim_heartbeat(
 
 # Late-bound origin namespace (see module docstring). Imported LAST so this module is fully
 # populated before ``scheduler`` re-exports from it.
-from cron import scheduler as _sched  # noqa: E402
+from cron import scheduler as _sched

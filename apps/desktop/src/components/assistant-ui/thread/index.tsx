@@ -180,7 +180,10 @@ export const Thread = memo(function Thread({
 
   return (
     <ThreadEditContext.Provider value={editContext}>
-      <div className="relative grid h-full min-h-0 max-w-full grid-rows-[minmax(0,1fr)] overflow-hidden bg-transparent contain-[layout_paint]">
+      <div
+        className="relative grid h-full min-h-0 max-w-full grid-rows-[minmax(0,1fr)] overflow-hidden bg-transparent contain-[layout_paint]"
+        data-slot="thread"
+      >
         <ThreadMessageList
           clampToComposer={clampToComposer}
           components={messageComponents}
@@ -189,6 +192,7 @@ export const Thread = memo(function Thread({
           scrollProfile={scrollProfile}
           sessionId={sessionId}
           sessionKey={sessionKey}
+          sessionLoading={loading === 'session'}
         />
         {loading === 'session' && <CenteredThreadSpinner />}
         <ThreadTimeline />

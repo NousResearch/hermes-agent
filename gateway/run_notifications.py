@@ -67,6 +67,9 @@ _SELF_CLEARING_STORAGE_CAUSES = frozenset({"compression", "compression_closed", 
 # Process-watcher retries of a refused completion: ~5 min at the default 5 s check interval.
 _MAX_COMPLETION_INJECTION_ATTEMPTS = 8
 _COMPLETION_INJECTION_RETRY_MAX_DELAY = 60
+# Drain retries of a refused watch event follow the same bounded-backoff policy, keyed to the
+# 2 s drain cadence instead of the watcher's check interval (#140899).
+_WATCH_INJECTION_RETRY_BASE_DELAY = 4.0
 
 # Durable async-delegation claim transitions: kind -> (tools.async_delegation function, failure log).
 _DURABLE_CLAIM_OPS = {
@@ -710,6 +713,12 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         from gateway.run import _drain_gateway_watch_events, _format_gateway_process_notification
         watch_events = _drain_gateway_watch_events(completion_queue)
         for evt in watch_events:
+            next_retry_at = evt.get("_watch_next_retry_at")
+            if next_retry_at is not None and next_retry_at > time.monotonic():
+                # Backoff between refused injections: hold the event for a later drain tick
+                # instead of re-attempting admission every 2 s (#140899).
+                completion_queue.put(evt)
+                continue
             async with self._completion_event_scope(evt):
                 from tools.process_registry_notifications import should_surface_notification
                 if not should_surface_notification(evt):
@@ -730,7 +739,22 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                         delivered = False
             # The original event: a requeued tick folds again from what is still queued.
             if delivered is False:
-                completion_queue.put(evt)
+                attempts = int(evt.get("_watch_injection_attempts") or 0) + 1
+                evt["_watch_injection_attempts"] = attempts
+                if attempts < _MAX_COMPLETION_INJECTION_ATTEMPTS:
+                    # A refusal may clear (adapter reconnecting, store draining): retry with the
+                    # same bounded backoff as the process watcher (#139026), never on every tick.
+                    evt["_watch_next_retry_at"] = time.monotonic() + jittered_backoff(
+                        attempts, base_delay=_WATCH_INJECTION_RETRY_BASE_DELAY,
+                        max_delay=_COMPLETION_INJECTION_RETRY_MAX_DELAY, jitter_ratio=0.0)
+                    completion_queue.put(evt)
+                else:
+                    logger.warning(
+                        "Watch notification for %s chat=%s (type=%s session_id=%s) was refused "
+                        "%d times; dropping the queued event",
+                        evt.get("platform") or "?", evt.get("chat_id") or "?",
+                        evt.get("type") or "?", evt.get("session_id", "unknown"), attempts,
+                    )
 
     def _adapter_by_platform_value(self, platform_name: str):
         """Literal ``p.value == platform_name`` scan over connected adapters (native adapters only)."""

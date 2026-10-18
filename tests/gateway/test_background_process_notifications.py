@@ -9,6 +9,7 @@ Contributed by @PeterFile (PR #593), reimplemented on current main.
 
 import asyncio
 import contextlib
+import itertools
 import queue
 import threading
 from types import SimpleNamespace
@@ -322,6 +323,86 @@ async def test_post_turn_watch_drain_all_injects_from_queued_event_origin(monkey
     assert synth_event.source.user_id == "proc_owner"
     assert completion_queue.qsize() == 1
     assert completion_queue.get_nowait() is async_event
+
+
+@pytest.mark.asyncio
+async def test_post_turn_watch_drain_refused_event_backs_off_then_drops(monkeypatch, tmp_path, caplog):
+    """Regression for #140899: a watch event whose injection is refused must be retried on a
+    bounded backoff and finally dropped with ONE warning — never requeued on every 2 s drain
+    tick forever (55k attempts over 32 h observed on a live gateway)."""
+    import logging
+
+    from gateway import run_notifications
+    from gateway.run_notifications import (
+        _MAX_COMPLETION_INJECTION_ATTEMPTS,
+        _WATCH_INJECTION_RETRY_BASE_DELAY,
+    )
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    completion_queue = queue.Queue()
+    completion_queue.put(_watch_event())
+
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(run_notifications.time, "monotonic", lambda: clock["now"])
+    attempt_times: list[float] = []
+
+    async def refused(self, synth_text, evt, **kwargs):
+        attempt_times.append(clock["now"])
+        return False
+
+    monkeypatch.setattr(run_notifications.GatewayNotificationsMixin, "_inject_watch_notification", refused)
+
+    for _ in range(500):
+        await runner._drain_watch_notifications(completion_queue)
+        clock["now"] += 2.0
+        if completion_queue.empty():
+            break
+
+    assert len(attempt_times) == _MAX_COMPLETION_INJECTION_ATTEMPTS
+    # Backoff, not one attempt per drain tick: successive retries are >= the base delay apart.
+    gaps = [b - a for a, b in itertools.pairwise(attempt_times)]
+    assert gaps
+    assert all(gap >= _WATCH_INJECTION_RETRY_BASE_DELAY for gap in gaps)
+    assert completion_queue.empty()
+    drops = [r for r in caplog.records
+             if r.levelno >= logging.WARNING and "dropping the queued event" in r.message]
+    assert len(drops) == 1
+    assert f"refused {_MAX_COMPLETION_INJECTION_ATTEMPTS} times" in drops[0].message
+
+
+@pytest.mark.asyncio
+async def test_post_turn_watch_drain_transient_refusal_recovers_without_drop(monkeypatch, tmp_path, caplog):
+    """A refusal that clears within the backoff budget delivers on the retry — the cap only
+    drops events that stay refused (#140899)."""
+    import logging
+
+    from gateway import run_notifications
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    completion_queue = queue.Queue()
+    completion_queue.put(_watch_event())
+
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(run_notifications.time, "monotonic", lambda: clock["now"])
+    flaky = {"refusals_left": 2}
+
+    async def flaky_inject(self, synth_text, evt, **kwargs):
+        if flaky["refusals_left"]:
+            flaky["refusals_left"] -= 1
+            return False
+        return True
+
+    monkeypatch.setattr(run_notifications.GatewayNotificationsMixin, "_inject_watch_notification", flaky_inject)
+
+    for _ in range(500):
+        await runner._drain_watch_notifications(completion_queue)
+        clock["now"] += 2.0
+        if completion_queue.empty():
+            break
+
+    assert completion_queue.empty()
+    assert not [r for r in caplog.records
+                if r.levelno >= logging.WARNING and "dropping the queued event" in r.message]
 
 
 @pytest.mark.asyncio

@@ -2806,6 +2806,16 @@ def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
         heartbeat_thread.join(timeout=1.0)
 
 
+def _manual_run_prompt_stamp(job: dict) -> Optional[str]:
+    """The per-run prompt a gateway-forwarded manual run stamped on the job via trigger_job; the
+    fire that consumes the manual occurrence picks it up here. Single-fire: mark_job_run clears
+    it. Also read before an external-worker handoff so the detached worker receives it (#140929)."""
+    _stamped = job.get("manual_run_prompt")
+    if _stamped and job.get("manual_run_at"):
+        return str(_stamped)
+    return None
+
+
 def run_one_job(
     job: dict, *, adapters=None, loop=None, verbose: bool = False,
     extra_prompt: Optional[str] = None, cancel_event: Optional[_CancelEventLike] = None,
@@ -2828,7 +2838,10 @@ def run_one_job(
     external_owner = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER") == execution_id
     if not external_owner:
         try:
-            handed_off = _launch_external_cron_worker(job)
+            handed_off = _launch_external_cron_worker(
+                job,
+                extra_prompt=extra_prompt if extra_prompt is not None
+                else _manual_run_prompt_stamp(job))
         except Exception as handoff_error:
             # Arbitrary waiter errors must not claim dispatch failure or resend
             # a worker's notice. A recovered unknown execution is different:
@@ -2876,11 +2889,7 @@ def run_one_job(
             record_unknown_worker_outcome(job, adapters=adapters, loop=loop)
             return True
     if extra_prompt is None:
-        # Gateway-forwarded manual run stamps its prompt on the job via trigger_job; the fire that
-        # consumes the manual occurrence picks it up here. Single-fire: mark_job_run clears it.
-        _stamped = job.get("manual_run_prompt")
-        if _stamped and job.get("manual_run_at"):
-            extra_prompt = str(_stamped)
+        extra_prompt = _manual_run_prompt_stamp(job)
     claim = job.get("fire_claim")
     fire_owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
     execution_token = object()
@@ -3599,7 +3608,7 @@ def _wait_for_external_cron_worker(
                 pass
 
 
-def _launch_external_cron_worker(job: dict) -> bool:
+def _launch_external_cron_worker(job: dict, *, extra_prompt: Optional[str] = None) -> bool:
     """Launch *job* outside the managed gateway process when required.
 
     Returns ``False`` outside a managed systemd gateway (in-process path).  In
@@ -3613,6 +3622,10 @@ def _launch_external_cron_worker(job: dict) -> bool:
     this handoff, so a routed desktop fire on the managed path serialized ``multiplex_active=False``
     and built the worker environment with the launch profile's residue and no scrub (review on
     f5f88d5058). Enable it for exactly this span; the worker then re-establishes it from the payload.
+
+    ``extra_prompt`` is the fire's per-run context (webhook/run ``prompt=``, or a stamped manual
+    run prompt) — never persisted on the job — so the handoff payload must carry it or the
+    detached worker runs with none (#140929).
     """
     execution_id = str(job["execution_id"])
     job_id = str(job["id"])
@@ -3675,6 +3688,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
             json.dump(
                 {
                     "job": job,
+                    "extra_prompt": extra_prompt,
                     "profile_home": str(_get_hermes_home().resolve()),
                     "multiplex_active": multiplex_active,
                 },
@@ -3934,7 +3948,9 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
             old_external_execution = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER")
             os.environ["_HERMES_CRON_EXTERNAL_WORKER"] = execution_id
             try:
-                completed = run_one_job(job, adapters=None, loop=None, verbose=False)
+                completed = run_one_job(
+                    job, adapters=None, loop=None, verbose=False,
+                    extra_prompt=payload.get("extra_prompt"))
                 # Successful return: the worker recorded its outcome. If it raises,
                 # retain fd 2's pathname until the waiter consumes the traceback.
                 with contextlib.suppress(OSError):

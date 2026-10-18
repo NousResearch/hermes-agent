@@ -26,12 +26,15 @@ class PluginMessage:
     """Handle for one posted message. ``ok`` / ``message_id`` / ``error`` describe the last
     operation; ``edit(text)`` replaces the text in place (or posts anew where the surface cannot
     edit, and the handle then follows the new message). A refused post returns a handle whose
-    edits are refused the same way."""
+    edits are refused the same way. Operations stay ordered: one the gateway has not finished
+    (``error == "timeout"``, ``pending`` set) is waited for before the next runs, and its outcome
+    still lands on the handle, so a slow post never leaves an orphan message behind a dead handle."""
 
     def __init__(self, plugin_id: str, target: Any, result: dict[str, Any]):
         self._plugin_id, self._target = plugin_id, target
         self.result = result
         self.message_id: Optional[str] = result.get("message_id")
+        self._pending: Optional[concurrent.futures.Future] = None
 
     @property
     def ok(self) -> bool:
@@ -41,8 +44,15 @@ class PluginMessage:
     def error(self) -> Optional[str]:
         return self.result.get("error")
 
+    @property
+    def pending(self) -> bool:
+        return self._pending is not None and not self._pending.done()
+
     def __repr__(self) -> str:
         return f"<PluginMessage ok={self.ok} message_id={self.message_id!r} error={self.error!r}>"
+
+    def _adopt(self, other: PluginMessage) -> None:
+        self._target, self.result, self.message_id = other._target, other.result, other.message_id
 
     def _refused(self) -> Optional[dict[str, Any]]:
         if self._target is None:
@@ -55,8 +65,7 @@ class PluginMessage:
             self.message_id = result["message_id"]
         return result
 
-    async def aedit(self, text: str) -> dict[str, Any]:
-        """``edit`` for code already running on the gateway's event loop (async hooks/commands)."""
+    async def _edit(self, text: str) -> dict[str, Any]:
         refused = self._refused()
         if refused is not None:
             return refused
@@ -64,12 +73,25 @@ class PluginMessage:
         return self._settle(await plugin_messages.edit(self._target, self.message_id, str(text),
                                                        plugin_id=self._plugin_id))
 
+    async def aedit(self, text: str) -> dict[str, Any]:
+        """``edit`` for code already running on the gateway's event loop (async hooks/commands)."""
+        if self.pending:
+            await asyncio.wrap_future(self._pending)
+        return await self._edit(text)
+
     def edit(self, text: str) -> dict[str, Any]:
         """Replace the message text: ``{"ok", "message_id", "edited", ["fallback"]}``. Thread-safe."""
+        if self.pending:
+            try:
+                self._pending.result(_TIMEOUT_S)
+            except concurrent.futures.TimeoutError:
+                return _err("timeout", "the previous operation on this message has not finished")
+            except Exception:  # its own outcome is already on the handle
+                logger.debug("plugin_message: previous operation failed", exc_info=True)
         refused = self._refused()
         if refused is not None:
             return refused
-        return _run_on_gateway_loop(self.aedit(text))
+        return _run_on_gateway_loop(self._edit(text), self)
 
 
 def _gateway_loop():
@@ -84,7 +106,9 @@ def _gateway_loop():
     return runner, loop
 
 
-def _run_on_gateway_loop(coro) -> dict[str, Any]:
+def _run_on_gateway_loop(coro, handle: PluginMessage) -> dict[str, Any]:
+    """Run *coro* on the gateway loop and wait up to ``_TIMEOUT_S``; past that it keeps running as
+    the handle's pending operation (its result still lands on the handle)."""
     _runner, loop = _gateway_loop()
     if loop is None:
         coro.close()
@@ -96,10 +120,15 @@ def _run_on_gateway_loop(coro) -> dict[str, Any]:
     if running is loop:
         coro.close()
         return _err("on_event_loop", "called from the gateway event loop: use the async form (await ...)")
+    future = asyncio.run_coroutine_threadsafe(coro, loop)
+    handle._pending = future
     try:
-        return asyncio.run_coroutine_threadsafe(coro, loop).result(_TIMEOUT_S)
+        return future.result(_TIMEOUT_S)
     except concurrent.futures.TimeoutError:
-        return _err("timeout", f"the gateway did not answer within {_TIMEOUT_S:.0f}s")
+        result = _err("timeout", f"the gateway did not answer within {_TIMEOUT_S:.0f}s; the operation "
+                                 "is still running and its result will land on this handle")
+        handle.result = result
+        return result
     except Exception as exc:  # the plugin gets a result, never the raise
         logger.warning("plugin_message: gateway hand-off failed", exc_info=True)
         return _err("send_failed", str(exc)[:512])
@@ -148,11 +177,13 @@ def post(ctx: Any, text: str) -> PluginMessage:
         return PluginMessage(ctx.plugin_id, None, _err("no_conversation", _NO_SESSION))
     from gateway.plugin_messages import bound_route
     route = bound_route()
-    holder: dict[str, PluginMessage] = {}
+    handle = PluginMessage(ctx.plugin_id, None, _err("timeout"))
 
     async def _post() -> dict[str, Any]:
-        holder["message"] = await _post_for(ctx, text, session_key, route)
-        return holder["message"].result
+        handle._adopt(await _post_for(ctx, text, session_key, route))
+        return handle.result
 
-    result = _run_on_gateway_loop(_post())
-    return holder.get("message") or PluginMessage(ctx.plugin_id, None, result)
+    result = _run_on_gateway_loop(_post(), handle)
+    if handle._target is None and not handle.pending:
+        handle.result = result
+    return handle

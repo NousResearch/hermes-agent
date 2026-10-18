@@ -959,7 +959,10 @@ describe the last operation; `edit()` returns `{"ok", "message_id", "edited"}` p
 in the calling context, the session is not live, or it belongs to another profile),
 `gateway_unavailable`, `adapter_unavailable`, `send_failed`, `edit_failed`, `on_event_loop`, `timeout`.
 A refused post returns a handle whose `edit()` is refused the same way, so the happy path needs no
-branching. Every post and edit is logged as `plugin_message plugin=<id> op=post|edit ...`.
+branching. `timeout` means the gateway has not answered within 30 s: the operation keeps running and
+its outcome still lands on the handle (`handle.pending` is true meanwhile), and the next `edit()` waits
+for it first, so a slow post never leaves a message the handle cannot edit. An edit that the platform
+refuses or that raises falls back to a fresh message the same way as a platform without edit support. Every post and edit is logged as `plugin_message plugin=<id> op=post|edit ...`.
 
 What each surface does:
 

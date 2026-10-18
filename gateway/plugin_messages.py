@@ -60,9 +60,11 @@ def _supports_edit(adapter: Any) -> bool:
     return getattr(type(adapter), "edit_message", None) is not BasePlatformAdapter.edit_message
 
 
-_ROUTE_VARS = {"platform": "HERMES_SESSION_PLATFORM", "chat_id": "HERMES_SESSION_CHAT_ID",
-               "chat_type": "HERMES_SESSION_CHAT_TYPE", "thread_id": "HERMES_SESSION_THREAD_ID",
-               "user_id": "HERMES_SESSION_USER_ID", "profile": "HERMES_SESSION_PROFILE"}
+# Every source field the gateway binds for a call (``GatewayRunner._set_session_env``), so a rebuilt
+# source keys exactly like the live one (Slack ``scope_id``, ``user_id_alt`` group keys, ...).
+_ROUTE_VARS = {field: "HERMES_SESSION_" + field.upper() for field in (
+    "platform", "chat_id", "chat_type", "chat_name", "thread_id", "user_id", "user_id_alt", "user_name",
+    "scope_id", "parent_chat_id", "message_id", "profile")}
 
 
 def bound_route() -> dict:
@@ -123,8 +125,10 @@ def _publish_local(target: PostTarget, text: str) -> dict:
 
 
 async def _send(target: PostTarget, text: str) -> dict:
+    # Never the turn's answer: a relay stream open for the reply must not be sealed with it.
+    metadata = {**(target.metadata or {}), "_interim_send": True}
     result = await target.adapter.send(target.chat_id, _fit(target.adapter, target.chat_id, text),
-                                       metadata=target.metadata)
+                                       metadata=metadata)
     if not getattr(result, "success", False):
         return _err("send_failed", str(getattr(result, "error", "") or "")[:512])
     return {"ok": True, "message_id": str(result.message_id) if result.message_id is not None else None}
@@ -150,13 +154,18 @@ async def edit(target: PostTarget, message_id: Optional[str], text: str, *, plug
         if target.live is not None:
             result = {**_publish_local(target, text), "edited": True}
         elif message_id and _supports_edit(target.adapter):
-            sent = await target.adapter.edit_message(target.chat_id, message_id,
-                                                     _fit(target.adapter, target.chat_id, text))
-            if getattr(sent, "success", False):
+            try:
+                sent = await target.adapter.edit_message(target.chat_id, message_id,
+                                                         _fit(target.adapter, target.chat_id, text))
+                edit_error = "" if getattr(sent, "success", False) else str(getattr(sent, "error", "") or "")
+            except Exception as exc:  # a raised edit falls back like a refused one
+                logger.debug("plugin_message plugin=%s edit_message raised", plugin_id, exc_info=True)
+                sent, edit_error = None, str(exc) or type(exc).__name__
+            if sent is not None and not edit_error:
                 result = {"ok": True, "message_id": str(sent.message_id or message_id), "edited": True}
             else:
                 result = {**await _send(target, text), "edited": False, "fallback": True,
-                          "edit_error": str(getattr(sent, "error", "") or "")[:256]}
+                          "edit_error": edit_error[:256]}
         else:
             result = {**await _send(target, text), "edited": False, "fallback": True}
     except Exception as exc:  # adapter boundary, as in post()

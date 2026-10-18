@@ -298,3 +298,124 @@ def test_all_platforms_withheld_warns_with_the_recovery_path(monkeypatch, caplog
     assert warnings, "a fully-withheld boot must warn"
     assert "/relay/rotate" in warnings[-1].getMessage()
     assert not any("self-provisioned (" in r.getMessage() for r in caplog.records)
+
+
+def _post_returning_bytes(monkeypatch, body: bytes) -> None:
+    def _fake_json_post(url, token, payload, timeout):  # noqa: ANN001
+        return _Resp(body)
+
+    monkeypatch.setattr(relay, "_json_post", _fake_json_post, raising=True)
+
+
+def test_non_json_200_body_raises_runtime_error(monkeypatch):
+    """A 200 with a non-JSON body (captive portal, proxy error page) must surface
+    as the documented RuntimeError, not a raw JSONDecodeError."""
+    _post_returning(monkeypatch, "<html>error</html>")
+
+    with pytest.raises(RuntimeError, match="non-JSON"):
+        relay._post_provision(
+            provision_url="https://connector.example/relay/provision",
+            access_token="tok",
+            gateway_id="gw-1",
+            platform="telegram",
+            bot_id="BOT",
+            gateway_endpoint="",
+            route_keys=["k"],
+        )
+
+
+def test_undecodable_200_body_raises_runtime_error(monkeypatch):
+    """A 200 whose body is not UTF-8 must also surface as RuntimeError."""
+    _post_returning_bytes(monkeypatch, b"\xff\xfe\x00corrupt")
+
+    with pytest.raises(RuntimeError, match="non-JSON"):
+        relay._post_provision(
+            provision_url="https://connector.example/relay/provision",
+            access_token="tok",
+            gateway_id="gw-1",
+            platform="telegram",
+            bot_id="BOT",
+            gateway_endpoint="",
+            route_keys=["k"],
+        )
+
+
+def test_self_provision_survives_non_json_connector_response(monkeypatch):
+    """E2E through self_provision_relay's NEVER-raises contract: a 200 with a
+    non-JSON body must be logged + skipped per platform, not escape as
+    JSONDecodeError and crash gateway boot."""
+    _post_returning(monkeypatch, "<html>proxy error</html>")
+    monkeypatch.setattr(relay, "_resolve_relay_identity_token", lambda: "tok", raising=True)
+    monkeypatch.setenv("GATEWAY_RELAY_URL", "https://connector.example")
+    monkeypatch.setattr(
+        relay,
+        "relay_platform_identities",
+        lambda: [("telegram", "BOT_T")],
+        raising=False,
+    )
+
+    assert relay.self_provision_relay() is False
+
+
+class _ResetResp:
+    def read(self):
+        raise ConnectionResetError("connection reset by peer")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc) -> bool:
+        return False
+
+
+def test_read_time_socket_failure_raises_runtime_error(monkeypatch):
+    """A mid-body socket reset is a transport failure -> RuntimeError, so
+    self_provision_relay's except-RuntimeError (and NEVER-raises contract) holds."""
+    monkeypatch.setattr(relay, "_json_post", lambda *a, **k: _ResetResp(), raising=True)
+
+    with pytest.raises(RuntimeError, match="transport failure"):
+        relay._post_provision(
+            provision_url="https://connector.example/relay/provision",
+            access_token="tok",
+            gateway_id="gw-1",
+            platform="telegram",
+            bot_id="BOT",
+            gateway_endpoint="",
+            route_keys=["k"],
+        )
+
+
+def test_malformed_provision_url_raises_runtime_error(monkeypatch):
+    """A connector URL urlopen rejects (e.g. no scheme) is a transport failure,
+    not a bare ValueError escaping the contract."""
+    def _fake_json_post(url, token, payload, timeout):  # noqa: ANN001
+        raise ValueError("unknown url type: badurl")
+
+    monkeypatch.setattr(relay, "_json_post", _fake_json_post, raising=True)
+
+    with pytest.raises(RuntimeError, match="transport failure"):
+        relay._post_provision(
+            provision_url="badurl",
+            access_token="tok",
+            gateway_id="gw-1",
+            platform="telegram",
+            bot_id="BOT",
+            gateway_endpoint="",
+            route_keys=["k"],
+        )
+
+
+def test_post_policy_transport_failure_raises_runtime_error(monkeypatch):
+    """_post_policy's documented contract is RuntimeError on transport failure;
+    a socket-level failure inside _json_post must not escape as bare OSError."""
+    def _raise_reset(url, token, body, timeout):  # noqa: ANN001
+        raise ConnectionResetError("reset")
+
+    monkeypatch.setattr(relay, "_json_post", _raise_reset, raising=True)
+
+    with pytest.raises(RuntimeError, match="transport failure"):
+        relay._post_policy(
+            policy_url="https://connector.example/relay/policy",
+            token="tok",
+            policy={"platform": "telegram"},
+        )

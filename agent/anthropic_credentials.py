@@ -747,14 +747,19 @@ def resolve_anthropic_token(*, model: Optional[str] = None) -> Optional[str]:
     if api_key:
         # Honouring the explicit key is the intent; doing it silently is not. An inherited or
         # forgotten key otherwise moves a host from subscription to metered billing with no
-        # signal anywhere (#97085). Stage only — never token material.
-        if _warn_once_api_key_shadows_subscription():
+        # signal anywhere (#97085). Stage only — never token material. Decide availability
+        # first: a key benched for this model bills nothing, so it neither warns nor spends
+        # the once-per-process slot.
+        usable = _available_anthropic_token(api_key, model)
+        if usable is None:
+            logger.debug("Anthropic token source: ANTHROPIC_API_KEY env (unavailable for this model)")
+        elif _warn_once_api_key_shadows_subscription():
             logger.warning(
                 "ANTHROPIC_API_KEY is set and takes precedence over a Claude Code subscription login "
                 "found on this host; requests bill to the API key. Unset it to use the subscription.")
         else:
             logger.debug("Anthropic token source: ANTHROPIC_API_KEY env")
-        return _available_anthropic_token(api_key, model)
+        return usable
     # The pool's claude_code row mirrors the same externally owned refresh grant.
     resolved = _resolve_anthropic_pool_token(skip_borrowed=True)
     if resolved:

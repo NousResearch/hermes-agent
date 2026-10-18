@@ -122,3 +122,21 @@ def test_shadow_warning_fires_once_under_concurrent_resolves(monkeypatch, caplog
             t.join()
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warnings) == 1, [r.getMessage() for r in warnings]
+
+
+def test_cooled_api_key_returns_none_without_warning_or_consuming_the_once(
+        monkeypatch, caplog, resolver_env):
+    """The warning says "requests bill to the key"; when the key is benched for the requested
+    model nothing bills to it, so no warning fires and the once-per-process slot is kept for a
+    resolve that actually returns the key."""
+    _write_subscription_login(resolver_env)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", API_KEY)
+    monkeypatch.setattr(ac, "_available_anthropic_token",
+                        lambda token, model: None if model == "cooled-model" else token)
+
+    with caplog.at_level(logging.DEBUG, logger=ac.__name__):
+        assert ac.resolve_anthropic_token(model="cooled-model") is None
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert ac.resolve_anthropic_token(model="other-model") == API_KEY
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1

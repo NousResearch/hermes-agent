@@ -43,6 +43,22 @@ def admit(conn, key="telegram:chat:1:msg:1", owner="session-a"):
     return mo.admit(conn, ingress_key=key, request="FULL original request and acceptance details", contract=contract(), owner_id=owner)
 
 
+def changed_python_artifact(tmp_path, monkeypatch):
+    """Create a real code-change fixture for the Phase 1 Python validator."""
+    root = tmp_path / "validation-repo"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.name", "Phase 1 test"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.email", "phase1-test@example.invalid"], cwd=root, check=True)
+    artifact = root / "sample.py"
+    artifact.write_text("value = 'before'\n", encoding="utf-8")
+    subprocess.run(["git", "add", "sample.py"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "baseline"], cwd=root, check=True)
+    artifact.write_text("value = 'after'\n", encoding="utf-8")
+    monkeypatch.chdir(root)
+    return "sample.py", artifact
+
+
 def test_admission_is_durable_non_dispatchable_and_preserves_full_request(tmp_path):
     conn = db(tmp_path / "board.db")
     mission_id, created = admit(conn)
@@ -465,10 +481,10 @@ def test_stale_or_document_only_completion_is_refused(tmp_path):
     assert mo.get(conn, mid)["status"] == "active"
 
 
-def test_valid_receipt_completes_and_requires_existing_code_artifact(tmp_path):
+def test_valid_receipt_completes_with_changed_python_artifact(tmp_path, monkeypatch):
     conn = db(tmp_path / "board.db")
     mid, _ = admit(conn)
-    code = "mission_ownership_tests/test_mission_ownership.py"
+    code, _artifact = changed_python_artifact(tmp_path, monkeypatch)
     from hermes_cli import mission_validation
     receipt = mission_validation.validate(
         conn, mission_id=mid, owner_kind="session", owner_id="session-a", generation=1,
@@ -482,16 +498,29 @@ def test_valid_receipt_completes_and_requires_existing_code_artifact(tmp_path):
                     contract_version=1, validation_id=receipt["validation_id"])
 
 
-def test_stale_artifact_hash_and_fake_empty_check_are_refused(tmp_path):
+def test_phase1_python_validator_rejects_unchanged_tracked_artifact(tmp_path, monkeypatch):
     conn = db(tmp_path / "board.db")
     mid, _ = admit(conn)
-    code = "mission_ownership_tests/test_mission_ownership.py"
+    code, artifact = changed_python_artifact(tmp_path, monkeypatch)
+    artifact.write_text("value = 'before'\n", encoding="utf-8")
+    from hermes_cli import mission_validation
+    with pytest.raises(mo.ContractError, match="no change from HEAD"):
+        mission_validation.validate(
+            conn, mission_id=mid, owner_kind="session", owner_id="session-a", generation=1,
+            contract_version=1, artifact_paths=[code], reviewer_identity="session:session-a",
+        )
+    assert mo.get(conn, mid)["status"] == "active"
+
+
+def test_stale_artifact_hash_and_fake_empty_check_are_refused(tmp_path, monkeypatch):
+    conn = db(tmp_path / "board.db")
+    mid, _ = admit(conn)
+    code, path = changed_python_artifact(tmp_path, monkeypatch)
     from hermes_cli import mission_validation
     receipt = mission_validation.validate(
         conn, mission_id=mid, owner_kind="session", owner_id="session-a", generation=1,
         contract_version=1, artifact_paths=[code], reviewer_identity="session:session-a",
     )
-    path = Path(code)
     original = path.read_bytes()
     try:
         path.write_bytes(original + b"\n# changed after validation\n")
@@ -609,10 +638,11 @@ def test_mission_completion_waits_for_recorded_native_child_tasks(tmp_path, monk
     mo.record_progress(conn, mission_id=mid, owner_kind="session", owner_id="session-a", generation=1,
                        progress={"next": "wait for child"}, child_ids=[child])
 
+    code, _artifact = changed_python_artifact(tmp_path, monkeypatch)
     from hermes_cli import mission_validation
     receipt = mission_validation.validate(
         conn, mission_id=mid, owner_kind="session", owner_id="session-a", generation=1,
-        contract_version=1, artifact_paths=["mission_ownership_tests/test_mission_ownership.py"],
+        contract_version=1, artifact_paths=[code],
         reviewer_identity="session:session-a",
     )
     with pytest.raises(mo.ContractError, match="child task must exist and be done or archived"):
@@ -751,12 +781,13 @@ def test_foreground_background_handoff_and_completion_guard_use_native_kanban(tm
             kb.complete_task(conn, task_id, summary="A documentation note was updated")
 
     monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    code, _artifact = changed_python_artifact(tmp_path, monkeypatch)
     from hermes_cli import mission_validation
     with connect_board_at(hermes_home) as conn:
         receipt = mission_validation.validate(
             conn, mission_id=mission_id, owner_kind="task", owner_id=task_id,
             generation=2, contract_version=1,
-            artifact_paths=["mission_ownership_tests/test_mission_ownership.py"],
+            artifact_paths=[code],
             reviewer_identity=f"task:{task_id}",
         )
     complete_result = _complete({"mission_id": mission_id, "generation": 2,

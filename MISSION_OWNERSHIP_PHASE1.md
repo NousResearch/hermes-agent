@@ -43,6 +43,8 @@ The candidate couples root task creation/promotion and owner changes in transact
 
 ## Evidence
 
+> Follow-up: a separate systemd + Bubblewrap execution-supervisor PoC, corrected completion fixtures, and current test evidence are documented in [MISSION_SUPERVISOR_POC.md](MISSION_SUPERVISOR_POC.md). The PoC is experimental and is not integrated into this candidate.
+
 ### Unit-tested
 
 Under the isolated PM-built virtualenv:
@@ -53,9 +55,9 @@ pytest mission_ownership_tests/test_mission_ownership.py -q -p no:cacheprovider 
 26 passed, 4 deselected in 3.08s
 ```
 
-The four excluded cases were run by the full file and failed. They pass an unchanged, already-committed test file as a validation artifact. `mission_validation.validate` rejects it because its bytes equal `HEAD`, so the cases cannot test completion from a clean committed checkout. This is a candidate limitation, not a passing completion test. The other unit cases cover delivery identity, owner fencing, lease blocking and cleanup, abrupt worker exit, recovery generation, completion evidence rejection, and Kanban coupling.
+At the time of this review, the four excluded cases failed because they passed an unchanged, already-committed test file as a validation artifact. `mission_validation.validate` correctly rejected it because its bytes equaled `HEAD`. The follow-up report records corrected fixtures and current test results; the validator was not weakened or changed.
 
-The canonical `scripts/run_tests.sh` ran 30 tests: 26 passed and those same 4 failed. A focused canonical-runner selection reported four tests passed, then the runner exited nonzero while trying to write `test_durations.json` into the read-only source checkout. The direct pytest command above is the successful hermetic result; it is not represented as a successful canonical-runner exit.
+The prior canonical test run recorded 26 passed and four fixture-related failures. The follow-up used the canonical runner with the isolated Python environment and passed all 31 ownership tests; see the follow-up report for the exact command and output.
 
 Ruff passed for all six new harness/probe scripts. `git diff --check` passed before the harness commit.
 
@@ -88,7 +90,7 @@ Focused unit recovery cases passed for normal drain, interruption, hard worker e
 
 - Message delivery identifiers deduplicate identical deliveries; prompt similarity does not attach a new session to an existing mission. With no transport ID, the fallback is scoped to the specific session/turn and cannot reliably identify a replay.
 - Handoff fences later dispatches routed through the shared executor. An active execution lease or recorded running child blocks transfer. Hard process exit leaves a durable lease that fails closed rather than expiring automatically.
-- Task-owner completion requires a trusted stored receipt bound to mission generation, contract, validator, checkout revision, artifact hashes, and check results. Model-provided command status is not accepted. This check remains application-level, and current clean-commit artifact behavior failed four tests as described above.
+- Task-owner completion requires a trusted stored receipt bound to mission generation, contract, validator, checkout revision, artifact hashes, and check results. Model-provided command status is not accepted. This check remains application-level. Current Python validation requires a changed tracked code artifact; legitimate documentation-only and verification-only outcomes remain outside its acceptance policy.
 - Candidate APIs transactionally couple root handoff and task state changes. Additive schema migration preserved the tested copy's existing rows.
 
 ### Application-level only or unsafe
@@ -96,7 +98,7 @@ Focused unit recovery cases passed for normal drain, interruption, hard worker e
 - **Detached/outliving work bypasses the lease.** A subprocess or remote operation can survive handler return, release the lease, and continue after successful handoff. This was reproduced. No reliable universal cancellation/join boundary currently wraps terminal, browser, connector, delegated, and plugin effects. Strong exclusivity needs backend-specific process ownership and wait/cancel semantics, likely a stronger OS process boundary. Do not claim exclusive ownership or stage this candidate as a safety fence.
 - **Crash leases fail closed but cannot self-heal.** A hard worker crash leaves a lease that blocks transfer/recovery until an operator resolves it. Automatically deleting it based on age is unsafe. Current recovery also waits for owner lease expiry and verifies the recorded worker is not alive before moving a task owner.
 - **Unwrapped work remains outside the fence.** Direct SQL, other Hermes builds, nested workers, and paths that bypass the shared executor can mutate without a mission lease.
-- **Completion verifier has an artifact policy gap.** Clean committed artifacts are rejected by the existing changed-from-`HEAD` rule in four tests; reviewer identity is recorded by the application and is not independently authenticated.
+- **Completion verifier has a narrow artifact policy.** The four prior failures were corrected as invalid fixtures. Clean committed code is still rejected by the intentional changed-from-`HEAD` rule; documentation-only and verification-only outcomes are not supported. Reviewer identity is recorded by the application and is not independently authenticated.
 - **Old plugin path needs a migration action.** The hyphenated installed directory is ignored by plugin discovery; staging must explicitly remove/rename it and verify the normalized candidate user/bundled version wins.
 - **Native child graph is incomplete.** Only recorded child IDs are checked; direct DB/API bypasses or unrecorded descendants can diverge.
 
@@ -110,11 +112,11 @@ The additive schema migration is validated on a read-only backup and separate di
 
 ## Deployment recommendation
 
-**Blocked; continue hardening. Do not proceed to supervised staging yet.** The candidate cannot guarantee single active mutation when a real detached operation survives handler return, crash leases have no automated safe recovery, and completion validation has four clean-checkout test failures. Real Telegram/CLI/desktop/dashboard routes, backend subprocess trees, and complete rollback remain unverified. Address the bounded process ownership/cancellation contract and completion artifact policy, then rerun the same isolated harness before asking for a staging review.
+**Blocked; continue hardening. Do not proceed to supervised staging yet.** The candidate itself still cannot guarantee single active mutation when a real detached operation survives handler return, and crash leases have no automated safe recovery. The separate supervisor PoC demonstrates a possible local boundary but is not integrated and does not cover all native or remote mutators. Real Telegram/CLI/desktop/dashboard routes, backend subprocess trees, and complete rollback remain unverified. The four completion-test fixture errors are corrected; the narrow artifact acceptance policy remains.
 
 ## Git and worktree state
 
 - Implementation commit: `a52a6473b378b491121018c57121659d03f74d3c` (`Add isolated Phase 1 integration harness`).
-- This report is committed after the implementation commit above; it contains evidence for that exact code revision. The final branch head is the following documentation-only commit.
+- This report describes the pre-PoC candidate through the prior review commit. See `MISSION_SUPERVISOR_POC.md` for the follow-up commit identity and evidence.
 - Branch: `codex/mission-ownership-phase1`.
-- The starting candidate commits remain in history. Git status is clean after the implementation and documentation commits.
+- The starting candidate commits remain in history. The experimental follow-up is committed separately; its final revision and clean status are recorded in `MISSION_SUPERVISOR_POC.md`.

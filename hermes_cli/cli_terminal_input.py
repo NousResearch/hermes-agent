@@ -33,6 +33,7 @@ def _cli():
 _IMAGE_EXTENSIONS = frozenset({
     '.png', '.jpg', '.jpeg', '.gif', '.webp',
     '.bmp', '.tiff', '.tif', '.svg', '.ico',
+    '.heic', '.heif', '.avif',
 })
 
 

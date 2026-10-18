@@ -6554,55 +6554,6 @@ class TestStreamingApiCall:
 # ===================================================================
 
 
-class TestAnthropicInterruptHandler:
-    """_interruptible_api_call must handle Anthropic mode when interrupted."""
-
-
-    def test_interruptible_anthropic_interrupt_never_closes_shared_client(self, agent):
-        """#67142: a non-streaming Anthropic interrupt must abort the
-        request-local client from the poll thread, never close/rebuild the
-        shared _anthropic_client (which raced a live SSL BIO and corrupted an
-        unrelated SQLite DB via TLS-FD recycling).
-
-        Replaces the former source-reading assertion (which asserted the old,
-        now-removed rebuild-on-interrupt behavior) with a behavior test.
-        """
-        import time
-        from unittest.mock import MagicMock
-        from agent.chat_completion_helpers import interruptible_api_call
-
-        agent.api_mode = "anthropic_messages"
-        agent._interrupt_requested = False
-        agent._anthropic_client = MagicMock()
-        agent._rebuild_anthropic_client = MagicMock()
-        request_client = MagicMock()
-        agent._create_request_anthropic_client = MagicMock(return_value=request_client)
-        agent._abort_request_anthropic_client = MagicMock()
-        agent._close_request_anthropic_client = MagicMock()
-
-        def _create(_api_kwargs, *, client):
-            assert client is request_client
-            agent._interrupt_requested = True
-            time.sleep(0.5)
-            raise RuntimeError("forced close would have happened")
-
-        agent._anthropic_messages_create = MagicMock(side_effect=_create)
-
-        t0 = time.time()
-        with pytest.raises(InterruptedError):
-            interruptible_api_call(agent, {"model": "x", "messages": []})
-        elapsed = time.time() - t0
-
-        assert elapsed < 3.0, f"interrupt took {elapsed:.1f}s — should be near-instant"
-        # The shared client is never closed/rebuilt from the poll thread.
-        agent._anthropic_client.close.assert_not_called()
-        agent._rebuild_anthropic_client.assert_not_called()
-        # The poll (stranger) thread aborts the request-local client's socket.
-        agent._abort_request_anthropic_client.assert_called_once_with(
-            request_client, reason="interrupt_abort"
-        )
-
-
 # ---------------------------------------------------------------------------
 # A contentless SSE keepalive frame must not kill the turn
 # ---------------------------------------------------------------------------

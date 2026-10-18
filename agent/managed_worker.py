@@ -104,7 +104,7 @@ def encode_frame(frame):
 
 
 def validate_bootstrap(frame):
-    if set(frame) - {'attachments_v1'} != BOOTSTRAP_FIELDS or frame['version'] != 1:
+    if set(frame) - {'attachments_v1', 'source_slices_v1'} != BOOTSTRAP_FIELDS or frame['version'] != 1:
         raise ValueError('invalid_managed_worker_bootstrap')
     scope = frame['scope']
     fields = {'profile_id', 'session_id', 'execution_id', 'generation', 'pid', 'birth', 'secret', 'epoch'}
@@ -120,6 +120,8 @@ def validate_bootstrap(frame):
     if frame['turn_author'] is not None and (not isinstance(frame['turn_author'], dict)
                                             or parse_turn_author(frame['turn_author']) is None):
         raise ValueError('invalid_managed_worker_bootstrap')
+    from gateway.source_context import validate_worker_source_slices
+    validate_worker_source_slices(frame.get('source_slices_v1', []))
     return frame
 
 
@@ -430,7 +432,10 @@ def _construct_agent(frame, factory, policy, **kwargs):
         if kwargs['api_key'] is None:
             from gateway.session_worker_construct import worker_api_key
             kwargs['api_key'] = worker_api_key(policy, kwargs)
-        return factory(**kwargs)
+        agent = factory(**kwargs)
+        from gateway.source_context import bind_worker_source_slices
+        bind_worker_source_slices(agent, frame)
+        return agent
     except Exception as exc:
         from gateway.session_kanban import record_start_failure
         record_start_failure(frame, exc)

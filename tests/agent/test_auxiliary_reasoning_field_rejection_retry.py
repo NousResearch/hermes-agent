@@ -1,3 +1,4 @@
+from agent import auxiliary_egress_recovery
 """Reasoning-field rejection retry in ``agent.auxiliary_client`` (#112781).
 
 The title lane disables reasoning (``reasoning_config={"enabled": False}``); on
@@ -87,7 +88,7 @@ def test_model_gating_400_naming_a_thinking_model_still_reaches_the_fallback_cha
     fb_client = MagicMock()
     fb_client.chat.completions.create.return_value = {"fb": True}
     p1, p2, p3, _p4 = _custom_route_patches(client)
-    with p1, p2, p3, patch("agent.auxiliary_client._try_configured_fallback_chain",
+    with p1, p2, p3, patch("agent.auxiliary_egress_recovery.try_configured_fallback_chain",
                            return_value=(fb_client, "fallback-model", "fallback")) as fallback:
         result = call_llm(task="title_generation", messages=[{"role": "user", "content": "hi"}],
                           reasoning_config={"enabled": False})

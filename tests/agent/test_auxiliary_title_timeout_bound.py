@@ -1,3 +1,4 @@
+from agent import auxiliary_egress_recovery
 """Auto-title timeouts are bounded by ONE ``auxiliary.title_generation.timeout`` window and named as
 timeouts (#89445, #66251).
 
@@ -22,8 +23,8 @@ def _route_patches(client):
               return_value=("mac-ollama", "qwen3.6:27b", None, None, None)),
         patch("agent.auxiliary_client._get_cached_client", return_value=(client, "qwen3.6:27b")),
         patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task, **_kw: resp),
-        patch("agent.auxiliary_client._try_configured_fallback_chain", return_value=(None, None, "")),
-        patch("agent.auxiliary_client._try_main_agent_model_fallback", return_value=(None, None, "")),
+        patch("agent.auxiliary_egress_recovery.try_configured_fallback_chain", return_value=(None, None, "")),
+        patch("agent.auxiliary_egress_recovery.try_main_agent_model_fallback", return_value=(None, None, "")),
     )
 
 def test_title_timeout_hits_the_provider_once_and_names_the_deadline(caplog):

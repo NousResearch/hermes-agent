@@ -15,7 +15,7 @@ from gateway.config import Platform
 logger = logging.getLogger(__name__)
 
 
-async def expand_references(text, *, cwd, context_length, plugins=True):
+async def expand_references(text, *, cwd, context_length, plugins=True, source_slices=None):
     """``(text, refusal)``: the expanded text, or the refusal when the injection was refused. A failed
     expansion leaves the text as typed."""
     from agent.i18n import t
@@ -28,6 +28,8 @@ async def expand_references(text, *, cwd, context_length, plugins=True):
         return text, None
     if result.blocked:
         return text, "\n".join(result.warnings) or t("gateway.notify.context_injection_refused")
+    if source_slices is not None:
+        source_slices.extend(result.source_slices)
     return (result.message if result.expanded else text), None
 
 
@@ -44,7 +46,7 @@ def _inbound_cwd(runner, source):
     return terminal_env("TERMINAL_CWD", os.path.expanduser("~"))
 
 
-async def inbound_references(runner, source, session_key, text):
+async def inbound_references(runner, source, session_key, text, *, source_slices=None):
     """``expand_references`` for an inbound turn: a local session's policy cwd, else the terminal cwd."""
     try:
         cwd = _inbound_cwd(runner, source)
@@ -52,7 +54,9 @@ async def inbound_references(runner, source, session_key, text):
     except Exception as exc:
         logger.warning("@ context reference expansion failed: %s", exc, exc_info=True)
         return text, None
-    return await expand_references(text, cwd=cwd, context_length=context_length)
+    return await expand_references(
+        text, cwd=cwd, context_length=context_length, source_slices=source_slices,
+    )
 
 
 async def turn_references(runner, event, source, session_key, text):
@@ -66,12 +70,16 @@ async def turn_references(runner, event, source, session_key, text):
     target = text if api_text is None else api_text
     if "@" not in target:
         return text
+    source_slices = getattr(event, "_gateway_source_slices", None)
     if source.platform == Platform.LOCAL:
-        expanded, refusal = await inbound_references(runner, source, session_key, target)
+        expanded, refusal = await inbound_references(
+            runner, source, session_key, target, source_slices=source_slices,
+        )
         if refusal is not None:
             event._gateway_turn_refusal = refusal
             return None
-    elif (expanded := await runner._expand_inbound_context_references(source, session_key, target)) is None:
+    elif (expanded := await runner._expand_inbound_context_references(
+            source, session_key, target, source_slices=source_slices)) is None:
         return None
     if api_text is None:
         return expanded
@@ -79,7 +87,7 @@ async def turn_references(runner, event, source, session_key, text):
     return text
 
 
-async def managed_turn_text(authority, row, policy):
+async def managed_turn_text(authority, row, policy, *, source_slices=None):
     """``(text, refusal)`` for a managed worker's admitted text, expanded against the session's
     workspace. Built-in kinds only for a bypass session, which loads no plugins; the context length
     is the frozen policy's, never the profile file a bypass session must not read. ``None`` text means
@@ -100,7 +108,7 @@ async def managed_turn_text(authority, row, policy):
         logger.warning("@ context reference expansion failed: %s", exc, exc_info=True)
         return text, None
     return await expand_references(text, cwd=policy.cwd, context_length=context_length,
-                                   plugins=not policy.ignore_user_config)
+                                   plugins=not policy.ignore_user_config, source_slices=source_slices)
 
 
 def refused_turn_result(row, refusal):

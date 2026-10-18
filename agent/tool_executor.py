@@ -8,6 +8,8 @@ observe → commit → project pipeline so the tool-result wire shape is produce
 
 from __future__ import annotations
 
+from agent import source_provenance_tools
+
 import concurrent.futures
 import contextlib
 import json
@@ -787,16 +789,22 @@ def _run_agent_tool_execution_middleware(
             state.dispatched = True
             state.blocked = False
             state.args = final_args
-        return _dispatch_authorized_once(
+        def _execute_with_provenance(args):
+            from agent.llm_egress_runtime import protected_worker_scope
+            with protected_worker_scope(agent), source_provenance_tools.source_provenance_activation(agent, function_name):
+                return execute(args)
+        result = _dispatch_authorized_once(
             agent,
             state,
             _ToolCallRef(function_name, final_args, effective_task_id, tool_call_id, trace),
-            execute=execute,
+            execute=_execute_with_provenance,
             scope_block=scope_block,
             display_index=display_index,
             begin_execution=begin_execution,
             authorization_gate=authorization_gate,
         )
+        source_provenance_tools.attach_trusted_source_provenance_metadata(agent, function_name)
+        return result
 
     from agent.terminal_approval_batch import bind_prepared_dispatch
     _authorized_dispatch = bind_prepared_dispatch(_authorized_dispatch)
@@ -1146,11 +1154,16 @@ def _commit_tool_result(
     # Multimodal dicts become an OpenAI-style content list; text-only servers get a
     # string-safe fallback so a rejected image result never poisons history.
     _tool_content = agent._tool_result_content_for_active_model(function_name, persisted_result)
-    tool_message = make_tool_result_message(function_name, _tool_content, tool_call_id, effect_disposition=effect_disposition)
+    tool_message = make_tool_result_message(function_name, _tool_content, tool_call_id,
+        effect_disposition=effect_disposition)
     # A plugin that went live during this turn, and late LSP verdicts on this session's earlier edits,
     # are told on this new row (outside any untrusted-data wrapper).
     lsp_deferred.forward_to_agent(agent)
     plugin_live_notes.attach_to_tool_message(agent, tool_message)
+    source_provenance = source_provenance_tools.attach_trusted_source_provenance_metadata(
+        agent, function_name, content=tool_message['content'], presentation_content=_tool_content)
+    if source_provenance is not None:
+        tool_message['_source_provenance'] = source_provenance
     # Prepare presentation data before the append. The emitting completion callback
     # stays below the durability fence; raw tool/model content remains unchanged.
     prepare_metadata = getattr(agent, "tool_result_metadata_callback", None)

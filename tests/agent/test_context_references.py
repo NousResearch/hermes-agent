@@ -72,6 +72,96 @@ def test_parse_typed_references_ignores_emails_and_handles():
     assert refs[2].target == "2"
 
 
+def test_exact_file_reference_issues_only_the_resolved_slice(sample_repo: Path):
+    from agent.context_references import preprocess_context_references
+    from agent.source_provenance import SourceProvenanceRegistry
+
+    registry = SourceProvenanceRegistry()
+    result = preprocess_context_references(
+        "Review @file:src/main.py:4-5",
+        cwd=sample_repo,
+        context_length=100_000,
+        source_provenance_registry=registry,
+        session_id="session-1",
+        turn_id="turn-1",
+        request_id="request-1",
+        policy_digest="policy-1",
+    )
+
+    grant = registry.grants_for_request("request-1")[0]
+    expected = b"".join((sample_repo / "src" / "main.py").read_bytes().splitlines(keepends=True)[3:5])
+    assert result.expanded
+    assert (grant.line_start, grant.line_end) == (4, 5)
+    assert grant.content_sha256 == __import__("hashlib").sha256(expected).hexdigest()
+
+
+def test_context_reference_without_exact_range_cannot_issue_a_grant(sample_repo: Path):
+    from agent.context_references import preprocess_context_references
+    from agent.source_provenance import SourceProvenanceRegistry
+
+    registry = SourceProvenanceRegistry()
+    preprocess_context_references(
+        "Review @file:src/main.py",
+        cwd=sample_repo,
+        context_length=100_000,
+        source_provenance_registry=registry,
+        session_id="session-1",
+        turn_id="turn-1",
+        request_id="request-1",
+        policy_digest="policy-1",
+    )
+
+    assert registry.grants_for_request("request-1") == ()
+
+
+def test_exact_file_reference_through_a_symlink_never_issues_a_grant(sample_repo: Path):
+    from agent.context_references import preprocess_context_references
+    from agent.source_provenance import SourceProvenanceRegistry
+
+    (sample_repo / "src" / "linked.py").symlink_to(sample_repo / "src" / "main.py")
+    registry = SourceProvenanceRegistry()
+
+    result = preprocess_context_references(
+        "Review @file:src/linked.py:1-1",
+        cwd=sample_repo,
+        context_length=100_000,
+        source_provenance_registry=registry,
+        session_id="session-1",
+        turn_id="turn-1",
+        request_id="request-1",
+        policy_digest="policy-1",
+    )
+
+    assert result.expanded
+    assert registry.grants_for_request("request-1") == ()
+    assert any("symlink_path" in warning for warning in result.warnings)
+
+
+def test_exact_file_reference_through_a_symlinked_ancestor_never_issues_a_grant(
+    sample_repo: Path,
+):
+    from agent.context_references import preprocess_context_references
+    from agent.source_provenance import SourceProvenanceRegistry
+
+    (sample_repo / "linked-src").symlink_to(sample_repo / "src", target_is_directory=True)
+    registry = SourceProvenanceRegistry()
+
+    result = preprocess_context_references(
+        "Review @file:linked-src/main.py:1-1",
+        cwd=sample_repo,
+        context_length=100_000,
+        source_provenance_registry=registry,
+        session_id="session-1",
+        turn_id="turn-1",
+        request_id="request-1",
+        policy_digest="policy-1",
+    )
+
+    assert result.expanded
+    assert registry.grants_for_request("request-1") == ()
+    assert any("symlink_path" in warning for warning in result.warnings)
+
+
 
 
 

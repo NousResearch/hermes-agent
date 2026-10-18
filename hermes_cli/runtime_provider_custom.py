@@ -141,6 +141,7 @@ def _shadowed_by_builtin(requested_norm: str) -> bool:
 
 def _match_new_style_provider(
     requested_norm: str, providers: dict[str, Any], *, resolve_credentials: bool = True,
+    metadata_only: bool = False,
 ) -> Optional[tuple[dict[str, Any], Any]]:
     """Scan ``providers:`` (new-style, keyed) for ``requested_norm``; ``(entry, config key)``."""
     from hermes_cli.config import is_provider_enabled
@@ -154,6 +155,8 @@ def _match_new_style_provider(
         base_url = _entry_url(entry)
         if not base_url:
             continue
+        if metadata_only:
+            return {"name": entry.get("name", ep_name), "base_url": base_url.strip()}, ep_name
         # Resolve credentials only after identity and endpoint validation. Merely scanning an
         # unrelated entry must not read its profile-scoped secret.
         key_env = _clean(entry.get("key_env") or entry.get("api_key_env"))
@@ -174,7 +177,9 @@ def _match_new_style_provider(
     return None
 
 
-def _match_legacy_custom_provider(requested_norm: str, custom_providers) -> Optional[tuple[dict[str, Any], dict]]:
+def _match_legacy_custom_provider(
+    requested_norm: str, custom_providers, *, metadata_only: bool = False,
+) -> Optional[tuple[dict[str, Any], dict]]:
     """Scan the legacy ``custom_providers:`` list for ``requested_norm``; ``(result, matched entry)``."""
     for entry in custom_providers:
         name, base_url = (entry.get("name"), entry.get("base_url")) if isinstance(entry, dict) else (None, None)
@@ -183,6 +188,8 @@ def _match_legacy_custom_provider(requested_norm: str, custom_providers) -> Opti
         provider_key = _clean(entry.get("provider_key", ""))
         if requested_norm not in custom_provider_aliases(name, provider_key):
             continue
+        if metadata_only:
+            return {"name": name.strip(), "base_url": base_url.strip()}, entry
         result = {"name": name.strip(), "base_url": base_url.strip(), "api_key": _clean(entry.get("api_key", ""))}
         model_name = _clean(entry.get("model", ""))
         if model_name:
@@ -195,11 +202,17 @@ def _match_legacy_custom_provider(requested_norm: str, custom_providers) -> Opti
 
 def _get_named_custom_provider(
     requested_provider: str, *, config: Optional[dict[str, Any]] = None,
-    resolve_credentials: bool = True,
+    resolve_credentials: bool = True, metadata_only: bool = False,
 ) -> Optional[dict[str, Any]]:
     """Resolve a named endpoint. Creation-time config copying supplies its own config snapshot
     and skips credential reads; ordinary runtime callers keep their existing scoped resolution."""
-    found = _select_named_custom_provider(requested_provider, config=config, resolve_credentials=resolve_credentials)
+    if metadata_only and config is None:
+        from hermes_cli.config import load_config_readonly
+        config = load_config_readonly()
+    found = _select_named_custom_provider(
+        requested_provider, config=config, resolve_credentials=resolve_credentials and not metadata_only,
+        metadata_only=metadata_only,
+    )
     return found[0] if found else None
 
 
@@ -225,6 +238,7 @@ def custom_provider_config_path_for_url(base_url: Any, config: dict[str, Any]) -
 
 def _select_named_custom_provider(
     requested_provider: str, *, config: Optional[dict[str, Any]], resolve_credentials: bool,
+    metadata_only: bool = False,
 ) -> Optional[tuple[dict[str, Any], Optional[tuple]]]:
     """``(resolved entry, its config path)`` for the first usable match: ``providers:`` first,
     then the legacy list view."""
@@ -236,7 +250,9 @@ def _select_named_custom_provider(
         config = rp.load_config()
     providers = config.get("providers")
     found = (
-        _match_new_style_provider(requested_norm, providers, resolve_credentials=resolve_credentials)
+        _match_new_style_provider(
+            requested_norm, providers, resolve_credentials=resolve_credentials, metadata_only=metadata_only,
+        )
         if isinstance(providers, dict) else None
     )
     if found:
@@ -247,7 +263,9 @@ def _select_named_custom_provider(
                        "Run 'hermes doctor' for details.")
         return None
     custom_providers = rp.get_compatible_custom_providers(config)
-    found = _match_legacy_custom_provider(requested_norm, custom_providers) if custom_providers else None
+    found = _match_legacy_custom_provider(
+        requested_norm, custom_providers, metadata_only=metadata_only,
+    ) if custom_providers else None
     return (found[0], _compatible_entry_path(config, found[1])) if found else None
 
 

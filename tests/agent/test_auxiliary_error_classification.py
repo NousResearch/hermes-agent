@@ -5,6 +5,7 @@ ladder, like the main loop), #64144 (an unhealthy mark for absent credentials mu
 error), and #108349 (a vision fallback never lands on a text-only main model; an upstream-capacity 429
 never benches the credential pool).
 """
+from agent import auxiliary_egress_recovery
 import logging
 
 import pytest
@@ -50,7 +51,7 @@ def test_vision_fallback_skips_text_only_main_model(monkeypatch):
     monkeypatch.setattr(ac, "_read_main_model", lambda: "glm-5.3")
     monkeypatch.setattr(ac, "_main_model_supports_vision", lambda provider, model: False)
     monkeypatch.setattr(ac, "resolve_provider_client", lambda **kw: pytest.fail("must not build a client for a text-only model"))
-    assert ac._try_main_agent_model_fallback("nous", "vision", reason="rate limit") == (None, None, "")
+    assert auxiliary_egress_recovery.try_main_agent_model_fallback("nous", "vision", reason="rate limit") == (None, None, "")
 
 
 @pytest.mark.parametrize("body, benches_pool", [

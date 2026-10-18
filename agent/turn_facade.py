@@ -63,7 +63,10 @@ class TurnFacadeMixin:
             "task_id": effective_task_id,
             "platform": getattr(self, "platform", None) or "",
         }
-        relay_turn_id = f"{session_id or 'session'}:{effective_task_id}:{uuid.uuid4().hex[:8]}"
+        relay_turn_id = str(getattr(self, "_source_provenance_pending_turn_id", "") or "") or (
+            f"{session_id or 'session'}:{effective_task_id}:{uuid.uuid4().hex[:8]}"
+        )
+        self._source_provenance_pending_turn_id = None
         self._relay_pending_turn_id = relay_turn_id
         relay_parent_session_id = (
             str(getattr(self, "_parent_session_id", None) or "")
@@ -96,6 +99,10 @@ class TurnFacadeMixin:
                 return admission.early_result
             lease = admission.lease
             conversation_history = admission.conversation_history
+            from agent.source_provenance import admit_agent_context_sources
+            admit_agent_context_sources(
+                self, turn_id=relay_turn_id, prepared_session_id=session_id,
+            )
 
             relay_session_cwd, relay_turn_cwd = resolve_relay_scope_cwds(
                 self,
@@ -203,6 +210,13 @@ class TurnFacadeMixin:
                         lease.release()
                     # Always clear mid-turn labels on exit — including interrupted early returns
                     # that skip finalize_turn. Keep ts.
+                    from agent.source_provenance import SourceProvenanceRegistry
+                    self._source_provenance_context_grants = ()
+                    self._source_provenance_context_error = None
+                    provenance_registry = getattr(self, "_source_provenance_registry", None)
+                    if isinstance(provenance_registry, SourceProvenanceRegistry):
+                        provenance_registry.clear_turn(relay_turn_id)
+                        provenance_registry.clear_turn(str(getattr(self, "_current_turn_id", "") or ""))
                     with suppress(Exception):
                         self._reset_activity_labels_after_turn()
                     if getattr(self, "_relay_pending_turn_id", None) == relay_turn_id:

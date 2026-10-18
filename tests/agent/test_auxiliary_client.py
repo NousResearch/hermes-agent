@@ -1,5 +1,6 @@
 """Tests for agent.auxiliary_client resolution chain, provider overrides, and model overrides."""
 
+from agent.auxiliary_egress_recovery import try_configured_fallback_chain as _try_configured_fallback_chain
 import base64
 import json
 import logging
@@ -317,7 +318,7 @@ class TestMoaAggregatorSharedResolution:
     def test_main_agent_fallback_uses_aggregator_for_moa_main(self, tmp_path, monkeypatch):
         """_try_main_agent_model_fallback with a moa main resolves the
         aggregator instead of asking for a literal "moa" client."""
-        from agent.auxiliary_client import _try_main_agent_model_fallback
+        from agent.auxiliary_egress_recovery import try_main_agent_model_fallback as _try_main_agent_model_fallback
 
         self._write_moa_config(tmp_path, monkeypatch)
         with patch("agent.auxiliary_client._read_main_provider", return_value="moa"), \
@@ -1625,9 +1626,9 @@ class TestCallLlmPaymentFallback:
                    return_value=(primary_client, "virtual-model")), \
              patch("agent.auxiliary_client._resolve_task_provider_model",
                    return_value=("custom", "virtual-model", "https://relay.example/v1", "test-key", None)), \
-             patch("agent.auxiliary_client._try_configured_fallback_chain",
+             patch("agent.auxiliary_egress_recovery.try_configured_fallback_chain",
                    return_value=(fallback_client, "fallback-model", "fallback_chain[0](openrouter)")) as mock_chain, \
-             patch("agent.auxiliary_client._try_main_agent_model_fallback",
+             patch("agent.auxiliary_egress_recovery.try_main_agent_model_fallback",
                    return_value=(None, None, "")):
             call_llm(task="compression", messages=[{"role": "user", "content": "summarize"}],
                      temperature=0.3)
@@ -1737,7 +1738,7 @@ class TestStaleFallbackCandidateSkip:
         with patch("agent.auxiliary_client._resolve_task_provider_model",
                    return_value=("auto", None, None, None, None)), \
              patch("agent.auxiliary_client._get_cached_client", side_effect=_cached_client), \
-             patch("agent.auxiliary_client._try_configured_fallback_chain",
+             patch("agent.auxiliary_egress_recovery.try_configured_fallback_chain",
                    return_value=(None, None, "")), \
              patch("agent.auxiliary_client._try_main_fallback_chain",
                    return_value=(None, None, "")), \
@@ -1779,7 +1780,7 @@ class TestStaleFallbackCandidateSkip:
                    return_value=("auto", None, None, None, None)), \
              patch("agent.auxiliary_client._get_cached_client",
                    return_value=(primary_client, "gpt-5.5")), \
-             patch("agent.auxiliary_client._try_configured_fallback_chain",
+             patch("agent.auxiliary_egress_recovery.try_configured_fallback_chain",
                    return_value=(None, None, "")), \
              patch("agent.auxiliary_client._try_main_fallback_chain",
                    return_value=(None, None, "")), \
@@ -1817,7 +1818,7 @@ class TestStaleFallbackCandidateSkip:
                    return_value=("auto", None, None, None, None)), \
              patch("agent.auxiliary_client._get_cached_client",
                    return_value=(primary_client, "gpt-5.5")), \
-             patch("agent.auxiliary_client._try_configured_fallback_chain",
+             patch("agent.auxiliary_egress_recovery.try_configured_fallback_chain",
                    return_value=(None, None, "")), \
              patch("agent.auxiliary_client._try_main_fallback_chain",
                    return_value=(None, None, "")), \
@@ -1873,7 +1874,7 @@ class TestDataEnvelopeUnwrap:
                    return_value=(primary_client, "cline-pass/kimi-k2.7-code")), \
              patch("agent.auxiliary_client._resolve_task_provider_model",
                    return_value=("custom", "cline-pass/kimi-k2.7-code", None, None, None)), \
-             patch("agent.auxiliary_client._try_configured_fallback_chain") as mock_chain:
+             patch("agent.auxiliary_egress_recovery.try_configured_fallback_chain") as mock_chain:
             result = call_llm(
                 task="title_generation",
                 messages=[{"role": "user", "content": "hello"}],
@@ -1895,7 +1896,7 @@ class TestDataEnvelopeUnwrap:
                    return_value=(primary_client, "cline-pass/kimi-k2.7-code")), \
              patch("agent.auxiliary_client._resolve_task_provider_model",
                    return_value=("custom", "cline-pass/kimi-k2.7-code", None, None, None)), \
-             patch("agent.auxiliary_client._try_configured_fallback_chain") as mock_chain:
+             patch("agent.auxiliary_egress_recovery.try_configured_fallback_chain") as mock_chain:
             result = await async_call_llm(
                 task="vision",
                 messages=[{"role": "user", "content": "hello"}],
@@ -1968,9 +1969,9 @@ class TestAuxiliaryFallbackLayering:
                    return_value=(primary_client, "gpt-5.5")), \
              patch("agent.auxiliary_client._resolve_task_provider_model",
                    return_value=("openai-codex", "gpt-5.5", None, None, None)), \
-             patch("agent.auxiliary_client._try_configured_fallback_chain",
+             patch("agent.auxiliary_egress_recovery.try_configured_fallback_chain",
                    return_value=(fallback_client, "deepseek-v4-pro", "fallback_chain[0](opencode-go)")) as mock_chain, \
-             patch("agent.auxiliary_client._try_main_agent_model_fallback") as mock_main:
+             patch("agent.auxiliary_egress_recovery.try_main_agent_model_fallback") as mock_main:
             call_llm(
                 task="kanban_decomposer",
                 messages=[{"role": "user", "content": "decompose this"}],
@@ -1994,9 +1995,9 @@ class TestAuxiliaryFallbackLayering:
                    return_value=(primary_client, "glm-4v-flash")), \
              patch("agent.auxiliary_client._resolve_task_provider_model",
                    return_value=("glm", "glm-4v-flash", None, None, None)), \
-             patch("agent.auxiliary_client._try_configured_fallback_chain",
+             patch("agent.auxiliary_egress_recovery.try_configured_fallback_chain",
                    return_value=(None, None, "")), \
-             patch("agent.auxiliary_client._try_main_agent_model_fallback",
+             patch("agent.auxiliary_egress_recovery.try_main_agent_model_fallback",
                    return_value=(None, None, "")), \
              caplog.at_level("WARNING", logger="agent.auxiliary_client"):
             with pytest.raises(Exception, match="Payment Required"):
@@ -2019,7 +2020,7 @@ class TestAuxiliaryFallbackLayering:
                    return_value=(None, None)), \
              patch("agent.auxiliary_client._resolve_task_provider_model",
                    return_value=("ollama-cloud", "deepseek-v4-flash:cloud", None, None, None)), \
-             patch("agent.auxiliary_client._try_configured_fallback_chain",
+             patch("agent.auxiliary_egress_recovery.try_configured_fallback_chain",
                    return_value=(chain_client, "gpt-5.4-mini", "fallback_chain[0](openai-codex)")) as mock_chain:
             result = call_llm(
                 task="compression",
@@ -2069,7 +2070,7 @@ class TestTryMainAgentModelFallback:
     """_try_main_agent_model_fallback resolves the user's main provider+model as a safety net."""
 
     def test_returns_none_when_main_provider_is_auto(self):
-        from agent.auxiliary_client import _try_main_agent_model_fallback
+        from agent.auxiliary_egress_recovery import try_main_agent_model_fallback as _try_main_agent_model_fallback
         with patch("agent.auxiliary_client._read_main_provider", return_value="auto"), \
              patch("agent.auxiliary_client._read_main_model", return_value="some-model"):
             client, model, label = _try_main_agent_model_fallback("glm", task="vision")
@@ -2077,7 +2078,7 @@ class TestTryMainAgentModelFallback:
 
 
     def test_resolves_main_provider_client(self):
-        from agent.auxiliary_client import _try_main_agent_model_fallback
+        from agent.auxiliary_egress_recovery import try_main_agent_model_fallback as _try_main_agent_model_fallback
         fake_client = MagicMock()
         with patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"), \
              patch("agent.auxiliary_client._read_main_model", return_value="anthropic/claude-sonnet-4"), \
@@ -2248,11 +2249,11 @@ class TestTransientTransportRetry:
         with (
             p1, p2, p3,
             patch(
-                "agent.auxiliary_client._try_configured_fallback_chain",
+                "agent.auxiliary_egress_recovery.try_configured_fallback_chain",
                 return_value=(None, None, ""),
             ),
             patch(
-                "agent.auxiliary_client._try_main_agent_model_fallback",
+                "agent.auxiliary_egress_recovery.try_main_agent_model_fallback",
                 return_value=(fb_client, "fb-model", "openai"),
             ),
         ):
@@ -2291,11 +2292,11 @@ class TestTransientTransportRetry:
                 return_value=("openrouter", primary, "some-model"),
             ),
             patch(
-                "agent.auxiliary_client._try_configured_fallback_chain",
+                "agent.auxiliary_egress_recovery.try_configured_fallback_chain",
                 return_value=(None, None, ""),
             ),
             patch(
-                "agent.auxiliary_client._try_main_agent_model_fallback",
+                "agent.auxiliary_egress_recovery.try_main_agent_model_fallback",
                 return_value=(fb_client, "fb-model", "openai"),
             ),
         ):
@@ -2327,7 +2328,7 @@ class TestTransientTransportRetry:
                 return_value=("openrouter", primary, "some-model"),
             ),
             patch(
-                "agent.auxiliary_client._try_configured_fallback_chain",
+                "agent.auxiliary_egress_recovery.try_configured_fallback_chain",
                 return_value=(MagicMock(), "fb-model", "configured-fallback"),
             ),
             patch(
@@ -2417,11 +2418,11 @@ class TestTransientTransportRetry:
         with (
             p1, p2, p3,
             patch(
-                "agent.auxiliary_client._try_configured_fallback_chain",
+                "agent.auxiliary_egress_recovery.try_configured_fallback_chain",
                 return_value=(fb_client, "sibling-model", "fallback_chain[0](openrouter)"),
             ) as mock_chain,
             patch(
-                "agent.auxiliary_client._try_main_agent_model_fallback",
+                "agent.auxiliary_egress_recovery.try_main_agent_model_fallback",
                 return_value=(None, None, ""),
             ),
         ):
@@ -3688,7 +3689,7 @@ class TestCodexAuxiliaryAdapterTimeout:
                 self.kwargs = kwargs
                 return _FakeCreateStream()
 
-        fake_client = SimpleNamespace(responses=FakeResponses())
+        fake_client = SimpleNamespace(base_url="http://127.0.0.1:18434/v1", responses=FakeResponses())
         adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
 
         response = adapter.create(
@@ -3713,7 +3714,7 @@ class TestCodexAuxiliaryAdapterTimeout:
             def create(self, **kwargs):
                 return _SlowAliveCreateStream()
 
-        fake_client = SimpleNamespace(responses=FakeResponses(), close=lambda: None)
+        fake_client = SimpleNamespace(base_url="http://127.0.0.1:18434/v1", responses=FakeResponses(), close=lambda: None)
         adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
 
         started = time.monotonic()
@@ -3745,7 +3746,7 @@ class TestCodexAuxiliaryAdapterTimeout:
             def create(self, **kwargs):
                 return _StallingStream()
 
-        fake_client = SimpleNamespace(responses=FakeResponses(), close=lambda: None)
+        fake_client = SimpleNamespace(base_url="http://127.0.0.1:18434/v1", responses=FakeResponses(), close=lambda: None)
         adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
 
         started = time.monotonic()
@@ -3873,7 +3874,7 @@ class TestCodexAuxiliaryToolMessageConversion:
                 self.kwargs = kwargs
                 return _FakeCreateStream()
 
-        fake_client = SimpleNamespace(responses=FakeResponses())
+        fake_client = SimpleNamespace(base_url="http://127.0.0.1:18434/v1", responses=FakeResponses())
         adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
         adapter.create(messages=messages, model="gpt-5.5")
         # #93650 routes bulk fields through extra_body; fold them back in so
@@ -3934,7 +3935,7 @@ class TestCodexAuxiliaryToolMessageConversion:
 
     def test_video_input_fails_before_responses_request(self):
         responses = MagicMock()
-        adapter = _CodexCompletionsAdapter(SimpleNamespace(responses=responses), "gpt-5.5")
+        adapter = _CodexCompletionsAdapter(SimpleNamespace(base_url="http://127.0.0.1:18434/v1", responses=responses), "gpt-5.5")
         messages = [{
             "role": "user",
             "content": [
@@ -3984,7 +3985,7 @@ class TestCodexAuxiliaryAdapterNullOutputRecovery:
             def create(self, **kwargs):
                 return _NullOutputCreateStream()
 
-        fake_client = SimpleNamespace(responses=FakeResponses())
+        fake_client = SimpleNamespace(base_url="http://127.0.0.1:18434/v1", responses=FakeResponses())
         adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
 
         response = adapter.create(messages=[{"role": "user", "content": "summarize"}])
@@ -4016,7 +4017,7 @@ class TestCodexAuxiliaryAdapterCompletedResponse:
                 assert kwargs["stream"] is True
                 return completed
 
-        fake_client = SimpleNamespace(responses=FakeResponses())
+        fake_client = SimpleNamespace(base_url="http://127.0.0.1:18434/v1", responses=FakeResponses())
         adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.6-terra")
 
         response = adapter.create(
@@ -4041,7 +4042,7 @@ class TestCodexAuxiliaryAdapterCompletedResponse:
             def create(self, **kwargs):
                 return completed
 
-        fake_client = SimpleNamespace(responses=FakeResponses())
+        fake_client = SimpleNamespace(base_url="http://127.0.0.1:18434/v1", responses=FakeResponses())
         adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
 
         response = adapter.create(messages=[{"role": "user", "content": "x"}])
@@ -4648,9 +4649,7 @@ class TestCompressionFallbackContextFilter:
     def test_configured_chain_skips_too_small_candidate_for_compression(self, monkeypatch):
         """When entry[0] is reachable but too small and entry[1] is large enough,
         _try_configured_fallback_chain must return entry[1], not entry[0]."""
-        from agent.auxiliary_client import (
-            _try_configured_fallback_chain,
-        )
+        from agent.auxiliary_egress_recovery import try_configured_fallback_chain as _try_configured_fallback_chain
 
         small_client = MagicMock(name="small_client")
         large_client = MagicMock(name="large_client")
@@ -4699,7 +4698,7 @@ class TestCompressionFallbackContextFilter:
     def test_same_provider_same_model_still_skipped(self, monkeypatch):
         """The exact (provider, model) pair that just failed is still
         skipped — failed_model narrows the skip, it doesn't disable it."""
-        from agent.auxiliary_client import _try_configured_fallback_chain
+        from agent.auxiliary_egress_recovery import try_configured_fallback_chain as _try_configured_fallback_chain
 
         entries = [
             self._make_chain_entry("nvidia", "deepseek-ai/deepseek-v4-pro"),
@@ -5088,7 +5087,6 @@ class TestSynchronousFallbackCachePlans:
     def _run_configured_fallback(monkeypatch, entry):
         from agent.auxiliary_client import (
             _call_fallback_candidate_sync,
-            _try_configured_fallback_chain,
         )
 
         client = MagicMock()
@@ -5181,7 +5179,6 @@ class TestAsynchronousFallbackCachePlans:
         """Async mirror parity: per-destination cache replan, not verbatim pass-through."""
         from agent.auxiliary_client import (
             _call_fallback_candidate_async,
-            _try_configured_fallback_chain,
         )
 
         entry = {

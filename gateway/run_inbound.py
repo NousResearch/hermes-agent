@@ -25,6 +25,7 @@ from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run_busy import approval_input_words
 from gateway.run_common import _UNSET
+from gateway.run_inbound_context import GatewayInboundContextMixin
 from gateway.run_inbound_media import rehome_inbound_media
 from gateway.run_inbound_hooks import GatewayInboundHooksMixin
 from gateway.run_plugin_injection import GatewayPluginInjectionMixin
@@ -68,7 +69,7 @@ def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
     return message_text.removeprefix(prefix)
 
 
-class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin):
+class GatewayInboundMixin(GatewayInboundContextMixin, GatewayInboundHooksMixin, GatewayPluginInjectionMixin):
     """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner."""
 
     async def _hm_offer_pairing_code(self, source: SessionSource) -> None:
@@ -1611,18 +1612,6 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
             custom_providers=_msg_custom_providers,
         )
 
-    async def _expand_inbound_context_references(
-        self, source: SessionSource, session_key: str, message_text: str
-    ) -> Optional[str]:
-        """Expand ``@`` context references; returns None when the injection was refused (user notified)."""
-        from gateway.session_context_refs import inbound_references
-        expanded, refusal = await inbound_references(self, source, session_key, message_text)
-        if refusal is None:
-            return expanded
-        _adapter = self._delivery_adapter_for(source)
-        if _adapter:
-            await _adapter.send(source.chat_id, refusal)
-        return None
 
     async def _prepare_inbound_message_text(
         self, *, event: MessageEvent, source: SessionSource, history: list[dict[str, Any]],
@@ -1632,6 +1621,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         follow-up paths so attribution, image enrichment, STT, document notes, reply context and
         @ references behave the same. Side effect: buffers per-session native image paths when the
         model supports native vision; the caller consumes that buffer at ``run_conversation``."""
+        event._gateway_source_slices = []
         rehome_inbound_media(event)  # before any consumer (vision, STT, document notes) reads media_urls
         _pending_stt_prepared = hasattr(event, "_gateway_pending_stt_text")
         message_text = (event._gateway_pending_stt_text if _pending_stt_prepared else event.text) or ""

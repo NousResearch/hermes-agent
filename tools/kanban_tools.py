@@ -6,11 +6,13 @@ in the agent's process (reach ``kanban.db`` from a container/SSH terminal backen
 shlex quoting of JSON metadata, structured-JSON failures). Humans use CLI/dashboard.
 """
 from __future__ import annotations
+from agent.llm_egress_runtime import is_protected_worker
 
 import functools
 import json
 import logging
 import os
+import re
 import time
 from contextlib import contextmanager
 from typing import Any, Callable, Optional
@@ -19,6 +21,7 @@ from agent.redact import redact_sensitive_text
 from hermes_cli.goals import judge_goal
 from tools.registry import no_cache_check_fn, registry, tool_error
 from hermes_cli.config import cfg_get, load_config
+from hermes_constants import get_hermes_home
 from tools.kanban_tools_schemas import (
     KANBAN_ATTACH_SCHEMA,
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
@@ -31,8 +34,121 @@ logger = logging.getLogger(__name__)
 KANBAN_LIST_DEFAULT_LIMIT = 50
 KANBAN_LIST_MAX_LIMIT = 200
 
-
 # --- Gating ---
+
+_PRIVATE_PATH_IN_TEXT = re.compile(
+    r"(?<![A-Za-z0-9_])(?:"
+    r"/(?:Users|home|private|var/folders|root|Volumes)/[^\s\"'`)]+"
+    r"|~(?:/|\\)[^\s\"'`)]+"
+    r"|[A-Za-z]:\\+(?:Users|Documents and Settings)\\+[^\s\"'`)]+"
+    r")",
+    re.IGNORECASE,
+)
+
+def _sanitize_remote_worker_payload(
+    value: Any,
+    *,
+    workspace_path: str | None,
+    control_home: str,
+) -> Any:
+    """Make Kanban state useful to a remote worker without host path egress."""
+
+    if isinstance(value, str):
+        text = value
+        if workspace_path:
+            text = text.replace(
+                str(workspace_path), "$HERMES_KANBAN_WORKSPACE"
+            )
+        if control_home:
+            text = text.replace(str(control_home), "$HERMES_CONTROL_HOME")
+        return _PRIVATE_PATH_IN_TEXT.sub("<private-path>", text)
+    if isinstance(value, dict):
+        return {
+            _sanitize_remote_worker_payload(
+                key,
+                workspace_path=workspace_path,
+                control_home=control_home,
+            ): _sanitize_remote_worker_payload(
+                item,
+                workspace_path=workspace_path,
+                control_home=control_home,
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [
+            _sanitize_remote_worker_payload(
+                item,
+                workspace_path=workspace_path,
+                control_home=control_home,
+            )
+            for item in value
+        ]
+    return value
+
+def _project_remote_worker_state(payload: dict, *, current_run_id: str | None) -> dict:
+    """Expose current task truth without recycling obsolete attempt failures."""
+
+    del current_run_id
+    task = dict(payload.get("task") or {})
+    if task.get("current_run_id") is not None:
+        task["current_run_id"] = "$HERMES_KANBAN_RUN_ID"
+    # The dispatcher has already rooted terminal and file tools in the exact
+    # task workspace. Exposing the shell token as structured ``workspace_path``
+    # tempts models to copy it into the tool's literal ``workdir`` field, where
+    # ``$`` is (correctly) rejected as a metacharacter. Keep the token only in
+    # sanitized command text, where the shell can expand the exact grant.
+    task["workspace_path"] = None
+    task["workspace_access"] = "dispatcher_current_directory"
+    review_assignment = False
+    if task.get("status") in {"review", "running"}:
+        for run in reversed(payload.get("runs") or []):
+            if not isinstance(run, dict):
+                continue
+            state = str(run.get("outcome") or run.get("status") or "").strip()
+            if state in {"running", "claimed", "spawned", ""}:
+                continue
+            review_assignment = state == "review_requested"
+            break
+    worker_context = (
+        "Work only from the current task body and current repository state. "
+        "Terminal and file tools already start in the dispatcher-selected task "
+        "workspace; do not pass an environment token as a tool workdir. "
+        "Prior crash, protocol, manual-reclaim, local-fallback, and blocked "
+        "records are attempt evidence only and cannot block this retry."
+    )
+    if review_assignment:
+        worker_context = (
+            "This is a review run. Do not redo the implementation assignment. "
+            "Terminal and file tools already start in the dispatcher-selected "
+            "task workspace; do not pass an environment token as a tool workdir. "
+            "Inspect the current deliverable and canonical state, verify the "
+            "claimed evidence, then complete it or request concrete changes. "
+            "Block only on a newly reproduced external dependency."
+        )
+    return {
+        "task": task,
+        "parents": payload.get("parents", []),
+        "unsatisfied_parents": payload.get("unsatisfied_parents", []),
+        "children": payload.get("children", []),
+        # Boolean current-state signal only: review summaries remain excluded
+        # with all other historical run text from the remote egress boundary.
+        "review_assignment": review_assignment,
+        # The task body is the authoritative bounded assignment. Historical
+        # worker comments are attempt evidence and previously caused agents to
+        # re-enact already-repaired failures.
+        "comments": [],
+        # Run/event counters are local lifecycle metadata and are not needed
+        # to execute the current assignment. The worker reports liveness via
+        # its lifecycle tools instead of replaying those identifiers remotely.
+        "events": [],
+        "runs": [],
+        "worker_context": worker_context,
+        "history_policy": (
+            "Verify canonical current state. Do not repeat or summarize obsolete "
+            "attempt failures. Finish, or report one newly reproduced blocker."
+        ),
+    }
 
 def _profile_has_kanban_toolset() -> bool:
     from tools.kanban_toolset_context import kanban_toolset_requested
@@ -60,7 +176,6 @@ def _profile_has_kanban_toolset() -> bool:
     except Exception:
         return False
 
-
 def _delegation_ctx(predicate: str, default: bool) -> bool:
     """``agent.delegation_context.<predicate>()``; ``default`` when it cannot be evaluated."""
     try:
@@ -69,16 +184,13 @@ def _delegation_ctx(predicate: str, default: bool) -> bool:
     except Exception:
         return default
 
-
 def _is_delegated_child_context() -> bool:
     return _delegation_ctx("is_delegated_child_context", False)
-
 
 def _is_dispatcher_owned_worker() -> bool:
     """False for delegate_task children AND for cron jobs fired in-process from
     a worker — i.e. whenever HERMES_KANBAN_* is present but not ours."""
     return _delegation_ctx("is_dispatcher_owned_worker_context", True)
-
 
 def _visible(*, to_env_worker: bool) -> bool:
     """check_fn core: never for delegate children; dispatcher-spawned env workers
@@ -89,18 +201,15 @@ def _visible(*, to_env_worker: bool) -> bool:
         return to_env_worker
     return _profile_has_kanban_toolset()
 
-
 @no_cache_check_fn
 def _check_kanban_mode() -> bool:
     """Lifecycle tools: dispatcher workers + profiles with the ``kanban`` toolset."""
     return _visible(to_env_worker=True)
 
-
 @no_cache_check_fn
 def _check_kanban_orchestrator_mode() -> bool:
     """Board-routing tools (kanban_list, kanban_unblock): hidden from task workers."""
     return _visible(to_env_worker=False)
-
 
 # --- Shared helpers: validation failures raise _Reject; _kanban_handler renders it ---
 
@@ -119,12 +228,10 @@ class _Reject(Exception):
     def __init__(self, message: str):
         super().__init__(tool_error(message))
 
-
 def _check(cond: Any, message: str) -> None:
     """Reject (as a tool error) unless ``cond`` is truthy."""
     if not cond:
         raise _Reject(message)
-
 
 # Keys a handler reads that its LLM-facing schema deliberately does not declare:
 # ``session_id`` is provenance stamped by internal callers (31fe2290393), ``project_id``
@@ -134,7 +241,6 @@ _UNDECLARED_ARGS: dict[str, frozenset[str]] = {
     # ``title`` is the pre-schema alias of ``filename`` that ``_handle_attach_url`` still honours.
     "kanban_attach_url": frozenset({"title"}),
 }
-
 
 def _persisted_identity() -> str:
     """Profile name persisted into board records (comment author, task creator).
@@ -148,7 +254,6 @@ def _persisted_identity() -> str:
     from hermes_cli.profiles import current_profile_name
 
     return current_profile_name("worker") or "worker"
-
 
 def _kanban_handler(tool_name: str) -> Callable:
     """Wrap a handler so every failure is a structured tool error. ``ValueError``
@@ -175,7 +280,6 @@ def _kanban_handler(tool_name: str) -> Callable:
         return wrapper
     return deco
 
-
 def _reject_delegated_child_mutation(tool_name: str) -> None:
     """A delegate_task child shares the parent's process, so inherited HERMES_KANBAN_*
     env is not proof of ownership: it may report findings but must not mutate."""
@@ -184,7 +288,6 @@ def _reject_delegated_child_mutation(tool_name: str) -> None:
             f"{tool_name} refused: delegate_task child agents are not Kanban run owners. "
             "Return findings to the parent agent; the dispatcher worker or an explicitly "
             "configured Kanban orchestrator must perform board mutations.")
-
 
 def _default_task_id(arg: Any) -> Optional[str]:
     """Resolve ``task_id`` arg or fall back to the env var the dispatcher set."""
@@ -204,7 +307,6 @@ def _default_task_id(arg: Any) -> Optional[str]:
         if val:
             return val
     return None
-
 
 def _require_task_id(args: dict) -> str:
     """Resolve the target task or reject with a message the caller can act on.
@@ -227,7 +329,6 @@ def _require_task_id(args: dict) -> str:
         "task_id is required: this session has no dispatcher-assigned task to "
         "default to. Pass an explicit task_id; discover task ids with kanban_list.")
 
-
 def _own_task_env(task_id: str, var: str) -> Optional[str]:
     """``$var`` only when this worker is scoped to ``task_id``; else None."""
     return os.environ.get(var) if os.environ.get("HERMES_KANBAN_TASK") == task_id else None
@@ -240,12 +341,10 @@ def _worker_run_id(task_id: str) -> Optional[int]:
     except ValueError:
         return None
 
-
 def _stamp_worker_session_metadata(task_id: str, metadata: Optional[dict]) -> Optional[dict]:
     """Add trusted worker session id metadata for this worker's own task."""
     session_id = _own_task_env(task_id, "HERMES_SESSION_ID")
     return {**(metadata or {}), "worker_session_id": session_id} if session_id else metadata
-
 
 def _enforce_worker_task_ownership(tid: str) -> None:
     """A dispatcher-spawned worker may only mutate its own HERMES_KANBAN_TASK; a
@@ -261,7 +360,6 @@ def _enforce_worker_task_ownership(tid: str) -> None:
         raise _Reject(
             f"worker is scoped to task {env_tid}; refusing to mutate {tid}. Use kanban_comment "
             f"to hand off information to other tasks, or kanban_create to spawn follow-up work.")
-
 
 def _worker_guard(tool_name: str, args: dict) -> str:
     """Worker mutation preamble, in order: delegate-child rejection, task id
@@ -297,7 +395,6 @@ def _worker_guard(tool_name: str, args: dict) -> str:
         )
     return tid
 
-
 def _require_orchestrator_tool(tool_name: str) -> None:
     """The check_fn already hides orchestrator tools from workers; this catches
     a stale registration or test harness routing a worker here anyway."""
@@ -306,7 +403,6 @@ def _require_orchestrator_tool(tool_name: str) -> None:
             f"{tool_name} is orchestrator-only; dispatcher-spawned workers must use "
             "kanban_complete, kanban_request_review, kanban_request_changes, kanban_block, "
             "kanban_heartbeat, or kanban_comment for their assigned task.")
-
 
 @contextmanager
 def _board(board: Optional[str], *, quiet_close: bool = False):
@@ -325,16 +421,13 @@ def _board(board: Optional[str], *, quiet_close: bool = False):
             if not quiet_close:
                 raise
 
-
 def _existing_task(kb, conn, tid: str):
     task = kb.get_task(conn, tid)
     _check(task is not None, f"task {tid} not found")
     return task
 
-
 def _ok(**fields: Any) -> str:
     return json.dumps({"ok": True, **fields})
-
 
 def _ok_landed(kb, conn, tid: str, default_status: str, **extra: Any) -> str:
     """Success payload reporting where the task actually landed (routing may
@@ -344,14 +437,11 @@ def _ok_landed(kb, conn, tid: str, default_status: str, **extra: Any) -> str:
     return _ok(task_id=tid, run_id=run.id if run else None,
                status=landed.status if landed else default_status, **extra)
 
-
 def _redact(value: Any) -> str:
     return redact_sensitive_text(str(value), force=True)
 
-
 def _redact_opt(value: Any) -> Any:
     return _redact(value) if value else value
-
 
 def _redact_metadata(metadata: dict) -> Optional[dict]:
     """Redact via a JSON round-trip; None if the result can't be re-parsed."""
@@ -359,7 +449,6 @@ def _redact_metadata(metadata: dict) -> Optional[dict]:
         return json.loads(redact_sensitive_text(json.dumps(metadata), force=True))
     except json.JSONDecodeError:
         return None
-
 
 def _coerce_str_list(value: Any, name: str, what: str, *, strip: bool = False):
     """Accept a single string (convenience) or a list/tuple; with ``strip`` the
@@ -374,11 +463,9 @@ def _coerce_str_list(value: Any, name: str, what: str, *, strip: bool = False):
         value = [str(x).strip() for x in value if str(x).strip()]
     return value
 
-
 def _require_dict_metadata(metadata: Any) -> None:
     _check(metadata is None or isinstance(metadata, dict),
            f"metadata must be an object/dict, got {type(metadata).__name__}")
-
 
 def _merge_artifacts(metadata: Any, artifacts: list[str]) -> dict:
     """Fold ``artifacts`` into ``metadata["artifacts"]`` (merged with, never overwriting, a
@@ -394,16 +481,13 @@ def _merge_artifacts(metadata: Any, artifacts: list[str]) -> dict:
         metadata["artifacts"] = artifacts
     return metadata
 
-
 def _require_text(args: dict, name: str, message: Optional[str] = None) -> Any:
     """``args[name]``; rejects when missing or blank."""
     value = args.get(name)
     _check(value and str(value).strip(), message or f"{name} is required")
     return value
 
-
 _BOOL_WORDS = {"true": True, "1": True, "yes": True, "false": False, "0": False, "no": False}
-
 
 def _parse_bool_arg(args: dict, name: str) -> bool:
     value = args.get(name)
@@ -413,10 +497,8 @@ def _parse_bool_arg(args: dict, name: str) -> bool:
     _check(parsed is not None, f"{name} must be a boolean or 'true'/'false'")
     return parsed
 
-
 def _opt_int(value: Any, default: Optional[int] = None) -> Optional[int]:
     return int(value) if value is not None else default
-
 
 _TASK_FIELDS = tuple(
     "id title body assignee status tenant priority workspace_kind workspace_path created_by "
@@ -432,11 +514,9 @@ _ATTACHMENT_FIELDS = tuple(
     "id filename content_type size uploaded_by stored_path created_at".split())
 _CREATED_FIELDS = ("status", "workspace_kind", "workspace_path", "project_id")
 
-
 def _fields(obj: Any, names: tuple[str, ...]) -> dict[str, Any]:
     """``{name: getattr(obj, name)}``; every value None when ``obj`` is None."""
     return {n: getattr(obj, n) if obj is not None else None for n in names}
-
 
 def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
     parents = kb.parent_ids(conn, task.id)
@@ -445,11 +525,9 @@ def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
         **_fields(task, _TASK_SUMMARY_FIELDS), "parents": parents, "children": children,
         "parent_count": len(parents), "child_count": len(children)}
 
-
 # --- Goal-mode judge gate ---
 
 _GOAL_MODE_BLOCK_ALLOWED_KINDS = frozenset({"dependency", "needs_input"})
-
 
 def _goal_judge_available() -> bool:
     """``judge_goal`` fails open (no auxiliary model -> ``"continue"``), which is
@@ -461,7 +539,6 @@ def _goal_judge_available() -> bool:
     except Exception:
         return False
     return client is not None and bool(model)
-
 
 # Per-tool guidance for a judge rejection: verdict -> message. ``{reason}``/``{tid}`` are filled in.
 _GOAL_GATE_MESSAGES = {
@@ -481,7 +558,6 @@ _GOAL_GATE_MESSAGES = {
         "continue": (
             "Goal review handoff rejected by judge: {reason}. Provide acceptance evidence "
             "matching the card before requesting review.")}}
-
 
 def _goal_gate(tool_name: str, task, tid: str, evidence: str) -> None:
     """Goal-mode pre-handoff judge gate: a worker must not complete / request
@@ -515,7 +591,6 @@ def _goal_gate(tool_name: str, task, tid: str, evidence: str) -> None:
     key = "blocked" if verdict == "blocked" else "continue"
     raise _Reject(_GOAL_GATE_MESSAGES[tool_name][key].format(reason=reason, tid=tid))
 
-
 # --- Runtime-activity → board bridges (auto-heartbeat, live comment injection) ---
 # The dispatcher watchdog reads ``tasks.last_heartbeat_at``, not the agent's in-process
 # activity timestamp, so normal work is mirrored onto the board here (``kanban_heartbeat``
@@ -540,7 +615,6 @@ _AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS = 60.0
 _auto_heartbeat_last_attempt: float = 0.0
 _auto_heartbeat_fence_warned = False
 
-
 def register_current_worker_from_env() -> bool:
     """Record this worker's pid on its run when the dispatcher died before it could
     (``adopt_worker_pid``). False only when the board says the run was already reclaimed:
@@ -557,7 +631,6 @@ def register_current_worker_from_env() -> bool:
     except Exception:
         logger.debug("kanban worker registration for %s failed", tid, exc_info=True)
         return True
-
 
 def heartbeat_current_worker_from_env() -> bool:
     """Claim extension + board heartbeat for the current worker; True iff both writes
@@ -605,14 +678,12 @@ def heartbeat_current_worker_from_env() -> bool:
         logger.debug("auto-heartbeat: bridge failed", exc_info=True)
         return False
 
-
 # Live operator-note injection: poll the task for new comments and steer them in
 # OUT-OF-BAND, so a user can talk to a running task without block → comment → unblock.
 # Watermarked per task (seeded on first poll: that history is already in the context).
 _COMMENT_POLL_MIN_INTERVAL_SECONDS = 6.0
 _comment_poll_last_attempt: float = 0.0
 _comment_watermark: dict[str, int] = {}
-
 
 def inject_new_comments_from_env(agent: Any) -> bool:
     """Steer new operator comments on the worker's task into ``agent``; True iff a
@@ -656,7 +727,6 @@ def inject_new_comments_from_env(agent: Any) -> bool:
         logger.debug("comment-inject: steer failed", exc_info=True)
         return False
 
-
 # --- Handlers ---
 
 @_kanban_handler("kanban_show")
@@ -676,7 +746,7 @@ def _handle_show(args: dict, **kw) -> str:
         })
     with _board(args.get("board")) as (kb, conn):
         task = _existing_task(kb, conn, tid)
-        return json.dumps({
+        payload = {
             "task": _fields(task, _TASK_FIELDS),
             "parents": kb.parent_ids(conn, tid),
             # Non-terminal parents; on a running card this means the dependency
@@ -689,8 +759,12 @@ def _handle_show(args: dict, **kw) -> str:
             "events": [_fields(e, _EVENT_FIELDS) for e in kb.list_events(conn, tid)[-50:]],
             "runs": [_fields(r, _RUN_FIELDS) for r in kb.list_runs(conn, tid)],
             # Same string build_worker_context hands the dispatcher at spawn time.
-            "worker_context": kb.build_worker_context(conn, tid)})
-
+            "worker_context": kb.build_worker_context(conn, tid)}
+        if is_protected_worker() and _is_dispatcher_owned_worker():
+            payload = _sanitize_remote_worker_payload(
+                _project_remote_worker_state(payload, current_run_id=_worker_run_id(tid)),
+                workspace_path=task.workspace_path, control_home=os.environ.get("HERMES_CONTROL_HOME") or str(get_hermes_home()))  # health: allow HX002 -- dispatcher-owned path anchor, not a behavioral setting
+        return json.dumps(payload)
 
 @_kanban_handler("kanban_list")
 def _handle_list(args: dict, **kw) -> str:
@@ -720,7 +794,6 @@ def _handle_list(args: dict, **kw) -> str:
             "next_limit": (min(limit * 2, KANBAN_LIST_MAX_LIMIT)
                            if truncated and limit < KANBAN_LIST_MAX_LIMIT else None),
             "promoted": promoted})
-
 
 @_kanban_handler("kanban_complete")
 def _handle_complete(args: dict, **kw) -> str:
@@ -807,7 +880,6 @@ def _handle_complete(args: dict, **kw) -> str:
                        _fields(a, _ATTACHMENT_FIELDS)
                        for a in kb.list_attachments(conn, tid)])
 
-
 @_kanban_handler("kanban_block")
 def _handle_block(args: dict, **kw) -> str:
     """Transition the task to blocked with a reason a human will read."""
@@ -848,7 +920,6 @@ def _handle_block(args: dict, **kw) -> str:
             )
         return _ok_landed(kb, conn, tid, "blocked", **extra)
 
-
 @_kanban_handler("kanban_schedule")
 def _handle_schedule(args: dict, **kw) -> str:
     """Park the current task until an orchestrator re-gates it."""
@@ -868,7 +939,6 @@ def _handle_schedule(args: dict, **kw) -> str:
             conn, tid, reason=reason, expected_run_id=_worker_run_id(tid))
         _check(ok, f"could not schedule {tid} (unknown id or not in todo/ready/running/blocked)")
         return _ok_landed(kb, conn, tid, "scheduled", reason=reason)
-
 
 @_kanban_handler("kanban_request_review")
 def _handle_request_review(args: dict, **kw) -> str:
@@ -915,7 +985,6 @@ def _handle_request_review(args: dict, **kw) -> str:
                    f"{fail_reason or 'unknown id or not in running/ready'}")
         return _ok_landed(kb, conn, tid, "review")
 
-
 @_kanban_handler("kanban_request_changes")
 def _handle_request_changes(args: dict, **kw) -> str:
     """Return a reviewer-owned running task to its implementer."""
@@ -927,7 +996,6 @@ def _handle_request_changes(args: dict, **kw) -> str:
             conn, tid, reason=reason, expected_run_id=_worker_run_id(tid))
         _check(ok, f"could not request changes for {tid}: {detail or 'invalid review state'}")
         return _ok_landed(kb, conn, tid, "ready", implementer=detail)
-
 
 @_kanban_handler("kanban_heartbeat")
 def _handle_heartbeat(args: dict, **kw) -> str:
@@ -944,7 +1012,6 @@ def _handle_heartbeat(args: dict, **kw) -> str:
             conn, tid, note=args.get("note"), expected_run_id=_worker_run_id(tid))
         _check(ok, f"could not heartbeat {tid} (unknown id or not running)")
         return _ok(task_id=tid)
-
 
 @_kanban_handler("kanban_comment")
 def _handle_comment(args: dict, **kw) -> str:
@@ -972,7 +1039,6 @@ def _handle_comment(args: dict, **kw) -> str:
         cid = kb.add_comment(conn, tid, author=author, body=str(body))
         return _ok(task_id=tid, comment_id=cid)
 
-
 def _store_attachment(board, tid, filename, data, content_type) -> str:
     """Store via ``kanban_db.store_attachment_bytes`` (shared size cap, per-task
     dir, metadata row) so agent, dashboard, and CLI surfaces stay in lockstep."""
@@ -981,7 +1047,6 @@ def _store_attachment(board, tid, filename, data, content_type) -> str:
             conn, tid, str(filename), data,
             content_type=content_type, uploaded_by="agent", board=board)
         return _ok(task_id=tid, attachment_id=att_id, size=len(data))
-
 
 @_kanban_handler("kanban_attach")
 def _handle_attach(args: dict, **kw) -> str:
@@ -997,9 +1062,7 @@ def _handle_attach(args: dict, **kw) -> str:
         raise _Reject(f"content_base64 is not valid base64: {e}")
     return _store_attachment(args.get("board"), tid, filename, data, args.get("content_type"))
 
-
 _MAX_ATTACH_URL_REDIRECTS = 5
-
 
 def _download_url_with_cap(url: str, max_bytes: int) -> tuple[bytes, Optional[str]]:
     """Fetch ``url`` over http(s) capped at ``max_bytes`` -> ``(data, content_type)``.
@@ -1038,7 +1101,6 @@ def _download_url_with_cap(url: str, max_bytes: int) -> tuple[bytes, Optional[st
         return b"".join(chunks), content_type
     raise ValueError(f"too many redirects fetching {url}")
 
-
 @_kanban_handler("kanban_attach_url")
 def _handle_attach_url(args: dict, **kw) -> str:
     """Attach a file fetched server-side from an http(s) URL (shared size cap)."""
@@ -1060,7 +1122,6 @@ def _handle_attach_url(args: dict, **kw) -> str:
     return _store_attachment(
         args.get("board"), tid, filename, data, args.get("content_type") or fetched_ct)
 
-
 @_kanban_handler("kanban_attachments")
 def _handle_attachments(args: dict, **kw) -> str:
     """List a task's attachments (read-only; no ownership restriction)."""
@@ -1071,7 +1132,6 @@ def _handle_attachments(args: dict, **kw) -> str:
             "ok": True, "task_id": tid,
             "attachments": [
                 _fields(a, _ATTACHMENT_FIELDS) for a in kb.list_attachments(conn, tid)]})
-
 
 def _persisted_session_id(session_id: Optional[str]) -> Optional[str]:
     """Return a session id only when it is present in this profile's state.db."""
@@ -1090,7 +1150,6 @@ def _persisted_session_id(session_id: Optional[str]) -> Optional[str]:
     finally:
         state.close()
 
-
 @_kanban_handler("kanban_create")
 def _handle_create(args: dict, **kw) -> str:
     """Create a (child) task; orchestrator workers use this to fan out."""
@@ -1104,6 +1163,8 @@ def _handle_create(args: dict, **kw) -> str:
     # mutate review evidence or race its checkout). Project identity is the one safe thing
     # to inherit implicitly (the DB turns it into a fresh per-task worktree).
     workspace_kind, workspace_path = args.get("workspace_kind"), args.get("workspace_path")
+    if _is_dispatcher_owned_worker() and workspace_kind == "scratch":
+        workspace_path = None
     # See #67567. ``project=""`` is an explicit "no project" (no ``or`` collapse, #106342).
     project_id = args["project"] if "project" in args else args.get("project_id")
     project_source_task_id = None
@@ -1153,7 +1214,6 @@ def _handle_create(args: dict, **kw) -> str:
         return _ok(task_id=new_tid, **landed, **gate,
                    subscribed=_maybe_auto_subscribe(conn, new_tid))
 
-
 def _live_tui_session_key(session_key: str, profile: Optional[str]) -> str:
     """Re-resolve a TUI session key at subscribe time: the inherited ``HERMES_SESSION_KEY``
     can name a session already superseded by a compaction fork, and a subscription bound to
@@ -1178,7 +1238,6 @@ def _live_tui_session_key(session_key: str, profile: Optional[str]) -> str:
             release_or_close(db)
     except Exception:
         return session_key
-
 
 def _resolve_notify_target() -> Optional[dict[str, Any]]:
     """``kanban_db.add_notify_sub`` kwargs for the calling session, or None (CLI/cron/tests).
@@ -1225,7 +1284,6 @@ def _resolve_notify_target() -> Optional[dict[str, Any]]:
         delivery_mode="notify+wake" if platform != "tui" else None,
         delivery_metadata=delivery_metadata or None)
 
-
 def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
     """Subscribe the calling session to completion/block events; True iff a row was
     written (surfaced as ``subscribed`` so an orchestrator can fall back to explicit
@@ -1256,7 +1314,6 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
             _exc, target["platform"] if target else "", bool(target and target["chat_id"]))
         return False
 
-
 @_kanban_handler("kanban_unblock")
 def _handle_unblock(args: dict, **kw) -> str:
     """Transition a blocked task to ready, or todo while parents remain open."""
@@ -1269,7 +1326,6 @@ def _handle_unblock(args: dict, **kw) -> str:
     with _board(args.get("board")) as (kb, conn):
         _check(kb.unblock_task(conn, tid), f"could not unblock {tid} (not blocked or unknown)")
         return _ok(task_id=tid, **_fields(kb.get_task(conn, tid), ("status",)))
-
 
 @_kanban_handler("kanban_link")
 def _handle_link(args: dict, **kw) -> str:
@@ -1286,7 +1342,6 @@ def _handle_link(args: dict, **kw) -> str:
             expected_child_run_id=_worker_run_id(str(child_id)))
         return _ok(parent_id=parent_id, child_id=child_id, gated=gated,
                    **({"gated_by": parent_id} if gated else {}))
-
 
 # --- Registration (order preserved: it is the order tools appear in the schema) ---
 

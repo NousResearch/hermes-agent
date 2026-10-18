@@ -4386,7 +4386,8 @@ class BasePlatformAdapter(ABC):
                 notify_message_delivered(
                     kind="final", platform=delivery_adapter.platform, chat_id=source.chat_id,
                     thread_id=source.thread_id, message_ids=delivered_message_ids(result),
-                    text=text_content, session_key=session_key)
+                    text=text_content, session_key=session_key,
+                    session_id=getattr(event, "_delivered_turn_session_id", None))
         except Exception:
             logger.debug("[%s] gateway_message_delivered notify failed", self.name, exc_info=True)
 

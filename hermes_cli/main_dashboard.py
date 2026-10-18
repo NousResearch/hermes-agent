@@ -13,7 +13,7 @@ import sys
 import time
 
 from pathlib import Path
-from typing import NoReturn
+from typing import NoReturn, Optional
 from hermes_cli.cli_output import line_input
 from hermes_cli.process_identity import is_desktop_owned_backend as _is_desktop_owned_backend
 
@@ -563,6 +563,10 @@ def _report_dashboard_status() -> int:
     Ledger-registered serves (profiled launches the argv scan can't match) surface via the spawn-ledger
     augmentation in _scan_dashboard_processes, and the ledger's recorded bind replaces the argv port so
     ``--port 0`` backends are probed on the port the OS actually gave them. See #81564.
+
+    A host serve owner whose argv the scan cannot match (e.g. a re-exec'd backend) surfaces via
+    the host rendezvous record — the same authority ``hermes serve`` attaches to — so ``--status``
+    can no longer deny a backend the start-time guard itself proves live. See #140913.
     """
     from hermes_cli.dashboard_procs import _ledger_serve_binds, _scan_dashboard_processes
     from gateway.status import _pid_exists
@@ -580,6 +584,10 @@ def _report_dashboard_status() -> int:
             continue
         live.append((pid, command, mode))
 
+    record_row = _host_backend_status_row(live)
+    if record_row is not None:
+        live.append(record_row)
+
     if not live:
         print("No hermes dashboard or serve processes running.")
         return 0
@@ -588,6 +596,34 @@ def _report_dashboard_status() -> int:
     for pid, command, mode in live:
         print(f"    PID {pid} [{mode}]: {command}")
     return len(live)
+
+
+def _host_backend_status_row(
+    argv_rows: list[tuple[int, str, str]],
+) -> Optional[tuple[int, str, str]]:
+    """A ``--status`` row for the host serve owner when the argv scan missed it, else ``None``.
+
+    The argv scan and the spawn ledger both key off recognizable command lines; a re-exec'd
+    owner can carry neither, and ``--status`` then reported "no processes running" while the
+    start-time guard attached to the very same backend via its host rendezvous record (#140913).
+    The record is only published by the lock-holding owner, and it is still made to prove
+    itself — ``probe_owner`` dials the recorded port and demands the token-authenticated
+    identity answer pid + role — before a row is listed for it.
+    """
+    try:
+        record = _host_backend_attachment()
+        if record is None or record.pid in {pid for pid, _, _ in argv_rows}:
+            return None
+        from gateway import host_rendezvous as hr
+        identity = hr.probe_owner(record)
+        if identity is None:
+            return None
+        where = f"{record.host or '127.0.0.1'}:{record.port}"
+        profiles = ", ".join(record.profiles) if record.profiles else "unknown"
+        mode = "dashboard" if identity.get("servesSpa") else "serve"
+        return (record.pid, f"host backend at {where} (profiles: {profiles}; rendezvous record)", mode)
+    except Exception:  # health: allow BLE001 -- --status is informational and must never crash; a discovery failure means "no row", same as every other miss above
+        return None
 
 
 def _dashboard_listening(host: str, port: int) -> bool:

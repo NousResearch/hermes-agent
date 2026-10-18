@@ -1,6 +1,7 @@
 """Regression tests for browser session cleanup and screenshot recovery."""
 
 from unittest.mock import patch
+import pytest
 from tools import browser_tool_lifecycle as bt_lifecycle
 
 
@@ -88,7 +89,6 @@ class TestBrowserCleanup:
     def test_strict_cleanup_retains_live_daemon_after_failed_termination(self, tmp_path, monkeypatch):
         import subprocess
         import sys
-        import pytest
 
         task_id, session_name = "strict-daemon-task", "strict-daemon-session"
         socket_dir = tmp_path / f"agent-browser-{session_name}"
@@ -120,6 +120,35 @@ class TestBrowserCleanup:
             if process.poll() is None:
                 process.kill()
             process.wait(timeout=10)
+
+    @pytest.mark.platforms("posix")
+    def test_strict_cleanup_retains_tracking_after_socket_removal_failure(self, tmp_path, monkeypatch):
+        import os
+
+        if os.geteuid() == 0:
+            pytest.skip("Root bypasses the filesystem permissions this regression exercises")
+        task_id, session_name = "strict-socket-task", "strict-socket-session"
+        socket_dir = tmp_path / f"agent-browser-{session_name}"
+        socket_dir.mkdir()
+        (socket_dir / "remaining.log").write_text("owned cleanup artifact")
+        monkeypatch.setattr(self.browser_tool, "_socket_safe_tmpdir", lambda: str(tmp_path))
+        self.browser_tool._active_sessions[task_id] = {
+            "session_name": session_name, "bb_session_id": None,
+        }
+        socket_dir.chmod(0o555)
+        try:
+            with patch("tools.browser_tool_session._run_browser_command", return_value={"success": True}):
+                with pytest.raises(PermissionError):
+                    bt_lifecycle.cleanup_browser(task_id, strict=True)
+                assert task_id in self.browser_tool._active_sessions
+                assert (socket_dir / "remaining.log").exists()
+                socket_dir.chmod(0o755)
+                bt_lifecycle.cleanup_browser(task_id, strict=True)
+            assert task_id not in self.browser_tool._active_sessions
+            assert not socket_dir.exists()
+        finally:
+            if socket_dir.exists():
+                socket_dir.chmod(0o755)
 
 
 class TestInactivityJanitorMultiplex:

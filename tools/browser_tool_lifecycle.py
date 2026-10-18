@@ -663,6 +663,7 @@ def _release_session_resources(task_id: str, session_info: dict[str, Any], *, st
     The unconditional tail of ``_cleanup_single_browser_session``; also the whole of the janitor's
     force-reap path (#100738), which skips the polite agent-browser/Camofox ``close`` that kept failing but
     must still release the cloud session and the local Chromium.
+    Strict teardown retains ownership until daemon and socket-directory cleanup both succeed.
     """
     bb_session_id = session_info.get("bb_session_id", "unknown")
     if not strict:
@@ -683,7 +684,10 @@ def _release_session_resources(task_id: str, session_info: dict[str, Any], *, st
         socket_dir = os.path.join(_bt._socket_safe_tmpdir(), f"agent-browser-{session_name}")
         if os.path.exists(socket_dir):
             _kill_verified_daemon(socket_dir, session_name, strict=strict)
-            shutil.rmtree(socket_dir, ignore_errors=True)
+            try:
+                shutil.rmtree(socket_dir, ignore_errors=not strict)
+            except FileNotFoundError:
+                pass  # The daemon may remove its own directory while exiting.
     if strict:
         _forget_session_tracking(task_id, session=True)
 

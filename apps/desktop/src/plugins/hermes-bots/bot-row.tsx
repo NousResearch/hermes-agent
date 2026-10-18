@@ -33,6 +33,7 @@ import {
 
 import { avatarColor, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
+import { BotRowDetails } from './bot-row-details'
 import { PrivateToggleItem } from './bot-row-private'
 import {
   $botChatFocused,
@@ -199,7 +200,6 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
 
   const handle = botHandle(bot.name, bot)
   const gatewayLabel = bot.connectionLabel || (bot.connectionId === 'local' ? b.bot.thisDevice : '')
-  const showDetailsRow = Boolean(showHandle || circle || displayPreview || fromBot)
 
   const rowTooltip = [displayName(bot, meta), `@${handle}`, gatewayLabel, sourceStatus.label]
     .filter(Boolean)
@@ -314,23 +314,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
             </span>
           ) : null}
         </div>
-        {showDetailsRow ? (
-          <div className="flex min-w-0 items-center gap-1.5 text-xs text-(--ui-text-tertiary)">
-            {showHandle ? (
-              <span className="shrink-0 font-mono text-[0.6875rem] text-(--ui-text-quaternary)">{`@${handle}`}</span>
-            ) : null}
-            {showHandle && circle ? <span className="shrink-0 text-(--ui-text-quaternary)">·</span> : null}
-            {circle ? (
-              <span className="shrink-0 font-mono text-[0.6875rem] text-(--ui-text-quaternary)" data-slot="bot-circle">
-                {circle}
-              </span>
-            ) : null}
-            {(showHandle || circle) && displayPreview ? <span className="shrink-0 text-(--ui-text-quaternary)">·</span> : null}
-            {displayPreview ? (
-              <span className={cn('min-w-0 truncate', fromBot && 'italic')}>{displayPreview}</span>
-            ) : null}
-          </div>
-        ) : null}
+        <BotRowDetails circle={circle} fromBot={Boolean(fromBot)} handle={showHandle ? handle : null} preview={displayPreview} />
       </div>
     </RowButton>
   )

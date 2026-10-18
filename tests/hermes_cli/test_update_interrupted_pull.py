@@ -303,7 +303,7 @@ def test_concurrent_launches_take_turns_and_all_rerun_from_the_restored_tree(tmp
         (origin / name).write_text(f"V = 'new {i}'\n" * 50, encoding="utf-8", newline="")
     _git(origin, "commit", "-qam", "B")
     root = tmp_path / "install"
-    _git(tmp_path, "clone", "-q", str(origin), str(root))
+    _git(tmp_path, "clone", "-q", "--no-local", str(origin), str(root))
     _git(root, "reset", "-q", "--hard", "HEAD~1")
     pre, target = _git(root, "rev-parse", "HEAD"), _git(root, "rev-parse", "origin/main")
     for i, name in enumerate(names[:150]):  # git got halfway

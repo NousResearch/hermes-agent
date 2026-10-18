@@ -43,6 +43,11 @@ source restriction (G3) + audit trail.
   acceptance rate (anchored at accepted_at), not actual restart intervals; a
   persistent cron payload could still drive repeated restarts if G3 layers were
   bypassed — G3 is defense in depth, not a formal safety proof.
+- Guarantee boundary: the env marker propagated by trusted code is REMOVABLE.
+  This thin guard is a provenance constraint along Hermes-managed execution
+  paths (dispatch → spawn → CLI entry). It does NOT claim unremovable permission
+  isolation against an actor who deliberately strips the marker, spawns a
+  separate same-UID process, or writes protocol files directly.
 
 ## Impact
 

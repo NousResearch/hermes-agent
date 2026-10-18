@@ -55,6 +55,7 @@ _EMOJI_PRESENTATION_BASES = (
 _HIDDEN_VARIATION_SELECTOR_RE = re.compile(
     rf'(?<![{_EMOJI_PRESENTATION_BASES}])(?!(?<=[0-9#*])\ufe0f\u20e3)[\ufe00-\ufe0f\U000e0100-\U000e01ef]')
 _INVISIBLE_UNICODE_DESCRIPTION = "invisible or bidirectional Unicode control character (possible obfuscation)"
+_CREDENTIAL_UPLOAD_DESCRIPTION = "upload a secret or credential file via curl/wget (possible exfiltration)"
 # Global flags before a subcommand, each with an optional value. Every flag has one parse ('-' plus
 # its possessive remainder, so '--x' and '--x=v' never split two ways) and a value cannot itself be a
 # flag, so a long run that never reaches the subcommand fails in linear time instead of holding the
@@ -355,7 +356,7 @@ DANGEROUS_PATTERNS = [
     # an uploading curl/wget. Flag letters are case-sensitive (-d/-F/-T upload; -D/-f/-t do not).
     (rf'{_UPLOAD_FLAG}(?:[\s=]+|(?=[@"\'$]))(?:"[^"]*(?:{_SECRET_VAR}|{_SECRET_FILE})|\'[^\']*{_SECRET_FILE}'
      rf'|\$\([^)]*{_SECRET_FILE}|\S*?(?:{_SECRET_VAR}|{_SECRET_FILE}))',
-     "upload a secret or credential file via curl/wget (possible exfiltration)"),
+     _CREDENTIAL_UPLOAD_DESCRIPTION),
     (rf'{_SECRET_FILE}[^|;&\n]*\|[^;&|\n]*\b(?:curl|wget)\b[^;&|\n]*{_UPLOAD_FLAG}',
      "pipe a credential file into a curl/wget upload (possible exfiltration)"),
     # Invisible / bidirectional Unicode controls make the command the user approves differ from what runs.
@@ -1569,6 +1570,23 @@ def _is_shell_token_spliced_gateway_lifecycle(command: str) -> bool:
     return contains_gateway_lifecycle_command(command)
 
 
+def _upload_flag_owned_by_curl_or_wget(command: str, flag_start: int) -> bool:
+    """True when a curl/wget word precedes the upload flag at *flag_start* in the same simple command.
+    ``awk -F``, ``cut -d`` and ``sort -t`` share the flag letters but take a delimiter and upload
+    nothing; curl run as an argument (``xargs curl``, ``ssh host curl``) still owns its flags."""
+    for start, _, _ in _iter_shell_command_word_spans(command):
+        if not start <= flag_start < start + len(_shell_command_segment(command, start)):
+            continue
+        pos = start
+        while pos < flag_start:
+            word_start, pos, word = _read_shell_word(command, pos)
+            if word_start == pos:
+                break
+            if os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower() in ("curl", "wget"):
+                return True
+    return False
+
+
 def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = None):
     """Yield the description (= pattern key) of every dangerous match, in detection order; may repeat.
     *only* restricts the scan to those pattern rules and skips the parser-limit, execution-flag and
@@ -1593,7 +1611,9 @@ def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = Non
                     )
                 if pattern_re.search(masked_lower):
                     yield description
-            elif pattern_re.search(command_lower):
+            elif any(description != _CREDENTIAL_UPLOAD_DESCRIPTION
+                     or _upload_flag_owned_by_curl_or_wget(command_lower, match.start())
+                     for match in pattern_re.finditer(command_lower)):
                 yield description
     if only is not None:
         # The variation-selector check is a content rule too, so the content-only scan keeps it.

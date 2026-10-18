@@ -1050,28 +1050,39 @@ pkill caffeinate
 | `-w P` | exit when PID `P` exits                           |
 
 :::warning Closing a MacBook's lid
-Idle-sleep settings don't stop lid-close sleep: `caffeinate -i` or `-d`,
-`pmset sleep 0`, and the Battery → Options setting that prevents automatic
-sleeping when the display is off all leave it in place, even on AC power. The
-gateway then stays offline until the lid opens. To keep a gateway reachable with
-the lid closed:
+Preventing idle sleep is not the same as preventing lid-close sleep.
+`caffeinate -i` or `-d`, `pmset sleep 0`, and the Battery setting that prevents
+automatic sleeping when the display is off are not a guarantee of lid-closed
+operation. If the host sleeps, the gateway cannot process messages until the
+host wakes and connectivity resumes.
 
-- **On AC power, `caffeinate -s`** also blocks lid-close sleep, without root
-  (`-dis` above includes it). It has no effect on battery, so an unplugged
-  MacBook still sleeps when closed.
-- **On battery as well, `sudo pmset -a disablesleep 1`** blocks all sleep. It
-  is an undocumented `pmset` setting; undo it with
-  `sudo pmset -a disablesleep 0`. A closed MacBook in a bag keeps running, heats
-  up and drains. Some keep-awake apps' closed-display modes toggle this setting
-  through an administrator-approved helper.
-- **Closed-display mode:** with an external display, an external keyboard and
-  mouse or trackpad, and power connected, macOS keeps running with the lid
-  closed.
+- **On AC power, test `caffeinate -s`** (`-dis` above includes it). It creates a
+  system-sleep assertion without root, active only on AC according to
+  `man caffeinate`. This assertion is not a guarantee of lid-closed gateway
+  availability across Mac models or macOS versions. Verify your own machine
+  with a fresh inbound message after an idle interval, and test behavior after
+  disconnecting and reconnecting power separately.
+- **Gateway availability needs protection between turns.** An assertion held
+  only during an active agent turn cannot keep a sleeping gateway reachable
+  for the next message. Keep the host-level assertion running for the period
+  when you need the gateway available; this documentation does not add a
+  built-in gateway-lifetime mode.
+- **Closed-display mode with an external display** is another option. Check
+  Apple's requirements for your Mac, including power and external input
+  devices, rather than assuming all lid-closed configurations are supported.
+- **Avoid relying on `pmset disablesleep` as a routine workaround.** This
+  undocumented, system-wide setting is used by some closed-display helpers
+  and can suppress sleep on battery too. Its hardware behavior was not tested
+  here. If you previously enabled it, restore the recorded prior value rather
+  than leaving it enabled. Never put a running, lid-closed laptop in a bag:
+  heat and battery drain remain risks.
 
-To check: `pmset -g assertions | grep PreventSystemSleep` lists an active
-`caffeinate -s`, `pmset -g | grep SleepDisabled` shows `SleepDisabled 1` while
-`disablesleep` is set, and `pmset -g log | grep "Clamshell Sleep"` lists recent
-lid-close sleeps.
+To verify your setup, inspect `pmset -g assertions` for the `caffeinate`
+`PreventSystemSleep` assertion, then send a **new** message after an idle
+interval with the lid closed. An assertion alone does not prove delivery.
+Inspect timestamped entries in `pmset -g log` for clamshell sleep and wake
+transitions. Test power-disconnect/reconnect behavior separately, and stop
+only the `caffeinate` process you started when the test is complete.
 :::
 
 ### Linux — `systemd-inhibit` or `loginctl`

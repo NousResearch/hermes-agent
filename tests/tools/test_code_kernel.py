@@ -606,3 +606,41 @@ class TestStaleStagingDirSweep(unittest.TestCase):
                 self.assertFalse(old.exists())
                 self.assertTrue(young.exists())
                 self.assertTrue(bystander.exists())
+
+
+class TestRawFdOutputPastTheCap(unittest.TestCase):
+    """Output written straight to the kernel's fds (``subprocess.run`` without capture,
+    ``os.system``) is capped like print() output: head and tail kept, the cut reported."""
+
+    def test_subprocess_stdout_keeps_its_last_line_and_reports_the_cut(self):
+        code = textwrap.dedent('''
+            import subprocess, sys
+            subprocess.run([sys.executable, "-c",
+                            "for i in range(3000): print('%05d' % i + 'x' * 94)\\n"
+                            "print('FAILED tests/test_x.py::test_last')"])
+        ''')
+        with _kernel_config():
+            result = _run(code)
+        self.assertEqual(result["status"], "success", result)
+        self.assertIn("00000xxx", result["output"])
+        self.assertIn("FAILED tests/test_x.py::test_last", result["output"])
+        self.assertTrue(result["stdout_truncated"])
+        self.assertGreaterEqual(result["stdout_bytes_total"], 300_000)
+        self.assertEqual(result["stdout_bytes_omitted"],
+                         result["stdout_bytes_total"] - result["stdout_bytes_captured"])
+
+    def test_dying_kernel_reports_the_redacted_end_of_its_stderr(self):
+        code = textwrap.dedent('''
+            import os, time
+            for i in range(1000):
+                os.write(2, b"warning %05d " % i + b"y" * 80 + b"\\n")
+            os.write(2, b"MemoryError: last words from ghp_" + b"Z" * 36 + b"\\n")
+            time.sleep(0.5)
+            os._exit(1)
+        ''')
+        with _kernel_config():
+            result = _run(code)
+        self.assertEqual(result["status"], "error", result)
+        self.assertIn("warning 00000", result["error"])
+        self.assertIn("MemoryError: last words from", result["error"])
+        self.assertNotIn("Z" * 36, result["error"])

@@ -53,29 +53,42 @@ MAX_STDERR_BYTES = 10_000    # 10 KB
 MAX_SPILLED_STDOUT_BYTES = 5_000_000
 
 
-def _truncate_stdout_text(stdout_text: str) -> tuple[str, dict[str, Any]]:
+def _truncate_stdout_text(stdout_text: str, *, omitted: int = 0,
+                          after_gap: str = "") -> tuple[str, dict[str, Any]]:
     """Cap stdout by bytes (40% head / 60% tail) with explicit truncation metadata: byte counts
     ride alongside the textual marker because a client layer can miss or re-truncate it. The
-    omitted middle is spilled to cache/exec and the result carries the path (recover-don't-rerun)."""
-    stdout_bytes = stdout_text.encode("utf-8", errors="replace")
-    total = len(stdout_bytes)
-    captured = min(total, MAX_STDOUT_BYTES)
-    metadata: dict[str, Any] = {"stdout_truncated": total > captured, "stdout_bytes_captured": captured,
-                                "stdout_bytes_total": total, "stdout_bytes_omitted": total - captured}
-    if total <= MAX_STDOUT_BYTES:
-        return stdout_bytes.decode("utf-8", errors="replace"), metadata
+    omitted middle is spilled to cache/exec and the result carries the path (recover-don't-rerun).
+    ``omitted`` > 0: a bounded capture upstream (the session kernel's raw fd output) already dropped
+    that many bytes between ``stdout_text`` and ``after_gap``; that middle was never kept, so the
+    spill (written only when ``stdout_text`` alone outgrows the head) holds the rest around it."""
+    stdout_bytes, after_bytes = (part.encode("utf-8", errors="replace") for part in (stdout_text, after_gap))
+    total = len(stdout_bytes) + omitted + len(after_bytes)
+    tail_source = after_bytes if omitted else stdout_bytes
+    if not omitted and total <= MAX_STDOUT_BYTES:
+        return stdout_bytes.decode("utf-8", errors="replace"), {
+            "stdout_truncated": False, "stdout_bytes_captured": total,
+            "stdout_bytes_total": total, "stdout_bytes_omitted": 0}
     head_bytes, tail_bytes = head_tail_split(MAX_STDOUT_BYTES)
-    text = (stdout_bytes[:head_bytes].decode("utf-8", errors="replace")
+    head, tail = stdout_bytes[:head_bytes], tail_source[-tail_bytes:]
+    captured = len(head) + len(tail)
+    metadata: dict[str, Any] = {"stdout_truncated": True, "stdout_bytes_captured": captured,
+                                "stdout_bytes_total": total, "stdout_bytes_omitted": total - captured}
+    text = (head.decode("utf-8", errors="replace")
             + truncation_notice(total - captured, total, unit="bytes")
-            + stdout_bytes[-tail_bytes:].decode("utf-8", errors="replace"))
+            + tail.decode("utf-8", errors="replace"))
     metadata["warning"] = ("execute_code stdout was truncated; the script did run, but only "
                            "the captured head/tail output is included. Re-run only with "
                            "narrower output if the omitted data is required.")
-    spill_path = _spill_full_stdout(stdout_text)
+    if omitted:
+        kept = stdout_text + truncation_notice(omitted, total, unit="bytes") + after_gap
+        spill_path = _spill_full_stdout(kept) if len(stdout_bytes) > head_bytes else None
+    else:
+        spill_path = _spill_full_stdout(stdout_text)
     if spill_path:
         metadata["stdout_spill_path"] = spill_path
+        saved = "Output (less the omitted subprocess middle)" if omitted else "FULL output"
         metadata["warning"] = ("execute_code stdout was truncated (head/tail shown); the "
-                               f"script did run. FULL output saved to {spill_path} — page it "
+                               f"script did run. {saved} saved to {spill_path} — page it "
                                f'with read_file(path="{spill_path}", offset=...) instead of re-running.')
     return text, metadata
 

@@ -649,10 +649,14 @@ class GatewayAgent:
     def _take_turn_route(self):
         """The ``/model --once`` pick for the admission being built, consumed here: one admission carries
         it, even when a later ``run_conversation`` submits while this one's ``prompt.submit`` still blocks.
-        A refusal that admitted nothing (``session_busy``) puts it back with ``_give_back_turn_route``."""
+        A refusal that admitted nothing (``session_busy``) puts it back with ``_give_back_turn_route``.
+
+        Staging already compared the pick with the session's route (``_route_off_session``), so it is not
+        compared again: its ``model`` may be an alias spelled like the session's model, and the owner runs a
+        plain pick of the session's own route on the session's endpoint and key (``one_turn_runtime``)."""
         pending, reasoning = self._turn_route, self._turn_reasoning
         self._turn_route = self._turn_reasoning = self._taken_turn_route = None
-        if not pending or not self._route_off_session(**pending):
+        if not pending:
             return None
         self._taken_turn_route = (pending, reasoning)
         return {**pending, **({"reasoning": reasoning} if reasoning else {})}

@@ -741,10 +741,16 @@ Hot-serving also grows the multiplexer's **profile reservation**: the new
 profile's `gateway.lock` is taken and its own session authority is built, so
 `hermes -p <name>` finds the multiplexer as its owner (no stray per-profile
 daemon) and the next `hermes gateway restart` reserves the whole set cleanly.
-A profile whose `state.db` cannot be opened is **parked** — logged as
-`Profile '<name>' not served`, left out of `served_profiles` — and every other
-profile keeps booting; fix the store and re-run `hermes profile create` or wait
-for the periodic rescan.
+A profile whose `state.db` cannot be opened, or whose startup Bot Chat
+recovery fails, is **parked** — logged as `Profile '<name>' not served`, listed
+under `parked_profiles`, left out of `served_profiles` — and every other profile
+keeps booting. When the cause clears by itself (the store was busy or failing
+I/O, or a CLI held the profile's Bot Chat session), the periodic rescan tries to
+serve it again with backoff: 15 seconds after the park, then doubling, capped at
+5 minutes. Each attempt waits for the next 30-second rescan (rescans begin once
+the gateway has finished starting), so the first usually comes within a minute.
+Any other cause waits for you: fix it, then run
+`hermes -p <name> gateway run` (a control-socket rescan).
 
 ### Routing shared-bot chats to profiles (`profile_routes`)
 

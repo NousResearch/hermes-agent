@@ -8581,17 +8581,16 @@
             "title": "Request Id"
           },
           "source": {
-            "default": "cli",
-            "enum": [
-              "cli",
-              "tui",
-              "gui",
-              "acp",
-              "tool",
-              "oneshot"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ],
-            "title": "Source",
-            "type": "string"
+            "default": "cli",
+            "title": "Source"
           },
           "cwd": {
             "anyOf": [

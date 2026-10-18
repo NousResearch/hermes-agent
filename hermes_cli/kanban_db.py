@@ -2372,9 +2372,9 @@ def release_stale_claims(
         "WHERE status = 'running' AND claim_expires IS NOT NULL "
         "  AND claim_expires < ?", (now,),
     ).fetchall()
-    from hermes_cli.kanban_owner_recovery import owner_reclaim_paused
+    from hermes_cli.kanban_owner_recovery import owner_reclaim_blocked
     for row in stale:
-        if owner_reclaim_paused(conn, row["id"]):
+        if owner_reclaim_blocked(conn, row["id"]):
             continue
         host_local = (row["claim_lock"] or "").startswith(host_prefix)
         hb = _to_epoch(row["last_heartbeat_at"])

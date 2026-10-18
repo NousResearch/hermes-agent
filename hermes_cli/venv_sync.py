@@ -510,7 +510,15 @@ def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
         completed = _tree_matches_completed_stamp(root)
         # ponytail: commit-only match; a product dir deleted by hand is rebuilt on demand
         # by its own entry point (the TUI/web freshness gates), not here.
-        _sync_source_dependencies(root, arm=not completed)
+        try:
+            _sync_source_dependencies(root, arm=not completed)
+        except Exception:
+            # A sync-stage failure exits before the tail's counter below, so a
+            # persistently broken uv/venv re-arms the marker and retries on every
+            # launch with no backoff and no cap (#139132); a user's Ctrl+C must
+            # not burn the budget, so only real errors count. The owed marker stays.
+            _record_completion_attempt(root, failed=True)
+            raise
         if completed:
             clear_completion(root)
             return

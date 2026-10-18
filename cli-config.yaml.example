@@ -434,6 +434,10 @@ terminal:
   # Two process_manage wait/poll calls in a row with no new output on a running background process
   # turn on notify_on_complete for it and tell the agent to stop checking; false = poll as before.
   process_wait_auto_notify: true
+  # Finite lifetime budget for pattern notifications (integer 1-64, default 8).
+  # Fixed at spawn. Each match may start a full-context turn; cooldown,
+  # three-strike and global flood guards remain unchanged. No unlimited mode.
+  watch_lifetime_max_hits: 8
   # A `hermes` / `hermes --tui` session's local tools (terminal, background processes, execute_code)
   # start with the launching shell's toolchain: PATH, an activated venv and CONDA_* / NODE_* / NVM_* /
   # PYENV_* (plus GOPATH, GOROOT, CARGO_HOME, RUSTUP_HOME, JAVA_HOME), for that session only, when

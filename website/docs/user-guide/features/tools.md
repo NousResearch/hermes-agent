@@ -245,6 +245,29 @@ wrappers, command substitutions (`$(...)`, backticks, `<(...)`) and commands
 whose approval category would change without the `&` are still refused with
 guidance, because Hermes cannot safely tell which part should keep running.
 
+### Watch-pattern notification budget
+
+Each background process can trigger at most **8** pattern-match notifications by
+default. For a deliberate longer workflow, configure a finite budget in the active
+profile's `config.yaml`:
+
+```yaml
+terminal:
+  watch_lifetime_max_hits: 32
+```
+
+Only integers **1–64** are accepted. Missing or invalid values (including `0`,
+negative numbers, booleans and `unbounded`) retain the default of 8. The budget is
+captured when the process starts; config changes affect new processes, not an
+already running one. Managed workers use their frozen session configuration.
+A recovered process keeps its recorded limit; older checkpoints without it use 8.
+
+This does **not** relax the 15-second cooldown, three-strike breaker or global
+flood protection. At the limit, the watch is disabled, a `watch_disabled` summary
+explains why, and the process is promoted to notify on exit. Raising the budget
+can cause more full-context agent turns and token usage. For periodic status of
+long-running jobs, prefer `notify=true` with a bounded `heartbeat` interval.
+
 ### Repeated waits on a quiet process
 
 When the agent calls `process(action="wait")` or `process(action="poll")` twice in a row on a

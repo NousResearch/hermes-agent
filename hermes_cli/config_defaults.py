@@ -315,13 +315,12 @@ DEFAULT_CONFIG = {
         # Seconds between SIGTERM and escalated SIGKILL for host process trees (browser daemons). 0
         # = SIGTERM only.
         "daemon_term_grace_seconds": 2.0,
-        # Max seconds a one-shot CLI run (-q/-Q/-z) lingers for tracked notify_on_complete
-        # background processes to finish. The dying parent owns their stdout pipes, so exiting
-        # immediately kills the delivery (e.g. Bot Mode handoff replies via message_agent /
-        # bot_relay). Plain background processes without notify_on_complete are never waited on. 0
-        # disables.
+        # One-shot exit grace for notify_on_complete processes: exiting kills their delivery pipes.
+        # Other background processes are not waited on; 0 disables.
         "oneshot_completion_wait_seconds": 600.0,
         "process_wait_auto_notify": True,  # 2 unchanged wait/poll -> notify_on_complete + stop; False = old polling
+        # Finite per-process watch budget, pinned at spawn (1-64). Cooldown/strike/global guards still apply.
+        "watch_lifetime_max_hits": 8,
         # Env vars passed into sandboxed terminal/execute_code (plus skill-declared required_environment_variables).
         "env_passthrough": [],
         "client_env_passthrough": [],  # Extra non-secret toolchain names a CLI/TUI client sends for its tools

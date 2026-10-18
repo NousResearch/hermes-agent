@@ -40,6 +40,8 @@ from tools.process_registry_termination import ProcessTerminationMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
 from tools.process_registry_env_log import log_delta_command
 from tools.process_registry_wsl import _is_wsl_launcher_command
+from tools.process_registry_watch_config import (
+    DEFAULT_WATCH_LIFETIME_MAX_HITS, configured_watch_lifetime_max_hits, normalize_watch_lifetime_max_hits)
 
 logger = logging.getLogger(__name__)
 
@@ -68,17 +70,9 @@ MAX_PROCESSES = 64              # max tracked processes (LRU pruning)
 # watching and fall back to notify_on_complete semantics.
 WATCH_MIN_INTERVAL_SECONDS = 15
 WATCH_STRIKE_LIMIT = 3
-# Lifetime cap, independent of strikes: a pattern recurring just above the cooldown never
-# strikes yet forces a full-context agent turn each time; watch_patterns is "ONLY for
-# rare one-shot signals", so after this many deliveries fall back to notify_on_complete.
-# MAX_ACTIVE_PROCESS_AGE = 86400  # 24h default — see session_reset.bg_process_max_age_hours (#29177)
-# A process whose pattern recurs at a cadence just above WATCH_MIN_INTERVAL_SECONDS (e.g. a service
-# restarted repeatedly over a day) never trips the consecutive-strike limit, since each match lands in its
-# own clean cooldown window, yet still forces a full-context agent turn every single time (#93513).
-# watch_patterns is documented as "ONLY for rare one-shot mid-process signals", so once a session has
-# delivered this many matches over its whole life we disable it and fall back to notify_on_complete, same as
-# the strike-limit path.
-WATCH_LIFETIME_MAX_HITS = 8
+# Default lifetime cap, independent of strikes (#93513): even sparse matches force full-context
+# turns. The operator may opt into a larger finite budget; exhaustion still promotes to notify-on-exit.
+WATCH_LIFETIME_MAX_HITS = DEFAULT_WATCH_LIFETIME_MAX_HITS
 # Heartbeat: an opt-in periodic "still running, here is the output since last time" event for
 # long bounded jobs (merge trains, full test suites, deploys). Unlike watch patterns it is
 # time-driven, so it is bounded by construction (≤ 3600/HEARTBEAT_MIN_SECONDS events per hour
@@ -584,6 +578,7 @@ class ProcessSession:
     notify_on_complete: bool = False            # Queue agent notification on exit
     completion_output_chars: int = 0            # Output chars the completion carries; 0 = COMPLETION_OUTPUT_CHARS
     watch_patterns: list[str] = field(default_factory=list)
+    watch_lifetime_max_hits: int = WATCH_LIFETIME_MAX_HITS  # fixed at spawn; never read config on reader threads
     heartbeat_seconds: int = 0                  # 0 = off; else a "heartbeat" event every N s while running
     total_output_chars: int = 0                 # Chars ever ingested (the buffer is a rolling tail)
     _heartbeat_last: float = field(default=0.0, repr=False)          # time of the last heartbeat (or spawn)
@@ -610,6 +605,7 @@ class ProcessSession:
     _pty: Any = field(default=None, repr=False)  # ptyprocess handle (use_pty=True)
 
     def __post_init__(self):
+        self.watch_lifetime_max_hits = normalize_watch_lifetime_max_hits(self.watch_lifetime_max_hits)
         # A session built without an explicit owner is owned by its own task, so ownership checks compare
         # ``owner_task_id`` alone instead of repeating an ``or task_id`` fallback at every call site.
         if not self.owner_task_id:
@@ -655,7 +651,7 @@ _CHECKPOINT_FIELDS = (
     "command", "pid", "pid_scope", "host_start_time", "systemd_unit", "wsl_chain", "cwd",
     "started_at", "task_id", "owner_task_id", "session_key",
     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
-    "parent_session_id", "notify_on_complete", "completion_output_chars", "watch_patterns",
+    "parent_session_id", "notify_on_complete", "completion_output_chars", "watch_patterns", "watch_lifetime_max_hits",
     "heartbeat_seconds", "persist_on_release", "output_log")
 _CHECKPOINT_DEFAULTS = {
     f.name: ([] if f.name == "watch_patterns" else f.default)
@@ -816,6 +812,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         matched_pattern = hits[0][0]
         matched_lines = [line for _, line in hits]
         now = time.time()
+        lifetime_max_hits = session.watch_lifetime_max_hits
         with session._lock:
             if session._watch_cooldown_until and now < session._watch_cooldown_until:
                 # Inside the cooldown: drop, count one strike per window, disable +
@@ -847,7 +844,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             suppressed = session._watch_suppressed
             session._watch_suppressed = 0
             # Lifetime cap: this match is still delivered, but no further ones.
-            lifetime_exhausted = session._watch_hits >= WATCH_LIFETIME_MAX_HITS
+            lifetime_exhausted = session._watch_hits >= lifetime_max_hits
             if lifetime_exhausted:
                 session._watch_disabled = True
                 session.notify_on_complete = True
@@ -867,7 +864,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         # Even when the breaker drops the final match, still explain the silence.
         if lifetime_exhausted:
             self._emit_watch_disabled(
-                session, 0, f"reached the lifetime cap of {WATCH_LIFETIME_MAX_HITS} delivered matches. ",
+                session, 0, f"reached the lifetime cap of {lifetime_max_hits} delivered matches. ",
             )
 
     def _emit_watch_disabled(self, session: ProcessSession, suppressed: int, why: str) -> None:
@@ -1090,6 +1087,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             id=f"proc_{uuid.uuid4().hex[:12]}", command=command, task_id=task_id,
             owner_task_id=owner_task_id, session_key=session_key, cwd=cwd,
             parent_session_id=get_session_env("HERMES_SESSION_ID", ""),
+            watch_lifetime_max_hits=configured_watch_lifetime_max_hits(),
             wsl_chain=_is_wsl_launcher_command(command),
             started_at=time.time(), **extra)
 

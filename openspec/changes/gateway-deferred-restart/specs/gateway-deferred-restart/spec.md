@@ -27,7 +27,9 @@ final exit.
 Exit codes: 0 = accepted or idempotent duplicate, 2 = usage error, 3 = no
 matching gateway target, 4 = target lacks a supervisor-managed restart path,
 5 = refused by cross-process cooldown, 6 = outcome unknown (could not prove
-acceptance).
+acceptance). Exit 6 is a CLI-observed state, not an authoritative record: the
+timeout writes no authoritative result, deletes no pending request, and does not
+cancel the background request.
 
 #### Scenario: agent triggers deferred restart in a chat turn
 - WHEN a chat session's agent executes `hermes gateway defer-restart` via the terminal tool
@@ -67,7 +69,13 @@ its own request_id attributable to the resolved target generation (PID + process
 start time). A stale or unattributable restart_requested/draining state SHALL NOT
 count as confirmation. When confirmation cannot be proven within the confirmation
 window (~5s), the CLI SHALL exit 6 and callers SHALL treat the outcome as unknown
-(no immediate unconditional retry).
+(no immediate unconditional retry). --max-wait limits only how long the CLI
+waits: on timeout the CLI SHALL NOT write an authoritative result record, delete
+the pending request, cancel the background request, or auto-retry. A late valid
+decision SHALL remain queryable by request_id. Target-generation matching refers
+to the generation recorded at request publication; the gateway having already
+become a new generation SHALL NOT invalidate the original request's acceptance
+evidence.
 
 Runtime status (restart_requested and similar live state) MAY be reset when a new
 generation starts, but accepted_request_id history SHALL be retained with a
@@ -83,7 +91,9 @@ sufficient retention period and SHALL NOT be cleared at new-process startup.
 
 #### Scenario: outcome unknown
 - WHEN the confirmation window closes without an attributable acceptance record
-- THEN the CLI exits 6 and does not immediately re-fire
+- THEN the CLI exits 6 and does not immediately re-fire, writes no authoritative
+  result record, and deletes no pending request; the background request remains
+  valid and a late accepted decision remains queryable by request_id
 
 ### Requirement: Cross-process cooldown and idempotency
 The deferred restart channel SHALL enforce a cross-process cooldown (default
@@ -132,16 +142,25 @@ path existed at request-acceptance time", not a permanent guarantee.
 
 ### Requirement: SIGUSR1 compatibility preservation
 Deferred request processing SHALL NOT change the behavior of pre-existing SIGUSR1
-calls that carry no valid deferred request: when no deferred request is present,
-the legacy restart behavior SHALL be preserved. When a deferred request is present
+calls per the legacy contract. Legacy restart SHALL occur only when the request
+directory scan succeeded and confirmed the directory empty AND the current
+generation has never observed deferred-protocol traffic. An unknown/failed scan
+SHALL NOT restart and SHALL NOT fall back to legacy; an invalid or expired
+request SHALL be handled per protocol without granting legacy restart rights;
+an empty directory seen after protocol traffic has been observed this generation
+SHALL be a no-op. When a deferred request is present
 but fails validation, the gateway SHALL reject that request and SHALL NOT fall
 through to legacy unconditional restart (invariant I3). Signal handlers SHALL NOT
 perform blocking file I/O; request reading, locking, and state commit SHALL run in
 an appropriate async context within the event loop.
 
-#### Scenario: legacy signal without deferred request
-- WHEN SIGUSR1 arrives and no valid deferred request file exists
-- THEN the existing SIGUSR1 restart behavior applies unchanged
+#### Scenario: legacy signal only on confirmed-clean generations
+- WHEN SIGUSR1 arrives, the scan confirms an empty request directory, and the generation never observed protocol traffic
+- THEN the legacy SIGUSR1 restart behavior applies (call parameters and final behavior compatible)
+- AND WHEN the scan outcome is unknown
+- THEN no restart occurs and there is no fallback
+- AND WHEN an invalid or expired request was observed, or the directory is empty after protocol traffic was seen this generation
+- THEN protocol handling applies and legacy restart is not granted
 
 #### Scenario: invalid deferred request present
 - WHEN SIGUSR1 arrives and a deferred request file exists but fails validation
@@ -154,8 +173,8 @@ generation; concurrent pending requests SHALL receive explicit outcomes
 silently dropped. Requests whose target_generation does not match the consuming
 gateway SHALL NOT be consumed; a new generation SHALL NOT reinterpret a previous
 generation's pending request as a fresh restart instruction. Pending files SHALL
-have an expiry/cleanup rule, and cleanup SHALL NOT delete result records for
-requests in accepted or outcome-unknown state. A crashed CLI after signaling
+have an expiry/cleanup rule, and cleanup SHALL NOT delete result records of
+accepted requests nor pending requests whose outcome is not yet determined. A crashed CLI after signaling
 leaves the request file which the gateway may still consume; a gateway crash
 before claiming leaves the file for expiry cleanup.
 
@@ -172,13 +191,17 @@ The existing terminal-tool lifecycle guard (G1) and CLI self-refusal (G2) SHALL
 remain unchanged in their interception semantics; this change adds no new guard
 surface and relaxes none. Normal chat turns remain allowed subject to
 authorization, capability, and cooldown rules. A cron payload MAY drive the
-deferred channel in v1: that is a KNOWN, documented coverage gap (the cross-
-process cooldown bounds it to at most one restart per cooldown window per
-service), left to a decoupled follow-up change.
+deferred channel in v1: that is a KNOWN, documented coverage gap left to a
+decoupled follow-up change. The cooldown (anchored at accepted_at) limits only
+the rate of NEW ACCEPTANCES per service identity; it does not bound the interval
+between actual restarts (drain/after-turn waits and supervisor relaunch sit
+between acceptance and exit) and does not prevent a persistent cron payload from
+driving repeated restarts.
 
 #### Scenario: known coverage gap documented
 - WHEN a reader consults the deferred restart documentation
-- THEN the cron coverage gap and its cooldown bound are stated as a v1 limitation
+- THEN the cron coverage gap is stated as a v1 limitation together with the
+  cooldown's acceptance-rate-only semantics (no actual-restart-interval bound)
 
 #### Scenario: existing guard behavior unchanged
 - WHEN any previously blocked command shape is submitted (restart/stop/uninstall forms, launchctl forms, kill forms, spliced/continuation/compound variants)

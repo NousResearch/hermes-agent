@@ -33,7 +33,7 @@ separate shell outside the running gateway."
 ### 两层架构（Codex 建议采纳）
 
 1. **defer-restart 请求协议**：目标绑定、request_id、授权/provenance、冷却、
-   审计、受理确认（本变重新增）
+   受理确认（本变重新增）
 2. **gateway restart executor**：接收已验证请求后复用现有 request_restart()、
    drain、退出码 75 链路（零改动或最小改动）
 
@@ -82,7 +82,8 @@ recover_pending_to_db() 恢复到会话历史。该机制保障已 flush 消息�
 
 普通 shell 用户、同一 hermes home 下其他 profile、cron 子进程、恶意本地进程、
 PID 复用、supervisor 配置变更。actor_ref 不作授权输入，授权不信任 CLI 自报；
-cron 覆盖是 v1 已知缺口（解耦 follow-up change 处理），冷却窗口为上界。
+cron 覆盖是 v1 已知缺口（解耦 follow-up change 处理）。冷却以 accepted_at
+为锚限新受理频率；不承诺实际重启间隔，不消除 fire/restart 循环。
 
 ## Non-goals（明确不做）
 

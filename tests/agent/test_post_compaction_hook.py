@@ -3,6 +3,8 @@ and a raising plugin never changes what the compaction returns (#118382)."""
 
 from unittest.mock import patch
 
+import threading
+
 import pytest
 
 from hermes_cli import plugins as plugins_mod
@@ -44,3 +46,26 @@ def test_post_compaction_fires_once_per_committed_compaction(ctx, summary, commi
     )
     assert kw["messages_removed"] == len(_messages()) - len(compressed) > 0
     assert kw["before_tokens"] > kw["after_tokens"] > 0
+
+
+def test_a_slow_callback_for_one_session_does_not_skip_another_sessions_compaction(ctx):
+    """The bounded dispatcher skips a callback still running for the same call; two sessions are two calls."""
+    entered, release, seen = threading.Event(), threading.Event(), []
+
+    def slow(session_id, **_kw):
+        seen.append(session_id)
+        if session_id == "a":
+            entered.set()
+            release.wait(10)
+
+    ctx.register_hook("post_compaction", slow)
+    first = threading.Thread(target=ctx._manager.invoke_hook, args=("post_compaction",), kwargs={"session_id": "a"})
+    first.start()
+    assert entered.wait(10)
+    try:
+        ctx._manager.invoke_hook("post_compaction", session_id="b")
+    finally:
+        release.set()
+        first.join(10)
+
+    assert sorted(seen) == ["a", "b"]

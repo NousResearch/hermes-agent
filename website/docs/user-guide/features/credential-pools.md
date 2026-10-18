@@ -23,7 +23,7 @@ Credential pools are mainly for API-key providers (OpenRouter, Anthropic). A sin
 
 ```
 Your request
-  → Pick key from pool (round_robin / least_used / fill_first / random)
+  → Pick key from pool (round_robin / least_used / fill_first / random / balanced)
   → Send to provider
   → 429 rate limit?
       → Plan/usage limit reached (e.g. ChatGPT/Codex "usage limit reached")?
@@ -175,6 +175,31 @@ credential_pool_strategies:
 | `round_robin` | Cycle through keys evenly, rotating after each selection |
 | `least_used` | Always pick the key with the lowest request count |
 | `random` | Random selection among healthy keys |
+| `balanced` | For subscription logins (Claude, ChatGPT Codex): new sessions go to the account with the most quota left, spread across accounts that already have busy sessions. See below. |
+
+#### `balanced`: quota headroom without losing prompt caches {#balanced-strategy}
+
+Claude and Codex subscription responses report how much of each plan window (5-hour, weekly)
+is spent. Under `balanced`, Hermes reads those reports from responses it already gets, with no
+extra requests:
+
+- A **new session** goes to the account with the largest share of its tightest window still
+  free, divided by the number of sessions already on that account. A session counts there from
+  the moment it is placed, so sessions that start together spread out. A larger plan fills more
+  slowly, so it keeps taking new sessions until the percentages even out.
+- A Claude session that hits a spent window **rotates within its organization** first, when the
+  pool holds several seats of one Team organization (identified by the `anthropic-organization-id`
+  response header). Seats of one organization share a prompt cache, so that move costs no cache
+  rewrite. Sessions that hit the limit together spread over the remaining seats.
+- **Between turns**, a session whose prompt cache is still warm stays on (or returns to) the
+  account that cache is on. A session idle past its cache lifetime (5 minutes or 1 hour for
+  Claude, depending on `prompt_caching.cache_ttl`; 1 hour for Codex) is re-placed. A warm
+  session moves only when a request fails on its account, such as on a spent window.
+- Ties go to the account whose window resets soonest, since quota left at a reset is lost.
+
+The view lives in the memory of the process that runs the sessions (the gateway, for every
+session it hosts). After a restart or `hermes update` it is empty, and sessions spread by count
+until their responses report the windows.
 
 ### Demoting a healthy credential {#demoting-a-healthy-credential}
 

@@ -23,7 +23,8 @@ def invoke_plugin_command(handler: Callable, raw_args: str, **context: Any) -> A
     # The first positional parameter receives raw_args whatever its name (``def h(source, **kw)``
     # must not get ``source`` twice).
     if parameters and parameters[0].kind is not inspect.Parameter.KEYWORD_ONLY:
-        context = {k: v for k, v in context.items() if k != parameters[0].name}
+        if parameters[0].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD:
+            context = {k: v for k, v in context.items() if k != parameters[0].name}
         parameters = parameters[1:]
     if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters):
         return handler(raw_args, **context)

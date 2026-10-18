@@ -298,32 +298,32 @@ class SessionGatewayMixin:
         namespaces the index per sessions_dir so two stores never share routing state."""
         if not session_key or not entry_json:
             return
-        from hermes_state_mutation_retirement import route_namespace, route_retired_sql
+        from hermes_state_mutation_retirement import ROUTE_RETIRED_SQL, route_retired_params
         self._write_sql(
             f"""INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at)
-               SELECT ?1, ?2, ?3, ?4 WHERE NOT {route_retired_sql('?3', '?5', '?4')}
+               SELECT :scope, :key, :entry, :now WHERE NOT {ROUTE_RETIRED_SQL}
                ON CONFLICT(scope, session_key) DO UPDATE SET
                    entry_json = excluded.entry_json,
                    updated_at = excluded.updated_at""",
-            (scope, session_key, entry_json, time.time(), route_namespace(session_key)),
+            {'scope': scope, 'key': session_key, **route_retired_params(session_key, entry_json, time.time())},
         )
 
     def replace_gateway_routing_entries(self, entries: dict[str, str], *, scope: str = "") -> set[str]:
         """Atomically replace the routing index for *scope* (keys absent from *entries*
         are removed); other scopes untouched. Returns the keys skipped as retired routes, which
         the sessions.json mirror must leave out too."""
-        from hermes_state_mutation_retirement import route_namespace, route_retired_sql
+        from hermes_state_mutation_retirement import ROUTE_RETIRED_SQL, route_retired_params
         now = time.time()
-        rows = [(scope, k, v, now, route_namespace(k)) for k, v in entries.items() if k and v]
+        rows = [{'scope': scope, 'key': k, **route_retired_params(k, v, now)} for k, v in entries.items() if k and v]
         def _do(conn):
             conn.execute("DELETE FROM gateway_routing WHERE scope = ?", (scope,))
             if rows:
                 conn.executemany(
                     "INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at) "
-                    f"SELECT ?1, ?2, ?3, ?4 WHERE NOT {route_retired_sql('?3', '?5', '?4')}",
+                    "SELECT :scope, :key, :entry, :now WHERE NOT " + ROUTE_RETIRED_SQL,
                     rows)
             kept = {r[0] for r in conn.execute("SELECT session_key FROM gateway_routing WHERE scope = ?", (scope,))}
-            return {row[1] for row in rows} - kept
+            return {row['key'] for row in rows} - kept
         return self._execute_write(_do)
 
     def load_gateway_routing_entries(self, *, scope: str = "") -> dict[str, str]:

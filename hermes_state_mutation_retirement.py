@@ -321,31 +321,39 @@ def route_fence_key(namespace, session_id):
     return f'{ROUTE_FENCE_PREFIX}{namespace}:{session_id}'
 
 
-def route_retired_sql(entry, namespace, now):
-    """SQL true when a routing save must skip an entry (SQL expressions *entry*: its JSON,
-    *namespace*: its key's ``route_namespace``, and *now*: the save's time), checked only against
-    the profile the route belongs to: this store's own marker for a launch (``main``) route, that
-    profile's fence for a secondary's. A launch-keyed route to an id this store holds no session of
-    can only name another profile's session, so a secondary's fence covers it too
-    (``fence_shared_routes``). A sweep's fence stops fencing at the horizon by itself: only the
-    owner's own store sweeps the owner's marker, and nothing guarantees the launch profile ever
-    sweeps this one. A delete's fence (no ``expires``) never does: the age test is NULL for it,
-    and NULL counts as not expired. An unscoped marker (no ``own``: an earlier release's, written for either)
-    still fences every route."""
-    sid = f"json_extract({entry}, '$.session_id')"
-    return (f"(EXISTS (SELECT 1 FROM state_meta m WHERE m.key = '{RETIRED_PREFIX}' || {sid} AND "
-            f"({namespace} = 'main' OR NOT (json_valid(m.value) AND json_extract(m.value, '$.own') IS NOT NULL))) "
-            f"OR EXISTS (SELECT 1 FROM state_meta f WHERE f.key = '{ROUTE_FENCE_PREFIX}' || {namespace} || ':' || {sid} "
-            f"AND NOT coalesce(json_valid(f.value) AND json_extract(f.value, '$.expires') "
-            f"AND json_extract(f.value, '$.retired_at') < {now} - {RETRY_HORIZON_S}, 0) "
-            f"AND ({namespace} != 'main' OR NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = {sid}))))")
+# True when a routing save must skip an entry, checked only against the profile the route belongs
+# to: this store's own marker for a launch (``main``) route, that profile's fence for a secondary's.
+# A launch-keyed route to an id this store holds no session of can only name another profile's
+# session, so a secondary's fence covers it too (``fence_shared_routes``). A sweep's fence stops
+# fencing at the horizon by itself: only the owner's own store sweeps the owner's marker, and nothing
+# guarantees the launch profile ever sweeps this one. A delete's fence (no ``expires``) never does:
+# its age test is NULL, which ``coalesce`` reads as not expired. An unscoped marker (no ``own``: an
+# earlier release's, written for either) still fences every route.
+# Bound by name (``route_retired_params``): :entry is the route's JSON, :ns its key's
+# ``route_namespace``, :now the save's time.
+ROUTE_RETIRED_SQL = """(
+    EXISTS (SELECT 1 FROM state_meta m
+             WHERE m.key = :retired_prefix || json_extract(:entry, '$.session_id')
+               AND (:ns = 'main' OR NOT (json_valid(m.value) AND json_extract(m.value, '$.own') IS NOT NULL)))
+    OR EXISTS (SELECT 1 FROM state_meta f
+                WHERE f.key = :fence_prefix || :ns || ':' || json_extract(:entry, '$.session_id')
+                  AND NOT coalesce(json_valid(f.value) AND json_extract(f.value, '$.expires')
+                                   AND json_extract(f.value, '$.retired_at') < :now - :horizon, 0)
+                  AND (:ns != 'main' OR NOT EXISTS (
+                          SELECT 1 FROM sessions s WHERE s.id = json_extract(:entry, '$.session_id')))))"""
+
+
+def route_retired_params(session_key, entry_json, now):
+    """The named parameters of ``ROUTE_RETIRED_SQL`` for one routing entry saved at *now*."""
+    return {'entry': entry_json, 'ns': route_namespace(session_key), 'now': now, 'horizon': RETRY_HORIZON_S,
+            'retired_prefix': RETIRED_PREFIX, 'fence_prefix': ROUTE_FENCE_PREFIX}
 
 
 def route_retired(db, session_key, entry_json):
     """A routing save (or the legacy sessions.json import) must skip this entry."""
     with db._read_ctx() as conn:
-        return bool(conn.execute(f"SELECT {route_retired_sql('?1', '?2', '?3')}",
-                                 (entry_json, route_namespace(session_key), time.time())).fetchone()[0])
+        return bool(conn.execute('SELECT ' + ROUTE_RETIRED_SQL,
+                                 route_retired_params(session_key, entry_json, time.time())).fetchone()[0])
 
 
 def expiring_retirements(db, session_ids):

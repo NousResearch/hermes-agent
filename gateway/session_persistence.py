@@ -525,7 +525,7 @@ class SessionPersistenceMixin:
                     db_saved = True
                     # A retired route the save skipped stays out of the mirror too: its fence may
                     # age out (a prune's), and the next start's legacy import would restore it.
-                    if isinstance(retired, set) and retired:
+                    if retired:
                         data = {k: v for k, v in data.items() if k not in retired}
                 except Exception as exc:
                     logger.warning("gateway.session: state.db routing save failed: %s", exc)

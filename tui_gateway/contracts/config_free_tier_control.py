@@ -495,7 +495,7 @@ class ProviderUsageWindow(Result):
 
 
 class ProviderUsageAccount(Result):
-    """One account of a provider's credential pool (``hermes_cli/inventory.py::_pool_usage_accounts``).
+    """One account of a provider's credential pool (``hermes_cli/inventory.py::pool_usage_accounts``).
     ``id`` is a stable non-secret account identity (never a key or URL); ``label`` may be empty (UI
     falls back to a localized "Account N"). ``windows`` is empty while the account's usage is not
     yet known — state carries the meaning, never a fabricated gauge.

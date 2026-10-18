@@ -303,29 +303,6 @@ def _apply_usage(rows: list[dict]) -> None:
     )
     from hermes_cli.auth import read_credential_pool
 
-    def _wire_windows(snapshot) -> list[dict]:
-        return [
-            {"label": w.label, "used_percent": float(w.used_percent),
-             "resets_at": w.reset_at.isoformat() if w.reset_at else None,
-             "scope": w.scope}
-            for w in (snapshot.windows if snapshot else ()) if w.used_percent is not None
-        ]
-
-    def _account_resets_at(snapshot, live_cooldown_until: float | None) -> str | None:
-        """A quota-exhausted account recovers at the LATEST of its exhausted account-scoped
-        windows (all of them must reopen before the account is whole again); a live
-        credential-wide cooldown wins when later. Model-scoped windows never reset an account.
-        Unknown stays None — the frontend renders its own advisory (e.g. the earliest sibling)."""
-        resets: list[str] = []
-        if live_cooldown_until:
-            resets.append(_iso_from_epoch(live_cooldown_until))
-        for window in (snapshot.windows if snapshot else ()):
-            if window.scope != "account" or window.used_percent is None or window.reset_at is None:
-                continue
-            if float(window.used_percent) >= _EXHAUSTED_WINDOW_PERCENT:
-                resets.append(window.reset_at.isoformat())
-        return max(resets) if resets else None
-
     wanted: list[str] = []
     entry_requests: list[dict] = []
     pooled_sizes = {slug: len(entries) for slug, entries in read_credential_pool().items() if entries}
@@ -342,13 +319,13 @@ def _apply_usage(rows: list[dict]) -> None:
                 continue
             wanted.append(slug)
             snapshot = cached_account_usage(slug)
-            windows = _wire_windows(snapshot)
+            windows = wire_windows(snapshot)
             if windows and not snapshot_is_stale(snapshot):
                 row["usage"] = {"windows": windows}
             continue
         if supports_usage:
             wanted.append(slug)
-        accounts = _pool_usage_accounts(slug, _wire_windows, _account_resets_at, entry_requests)
+        accounts = pool_usage_accounts(slug, entry_requests)
         if accounts is not None:
             row["usage"] = {"accounts": accounts}
     refresh_account_usage_async(wanted)
@@ -359,14 +336,38 @@ def _apply_usage(rows: list[dict]) -> None:
 _EXHAUSTED_WINDOW_PERCENT = 100.0
 
 
+def wire_windows(snapshot) -> list[dict]:
+    return [
+        {"label": w.label, "used_percent": float(w.used_percent),
+         "resets_at": w.reset_at.isoformat() if w.reset_at else None,
+         "scope": w.scope}
+        for w in (snapshot.windows if snapshot else ()) if w.used_percent is not None
+    ]
+
+
+def account_resets_at(snapshot, live_cooldown_until: float | None) -> str | None:
+    """A quota-exhausted account recovers at the LATEST of its exhausted account-scoped
+    windows (all of them must reopen before the account is whole again); a live
+    credential-wide cooldown wins when later. Model-scoped windows never reset an account.
+    Unknown stays None — the frontend renders its own advisory (e.g. the earliest sibling)."""
+    resets: list[str] = []
+    if live_cooldown_until:
+        resets.append(_iso_from_epoch(live_cooldown_until))
+    for window in (snapshot.windows if snapshot else ()):
+        if window.scope != "account" or window.used_percent is None or window.reset_at is None:
+            continue
+        if float(window.used_percent) >= _EXHAUSTED_WINDOW_PERCENT:
+            resets.append(window.reset_at.isoformat())
+    return max(resets) if resets else None
+
+
 def _iso_from_epoch(epoch: float) -> str:
     from datetime import datetime, timezone
 
     return datetime.fromtimestamp(float(epoch), UTC).isoformat()
 
 
-def _pool_usage_accounts(slug: str, wire_windows, account_resets_at,
-                         entry_requests: list[dict]) -> Optional[list[dict]]:
+def pool_usage_accounts(slug: str, entry_requests: list[dict]) -> Optional[list[dict]]:
     """Per-account usage rows for one pooled provider, or None when the pool cannot be read.
 
     Read-only: entries are inspected via ``load_pool(slug)`` properties (no select/rotate/refresh).

@@ -225,6 +225,9 @@ async def write_mutation(authority, ref, params, editor_servers, *, principal_id
             result = await asyncio.to_thread(mutate_runtime_session, authority.db, **fields,
                                              _prepared=prepared, _authorize_write=authorize_write)
         await _project_result(authority, ref, live, params, result, editor_servers, applied=applied)
+    if operation == 'compress' and applied and (prepared or {}).get('post_compaction'):
+        from gateway.session_mutation_compress import fire_post_compaction_hook
+        await fire_post_compaction_hook(authority, prepared, result)
     if operation == 'delete':
         # After the synchronous projections (no yield before retirement), off the loop: the
         # retired-media owner check is a messages-table pass (exact retries repeat it too).

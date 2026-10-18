@@ -195,15 +195,10 @@ VALID_HOOKS: set[str] = {
     # returns IGNORED in v1. Deliberately NOT fired for the gateway's running-agent intercept path
     # (/stop, /approve, busy_policy) — a slow/hostile plugin must not touch the operator's escape
     # hatches. Kwargs: surface, command (canonical), alias_used, args_raw, session_key, platform.
-    # Slash-command dispatch observer (#64204, observer-first per #64182 ground rule 3). Return values are
-    # IGNORED in v1 — a plugin returning a directive-shaped dict gets a debug log so future block/rewrite
-    # adopters are discoverable once the middleware variant ships against the #64231 taxonomy.
+    # Observer-first (#64204, #64182 rule 3); a directive-shaped return gets a debug log so future
+    # block/rewrite adopters are discoverable once the middleware variant ships (#64231 taxonomy).
     "pre_command",
-    # post_compaction: after a successful context compaction. Fires once per compress() call that
-    # made progress. Observer-only (returns ignored). Kwargs: session_id, before_tokens, after_tokens,
-    # messages_removed, reason. Lets plugins/providers re-inject context that compaction summarized
-    # away (#118382).
-    "post_compaction",
+    "post_compaction",  # once per committed compaction on every path; observer (hooks.md, #118382)
 }
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as

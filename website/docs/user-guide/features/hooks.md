@@ -472,6 +472,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `on_session_finalize` | Observer | CLI/TUI/gateway teardown through `finalize_session`; gateway shutdown may finalize without a reset. Return ignored. | Surface-dependent `session_id`, `platform`, optionally `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
 | `on_session_reset` | Observer | CLI/TUI session boundary and gateway after the replacement session exists; return ignored. | CLI: `session_id`, `platform`, `reason`; TUI: `session_id`, `platform`; gateway: those plus `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
 | `on_session_delete` | Observer | After a session delete or deliberate archive commits (CLI, TUI, Desktop/dashboard, gateway API, sweeps, prune); return ignored. | `session_id`, `reason`, `profile`, optional `deleted_ids` (full set when more than one row went), `sessions_dir` | Session identifiers only; no message content. |
+| `post_compaction` | Observer | Once per committed compaction, on every path: automatic and manual compaction in the agent loop (CLI, TUI, Desktop, gateway hygiene, overflow recovery), the gateway's `/compress` (`session.mutate compress`), Codex app-server compactions, micro-compaction and proactive tool-result pruning. Not fired for attempts that changed nothing (aborted, blocked, refused). Timeout-bounded; return ignored. | `session_id`, `old_session_id`, `kind`, `reason`, `before_tokens`, `after_tokens`, `messages_removed` | Identifiers and counts only. |
 | `agent_loop_stopped` | Observer | Immediately after a real running agent is interrupted — gateway `_interrupt_and_clear_session` or TUI/desktop `session.interrupt`; return ignored. | `session_key`, `platform`, `reason`, `invalidation_reason` | Session/routing identifiers and interruption reasons; no message body. |
 | `on_skill_lifecycle` | Observer | After an authoritative skill-usage state change; return ignored. | `action`, `skill_name`, `provenance`, `task_id`, `session_id`, `use_count`, `reused`, `reuse_after_patch` | Exposes the local skill name and provenance. |
 | `subagent_start` | Observer | Child constructed and about to run; return ignored. | `parent_session_id`, `parent_turn_id`, `parent_subagent_id`, `child_session_id`, `child_subagent_id`, `child_role`, `child_goal` | Child goal may contain user/project content. |
@@ -1113,6 +1114,31 @@ def my_callback(session_id: str, reason: str, profile: str | None, **kwargs):
 See the **[Build a Plugin guide](../../developer-guide/plugins/index.md)** for the full walkthrough including tool schemas, handlers, and advanced hook patterns.
 
 ---
+
+### `post_compaction`
+
+Fires once after a compaction **committed**, so plugins (memory providers, context engines, external knowledge stores) can tell that detail they injected earlier was just summarized away and re-inject it, typically from their next `pre_llm_call`.
+
+**Callback signature:**
+
+```python
+def my_callback(session_id: str, kind: str, reason: str, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `session_id` | `str` | The session that holds the compacted transcript now. |
+| `old_session_id` | `str` | The session the compaction started in when it rotated to a new one; `""` when compacted in place. |
+| `kind` | `str` | `"summarize"` (full compaction), `"micro_summarize"`, `"prune_tool_results"` or `"provider_native"` (Codex app-server). |
+| `reason` | `str` | What triggered it: `"manual"` (`/compress`), `"pre_api"`, `"post_tool"`, `"overflow"`, `"gateway_hygiene"`, `"between_turns"`, `"proactive_prune"`, `"provider"`, or `"unknown"`. |
+| `before_tokens` / `after_tokens` | `int \| None` | Rough token estimates of the transcript before and after; `None` when unknown (Codex owns the thread). |
+| `messages_removed` | `int \| None` | Messages before minus after; `None` when unknown. |
+
+**Fires:** in the agent loop, in the process that compacted (CLI, TUI and Desktop backends, gateway agents, cron); for the gateway's `/compress`, in the gateway after the commit. Attempts that changed nothing (summary aborted, blocked by a cooldown, refused because it would grow) and background-review forks fire nothing.
+
+**Return value:** Ignored. A callback that raises is logged and skipped; the compaction is already committed and is unaffected. Callbacks are bounded by `plugins.hook_callback_timeout`.
+
+**Use cases:** Re-inject session context after compaction, refresh an external index, count compactions.
 
 ### `agent_loop_stopped`
 

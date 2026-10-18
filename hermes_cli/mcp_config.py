@@ -292,12 +292,13 @@ def _remove_mcp_server(name: str) -> bool:
 
 def _oauth_storage_identity(entry: dict) -> tuple:
     """What a stored grant is bound to: endpoint, auth mode, transport and the ``oauth:`` block
-    minus the ``share_with_profiles`` export flag (toggling the export changes WHERE the grant lives,
-    not WHAT it is for, so it must not revoke anything)."""
+    minus the ``share_with_profiles`` export flag and ``flow`` (the export changes WHERE the grant
+    lives and the flow HOW it is obtained, not WHAT it is for, so neither may revoke anything)."""
+    from tools.mcp_oauth import oauth_identity
+
     oauth = entry.get("oauth")
-    oauth_identity = dict(oauth) if isinstance(oauth, dict) else {}
-    oauth_identity.pop("share_with_profiles", None)
-    return (entry.get("url"), entry.get("auth"), entry.get("transport"), oauth_identity)
+    return (entry.get("url"), entry.get("auth"), entry.get("transport"),
+            oauth_identity(oauth) if isinstance(oauth, dict) else {})
 
 
 class _OAuthPoolTransition:
@@ -360,7 +361,10 @@ class _OAuthPoolTransition:
             return cls(name, home=home, unblock=not keep_pool)
         old_pool, local_pool = cls._pools(name, home)
         if keep_pool and old_pool == keep_pool:
-            return cls(name, home=home)
+            # The pool now holds the new identity's grant: keep it, but drop the cached provider
+            # built for the old identity. Left cached, its stale URL reads as an identity change
+            # on the next connect, and the manager would wipe the grant just authorized.
+            return cls(name, home=home, pool=old_pool)
         return cls(name, home=home, pool=old_pool, revoke=old_pool == local_pool, unblock=True)
 
     @classmethod

@@ -342,10 +342,23 @@ def _contains_config_reference(value: Any) -> bool:
     return False
 
 
+# ``oauth:`` keys that choose HOW a grant is obtained or WHO may share it, never WHAT it is for.
+# Neither may change a server's storage identity: ``hermes mcp login`` adds ``flow`` to the config
+# it authorizes with, and toggling the export only moves participation.
+_NON_IDENTITY_OAUTH_KEYS = frozenset({"share_with_profiles", "flow"})
+
+
+def oauth_identity(oauth: Any) -> Any:
+    """The part of an ``oauth:`` block a stored grant is bound to (non-dicts pass through)."""
+    if not isinstance(oauth, dict):
+        return oauth
+    return {k: v for k, v in oauth.items() if k not in _NON_IDENTITY_OAUTH_KEYS}
+
+
 def _shared_server_identity(entry: dict[str, Any]) -> tuple[Any, ...] | None:
     """The identity two profiles must agree on before they may share one OAuth grant:
-    ``(url, transport, oauth block minus share_with_profiles)``. None fails closed — a non-OAuth
-    server, a non-HTTP URL, or any dynamic ``${...}`` reference in the identity."""
+    ``(url, transport, oauth block minus share_with_profiles and flow)``. None fails closed — a
+    non-OAuth server, a non-HTTP URL, or any dynamic ``${...}`` reference in the identity."""
     url = entry.get("url")
     if entry.get("auth") != "oauth" or not isinstance(url, str) or _contains_config_reference(url):
         return None
@@ -353,16 +366,13 @@ def _shared_server_identity(entry: dict[str, Any]) -> tuple[Any, ...] | None:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return None
     oauth = entry.get("oauth")
-    if oauth is None:
-        oauth_identity: dict[str, Any] = {}
-    elif isinstance(oauth, dict):
-        oauth_identity = {k: v for k, v in oauth.items() if k != "share_with_profiles"}
-    else:
+    if oauth is not None and not isinstance(oauth, dict):
         return None
+    bound = oauth_identity(oauth or {})
     transport = entry.get("transport")
-    if _contains_config_reference(oauth_identity) or _contains_config_reference(transport):
+    if _contains_config_reference(bound) or _contains_config_reference(transport):
         return None
-    return (url, transport, oauth_identity)
+    return (url, transport, bound)
 
 
 def _shared_token_home(active_home: Path, server_name: str, *, requested: dict | None = None) -> Path:
@@ -418,12 +428,11 @@ class OAuthAuthorityUnavailableError(OAuthStorageDetachedError):
 def _storage_fingerprint(entry: Any) -> str | None:
     """Everything that decides where a server's grant lives and what it is for, verbatim (dynamic
     references included, unlike :func:`_shared_server_identity`): auth, url, transport and the
-    oauth block minus the export flag, which never changes the owner's own storage."""
+    oauth block minus the export flag and flow, which never change the owner's own storage."""
     if not isinstance(entry, dict):
         return None
     fields = _requested_identity(entry)
-    if isinstance(fields["oauth"], dict):
-        fields["oauth"] = {k: v for k, v in fields["oauth"].items() if k != "share_with_profiles"}
+    fields["oauth"] = oauth_identity(fields["oauth"])
     return json.dumps(fields, sort_keys=True, default=str)
 
 

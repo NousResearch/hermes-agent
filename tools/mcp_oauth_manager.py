@@ -343,7 +343,7 @@ class MCPOAuthManager:
         keeps the pool (same profile, new endpoint/client) also wipes that pool: the new identity
         must not reload tokens minted for the old one. A change that MOVES the profile off a shared
         root pool evicts only this provider — the root grant stays for root and sibling profiles."""
-        from tools.mcp_oauth import HermesTokenStorage
+        from tools.mcp_oauth import HermesTokenStorage, oauth_identity
 
         key = self._key(server_name)
         requested = {"url": server_url, "oauth": oauth_config, "transport": transport}
@@ -366,18 +366,27 @@ class MCPOAuthManager:
                 logger.info("MCP OAuth '%s': provider rebuild blocked after permanent removal", server_name)
                 return None
             entry = self._entries.get(key)
-            if entry is not None and (entry.server_url != server_url or (entry.oauth_config or {}) != requested_config
-                                      or entry.pool_path != requested_pool):
-                logger.info("MCP OAuth '%s': server or OAuth configuration changed, discarding cache", server_name)
-                if entry.provider is not None:
-                    self._detach_provider(entry.provider)
-                if entry.pool_path == requested_pool:
-                    HermesTokenStorage(server_name, hermes_home=key[0], token_dir=Path(entry.pool_path).parent).remove()
-                entry = None
-            if entry is not None and entry.transport != transport:
+            if entry is not None:
+                identity_changed = (entry.server_url != server_url
+                                    or oauth_identity(entry.oauth_config or {}) != oauth_identity(requested_config))
+                if identity_changed or entry.pool_path != requested_pool:
+                    logger.info("MCP OAuth '%s': server or OAuth identity changed, discarding cache", server_name)
+                    if entry.provider is not None:
+                        self._detach_provider(entry.provider)
+                    if identity_changed and entry.pool_path == requested_pool:
+                        HermesTokenStorage(server_name, hermes_home=key[0],
+                                           token_dir=Path(entry.pool_path).parent).remove()
+                    entry = None
+            if entry is not None and (entry.transport != transport or (entry.oauth_config or {}) != requested_config):
                 # Same endpoint, client and pool (any pool move was handled above): the grant is still
-                # valid for the new transport, so keep the pool and just rebuild the provider.
+                # valid for the new transport, flow or export flag, so keep the pool and rebuild the provider.
                 entry = None
+            if entry is not None and entry.provider is not None and self._provider_revoked(entry.provider):
+                # Fenced by a revocation (seen or not yet seen) that another process made; the pool
+                # may already hold a new grant for this same identity. Rebuild on current authority.
+                logger.info("MCP OAuth '%s': cached provider lost its pool authority, rebuilding", server_name)
+                self._detach_provider(entry.provider)
+                entry.provider = None
             if entry is None:
                 entry = self._entries[key] = _ProviderEntry(
                     server_url=server_url, oauth_config=requested_config, pool_path=requested_pool,
@@ -404,6 +413,16 @@ class MCPOAuthManager:
         the rotated grant rather than present the one it was built with)."""
         provider.context.clear_tokens()
         provider._initialized = False  # private SDK API, stable across pinned versions
+
+    @staticmethod
+    def _provider_revoked(provider: Any) -> bool:
+        """True when *provider* is fenced or its authority is permanently gone. Authority that only
+        cannot be proved right now (an unreadable epoch or config) is not revoked: keep and retry."""
+        if getattr(provider, "_hermes_detached", False):
+            return True
+        authority = getattr(provider, "_hermes_authority", None)
+        verdict = authority.revocation() if authority is not None else None
+        return verdict is not None and verdict[1]
 
     @staticmethod
     def _detach_provider(provider: Any) -> None:

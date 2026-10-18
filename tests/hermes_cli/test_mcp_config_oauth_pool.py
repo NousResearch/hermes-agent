@@ -544,3 +544,149 @@ def test_failed_participant_login_cannot_restore_a_revoked_owner_grant(estate, m
     cmd_mcp_login(_args("team"))
     assert not _grant(root).exists(), "rollback must never resurrect the owner's revoked grant"
     assert not (root / "mcp-tokens" / "team.client.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# Review round 1: a grant must survive the operations that only move or re-flow it
+# ---------------------------------------------------------------------------
+
+def test_reconnect_after_saving_an_authorized_endpoint_edit_keeps_the_new_grant(estate):
+    """A local-pool profile has a live provider for the OLD endpoint, authorizes an endpoint
+    edit, and saves it. The save must drop the stale provider: otherwise the next connect sees the
+    cached old URL, treats it as an identity change on the same pool, and deletes the grant the
+    authorization just minted."""
+    from hermes_cli.mcp_config import _save_mcp_server
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import get_manager
+
+    root, _a, b, activate = estate
+    _write_config(root, {"team": dict(SERVER)})  # no export: B's pool is its own
+    activate(b)
+    _seed_tokens(b, "team", "FOR_OLD_ENDPOINT")
+    manager = get_manager()
+    stale = manager.get_or_build_provider("team", SERVER["url"], None)
+    assert stale is not None
+    storage = HermesTokenStorage("team", requested=CHANGED)
+    minted = _seed_tokens(b, "team", "MINTED_FOR_CHANGED")
+    assert _save_mcp_server("team", dict(CHANGED), authorized_pool=storage.pool_path) is True
+
+    fresh = manager.get_or_build_provider("team", CHANGED["url"], None)
+    assert fresh is not None and fresh is not stale
+    assert stale._hermes_detached, "the old-endpoint provider must be fenced, not left serving"
+    assert json.loads(minted.read_text())["access_token"] == "MINTED_FOR_CHANGED"
+
+
+def test_cli_login_flow_selection_keeps_a_participant_on_the_shared_pool():
+    """`hermes mcp login` adds `oauth.flow` to the probe config. How a grant is obtained is not
+    what it is for: the requested entry must still resolve the root-exported pool."""
+    import tempfile
+
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.mcp_oauth import HermesTokenStorage
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / ".hermes"
+        prof = root / "profiles" / "a"
+        _write_config(root, {"team": {**SERVER, "oauth": {"share_with_profiles": True}}})
+        _write_config(prof, {"team": dict(SERVER)})
+        token = set_hermes_home_override(prof)
+        try:
+            for flow in ("browser", "device"):
+                requested = {**SERVER, "oauth": {"flow": flow}}
+                pool = HermesTokenStorage("team", requested=requested).pool_path
+                assert pool == str(_grant(root).resolve()), flow
+        finally:
+            reset_hermes_home_override(token)
+
+
+def test_participant_default_cli_login_writes_the_shared_pool(estate, monkeypatch, capsys):
+    """End to end: participant B logs in with no explicit flow. The probe stores the new grant
+    where the probe config resolves, as the real provider does. The login must succeed and the
+    new grant must land in the root pool, not in B's own `mcp-tokens/`."""
+    from hermes_cli.mcp_config import cmd_mcp_login
+    from tools.mcp_oauth import HermesTokenStorage
+
+    root, a, b, activate = estate
+    _build_all(root, a, b, activate)
+    activate(b)
+
+    def probe(name, cfg, connect_timeout=30):
+        path = HermesTokenStorage(name, requested=cfg)._tokens_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"access_token": "NEW", "token_type": "Bearer", "expires_in": 3600}))
+        return [("tool", "")]
+
+    monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", probe)
+    cmd_mcp_login(_args("team"))
+
+    out = capsys.readouterr().out
+    assert "Authenticated" in out, out
+    assert json.loads(_grant(root).read_text())["access_token"] == "NEW"
+    assert not (b / "mcp-tokens" / "team.json").exists(), "the grant leaked into B's own pool"
+
+
+@pytest.mark.parametrize("oauth_change", [{"share_with_profiles": True}, {"flow": "device"}])
+def test_a_non_identity_oauth_change_rebuilds_the_provider_and_keeps_the_grant(local, oauth_change):
+    """Toggling the export flag or switching the flow changes neither the endpoint nor the client.
+    The save keeps the grant; the next provider build must keep it too."""
+    from hermes_cli.mcp_config import _save_mcp_server
+    from tools.mcp_oauth_manager import get_manager
+
+    _home, grant = local
+    old = get_manager().get_or_build_provider("srv", SERVER["url"], None)
+    assert _save_mcp_server("srv", {**SERVER, "oauth": dict(oauth_change)}) is True
+    assert json.loads(grant.read_text())["access_token"] == "LOCAL", "save kept the grant"
+    new = get_manager().get_or_build_provider("srv", SERVER["url"], dict(oauth_change))
+    assert new is not None and new is not old, "the provider is rebuilt for the new options"
+    assert json.loads(grant.read_text())["access_token"] == "LOCAL", "the rebuild kept the grant"
+
+
+def _fence_by_observed_revocation(provider):
+    from tools.mcp_oauth import OAuthStorageDetachedError
+    with pytest.raises(OAuthStorageDetachedError):
+        provider._hermes_assert_authority()
+
+
+@pytest.mark.parametrize("how", ["epoch-observed", "epoch-unobserved", "entry-flipped-back"])
+def test_reconnect_replaces_a_provider_fenced_by_another_process(local, how):
+    """Another process revokes the pool. Whether or not the old provider has noticed yet, the
+    reconnect must build a fresh provider instead of returning the fenced one. The flip-back case
+    fences the provider on an A -> B edit; once the entry reads A again its authority checks out,
+    but the provider stays fenced, so the fence flag itself must trigger the rebuild."""
+    from tools.mcp_oauth import HermesTokenStorage, advance_pool_epoch
+    from tools.mcp_oauth_manager import get_manager
+
+    home, _grant_path = local
+    manager = get_manager()
+    old = manager.get_or_build_provider("srv", SERVER["url"], None)
+    expected = "LOCAL"
+    if how.startswith("epoch"):
+        advance_pool_epoch(Path(HermesTokenStorage("srv", hermes_home=home).pool_path))
+        _seed_tokens(home, "srv", "NEW_GRANT")
+        expected = "NEW_GRANT"
+    if how == "entry-flipped-back":
+        _write_config(home, {"srv": dict(CHANGED)})
+    if how != "epoch-unobserved":
+        _fence_by_observed_revocation(old)
+    if how == "entry-flipped-back":
+        _write_config(home, {"srv": dict(SERVER)})
+        assert old._hermes_authority.revocation() is None, "precondition: authority reads valid again"
+    new = manager.get_or_build_provider("srv", SERVER["url"], None)
+    assert new is not old
+    assert not new._hermes_detached
+    new._hermes_assert_authority()  # current authority: no raise
+    assert asyncio.run(new.context.storage.get_tokens()).access_token == expected
+
+
+def test_reconnect_keeps_a_provider_whose_authority_is_only_unavailable(local):
+    """An unreadable epoch is 'cannot prove', not 'revoked': the provider stays and retries."""
+    from tools.mcp_oauth import HermesTokenStorage, _pool_sidecar
+    from tools.mcp_oauth_manager import get_manager
+
+    home, grant = local
+    manager = get_manager()
+    old = manager.get_or_build_provider("srv", SERVER["url"], None)
+    _pool_sidecar(Path(HermesTokenStorage("srv", hermes_home=home).pool_path), ".epoch").write_text("{")
+    assert manager.get_or_build_provider("srv", SERVER["url"], None) is old
+    assert grant.exists()

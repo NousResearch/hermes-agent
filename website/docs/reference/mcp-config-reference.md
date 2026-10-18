@@ -363,7 +363,7 @@ A named profile reads and refreshes `~/.hermes/mcp-tokens/linear.json` instead o
 
 - the root's entry for the same server name carries `oauth.share_with_profiles: true` (boolean);
 - the profile has its own entry for that name (nothing is inherited — no entry, no server);
-- both entries have the same `url`, `transport` and `oauth` block (ignoring the flag itself), and none of those contains a `${VAR}` reference — a reference resolves per profile scope, so two profiles could read different endpoints or clients from the same text.
+- both entries have the same `url`, `transport` and `oauth` block (ignoring the flag itself and `flow`, which only chooses how a login runs), and none of those contains a `${VAR}` reference — a reference resolves per profile scope, so two profiles could read different endpoints or clients from the same text.
 
 Lifecycle follows ownership. A profile that edits or removes its own entry *leaves* the pool (its cached provider is dropped; the root's grant is untouched and its siblings keep working). The root editing the exported entry's identity, or removing it, revokes the grant for every participant. Setting `share_with_profiles` back to `false` (or deleting it) withdraws every participant but keeps the root's own grant. `hermes mcp login linear` from any participant re-authorizes the shared pool. Trust, tool filters and connections stay per profile as documented above.
 

@@ -1,121 +1,95 @@
-"""on_session_delete post-commit observer (#124511).
+"""``on_session_delete`` (#124511): every committed delete or deliberate archive notifies plugins once.
 
-Delete paths must notify plugins after the commit so per-session on-disk
-state can be cleaned up without polling the store. Failing observers fail
-open — deletion itself never breaks.
+Real ``SessionDB`` + the real plugin hook registry. The callback reads the row back, so each event
+also proves dispatch ran AFTER the commit, never before.
 """
 
 import pytest
 
-from hermes_cli import lifecycle
-from hermes_cli.plugins import VALID_HOOKS
+import hermes_state_runtime as rt
+from hermes_cli.plugins import get_plugin_manager
 from hermes_state import SessionDB
 
 
 @pytest.fixture()
 def db(tmp_path):
-    session_db = SessionDB(db_path=tmp_path / "test_state.db")
+    session_db = SessionDB(db_path=tmp_path / "state.db")
     yield session_db
     session_db.close()
 
 
-@pytest.fixture(autouse=True)
-def _no_fts_rebuild_throttle(monkeypatch):
-    monkeypatch.setattr(SessionDB, "_FTS_REBUILD_MIN_PAUSE", 0.0)
-    monkeypatch.setattr(SessionDB, "_FTS_REBUILD_DUTY_FACTOR", 0.0)
-
-
 @pytest.fixture()
-def fired(monkeypatch):
-    calls = []
+def hook(db):
+    """Register callbacks on the registry ``invoke_hook`` reads; restore it afterwards."""
+    manager = get_plugin_manager()
+    saved = {name: list(cbs) for name, cbs in manager._hooks.items()}
+    events: list[dict] = []
 
-    def _spy(**kwargs):
-        calls.append(kwargs)
-        return []
+    def _record(**kw):
+        row = db.get_session(kw["session_id"])
+        events.append({**kw, "row_after": None if row is None else bool(row["archived"])})
 
-    monkeypatch.setattr(lifecycle, "notify_session_deleted", _spy)
-    return calls
-
-
-def test_hook_is_registered():
-    assert "on_session_delete" in VALID_HOOKS
-
-
-def test_delete_session_fires_once(db, fired):
-    db.create_session(session_id="s1", source="cli")
-    db.append_message("s1", role="user", content="hi")
-
-    assert db.delete_session("s1") is True
-
-    assert len(fired) == 1
-    assert fired[0]["session_id"] == "s1"
-    assert "deleted_ids" not in fired[0]
+    manager._hooks.setdefault("on_session_delete", []).append(_record)
+    try:
+        yield manager, events
+    finally:
+        manager._hooks = saved
 
 
-def test_delete_session_unknown_id_does_not_fire(db, fired):
-    assert db.delete_session("missing") is False
-    assert fired == []
+def _canonical(db, sid, operation, payload):
+    epoch = rt.begin_runtime_epoch(db, instance_id="test")
+    row = db.get_session(sid)
+    return rt.mutate_runtime_session(
+        db, epoch=epoch, principal_id="human", session_id=sid, request_id=f"{operation}-{sid}",
+        expected_revision=row["runtime_revision"], expected_generation=row["runtime_generation"],
+        operation=operation, payload=payload)
 
 
-def test_delete_sessions_bulk_fires_once_with_ids(db, fired):
-    db.create_session(session_id="s1", source="cli")
-    db.create_session(session_id="s2", source="cli")
-    db.create_session(session_id="keep", source="cli")
-
-    assert db.delete_sessions(["s1", "s2", "missing"]) == 2
-
-    assert len(fired) == 1
-    assert fired[0]["session_id"] == "s1"
-    assert fired[0]["deleted_ids"] == ["s1", "s2"]
-
-
-def test_delete_empty_sessions_carries_reason(db, fired):
-    db.create_session(session_id="empty", source="cli")
+def test_every_delete_and_archive_path_fires_once_after_commit(db, hook):
+    _, events = hook
+    for sid in ("cli", "bulk1", "bulk2", "empty", "old", "desk", "arch", "desk-arch"):
+        db.create_session(sid, source="cli")
+        if sid != "empty":
+            db.append_message(sid, role="user", content="hi")
     db.end_session("empty", "done")
+    db.end_session("old", "done")
 
-    assert db.delete_empty_sessions() == 1
+    assert db.delete_session("cli")                          # hermes sessions delete, /exit --delete
+    assert db.delete_session("missing") is False             # unknown id: silent
+    assert db.delete_sessions(["bulk1", "bulk2", "nope"]) == 2   # Desktop/dashboard bulk delete
+    assert db.delete_empty_sessions() == 1                   # "Delete empty (N)"
+    assert db.prune_sessions(older_than_days=0) == 1         # retention prune (only ended row)
+    _canonical(db, "desk", "delete", {})                     # Desktop DELETE /api/sessions/{id}
+    assert db.set_session_archived("arch", True)             # TUI session.archive, CLI archive
+    assert db.set_session_archived("arch", True)             # repeat archive: silent
+    assert db.set_session_archived("arch", False)            # un-archive: silent
+    _canonical(db, "desk-arch", "sidebar", {"archived": True})   # Desktop archive (PATCH)
+    db.archive_stale_sessions(0)                             # idle auto-archive sweep: silent
 
-    assert len(fired) == 1
-    assert fired[0]["session_id"] == "empty"
-    assert fired[0]["reason"] == "empty_sweep"
+    got = [(e["session_id"], e["reason"], e.get("deleted_ids"), e["row_after"]) for e in events]
+    assert got == [
+        ("cli", "delete", None, None),
+        ("bulk1", "delete", ["bulk1", "bulk2"], None),
+        ("empty", "empty_sweep", None, None),
+        ("old", "prune", None, None),
+        ("desk", "delete", None, None),
+        ("arch", "archive", None, True),
+        ("desk-arch", "archive", None, True),
+    ]
+    assert all(e["profile"] == events[0]["profile"] for e in events)
 
 
-def test_delete_moved_session_fires_with_reason(db, fired):
-    db.create_session(session_id="moved1", source="cli")
+def test_raising_callback_never_breaks_deletion(db, hook):
+    manager, events = hook
 
-    assert db.delete_moved_session("moved1") is True
-
-    assert len(fired) == 1
-    assert fired[0]["session_id"] == "moved1"
-    assert fired[0]["reason"] == "profile_repair"
-
-
-def test_delete_moved_session_unknown_id_does_not_fire(db, fired):
-    assert db.delete_moved_session("missing") is False
-    assert fired == []
-
-
-def test_failing_observer_does_not_break_delete(db, monkeypatch):
-    def _boom(**kwargs):
+    def _boom(**_):
         raise RuntimeError("plugin down")
 
-    monkeypatch.setattr(lifecycle, "notify_session_deleted", _boom)
-    db.create_session(session_id="s1", source="cli")
+    manager._hooks["on_session_delete"].insert(0, _boom)
+    db.create_session("s1", source="cli")
+    db.create_session("s2", source="cli")
 
     assert db.delete_session("s1") is True
-    assert db.get_session("s1") is None
-
-
-def test_notify_dispatches_hook_and_fails_open(monkeypatch):
-    seen = []
-    monkeypatch.setattr(
-        lifecycle, "invoke_hook", lambda name, **kw: seen.append((name, kw)) or []
-    )
-    lifecycle.notify_session_deleted("s1", reason="prune")
-    assert seen == [("on_session_delete", {"session_id": "s1", "reason": "prune"})]
-
-    def _boom(name, **kw):
-        raise RuntimeError("dispatch down")
-
-    monkeypatch.setattr(lifecycle, "invoke_hook", _boom)
-    assert lifecycle.notify_session_deleted("s1") == []
+    assert db.set_session_archived("s2", True) is True
+    assert db.get_session("s1") is None and db.get_session("s2")["archived"]
+    assert [e["session_id"] for e in events] == ["s1", "s2"]  # later observers still ran

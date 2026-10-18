@@ -290,7 +290,7 @@ class SessionProfileRepairMixin:
             return True
         deleted = self._execute_write(_do)
         if deleted:
-            emit_session_deleted([session_id], reason="profile_repair")
+            emit_session_deleted(self, [session_id], reason="profile_repair")
         return bool(deleted)
 
     # ── routing index ─────────────────────────────────────────────────────────

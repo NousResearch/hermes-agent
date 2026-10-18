@@ -137,7 +137,7 @@ class SessionMaintenanceMixin:
         for sid in removed_ids if sessions_dir else ():
             self._remove_session_files(sessions_dir, sid)
         if removed_ids:
-            emit_session_deleted(removed_ids, reason="ghost_prune", sessions_dir=sessions_dir)
+            emit_session_deleted(self, removed_ids, reason="ghost_prune", sessions_dir=sessions_dir)
         return len(removed_ids)
 
     def _guarded_ids(self, conn, ids: Iterable[str]) -> set:
@@ -376,7 +376,7 @@ class SessionMaintenanceMixin:
         if deleted_ids is not None:
             deleted_ids.extend(removed_ids)
         if count:
-            emit_session_deleted(removed_ids, reason="prune", sessions_dir=sessions_dir)
+            emit_session_deleted(self, removed_ids, reason="prune", sessions_dir=sessions_dir)
         return count
 
     def _page_pragmas(self, names: tuple[str, ...], fail_msg: str) -> Optional[list]:

@@ -935,12 +935,21 @@ class SessionSessionsMixin:
             (session_id, session_id, value),
         ).fetchall()]
 
-    def set_session_archived(self, session_id: str, archived: bool) -> bool:
+    def set_session_archived(self, session_id: str, archived: bool, *, notify: bool = True) -> bool:
         """Soft-hide (or unhide) a session and its compression lineage; messages are kept.
         This is the DELIBERATE archive (user, CLI, API): it clears the ``auto_archived``
-        provenance, so re-activation never un-hides it on the user's behalf."""
-        return self._set_lineage_column(
-            "archived", session_id, int(archived), extra_set_sql=", auto_archived = 0")
+        provenance, so re-activation never un-hides it on the user's behalf. A real
+        unarchived -> archived flip fires ``on_session_delete`` (``reason="archive"``) after commit;
+        ``notify=False`` is for housekeeping that hides a row whose session lives on elsewhere."""
+        def _do(conn):
+            row = conn.execute("SELECT archived FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            ids = self._set_lineage_column_in_transaction(
+                conn, "archived", session_id, int(archived), extra_set_sql=", auto_archived = 0")
+            return ids, bool(archived and ids and row is not None and not row[0])
+        ids, newly_archived = self._execute_write(_do)
+        if newly_archived and notify:
+            emit_session_deleted(self, [session_id], reason="archive")
+        return bool(ids)
 
     def _auto_archive_lineage(self, session_id: str) -> bool:
         """The idle sweep's archive: like :meth:`set_session_archived` but stamps
@@ -1758,7 +1767,7 @@ class SessionSessionsMixin:
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
         if deleted:
-            emit_session_deleted(removed_ids, sessions_dir=sessions_dir)
+            emit_session_deleted(self, removed_ids, reason="delete", primary=session_id, sessions_dir=sessions_dir)
         return bool(deleted)
 
     def discard_unadmitted_session(self, session_id: str) -> bool:
@@ -1819,7 +1828,7 @@ class SessionSessionsMixin:
         collect_retired_media(self)
         if deleted:
             self._remove_session_files(sessions_dir, session_id)
-            emit_session_deleted([session_id], sessions_dir=sessions_dir)
+            emit_session_deleted(self, [session_id], reason="empty_sweep", sessions_dir=sessions_dir)
         return deleted
 
     def delete_sessions(
@@ -1908,7 +1917,8 @@ class SessionSessionsMixin:
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
         if count:
-            emit_session_deleted(removed_ids, sessions_dir=sessions_dir)
+            emit_session_deleted(self, removed_ids, reason="delete", primary=unique_ids[0] if len(unique_ids) == 1 else None,
+                                 sessions_dir=sessions_dir)
         return count
 
     # Shared by count_empty_sessions / delete_empty_sessions so badge and sweep agree. message_count
@@ -1952,7 +1962,7 @@ class SessionSessionsMixin:
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
         if count:
-            emit_session_deleted(removed_ids, reason="empty_sweep", sessions_dir=sessions_dir)
+            emit_session_deleted(self, removed_ids, reason="empty_sweep", sessions_dir=sessions_dir)
         return count
 
     def archive_sessions(

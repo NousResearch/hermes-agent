@@ -449,7 +449,11 @@ def mutate_runtime_session(db, *, epoch: int, principal_id: str, session_id: str
     key, digest = mutation_receipt_key(principal_id, session_id, request_id, operation=operation, payload=payload,
                                        expected_revision=expected_revision, expected_generation=expected_generation)
 
+    # (ids, reason) for on_session_delete; reset per attempt (the write retries) and empty on replay.
+    gone: list = []
+
     def write(conn):
+        gone.clear()
         _epoch(conn, epoch)
         replay = replay_mutation_receipt(conn, key, digest)
         if replay is not None:
@@ -477,6 +481,10 @@ def mutate_runtime_session(db, *, epoch: int, principal_id: str, session_id: str
                 require_idle(db, conn, list({session_id, snapshot['target']}))
             return {'snapshot': snapshot}
         affected, projection = apply_action(db, conn, session_id, operation, payload, prepared=_prepared)
+        if operation == 'delete':
+            gone[:] = [projection.get('deleted_ids') or [session_id], 'delete']
+        elif payload.get('archived') is True and session is not None and not session['archived']:
+            gone[:] = [[session_id], 'archive']
         conn.executemany('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?',
                          [(target,) for target in affected])
         updated = conn.execute('SELECT * FROM sessions WHERE id=?', (session_id,)).fetchone()
@@ -486,7 +494,11 @@ def mutate_runtime_session(db, *, epoch: int, principal_id: str, session_id: str
         conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
                      (key, _json({'digest': digest, 'result': result})))
         return result
-    return db._execute_write(write)
+    result = db._execute_write(write)
+    if gone:
+        from hermes_state_common import emit_session_deleted
+        emit_session_deleted(db, gone[0], reason=gone[1], primary=session_id)
+    return result
 
 
 _IMPORT_KEY = 'gateway.prompt_admissions_import.v1'

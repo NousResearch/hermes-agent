@@ -47,7 +47,8 @@ TOKEN_PATH = HERMES_HOME / "google_token.json"
 CLIENT_SECRET_PATH = HERMES_HOME / "google_client_secret.json"
 PENDING_AUTH_PATH = HERMES_HOME / "google_oauth_pending.json"
 
-SCOPES = [
+# Scopes for the agent's own Gmail accounts (read + send + modify).
+FULL_SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.send",
     "https://www.googleapis.com/auth/gmail.modify",
@@ -57,6 +58,19 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/documents",
 ]
+
+# Scopes for the user's personal Gmail accounts — read-only only.
+READ_ONLY_SCOPES = [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/contacts.readonly",
+    "https://www.googleapis.com/auth/spreadsheets.readonly",
+    "https://www.googleapis.com/auth/documents.readonly",
+]
+
+# Default alias used by code that references SCOPES.
+SCOPES = FULL_SCOPES
 
 # OAuth redirect for "out of band" manual code copy flow.
 # Google deprecated OOB, so we use a localhost redirect and tell the user to
@@ -291,8 +305,12 @@ def _extract_code_and_state(code_or_url: str) -> tuple[str, str | None]:
     return params["code"][0], state
 
 
-def get_auth_url():
-    """Print the OAuth authorization URL. User visits this in a browser."""
+def get_auth_url(mode: str = "full"):
+    """Print the OAuth authorization URL. User visits this in a browser.
+    
+    mode: 'full' requests all scopes (including Gmail write).
+          'read-only' requests only read scopes (no Gmail write).
+    """
     if not CLIENT_SECRET_PATH.exists():
         print("ERROR: No client secret stored. Run --client-secret first.")
         sys.exit(1)
@@ -300,9 +318,14 @@ def get_auth_url():
     _ensure_deps()
     from google_auth_oauthlib.flow import Flow
 
+    if mode == "read-only":
+        scopes = READ_ONLY_SCOPES
+    else:
+        scopes = FULL_SCOPES
+
     flow = Flow.from_client_secrets_file(
         str(CLIENT_SECRET_PATH),
-        scopes=SCOPES,
+        scopes=scopes,
         redirect_uri=REDIRECT_URI,
         autogenerate_code_verifier=True,
     )
@@ -311,12 +334,15 @@ def get_auth_url():
         prompt="consent",
     )
     _save_pending_auth(state=state, code_verifier=flow.code_verifier)
-    # Print just the URL so the agent can extract it cleanly
+    print(f"Mode: {mode} ({len(scopes)} scopes)")
     print(auth_url)
 
 
-def exchange_auth_code(code: str):
-    """Exchange the authorization code for a token and save it."""
+def exchange_auth_code(code: str, mode: str = "full"):
+    """Exchange the authorization code for a token and save it.
+    
+    mode: 'full' or 'read-only' — must match the mode used for --auth-url.
+    """
     if not CLIENT_SECRET_PATH.exists():
         print("ERROR: No client secret stored. Run --client-secret first.")
         sys.exit(1)
@@ -332,8 +358,13 @@ def exchange_auth_code(code: str):
     from google_auth_oauthlib.flow import Flow
     from urllib.parse import parse_qs, urlparse
 
+    if mode == "read-only":
+        requested_scopes = READ_ONLY_SCOPES
+    else:
+        requested_scopes = FULL_SCOPES
+
     # Extract granted scopes from the callback URL if the user pasted the full redirect URL.
-    granted_scopes = list(SCOPES)
+    granted_scopes = list(requested_scopes)
     if isinstance(raw_callback, str) and raw_callback.startswith("http"):
         params = parse_qs(urlparse(raw_callback).query)
         scope_val = (params.get("scope") or [""])[0].strip()
@@ -392,7 +423,7 @@ def revoke():
     from google.auth.transport.requests import Request
 
     try:
-        creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
+        creds = Credentials.from_authorized_user_file(str(TOKEN_PATH))
         if creds.expired and creds.refresh_token:
             creds.refresh(Request())
 
@@ -424,6 +455,8 @@ def main():
     group.add_argument("--auth-code", metavar="CODE", help="Exchange auth code for token")
     group.add_argument("--revoke", action="store_true", help="Revoke and delete stored token")
     group.add_argument("--install-deps", action="store_true", help="Install Python dependencies")
+    parser.add_argument("--mode", choices=["full", "read-only"], default="full",
+                        help="Scope mode for --auth-url/--auth-code: 'full' (default) includes Gmail write; 'read-only' excludes Gmail write")
     args = parser.parse_args()
 
     if args.check:
@@ -433,9 +466,9 @@ def main():
     elif args.client_secret:
         store_client_secret(args.client_secret)
     elif args.auth_url:
-        get_auth_url()
+        get_auth_url(mode=args.mode)
     elif args.auth_code:
-        exchange_auth_code(args.auth_code)
+        exchange_auth_code(args.auth_code, mode=args.mode)
     elif args.revoke:
         revoke()
     elif args.install_deps:

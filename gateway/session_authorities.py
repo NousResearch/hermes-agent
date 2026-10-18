@@ -184,6 +184,21 @@ def active_authority(runner):
     return registry.active()
 
 
+def require_active_authority(runner, store=None):
+    """The active scope's authority, or a refusal: retryable (``runtime_draining``) while its
+    profile is parked, else ``profile_mismatch``. With *store* (a callable returning the caller's
+    SessionDB, called only once an authority exists), that store must be the authority's: an API
+    adapter bound to another profile's SessionDB never admits here."""
+    authority = active_authority(runner)
+    if authority is None:
+        from gateway.run_runtime import refuse_parked_scope
+        refuse_parked_scope(runner)  # retryable while its profile is parked
+    if authority is None or (store is not None and store() is not authority.db):
+        from hermes_state_runtime import RuntimeStoreError
+        raise RuntimeStoreError('profile_mismatch')
+    return authority
+
+
 def all_authorities(runner):
     registry = getattr(runner, 'session_authorities', None)
     if registry is not None:

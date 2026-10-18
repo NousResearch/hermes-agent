@@ -141,6 +141,7 @@ from gateway.platforms import api_server_room_grants as _room_grants
 from gateway.platforms import api_server_runs as _api_runs
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
 from gateway.platforms.api_server_memory_sessions import ApiServerMemorySessions
+from gateway.platforms.api_server_bot_chat import reset_local_title_owner
 from gateway.platforms.base import (
     MEDIA_TAG_CLEANUP_RE, BasePlatformAdapter, SendResult, _terminal_sentinel_start, is_network_accessible,
     validate_media_delivery_path)
@@ -3155,7 +3156,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 rows = [s for s in rows if (s.get("title") or "").strip() == title_filter]
             return rows
 
-        sessions = await _list()
+        sessions = await _list() or (await reset_local_title_owner(db, title_filter, include_hidden, source))
         if title_filter and not sessions:
             # A canonical Bot Chat auto-archived by the orphan reaper would make `hermes peer dm`
             # mint transient sessions: resurrect and re-list; deliberate archives stay put.
@@ -3176,8 +3177,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     sessions = await _list()
             except Exception:
                 pass  # resolution degrades to today's no-row behavior
-        # Back-filled pins arrive PAST the limit, so counting them would report
-        # another page that doesn't exist. Only the recency window decides.
+        # Back-filled pins arrive PAST the limit: counting them would report a page that doesn't exist.
         windowed = sum(1 for s in sessions if not s.get("pinned"))
         return web.json_response({
             "object": "list", "data": [self._session_response(s) for s in sessions],

@@ -3040,7 +3040,7 @@ class _StreamingCall(StreamingWaitMonitor):
         from agent.chat_completion_helpers_tool_calls import _ToolCallAccumulator
         tool_calls = _ToolCallAccumulator()
         tool_calls_acc = tool_calls.acc
-        from agent.reasoning_carriers import StreamCarriers
+        from agent.reasoning_carriers import StreamCarriers, delta_is_google_thought
         carriers = StreamCarriers()
         finish_reason = model_name = usage_obj = None
         response_id = upstream_provider = None  # the provider's own id / serving upstream, from the chunks
@@ -3170,8 +3170,13 @@ class _StreamingCall(StreamingWaitMonitor):
                 refusal_parts.append(delta_refusal)
 
             # Text (list-of-blocks deltas flattened once); possible echoed SSE is
-            # buffered until it can be judged.
-            delta_content = flatten_message_text(getattr(delta, "content", None), sep="")
+            # buffered until it can be judged. Vertex OpenAI-compat streams Gemini
+            # thought summaries in ``delta.content`` with ``extra_content.google.thought=true``
+            # (already routed to ``reasoning_text`` by ``carriers.feed`` above).
+            delta_content = (
+                "" if delta_is_google_thought(delta)
+                else flatten_message_text(getattr(delta, "content", None), sep="")
+            )
             if delta_content:
                 content_parts.append(delta_content)
                 if content_watch.feed(delta_content):

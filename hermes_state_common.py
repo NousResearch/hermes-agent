@@ -281,7 +281,12 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
         f"(SELECT started_at FROM sessions _act_s WHERE _act_s.id = {session_id_expr})")
 
 
-SCHEMA_VERSION = 31
+# v32 (#140315): no data migration. #106742 added runtime_epoch, session_admissions, worker_executions,
+# worker_receipts and three columns to SCHEMA_SQL under v31. Drift is detected by the schema read probe
+# (schema_read_probe_statements), never by this number, and its catch-up is the declarative
+# executescript(SCHEMA_SQL) + _reconcile_columns() every writable open already runs (additive,
+# idempotent). The bump only records that the declared shape changed; a new table or column needs no bump.
+SCHEMA_VERSION = 32
 
 # Auto-maintenance VACUUMs only above this freelist fraction; below it a rewrite costs more I/O than it returns.
 # Auto-maintenance only VACUUMs when at least this fraction of the database file is reclaimable (``PRAGMA
@@ -354,6 +359,26 @@ def _placeholders(items) -> str:
     return ",".join("?" for _ in range(items if isinstance(items, int) else len(items)))
 
 
+def _source_match_clause(sources, local_created_sources=None) -> tuple[str, list]:
+    """``sessions s`` source predicate. With ``local_created_sources``, a ``source='local'`` row
+    matches only when ``created_source`` is one of those surfaces; the placeholder ``'unknown'``
+    is not a surface and stays unmatched until an upsert stamps the real creator."""
+    labels = list(sources or [])
+    if not labels:
+        return "", []
+    surfaces = list(local_created_sources or ())
+    if not surfaces:
+        return f"s.source IN ({_placeholders(labels)})", labels
+    non_local = [item for item in labels if item != "local"]
+    local_sql = f"(s.source = 'local' AND s.created_source IN ({_placeholders(surfaces)}))"
+    if not non_local:
+        return local_sql, list(surfaces)
+    return (
+        f"(s.source IN ({_placeholders(non_local)}) OR {local_sql})",
+        [*non_local, *surfaces],
+    )
+
+
 # Ids per ``IN (?,...)`` list: SQLite caps bound parameters at SQLITE_MAX_VARIABLE_NUMBER (999 on builds
 # < 3.32, 32766 after); a bulk prune of a cron-heavy store bound tens of thousands of ids into one list and
 # died with "too many SQL variables". Every IN-list over session ids goes through ``_id_chunks``.
@@ -365,6 +390,43 @@ def _id_chunks(ids, size: int = _SQL_IN_CHUNK):
     ids = list(ids)
     for start in range(0, len(ids), size):
         yield ids[start:start + size]
+
+
+def emit_session_deleted(db, deleted_ids, *, reason, primary=None, sessions_dir=None):
+    """Fire ``on_session_delete`` after a committed delete or deliberate archive (#124511).
+
+    Call right after the write transaction commits (before follow-up cleanup that can raise), with
+    the ids it removed or, for ``reason="archive"``, hid. *primary* is the session the caller asked
+    for; without it the first id stands in (bulk sweeps). ``deleted_ids`` rides along when more
+    than one row went. Dispatch runs under the store's own profile home, so a process touching
+    another profile's store (``sessions repair-profiles``) reaches THAT profile's plugins.
+    Late-bound and fail-open: never breaks the delete.
+    """
+    ids = sorted({sid for sid in (deleted_ids or ()) if isinstance(sid, str) and sid})
+    if not ids:
+        return
+    try:
+        from hermes_cli.lifecycle import invoke_hook
+        from hermes_constants import (
+            get_hermes_home, profile_name_for_home, reset_hermes_home_override, set_hermes_home_override,
+        )
+
+        home = os.path.dirname(os.path.abspath(os.fspath(db.db_path)))
+        profile = profile_name_for_home(home)
+        payload: dict = {"session_id": primary if primary in ids else ids[0], "reason": reason, "profile": profile}
+        if len(ids) > 1:
+            payload["deleted_ids"] = ids
+        if sessions_dir is not None:
+            payload["sessions_dir"] = str(sessions_dir)
+        rebind = profile is not None and os.path.realpath(home) != os.path.realpath(get_hermes_home())
+        token = set_hermes_home_override(home) if rebind else None
+        try:
+            invoke_hook("on_session_delete", **payload)
+        finally:
+            if token is not None:
+                reset_hermes_home_override(token)
+    except Exception:
+        logger.warning("on_session_delete dispatch failed", exc_info=True)
 
 
 _FTS_TRIGGERS = ("messages_fts_insert", "messages_fts_delete", "messages_fts_update",
@@ -811,6 +873,13 @@ CREATE INDEX IF NOT EXISTS idx_sessions_tool_names
 -- a small candidate set before compression-chain and preview hydration.
 CREATE INDEX IF NOT EXISTS idx_sessions_effective_activity
     ON sessions(COALESCE(last_activity_at, started_at) DESC, started_at DESC);
+-- CLI/TUI listings match gateway rows stored as source='local' by created_source,
+-- before LIMIT. created_source is reconciled onto legacy DBs, so this index lives
+-- here rather than in SCHEMA_SQL. A source-only index would walk every local row
+-- (Desktop and TUI included) to find one surface.
+CREATE INDEX IF NOT EXISTS idx_sessions_local_created_started
+    ON sessions(created_source, started_at DESC)
+    WHERE source = 'local';
 """
 
 

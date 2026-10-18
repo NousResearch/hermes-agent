@@ -72,13 +72,14 @@ def retained_destination(adapter, chat_id):
     """Readback also checks today's connector and authorization; retained data is not a grant."""
     from gateway.session_envelope import restore_native, _validate_native
     runner = adapter.gateway_runner or getattr(adapter._message_handler, '__self__', None)
-    from gateway.session_authorities import active_authority, all_authorities
+    from gateway.session_authorities import active_authority, all_authorities, serving_authorities
     if not all_authorities(runner):
         return validate_destination(adapter._delivery_info.get(chat_id))
     # The reply leg runs in the routed profile's scope; that ledger holds the destination. A
-    # delivery id is unique per route, so an unscoped caller may search every served ledger.
+    # delivery id is unique per route, so an unscoped caller may search every served ledger (a
+    # parked profile's retained store is not served: reading it could fail every other profile's).
     scoped = active_authority(runner)
-    candidates = [scoped] if scoped is not None else all_authorities(runner)
+    candidates = [scoped] if scoped is not None else serving_authorities(runner)
     # Only the signed ingress admission carries the destination; later automation rows
     # (process/watch completions) on the same chat share its source but never compete.
     query = """SELECT payload_json FROM session_admissions

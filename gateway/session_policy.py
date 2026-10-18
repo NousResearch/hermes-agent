@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+import contextlib
 import json
 import logging
 from pathlib import Path
@@ -14,11 +15,18 @@ CREATE_FIELDS = frozenset({'request_id', 'source', 'cwd', 'model', 'toolsets',
                            'provider', 'base_url', 'reasoning', 'max_turns', 'ignore_rules', 'api_key', 'editor',
                            'yolo', 'safe_mode', 'ignore_user_config',
                            'skills', 'checkpoints', 'accept_hooks', 'pass_session_id', 'follow_profile_config',
-                           'service_tier', 'cwd_explicit', 'run_budget', 'verbose', 'row_cwd'})
+                           'service_tier', 'cwd_explicit', 'run_budget', 'verbose', 'row_cwd', 'client_env'})
 # Sections a ``follow_profile_config`` session re-reads from the owning profile's CURRENT config each
 # turn (main's Bot Chat row), credentials included: a frozen key never crosses a profile route change.
 FOLLOW_SECTIONS = ('model', 'providers', 'custom_providers', 'fallback_providers', 'fallback_model', 'model_aliases',
                    'platform_toolsets')
+def pin_reasoning_effort(config, effort):
+    """Write an explicit session reasoning level into *config*: it wins over a per-model default
+    (``reasoning_overrides``), at creation, on ``/reasoning`` and on a model pick that carries one."""
+    config.setdefault('agent', {})['reasoning_effort'] = effort
+    config['agent'].pop('reasoning_overrides', None)
+
+
 FOLLOW_AGENT_KEYS = ('reasoning_effort', 'reasoning_overrides', 'service_tier', 'disabled_toolsets', 'coding_context')
 # What a pick (create-time ``model`` / committed ``/model``) owns of the ``model:`` block.
 SELECTION_KEYS = ('default', 'provider', 'base_url', 'api_mode', 'selection_profile', 'api_key_from', 'key_env',
@@ -67,6 +75,24 @@ class LocalSessionPolicy:
     # workspace). A following session replays this decision rather than re-probing its folder each turn: it
     # drops the posture when its profile leaves ``focus``, and one created outside it never gains it later.
     coding_posture: bool = False
+    # The shell-launched client's allowlisted environment (``agent.session_client_env``), bound for this
+    # session's turns only; None when the client sent none (Desktop, a session from before the field).
+    client_env_json: str | None = None
+    # The client sent one over an attach the gateway could not prove is on its host (no gateway-minted
+    # ticket): only host-free values were kept, and its tools run with the gateway's own toolchain.
+    client_env_remote: bool = False
+    # The rules that map was normalised by (``client_env_rules``: allowlist, secret filter, locality) as
+    # plain data: an exact retry is judged by them, never by the profile's current ones, and the session's
+    # tools run without every toolchain name they cover that the client did not send.
+    client_env_rules_json: str | None = None
+
+    def client_env(self):
+        return None if self.client_env_json is None else json.loads(self.client_env_json)
+
+    def client_env_scope(self):
+        from agent.session_client_env import client_env_scope
+        rules = None if self.client_env_rules_json is None else json.loads(self.client_env_rules_json)
+        return client_env_scope(self.client_env(), local=not self.client_env_remote, rules=rules)
 
     def config(self, authority=None, *, secrets=True):
         return self.effective(authority, secrets=secrets)[0]
@@ -79,8 +105,9 @@ class LocalSessionPolicy:
         config = present_sections(json.loads(self.config_json))
         live = self.read_profile(authority)
         if self.config_secret_ref is not None and authority is not None and secrets:
-            from gateway.session_policy_credentials import recover_config_secrets
-            for path, value in recover_config_secrets(authority, self).items():
+            from gateway.session_policy_credentials import disable_dropped_secrets, recover_config_secrets
+            recovered = recover_config_secrets(authority, self)
+            for path, value in recovered.items():
                 if path[0] is None:  # private terminal projection, not config
                     continue
                 target = config
@@ -88,6 +115,7 @@ class LocalSessionPolicy:
                     # An alias entry added after creation is absent from the frozen tree.
                     target = target.setdefault(key, {}) if isinstance(target, dict) else target[key]
                 target[path[-1]] = value
+            disable_dropped_secrets(config, getattr(recovered, 'dropped', ()), getattr(recovered, 'session', None))
         model = self.model
         if live:
             frozen, request = config.get('model') or {}, json.loads(self.request_json)
@@ -241,14 +269,30 @@ def profile_target(config):
     return (model.strip() if isinstance(model, str) else ''), ''
 
 
+def model_route(block):
+    """``(provider, endpoint)`` identity of a ``model:`` block: what an endpoint-bound credential belongs to."""
+    from hermes_cli.route_identity import normalize_route_base_url
+    block = block if isinstance(block, dict) else {}
+    return str(block.get('provider') or '').strip().lower(), normalize_route_base_url(block.get('base_url'))
+
+
+def bound_route_holds(bound, bound_config, block, config):
+    """True when *block* (resolved in *config*) is the route *bound* was bound to, *bound* resolved in
+    the config it was bound in: a respelled provider on one endpoint is one route, and a named entry
+    whose ``base_url`` moved is another. An ``auto``/unset side keeps the literal comparison: a
+    credential never follows a route the resolver picks later."""
+    from gateway.session_route_identity import resolved_route, same_route
+    bound = bound if isinstance(bound, dict) else {}
+    identity, url = resolved_route(bound, bound_config)
+    if 'auto' in (identity, resolved_route(block, config)[0]):
+        return model_route(bound) == model_route(block)
+    return same_route({**bound, 'base_url': url} if url else bound, block, config)
+
+
 def _held_pick(frozen, live):
     """A pick that still holds keeps its selection; on the profile's own endpoint the rest of the
     ``model:`` block (a rotated key included) is the profile's. Another endpoint never gets it."""
-    from hermes_cli.route_identity import normalize_route_base_url
-
-    def route(block):
-        return str(block.get('provider') or '').strip().lower(), normalize_route_base_url(block.get('base_url'))
-    if route(frozen) != route(live):
+    if model_route(frozen) != model_route(live):
         return frozen
     return {**{k: v for k, v in live.items() if k not in SELECTION_KEYS},
             **{k: frozen[k] for k in SELECTION_KEYS if k in frozen}}
@@ -264,7 +308,8 @@ def present_sections(config):
     return config
 
 
-def build_policy(params, config, *, private_secrets=None, profile_terminal=True, workspace_posture=False):
+def build_policy(params, config, *, private_secrets=None, profile_terminal=True, workspace_posture=False,
+                 client_local=False):
     from agent.runtime_cwd import resolve_agent_cwd
     from tools.terminal_scope import build_profile_terminal_scope, default_terminal_scope
     from hermes_constants import get_hermes_home
@@ -315,7 +360,17 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
     # configured cwd unless the user picked this folder for the session.
     if params.get('cwd_explicit') is True or terminal_uses_host_cwd(terminal):
         terminal['TERMINAL_CWD'] = cwd
-    request = {k: v for k, v in params.items() if k not in {'request_id', 'api_key'}}
+    client_env = rules = None
+    if 'client_env' in params:
+        from agent.session_client_env import client_env_rules, normalise_client_env
+        rules = client_env_rules(config, local=client_local)
+        try:
+            client_env = json.dumps(normalise_client_env(params['client_env'], rules), sort_keys=True)
+        except ValueError as exc:
+            _refuse('client_env', str(exc))
+        rules = json.dumps(rules, sort_keys=True)
+    # Values stay out of the request: ``launch_request`` is echoed to every viewer of the session.
+    request = {k: v for k, v in params.items() if k not in {'request_id', 'api_key', 'client_env'}}
     request.setdefault('source', 'cli')
     from gateway.session_local_mcp import private_editor_request
     private_editor_request(request, private_secrets)
@@ -324,7 +379,9 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
     return LocalSessionPolicy(source, SURFACES[source], cwd, model, tuple(sorted(enabled)),
                               json.dumps(config), json.dumps(request, sort_keys=True), json.dumps(terminal),
                               safe_mode=safe_mode, ignore_user_config=ignore_user_config,
-                              coding_posture=coding_posture)
+                              coding_posture=coding_posture, client_env_json=client_env,
+                              client_env_remote=client_env is not None and not client_local,
+                              client_env_rules_json=rules)
 
 
 def terminal_uses_host_cwd(terminal):
@@ -349,11 +406,66 @@ def _profile_workspace_cwd(home):
     return configured if configured and os.path.isdir(configured) else None
 
 
+def _without_auto_pick(params):
+    """`provider: auto` is the thin client's "no pick" sentinel: the profile's route stands as configured."""
+    if isinstance(params.get('provider'), str) and params['provider'].strip().lower() == 'auto':
+        return {k: v for k, v in params.items() if k != 'provider'}
+    return params
+
+
+def _keeps_profile_route(picked, config):
+    """Whether a provider pick resolves to the profile's own route, so its endpoint and key pins stay.
+
+    The same resolved provider under another spelling (`vllm` for `custom`, `deep-infra` for
+    `deepinfra`, `custom:<name>` for a named entry) is the same route. A block with an endpoint
+    and no provider (or `auto`) already routes to `custom` there.
+    """
+    from gateway.session_route_identity import profile_route_identity, resolved_route
+    held_id = profile_route_identity(config)
+    if held_id == 'auto' or not isinstance(picked, str) or not picked.strip():
+        return False
+    return resolved_route({'provider': picked}, config)[0] == held_id
+
+
+def _with_entry_pick(params, config):
+    """*params* with a provider pick of the held entry's bare config key spelled as its ``custom:<key>``.
+
+    A configured entry keyed like a canonical built-in (`providers: deepseek`) is shadowed by the
+    built-in in raw provider resolution, so the bare spelling would route, and be frozen, as a
+    different provider than the entry the profile runs (#140107). Only the held entry's bare key
+    is that entry (Desktop's guard). A keyed entry's display name is not; a keyless legacy
+    ``custom_providers:`` entry's is (``configured_entry_key``). Other picks stay as they came.
+    """
+    from gateway.session_route_identity import configured_entry_key, profile_route_identity
+    picked = params.get('provider')
+    if not isinstance(picked, str):
+        return params
+    identity = profile_route_identity(config)
+    if identity == 'auto' or picked.strip().lower() != (configured_entry_key(identity, config) or None):
+        return params
+    return {**params, 'provider': identity}
+
+
 def _apply_launch_overrides(params, config):
     """Validate the explicit model/agent launch overrides and fold them into *config*."""
     from urllib.parse import urlsplit
     from hermes_cli.config import resolve_turn_limit
     from hermes_constants import parse_reasoning_effort
+    params = _with_entry_pick(_without_auto_pick(params), config)
+    picks_profile_entry = 'provider' in params and _keeps_profile_route(params['provider'], config)
+    if 'provider' in params and not picks_profile_entry:
+        model = config.setdefault('model', {})
+        # A provider pick is a route change: the profile's endpoint, wire protocol and
+        # credential pointers belong to the provider being replaced, and pairing the new one
+        # with them sends its key to the old host (401) or the old key down the new route.
+        # They are dropped before the overrides fold in, so the target provider resolves its
+        # own — the same route keys a committed /model switch rewrites (#138843). An explicit
+        # base_url is applied after the drop, so a pinned endpoint survives without carrying
+        # the replaced provider's other pins, and a same-provider re-pick keeps the profile's.
+        from gateway.session_route_identity import ROUTE_BOUND_KEYS
+        # The replaced provider's context window goes too: it was sized for the old model.
+        for stale in ROUTE_BOUND_KEYS:
+            model.pop(stale, None)
     for key in ('provider', 'base_url'):
         if key in params:
             value = params[key]
@@ -403,9 +515,7 @@ def _apply_launch_overrides(params, config):
     if 'reasoning' in params:
         if not isinstance(params['reasoning'], str) or parse_reasoning_effort(params['reasoning']) is None:
             _refuse('reasoning', f"not a known effort level: {params['reasoning']!r}")
-        config.setdefault('agent', {})['reasoning_effort'] = params['reasoning']
-        # An explicit launch level wins over a per-model default, just like CLI.
-        config['agent'].pop('reasoning_overrides', None)
+        pin_reasoning_effort(config, params['reasoning'])
 
 
 def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False, bypass=False):
@@ -431,7 +541,8 @@ def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False, b
             server = name[4:] if name.startswith('mcp-') and name not in configured else name
             if server in configured and server not in enabled_servers:
                 # Picking a disabled server must not match nothing and fall through to every enabled one.
-                _refuse('toolsets', f'MCP server {server!r} is disabled in config')
+                why = 'is disabled in config' if isinstance(configured[server], dict) else 'has no usable config entry'
+                _refuse('toolsets', f'MCP server {server!r} {why}')
         if 'desktop_ui' in explicit and source != 'gui':
             _refuse('toolsets', f'desktop_ui is only available on the Desktop, not on {source}')
         config.setdefault('platform_toolsets', {})['acp' if source == 'acp' else 'cli'] = explicit
@@ -527,13 +638,32 @@ def render_launch_skills(params, session_id):
 
 def accept_launch_hooks(policy):
     """`--accept-hooks` / `HERMES_ACCEPT_HOOKS=1` on a launch: consent to the profile's configured
-    shell hooks (recorded in the per-user allowlist, as the in-process CLI/TUI did) and register
-    them on this owner. A bypass launch has no profile hooks to consent to (main's safe mode
-    registered none either), so the flag is a no-op there rather than a refusal. Allowlist file
-    lock + write: callers run it off the owner loop."""
+    shell hooks in the per-user allowlist (no prompt; kept in memory if that write fails), which
+    the open's ``refresh_profile_hooks`` then registers. A bypass launch has no profile hooks to
+    consent to, so the flag is a no-op there rather than a refusal. Allowlist I/O: off the loop."""
     if json.loads(policy.request_json).get('accept_hooks') and not policy.ignore_user_config:
-        from agent.shell_hooks import register_from_config
-        register_from_config(policy.config(), accept_hooks=True)
+        from agent.shell_hooks import accept_for_launch
+        from gateway.run import _load_gateway_config
+        accept_for_launch(_load_gateway_config())
+
+
+def refresh_profile_hooks(policy):
+    """Bring this owner's shell hooks in step with the profile on every local session open
+    (create and resume): hooks added to ``config.yaml`` or approved since the gateway started
+    register, removed or revoked ones stop firing, as each new CLI process did on main. Reads the
+    owner home's LIVE config (as session creation does), never the session's frozen copy: the
+    registry is shared by every session and surface of this profile. Consent comes from the
+    allowlist (the launching client's TTY prompt, or ``accept_launch_hooks``) or an opt-in in force
+    on the gateway itself; this never prompts. A bypass launch registers nothing (main's safe mode
+    registered none). Config read + allowlist I/O: run off the loop."""
+    if policy is None or policy.ignore_user_config:
+        return
+    from agent.shell_hooks import sync_from_config
+    from gateway.run import _load_gateway_config
+    try:
+        sync_from_config(_load_gateway_config)  # it never removes on an empty (failed-open) config
+    except Exception:  # health: allow BLE001 -- best effort; a hook re-sync never blocks opening a session
+        logger.warning("shell-hook re-sync failed; keeping the registered hooks", exc_info=True)
 
 
 def register_worker_hooks(policy):
@@ -553,11 +683,16 @@ def register_worker_hooks(policy):
     register_outbound_webhooks(config)
 
 
-def bind_launch_key(authority, session_id, policy, api_key, *, config_secrets=None):
+def bind_launch_key(authority, session_id, policy, api_key, *, config_secrets=None, owner_key=False,
+                    client_request=None):
     """CLI keys live only in this authority lifetime, never its durable receipt.
 
     Restart deliberately revokes them. History remains readable; inference must
     report launch_credentials_unavailable, never select a profile fallback key.
+    An ``owner_key`` (an alias's, expanded by the owner) of the same create request as the attempt
+    holding the slot (``same_create_retry``, its ``client_env`` in ``client_request``) takes the held
+    key: a ``.env`` rotation between overlapping attempts is not a changed request, and the policy
+    then fingerprints the key it runs with.
     """
     from dataclasses import replace
     import hmac
@@ -573,6 +708,12 @@ def bind_launch_key(authority, session_id, policy, api_key, *, config_secrets=No
         keys = authority._local_launch_keys = {}
     ref = f'{authority.instance_id}:{authority.epoch}:{session_id}'
     old = keys.get(ref)
+    owners = getattr(authority, '_local_owner_key_requests', None)
+    if owners is None:
+        owners = authority._local_owner_key_requests = {}
+    if owner_key and api_key is not None and old is not None and ref in owners:
+        from hermes_state_local import same_create_retry
+        api_key = old if same_create_retry(owners[ref], policy.request_json, client_request or {}) else api_key
     # Only a key that IS being bound can conflict: binding config secrets alone (a provider
     # change drops the launch key) must not be refused by the key the session already holds.
     if api_key is not None and old is not None and not hmac.compare_digest(old, api_key):
@@ -588,6 +729,8 @@ def bind_launch_key(authority, session_id, policy, api_key, *, config_secrets=No
         raise RuntimeStoreError('admission_conflict')
     if config_secrets:
         configs[config_ref] = dict(config_secrets)
+    if api_key is not None and old is None and owner_key:
+        owners[ref] = {k: getattr(policy, k) for k in ('request_json', 'client_env_json', 'client_env_rules_json')}
     if api_key is not None:
         keys[ref] = api_key
     # The durable ref carries the key's fingerprint (the digest config_secret_ref already
@@ -649,8 +792,10 @@ def release_launch_secrets(authority, session_ids):
     prefix = f'{authority.instance_id}:{authority.epoch}:'
     keys = getattr(authority, '_local_launch_keys', None) or {}
     # A key re-supplied after a restart sits in the slot of the epoch that minted it.
+    owners = getattr(authority, '_local_owner_key_requests', None) or {}
     for ref in [ref for ref in keys if ref.split(':', 2)[-1] in retired]:
         del keys[ref]
+        owners.pop(ref, None)
     configs = getattr(authority, '_local_config_secrets', None) or {}
     for ref in list(configs):
         if ref.startswith(PREFIX):
@@ -673,6 +818,16 @@ def launch_key(authority, policy):
     return value
 
 
+def route_launch_key(authority, policy, config):
+    """The launch key a turn on *config* (the route it runs, a followed profile's included) sends.
+    A launch key authenticates the frozen route it was bound with: once the followed profile
+    supersedes that pick and moves to another endpoint, the key stays behind with its route."""
+    bound = present_sections(json.loads(policy.config_json))  # the route the key was bound with
+    if not bound_route_holds(bound.get('model'), bound, config.get('model'), config):
+        return None
+    return launch_key(authority, policy)
+
+
 def restore_policy(data):
     """Reject incomplete private policy rather than rebuilding from current defaults."""
     try:
@@ -688,6 +843,8 @@ def restore_policy(data):
                 or type(policy.safe_mode) is not bool or type(policy.ignore_user_config) is not bool
                 or not isinstance(policy.skills_prompt, (str, type(None)))
                 or type(policy.coding_posture) is not bool
+                or not _valid_client_env(policy.client_env_json) or type(policy.client_env_remote) is not bool
+                or not _valid_client_env(policy.client_env_rules_json, list)
                 or (policy.safe_mode and not policy.ignore_user_config)):
             raise ValueError('invalid policy')
         from dataclasses import replace
@@ -700,6 +857,15 @@ def restore_policy(data):
         return replace(policy, toolsets=tuple(policy.toolsets))
     except (KeyError, TypeError, ValueError) as exc:
         raise RuntimeStoreError('storage_unavailable') from exc
+
+
+def _valid_client_env(value, kind: type = str):
+    """A stored client map (names to strings) or its rules (``kind=list``: rule names to string lists)."""
+    if value is None:
+        return True
+    env = json.loads(value) if isinstance(value, str) else None
+    return isinstance(env, dict) and all(isinstance(k, str) and isinstance(v, kind) and (
+        kind is str or all(isinstance(item, str) for item in v)) for k, v in env.items())
 
 
 def policy_for_source(runner, source):
@@ -746,14 +912,31 @@ def policy_scope(policy, *, authority=None):
     policy_token = _ACTIVE_POLICY.set(active)
     from gateway.session_local_editor import editor_scope
     try:
+        from agent.auxiliary_task_config import session_auxiliary_scope
         from gateway.session_local_mcp import editor_mcp_scope
-        with editor_scope(policy), editor_mcp_scope(authority, policy):
+        # Auxiliary tasks read the session's frozen section, never live config.yaml (a rotated key there).
+        auxiliary = policy.config(authority).get('auxiliary') if authority is not None else None
+        aux_scope = session_auxiliary_scope(auxiliary) if authority is not None else contextlib.nullcontext()
+        with (editor_scope(policy), editor_mcp_scope(authority, policy), aux_scope,
+              policy.client_env_scope()):
             yield
     finally:
         _ACTIVE_POLICY.reset(policy_token)
         reset_terminal_scope(terminal_token)
         cwd_token.var.reset(cwd_token)
         _TURN_PROFILE.reset(profile_token)
+
+
+@contextmanager
+def profile_read_scope(policy, authority):
+    """Hold ONE read of a following session's profile for every resolution inside, as a turn's
+    ``policy_scope`` does, without that scope's workspace and terminal setup (a session control
+    reads the route, it runs nothing)."""
+    token = _TURN_PROFILE.set((policy, policy.read_profile(authority)))
+    try:
+        yield
+    finally:
+        _TURN_PROFILE.reset(token)
 
 
 def active_policy():

@@ -398,6 +398,11 @@ class GatewayChatView:
         print(f"Turn interrupted{f' ({reason})' if isinstance(reason, str) and reason else ''}; "
               "it was not retried. Resume this session to continue.", file=sys.stderr)
 
+    def _report_no_reply(self, exit_code):
+        """`-z` exit 1 (a completed turn with no reply text): the in-process one-shot's stderr line."""
+        if self.unattended and exit_code == 1:
+            print("hermes -z: no final response was produced; treating the run as failed.", file=sys.stderr)
+
     def _write_usage_file(self, result, outcome):
         """``-z --usage-file``: the same JSON ledger the in-process one-shot wrote."""
         from hermes_cli.oneshot import _write_usage_file
@@ -460,6 +465,7 @@ class GatewayChatView:
                                                     session_id=self.session_id, exit_code=exit_code)
                 self._report_silent_interrupt(text, result)
                 print(text, flush=True)
+                self._report_no_reply(exit_code)
                 # Same stderr exit contract as the legacy -Q path: automation wrappers read the
                 # durable id from this line, and it names the physical row (a compaction may have
                 # advanced it past the row printed at start).
@@ -475,8 +481,7 @@ class GatewayChatView:
                                    bottom_toolbar=lambda: f" \u2624 {self.model} \u2502 {self.session_id} ")
             prompt_symbol = get_active_prompt_symbol("❯ ")
             self._composer = prompt if sys.stdin.isatty() else None
-            from hermes_cli.gateway_chat_inject import plugin_inject_slot
-            with patch_stdout(), plugin_inject_slot(self):
+            with patch_stdout():
                 while not self.failure:
                     try:
                         # Empty when the stream failed first: the loop guard then raises it.

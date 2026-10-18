@@ -1006,16 +1006,33 @@ def _apply_yaml_config(yaml_cfg: dict, mattermost_cfg: dict) -> dict | None:
 _is_connected = _env_is_connected("MATTERMOST_TOKEN", "MATTERMOST_URL")
 
 
+# System-prompt platform hint (PlatformEntry.platform_hint); cached-prompt bytes, keep stable.
+_PLATFORM_HINT = (
+    "You are in a Mattermost workspace communicating with your user. Mattermost renders standard "
+    "Markdown — headings, bold, italic, code blocks, and tables all work. You can send media files "
+    "natively: include MEDIA:/absolute/path/to/file in your response. Images (.jpg, .png, .webp) are "
+    "uploaded as photo attachments, audio and video as file attachments. Image URLs in markdown format "
+    "![alt](url) are rendered as inline previews automatically."
+)
+
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
+    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
     ctx.register_platform(
         name="mattermost", label="Mattermost", adapter_factory=MattermostAdapter,
+        dashboard_description="Connect Hermes to Mattermost channels and direct messages.",
+        docs_url="https://mattermost.com/deploy/",
+        dashboard_env_vars=("MATTERMOST_URL", "MATTERMOST_TOKEN", "MATTERMOST_ALLOWED_USERS"),
         check_fn=check_mattermost_requirements, validate_config=validate_mattermost_config,
         is_connected=_is_connected, required_env=["MATTERMOST_URL", "MATTERMOST_TOKEN"],
         install_hint="pip install aiohttp", setup_fn=interactive_setup,
         apply_yaml_config_fn=_apply_yaml_config,  # YAML→env bridge (see _YAML_BRIDGE)
-        allowed_users_env="MATTERMOST_ALLOWED_USERS", allow_all_env="MATTERMOST_ALLOW_ALL_USERS",
         cron_deliver_env_var="MATTERMOST_HOME_CHANNEL",
         standalone_sender_fn=_standalone_send,  # out-of-process cron; without it `deliver=mattermost` fails
-        max_message_length=MAX_POST_LENGTH, emoji="💬", allow_update_command=True)
+        max_message_length=MAX_POST_LENGTH, emoji="💬", allow_update_command=True,
+        platform_hint=_PLATFORM_HINT,
+        display_tier="medium",
+        env_overrides=gateway_env.ENV_OVERRIDES,
+        env_enable_credentials=gateway_env.ENV_ENABLE_CREDENTIALS, **gateway_env.AUTHZ,
+    )

@@ -20,6 +20,7 @@ Session keys prefer union_id (user_id_alt) over open_id (user_id) for stability.
 from __future__ import annotations
 
 from pm import install_hint
+from pm.extras import missing_extra_message
 import asyncio
 import collections
 import concurrent.futures
@@ -1508,7 +1509,7 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.error("[Feishu] Webhook mode requires FEISHU_VERIFICATION_TOKEN or FEISHU_ENCRYPT_KEY.")
             return False
         if not await asyncio.to_thread(_load_lark_oapi):
-            logger.error("[Feishu] lark-oapi not installed")
+            logger.error("[Feishu] %s", missing_extra_message("feishu", "lark-oapi not installed"))
             return False
 
         try:
@@ -4312,7 +4313,8 @@ _MIGRATION_AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
 async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
     """standalone_sender_fn: out-of-process delivery (cron without gateway) via a transient adapter."""
     if not await asyncio.to_thread(_load_lark_oapi):
-        return send_error("Feishu dependencies not installed. Run `hermes setup` to install Feishu support.")
+        return send_error(missing_extra_message(
+            "feishu", "Feishu dependencies not installed. Run `hermes setup` to install Feishu support."))
     try:
         adapter = FeishuAdapter(pconfig)
         adapter._client = adapter._build_lark_client(_sdk_domain(getattr(adapter, "_domain_name", "feishu")))

@@ -181,6 +181,25 @@ def install_hint(extra: str) -> str:
     return f"hermes pm install --extra {extra}"
 
 
+def missing_extra_message(extra: str, fallback: str) -> str:
+    """Explain an import failure without installing or adopting a dependency tree."""
+    from pm.environments import selected_venv, site_packages
+    from pm.environments_adopt import restart_needed
+    from pm.paths import repo_root
+
+    root = repo_root()
+    try:
+        if restart_needed(root) and all(
+            _installed_in(site_packages(selected_venv(root)), anchor) for anchor in _anchors(extra)
+        ):
+            return (f"{extra} support is installed in a newer dependency environment. "
+                    "Restart Hermes (the gateway for messaging) to activate it.")
+    except (OSError, RuntimeError, ValueError):
+        # A missing/damaged selection cannot establish that a restart will load the SDK.
+        pass
+    return fallback
+
+
 def ensure_import(extra: str) -> None:
     """Make an extra available: no-op when the anchor imports, otherwise
     sync the venv with the extra enabled. Raises InstallError on failure

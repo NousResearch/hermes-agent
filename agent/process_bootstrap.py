@@ -332,16 +332,21 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
 
 def _install_safe_stdio() -> None:
     """Wrap stdout/stderr so best-effort console output cannot crash the agent."""
-    from agent.thread_scoped_output import _ThreadRoutingStream
-    for stream_name in ("stdout", "stderr"):
-        stream = getattr(sys, stream_name, None)
-        # A thread-routing proxy already swallows OSError/ValueError in _forward(),
-        # and wrapping it would make the next silence adopt the wrapped sandwich
-        # as its passthrough — every later agent build then stacks two more links
-        # onto sys.stdout until attribute probes blow the recursion limit (#139687).
-        if stream is None or isinstance(stream, (_SafeWriter, _ThreadRoutingStream)):
-            continue
-        setattr(sys, stream_name, _SafeWriter(stream))
+    import agent.thread_scoped_output as thread_output
+    # One shared installation lock with thread_scoped_output._ensure_installed,
+    # covering the whole read/check/publish transaction: a snapshot taken
+    # outside the lock could publish a SafeWriter over a stream a silenced
+    # worker had just routed around, bypassing its silence (review F1).
+    with thread_output._install_lock:
+        for stream_name in ("stdout", "stderr"):
+            stream = getattr(sys, stream_name, None)
+            # A thread-routing proxy already swallows OSError/ValueError in _forward(),
+            # and wrapping it would make the next silence adopt the wrapped sandwich
+            # as its passthrough — every later agent build then stacks two more links
+            # onto sys.stdout until attribute probes blow the recursion limit (#139687).
+            if stream is None or isinstance(stream, (_SafeWriter, thread_output._ThreadRoutingStream)):
+                continue
+            setattr(sys, stream_name, _SafeWriter(stream))
 
 
 # Drop-in for ``openai.OpenAI``.

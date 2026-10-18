@@ -181,10 +181,15 @@ class _RedactingStdio:
 
 def redact_detached_stdio() -> None:
     """Route a detached process's stdout/stderr through secret redaction (idempotent)."""
-    for name in ("stdout", "stderr"):
-        stream = getattr(sys, name)
-        if stream is not None and not isinstance(stream, _RedactingStdio):
-            setattr(sys, name, _RedactingStdio(stream))
+    from agent.thread_scoped_output import _install_lock
+    # Same shared installation lock as the safe-stdio and routing installers:
+    # a snapshot taken outside it could overwrite a router a silenced worker
+    # just published, sending its output to the pre-silence destination.
+    with _install_lock:
+        for name in ("stdout", "stderr"):
+            stream = getattr(sys, name)
+            if stream is not None and not isinstance(stream, _RedactingStdio):
+                setattr(sys, name, _RedactingStdio(stream))
 
 
 def _is_windows_concurrent_log_lock_timeout(exc: BaseException | None) -> bool:

@@ -230,6 +230,19 @@ test('a dial against a replaced local gateway forgets the cached endpoint once a
   expect(ensures).toBe(2)
 })
 
+test('a redial whose re-ensure comes back without a gateway endpoint names that, not a TypeError', async () => {
+  const { localGatewayDial } = await import('./local-gateway')
+  const endpoint = { profile_id: '/h', control_home: null, instance_id: 'dead', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1234', capabilities: ['session-authority-v1'], supervisor: 'none' }
+  const mint = vi.fn(async () => { throw new Error('Gateway ticket control socket missing') })
+  const ensure = vi.fn()
+    .mockResolvedValueOnce({ baseUrl: 'http://127.0.0.1:1234', gatewayEndpoint: endpoint })
+    .mockResolvedValueOnce({ baseUrl: 'http://127.0.0.1:1234' })
+
+  await expect(localGatewayDial({ ensure, forget: vi.fn(), launchHome: '/h', mint, prepare: () => 'unused', profile: '' }))
+    .rejects.toThrow('Local gateway connection has no gateway endpoint')
+  expect(mint).toHaveBeenCalledTimes(1)
+})
+
 test('a ready owner running other code than this Hermes is restarted once, then re-ensured', async () => {
   // After `hermes update` the live gateway still serves the old code and answers model calls
   // 503 "Restart required"; attaching to it on every dial pinned the user to it forever.
@@ -573,6 +586,22 @@ test('an ensure refusal names its remedy instead of only a status pointer', asyn
   await expect(ensureLocalGateway(async () => ({
     code: 3, stdout: JSON.stringify({ state: 'incompatible', reason_code: 'runtime_protocol', detail, endpoint: null })
   }))).rejects.toThrow(`Gateway incompatible (runtime_protocol). ${detail}. Use hermes gateway status for recovery.`)
+})
+
+test('an elevated or other-session gateway is named with its remedy, not as authorization (#139845, #140252)', async () => {
+  const cases = [
+    ['gateway_elevated', 'The running gateway (PID 23460) was started as administrator, so this non-elevated app cannot reach it. Stop it from an administrator prompt (hermes gateway stop), then start Hermes without elevation'],
+    ['gateway_other_session', 'The running gateway (PID 23460) runs in another Windows logon session (session 0, e.g. a boot-time scheduled task), so this app cannot reach it. Stop it (hermes gateway stop from an administrator prompt) and let only one auto-start task launch the gateway']
+  ]
+
+  for (const [reason_code, detail] of cases) {
+    const failure = ensureLocalGateway(async () => ({
+      code: 4, stdout: JSON.stringify({ state: 'inaccessible', reason_code, detail, endpoint: null })
+    }))
+
+    await expect(failure).rejects.toThrow(`Gateway inaccessible (${reason_code}). ${detail}.`)
+    await expect(failure).rejects.not.toThrow('authorization')
+  }
 })
 
 test('an update-paused ensure refusal points to the restart that completes its tail', async () => {

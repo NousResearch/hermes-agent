@@ -2058,8 +2058,6 @@
   "skills.plugins.settingsForm.secretSet": ["ar","ja","ru","zh","zh-hant"],
   "skills.plugins.settingsForm.secretStoredAs": ["ar","ja","ru","zh","zh-hant"],
   "skills.plugins.settingsToggle": ["ar","ja","ru","zh","zh-hant"],
-  "skills.plugins.tierCommunity": ["ar","ja","ru","zh-hant"],
-  "skills.plugins.tierOfficial": ["ar","ja","ru","zh-hant"],
   "skills.plugins.toggleFailed": ["ar","ja","ru","zh-hant"],
   "skills.plugins.toolsetOff": ["ar","ja","ru","zh","zh-hant"],
   "skills.plugins.toolsetOn": ["ar","ja","ru","zh","zh-hant"],

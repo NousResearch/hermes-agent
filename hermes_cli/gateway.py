@@ -1039,7 +1039,7 @@ def _restart_argv_is_host_gateway(argv: list[str]) -> bool:
     try:
         from gateway import host_rendezvous as hr
         record = hr.read_record(hr.ROLE_GATEWAY)
-        if record is not None and hr.liveness_is_proven(record) and len(record.profiles) > 1:
+        if record is not None and hr.record_names_live_owner(record) and len(record.profiles) > 1:
             return True
     except Exception:
         pass
@@ -4648,11 +4648,11 @@ from hermes_cli.gateway_setup_wizard import (
     _all_platforms,
     _platform_status,
     _set_platform_unauthorized_dm_behavior,
-    _print_setup_header,
-    _confirm_reconfigure,
-    _offer_home_channel,
-    _save_env_values,
-    _prompt_csv,
+    print_setup_header,
+    confirm_reconfigure,
+    offer_home_channel,
+    save_env_values,
+    prompt_csv,
     _UNAUTHORIZED_ACCESS_CHOICES,
     _prompt_unauthorized_access,
     _telegram_auto_setup,

@@ -78,6 +78,7 @@ Hermes 有两个斜杠命令入口，均由 `hermes_cli/commands.py` 中的中�
 | `/yolo` | 切换 YOLO 模式——跳过所有危险命令审批提示。 |
 | `/footer [on\|off\|status]` | 切换最终回复中的 gateway 运行时元数据页脚（显示模型、工具调用次数、耗时）。 |
 | `/busy [queue\|steer\|interrupt\|status]` | 控制 Hermes 工作时发送消息的行为——将新消息加入队列、中途引导，或立即中断。支持 CLI 和消息 gateway。 |
+| `/autoprune [on\|off\|later\|status]` | 决定是否自动清理旧的已结束 session（默认关闭）。当 `state.db` 所在磁盘空间不足时 Hermes 会询问一次；`on`/`off` 保存 `sessions.auto_prune` 并不再询问，`later` 一周后再提醒。支持 CLI、TUI、Desktop 和消息 gateway（Slack 上用 `/hermes autoprune`）。 |
 | `/indicator [kaomoji\|emoji\|unicode\|ascii]` | 仅限 CLI：选择 TUI 忙碌指示器样式。 |
 
 ### 工具与 Skill

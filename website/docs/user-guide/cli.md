@@ -121,6 +121,13 @@ Safety guarantees (all modes, any age):
 - **Untracked-only scratch** (PR body drafts, notes) is archived to
   `~/.hermes/archive/worktree-prune/` before its tree is removed — never
   destroyed.
+- **Nothing irreproducible is deleted unarchived**: a tree is kept when it holds
+  an embedded repository (even a gitignored one), a commit only a per-worktree
+  ref (`refs/worktree/*`, `refs/bisect/*`) reaches, an untracked file over the
+  archive size cap, or an ignored file that is neither under a build/dependency
+  directory (`node_modules`, `.venv`, `__pycache__`, `dist`, `build`, …) nor a
+  byte-identical copy of the main checkout's file (`.worktreeinclude`'s `.env`).
+  See [ignored files](./git-worktrees.md#stale-worktree-sweep-and-restore).
 - Branch deletion is content-gated, not name-gated: any local branch whose
   commits are all on upstream is safe to delete; branches with unique work,
   checked-out branches, and `main`/`master`/`develop` are always kept.

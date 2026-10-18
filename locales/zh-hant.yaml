@@ -3297,6 +3297,7 @@ cli:
     next_session_deepens: "下一次 `hermes -w` 工作階段會加深複製並自動清理已合併的工作樹。"
     unpushed_keeping: "⚠ 工作樹有未推送的提交，保留：{path}"
     uncommitted_keeping: "⚠ 工作樹有未提交的變更，保留：{path}"
+    kept_reason: "⚠ 保留工作樹（{reason}）：{path}"
     clean_up_manually: "手動清理方式：git worktree remove --force {path}"
     cleaned_up: "✓ 工作樹已清理：{path}"
     exit_question_dirty: "此工作樹有未提交的變更：{path}"
@@ -3308,9 +3309,9 @@ cli:
     archived: "✓ 工作樹已封存至 {ref} 並移除：{path}"
     restore_hint: "還原方式：hermes worktree restore {name}"
     archive_failed: "✗ 無法封存 {path}，保留：{error}"
-    archived_kept: "✓ 工作樹已封存至 {ref}，但已保留（有變更、使用中或無法移除）：{path}"
+    archived_kept: "✓ 工作樹已封存至 {ref}，但已保留（{reason}）：{path}"
     sweep_archived_removed: "已封存並移除 → {ref}"
-    sweep_archived_kept: "已封存，保留（清理期間有變更）→ {ref}"
+    sweep_archived_kept: "已封存，保留（{reason}）→ {ref}"
     discarded: "工作樹已移除，變更已捨棄：{path}"
 display:
   verb:

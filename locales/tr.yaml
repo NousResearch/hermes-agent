@@ -3297,6 +3297,7 @@ cli:
     next_session_deepens: "Bir sonraki `hermes -w` oturumu klonu derinleştirir ve birleştirilmiş worktree'leri otomatik olarak temizler."
     unpushed_keeping: "⚠ Worktree'de push edilmemiş commit'ler var, korunuyor: {path}"
     uncommitted_keeping: "⚠ Worktree'de commit edilmemiş değişiklikler var, korunuyor: {path}"
+    kept_reason: "⚠ Worktree tutuluyor ({reason}): {path}"
     clean_up_manually: "Elle temizlemek için: git worktree remove --force {path}"
     cleaned_up: "✓ Worktree temizlendi: {path}"
     exit_question_dirty: "Bu worktree'de commit edilmemiş değişiklikler var: {path}"
@@ -3308,9 +3309,9 @@ cli:
     archived: "✓ Worktree {ref} konumuna arşivlendi ve kaldırıldı: {path}"
     restore_hint: "Geri yüklemek için: hermes worktree restore {name}"
     archive_failed: "✗ {path} arşivlenemedi, korunuyor: {error}"
-    archived_kept: "✓ Worktree {ref} konumuna arşivlendi ama tutuldu (değişti, kullanımda veya kaldırılamadı): {path}"
+    archived_kept: "✓ Worktree {ref} konumuna arşivlendi ama tutuldu ({reason}): {path}"
     sweep_archived_removed: "arşivlendi + kaldırıldı → {ref}"
-    sweep_archived_kept: "arşivlendi, tutuldu (temizlik sırasında değişti) → {ref}"
+    sweep_archived_kept: "arşivlendi, tutuldu ({reason}) → {ref}"
     discarded: "Worktree kaldırıldı ve değişiklikleri atıldı: {path}"
 display:
   verb:

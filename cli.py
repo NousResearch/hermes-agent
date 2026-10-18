@@ -577,6 +577,12 @@ def _cleanup_worktree(info: dict[str, str] | None = None) -> None:
             print(f"  {_t('cli.worktree.clean_up_manually', path=wt_path)}")
         return
 
+    from hermes_cli.worktree_ops import removal_blocked
+    blocked = removal_blocked(wt_path)  # an embedded repo, private ref or ignored file dies with it
+    if blocked:
+        _cprint(f"\n\033[33m{_t('cli.worktree.kept_reason', path=wt_path, reason=blocked[1])}\033[0m")
+        return
+
     # Release the tree's language servers while the path still exists, then unlock so `remove`
     # isn't blocked by the lock placed at creation. Fail-soft.
     release_lsp_clients(wt_path)

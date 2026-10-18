@@ -95,8 +95,9 @@ def _sweep(repo_root: str, dry_run: bool, older_than: Optional[float] = None) ->
     from hermes_cli.worktree_archive import prune_expired_archives
     expired = prune_expired_archives(repo_root, settings["archive_retention_days"])
     from agent.i18n import t
-    saved = [t("cli.worktree.sweep_archived_removed" if removed else "cli.worktree.sweep_archived_kept", ref=ref)
-             for ref, removed in archived]
+    saved = [t("cli.worktree.sweep_archived_removed", ref=ref) if removed
+             else t("cli.worktree.sweep_archived_kept", ref=ref, reason=why or "?")
+             for ref, removed, why in archived]
     return plan, saved + [f"deleted expired archive {r}" for r in expired]
 
 

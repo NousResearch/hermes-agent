@@ -3297,6 +3297,7 @@ cli:
     next_session_deepens: "Die volgende `hermes -w`-sessie verdiep die kloon en snoei saamgevoegde werkbome outomaties."
     unpushed_keeping: "⚠ Werkboom het ongestootte commits, word behou: {path}"
     uncommitted_keeping: "⚠ Werkboom het ongecommitte veranderinge, word behou: {path}"
+    kept_reason: "⚠ Werkboom word behou ({reason}): {path}"
     clean_up_manually: "Om met die hand op te ruim: git worktree remove --force {path}"
     cleaned_up: "✓ Werkboom opgeruim: {path}"
     exit_question_dirty: "Hierdie werkboom het ongecommitte veranderinge: {path}"
@@ -3308,9 +3309,9 @@ cli:
     archived: "✓ Werkboom geargiveer na {ref} en verwyder: {path}"
     restore_hint: "Herstel dit met: hermes worktree restore {name}"
     archive_failed: "✗ Kon nie {path} argiveer nie, word behou: {error}"
-    archived_kept: "✓ Werkboom geargiveer na {ref} maar behou (dit het verander, is in gebruik, of kon nie verwyder word nie): {path}"
+    archived_kept: "✓ Werkboom geargiveer na {ref} maar behou ({reason}): {path}"
     sweep_archived_removed: "geargiveer + verwyder → {ref}"
-    sweep_archived_kept: "geargiveer, behou (verander tydens die opruiming) → {ref}"
+    sweep_archived_kept: "geargiveer, behou ({reason}) → {ref}"
     discarded: "Werkboom verwyder en sy veranderinge weggegooi: {path}"
 display:
   verb:

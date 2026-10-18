@@ -397,7 +397,7 @@ model:
 # refs/hermes/archive/<tree> and removed; `hermes worktree restore <name>` brings one back.
 # worktrees:
 #   archive_dirty: true          # false = never remove dirty/unpushed trees (old behaviour)
-#   archive_max_file_mb: 50      # untracked files above this are listed, not archived
+#   archive_max_file_mb: 50      # untracked files above this are not archived; their tree is kept
 #   archive_retention_days: 30   # archive refs older than this are deleted (0 = keep)
 #   max_total_gb: 0              # optional budget for idle trees; oldest evicted first
 

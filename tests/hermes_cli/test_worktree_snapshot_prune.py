@@ -8,6 +8,7 @@ visits the repos the ACTIVE profile registered (I7); a non-interactive exit neve
 
 import hashlib
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -202,8 +203,8 @@ def test_a_tree_resumed_mid_sweep_is_never_removed(repo, monkeypatch, capsys):
     assert second.exists() and (second / "notes.md").read_text(encoding="utf-8-sig") == "uncommitted\n"
     assert staged.exists() and _git(["show", ":b.py"], staged) == "NEW STAGED CONTENT"
     assert sorted(ref.rsplit("/", 1)[-1] for ref in _archives(repo)) == ["lane-a", "lane-staged"]
-    assert sorted(actions) == ["archived, kept (changed during the sweep) → refs/hermes/archive/lane-a",
-                               "archived, kept (changed during the sweep) → refs/hermes/archive/lane-staged"]
+    assert sorted(actions) == ["archived, kept (changed 0s ago) → refs/hermes/archive/lane-a",
+                               "archived, kept (staged changes since the snapshot) → refs/hermes/archive/lane-staged"]
 
 
 def test_dirty_submodule_work_is_never_archived_away(repo, tmp_path, monkeypatch):
@@ -264,6 +265,113 @@ def test_dirty_submodule_work_is_never_archived_away(repo, tmp_path, monkeypatch
     for tree in trees.values():
         with pytest.raises(ArchiveError, match="submodule"):
             snapshot_worktree(str(repo), tree, reason="session exit")
+
+
+def _big(path, mb=2):
+    with open(path, "wb") as f:
+        f.truncate(mb * 1024 * 1024)
+        f.seek(0)
+        f.write(b"UNIQUE BYTES")
+
+
+def _private_commit(repo_dir):
+    _git(["init", "-q", "-b", "main", str(repo_dir)], repo_dir.parent)
+    (repo_dir / "x").write_text("PRIVATE\n", encoding="utf-8")
+    _git(["add", "-A"], repo_dir)
+    _git(["commit", "-qm", "private"], repo_dir)
+    return _git(["rev-parse", "HEAD"], repo_dir)
+
+
+def _case_large(repo, wt):
+    (wt / "notes.md").write_text("dirty\n", encoding="utf-8")
+    _big(wt / "dataset.bin")
+    return {"dataset.bin": None}, None
+
+
+def _case_ignored_repo(repo, wt):
+    (wt / "notes.md").write_text("dirty\n", encoding="utf-8")
+    return {}, (wt / "build" / "tool", _private_commit(_mkdirs(wt / "build" / "tool")))
+
+
+def _case_ignored_files(repo, wt):
+    (wt / "notes.md").write_text("dirty\n", encoding="utf-8")
+    (wt / "prod.secret").write_text("API KEY WORK\n", encoding="utf-8")
+    (wt / ".env").write_text("LOCAL ONLY=1\n", encoding="utf-8")       # differs from the main checkout
+    return {"prod.secret": b"API KEY WORK\n", ".env": b"LOCAL ONLY=1\n"}, None
+
+
+def _case_untracked_hidden(repo, wt):
+    _git(["config", "status.showUntrackedFiles", "no"], repo)
+    (wt / "new_work.py").write_text("UNTRACKED WORK\n", encoding="utf-8")
+    return {"new_work.py": b"UNTRACKED WORK\n"}, None
+
+
+def _case_skip_worktree(repo, wt):
+    _git(["update-index", "--skip-worktree", "b.py"], wt)
+    _git(["update-index", "--assume-unchanged", "a.txt"], wt)
+    (wt / "b.py").write_bytes(b"SKIP-WORKTREE EDIT\n")
+    return {"b.py": b"SKIP-WORKTREE EDIT\n"}, None
+
+
+def _case_worktree_ref(repo, wt):
+    (wt / "b.py").write_text("private\n", encoding="utf-8")
+    _git(["commit", "-qam", "private"], wt)
+    sha = _git(["rev-parse", "HEAD"], wt)
+    _git(["update-ref", "refs/worktree/keep", sha], wt)
+    _git(["update-ref", "refs/bisect/bad", sha], wt)
+    _git(["reset", "-q", "--hard", "origin/main"], wt)
+    return {}, (repo, sha)
+
+
+def _mkdirs(path):
+    path.mkdir(parents=True)
+    return path
+
+
+@pytest.mark.parametrize("mode", ["archive", "classic"])
+@pytest.mark.parametrize("setup", [_case_large, _case_ignored_repo, _case_ignored_files, _case_untracked_hidden,
+                                   _case_skip_worktree, _case_worktree_ref], ids=lambda f: f.__name__[6:])
+def test_the_pruner_removes_a_tree_only_when_everything_irreproducible_is_archived(repo, mode, setup):
+    """R2: through the real pruner, every byte and commit that git cannot regenerate survives,
+    in the tree or in its archive: an untracked file over the size cap, a gitignored embedded
+    repository, ignored files that are not reproducible, untracked files hidden by
+    ``status.showUntrackedFiles=no``, skip-worktree / assume-unchanged edits, and commits held
+    only by per-worktree refs. Regenerable ignored content (``node_modules``, ``__pycache__``) and
+    ``.worktreeinclude`` copies identical to the main checkout never hold a tree back."""
+    if mode == "classic":
+        _set_worktrees_config("worktrees:\n  archive_dirty: false\n")
+    else:
+        _set_worktrees_config("worktrees:\n  archive_max_file_mb: 1\n")
+    (repo / ".git" / "info").mkdir(exist_ok=True)
+    (repo / ".git" / "info" / "exclude").write_text("build/\n*.secret\n.env\n__pycache__/\n", encoding="utf-8")
+    (repo / ".env").write_text("SHARED=1\n", encoding="utf-8")
+    wt, regen = _tree(repo, "lane-case"), _tree(repo, "lane-regen", dirty=True)
+    for tree in (wt, regen):
+        shutil.copy2(repo / ".env", tree / ".env")                    # what .worktreeinclude copies
+        (_mkdirs(tree / "node_modules" / "dep") / "index.js").write_text("x\n", encoding="utf-8")
+        (_mkdirs(tree / "pkg" / "__pycache__") / "m.pyc").write_bytes(b"\0")
+    precious, commit = setup(repo, wt)
+    sizes = {rel: (wt / rel).read_bytes() for rel, data in precious.items() if data is None}
+    precious = {**precious, **sizes}
+    for tree in (wt, regen):
+        _idle(tree)
+
+    worktree_ops._prune_stale_worktrees(str(repo))
+
+    archives = _archives(repo)
+    for rel, data in precious.items():
+        in_tree = (wt / rel).is_file() and (wt / rel).read_bytes() == data
+        in_archive = any(subprocess.run(["git", "cat-file", "blob", f"{ref}:{rel}"], cwd=repo, capture_output=True,
+                                        check=False)
+                         .stdout == data for ref in archives if ref.endswith("/lane-case"))
+        assert in_tree or in_archive, f"{rel} lost"
+    if commit:
+        where, sha = commit
+        assert where.exists() and _git(["cat-file", "-t", sha], where) == "commit"
+        if where == repo:
+            assert wt.exists()
+    if mode == "archive":
+        assert not regen.exists(), "regenerable / main-identical ignored files must not hold a tree back"
 
 
 def test_prune_older_than_bounds_what_the_sweep_removes(repo, capsys):

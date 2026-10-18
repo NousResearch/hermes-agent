@@ -3314,6 +3314,7 @@ cli:
     next_session_deepens: "A következő `hermes -w` munkamenet mélyíti a klónt, és automatikusan eltávolítja a beolvasztott worktree-ket."
     unpushed_keeping: "⚠ A worktree-ben feltöltetlen commitok vannak, megtartva: {path}"
     uncommitted_keeping: "⚠ A worktree-ben nem commitolt változások vannak, megtartva: {path}"
+    kept_reason: "⚠ Worktree megtartva ({reason}): {path}"
     clean_up_manually: "Kézi takarításhoz: git worktree remove --force {path}"
     cleaned_up: "✓ Worktree eltakarítva: {path}"
     exit_question_dirty: "Ebben a worktree-ben nem commitolt változások vannak: {path}"
@@ -3325,9 +3326,9 @@ cli:
     archived: "✓ Worktree archiválva ide: {ref}, és eltávolítva: {path}"
     restore_hint: "Visszaállítás: hermes worktree restore {name}"
     archive_failed: "✗ {path} archiválása sikertelen, megtartva: {error}"
-    archived_kept: "✓ Worktree archiválva ide: {ref}, de megtartva (változott, használatban van, vagy nem távolítható el): {path}"
+    archived_kept: "✓ Worktree archiválva ide: {ref}, de megtartva ({reason}): {path}"
     sweep_archived_removed: "archiválva + eltávolítva → {ref}"
-    sweep_archived_kept: "archiválva, megtartva (a takarítás közben változott) → {ref}"
+    sweep_archived_kept: "archiválva, megtartva ({reason}) → {ref}"
     discarded: "Worktree eltávolítva, változásai elvetve: {path}"
 display:
   verb:

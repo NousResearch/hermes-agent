@@ -94,14 +94,17 @@ def apply_exit_choice(info: dict, echo) -> bool:
         from hermes_cli.worktree_sweep import archive_then_remove, sweep_settings
         echo(t("cli.worktree.archiving", path=path))
         try:
-            ref, _kept, removed = archive_then_remove(
+            ref, _kept, removed, why = archive_then_remove(
                 repo_root, path, reason="session exit", unlock=True, exclude_pids=(os.getpid(),),
                 max_untracked_mb=sweep_settings()["archive_max_file_mb"])
         except (ArchiveError, OSError, subprocess.SubprocessError, KeyboardInterrupt) as exc:
             echo(f"\033[31m{t('cli.worktree.archive_failed', path=path, error=str(exc) or 'interrupted')}\033[0m")
             return True
         name = ref.rsplit("/", 1)[-1]
-        echo(f"\033[32m{t('cli.worktree.archived' if removed else 'cli.worktree.archived_kept', path=path, ref=ref)}\033[0m")
+        if removed:
+            echo(f"\033[32m{t('cli.worktree.archived', path=path, ref=ref)}\033[0m")
+        else:
+            echo(f"\033[33m{t('cli.worktree.archived_kept', path=path, ref=ref, reason=why or '?')}\033[0m")
         echo(f"  {t('cli.worktree.restore_hint', name=name)}")
         return True
     from hermes_cli._subprocess_compat import noninteractive_git_env

@@ -3297,6 +3297,7 @@ cli:
     next_session_deepens: "Déanann an chéad seisiún `hermes -w` eile an clón a dhoimhniú agus bearrann sé worktrees cumaiscthe go huathoibríoch."
     unpushed_keeping: "⚠ Tá tiomantais gan bhrú sa worktree, á choinneáil: {path}"
     uncommitted_keeping: "⚠ Tá athruithe gan tiomantas sa worktree, á choinneáil: {path}"
+    kept_reason: "⚠ Worktree á choinneáil ({reason}): {path}"
     clean_up_manually: "Chun glanadh de láimh: git worktree remove --force {path}"
     cleaned_up: "✓ Worktree glanta: {path}"
     exit_question_dirty: "Tá athruithe gan tiomantas sa worktree seo: {path}"
@@ -3308,9 +3309,9 @@ cli:
     archived: "✓ Worktree cartlannaithe go {ref} agus bainte: {path}"
     restore_hint: "Athchóirigh é le: hermes worktree restore {name}"
     archive_failed: "✗ Níorbh fhéidir {path} a chartlannú, á choinneáil: {error}"
-    archived_kept: "✓ Worktree cartlannaithe go {ref} ach coinnithe (athraíodh é, tá sé in úsáid, nó níorbh fhéidir é a bhaint): {path}"
+    archived_kept: "✓ Worktree cartlannaithe go {ref} ach coinnithe ({reason}): {path}"
     sweep_archived_removed: "cartlannaithe + bainte → {ref}"
-    sweep_archived_kept: "cartlannaithe, coinnithe (athraithe le linn an scuabtha) → {ref}"
+    sweep_archived_kept: "cartlannaithe, coinnithe ({reason}) → {ref}"
     discarded: "Worktree bainte agus a athruithe caite uait: {path}"
 display:
   verb:

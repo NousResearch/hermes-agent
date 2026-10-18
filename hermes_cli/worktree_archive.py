@@ -11,8 +11,10 @@ Bytes are stored raw: every tracked/untracked regular file is re-hashed with
 ``hash-object --no-filters`` and restored by writing the blob bytes directly, so no attribute
 source (``.gitattributes``, ``$GIT_COMMON_DIR/info/attributes``, ``core.attributesFile``) and no
 clean/smudge/eol conversion can change them; a restore writes back exactly the archived bytes. Untracked files over a size cap are skipped and listed
-(so ``.git`` never balloons with build artefacts the ignore rules missed); an untracked embedded
-repository cannot be captured at all and fails the snapshot, which keeps the tree.
+(so ``.git`` never balloons with build artefacts the ignore rules missed), and a tree with a
+skipped file is never removed; an untracked embedded repository cannot be captured at all and
+fails the snapshot, which keeps the tree. Ignored files are not captured: removal is allowed only
+when every one is reproducible (``worktree_retention``).
 """
 
 from __future__ import annotations
@@ -213,16 +215,17 @@ def _digest_index(wt: Path, env) -> str:
     return hashlib.sha256(_ok(["ls-files", "--stage", "-z"], wt, env).encode("utf-8", "surrogateescape")).hexdigest()
 
 
-def archive_preflight(wt_path) -> Optional[str]:
-    """Why *wt_path* cannot be snapshotted losslessly, or None. Read-only."""
+def archive_preflight(wt_path, max_untracked_mb: float = 50) -> Optional[tuple[str, str]]:
+    """``(keep-action, reason)`` when archiving and removing *wt_path* would lose something
+    (``worktree_retention.removal_blocker``: submodule, embedded repository, per-worktree ref,
+    an untracked file over the size cap, a non-reproducible ignored file), else None. Read-only."""
+    from hermes_cli.worktree_retention import KEEP_UNARCHIVABLE, removal_blocker
     try:
         wt = Path(wt_path)
-        embedded = [p for p in _untracked(wt, _env(wt)) if p.endswith("/")]
-        if not embedded:
-            return submodule_work(wt)
+        skipped = _split_oversized(wt, _untracked(wt, _env(wt)), max_untracked_mb)
     except (ArchiveError, OSError, subprocess.SubprocessError) as exc:
-        return str(exc)
-    return f"untracked embedded repository {embedded[0].rstrip('/')} cannot be archived"
+        return KEEP_UNARCHIVABLE, str(exc)
+    return removal_blocker(wt, skipped=skipped, gitlinks=True)
 
 
 def _split_oversized(wt: Path, untracked: list[str], max_mb: float) -> list[dict]:

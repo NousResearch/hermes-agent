@@ -6,9 +6,10 @@ tiers and classifier, then removes an idle dirty/unpushed tree only after archiv
 working state to ``refs/hermes/archive/<tree>`` (``worktree_archive``); a failed archive keeps
 the tree. Never touched, at any age or budget: Kanban ``t_<hex>`` trees, trees whose ``hermes``
 lock owner still runs, trees any live process sits in (cwd or open file), and trees with file or
-ref activity younger than their tier, and trees with a submodule (``keep-submodule-work``: an
-archive records only the gitlink; see ``worktree_archive.submodule_work``). With ``archive_dirty: false`` and no size budget the
-classic pruner runs unchanged.
+ref activity younger than their tier, and trees holding anything an archive cannot carry
+(``worktree_retention.removal_blocker``: a submodule, an embedded repository, a per-worktree ref,
+an untracked file over the size cap, an ignored file that is not reproducible). With
+``archive_dirty: false`` and no size budget the classic pruner runs unchanged.
 
 ``plan_sweep`` is read-only (``hermes worktree prune --dry-run`` prints it); ``execute_plan``
 applies a frozen plan.
@@ -196,12 +197,6 @@ def _tier_hours(name: str, max_age_hours: float) -> float:
     return prune_tier_hours(name, max_age_hours)
 
 
-def _unarchivable_action(why: str) -> str:
-    """``keep-submodule-work`` for a submodule a gitlink cannot carry, else ``keep-unarchivable``."""
-    from hermes_cli.worktree_archive import SUBMODULE_REASON
-    return "keep-submodule-work" if why.startswith(SUBMODULE_REASON) else "keep-unarchivable"
-
-
 def _plan_survivor(repo_root: str, entry: Path, verdict: str, lock_state, settings: dict,
                    tier_hours: float, now: float) -> tuple[str, str, Optional[str], Optional[float]]:
     """(action, reason, lock_state, last_activity) for a dirty/unpushed tree past its tier."""
@@ -216,13 +211,13 @@ def _plan_survivor(repo_root: str, entry: Path, verdict: str, lock_state, settin
         return "skip-young", f"{what}; last activity {(now - active) / 3600:.1f}h ago", lock_state, active
     if not settings["archive_dirty"]:
         return f"keep-{verdict}", what, lock_state, active  # idle: only the size budget may evict it
-    unsafe = archive_preflight(str(entry))
+    unsafe = archive_preflight(str(entry), settings["archive_max_file_mb"])
     if unsafe:
-        return _unarchivable_action(unsafe), unsafe, lock_state, active
+        return unsafe[0], unsafe[1], lock_state, active
     return "archive-remove", what, lock_state, active
 
 
-def _apply_budget(decisions: list[Decision], max_total_gb: float) -> None:
+def _apply_budget(decisions: list[Decision], max_total_gb: float, max_file_mb: float = 50) -> None:
     """Evict the oldest idle kept trees (archive first) until they fit *max_total_gb*.
 
     Only idle past-tier trees count or move; live, young and kanban trees are invisible here.
@@ -237,9 +232,9 @@ def _apply_budget(decisions: list[Decision], max_total_gb: float) -> None:
     for d in sorted(eligible, key=lambda x: x.mtime):
         if total <= budget_mb:
             break
-        unsafe = archive_preflight(d.path)
+        unsafe = archive_preflight(d.path, max_file_mb)
         if unsafe:
-            d.action, d.reason = _unarchivable_action(unsafe), unsafe
+            d.action, d.reason = unsafe
             continue
         d.action, d.reason = "archive-remove", f"{d.reason}; over worktrees.max_total_gb={max_total_gb:g}"
         total -= d.size_mb or 0
@@ -294,14 +289,14 @@ def plan_sweep(repo_root: str, max_age_hours: int = 24, settings: Optional[dict]
                 repo_root, entry, verdict, lock_state, settings, tier, now)
             if active:
                 d.age_hours = min(d.age_hours, round((now - active) / 3600, 1))
-        elif why := ops.submodule_blocks_removal(str(entry)):
-            d.action, d.reason = "keep-submodule-work", why
+        elif blocked := ops.removal_blocked(str(entry)):
+            d.action, d.reason = blocked
         else:
             d.action = "remove-keep-branch" if verdict == "reap-keep-branch" else "remove"
             d.reason = "pushed to origin; branch kept" if verdict == "reap-keep-branch" else "clean and merged/pushed"
         decisions.append(d)
     if settings["max_total_gb"]:
-        _apply_budget(decisions, settings["max_total_gb"])
+        _apply_budget(decisions, settings["max_total_gb"], settings["archive_max_file_mb"])
     if older_than_days is not None:
         for d in decisions:
             if d.action in _DESTRUCTIVE and d.age_hours < older_than_days * 24:
@@ -355,45 +350,49 @@ def _index_moved(path: str, captured: str) -> Optional[str]:
 def archive_then_remove(repo_root: str, path: str, *, reason: str, max_untracked_mb: float,
                         unlock: bool, remote_heads_fn=None, keep_branch: bool = False,
                         exclude_pids=(),
-                        ) -> tuple[str, Optional[str], bool]:
-    """Snapshot *path*, then remove it -> ``(archive_ref, kept_branch, removed)``.
+                        ) -> tuple[str, Optional[str], bool, Optional[str]]:
+    """Snapshot *path*, then remove it -> ``(archive_ref, kept_branch, removed, why_kept)``.
 
     Raises ``ArchiveError`` (tree untouched) when the snapshot fails. Right after the snapshot the
     tree is checked again: a process (other than *exclude_pids*) now working in it, any edit
-    made while the snapshot ran, staged entries that differ from the captured index, or a submodule
-    that appeared meanwhile keep the tree (``removed`` False; the archive stays). The branch
+    made while the snapshot ran, staged entries that differ from the captured index, or anything
+    the archive does not hold (``worktree_retention.removal_blocker``: a file the snapshot skipped
+    for size, an embedded repository, a per-worktree ref, a non-reproducible ignored file, a
+    submodule) keep the tree (``removed`` False, *why_kept* says why; the archive stays). The branch
     survives when it is protected or published on a remote (an open PR may still need it);
     otherwise the archive ref anchors its commits and the local branch is deleted.
     """
     from hermes_cli.worktree_archive import snapshot_worktree
-    from hermes_cli.worktree_ops import _git, _git_quiet, release_lsp_clients, submodule_blocks_removal
+    from hermes_cli.worktree_ops import _git, _git_quiet, release_lsp_clients
+    from hermes_cli.worktree_retention import removal_blocker
     from hermes_cli._subprocess_compat import noninteractive_git_env
     started = time.time()
     arc = snapshot_worktree(repo_root, path, reason=reason, max_untracked_mb=max_untracked_mb)
+    blocked = removal_blocker(path, skipped=arc.meta.get("skipped_untracked"), gitlinks=True)
     busy = (_in_use_since(path, started, exclude=exclude_pids) or _index_moved(path, arc.staged)
-            or submodule_blocks_removal(path, gitlinks=True))  # a submodule set up during capture
+            or (blocked and blocked[1]))
     if busy:
         logger.warning("Archived %s to %s but keeping it: %s", path, arc.ref, busy)
-        return arc.ref, None, False
+        return arc.ref, None, False, busy
     release_lsp_clients(path)
     if unlock:
         _git_quiet(["worktree", "unlock", path], repo_root, log=f"unlock {path}")
     removed = _git(["worktree", "remove", "--force", path], repo_root, timeout=60)
     if removed.returncode != 0:
         logger.warning("Archived %s to %s but could not remove it: %s", path, arc.ref, removed.stderr.strip())
-        return arc.ref, None, False
+        return arc.ref, None, False, removed.stderr.strip() or "git worktree remove failed"
     branch = arc.meta.get("branch")
     if not branch or keep_branch or branch in _PROTECTED_BRANCHES:
-        return arc.ref, branch, True
+        return arc.ref, branch, True, None
     if remote_heads_fn is None:
         from hermes_cli.worktree_ops import _fetch_remote_branch_heads
         heads = _fetch_remote_branch_heads(repo_root, timeout=10)
     else:
         heads = remote_heads_fn()
     if _branch_published(repo_root, branch, heads):
-        return arc.ref, branch, True
+        return arc.ref, branch, True, None
     _git(["branch", "-D", branch], repo_root, stdin=subprocess.DEVNULL, env=noninteractive_git_env())
-    return arc.ref, None, True
+    return arc.ref, None, True, None
 
 
 def _recheck(repo_root: str, d: Decision) -> tuple[Optional[str], Optional[str]]:
@@ -418,10 +417,10 @@ def _recheck(repo_root: str, d: Decision) -> tuple[Optional[str], Optional[str]]
 
 
 def execute_plan(repo_root: str, plan: list[Decision], settings: dict
-                 ) -> tuple[list[str], set, list[tuple[str, bool]]]:
-    """Apply a frozen plan -> ``(preserved_stale, kept_branches, [(archive_ref, removed)])``. Each
-    tree is re-gated (lock, live process, fresh activity) right before it is archived or removed;
-    ``removed`` is False when the archive was saved but the tree was kept (changed meanwhile)."""
+                 ) -> tuple[list[str], set, list[tuple[str, bool, Optional[str]]]]:
+    """Apply a frozen plan -> ``(preserved_stale, kept_branches, [(archive_ref, removed, why_kept)])``.
+    Each tree is re-gated (lock, live process, fresh activity) right before it is archived or
+    removed; ``removed`` is False when the archive was saved but the tree was kept (*why_kept*)."""
     from hermes_cli import worktree_ops as ops
     from hermes_cli.worktree_archive import ArchiveError
     memo: dict = {}
@@ -432,7 +431,7 @@ def execute_plan(repo_root: str, plan: list[Decision], settings: dict
         return memo["heads"]
 
     kept_branches: set = set()
-    archived: list[tuple[str, bool]] = []
+    archived: list[tuple[str, bool, Optional[str]]] = []
     preserved: list[str] = [f"{d.name} ({d.reason})" for d in plan if d.action.startswith("keep-")]
     for d in (d for d in plan if d.action in _DESTRUCTIVE):
         why_keep, lock_state = _recheck(repo_root, d)
@@ -445,16 +444,16 @@ def execute_plan(repo_root: str, plan: list[Decision], settings: dict
             kept_branches |= kept
             continue
         try:
-            ref, kept, removed = archive_then_remove(
+            ref, kept, removed, why = archive_then_remove(
                 repo_root, d.path, reason=f"sweep: {d.reason}", max_untracked_mb=settings["archive_max_file_mb"],
                 unlock=lock_state == "dead", remote_heads_fn=remote_heads)
         except (ArchiveError, OSError, subprocess.SubprocessError) as exc:
             logger.warning("Keeping worktree %s: archive failed (%s)", d.name, exc)
             preserved.append(f"{d.name} (archive failed)")
             continue
-        archived.append((ref, removed))
+        archived.append((ref, removed, why))
         if not removed:
-            preserved.append(f"{d.name} (archived to {ref}, kept: changed during the sweep)")
+            preserved.append(f"{d.name} (archived to {ref}, kept: {why})")
         if kept:
             kept_branches.add(kept)
     return preserved, kept_branches, archived
@@ -466,7 +465,7 @@ def run_sweep(repo_root: str, max_age_hours: int, settings: dict) -> None:
     from hermes_cli.worktree_archive import prune_expired_archives
     plan = plan_sweep(repo_root, max_age_hours, settings)
     preserved, kept_branches, archived = execute_plan(repo_root, plan, settings)
-    removed = [ref for ref, gone in archived if gone]
+    removed = [ref for ref, gone, _why in archived if gone]
     if removed:
         logger.warning("Archived and removed %d idle worktree(s) with unmerged work; restore any with "
                        "`hermes worktree restore <name>` (`hermes worktree list` shows archives).", len(removed))

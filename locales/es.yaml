@@ -3297,6 +3297,7 @@ cli:
     next_session_deepens: "La próxima sesión `hermes -w` profundiza el clon y elimina automáticamente los worktrees fusionados."
     unpushed_keeping: "⚠ El worktree tiene commits sin push, se conserva: {path}"
     uncommitted_keeping: "⚠ El worktree tiene cambios sin commit, se conserva: {path}"
+    kept_reason: "⚠ Se conserva el worktree ({reason}): {path}"
     clean_up_manually: "Para limpiar manualmente: git worktree remove --force {path}"
     cleaned_up: "✓ Worktree limpiado: {path}"
     exit_question_dirty: "Este worktree tiene cambios sin commit: {path}"
@@ -3308,9 +3309,9 @@ cli:
     archived: "✓ Worktree archivado en {ref} y eliminado: {path}"
     restore_hint: "Restáuralo con: hermes worktree restore {name}"
     archive_failed: "✗ No se pudo archivar {path}, se conserva: {error}"
-    archived_kept: "✓ Worktree archivado en {ref} pero conservado (cambió, está en uso o no se pudo eliminar): {path}"
+    archived_kept: "✓ Worktree archivado en {ref} pero conservado ({reason}): {path}"
     sweep_archived_removed: "archivado + eliminado → {ref}"
-    sweep_archived_kept: "archivado, conservado (cambió durante la limpieza) → {ref}"
+    sweep_archived_kept: "archivado, conservado ({reason}) → {ref}"
     discarded: "Worktree eliminado y cambios descartados: {path}"
 display:
   verb:

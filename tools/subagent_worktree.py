@@ -164,7 +164,7 @@ def finalize_subagent_worktree(info: dict[str, str], *, prune: bool = True) -> d
     failed, unmeasured = [], []
     probes = (("commits", "rev-list", ["rev-list", "--count", f"{base_commit}..HEAD"],
                lambda s: int(s or 0)),
-              ("dirty", "status", ["status", "--porcelain"], bool))
+              ("dirty", "status", ["status", "--porcelain", "--untracked-files=normal"], bool))
     try:
         for field, label, args, parse in probes:
             res = _run_git(args, cwd=path, env=probe_env)
@@ -180,13 +180,23 @@ def finalize_subagent_worktree(info: dict[str, str], *, prune: bool = True) -> d
     if failed:
         # Destructive cleanup requires affirmative proof; defaults prove nothing.
         return mark_worktree_payload_unproven(payload, "; ".join(failed), unmeasured="/".join(unmeasured))
+    if not payload["dirty"]:
+        # status trusts skip-worktree / assume-unchanged: edits behind them are invisible to it.
+        from hermes_cli.worktree_archive import ArchiveError
+        from hermes_cli.worktree_retention import hidden_index_edits
+        try:
+            payload["dirty"] = bool(hidden_index_edits(path))
+        except (ArchiveError, OSError, subprocess.SubprocessError) as exc:
+            return mark_worktree_payload_unproven(payload, f"index flag probe failed: {exc}", unmeasured="dirty")
     if prune and (payload["commits"] or payload["dirty"]):
         return _archive_finished_worktree(info, payload)
     if prune and payload["commits"] == 0 and not payload["dirty"]:
         cwd = info.get("repo_root", "") or path
         try:
-            from hermes_cli.worktree_ops import release_lsp_clients, submodule_blocks_removal
-            if submodule_blocks_removal(path):  # a module repository dies with the tree
+            from hermes_cli.worktree_ops import release_lsp_clients, removal_blocked
+            blocked = removal_blocked(path)  # an embedded repo / ignored file / ref dies with the tree
+            if blocked:
+                payload["note"] = f"Worktree kept at {path}: {blocked[1]}."
                 return payload
             release_lsp_clients(path)  # the child ran in-process: its language servers are ours
             removed = _run_git(["worktree", "remove", "--force", path], cwd=cwd)
@@ -218,7 +228,7 @@ def _archive_finished_worktree(info: dict[str, str], payload: dict[str, Any]) ->
         logger.info("subagent worktree: a live process works in %s; keeping it", path)
         return payload
     try:
-        ref, _kept, removed = archive_then_remove(
+        ref, _kept, removed, why = archive_then_remove(
             info.get("repo_root", "") or path, path, reason="subagent finished",
             max_untracked_mb=settings["archive_max_file_mb"], unlock=False, keep_branch=True,
             exclude_pids=(os.getpid(),))
@@ -232,8 +242,8 @@ def _archive_finished_worktree(info: dict[str, str], payload: dict[str, Any]) ->
                            f"Restore the full tree (including uncommitted edits) with "
                            f"`hermes worktree restore {ref.rsplit('/', 1)[-1]}`.")
     else:
-        payload["note"] = (f"Worktree archived to {ref} but kept at {path} (it changed after the snapshot "
-                           f"or could not be removed); branch {info.get('branch')} kept.")
+        payload["note"] = (f"Worktree archived to {ref} but kept at {path} ({why}); "
+                           f"branch {info.get('branch')} kept.")
     return payload
 
 

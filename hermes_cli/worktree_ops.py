@@ -558,7 +558,9 @@ def _worktree_is_dirty(worktree_path: str, repo_root, timeout: int = 10) -> bool
 
     Untracked ``.worktreeinclude`` directory symlinks back to the main checkout *repo_root* are
     ignored: they are our own scaffolding, and counting them would keep every worktree of such a
-    repo forever.
+    repo forever. ``status.showUntrackedFiles=no`` is overridden (it would hide new files), and
+    skip-worktree / assume-unchanged files whose bytes differ from the index count as changes
+    (``git status`` trusts both flags).
     """
     from hermes_cli._subprocess_compat import noninteractive_repo_git_env
     try:
@@ -566,13 +568,14 @@ def _worktree_is_dirty(worktree_path: str, repo_root, timeout: int = 10) -> bool
         env = noninteractive_repo_git_env(worktree_path)
         if env is None:
             return True
-        result = _git(["status", "--porcelain", "-z"], worktree_path, timeout=timeout,
-                      stdin=subprocess.DEVNULL, env=env)
+        result = _git(["status", "--porcelain", "-z", "--untracked-files=normal"], worktree_path,
+                      timeout=timeout, stdin=subprocess.DEVNULL, env=env)
         if result.returncode != 0:
             return True
         entries = [e for e in result.stdout.split("\0") if e]
         if not entries:
-            return False
+            from hermes_cli.worktree_retention import hidden_index_edits
+            return bool(hidden_index_edits(worktree_path))
         if any(not e.startswith("?? ") for e in entries):
             return True
         include_links = _include_symlink_paths(worktree_path, repo_root)
@@ -1013,14 +1016,13 @@ def _classify_prune_candidates(repo_root: str, candidates: list) -> list:
 _PRESERVE_REASONS = {"dirty": "uncommitted changes", "unpushed": "unpushed commits"}
 
 
-def submodule_blocks_removal(path: str, gitlinks: bool = False) -> Optional[str]:
-    """Why a submodule keeps the tree at *path* (``worktree_archive.submodule_work``); an
-    unreadable tree counts as blocked."""
-    from hermes_cli.worktree_archive import ArchiveError, submodule_work
-    try:
-        return submodule_work(path, gitlinks=gitlinks)
-    except (ArchiveError, OSError, subprocess.SubprocessError) as exc:
-        return f"submodule check failed: {exc}"
+def removal_blocked(path: str) -> Optional[tuple[str, str]]:
+    """``(keep-action, reason)`` when deleting the clean tree at *path* would lose something no
+    branch holds (``worktree_retention.removal_blocker``: a checked-out submodule, an embedded
+    repository, a per-worktree ref, an ignored file that is not reproducible); unverifiable
+    counts as blocked."""
+    from hermes_cli.worktree_retention import removal_blocker
+    return removal_blocker(path)
 
 
 def _reap_prune_verdicts(repo_root: str, verdicts: list, stale_work_cutoff: float) -> tuple[list, set]:
@@ -1040,9 +1042,9 @@ def _reap_prune_verdicts(repo_root: str, verdicts: list, stale_work_cutoff: floa
         if verdict == "locked-live":
             logger.debug("Skipping live-locked worktree: %s", entry.name)
             continue
-        why = submodule_blocks_removal(str(entry))
-        if why:
-            preserved_stale.append(f"{entry.name} ({why})")
+        blocked = removal_blocked(str(entry))
+        if blocked:
+            preserved_stale.append(f"{entry.name} ({blocked[1]})")
             continue
 
         if lock_state == "dead":

@@ -3297,6 +3297,7 @@ cli:
     next_session_deepens: "次回の `hermes -w` セッションでクローンを深化し、マージ済みのワークツリーを自動的に削除します。"
     unpushed_keeping: "⚠ ワークツリーに未プッシュのコミットがあるため保持します: {path}"
     uncommitted_keeping: "⚠ ワークツリーに未コミットの変更があるため保持します: {path}"
+    kept_reason: "⚠ ワークツリーを保持します ({reason}): {path}"
     clean_up_manually: "手動でクリーンアップするには: git worktree remove --force {path}"
     cleaned_up: "✓ ワークツリーをクリーンアップしました: {path}"
     exit_question_dirty: "このワークツリーには未コミットの変更があります: {path}"
@@ -3308,9 +3309,9 @@ cli:
     archived: "✓ ワークツリーを {ref} にアーカイブして削除しました: {path}"
     restore_hint: "復元するには: hermes worktree restore {name}"
     archive_failed: "✗ {path} をアーカイブできなかったため保持します: {error}"
-    archived_kept: "✓ ワークツリーを {ref} にアーカイブしましたが保持しました (変更された、使用中、または削除できませんでした): {path}"
+    archived_kept: "✓ ワークツリーを {ref} にアーカイブしましたが保持しました ({reason}): {path}"
     sweep_archived_removed: "アーカイブして削除 → {ref}"
-    sweep_archived_kept: "アーカイブ済み、保持 (掃除中に変更されました) → {ref}"
+    sweep_archived_kept: "アーカイブ済み、保持 ({reason}) → {ref}"
     discarded: "ワークツリーを削除し、変更を破棄しました: {path}"
 display:
   verb:

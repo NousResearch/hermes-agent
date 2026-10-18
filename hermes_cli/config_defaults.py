@@ -500,7 +500,7 @@ DEFAULT_CONFIG = {
     "worktrees": {
         # false = never remove a dirty/unpushed tree (the pre-archive behaviour, exactly).
         "archive_dirty": True,
-        # Untracked files larger than this (MB) are left out of the archive and listed in it.
+        # Untracked files larger than this (MB) are not archived, so a tree holding one is kept.
         "archive_max_file_mb": 50,
         # The sweep deletes archive refs older than this many days. 0 keeps them forever.
         "archive_retention_days": 30,

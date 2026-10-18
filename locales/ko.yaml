@@ -3297,6 +3297,7 @@ cli:
     next_session_deepens: "다음 `hermes -w` 세션에서 클론을 깊게 만들고 병합된 워크트리를 자동으로 정리해요."
     unpushed_keeping: "⚠ 워크트리에 푸시되지 않은 커밋이 있어 유지해요: {path}"
     uncommitted_keeping: "⚠ 워크트리에 커밋되지 않은 변경 사항이 있어 유지해요: {path}"
+    kept_reason: "⚠ 워크트리를 유지해요 ({reason}): {path}"
     clean_up_manually: "직접 정리하려면: git worktree remove --force {path}"
     cleaned_up: "✓ 워크트리를 정리했어요: {path}"
     exit_question_dirty: "이 워크트리에 커밋되지 않은 변경 사항이 있어요: {path}"
@@ -3308,9 +3309,9 @@ cli:
     archived: "✓ 워크트리를 {ref}에 보관하고 제거했어요: {path}"
     restore_hint: "복원하려면: hermes worktree restore {name}"
     archive_failed: "✗ {path}을(를) 보관하지 못해 유지해요: {error}"
-    archived_kept: "✓ 워크트리를 {ref}에 보관했지만 유지했어요 (변경됐거나, 사용 중이거나, 제거할 수 없음): {path}"
+    archived_kept: "✓ 워크트리를 {ref}에 보관했지만 유지했어요 ({reason}): {path}"
     sweep_archived_removed: "보관 후 제거 → {ref}"
-    sweep_archived_kept: "보관됨, 유지 (정리 중 변경됨) → {ref}"
+    sweep_archived_kept: "보관됨, 유지 ({reason}) → {ref}"
     discarded: "워크트리를 제거하고 변경 사항을 버렸어요: {path}"
 display:
   verb:

@@ -214,6 +214,30 @@ repositories' `.worktrees/`:
 | File, `HEAD` or reflog activity younger than its tier (a deleted file counts through its folder) | never touched |
 | Kanban task trees (`t_<hex>`) | never touched (the Kanban GC owns them) |
 | Any submodule: a gitlink in the index, or a submodule repository kept under the tree's `modules/` (even after `git submodule deinit`) | kept (`keep-submodule-work`: an archive records only the submodule pointer). A clean merged tree is removed only if its submodules were never initialized |
+| An embedded repository anywhere inside, gitignored or not (e.g. `build/tool/.git`) | kept (`keep-unarchivable`) |
+| A commit held only by a per-worktree ref (`refs/worktree/*`, `refs/bisect/*`, `refs/rewritten/*`) | kept (`keep-worktree-refs`: those refs are deleted with the tree) |
+| An untracked file larger than `worktrees.archive_max_file_mb` | kept (`keep-large-untracked`) |
+| An ignored file that is not reproducible (see below) | kept (`keep-ignored-work`; `--dry-run` names the files) |
+
+**Ignored files.** An archive does not capture files your ignore rules
+(`.gitignore`, `.git/info/exclude`, `core.excludesFile`) exclude, so a tree is
+removed only when every ignored file in it can be regenerated:
+
+- it lies under a build or dependency directory: `node_modules`, `.venv`,
+  `venv`, `__pycache__`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.tox`,
+  `dist`, `build`, `target`, `.next`, `.turbo`, `.cache`, `coverage`, `.gradle`,
+  `*.egg-info`; or
+- it is a byte-identical copy of the same path in the main checkout (what
+  `.worktreeinclude` copies, such as `.env`).
+
+Any other ignored file (a local `.env` edit, `*.secret`, notes excluded in
+`info/exclude`, test output) keeps the tree, on every path: the sweep, exit
+**Archive** and subagent cleanup. Commit, move or delete the file and the next
+sweep reclaims the tree.
+
+The same checks run on clean merged trees, and every dirty check counts files
+that `status.showUntrackedFiles=no` would hide and skip-worktree /
+assume-unchanged files whose bytes differ from the index.
 
 An archive is a commit stored at `refs/hermes/archive/<tree>` holding the
 tree's `HEAD`, staged changes, unstaged changes and untracked files (files your
@@ -224,7 +248,8 @@ staged changes move (`git add`, `git apply --cached`) while the archive is
 being built, the archive is saved and the tree is kept too. File bytes are stored and
 restored exactly: no `.gitattributes`, `info/attributes`, `core.attributesFile`
 line-ending or filter rule is applied. Untracked files larger than
-`worktrees.archive_max_file_mb` are left out and listed in the archive. A
+`worktrees.archive_max_file_mb` are left out and listed in the archive, and the
+tree is then kept: exit **Archive** and the subagent result say so. A
 branch that exists on a remote (an open PR) is kept; otherwise the archive
 holds its commits and the local branch is deleted.
 
@@ -243,7 +268,7 @@ sweep.
 ```yaml
 worktrees:
   archive_dirty: true          # false = never remove dirty/unpushed trees (the old behaviour)
-  archive_max_file_mb: 50      # untracked files above this are listed, not archived
+  archive_max_file_mb: 50      # untracked files above this are not archived; their tree is kept
   archive_retention_days: 30   # 0 keeps archives forever
   max_total_gb: 0              # optional budget for idle trees; oldest are archived + removed first
 ```

@@ -3297,6 +3297,7 @@ cli:
     next_session_deepens: "Следующий сеанс `hermes -w` углубит клон и автоматически удалит слитые worktree."
     unpushed_keeping: "⚠ В worktree есть неотправленные коммиты, оставляю: {path}"
     uncommitted_keeping: "⚠ В worktree есть незакоммиченные изменения, оставляю: {path}"
+    kept_reason: "⚠ Worktree сохранён ({reason}): {path}"
     clean_up_manually: "Чтобы очистить вручную: git worktree remove --force {path}"
     cleaned_up: "✓ Worktree очищен: {path}"
     exit_question_dirty: "В этом worktree есть незакоммиченные изменения: {path}"
@@ -3308,9 +3309,9 @@ cli:
     archived: "✓ Worktree заархивирован в {ref} и удалён: {path}"
     restore_hint: "Восстановить: hermes worktree restore {name}"
     archive_failed: "✗ Не удалось заархивировать {path}, оставляю: {error}"
-    archived_kept: "✓ Worktree заархивирован в {ref}, но сохранён (изменился, используется или не удалось удалить): {path}"
+    archived_kept: "✓ Worktree заархивирован в {ref}, но сохранён ({reason}): {path}"
     sweep_archived_removed: "заархивирован + удалён → {ref}"
-    sweep_archived_kept: "заархивирован, сохранён (изменился во время очистки) → {ref}"
+    sweep_archived_kept: "заархивирован, сохранён ({reason}) → {ref}"
     discarded: "Worktree удалён, изменения отброшены: {path}"
 display:
   verb:

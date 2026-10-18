@@ -20,6 +20,16 @@ export const itNotices = {
   promptNotices: {
     legacySendUnconfirmed:
       'Questo server non ha potuto confermare l’invio precedente di questo messaggio, quindi potrebbe essere già stato elaborato. Controlla la conversazione prima di inviarlo di nuovo.',
+    mcpReloadDeferred:
+      'Questa chat è occupata: la modifica MCP si applica quando il turno in corso termina e MCP si ricarica, o alla riapertura della chat',
+    mcpReloadNotInChat: server => `${server} non è attivato in questa chat`,
+    mcpReloadUnavailable: servers => `Connessione non riuscita: ${servers}`,
     sessionCommands: itSessionCommands
+  },
+  keepAwakeOffer: {
+    title: 'Il computer si è spento mentre Hermes lavorava',
+    message:
+      'Hermes può mantenere il computer sveglio mentre un’attività è in esecuzione. Lo schermo si spegne comunque, e a batteria il computer potrebbe comunque andare in riposo.',
+    action: 'Tieni sveglio il computer mentre lavora'
   }
-} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar' | 'promptNotices'>
+} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer'>

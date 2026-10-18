@@ -119,8 +119,6 @@ export const itAssistant = {
       pinnedProvenance: (sha: string) =>
         `Fissato al commit ${sha}. Gli aggiornamenti vengono rifiutati finché non viene reinstallato con un nuovo commit fissato.`,
       pinnedBadge: (sha: string) => `fissato @ ${sha}`,
-      tierOfficial: 'ufficiale',
-      tierCommunity: 'community',
       updateToPin: (sha: string) => `Aggiorna a ${sha}`,
       updateFailed: (name: string) => `Impossibile aggiornare ${name}`,
       updated: (name: string) =>
@@ -521,6 +519,7 @@ export const itAssistant = {
       },
       tier: {
         official: 'ufficiale',
+        verified: 'verificato',
         community: 'community'
       },
       targetProfile: (profile: string) => `Viene installato nel tuo profilo ${profile}`,

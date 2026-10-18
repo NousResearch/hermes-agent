@@ -291,6 +291,15 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'Error al subir'
   },
   it: {
+    roomStopped: 'Gruppo arrestato',
+    roomDisbanded: 'Gruppo sciolto',
+    authorityLost: 'La proprietà del gruppo è cambiata',
+    workLimitReached: 'Limite di lavoro del gruppo raggiunto',
+    turnFailed: 'Turno non riuscito',
+    turnCancelled: 'Turno annullato',
+    turnDeferred: 'Turno rinviato',
+    memberUnavailable: 'Membro non disponibile',
+    members: 'Membri',
     refreshGroups: 'Aggiorna i gruppi del gateway',
     loadingGroup: 'Caricamento del gruppo…',
     loadingGroups: 'Caricamento dei gruppi del gateway…',

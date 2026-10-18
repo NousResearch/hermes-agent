@@ -45,6 +45,11 @@ class _RaisingEditAdapter(_Adapter):
         raise ValueError("malformed edit response")
 
 
+class _FailedEditAdapter(_Adapter):
+    async def edit_message(self, chat_id, message_id, content, *, finalize=False):
+        return SendResult(success=False)  # no error text, as an empty platform response gives
+
+
 def _setup(tmp_path, adapter):
     store = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
     entry = store.get_or_create_session(SessionSource(
@@ -70,7 +75,8 @@ async def _in_session(session_key, fn):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("adapter_cls, edited",
-                         [(_EditingAdapter, True), (_Adapter, False), (_RaisingEditAdapter, False)])
+                         [(_EditingAdapter, True), (_Adapter, False), (_RaisingEditAdapter, False),
+                          (_FailedEditAdapter, False)])
 async def test_post_then_edit_targets_the_calling_session(tmp_path, adapter_cls, edited):
     adapter = adapter_cls()
     runner, ctx, entry = _setup(tmp_path, adapter)
@@ -82,7 +88,7 @@ async def test_post_then_edit_targets_the_calling_session(tmp_path, adapter_cls,
     assert result["ok"] is True and result["edited"] is edited
     if edited:
         assert adapter.calls == [("send", "42", "step 1/2"), ("edit", "42", "m1", "step 2/2")]
-    else:  # no edit support, or the edit raised: a fresh message, and the handle follows it
+    else:  # no edit support, a raised or a failed edit: a fresh message, and the handle follows it
         assert adapter.calls == [("send", "42", "step 1/2"), ("send", "42", "step 2/2")]
         assert result["fallback"] is True and handle.message_id == "m2"
 

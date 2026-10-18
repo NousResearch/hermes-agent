@@ -81,6 +81,8 @@ class PluginMessage:
 
     def edit(self, text: str) -> dict[str, Any]:
         """Replace the message text: ``{"ok", "message_id", "edited", ["fallback"]}``. Thread-safe."""
+        if _on_gateway_loop():  # never block the loop the pending operation needs
+            return _err("on_event_loop", "called from the gateway event loop: use await handle.aedit(...)")
         if self.pending:
             try:
                 self._pending.result(_TIMEOUT_S)
@@ -106,6 +108,14 @@ def _gateway_loop():
     return runner, loop
 
 
+def _on_gateway_loop() -> bool:
+    _runner, loop = _gateway_loop()
+    try:
+        return loop is not None and asyncio.get_running_loop() is loop
+    except RuntimeError:
+        return False
+
+
 def _run_on_gateway_loop(coro, handle: PluginMessage) -> dict[str, Any]:
     """Run *coro* on the gateway loop and wait up to ``_TIMEOUT_S``; past that it keeps running as
     the handle's pending operation (its result still lands on the handle)."""
@@ -113,11 +123,7 @@ def _run_on_gateway_loop(coro, handle: PluginMessage) -> dict[str, Any]:
     if loop is None:
         coro.close()
         return _err("gateway_unavailable", "no live gateway is running in this process")
-    try:
-        running = asyncio.get_running_loop()
-    except RuntimeError:
-        running = None
-    if running is loop:
+    if _on_gateway_loop():
         coro.close()
         return _err("on_event_loop", "called from the gateway event loop: use the async form (await ...)")
     future = asyncio.run_coroutine_threadsafe(coro, loop)

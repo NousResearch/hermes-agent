@@ -74,16 +74,14 @@ def bound_route() -> dict:
     return {field: get_session_env(var, "") for field, var in _ROUTE_VARS.items()}
 
 
-def _bound_source(route: dict):
+def _bound_source(runner, route: dict, *, plugin_home, plugin_id: str):
     """A source for a messaging chat whose session has no store entry yet (a plugin command that is
-    the chat's first message): the route the gateway itself bound for this call."""
-    from gateway.session import SessionSource
+    the chat's first message), rebuilt from the route the gateway bound for this call and given the
+    receiving bot's provenance by the same canonicalizer a plugin ``origin`` goes through."""
     if not route.get("platform") or not route.get("chat_id") or route["platform"] == Platform.LOCAL.value:
         return None
-    try:
-        return SessionSource.from_dict({k: v for k, v in route.items() if v})
-    except (KeyError, TypeError, ValueError):
-        return None
+    return runner._plugin_origin_source({k: v for k, v in route.items() if v}, plugin_home=plugin_home,
+                                        plugin_id=plugin_id)
 
 
 def resolve(runner, *, session_key: str, route: dict, plugin_home, plugin_id: str):
@@ -93,7 +91,7 @@ def resolve(runner, *, session_key: str, route: dict, plugin_home, plugin_id: st
         from gateway.session_identity import replace_source
         source = replace_source(runner._restored_source(entry))
     else:
-        source = _bound_source(route)
+        source = _bound_source(runner, route, plugin_home=plugin_home, plugin_id=plugin_id)
         # The bound route must be the chat this key names (both are bound by the gateway together).
         if source is None or runner._session_key_for_source(source) != session_key:
             return None, _err("no_conversation", f"session {session_key!r} is not known to this gateway")
@@ -157,11 +155,11 @@ async def edit(target: PostTarget, message_id: Optional[str], text: str, *, plug
             try:
                 sent = await target.adapter.edit_message(target.chat_id, message_id,
                                                          _fit(target.adapter, target.chat_id, text))
-                edit_error = "" if getattr(sent, "success", False) else str(getattr(sent, "error", "") or "")
+                edited, edit_error = bool(getattr(sent, "success", False)), str(getattr(sent, "error", "") or "")
             except Exception as exc:  # a raised edit falls back like a refused one
                 logger.debug("plugin_message plugin=%s edit_message raised", plugin_id, exc_info=True)
-                sent, edit_error = None, str(exc) or type(exc).__name__
-            if sent is not None and not edit_error:
+                sent, edited, edit_error = None, False, str(exc) or type(exc).__name__
+            if edited:
                 result = {"ok": True, "message_id": str(sent.message_id or message_id), "edited": True}
             else:
                 result = {**await _send(target, text), "edited": False, "fallback": True,

@@ -246,8 +246,10 @@ def _handle_set(arg: str) -> str:
     result = _save(name, value, backend=backend, force=force)
     if not result.get("success"):
         error = str(result.get("error") or "Failed to store credential.")
-        if "already exists" in error:
-            return f"{error}\nUpdate it with: /creds set {name} <value> --force"
+        # save_credential already names --force; only the store's own wording
+        # ("Use overwrite to replace it") needs the actionable hint appended.
+        if "already exists" in error and "--force" not in error:
+            error = f"{error}\nUpdate it with: /creds set {name} <value> --force"
         return error
     _register(value)
     where = _where_phrase(str(result.get("backend", LOCAL)))

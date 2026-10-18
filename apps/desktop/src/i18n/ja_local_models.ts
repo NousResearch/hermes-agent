@@ -49,6 +49,7 @@ export const jaLocalModels: TranslationOverride<Translations['settings']['localM
   downloadRetryingLabel: '接続が中断されました。自動的に再試行します。',
   downloadWaitingLabel: 'このファイルの別のダウンロードが完了するまで待機しています。',
   downloadVerifyingLabel: '完了したファイルを検証して保存しています。',
+  setupInterruptedLabel: 'セットアップが中断されました。再開してセットアップを完了してください。',
   downloadInterruptedLabel: 'ダウンロードが中断されました。保存済みの進行状況から再開してください。',
   downloadInterruptedEmptyLabel:
     'ダウンロードが中断されました。保存済みのデータがありません。再開すると最初から開始します。',

@@ -1141,6 +1141,7 @@ export const zhHantSettings = {
       downloadRetryingLabel: '連線已中斷。正在自動重試。',
       downloadWaitingLabel: '正在等待此檔案的另一個下載完成。',
       downloadVerifyingLabel: '正在驗證並儲存已完成的檔案。',
+      setupInterruptedLabel: '設定已中斷。繼續以完成設定。',
       downloadInterruptedLabel: '下載已中斷。請繼續下載以從已儲存的進度繼續。',
       downloadInterruptedEmptyLabel: '下載已中斷。沒有保留的已下載資料。請繼續下載以重新開始。',
 

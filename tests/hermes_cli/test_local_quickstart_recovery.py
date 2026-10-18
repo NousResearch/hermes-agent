@@ -22,7 +22,7 @@ def _routes(monkeypatch, server):
     monkeypatch.setattr(lm.hardware, "probe_budget", lambda **kw: None)
     monkeypatch.setattr(lm, "_quickstart_target", lambda body, budget: choices[body.model_id])
     monkeypatch.setattr(lm, "_download_target", lambda model_id: choices[model_id])
-    monkeypatch.setattr(lm, "_runtime_target", lambda: ("test", "cpu"))
+    monkeypatch.setattr(lm, "_runtime_target", lambda requested=None: ("test", "cpu"))
     monkeypatch.setattr(lm.binaries, "installed_engine", lambda backend: object())
     monkeypatch.setattr(lm, "_download_plan", lambda entry, variant: plans[entry.id])
     monkeypatch.setattr(lm, "_set_runtime_enabled", lambda enabled: {})

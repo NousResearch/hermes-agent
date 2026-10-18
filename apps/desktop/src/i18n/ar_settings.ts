@@ -20,6 +20,7 @@ export const arSettings = {
       downloadRetryingLabel: 'انقطع الاتصال. تجري إعادة المحاولة تلقائيًا.',
       downloadWaitingLabel: 'في انتظار اكتمال تنزيل آخر لهذا الملف.',
       downloadVerifyingLabel: 'جارٍ التحقق من الملف المكتمل وحفظه.',
+      setupInterruptedLabel: 'توقف الإعداد. استأنف لإكمال الإعداد.',
       downloadInterruptedLabel: 'انقطع التنزيل. استأنف للمتابعة من التقدم المحفوظ.',
       downloadInterruptedEmptyLabel: 'انقطع التنزيل. لا توجد بيانات محفوظة. استأنف للبدء من جديد.',
 

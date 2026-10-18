@@ -67,6 +67,7 @@ export interface DownloadStatusCopy {
   downloadVerifyingLabel: string
   downloadInterruptedLabel: string
   downloadInterruptedEmptyLabel: string
+  setupInterruptedLabel: string
   downloadStatusRunning: string
   downloadProgress: (done: string, total: string) => string
   downloadSpeed: (rate: string) => string
@@ -125,7 +126,11 @@ export function downloadStatusText(job: LocalRuntimeJob, copy: DownloadStatusCop
     retrying: copy.downloadRetryingLabel,
     waiting: copy.downloadWaitingLabel,
     verifying: copy.downloadVerifyingLabel,
-    interrupted: job.done_bytes ? copy.downloadInterruptedLabel : copy.downloadInterruptedEmptyLabel
+    interrupted: ['quickstart', 'runtime-install'].includes(job.kind)
+      ? copy.setupInterruptedLabel
+      : job.done_bytes
+        ? copy.downloadInterruptedLabel
+        : copy.downloadInterruptedEmptyLabel
   }
 
   const parts: string[] = [

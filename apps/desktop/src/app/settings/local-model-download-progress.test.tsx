@@ -209,6 +209,7 @@ const statusCopy = {
   downloadVerifyingLabel: 'Prüfen',
   downloadInterruptedLabel: 'Unterbrochen; fortsetzen',
   downloadInterruptedEmptyLabel: 'Keine gespeicherten Daten; neu starten',
+  setupInterruptedLabel: 'Einrichtung unterbrochen; fortsetzen',
   downloadProgress: (done: string, total: string) => `${done} of ${total}`,
   downloadSpeed: (rate: string) => `${rate}`,
   downloadStatusRunning: 'Downloading'
@@ -247,6 +248,15 @@ describe('downloadStatusText', () => {
     expect(
       downloadStatusText(job({ phase: 'interrupted', status: 'paused', done_bytes: 0, total_bytes: null }), statusCopy)
     ).toBe(statusCopy.downloadInterruptedEmptyLabel)
+  })
+
+  it('offers to finish setup without claiming that a restart lost its saved bytes', () => {
+    expect(
+      downloadStatusText(
+        job({ kind: 'quickstart', phase: 'interrupted', status: 'paused', done_bytes: 0, total_bytes: null }),
+        statusCopy
+      )
+    ).toBe(statusCopy.setupInterruptedLabel)
   })
 
   it('composes state, bytes, speed and ETA while bytes move', () => {

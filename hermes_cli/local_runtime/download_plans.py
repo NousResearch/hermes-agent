@@ -17,8 +17,9 @@ def _root() -> Path:
     return partials_root() / ".model-plans"
 
 
-def plan_key(plan) -> str:
-    identity = [(url, str(dest)) for url, dest, _ in plan]
+def plan_key(plan, setup=None) -> str:
+    identity = (("setup", setup["profile"], setup["model_id"], setup["backend"] if setup["model_id"] is None else None)
+                if setup else [(url, str(dest)) for url, dest, _ in plan])
     return hashlib.sha256(json.dumps(identity, separators=(",", ":")).encode()).hexdigest()
 
 
@@ -27,12 +28,27 @@ def plan_lock(key: str, *, wait: bool = False, cancelled=None, on_wait=None):
 
 
 def save_plan(job: dict, plan) -> str:
-    key = plan_key(plan)
+    key = plan_key(plan, job.get("setup"))
     record = {"target": job["target"], "model_id": job.get("model_id"),
               "total_bytes": job.get("total_bytes"),
               "files": [(url, str(dest), size) for url, dest, size in plan]}
+    if job.get("setup"):
+        record["setup"] = job["setup"]
+    record["partial_urls"] = list(job.get("partial_urls", ()))
     durable_write_bytes(_root() / f"{key}.json", json.dumps(record).encode())
     return key
+
+
+def checkpoint(job: dict) -> None:
+    """Save a parked job's display state without changing its operation intent."""
+    path = _root() / f"{job['plan_key']}.json"
+    try:
+        record = json.loads(path.read_bytes())
+        record["partial_urls"] = list(job.get("partial_urls", ()))
+        record["state"] = {key: job[key] for key in ("done_bytes", "total_bytes", "ranges", "restart_runtime") if key in job}
+        durable_write_bytes(path, json.dumps(record).encode())
+    except (OSError, ValueError) as exc:
+        logging.getLogger(__name__).warning("could not checkpoint parked download: %s", exc)
 
 
 def remove_plan(key: str) -> None:
@@ -51,7 +67,7 @@ def discard_plan(key: str) -> bool:
         path = _root() / f"{key}.json"
         if path.is_file():
             record = json.loads(path.read_bytes())
-            for url, _, _ in record["files"]:
+            for url in [row[0] for row in record["files"]] + record.get("partial_urls", []):
                 discard_partial(_root().parent, url, excluding_plan=key)
             path.unlink(missing_ok=True)
         return True
@@ -59,6 +75,12 @@ def discard_plan(key: str) -> bool:
 
 def has_plan(key: str) -> bool:
     return (_root() / f"{key}.json").exists()
+
+
+def _valid_setup(setup) -> bool:
+    return (isinstance(setup, dict) and set(setup) == {"model_id", "profile", "backend", "variant"}
+            and isinstance(setup["profile"], str) and isinstance(setup["backend"], str)
+            and all(value is None or isinstance(value, str) for value in (setup["model_id"], setup["variant"])))
 
 
 def pending_plans():
@@ -76,12 +98,17 @@ def pending_plans():
             try:
                 record = json.loads(path.read_bytes())
                 plan = [(url, Path(dest), size) for url, dest, size in record["files"]]
-                if (not plan or not isinstance(record["target"], str)
+                setup = record.get("setup")
+                if (not plan and not setup or not isinstance(record["target"], str)
                         or record.get("model_id") is not None and not isinstance(record["model_id"], str)
                         or any(not isinstance(url, str) or type(size) is not int or size < 0
                                or dest.parent.resolve() not in parents or dest.suffix.lower() != ".gguf"
                                for url, dest, size in plan)
-                        or path.stem != plan_key(plan)):
+                        or setup is not None and not _valid_setup(setup)
+                        or not isinstance(record.get("state", {}), dict)
+                        or not isinstance(record.get("partial_urls", []), list)
+                        or any(not isinstance(url, str) for url in record.get("partial_urls", []))
+                        or path.stem != plan_key(plan, setup)):
                     continue
                 yield path.stem, record, plan
             except (OSError, ValueError, TypeError, KeyError):

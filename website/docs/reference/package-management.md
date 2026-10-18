@@ -159,6 +159,9 @@ untouched.
 Temporary engine-download failures also retain Resume and Discard. The PM
 worker preserves the download cause inside the package-install error, including
 all attempted source URLs, so recovery and cleanup use the same information.
+Saved setup intent also retains the selected build, backend, and profile. After
+an app/backend restart, Resume completes installation, starts the server, and
+sets the default model. Standalone engine installs also retain recovery controls.
 Plans are restored at backend startup and reconciled once a minute. Job status
 reads do not scan or change files. Desktop recovery messages use the selected
 language.

@@ -10,6 +10,7 @@ export const deLocalModels: TranslationOverride<Translations['settings']['localM
   downloadRetryingLabel: 'Verbindung unterbrochen. Automatischer neuer Versuch.',
   downloadWaitingLabel: 'Warten, bis ein anderer Download dieser Datei abgeschlossen ist.',
   downloadVerifyingLabel: 'Die vollständige Datei wird geprüft und gespeichert.',
+  setupInterruptedLabel: 'Einrichtung unterbrochen. Fortsetzen, um die Einrichtung abzuschließen.',
   downloadInterruptedLabel: 'Download unterbrochen. Mit Fortsetzen beim gespeicherten Fortschritt weitermachen.',
   downloadInterruptedEmptyLabel:
     'Download unterbrochen. Keine gespeicherten Daten vorhanden. Mit Fortsetzen neu starten.',

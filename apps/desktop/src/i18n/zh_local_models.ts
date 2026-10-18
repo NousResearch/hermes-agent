@@ -55,6 +55,7 @@ export const zhLocalModels: TranslationOverride<Translations['settings']['localM
   downloadRetryingLabel: '连接已中断。正在自动重试。',
   downloadWaitingLabel: '正在等待此文件的另一个下载完成。',
   downloadVerifyingLabel: '正在校验并保存已完成的文件。',
+  setupInterruptedLabel: '设置已中断。继续以完成设置。',
   downloadInterruptedLabel: '下载已中断。请恢复下载以从已保存的进度继续。',
   downloadInterruptedEmptyLabel: '下载已中断。没有保留的已下载数据。请恢复下载以重新开始。',
 

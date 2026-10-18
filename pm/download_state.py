@@ -52,7 +52,8 @@ def _referenced_by_plan(root: Path, url: str, excluding_plan: str | None) -> boo
         if path.stem == excluding_plan:
             continue
         try:
-            if any(item[0] == url for item in json.loads(path.read_bytes())["files"]):
+            record = json.loads(path.read_bytes())
+            if url in [item[0] for item in record["files"]] + record.get("partial_urls", []):
                 return True
         except (OSError, ValueError, KeyError, TypeError, IndexError):
             return True  # An unreadable plan cannot establish safe deletion.
@@ -82,7 +83,7 @@ def collect_download_plans(root: Path, *, grace_seconds: float = MODEL_PLAN_GRAC
                 record = json.loads(path.read_bytes())
                 checkpoints = [path]
                 keys = set()
-                for url, _, _ in record["files"]:
+                for url in [item[0] for item in record["files"]] + record.get("partial_urls", []):
                     key = partial_key(url)
                     keys.add(key)
                     checkpoints.extend(root / f"{key}{suffix}" for suffix in (".part", ".ranges"))

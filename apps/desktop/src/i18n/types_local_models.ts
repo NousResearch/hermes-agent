@@ -44,6 +44,7 @@ export interface LocalModelsTranslations {
   downloadVerifyingLabel: string
   downloadInterruptedLabel: string
   downloadInterruptedEmptyLabel: string
+  setupInterruptedLabel: string
   downloadDiscardDetail: string
   downloadDiscardFailed: (model: string) => string
   downloadDoneToast: (model: string) => string

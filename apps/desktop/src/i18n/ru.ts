@@ -339,6 +339,7 @@ export const ruOverrides = {
       downloadRetryingLabel: 'Соединение прервано. Повторная попытка выполняется автоматически.',
       downloadWaitingLabel: 'Ожидание завершения другой загрузки этого файла.',
       downloadVerifyingLabel: 'Проверка и сохранение готового файла.',
+      setupInterruptedLabel: 'Настройка прервана. Возобновите, чтобы завершить настройку.',
       downloadInterruptedLabel: 'Загрузка прервана. Возобновите её с сохранённого места.',
       downloadInterruptedEmptyLabel:
         'Загрузка прервана. Сохранённых данных нет. Возобновите загрузку, чтобы начать заново.',

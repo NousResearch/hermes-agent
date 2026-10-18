@@ -10,6 +10,7 @@ export const esLocalModels: TranslationOverride<Translations['settings']['localM
   downloadRetryingLabel: 'Conexión interrumpida. Se reintentará automáticamente.',
   downloadWaitingLabel: 'Esperando a que termine otra descarga de este archivo.',
   downloadVerifyingLabel: 'Verificando y guardando el archivo completo.',
+  setupInterruptedLabel: 'Configuración interrumpida. Reanuda para terminar la configuración.',
   downloadInterruptedLabel: 'Descarga interrumpida. Reanuda para continuar desde el progreso guardado.',
   downloadInterruptedEmptyLabel: 'Descarga interrumpida. No quedan datos guardados. Reanuda para empezar de nuevo.',
 

@@ -10,6 +10,7 @@ export const frLocalModels: TranslationOverride<Translations['settings']['localM
   downloadRetryingLabel: 'Connexion interrompue. Nouvelle tentative automatique.',
   downloadWaitingLabel: 'En attente de la fin d’un autre téléchargement de ce fichier.',
   downloadVerifyingLabel: 'Vérification et enregistrement du fichier complet.',
+  setupInterruptedLabel: 'Configuration interrompue. Reprenez pour terminer la configuration.',
   downloadInterruptedLabel: 'Téléchargement interrompu. Reprenez pour continuer depuis la progression enregistrée.',
   downloadInterruptedEmptyLabel:
     'Téléchargement interrompu. Aucune donnée enregistrée ne reste. Reprenez pour recommencer.',

@@ -214,8 +214,8 @@ def _record_rate(job: dict[str, Any], done: int) -> None:
 
 def _job_view(job: dict[str, Any]) -> dict[str, Any]:
     out = dict(job)
-    out.pop("plan_saved", None)
-    out.pop("partial_urls", None)
+    for field in ("plan_saved", "partial_urls", "setup", "download_key", "download_plan", "adopted_plan", "restart_runtime"):
+        out.pop(field, None)
     running = _RUNNING.get(job["job_id"], {})
     pause = running.get("pause")
     out["pause_requested"] = bool(pause is not None and pause.is_set() and out["status"] == "running")
@@ -254,15 +254,21 @@ def _finish(job: dict[str, Any], detail: str) -> None:
 
 def _spawn_job(job: dict[str, Any], name: str, body: Callable[[], None], *, fail_msg: str | None = None,
                on_exit: Callable[[], None] | None = None, download_label: str | None = None,
-               resumable: bool = False, start_paused: bool = False) -> None:
+               resumable: bool = False, start_paused: bool = False, ownership=None) -> None:
     """One worker per job. Pauses retain ownership; terminal outcomes release it."""
     guard = threading.Lock()
     pause = threading.Event()
 
     def _run():
+        with contextlib.ExitStack() as resources:
+            _run_owned(resources)
+
+    def _run_owned(resources):
         status = "done"
         download = None
         try:
+            if ownership is not None:
+                resources.enter_context(ownership())
             body()
             if download_label is not None:
                 _finish(job, f"{download_label} ready")
@@ -271,8 +277,7 @@ def _spawn_job(job: dict[str, Any], name: str, body: Callable[[], None], *, fail
             status = "paused"
             download = exc
         except Exception as exc:
-            if fail_msg:
-                logger.warning(fail_msg, exc)
+            logger.warning(fail_msg or "local-model job failed: %s", exc, exc_info=True)
             download = DownloadTransportError.find(exc)
             recoverable = resumable and download is not None and download.recoverable
             status = "paused" if recoverable else "error"
@@ -282,10 +287,13 @@ def _spawn_job(job: dict[str, Any], name: str, body: Callable[[], None], *, fail
         finally:
             if status == "paused" and download is not None:
                 job["partial_urls"] = tuple(dict.fromkeys((*job.get("partial_urls", ()), *download.urls)))
+            if status == "paused" and job.get("plan_saved"):
+                download_plans.checkpoint(job)
             try:
                 if status != "paused" and on_exit is not None:
                     on_exit()
             finally:
+                resources.close()
                 with _JOBS_LOCK:
                     if status != "paused":
                         _RUNNING.pop(job["job_id"], None)
@@ -537,9 +545,10 @@ def _download_progress_hook(job: dict[str, Any]):
 def _download_job(job: dict[str, Any], plan) -> None:
     """Model bytes use the same resumable transfer as pinned PM archives."""
     running = _RUNNING.get(job["job_id"], {})
-    job["plan_key"] = download_plans.plan_key(plan)
+    key = download_plans.plan_key(plan)
+    job["download_key" if job.get("setup") else "plan_key"] = key
     pause = running.get("pause")
-    with download_plans.plan_lock(job["plan_key"], wait=True, cancelled=pause.is_set if pause else None,
+    with download_plans.plan_lock(key, wait=True, cancelled=pause.is_set if pause else None,
                                   on_wait=lambda: _step(job, "waiting", "Waiting for this model's other download to finish")) as acquired:
         if not acquired:
             raise DownloadPaused("download paused while waiting for its plan")
@@ -547,8 +556,9 @@ def _download_job(job: dict[str, Any], plan) -> None:
 
 
 def _download_owned_plan(job: dict[str, Any], plan, pause) -> None:
-    download_plans.save_plan(job, plan)
-    job["plan_saved"] = True
+    if not job.get("setup"):
+        download_plans.save_plan(job, plan)
+        job["plan_saved"] = True
     def state(phase, detail):
         _step(job, phase, f"Downloading {job['target']}" if phase == "downloading" else detail)
 
@@ -562,28 +572,33 @@ def _download_owned_plan(job: dict[str, Any], plan, pause) -> None:
         if total and total != saved_total:
             # Probed plan sizes survive a restart even for companion files
             # that have not started yet. This is not a per-chunk metadata write.
-            download_plans.save_plan(job, plan)
+            if job.get("setup"):
+                download_plans.checkpoint(job)
+            else:
+                download_plans.save_plan(job, plan)
             saved_total = total
     try:
         dl.run(progress=progress)
     except DownloadPaused:
         raise
     except DownloadTransportError as exc:
-        if not exc.recoverable:
+        if not exc.recoverable and not job.get("setup"):
             download_plans.remove_plan(job["plan_key"])
         raise
     except Exception:
-        download_plans.remove_plan(job["plan_key"])
+        if not job.get("setup"):
+            download_plans.remove_plan(job["plan_key"])
         raise
     else:
-        download_plans.remove_plan(job["plan_key"])
+        if not job.get("setup"):
+            download_plans.remove_plan(job["plan_key"])
 
 
 def _plan_job(target: str, model_id: str, plan, *, kind: str = "model-download") -> tuple[dict, bool]:
     key = download_plans.plan_key(plan)
     with _DOWNLOAD_START_LOCK:
         with _JOBS_LOCK:
-            existing = next((job for job in _JOBS.values() if job.get("plan_key") == key
+            existing = next((job for job in _JOBS.values() if job.get("download_key", job.get("plan_key")) == key
                              and job["status"] in {"running", "paused"}), None)
         if existing is not None:
             return existing, False
@@ -595,6 +610,11 @@ def _plan_job(target: str, model_id: str, plan, *, kind: str = "model-download")
 def _restore_download_plans() -> None:
     with _DOWNLOAD_START_LOCK:
         for key, record, plan in download_plans.pending_plans():
+            if record.get("setup"):
+                from hermes_cli.web_routers import local_models_setup
+
+                local_models_setup.restore(key, record, plan)
+                continue
             if all(dest.is_file() for _, dest, _ in plan):
                 download_plans.remove_plan(key)
                 continue
@@ -860,32 +880,9 @@ def _install_engine_job(job: dict[str, Any], backend: str):
 
 @router.post("/api/local-models/runtime/install")
 def local_models_runtime_install(body: RuntimeInstallBody, profile: Optional[str] = None):
-    tag, backend = _runtime_target(body.backend)
-    job = _job("runtime-install", f"llama.cpp {tag} ({backend})")
-    owed = {"restart": False}  # survives a pause: resume runs this job's ``run`` again
+    from hermes_cli.web_routers import local_models_setup
 
-    def run():
-        with _config_profile_scope(profile):
-            previous = binaries.installed_engine(backend)
-            engine = _install_engine_job(job, backend)
-            drafts = _missing_drafts(engine.tag)
-            if drafts:
-                before, owed["restart"] = owed["restart"], True  # the restart is what loads them
-                _step(job, "downloading", "Downloading draft models that speed up generation")
-                if not _download_optional(job, drafts) and len(_missing_drafts(engine.tag)) == len(drafts):
-                    owed["restart"] = before  # nothing new landed for a restart to load
-            running = bootstrap.get_supervisor()
-            serving = bootstrap.serving_engine()
-            stale = previous != engine or (serving is not None and serving.tag != engine.tag)
-            if running is not None and (stale or owed["restart"]):
-                _step(job, "restarting", "Switching the running server to the pinned build"
-                      if stale else "Restarting the local server")
-                bootstrap.refresh_local_runtime()
-                owed["restart"] = False
-        _finish(job, f"llama.cpp {tag} ready ({backend})")
-
-    _spawn_job(job, "lr-runtime-install", run, fail_msg="runtime install failed: %s", resumable=True)
-    return {"job_id": job["job_id"], "backend": backend, "tag": tag}
+    return local_models_setup.begin_runtime(body, profile)
 
 
 # ── model download (job with byte progress) ──────────────────
@@ -997,17 +994,6 @@ def _quickstart_target(body: QuickstartBody, budget):
         "no catalog model fits this machine — open Local Models to browse for a smaller build"))
 
 
-def _repriced_quickstart(job: dict[str, Any], body: QuickstartBody, variant):
-    """Re-pick once the engine is installed, before any bytes are committed: a Vulkan/HIP GPU's
-    type and size come from that engine's own device probe, so the preflight price was a guess."""
-    entry, picked = _quickstart_target(body, hardware.probe_budget(planning=True))
-    if picked.model_id != variant.model_id:
-        with _JOBS_LOCK:
-            job.update(target=entry.display_name, model_id=entry.id)
-    plan = _download_plan(entry, picked)
-    return entry, picked, plan if any(not dest.is_file() for _, dest, _ in plan) else []
-
-
 def _quickstart_job(entry, plan) -> dict:
     if not plan:
         return _job("quickstart", entry.display_name, model_id=entry.id)
@@ -1032,45 +1018,9 @@ def local_models_quickstart(body: QuickstartBody, profile: Optional[str] = None)
     missing), make it the default. Each leg uses the same code as the individual setup routes.
     Preflight rejects (no automatic recommendation or no servable choice) fail the POST
     synchronously so the button can explain itself; everything slow runs in the job with phase/byte progress."""
-    entry, variant = _quickstart_target(body, hardware.probe_budget(planning=True))
-    _tag, backend = _runtime_target()
-    need_runtime = binaries.installed_engine(backend) is None
-    download_plan = _download_plan(entry, variant)
-    need_download = any(not dest.is_file() for _, dest, _ in download_plan)
-    if not need_download:
-        download_plan = []
-    download_bytes = sum(p[2] for p in download_plan)
-    if not _QUICKSTART_LOCK.acquire(blocking=False):
-        raise HTTPException(status_code=409, detail="Setup is already running")
-    try:
-        job = _quickstart_job(entry, download_plan)
-    except Exception:
-        _QUICKSTART_LOCK.release()
-        raise
-    def _run():
-        nonlocal entry, variant, download_plan
-        if need_runtime and binaries.installed_engine(backend) is None:
-            _install_engine_job(job, backend)
-            entry, variant, download_plan = _repriced_quickstart(job, body, variant)
-        if download_plan:
-            # Each phase has its own complete download plan. Resume within a
-            # phase retains counters until PM reports the durable bytes.
-            if job["phase"] not in _MODEL_DOWNLOAD_PHASES:
-                with _JOBS_LOCK:
-                    job.update(done_bytes=0, total_bytes=None, ranges={})
-            _run_download_plan(job, download_plan, entry.display_name, entry)
-        _step(job, "starting-server", "Starting the local server")
-        with _config_profile_scope(profile):
-            _ensure_server(job, _set_runtime_enabled(True), variant.model_id,
-                           fail_detail="The local server could not start — open Local Models for details",
-                           skip_msg="quickstart rescan check skipped")
-            _assign_default(job, variant.model_id)
-        _finish(job, f"{entry.display_name} is ready — new chats use it")
+    from hermes_cli.web_routers import local_models_setup
 
-    _spawn_job(job, "lr-quickstart", _run, fail_msg="quickstart failed: %s",
-               on_exit=_QUICKSTART_LOCK.release, resumable=True)
-    return {"job_id": job["job_id"], "model_id": entry.id, "display_name": entry.display_name,
-            "needs_runtime": need_runtime, "needs_download": need_download, "download_bytes": download_bytes}
+    return local_models_setup.begin(body, profile)
 
 
 # ── server lifecycle: turn the engine on/off ─────────────────

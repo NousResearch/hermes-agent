@@ -142,13 +142,13 @@ Give the user the `approval_url`, then run `_next` (in the background if your ha
 ```
 link-cli spend-request retrieve <lsrq_id> \
   --include card \
-  --output-file ~/.hermes/cache/scratch/link-card.json \
+  --output-file <scratch-dir>/link-card.json \
   --format json
 ```
 
-The file is written with `0600` perms; stdout shows only redacted fields (brand, last4, expiry) plus a `card_output_file` path.
+Use an absolute path for `<scratch-dir>`: `~/.hermes/cache/scratch` on Linux/macOS, `C:/Users/<user>/AppData/Local/hermes/cache/scratch` on Windows (see the Windows pitfall below).
 
-**Windows:** pass an absolute native path, e.g. `C:/Users/<user>/AppData/Local/hermes/cache/scratch/link-card.json`. Under git-bash, `$TMPDIR`/`/tmp` resolves to `C:\tmp` for Node and fails with `OUTPUT_FILE_WRITE_ERROR ... ENOENT`.
+The file is written with `0600` perms; stdout shows only redacted fields (brand, last4, expiry) plus a `card_output_file` path.
 
 ### 6. Use the credential
 
@@ -167,7 +167,7 @@ The file is written with `0600` perms; stdout shows only redacted fields (brand,
 Delete the card file as soon as the purchase is done:
 
 ```
-rm -f ~/.hermes/cache/scratch/link-card.json
+rm -f <scratch-dir>/link-card.json
 ```
 
 ## Optional: run as an MCP server instead
@@ -184,8 +184,9 @@ Then `hermes mcp list` should show `stripe-link`. The same approval rules apply 
 
 - **US-only.** Outside the US, `auth login` will fail. Tell the user, don't keep retrying.
 - **Card PAN must never enter agent context.** Use `--output-file` every time. If you've already retrieved without it, immediately `link-cli auth logout` is not enough — the card is one-time-use but rotate hygiene matters.
-- **`--request-approval` blocks until the user acts.** If the user is asleep, the CLI will hit its timeout. Set expectations.
+- **`--request-approval` does not block.** It returns at once with `status: pending_approval`; the wait happens in the `_next` retrieve poll (Section 4). Run that poll in the background, re-run it if it exhausts its ~10-minute attempt budget while the ~30-minute approval window is still open, and tell the user the request expires if they don't act.
 - **Multi-step `_next` commands.** Some commands return `_next.command` that must be executed to continue. When in doubt, prefer the inline-polling flags (`--interval`/`--timeout`).
+- **Windows: `--output-file` needs an absolute native path.** Under git-bash, POSIX paths are not translated for Node: `/tmp/...` resolves to `C:\tmp\...` and `~/...` expands to `/c/Users/...`, and both fail with `OUTPUT_FILE_WRITE_ERROR ... ENOENT`. Pass a forward-slash native path such as `C:/Users/<user>/AppData/Local/hermes/cache/scratch/link-card.json`.
 - **Output format defaults to `toon`** in non-TTY mode. Fine for prose, but if a downstream step needs to parse a specific field, pass `--format json`.
 - **Don't default to `card`.** The merchant-evaluation step (Section 2) exists because picking the wrong credential type fails the purchase silently or leaks more data than needed.
 - **Shopify storefront checkout resists browser automation.** Filling a one-time card into a Shopify checkout with a driven browser hit bot protection: a headless browser's "Pay now" was silently ignored, and a headed one got a CAPTCHA plus a Shop Pay prompt. Never try to solve CAPTCHAs. For Shopify merchants, prefer the `shop` optional skill (Shop CLI, UCP checkout with Shop Pay), or hand the final click to the user.

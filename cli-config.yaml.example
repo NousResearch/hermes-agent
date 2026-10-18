@@ -736,6 +736,17 @@ compression:
   # Range: 0.10 - 0.80
   target_ratio: 0.20
 
+  # Model-facing size target for the summary, in tokens (default: null = derived).
+  # Derived = min(compressed content × 0.20, min(context_length × 5%, 10000)).
+  # Set it when the summariser is slow (a local vLLM/llama.cpp route decodes far slower
+  # than a hosted API): summary time ≈ output tokens ÷ decode speed, so a 30K-token
+  # summary on a 30 tok/s local model costs ~17 minutes and blows the compression
+  # deadline, while a 6K target finishes in ~4. The budget is advisory — models
+  # routinely overshoot it 3x — so when this is set the prompt also carries an explicit
+  # hard-ceiling sentence and per-section caps. It NEVER becomes a wire max_tokens:
+  # a finish_reason=length summary is treated as PARTIAL and the compaction is discarded.
+  max_summary_tokens: null
+
   # Number of most-recent messages to always preserve (default: 20 ≈ 10 full turns)
   # Higher values keep more recent conversation intact at the cost of more aggressive
   # compression of older turns.

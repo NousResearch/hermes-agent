@@ -1578,6 +1578,8 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
             if isinstance(v, (int, float)) and not isinstance(v, bool)
         },
         threshold_tokens=threshold_tokens,
+        # Advisory summary-size target in tokens (None = derived); applied to the compressor below.
+        max_summary_tokens=_positive_int(cfg.get("max_summary_tokens")),
         checkpoint_required=checkpoint_required,
         # In-place compaction: no session-id rotation. default=True MUST match DEFAULT_CONFIG
         # (a False default flipped agents into rotation mode when the key was omitted).
@@ -2037,6 +2039,11 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
         if hasattr(_cc, _attr):
             setattr(_cc, _attr, _value)
     agent.compression_checkpoint_required = cs.checkpoint_required
+    # compression.max_summary_tokens: advisory summary-size target (None/0 = derived from the window).
+    _summary_target = getattr(cs, "max_summary_tokens", None)
+    if _summary_target:
+        with suppress(Exception):
+            _cc.summary_tokens_override = int(_summary_target)
     from agent.conversation_compression_checkpoint import _warn_checkpoint_required_without_capable_provider
     _warn_checkpoint_required_without_capable_provider(agent)
     agent.codex_app_server_auto_compaction = cs.codex_app_server_auto

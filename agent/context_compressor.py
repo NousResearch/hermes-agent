@@ -2248,6 +2248,11 @@ class ContextCompressor(
 
     @property
     def max_summary_tokens(self) -> int:
+        # compression.max_summary_tokens: an explicit target wins over the window-derived ceiling so a
+        # slow local summariser can be told to write a shorter summary (update_model() may reset the
+        # cached value, but never the override).
+        if self.summary_tokens_override:
+            return int(self.summary_tokens_override)
         if self._max_summary_tokens is None:
             self._max_summary_tokens = min(int(self.context_length * 0.05), _SUMMARY_TOKENS_CEILING)
         return self._max_summary_tokens
@@ -2830,6 +2835,8 @@ class ContextCompressor(
         self.threshold_percent = self._base_threshold_percent
         # Effective trigger = min(ratio threshold, cap); re-applied in update_model().
         self.threshold_tokens_cap = self._coerce_threshold_tokens_cap(threshold_tokens_cap)
+        # Advisory summary-size target from compression.max_summary_tokens (None = window-derived).
+        self.summary_tokens_override: int | None = None
         # Aux summariser window installed by the feasibility probe; None until it runs.
         self._aux_context_ceiling: int | None = None
         self.protect_first_n, self.protect_last_n = protect_first_n, protect_last_n
@@ -4050,7 +4057,10 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         )
         # Lean mode folds the session log into this SAME single request (one aux call).
         _session_log_section = _LEAN_SESSION_LOG_SECTION if getattr(self, "tail_mode", "lean") == "lean" else ""
-        _template_sections = self._summary_template_sections(_section, summary_budget, _session_log_section)
+        _template_sections = self._summary_template_sections(
+            _section, summary_budget, _session_log_section,
+            target_override=getattr(self, "summary_tokens_override", None),
+        )
         if self._previous_summary:
             # Iterative update. Bound the previous summary too: a rehydrated handoff can be huge.
             _bounded_previous_summary = self._bound_summary_input(self._previous_summary)
@@ -4104,9 +4114,24 @@ This compaction should PRIORITISE preserving all information related to the focu
         return ""
 
     @classmethod
-    def _summary_template_sections(cls, _section: dict[str, str], summary_budget: int, _session_log_section: str) -> str:
-        """The ``## ...`` section template shared by the fresh and iterative-update prompts."""
+    def _summary_template_sections(cls, _section: dict[str, str], summary_budget: int, _session_log_section: str,
+                                   target_override: int | None = None) -> str:
+        """The ``## ...`` section template shared by the fresh and iterative-update prompts.
+
+        ``target_override`` (compression.max_summary_tokens) replaces the derived target with an explicit
+        count and adds a hard-ceiling sentence plus per-section caps — the budget alone is advisory and
+        models routinely overshoot it ~3x, which is what makes a slow local summariser time out.
+        """
         _temporal_anchoring_rule = cls._temporal_anchoring_rule()
+        _target_total = summary_budget + (_LEAN_SESSION_LOG_BUDGET_TOKENS if _session_log_section else 0)
+        _target_note = ""
+        if target_override:
+            _target_total = int(target_override)
+            _target_note = (
+                f" HARD CEILING — do not exceed {int(target_override)} tokens; if you run short of room, drop "
+                f"low-value detail rather than exceed it. Completed Actions: at most 20 entries, each at most "
+                f"120 characters. Relevant Files: only files actually read or modified."
+            )
         return f"""{HISTORICAL_TASK_HEADING}
 {_section["historical_task"]}
 
@@ -4159,7 +4184,7 @@ repeat each one verbatim here — copy the exact text, do NOT paraphrase, summar
 or describe them. These markers tell the agent which skills must be reloaded before
 use. If none appear, omit this section entirely.]
 
-Target ~{summary_budget + (_LEAN_SESSION_LOG_BUDGET_TOKENS if _session_log_section else 0)} tokens. Be CONCRETE — include file paths, command outputs, error messages, line numbers, and specific values. Avoid vague descriptions like "made some changes" — say exactly what changed.
+Target ~{_target_total} tokens.{_target_note} Be CONCRETE — include file paths, command outputs, error messages, line numbers, and specific values. Avoid vague descriptions like "made some changes" — say exactly what changed.
 {_temporal_anchoring_rule}
 Write only the summary body. Do not include any preamble or prefix."""
 

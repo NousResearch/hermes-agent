@@ -613,6 +613,11 @@ DEFAULT_CONFIG = {
         # (~3x fewer retained tokens; a few extra summarizer calls at the boundary). "legacy" =
         # 0.20×threshold verbatim tail (100-240K tokens on big windows).
         "tail_mode": "lean",
+        # max_summary_tokens: model-facing size target for the summary, in tokens. None = derived as
+        # min(content×0.20, min(context_length×5%, 10000)). Set it to shrink summaries on slow local
+        # routes — the budget is advisory (models overshoot ~3x), so when set the prompt also carries a
+        # hard-ceiling sentence. Never becomes a wire max_tokens: a length stop invalidates the summary.
+        "max_summary_tokens": None,
         # protect_last_n: minimum recent messages kept uncompressed, honoured up to a small count
         # floor; the verbatim tail is otherwise token-bounded and never above 20% of the window.
         "protect_last_n": 20,

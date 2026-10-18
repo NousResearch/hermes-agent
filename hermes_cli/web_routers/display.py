@@ -96,16 +96,27 @@ async def _open_rfb(profile_home: Path):
     Popen; None for a socket). Raises OSError when nothing is running."""
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from tools.bot_desktop import runtime as _bd_runtime
+    from tools.terminal_scope import TerminalPolicyUnavailable, install_and_reset_profile_terminal_scope
     token = set_hermes_home_override(profile_home)
     try:
-        if _bd_runtime.sandbox_screen_running():
-            relay = _bd_runtime.open_rfb_stream()
-        else:
-            sock = profile_home / "bot-desktop" / "rfb.sock"
-            if not sock.exists():
-                raise OSError("rfb.sock missing")
-            reader, writer = await asyncio.open_unix_connection(str(sock))
-            return reader, writer, None
+        # The home override alone is not the profile's terminal authority: ``_resolve_container_task_id``
+        # reads TERMINAL_* through the scope-aware ``_tenv``, which without a bound scope falls back to the
+        # process env — the LAUNCH profile's bridged values. A multiplexed serve whose launch profile runs
+        # local then keys a routed docker-persistent profile's sandbox as ``home:<path>`` instead of
+        # ``profile:<name>``, so the RFB relay resolves a LocalEnvironment and dies on its first exec
+        # (#140892). Bind the routed profile's terminal policy for exactly the override's interval.
+        with install_and_reset_profile_terminal_scope(profile_home):
+            if _bd_runtime.sandbox_screen_running():
+                relay = _bd_runtime.open_rfb_stream()
+            else:
+                sock = profile_home / "bot-desktop" / "rfb.sock"
+                if not sock.exists():
+                    raise OSError("rfb.sock missing")
+                reader, writer = await asyncio.open_unix_connection(str(sock))
+                return reader, writer, None
+    except TerminalPolicyUnavailable as exc:
+        # Refusal fails closed, but the viewer still gets a close frame instead of a dropped socket.
+        raise OSError(f"terminal policy unavailable for {profile_home}: {exc}") from exc
     finally:
         reset_hermes_home_override(token)
     loop = asyncio.get_running_loop()

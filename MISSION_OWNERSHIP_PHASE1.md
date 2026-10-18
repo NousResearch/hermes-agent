@@ -45,7 +45,7 @@ PYTHONPATH=. .venv/bin/python -m pytest -q --confcutdir=mission_ownership_tests 
 
 Result: `30 passed in 2.00s`.
 
-Coverage includes SQLite ownership transitions, stale-owner and inline dispatch rejection, repeated delivery and mismatched reuse, identical wording across sessions, post-completion new mission, named resume, child task checks, task/mission atomic completion, trusted receipt acceptance/rejection, handoff rollback (including task-card creation rollback), lease timeout/quiescence, interrupted scopes, and a subprocess hard exit that leaves a fail-closed lease. The suite also invokes the shared executor middleware path with a long-running mocked terminal-named dispatch and a Telegram gateway post-admission consumer wrapper with the lifecycle plug-in call mocked.
+Coverage includes SQLite ownership transitions, stale-owner and inline dispatch rejection, repeated delivery and mismatched reuse, identical wording across sessions, post-completion new mission, named resume, child task checks, task/mission atomic completion, trusted receipt acceptance/rejection, handoff rollback (including task-card creation rollback), expired owner lease with an outstanding execution lease, interrupted scopes, and a subprocess hard exit that leaves a fail-closed lease. The suite also invokes the shared executor middleware path with a long-running mocked terminal-named dispatch and a Telegram gateway post-admission consumer wrapper with the lifecycle plug-in call mocked.
 
 Additional checks:
 

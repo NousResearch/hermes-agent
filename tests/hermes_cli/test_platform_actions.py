@@ -319,3 +319,89 @@ class TestPluginContextWiring:
         assert facade._plugin_id == "actions-fixture"
         # Cached: property returns the same instance.
         assert ctx.platform_actions is facade
+
+
+class TestSetMessageButtons:
+    """``set_message_buttons``: validated inline buttons on a sent message (#64176, #61825)."""
+
+    BUTTONS = [{"label": "Apply", "data": "myplug:apply:42"}, {"label": " Skip ", "data": "myplug:skip:42"}]
+
+    def _telegram(self, ok=True):
+        adapter = _telegram_adapter()
+        adapter.set_message_buttons = AsyncMock(return_value=ok)
+        return adapter
+
+    def test_routes_normalized_buttons_to_adapter(self):
+        adapter = self._telegram()
+        with _grant(True), _runner_with({Platform.TELEGRAM: adapter}):
+            result = asyncio.run(PlatformActions("p").set_message_buttons("telegram", "-100", "7", self.BUTTONS))
+        assert result == {"ok": True, "action": "set_message_buttons", "count": 2}
+        adapter.set_message_buttons.assert_awaited_once_with(
+            "-100", "7", [{"label": "Apply", "data": "myplug:apply:42"}, {"label": "Skip", "data": "myplug:skip:42"}])
+
+    def test_empty_list_clears_buttons(self):
+        adapter = self._telegram()
+        with _grant(True), _runner_with({Platform.TELEGRAM: adapter}):
+            result = asyncio.run(PlatformActions("p").set_message_buttons("telegram", "1", "2", []))
+        assert result["ok"] is True
+        adapter.set_message_buttons.assert_awaited_once_with("1", "2", [])
+
+    @pytest.mark.parametrize("data", [
+        "ea:approve:1", "cl:0:1", "mp:openai", "mb", "mx", "mbox:1", "cp:x", "gt:1", "sc:1", "update_prompt:y"])
+    def test_reserved_core_prefix_is_refused(self, data):
+        adapter = self._telegram()
+        with _grant(True), _runner_with({Platform.TELEGRAM: adapter}):
+            result = asyncio.run(PlatformActions("p").set_message_buttons(
+                "telegram", "1", "2", [{"label": "x", "data": data}]))
+        assert result["error"] == "invalid_argument" and "reserved" in result["detail"]
+        adapter.set_message_buttons.assert_not_awaited()
+
+    @pytest.mark.parametrize("buttons", [
+        "not-a-list",
+        [{"label": "x", "data": "p:1"}] * 9,
+        ["not-a-dict"],
+        [{"label": "", "data": "p:1"}],
+        [{"label": "x" * 65, "data": "p:1"}],
+        [{"label": "x", "data": ""}],
+        [{"label": "x", "data": "p:" + "й" * 32}],   # 66 UTF-8 bytes
+        [{"label": "x"}],
+    ])
+    def test_invalid_buttons_are_structured_errors(self, buttons):
+        adapter = self._telegram()
+        with _grant(True), _runner_with({Platform.TELEGRAM: adapter}):
+            result = asyncio.run(PlatformActions("p").set_message_buttons("telegram", "1", "2", buttons))
+        assert result["ok"] is False and result["error"] == "invalid_argument"
+        adapter.set_message_buttons.assert_not_awaited()
+
+    def test_ungranted_plugin_gets_capability_error_not_validation_details(self):
+        adapter = self._telegram()
+        with _grant(False), _runner_with({Platform.TELEGRAM: adapter}):
+            result = asyncio.run(PlatformActions("p").set_message_buttons(
+                "telegram", "1", "2", [{"label": "x", "data": "ea:approve"}]))
+        assert result["error"] == "capability_not_granted"
+        adapter.set_message_buttons.assert_not_awaited()
+
+    def test_adapter_false_is_action_failed(self):
+        adapter = self._telegram(ok=False)
+        with _grant(True), _runner_with({Platform.TELEGRAM: adapter}):
+            result = asyncio.run(PlatformActions("p").set_message_buttons("telegram", "1", "2", self.BUTTONS))
+        assert result["error"] == "action_failed"
+
+    def test_discord_is_unsupported(self):
+        with _grant(True), _runner_with({Platform.DISCORD: _discord_adapter()}):
+            result = asyncio.run(PlatformActions("p").set_message_buttons("discord", "1", "2", self.BUTTONS))
+        assert result["error"] == "unsupported_platform_action"
+
+    def test_reserved_prefixes_cover_every_core_dispatched_prefix(self):
+        """A new core callback flow must be added to CORE_CALLBACK_PREFIXES, or plugins could mint it."""
+        import inspect
+        import re
+
+        from plugins.platforms.telegram.adapter import CORE_CALLBACK_PREFIXES, TelegramAdapter
+
+        source = inspect.getsource(TelegramAdapter._handle_callback_query)
+        dispatched = set(re.findall(r'\(\s*"([A-Za-z_]+:?)"\s*,\s*self\._handle_', source))
+        for group in re.findall(r'\(\(([^()]*)\)\s*,\s*self\._handle_', source):
+            dispatched.update(re.findall(r'"([^"]+)"', group))
+        assert dispatched, "dispatcher parsing found no prefixes"
+        assert dispatched <= set(CORE_CALLBACK_PREFIXES), dispatched - set(CORE_CALLBACK_PREFIXES)

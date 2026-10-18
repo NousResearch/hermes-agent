@@ -1068,8 +1068,11 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
     clarify_session_key = run.clarify_session_key
     q = run.queue
 
-    def _clarify_callback(question: str, choices, multi_select: bool = False) -> str:
+    def _ask_one_clarify(question: str, choices, multi_select: bool) -> tuple[Optional[str], Optional[str]]:
+        """One SSE ``clarify.request`` + wait. Returns ``(answer, notice)``;
+        ``answer is None`` means undelivered/timeout (``notice`` carries why)."""
         from tools import clarify_gateway
+        from tools.clarify_gateway import CANCELLED
         redact = _api_server.redact_sensitive_text
         safe_question = str(redact(str(question or ""), force=True) or "")[
             :_api_server._RUN_CLARIFY_MAX_QUESTION_CHARS]
@@ -1109,9 +1112,11 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             loop.call_soon_threadsafe(_publish_clarify)
         except RuntimeError:
             clarify_gateway.clear_session(clarify_session_key)
-            return "[clarify prompt could not be delivered]"
+            return None, "[clarify prompt could not be delivered]"
         timeout = clarify_gateway.get_clarify_timeout()
         response = clarify_gateway.wait_for_response(request_id, timeout=float(timeout))
+        if response == CANCELLED or run_id in self._stopping_run_ids:
+            return None, CANCELLED
         if not response:
             def _clear_awaiting_on_timeout() -> None:
                 if self._run_statuses.get(run_id, {}).get("awaiting_user"):
@@ -1120,8 +1125,28 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
 
             with suppress(RuntimeError):
                 loop.call_soon_threadsafe(_clear_awaiting_on_timeout)
-            return f"[user did not respond within {int(timeout / 60)}m]"
-        return response
+            return None, f"[user did not respond within {int(timeout / 60)}m]"
+        return response, None
+
+    def _clarify_callback(questions) -> dict:
+        """clarify_tool batch contract: one SSE prompt per question, sequential on this run."""
+        from tools.clarify_gateway import CANCELLED
+        answers: dict[str, Any] = {}
+        reply: dict[str, Any] = {"answers": answers, "outcome": "submitted"}
+        for entry in questions or []:
+            raw, notice = _ask_one_clarify(
+                entry.get("question", ""), entry.get("choices"), bool(entry.get("multi_select")))
+            if notice == CANCELLED:
+                reply["outcome"] = "cancelled"
+                break
+            if raw is None:
+                reply["outcome"] = (
+                    "undelivered" if notice and "could not be delivered" in notice else "timed_out")
+                if notice:
+                    reply["notice"] = notice
+                break
+            answers[str(entry.get("qid") or "")] = raw
+        return reply
 
     try:
         # Shutdown landed between admission and the task's first tick: nothing to

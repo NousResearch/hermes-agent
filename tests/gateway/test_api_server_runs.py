@@ -82,6 +82,38 @@ def _claim_run(adapter: APIServerAdapter, run_id: str) -> None:
     adapter._run_owners[run_id] = adapter._run_idempotency_scope(request)
 
 
+async def _next_run_event(stream: _RunStream, *, timeout: float = 3.0) -> dict:
+    """Wait for the next non-sentinel event on a fan-out ``_RunStream``."""
+    queue, replay = stream.attach()
+    try:
+        for _seq, event in replay:
+            if event is not None:
+                return event
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise asyncio.TimeoutError
+            _seq, event = await asyncio.wait_for(queue.get(), timeout=remaining)
+            if event is not None:
+                return event
+    finally:
+        stream.detach(queue)
+
+
+def _invoke_run_clarify(callback, question, choices=None, *, multi_select=False, qid="q0"):
+    """Drive the Runs clarify_callback through clarify_tool's batch contract."""
+    entry = {
+        "qid": qid,
+        "question": question,
+        "choices": list(choices) if choices else None,
+        "choices_offered": list(choices) if choices else None,
+        "multi_select": bool(multi_select) and bool(choices),
+    }
+    reply = callback([entry])
+    return reply["answers"].get(qid)
+
+
 def _create_runs_app(adapter: APIServerAdapter) -> web.Application:
     """Create an aiohttp app with /v1/runs routes registered."""
     mws = [mw for mw in (cors_middleware, security_headers_middleware) if mw is not None]
@@ -998,10 +1030,11 @@ class TestRunEventsCORS:
 
 
 # ---------------------------------------------------------------------------
-# POST /v1/runs/{run_id}/steer — steer a running agent
+# POST /v1/runs/{run_id}/clarification — Runs clarify-tool hard gate
 # ---------------------------------------------------------------------------
 
 
+class TestRunClarification:
     @pytest.mark.asyncio
     async def test_clarification_event_waits_for_exact_choice_response(self, adapter):
         app = _create_runs_app(adapter)
@@ -1011,7 +1044,8 @@ class TestRunEventsCORS:
             mock_agent = MagicMock()
 
             def run_conversation(**_run_kwargs):
-                callback_result["answer"] = kwargs["clarify_callback"](
+                callback_result["answer"] = _invoke_run_clarify(
+                    kwargs["clarify_callback"],
                     "Pick a color OPENAI_API_KEY=sk-secret-12345678901234567890",
                     ["Red", "Blue"],
                 )
@@ -1027,7 +1061,7 @@ class TestRunEventsCORS:
             with patch.object(adapter, "_create_agent", side_effect=make_agent) as create:
                 started = await cli.post("/v1/runs", json={"input": "hello"})
                 run_id = (await started.json())["run_id"]
-                event = await asyncio.wait_for(adapter._run_streams[run_id].get(), timeout=3)
+                event = await _next_run_event(adapter._run_streams[run_id])
 
                 assert event["event"] == "clarify.request"
                 assert event["run_id"] == run_id
@@ -1086,7 +1120,8 @@ class TestRunEventsCORS:
             mock_agent = MagicMock()
 
             def run_conversation(**_run_kwargs):
-                answers[id(mock_agent)] = kwargs["clarify_callback"](
+                answers[id(mock_agent)] = _invoke_run_clarify(
+                    kwargs["clarify_callback"],
                     "Pick one?",
                     ["Yes", "No"],
                 )
@@ -1108,12 +1143,8 @@ class TestRunEventsCORS:
                 )
                 first_id = (await first.json())["run_id"]
                 second_id = (await second.json())["run_id"]
-                first_event = await asyncio.wait_for(
-                    adapter._run_streams[first_id].get(), timeout=3
-                )
-                second_event = await asyncio.wait_for(
-                    adapter._run_streams[second_id].get(), timeout=3
-                )
+                first_event = await _next_run_event(adapter._run_streams[first_id])
+                second_event = await _next_run_event(adapter._run_streams[second_id])
                 assert first_event["event"] == "clarify.request"
                 assert second_event["event"] == "clarify.request"
                 for _ in range(40):
@@ -1167,8 +1198,7 @@ class TestRunEventsCORS:
 
             def run_conversation(**_run_kwargs):
                 callback_result["batch"] = clarify_tool(
-                    "",
-                    questions=[
+                    [
                         {
                             "question": "Which environment?",
                             "choices": ["Staging", "Production"],
@@ -1185,73 +1215,82 @@ class TestRunEventsCORS:
             mock_agent.session_total_tokens = 0
             return mock_agent
 
-        async def next_clarify_request(queue):
-            while True:
-                event = await asyncio.wait_for(queue.get(), timeout=3)
-                if event and event.get("event") == "clarify.request":
-                    return event
-
         async with TestClient(TestServer(app)) as cli:
             with patch.object(adapter, "_create_agent", side_effect=make_agent):
                 started = await cli.post("/v1/runs", json={"input": "hello"})
                 run_id = (await started.json())["run_id"]
-                queue = adapter._run_streams[run_id]
-                first_event = await next_clarify_request(queue)
+                stream = adapter._run_streams[run_id]
+                sub_queue, replay = stream.attach()
+                pending = [event for _seq, event in replay if event]
 
-                assert first_event["run_id"] == run_id
-                assert first_event["prompt"]["question"] == "Which environment?"
-                assert first_event["prompt"]["type"] == "choice"
-                assert adapter._run_statuses[run_id]["awaiting_user"] is True
+                async def next_clarify_request():
+                    while True:
+                        if pending:
+                            event = pending.pop(0)
+                        else:
+                            _seq, event = await asyncio.wait_for(sub_queue.get(), timeout=3)
+                        if event and event.get("event") == "clarify.request":
+                            return event
 
-                first = await cli.post(
-                    f"/v1/runs/{run_id}/clarification",
-                    json={
-                        "request_id": first_event["request_id"],
-                        "response": {"type": "choice", "choice_id": "choice-2"},
-                    },
-                )
-                assert first.status == 200
+                try:
+                    first_event = await next_clarify_request()
 
-                stale = await cli.post(
-                    f"/v1/runs/{run_id}/clarification",
-                    json={
-                        "request_id": first_event["request_id"],
-                        "response": {"type": "choice", "choice_id": "choice-2"},
-                    },
-                )
-                assert stale.status == 409
+                    assert first_event["run_id"] == run_id
+                    assert first_event["prompt"]["question"] == "Which environment?"
+                    assert first_event["prompt"]["type"] == "choice"
+                    assert adapter._run_statuses[run_id]["awaiting_user"] is True
 
-                second_event = await next_clarify_request(queue)
-                assert second_event["request_id"] != first_event["request_id"]
-                assert second_event["prompt"]["question"] == "Any notes?"
-                assert second_event["prompt"]["type"] == "text"
-                assert adapter._run_statuses[run_id]["status"] == (
-                    "waiting_for_clarification"
-                )
-                assert adapter._run_statuses[run_id]["awaiting_user"] is True
+                    first = await cli.post(
+                        f"/v1/runs/{run_id}/clarification",
+                        json={
+                            "request_id": first_event["request_id"],
+                            "response": {"type": "choice", "choice_id": "choice-2"},
+                        },
+                    )
+                    assert first.status == 200
 
-                second = await cli.post(
-                    f"/v1/runs/{run_id}/clarification",
-                    json={
-                        "request_id": second_event["request_id"],
-                        "response": {"type": "text", "text": "ship it"},
-                    },
-                )
-                assert second.status == 200
+                    stale = await cli.post(
+                        f"/v1/runs/{run_id}/clarification",
+                        json={
+                            "request_id": first_event["request_id"],
+                            "response": {"type": "choice", "choice_id": "choice-2"},
+                        },
+                    )
+                    assert stale.status == 409
 
-                for _ in range(40):
-                    status = adapter._run_statuses[run_id]
-                    if status["status"] == "completed":
-                        break
-                    await asyncio.sleep(0.05)
+                    second_event = await next_clarify_request()
+                    assert second_event["request_id"] != first_event["request_id"]
+                    assert second_event["prompt"]["question"] == "Any notes?"
+                    assert second_event["prompt"]["type"] == "text"
+                    assert adapter._run_statuses[run_id]["status"] == (
+                        "waiting_for_clarification"
+                    )
+                    assert adapter._run_statuses[run_id]["awaiting_user"] is True
 
-                payload = json.loads(callback_result["batch"])
-                assert [row["user_response"] for row in payload["responses"]] == [
-                    "Production",
-                    "ship it",
-                ]
-                assert status["status"] == "completed"
-                assert status["awaiting_user"] is False
+                    second = await cli.post(
+                        f"/v1/runs/{run_id}/clarification",
+                        json={
+                            "request_id": second_event["request_id"],
+                            "response": {"type": "text", "text": "ship it"},
+                        },
+                    )
+                    assert second.status == 200
+
+                    for _ in range(40):
+                        status = adapter._run_statuses[run_id]
+                        if status["status"] == "completed":
+                            break
+                        await asyncio.sleep(0.05)
+
+                    payload = json.loads(callback_result["batch"])
+                    assert [row["user_response"] for row in payload["responses"]] == [
+                        "Production",
+                        "ship it",
+                    ]
+                    assert status["status"] == "completed"
+                    assert status["awaiting_user"] is False
+                finally:
+                    stream.detach(sub_queue)
 
     @pytest.mark.asyncio
     async def test_clarification_multi_select_returns_json_array(self, adapter):
@@ -1262,7 +1301,8 @@ class TestRunEventsCORS:
             mock_agent = MagicMock()
 
             def run_conversation(**_run_kwargs):
-                callback_result["answer"] = kwargs["clarify_callback"](
+                callback_result["answer"] = _invoke_run_clarify(
+                    kwargs["clarify_callback"],
                     "Pick environments",
                     ["Staging", "Production", "Canary"],
                     multi_select=True,
@@ -1279,7 +1319,7 @@ class TestRunEventsCORS:
             with patch.object(adapter, "_create_agent", side_effect=make_agent):
                 started = await cli.post("/v1/runs", json={"input": "hello"})
                 run_id = (await started.json())["run_id"]
-                event = await asyncio.wait_for(adapter._run_streams[run_id].get(), timeout=3)
+                event = await _next_run_event(adapter._run_streams[run_id])
 
                 assert event["event"] == "clarify.request"
                 assert event["prompt"]["multi_select"] is True
@@ -1449,7 +1489,8 @@ class TestRunEventsCORS:
             mock_agent = MagicMock()
 
             def run_conversation(**_run_kwargs):
-                callback_result["answer"] = kwargs["clarify_callback"](
+                callback_result["answer"] = _invoke_run_clarify(
+                    kwargs["clarify_callback"],
                     "Which env?",
                     ["Staging", "Production"],
                 )
@@ -1471,9 +1512,7 @@ class TestRunEventsCORS:
                     )
                     assert started.status == 202
                     run_id = (await started.json())["run_id"]
-                    event = await asyncio.wait_for(
-                        adapter._run_streams[run_id].get(), timeout=3
-                    )
+                    event = await _next_run_event(adapter._run_streams[run_id])
                     assert event["event"] == "clarify.request"
                     pending = clarify_mod.get_pending_by_id(
                         event["request_id"], session_key=run_id
@@ -1936,7 +1975,8 @@ class TestStopRun:
             mock_agent = MagicMock()
 
             def run_conversation(**_run_kwargs):
-                answer = kwargs["clarify_callback"](
+                answer = _invoke_run_clarify(
+                    kwargs["clarify_callback"],
                     "Q" * 2500,
                     ["X" * 600, "Y" * 600, "Z" * 600, "W" * 600, "extra"],
                 )
@@ -1957,9 +1997,7 @@ class TestStopRun:
             with patch.object(adapter, "_create_agent", side_effect=make_agent):
                 started = await cli.post("/v1/runs", json={"input": "hello"})
                 run_id = (await started.json())["run_id"]
-                event = await asyncio.wait_for(
-                    adapter._run_streams[run_id].get(), timeout=3
-                )
+                event = await _next_run_event(adapter._run_streams[run_id])
                 assert event["event"] == "clarify.request"
                 assert len(event["prompt"]["question"]) == 2000
                 assert len(event["prompt"]["choices"]) == 4

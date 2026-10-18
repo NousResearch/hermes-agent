@@ -18,6 +18,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 # Ensure project root is importable.
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -228,3 +230,44 @@ class TestRuntimeResolutionTargetModel:
         assert success is True, error
         assert resolve_kwargs["target_model"] == "my-pinned-model"
         assert resolve_kwargs["requested"] == "openrouter"
+
+
+class TestNamedCustomPin:
+    @pytest.mark.parametrize("same_endpoint", [False, True])
+    def test_named_route_survives_default_change_and_unpin(self, tmp_path, monkeypatch, same_endpoint):
+        """Create and edit must retain route B, even when A shares its model/endpoint."""
+        from cron import jobs
+        from cron.scheduler import _CronJobConfig, _resolve_job_runtime
+        from hermes_cli import runtime_provider as rp
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(jobs, "get_hermes_home", lambda: tmp_path)
+        cfg = {
+            "model": {"provider": "route-b", "default": "shared-model"},
+            "custom_providers": [
+                {"name": "route-a", "base_url": ("https://models.example.invalid/v1" if same_endpoint
+                                                  else "https://other.example.invalid/v1"),
+                 "api_key": "synthetic-key-a"},
+                {"name": "route-b", "base_url": "https://models.example.invalid/v1",
+                 "api_key": "synthetic-key-b"},
+            ],
+        }
+        monkeypatch.setattr(rp, "load_config", lambda: cfg)
+        monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **kw: None)
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(json.dumps(cfg))
+        jobs.create_job(prompt="hello", schedule="every 1 hour", pinned=True)
+        edited = jobs.create_job(prompt="hello", schedule="every 1 hour")
+        jobs.update_job(edited["id"], {"pinned": True})
+        # The persisted rows, not the in-memory create response, reach execution.
+        cfg["model"] = {"provider": "route-a", "default": "other-model"}
+        config_path.write_text(json.dumps(cfg))
+        jc = _CronJobConfig(cfg=cfg, model="shared-model", model_cfg=cfg["model"], cron_default_provider="")
+        for saved in jobs.load_jobs():
+            assert saved["provider"] == "route-b"
+            assert saved["base_url"] == "https://models.example.invalid/v1"
+            runtime, model = _resolve_job_runtime(saved, saved["id"], jc)
+            assert (model, runtime["base_url"], runtime["api_key"]) == (
+                "shared-model", "https://models.example.invalid/v1", "synthetic-key-b")
+            released = jobs.update_job(saved["id"], {"pinned": False})
+            assert (released["provider"], released["model"], released["base_url"]) == (None, None, None)

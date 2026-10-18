@@ -820,7 +820,7 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
         if not _clean(custom_provider.get("key_cmd")) else ("", False)
     )
     pool_result = None
-    if not has_declared_key and not rp.has_usable_secret(explicit_key):
+    if not rp.has_usable_secret(explicit_key):
         pool_result = rp._try_resolve_from_custom_pool(
             base_url, "custom", custom_provider.get("api_mode"),
             provider_name=custom_provider.get("provider_key") or custom_provider.get("name"),

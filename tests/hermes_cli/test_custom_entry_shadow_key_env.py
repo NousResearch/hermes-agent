@@ -88,9 +88,9 @@ def test_shadowing_entry_unset_key_env_never_borrows_builtin_key(tmp_path, monke
     monkeypatch.delenv("ENTRY_KEY_VAR")
     from hermes_cli import runtime_provider as rp
 
-    resolved = rp.resolve_runtime_provider(requested="custom:deepseek")
-    assert resolved["base_url"] == ENDPOINT
-    assert resolved["api_key"] == "no-key-required"
+    with pytest.raises(rp.AuthError, match="ENTRY_KEY_VAR") as error:
+        rp.resolve_runtime_provider(requested="custom:deepseek")
+    assert error.value.code == "declared_key_env_unresolved"
 
 
 def test_shadowing_entry_inline_api_key_beats_builtin_env(tmp_path, monkeypatch):
@@ -118,6 +118,12 @@ def test_shadowing_entry_manual_pool_row_still_wins(tmp_path, monkeypatch):
     from agent.credential_pool import load_pool
 
     assert BUILTIN_KEY in {e.access_token for e in load_pool("deepseek").entries()}
+    # A usable declared binding permits its entry's rotation pool. A missing
+    # binding must refuse before even an otherwise valid manual row is selected.
+    monkeypatch.delenv("ENTRY_KEY_VAR")
+    with pytest.raises(rp.AuthError, match="ENTRY_KEY_VAR") as error:
+        rp.resolve_runtime_provider(requested="custom:deepseek")
+    assert error.value.code == "declared_key_env_unresolved"
 
 
 def test_entry_without_key_env_keeps_existing_resolution(tmp_path, monkeypatch):
@@ -189,6 +195,12 @@ def test_declared_key_env_unset_never_falls_back_to_the_builtin_host_key(tmp_pat
     _edit_config(home, entry={"api": BUILTIN_HOST})
     monkeypatch.delenv("ENTRY_KEY_VAR")
     from hermes_cli import runtime_provider as rp
+
+    if requested != "custom":
+        with pytest.raises(rp.AuthError, match="ENTRY_KEY_VAR") as error:
+            rp.resolve_runtime_provider(requested=requested)
+        assert error.value.code == "declared_key_env_unresolved"
+        return
 
     with caplog.at_level("WARNING"):
         resolved = rp.resolve_runtime_provider(requested=requested, explicit_base_url=BUILTIN_HOST if requested == "custom" else None)

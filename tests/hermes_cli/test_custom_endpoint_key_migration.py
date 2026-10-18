@@ -1,4 +1,4 @@
-"""Regression tests for the v52 custom-endpoint credential migration."""
+"""Regression tests for the v53 custom-endpoint credential migration."""
 
 import hermes_yaml as yaml
 import pytest
@@ -15,6 +15,7 @@ def test_migration_moves_plaintext_custom_key_to_env(tmp_path, monkeypatch):
                 "cron": {"model_drift_guard": True, "max_iterations": 17,
                          "bot_chat_delivery_timeout_seconds": 60},
                 "security": {"tirith_enabled": True, "redact_secrets": True},
+                "browser": {"backend": "local", "headless": False},
                 "model": {
                     "provider": "custom",
                     "base_url": "https://text.example.com/v1",
@@ -41,6 +42,8 @@ def test_migration_moves_plaintext_custom_key_to_env(tmp_path, monkeypatch):
     assert raw["cron"]["max_iterations"] == 17
     assert "tirith_enabled" not in raw["security"]
     assert raw["security"]["redact_secrets"] is True
+    assert "backend" not in raw["browser"]
+    assert raw["browser"]["headless"] is False
     key_env = raw["model"]["key_env"]
     assert "api_key" not in raw["model"]
     assert get_env_value(key_env) == "sk-legacy-secret"
@@ -78,7 +81,7 @@ def test_migration_preserves_existing_env_reference(tmp_path, monkeypatch):
     assert "key_env" not in raw["model"]
 
 
-@pytest.mark.parametrize("version", [49, 50, 51, None])
+@pytest.mark.parametrize("version", [49, 50, 51, 52, None])
 def test_current_and_unversioned_configs_migrate_plaintext(tmp_path, monkeypatch, version):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     config = {"model": {"provider": "custom", "base_url": "https://current.example/v1",
@@ -122,7 +125,7 @@ def test_migration_preserves_populated_declared_binding(tmp_path, monkeypatch, b
     assert "sk-stale-inline-secret" not in path.read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("version", [50, 51, None])
+@pytest.mark.parametrize("version", [50, 51, 52, None])
 @pytest.mark.parametrize("location", ["model", "providers", "custom_providers"])
 @pytest.mark.parametrize("failure", ["env_error", "env_noop", "config_error"])
 def test_failed_secret_move_keeps_migration_retryable(

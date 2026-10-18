@@ -301,7 +301,7 @@ class SessionGatewayMixin:
         from hermes_state_mutation_retirement import route_namespace, route_retired_sql
         self._write_sql(
             f"""INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at)
-               SELECT ?1, ?2, ?3, ?4 WHERE NOT {route_retired_sql('?3', '?5')}
+               SELECT ?1, ?2, ?3, ?4 WHERE NOT {route_retired_sql('?3', '?5', '?4')}
                ON CONFLICT(scope, session_key) DO UPDATE SET
                    entry_json = excluded.entry_json,
                    updated_at = excluded.updated_at""",
@@ -320,7 +320,7 @@ class SessionGatewayMixin:
             if rows:
                 conn.executemany(
                     "INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at) "
-                    f"SELECT ?1, ?2, ?3, ?4 WHERE NOT {route_retired_sql('?3', '?5')}",
+                    f"SELECT ?1, ?2, ?3, ?4 WHERE NOT {route_retired_sql('?3', '?5', '?4')}",
                     rows)
             kept = {r[0] for r in conn.execute("SELECT session_key FROM gateway_routing WHERE scope = ?", (scope,))}
             return {row[1] for row in rows} - kept

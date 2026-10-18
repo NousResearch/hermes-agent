@@ -246,6 +246,64 @@ async def test_a_delayed_snapshot_cannot_restore_a_pruned_route_once_its_fence_a
         assert store._entries[key].session_id == sid
 
 
+def _age_retirements(*dbs, days=8):
+    """Move every retirement marker and routing fence *days* into the past: the wall clock passing
+    the horizon, with no sweep run anywhere."""
+    from hermes_state_mutation_retirement import RETIRED_PREFIX, ROUTE_FENCE_PREFIX
+    for db in dbs:
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE state_meta SET value=json_set(value, '$.retired_at', json_extract(value, '$.retired_at') - ?) "
+            "WHERE (key GLOB ? OR key GLOB ?) AND json_valid(value)",
+            (days * 86400, RETIRED_PREFIX + '*', ROUTE_FENCE_PREFIX + '*')))
+
+
+@pytest.mark.asyncio
+async def test_a_pruned_id_routes_again_after_the_owner_alone_sweeps_past_the_horizon(tmp_path, monkeypatch):
+    """Only the owner's own housekeeping runs (the launch profile's auto-prune is off by default):
+    once the horizon passes, the shared fence of alpha's prune no longer refuses the route of a
+    session alpha recreates with that id, though nothing swept the launch database."""
+    async with _served(tmp_path, monkeypatch) as served:
+        store = served.store
+        key, sid, _stale = await _pruned_alpha_route(served, tmp_path)
+        _age_retirements(served.alpha.db, served.launch.db)
+        served.alpha.db.prune_sessions(older_than_days=90)  # alpha's auto-prune pass: its own db only
+        assert _conflict(served.alpha.db, sid) is None
+
+        served.alpha.db.create_session(sid, source='telegram')
+        store._entries[key] = _entry(key, sid)
+        with store._lock:
+            store._save()
+        assert key in _durable(store), 'an expired shared fence refused the recreated route'
+        assert key in _mirror(store), 'an expired shared fence kept the recreated route out of sessions.json'
+        _restart(store)
+        assert store._entries[key].session_id == sid
+
+
+@pytest.mark.asyncio
+async def test_the_owners_next_prune_reclaims_its_expired_shared_fences(tmp_path, monkeypatch):
+    """An owner's prune that fences new ids in the shared index also reclaims the fences there that
+    aged out, so the index does not grow with every prune while the launch profile never sweeps.
+    A delete's fence stays."""
+    from gateway.run import _profile_runtime_scope
+    from gateway.session_local import create_local_session
+    async with _served(tmp_path, monkeypatch) as served:
+        _key, sid, _stale = await _pruned_alpha_route(served, tmp_path)
+        with _profile_runtime_scope(served.home, {}):
+            kept = create_local_session(served.alpha, served.actor, {
+                'request_id': 'k', 'source': 'gui', 'cwd': str(tmp_path), 'model': 'frozen', 'toolsets': []})
+            await _delete(served, kept)
+        _age_retirements(served.alpha.db, served.launch.db)
+        with _profile_runtime_scope(served.home, {}):
+            later = create_local_session(served.alpha, served.actor, {
+                'request_id': 'l', 'source': 'gui', 'cwd': str(tmp_path), 'model': 'frozen', 'toolsets': []})
+            await _prune(served, later)
+        fence = 'gateway.retired_route.v1.{}:{}'.format
+        assert served.launch.db.get_meta(fence('alpha', sid)) is None, 'an expired shared fence was never reclaimed'
+        assert served.launch.db.get_meta(fence('main', sid)) is None
+        assert served.launch.db.get_meta(fence('alpha', later.session_id)) is not None
+        assert served.launch.db.get_meta(fence('alpha', kept.session_id)) is not None, "a delete's fence aged out"
+
+
 @pytest.mark.asyncio
 async def test_a_start_within_the_horizon_strips_a_pruned_route_from_an_older_mirror(tmp_path, monkeypatch):
     """A sessions.json an earlier release wrote unfiltered (or one left by a crash before the next

@@ -4,6 +4,7 @@ Short tokens (< 18 chars) are fully masked; longer ones keep the first 6 and
 last 4 characters for debuggability.
 """
 
+import itertools
 import logging
 import os
 import re
@@ -884,6 +885,92 @@ def _redact_url_credentials(text: str, code_file: bool) -> str:
     return _URL_BARE_TOKEN_RE.sub(lambda m: f"{m.group(1)}{_mask_token(m.group(2))}{m.group(3)}", text)
 
 
+# RPC providers that authenticate by putting the API key in the URL PATH (``/v1/rpc/<key>``,
+# ``/v2/<key>``, ``/<key>/``) or in a key query param (``?dkey=``, ``?api-key=``). The generic URL
+# passes never see these: there is no userinfo and query redaction is opt-in. Host-scoped so an
+# ordinary URL with a long id segment (commit SHA, UUID route) is never touched.
+_RPC_KEY_HOSTS = (
+    "blockpi.network", "alchemy.com", "alchemyapi.io", "infura.io", "quiknode.pro", "nodereal.io",
+    "ankr.com", "chainstack.com", "p2pify.com", "getblock.io", "blastapi.io", "drpc.org",
+    "helius-rpc.com", "tenderly.co", "moralis-nodes.com", "allthatnode.com", "onfinality.io",
+    "nownodes.io", "1rpc.io", "chainnodes.org", "rpcfast.com", "nodies.app", "lavanet.xyz",
+)
+_RPC_URL_RE = re.compile(
+    r"((?:https?|wss?)://(?:[A-Za-z0-9-]+\.)*(?:"
+    + "|".join(re.escape(h) for h in _RPC_KEY_HOSTS)
+    + r")(?::\d+)?)((?:/[^\s/?#'\"<>|│║]*)*)(\?[^\s#'\"<>|│║]*)?",
+    re.IGNORECASE,
+)
+_RPC_KEY_SEGMENT_RE = re.compile(r"(?=[A-Za-z0-9_-]*[0-9])[A-Za-z0-9_-]{16,}")
+_RPC_KEY_PARAM_RE = re.compile(r"([?&](?:d?key|api[-_]?key|apikey|token|access[-_]?token|secret)=)([^&#\s]+)",
+                               re.IGNORECASE)
+
+
+def _redact_rpc_url_keys(text: str) -> str:
+    """Mask the key segment / key param of known keyed-RPC provider URLs (host kept)."""
+    def _sub(m):
+        path = "/".join("***" if _RPC_KEY_SEGMENT_RE.fullmatch(seg) else seg for seg in m.group(2).split("/"))
+        query = _RPC_KEY_PARAM_RE.sub(lambda q: q.group(1) + "***", m.group(3) or "")
+        return m.group(1) + path + query
+    return _RPC_URL_RE.sub(_sub, text)
+
+
+def _has_rpc_host(text: str) -> bool:
+    lowered = text.lower()
+    return any(h in lowered for h in _RPC_KEY_HOSTS)
+
+
+# Box-drawn CLI tables (``railway variables``, ``vercel env ls``): ``║ NAME │ value ║``. A long value
+# wraps onto continuation rows whose name cell is blank, so a key or a keyed URL is split across lines
+# and no single-line pattern can see it. Rows are regrouped per NAME, the reassembled ``NAME=value`` is
+# judged by the normal assignment/URL rules, and every fragment of a sensitive cell is masked.
+_BOX_SEPARATORS = "│┃║"
+_BOX_SPLIT_RE = re.compile(r"[│┃║]")
+_TABLE_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.\-]{0,127}")
+
+
+def _redact_box_table_rows(text: str) -> str:
+    lines = text.split("\n")
+    groups: list[tuple[str, list[tuple[int, int, int]]]] = []  # (name, [(line, start, end) of value cell])
+    current: tuple[str, list] | None = None
+    for idx, line in enumerate(lines):
+        if not any(c in line for c in _BOX_SEPARATORS):
+            current = None
+            continue
+        bounds = [m.start() for m in _BOX_SPLIT_RE.finditer(line)]
+        edges = [-1, *bounds, len(line)]
+        cells = [(a + 1, b) for a, b in itertools.pairwise(edges)]  # text between consecutive separators
+        # drop the outer-border cells (text outside the first / after the last separator)
+        inner = cells[1:-1] if len(cells) >= 3 else []
+        if len(inner) < 2:
+            current = None
+            continue
+        name = line[inner[0][0]:inner[0][1]].strip()
+        value_cell = inner[-1]
+        if name:
+            if not _TABLE_NAME_RE.fullmatch(name):
+                current = None
+                continue
+            current = (name, [(idx, *value_cell)])
+            groups.append(current)
+        elif current is not None:
+            current[1].append((idx, *value_cell))
+    if not groups:
+        return text
+    for name, frags in groups:
+        value = "".join(lines[i][a:b].strip() for i, a, b in frags)
+        if not value or value in ("***", "<sealed>"):
+            continue
+        probe = f"{name}={value}"
+        if redact_sensitive_text(probe, force=True) == probe:
+            continue
+        for n, (i, a, b) in enumerate(frags):
+            width = b - a
+            fill = " ***" if n == 0 else ""
+            lines[i] = lines[i][:a] + fill.ljust(width)[:width] + lines[i][b:]
+    return "\n".join(lines)
+
+
 def _redact_phone(m):
     phone = m.group(1)
     keep = 2 if len(phone) <= 8 else 4
@@ -943,6 +1030,10 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     # be silently fail-open because another flag (code_file, or file_read implying it) was also set.
     code_file = (code_file or file_read) and not secret_file
 
+    # Before the line-local passes: they would mask only a fragment of a wrapped cell.
+    if any(c in text for c in _BOX_SEPARATORS):
+        text = _redact_box_table_rows(text)
+
     # Control/zero-width chars can split a token body so _PREFIX_RE alone misses it.
     if _has_known_prefix_substring(text):
         _prefix_sub = _mask_token_nonreusable if file_read else _mask_token
@@ -977,6 +1068,8 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     # #33801.
     if "://" in text:
         text = _redact_url_credentials(text, code_file)
+        if _has_rpc_host(text):
+            text = _redact_rpc_url_keys(text)
 
     if "eyJ" in text:
         text = _JWT_RE.sub(lambda m: _mask_token(m.group(0)), text)
@@ -1151,6 +1244,18 @@ def is_env_dump_command(command: str | None) -> bool:
             tokens = seg.split()
         if tokens and tokens[0] in _ENV_DUMP_COMMANDS:
             return True
+        if _is_platform_env_listing(tokens):
+            return True
+    return False
+
+
+# Platform CLIs whose listing prints ``KEY=value`` / JSON / a table of raw service variables.
+def _is_platform_env_listing(tokens: list[str]) -> bool:
+    if len(tokens) < 2:
+        return False
+    cli = tokens[0].rsplit("/", 1)[-1]
+    if cli == "railway" and tokens[1] in ("variables", "variable", "vars", "var"):
+        return not (len(tokens) > 2 and tokens[2] in ("set", "delete", "rm", "remove", "edit"))
     return False
 
 

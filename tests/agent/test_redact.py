@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from agent.redact import mask_secret, redact_cdp_url, redact_sensitive_text, RedactingFormatter
+from agent.redact import mask_secret, redact_cdp_url, redact_sensitive_text, redact_terminal_output, RedactingFormatter
 
 
 @pytest.fixture(autouse=True)
@@ -1633,3 +1633,82 @@ class TestRedactForEgress:
         from agent import redact as R
         monkeypatch.setattr(R, "redact_sensitive_text", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
         assert R.redact_for_egress("sk-live-0123456789abcdef") == R.REDACTION_UNAVAILABLE
+
+
+
+class TestKeyedRpcUrlsAndBoxTables:
+    """RPC keys in URL paths and credentials in box-drawn CLI tables (railway variables)."""
+
+    KEY = "rave_product_" + "Ab3dEf9hIj2kLm5nOp8qRs1tUv4wXy7z"
+    RPC = "3f9c2a7b1e4d8f0a6c5b9e2d7a1f4c8b"
+
+    def test_env_assignment_still_masked(self):
+        out = redact_sensitive_text(f"LIQUIDMESH_ENGINE_API_KEY={self.KEY}", force=True)
+        assert self.KEY not in out
+
+    def test_rpc_url_assignment_path_key_masked(self):
+        out = redact_sensitive_text(f"BSC_RPC_URL=https://bsc.blockpi.network/v1/rpc/{self.RPC}", force=True)
+        assert self.RPC not in out
+        assert "https://bsc.blockpi.network/v1/rpc/" in out
+
+    def test_bare_rpc_url_path_key_masked(self):
+        out = redact_sensitive_text(f"calling https://bsc.blockpi.network/v1/rpc/{self.RPC} now", force=True)
+        assert self.RPC not in out and out.endswith(" now")
+
+    @pytest.mark.parametrize("url", [
+        "https://eth-mainnet.g.alchemy.com/v2/{k}",
+        "wss://bsc-mainnet.nodereal.io/ws/v1/{k}",
+        "https://mainnet.infura.io/v3/{k}",
+        "https://x.quiknode.pro/{k}/",
+        "https://lb.drpc.org/ogrpc?network=ethereum&dkey={k}",
+    ])
+    def test_other_keyed_rpc_providers(self, url):
+        out = redact_sensitive_text(url.format(k=self.RPC), force=True)
+        assert self.RPC not in out
+
+    @pytest.mark.parametrize("text", [
+        "https://github.com/NousResearch/hermes-agent/commit/0122bbdb1a3f9c2a7b1e4d8f0a6c5b9e2d7a1f4c",
+        "docs at https://docs.blockpi.io/ and https://www.alchemy.com/docs/reference/eth-getlogs",
+        "https://dashboard.alchemy.com/apps/abc",
+        "https://rpc.pharos.xyz",
+    ])
+    def test_ordinary_urls_unchanged(self, text):
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_single_row_table_value_masked(self):
+        out = redact_sensitive_text(f"║ LIQUIDMESH_ENGINE_API_KEY │ {self.KEY} ║", force=True)
+        assert self.KEY not in out
+        assert "LIQUIDMESH_ENGINE_API_KEY" in out
+
+    def test_wrapped_table_rows_masked_across_lines(self):
+        rows = [
+            "║ LIQUIDMESH_BSC_RPC_URL │ https://                ║",
+            "║                        │ bsc.blockpi.network/v1/ ║",
+            "║                        │ rpc/" + self.RPC[:20] + "  ║",
+            "║                        │ " + self.RPC[20:] + "            ║",
+            "║────────────────────────────────────────────────║",
+            "║ LIQUIDMESH_APP_KEY     │ rave_product_           ║",
+            "║                        │ " + self.KEY[13:] + " ║",
+            "║────────────────────────────────────────────────║",
+            "║ LIQUIDMESH_ENABLED     │ true                    ║",
+        ]
+        out = redact_sensitive_text("\n".join(rows), force=True)
+        for frag in (self.RPC[:20], self.RPC[20:], self.KEY[13:]):
+            assert frag not in out
+        assert "LIQUIDMESH_ENABLED     │ true" in out
+        assert len(out.splitlines()) == len(rows)
+
+    @pytest.mark.parametrize("text", [
+        "│ name │ value │\n│ LIQUIDMESH_ENABLED │ true │",
+        "║ RAVE_RAILWAY_PROJECT_ID │ 1fdca607-b33b-43e8-b763-a545b7fcccc5 ║",
+        "┌──┐ plain box │ hello world │",
+        "│ Model │ Context │\n│ claude-opus │ 1000000 │",
+    ])
+    def test_ordinary_tables_unchanged(self, text):
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_railway_kv_listing_runs_env_pass(self):
+        opaque = "Zq81mXv0Lr4" + "Tn6Wy2Bp9Kd3Hs7Gf"  # no vendor prefix: only the env pass masks it
+        out = redact_terminal_output(f"SOME_SERVICE_TOKEN={opaque}", "railway variables -s x --kv | grep TOKEN")
+        assert opaque not in out
+        assert redact_terminal_output("MAX_TOKENS=100", "railway variable set MAX_TOKENS=100") == "MAX_TOKENS=100"

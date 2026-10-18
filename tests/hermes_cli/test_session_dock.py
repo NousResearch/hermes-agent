@@ -74,3 +74,62 @@ def test_dock_ignores_a_goal_manager_left_over_from_another_session(hermes_home)
     assert goal_line(SimpleNamespace(session_id="old-sid", _goal_manager=mgr)).startswith("⊙ Goal")
     assert goal_line(SimpleNamespace(session_id="new-sid", _goal_manager=mgr)) == ""
     assert goal_line(SimpleNamespace(session_id="new-sid")) == ""
+
+
+def test_dock_drops_the_prompt_a_turn_takes_from_the_queue_before_the_turn_runs(hermes_home):
+    """A seeded ``-q`` prompt (or any queued input) leaves ``_pending_input`` when its turn starts;
+    the dock must stop listing it then, not up to a second later on the spinner thread's poll,
+    or the dock is still painted when the reply prints and shrinks under it afterwards."""
+    from unittest.mock import Mock
+
+    from cli import HermesCLI, _SeededQueryMessage
+    from hermes_cli.cli_subagent_monitor import SubagentMonitor
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.session_id, cli.agent = "sid-a", None
+    cli._pending_input = queue.Queue()
+    cli._pending_input.put(_SeededQueryMessage("hello"))
+    monitor = cli._subagent_monitor = SubagentMonitor(cli)
+    monitor.refresh()
+    monitor._last_poll = float("inf")  # the 1 s poll would not fire again during this turn
+    assert monitor.queued == ["hello"]
+
+    seen = []
+    for attr, value in {"_pending_resume_sessions": [], "_typed_voice_stop": lambda t: False,
+                        "handle_bang_shell": lambda t: False, "_turn_summary_begin": lambda: None,
+                        "_tui_after_turn": lambda: None, "_app": SimpleNamespace(invalidate=lambda: None),
+                        "chat": Mock(side_effect=lambda *a, **k: seen.append(list(monitor.queued)))}.items():
+        setattr(cli, attr, value)
+    cli._tui_process_one_input(cli._pending_input.get_nowait())
+
+    assert cli.chat.call_args.args[0] == "hello"
+    assert seen == [[]]
+    assert not monitor.has_rows
+
+
+def test_dock_loop_row_counts_down_to_the_next_wakeup(hermes_home):
+    """A standing /loop gets a dock row whose countdown moves with the clock (it used to be a
+    one-shot ``next in 45m`` transcript line that never changed)."""
+    from hermes_cli.cli_subagent_monitor import SubagentMonitor
+    from hermes_cli.loops import LoopManager
+
+    mgr = LoopManager(session_id="sid-a")
+    mgr.set("check the deploy", interval_seconds=45 * 60)
+    mgr.fire_tick()
+    mgr.complete_tick("deploy still running")
+    due = mgr.state.next_due_at
+    dock = SubagentMonitor(SimpleNamespace(agent=None, session_id="sid-a", _loop_manager=mgr,
+                                           _pending_input=queue.Queue()))
+
+    assert dock.refresh(now=due - 45 * 60) and dock.has_rows
+    assert dock.dock_text(columns=100, rows=40).strip() == "↻ loop · every 45m · 1 run · next in 45m · check the deploy"
+    assert dock.refresh(now=due - 30 * 60 + 1) and "next in 30m" in dock.loop  # rounds up, never early
+    assert dock.refresh(now=due - 42) and "next in 42s" in dock.loop
+    assert not dock.refresh(now=due - 42)  # unchanged text → no repaint
+    dock.collapsed = True
+    assert dock.dock_text(columns=100, rows=40).strip() == "↻ loop next in 42s · Ctrl+R restore · check the deploy"
+
+    mgr.pause("user-paused")
+    assert dock.refresh(now=due) and dock.loop == "⏸ loop paused · user-paused · 1 run · check the deploy"
+    mgr.clear()
+    assert dock.refresh(now=due) and not dock.has_rows

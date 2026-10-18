@@ -25,7 +25,7 @@ def test_real_junction_and_plain_directory(tmp_path: Path) -> None:
     command = str(Path(os.environ["SystemRoot"]) / "System32" / "cmd.exe")
     result = subprocess.run(
         [command, "/d", "/c", "mklink", "/J", str(junction), str(target)],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15, check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     try:

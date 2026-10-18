@@ -228,7 +228,6 @@ def cmd_trades(limit: int = 10, market: str | None = None):
         size = t.get("size", "?")
         outcome = t.get("outcome", "?")
         title = t.get("title", "?")[:50]
-        ts = t.get("timestamp", "")
         print(f"  {side:4}  {price:>7}  x{float(size):>8.2f}  [{outcome}]  {title}")
 
 

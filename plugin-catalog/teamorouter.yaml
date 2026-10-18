@@ -1,0 +1,33 @@
+name: teamorouter
+title: TeamoRouter
+repo: https://github.com/2867297362mjb-sketch/hermes-provider-teamorouter
+sha: 9260c9a0e7c433b7cbb51bd07128de7f2627c829
+subdir: teamorouter
+description: >-
+  TeamoRouter as Hermes model providers on one key: `teamorouter` serves Claude models over
+  TeamoRouter's native Anthropic Messages API (so Hermes' Anthropic prompt caching and thinking
+  apply), and `teamorouter-openai` serves GPT, Gemini, DeepSeek, GLM and Grok models over its
+  OpenAI-compatible API. Each /model picker lists that side's tool-capable chat models from
+  TeamoRouter's public catalog, leaving out image, service-tier and free-tier variants, and context
+  windows come from the same catalog. Maintained by TeamoRouter. Disclosure — registers two model
+  providers at import and nothing else (no tools, hooks, commands or threads). Prompts, tool schemas
+  and TEAMOROUTER_API_KEY go to https://api.teamorouter.com (/v1/messages and /v1/chat/completions)
+  through Hermes' own clients, and TeamoRouter forwards each request to the upstream vendor serving
+  the model. The plugin's own request is GET https://api.teamorouter.com/v1/models/pricing, a public
+  endpoint, sent without the key and cached for an hour. `teamorouter-openai` requests carry a fixed
+  `X-Client-Source: hermes-teamorouter-plugin` header (via the profile's default_headers), used only
+  to count traffic from this plugin; Claude requests carry no header from the plugin. No telemetry,
+  no files read or written, no stored credentials, no processes.
+maintainer: TeamoRouter
+tier: community
+category: models
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/2867297362mjb-sketch/hermes-provider-teamorouter#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - TEAMOROUTER_API_KEY

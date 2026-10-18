@@ -106,6 +106,7 @@ print(json.dumps(row))
     child = subprocess.run(
         [sys.executable, "-S", "-c", code], cwd=repo, env=dict(os.environ),
         capture_output=True, text=True, encoding="utf-8", timeout=30,
+        check=False,
     )
     assert child.returncode == 0, child.stdout + child.stderr
     row = json.loads(child.stdout)

@@ -107,6 +107,7 @@ class BinaryPackage(Package):
                 timeout=60,
                 cwd=native(binary.parent) if self.probe_cwd else None,
                 env=self._probe_env(),
+                check=False,
             )
         except OSError as e:
             return f"could not exec {native(binary)} {' '.join(self.probe_args)}: {e}"
@@ -346,6 +347,12 @@ def uv_cache_dir() -> Path:
     # from the network (and built sdists where the index has no wheel for the target).
     lock = repo_root() / "uv.lock"
     seed = _uv_lock_digest(lock).hex() if lock.is_file() else "1"
+    # The marker also records whether a payload cache was present. An image without one still
+    # writes the marker for its lock, and a later image with the same lock must still merge its
+    # seed. Do not drop the suffix: the lock alone cannot tell those two images apart.
+    payload_cache = long_root(store_root().parent / "uv-cache")
+    if payload_cache.is_dir():
+        seed += "+payload"
     try:
         current = marker.read_text(encoding="utf-8-sig").strip() == seed
     except OSError:
@@ -358,7 +365,6 @@ def uv_cache_dir() -> Path:
         try:
             # uv's cache trees run deep; both roots get the long spelling so
             # the copy is not cut at MAX_PATH. The returned path stays ordinary.
-            payload_cache = long_root(store_root().parent / "uv-cache")
             if payload_cache.is_dir():
                 seeded = long_root(machine_cache)
                 seeded.mkdir(parents=True, exist_ok=True)
@@ -660,6 +666,7 @@ class Npm(BinaryPackage):
                 text=True,
                 timeout=900,
                 env=npm_env(Path(cache)),
+                check=False,
             )
         if proc.returncode != 0:
             raise InstallError(
@@ -742,6 +749,7 @@ class Git(BinaryPackage):
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     timeout=600,
+                    check=False,
                 )
             except subprocess.TimeoutExpired:
                 raise InstallError(

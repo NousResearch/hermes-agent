@@ -1,6 +1,7 @@
 import type { TranslationOverrides } from './define-locale'
+import { jaSessionCommands } from './ja_session_commands'
 
-// Shell notices (remote-display toast, butterbar), spread into ja.ts.
+// Shell notices (remote-display toast, butterbar, keep-awake offer), spread into ja.ts.
 export const jaNotices = {
   remoteDisplayBanner: {
     message: reason =>
@@ -15,5 +16,20 @@ export const jaNotices = {
       privacy: 'プライバシーポリシー',
       after: 'が適用されます。'
     }
+  },
+  promptNotices: {
+    legacySendUnconfirmed:
+      'このサーバーはこのメッセージの前回の送信を確認できなかったため、すでに実行された可能性があります。再送信する前に会話を確認してください。',
+    mcpReloadDeferred:
+      'このチャットは処理中です。MCP の変更は現在のターンが終わって MCP を再読み込みしたとき、またはチャットを開き直したときに反映されます',
+    mcpReloadNotInChat: server => `${server} はこのチャットでは有効になっていません`,
+    mcpReloadUnavailable: servers => `接続できませんでした: ${servers}`,
+    sessionCommands: jaSessionCommands
+  },
+  keepAwakeOffer: {
+    title: 'Hermes の作業中にコンピューターがスリープしました',
+    message:
+      'タスクの実行中は、Hermes がコンピューターのスリープを防げます。画面はいつもどおりオフになり、バッテリー駆動中はスリープすることがあります。',
+    action: '実行中はスリープしない'
   }
-} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar'>
+} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer'>

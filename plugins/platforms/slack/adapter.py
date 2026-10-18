@@ -4494,6 +4494,17 @@ class SlackAdapter(BasePlatformAdapter):
             event = self._normalize_changed_message(event)
             if event is None:
                 return None
+        # A reply sent through Slack's streaming API (chat.startStream → appendStream →
+        # stopStream; what another Hermes does) arrives as an empty opener plus edits while
+        # ``streaming_state`` is ``in_progress``, then one ``message_changed`` carrying the
+        # full text at ``completed``. Only the last is the message: routing the opener built a
+        # body-less turn, and claiming its ts made the completed edit look already routed
+        # (#138676). No claim is taken here, so the completed frame drives the turn.
+        if event.get("streaming_state") == "in_progress":
+            logger.debug(
+                "[Slack] Skipping in-progress stream frame ts=%s in channel %s; the completed "
+                "edit carries the message", event.get("ts", ""), event.get("channel", ""))
+            return None
         # Socket Mode redelivers after reconnects. Scope by workspace: ts is only unique per team.
         # Dedup: Slack Socket Mode can redeliver events after reconnects (#4777) Scope the dedup id by
         # workspace: Slack event ts values are only unique within one workspace, so two teams' events with

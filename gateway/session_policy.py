@@ -20,11 +20,44 @@ CREATE_FIELDS = frozenset({'request_id', 'source', 'cwd', 'model', 'toolsets',
 # turn (main's Bot Chat row), credentials included: a frozen key never crosses a profile route change.
 FOLLOW_SECTIONS = ('model', 'providers', 'custom_providers', 'fallback_providers', 'fallback_model', 'model_aliases',
                    'platform_toolsets')
-def pin_reasoning_effort(config, effort):
+# A launch field's state as a committed session edit left it, in the policy's own config: ``True`` the
+# session chose it (``/reasoning <level>``, a model pick carrying one), ``False`` a reset gave it back to
+# the profile. Either wins over the creation request (the launch identity, never rewritten) and the older
+# pick receipts.
+SESSION_PINS = 'session_pins'
+
+
+def session_pinned(config, field, launched):
+    """Whether *field* is the session's own choice: its last committed session edit, else *launched*."""
+    pins = config.get(SESSION_PINS)
+    return pins[field] if isinstance(pins, dict) and isinstance(pins.get(field), bool) else launched
+
+
+def pin_reasoning_effort(config, effort, *, session=False):
     """Write an explicit session reasoning level into *config*: it wins over a per-model default
-    (``reasoning_overrides``), at creation, on ``/reasoning`` and on a model pick that carries one."""
+    (``reasoning_overrides``), at creation, on ``/reasoning`` and on a model pick that carries one.
+    A *session* edit also records the pin."""
     config.setdefault('agent', {})['reasoning_effort'] = effort
     config['agent'].pop('reasoning_overrides', None)
+    if session:
+        config[SESSION_PINS] = {**(config.get(SESSION_PINS) or {}), 'reasoning': True}
+
+
+def profile_config(authority):
+    """The owning profile's current ``config.yaml`` (its present sections), read fresh."""
+    from gateway.run import _load_gateway_config
+    return present_sections(_load_gateway_config(Path(authority.db.db_path).resolve().parent / 'config.yaml'))
+
+
+def unpin_reasoning(config, profile):
+    """``/reasoning reset``: the level is *profile*'s (its current config) again, re-read every turn by a
+    following session and on each resume by any other; a create-time ``reasoning`` included."""
+    from gateway.session_policy_refresh import _follow
+    followed = profile.get('agent') if isinstance(profile.get('agent'), dict) else {}
+    agent = config.setdefault('agent', {})
+    for key in ('reasoning_effort', 'reasoning_overrides'):
+        _follow(agent, followed, key)
+    config[SESSION_PINS] = {**(config.get(SESSION_PINS) or {}), 'reasoning': False}
 
 
 FOLLOW_AGENT_KEYS = ('reasoning_effort', 'reasoning_overrides', 'service_tier', 'disabled_toolsets', 'coding_context')
@@ -100,8 +133,9 @@ class LocalSessionPolicy:
     def effective(self, authority=None, *, secrets=True):
         """``(config, model)`` the next turn runs, both from ONE read of the owning profile when following
         (the turn's policy scope holds that read): a route never pairs one profile's model with another's
-        endpoint. Explicit choices (create-time reasoning / tier / toolsets, a pick that still holds) are
-        applied over the followed defaults; frozen secrets of followed sections are never recovered."""
+        endpoint. Explicit choices (create-time reasoning / tier / toolsets, a session ``/reasoning`` until
+        reset, a pick that still holds) are applied over the followed defaults; frozen secrets of followed
+        sections are never recovered."""
         config = present_sections(json.loads(self.config_json))
         live = self.read_profile(authority)
         if self.config_secret_ref is not None and authority is not None and secrets:
@@ -122,7 +156,8 @@ class LocalSessionPolicy:
             pick = frozen.get('selection_profile')
             held = pick is not None and pick == list(profile_target(live))
             pinned = {'platform_toolsets', 'disabled_toolsets'} if 'toolsets' in request else set()
-            pinned |= {'reasoning_effort', 'reasoning_overrides'} if 'reasoning' in request else set()
+            chosen = session_pinned(config, 'reasoning', 'reasoning' in request)
+            pinned |= {'reasoning_effort', 'reasoning_overrides'} if chosen else set()
             pinned |= {'service_tier'} if 'service_tier' in request else set()
             for key in FOLLOW_SECTIONS:
                 if key in pinned:
@@ -165,8 +200,7 @@ class LocalSessionPolicy:
         held = _TURN_PROFILE.get()
         if held is not None and held[0] == self:
             return held[1]
-        from gateway.run import _load_gateway_config
-        return present_sections(_load_gateway_config(Path(authority.db.db_path).resolve().parent / 'config.yaml'))
+        return profile_config(authority)
 
     def current_toolsets(self, config):
         """The next turn's toolsets from its resolved *config*: a following session without an explicit
@@ -779,21 +813,43 @@ def rebind_launch_key(authority, session, api_key):
     keys[_key_slot(ref)] = api_key
 
 
+def _secret_refs(authority, session_ids):
+    """The launch-key slots and config-secret references the live LOCAL policies of *session_ids* name."""
+    from gateway.config import Platform
+    sources = [getattr(authority.sessions.get(sid), 'source', None) for sid in session_ids]
+    chats = [source.chat_id for source in sources if source is not None and source.platform == Platform.LOCAL]
+    if not chats:
+        return set()  # only a restored (live) LOCAL session has a policy in the adapter map
+    from gateway.session_local_recovery import local_adapter_map
+    policies = getattr(local_adapter_map(authority).get(Platform.LOCAL), 'policies', None) or {}
+    refs = set()
+    for policy in filter(None, map(policies.get, chats)):
+        refs.update(ref for ref in (policy.credential_ref and _key_slot(policy.credential_ref),
+                                    policy.config_secret_ref) if ref)
+    return refs
+
+
 def release_launch_secrets(authority, session_ids):
     """Drop retired sessions' launch keys, frozen config secrets and editor MCP servers.
 
     They live only in this authority's memory for the session's lifetime; a deleted session can
-    never run again, so keeping them would hold its credentials until the process exits."""
+    never run again, so keeping them would hold its credentials until the process exits. A branch's
+    policy names its parent's slots, so a slot named after a retired session stays while a live
+    policy references it, and then until restart, which revokes every launch secret anyway. Only
+    slots named after *session_ids* are released, so the set never exceeds release by name: no later
+    sweep, and a binding not yet published always sits under its own live session's name. Call
+    before the retired sessions leave ``authority.sessions``."""
     import hashlib
     from gateway.session_policy_credentials import PREFIX
     retired = {str(sid) for sid in session_ids}
     if not retired:
         return
+    kept = _secret_refs(authority, set(authority.sessions) - retired)
     prefix = f'{authority.instance_id}:{authority.epoch}:'
     keys = getattr(authority, '_local_launch_keys', None) or {}
     # A key re-supplied after a restart sits in the slot of the epoch that minted it.
     owners = getattr(authority, '_local_owner_key_requests', None) or {}
-    for ref in [ref for ref in keys if ref.split(':', 2)[-1] in retired]:
+    for ref in [ref for ref in keys if ref.split(':', 2)[-1] in retired and ref not in kept]:
         del keys[ref]
         owners.pop(ref, None)
     configs = getattr(authority, '_local_config_secrets', None) or {}
@@ -802,7 +858,7 @@ def release_launch_secrets(authority, session_ids):
             owner = json.loads(ref[len(PREFIX):]).get('session')
         else:
             owner = ref[len(prefix):] if ref.startswith(prefix) else None
-        if owner in retired:
+        if owner in retired and ref not in kept:
             del configs[ref]
     editors = getattr(authority, '_local_editor_mcp', None) or {}
     for sid in retired:
@@ -925,6 +981,58 @@ def policy_scope(policy, *, authority=None):
         reset_terminal_scope(terminal_token)
         cwd_token.var.reset(cwd_token)
         _TURN_PROFILE.reset(profile_token)
+
+
+def bind_turn_workspace(policy, task_id):
+    """Make the session's frozen workspace its terminal cwd override for this turn's tools (#140665).
+
+    The client's cwd (or ``--in DIR``) is frozen into the policy at admission, but the terminal tool
+    mounts ``resolve_task_overrides(task_id)['cwd']`` into a per-session Docker container. Before the
+    one-gateway runtime each ``hermes chat`` was its own process with its own ``TERMINAL_CWD``; now the
+    turn runs here, so register it under the turn's own task id (inside the turn's routed scope, which
+    qualifies the key). Docker mounting the host cwd only: the local backend already runs in the
+    policy's ``TERMINAL_CWD``, and ssh and the other sandboxes keep their own cwd. Re-registered only
+    when the workspace changed, so an agent's ``cd`` inside the session survives later turns.
+    """
+    if policy is None or not task_id:
+        return
+    terminal = json.loads(policy.terminal_json)
+    if str(terminal.get('TERMINAL_ENV') or '').strip().lower() != 'docker' or not terminal_uses_host_cwd(terminal):
+        # The session moved off a host-cwd Docker mount (e.g. to SSH with its own terminal.cwd): the
+        # binding an earlier turn registered would otherwise win in _plan_execution on the new backend.
+        unbind_turn_workspace(task_id)
+        return
+    from tools.terminal_tool import register_task_env_overrides, resolve_task_overrides, workspace_key_for
+    current = resolve_task_overrides(task_id)
+    if current.get('cwd') == policy.cwd and current.get('cwd_source') == 'session':
+        return
+    register_task_env_overrides(task_id, {**current, 'cwd': policy.cwd, 'cwd_source': 'session',
+                                          'workspace_key': workspace_key_for(policy.cwd)})
+
+
+def unbind_turn_workspace(task_id):
+    """Drop the workspace override :func:`bind_turn_workspace` registered for *task_id*, and the cwd
+    record it seeded. Only its own entry (tagged ``workspace_key``): an ACP/TUI workspace or an RL
+    image override registered by someone else under the same id stays."""
+    if not task_id:
+        return
+    from tools.terminal_tool import _qualify_task_key, _task_env_overrides, clear_session_cwd, get_session_cwd
+    key = _qualify_task_key(task_id)
+    current = _task_env_overrides.get(key) or {}
+    if 'workspace_key' not in current:
+        return
+    _task_env_overrides.pop(key, None)
+    if get_session_cwd(task_id) == current.get('cwd'):
+        clear_session_cwd(task_id)
+
+
+def release_session_workspaces(authority, session_ids):
+    """Session teardown: drop each session's workspace binding under its owning profile's scope (the
+    key the turn bound it under), so the override table does not grow with every closed session."""
+    from gateway.session_authorities import owner_scope
+    with owner_scope(authority):
+        for sid in session_ids:
+            unbind_turn_workspace(sid)
 
 
 @contextmanager

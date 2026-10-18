@@ -5,17 +5,21 @@ description: >-
   Череда in the Hermes desktop app — obligation loops instead of status cards. Each
   loop shows whose move it is (customer or performer), the clock and deadline, the
   class, the evidence (command, output digest, expected exit code) and the whole
-  description, which a participant can refine from the card. Moves are verbs — ask, promise, refuse with a reason, declare with
-  proof, accept, object — offered as buttons; the panel only calls the real
-  `череда` CLI, so the rules (no talking out of turn, refusal only with a reason,
-  three-promise cap) stay in one place. A loop also carries a feed for participant
-  reports and notes that do not move the turn. Read-only apart from those verbs,
-  loopback only, no self-update; the interface ships in English and Russian with a glossary explaining every verb. Requires the `череда` binary in PATH
-  (cargo install --path . from github.com/kostyk348/chereda); without it the plugin
-  answers 503 with the exact install instruction instead of an empty screen.
+  description, which a participant can refine from the card. Moves are verbs — ask,
+  promise, refuse with a reason, declare with proof, accept, object, withdraw —
+  offered as buttons; the panel only calls the real `череда` CLI, so the rules (no
+  talking out of turn, refusal only with a reason, three-promise cap, deadline
+  escalation) stay in one place and cannot drift between CLI and UI. A loop also
+  carries a feed for participant reports and notes that do not move the turn, and a
+  “write as” switch so the owner speaks as themselves rather than as the bot.
+  Read-only apart from those verbs, loopback only, no self-update. The interface
+  ships in English and Russian with a glossary explaining every verb. Requires the
+  `череда` binary in PATH (cargo install --path . from github.com/kostyk348/chereda);
+  without it the plugin answers 503 with the exact install instruction instead of an
+  empty screen.
 maintainer: kostyk348
 tier: community
-category: productivity
+category: desktop
 docs_url: https://github.com/kostyk348/chereda-hermes-plugin#readme
 version: "0.1.0"
 platforms: []

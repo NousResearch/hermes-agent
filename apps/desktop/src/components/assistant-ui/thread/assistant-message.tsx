@@ -24,7 +24,7 @@ import {
   pickPrimaryPreviewTarget
 } from '@/components/assistant-ui/thread/content'
 import { MessageHoverTime } from '@/components/assistant-ui/thread/message-hover-time'
-import { MESSAGE_PARTS_COMPONENTS } from '@/components/assistant-ui/thread/message-parts'
+import { MessageParts } from '@/components/assistant-ui/thread/message-parts'
 import { ReactionPicker } from '@/components/assistant-ui/thread/message-reactions'
 import { ResponseMessageIds } from '@/components/assistant-ui/thread/response-group'
 import { ResponseLoadingIndicator, TurnActivityIndicator } from '@/components/assistant-ui/thread/status'
@@ -83,13 +83,12 @@ import { $voicePlayback } from '@/store/voice-playback'
 // would re-derive the changed-files card on every message re-render.
 const EMPTY_PARTS: readonly unknown[] = []
 
-// PERF: hoisted to module scope so the element OBJECT is identical on every
-// render of every assistant message. React bails out of re-rendering a child
-// whose element identity is unchanged, so a status flip on the message root
-// (pending -> complete and back, N rows per stream flush) can no longer
-// descend into the parts subtree at all. Its props were already the module
-// constant MESSAGE_PARTS_COMPONENTS, so nothing per-message is captured here.
-const MESSAGE_PARTS = <MessagePrimitive.Parts components={MESSAGE_PARTS_COMPONENTS} />
+// PERF: MessageParts picks between two hoisted elements in message-parts.tsx,
+// so the element OBJECT for a given mode is identical on every render of every
+// assistant message. React bails out of re-rendering a child whose element
+// identity is unchanged, so a status flip on the message root (pending ->
+// complete and back, N rows per stream flush) can no longer descend into the
+// parts subtree at all.
 
 interface MessageActionProps {
   messageId: string
@@ -177,7 +176,7 @@ const InterAgentCollapsedNotice: FC<{ sender: string }> = ({ sender }) => (
         show reply
       </summary>
       <div className="mt-1 max-w-[36rem] rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2 text-left text-[0.75rem] leading-5 text-foreground/85">
-        {MESSAGE_PARTS}
+        <MessageParts />
       </div>
     </details>
   </div>
@@ -308,7 +307,7 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
             data-slot="aui_assistant-message-content"
           >
             {/* Todos render in the composer status stack now, not inline. */}
-            {MESSAGE_PARTS}
+            <MessageParts />
             <StoppedNotice />
             <AssistantStatusSlot />
             <AssistantPreviewEmbeds />

@@ -24,12 +24,10 @@ describe('splitRunItems', () => {
     ])
   })
 
-  it('passes a part that is not a tool call through as its own card', () => {
-    expect(splitRunItems(['read_file', '', 'read_file'])).toEqual([
-      { end: 0, kind: 'run', start: 0 },
-      { index: 1, kind: 'card' },
-      { end: 2, kind: 'run', start: 2 }
-    ])
+  // A non-tool part inside the range is the reasoning of the activity group:
+  // more machinery between two calls, not a card that must stay on screen.
+  it('keeps a part that is not a tool call inside the run around it', () => {
+    expect(splitRunItems(['read_file', '', 'read_file'])).toEqual([{ end: 2, kind: 'run', start: 0 }])
   })
 
   it('has nothing to split when the range is empty', () => {

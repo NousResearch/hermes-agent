@@ -4,6 +4,7 @@ import { afterEach, assert, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $displayTimestamps } from '@/store/display-timestamps'
 import { clearAllPrompts, setApprovalRequest } from '@/store/prompts'
+import { setShowReasoningFromConfig } from '@/store/reasoning-disclosure'
 import { $activeSessionId } from '@/store/session'
 import { clearDismissedToolRows } from '@/store/tool-dismiss'
 import { $toolDisclosureStates } from '@/store/tool-view'
@@ -348,6 +349,79 @@ function movedOnMessage(): ThreadMessage {
     }
   } as unknown as ThreadMessage
 }
+
+// A turn whose machinery alternates calls and thinking. Reasoning used to be
+// its own group, so each thought ended the tool run and one turn painted three
+// separate summary lines.
+function interleavedReasoningMessage(): ThreadMessage {
+  const call = (id: string, command: string) => ({
+    type: 'tool-call' as const,
+    toolCallId: id,
+    toolName: 'terminal',
+    args: { command },
+    argsText: JSON.stringify({ command }),
+    result: { output: 'ok' }
+  })
+
+  return {
+    id: 'assistant-interleaved-reasoning',
+    role: 'assistant',
+    content: [
+      call('term-a', 'ls'),
+      { type: 'reasoning', text: 'Look at the listing first.', status: { type: 'complete' } },
+      call('term-b', 'cat package.json'),
+      { type: 'reasoning', text: 'Now read the scripts block.', status: { type: 'complete' } },
+      call('term-c', 'npm test')
+    ],
+    status: { type: 'complete', reason: 'stop' },
+    createdAt,
+    metadata: {
+      unstable_state: null,
+      unstable_annotations: [],
+      unstable_data: [],
+      steps: [],
+      custom: {}
+    }
+  } as unknown as ThreadMessage
+}
+
+describe('activity across reasoning', () => {
+  afterEach(() => {
+    setShowReasoningFromConfig(true)
+  })
+
+  it('draws one summary line for the whole turn while thinking is hidden', async () => {
+    setShowReasoningFromConfig(false)
+
+    const { container } = render(<GroupHarness message={interleavedReasoningMessage()} />)
+
+    await waitFor(() => {
+      expect(container.querySelectorAll('[data-tool-summary]')).toHaveLength(1)
+    })
+    expect(container.querySelectorAll('[data-tool-row]')).toHaveLength(0)
+  })
+
+  it('opens the whole turn from that one line', async () => {
+    setShowReasoningFromConfig(false)
+
+    const { container } = render(<GroupHarness message={interleavedReasoningMessage()} />)
+
+    fireEvent.click(await container.querySelector('[data-tool-summary] button')!)
+
+    await waitFor(() => {
+      expect(container.querySelectorAll('[data-tool-row]')).toHaveLength(3)
+    })
+  })
+
+  it('leaves the rows and thinking blocks alone while thinking is visible', async () => {
+    const { container } = render(<GroupHarness message={interleavedReasoningMessage()} />)
+
+    await waitFor(() => {
+      expect(container.querySelectorAll('[data-tool-row]')).toHaveLength(3)
+    })
+    expect(container.querySelectorAll('[data-tool-summary]')).toHaveLength(0)
+  })
+})
 
 const GroupHarness = ({ message }: { message: ThreadMessage }) => (
   <ThreadRuntime messages={[message]}>

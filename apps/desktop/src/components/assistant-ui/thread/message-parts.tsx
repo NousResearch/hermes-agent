@@ -1,4 +1,5 @@
 import {
+  MessagePrimitive,
   type ReasoningMessagePartComponent,
   type TextMessagePartProps,
   type ToolCallMessagePartProps,
@@ -475,3 +476,109 @@ export const MESSAGE_PARTS_COMPONENTS = {
   ToolGroup: ToolGroupSlot,
   tools: { Fallback: ChainToolFallback }
 } as const
+
+/**
+ * One activity line per stretch of machinery.
+ *
+ * Reasoning and tool calls are the same thing to a reader — what the agent did
+ * on the way to the answer. Grouped by type, a long turn (call → think → call →
+ * think …) painted a separate summary line per tool run, so the machinery read
+ * as a dozen grey lines above the reply. While thinking is hidden they share
+ * one group key instead, and the whole stretch collapses behind the one line
+ * ToolGroupSlot already draws. While thinking is visible they stay separate
+ * groups, so each block keeps the disclosure that shows its own text.
+ *
+ * Text is deliberately never grouped with them: prose is the reply, not the
+ * machinery, so it keeps the group split where the agent actually spoke. Cards
+ * (diffs, approvals, connector runs, set_theme) are left ungrouped for the same
+ * reason — `splitRunItems` draws them in place, and one of them must never be
+ * something a collapsed summary hides.
+ */
+type GroupByFn = NonNullable<ComponentProps<typeof MessagePrimitive.GroupedParts>['groupBy']>
+
+const ACTIVITY_GROUP: readonly ['group-activity'] = ['group-activity']
+const REASONING_GROUP: readonly ['group-reasoning'] = ['group-reasoning']
+
+type GroupablePart = { toolName?: string; type: string }
+
+/** Null keeps a part ungrouped (its own leaf); a key path coalesces neighbours. */
+const groupKeyFor = (part: GroupablePart, reasoningKey: null | readonly ['group-reasoning']) => {
+  if (part.type === 'reasoning') {
+    return reasoningKey
+  }
+
+  if (part.type !== 'tool-call') {
+    return null
+  }
+
+  const name = part.toolName
+
+  return !name || isCardTool(name) ? null : ACTIVITY_GROUP
+}
+
+const groupActivity: GroupByFn = part => groupKeyFor(part as GroupablePart, ACTIVITY_GROUP)
+const groupReasoningSeparately: GroupByFn = part => groupKeyFor(part as GroupablePart, REASONING_GROUP)
+
+type GroupedPartsRenderer = NonNullable<ComponentProps<typeof MessagePrimitive.GroupedParts>['children']>
+type GroupedPartRange = { indices: readonly number[] }
+
+const renderGroupedPart: GroupedPartsRenderer = ({ part, children }) => {
+  if (part.type.startsWith('group-')) {
+    const { indices } = part as unknown as GroupedPartRange
+    const startIndex = indices[0] ?? 0
+    const endIndex = indices[indices.length - 1] ?? startIndex
+
+    if (part.type === 'group-reasoning') {
+      return (
+        <ReasoningAccordionGroup endIndex={endIndex} startIndex={startIndex}>
+          {children}
+        </ReasoningAccordionGroup>
+      )
+    }
+
+    return (
+      <ToolGroupSlot endIndex={endIndex} startIndex={startIndex}>
+        {children}
+      </ToolGroupSlot>
+    )
+  }
+
+  switch (part.type) {
+    case 'text':
+      // The part carries its own timestamp/completedAt (text parts only); the
+      // grouped renderer has to hand them on, the way the parts renderer did.
+      return <TimelineMarkdownText {...(part as unknown as TimelineTextPartProps)} />
+
+    case 'reasoning':
+      return <ReasoningTextPart />
+
+    case 'tool-call':
+      return part.toolUI ?? <ChainToolFallback {...(part as unknown as TimelineToolCallProps)} />
+
+    default:
+      return null
+  }
+}
+
+// Hoisted per mode so the element identity is stable: a status flip on the
+// message root cannot descend into the parts subtree. The mode picks one, so
+// nothing per-message is captured here either.
+const MERGED_MESSAGE_PARTS = (
+  <MessagePrimitive.GroupedParts groupBy={groupActivity}>{renderGroupedPart}</MessagePrimitive.GroupedParts>
+)
+
+const SEPARATE_MESSAGE_PARTS = (
+  <MessagePrimitive.GroupedParts groupBy={groupReasoningSeparately}>{renderGroupedPart}</MessagePrimitive.GroupedParts>
+)
+
+/**
+ * The transcript body of one assistant message.
+ *
+ * Reasoning visibility decides the grouping (see groupActivity): hidden
+ * thinking folds into the activity line, visible thinking keeps its own blocks.
+ */
+export const MessageParts: FC = () => {
+  const showReasoning = useStore($showReasoning)
+
+  return showReasoning ? SEPARATE_MESSAGE_PARTS : MERGED_MESSAGE_PARTS
+}

@@ -813,15 +813,17 @@ export type RunItem = { end: number; kind: 'run'; start: number } | { index: num
  * Order is preserved rather than sorted into "all the runs, then all the
  * cards": a turn that reads, edits, then reads again shows a summary, the
  * diff, then a second summary, in the sequence it happened. Indices are
- * relative to the range. An empty name is a part that isn't a tool call at
- * all, which passes through as its own card.
+ * relative to the range. An empty name is a part that isn't a tool call — the
+ * reasoning inside an activity group — which belongs to the run around it: it
+ * is more of the machinery, so it opens with the rows it sits between instead
+ * of splitting one line into two.
  */
 export function splitRunItems(toolNames: readonly string[]): RunItem[] {
   const items: RunItem[] = []
   let run: null | Extract<RunItem, { kind: 'run' }> = null
 
   toolNames.forEach((name, index) => {
-    if (!name || isCardTool(name)) {
+    if (name && isCardTool(name)) {
       run = null
       items.push({ index, kind: 'card' })
 

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
-import { Check } from "lucide-react";
+import { Check, Languages } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { BottomSheet } from "@nous-research/ui/ui/components/bottom-sheet";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
@@ -77,6 +77,10 @@ export function LanguageSwitcher({ collapsed = false, dropUp = false }: Language
         )}
       >
         <span className="inline-flex items-center gap-1.5">
+          {/* Below `sm` the endonym is hidden to save header space, which used
+              to leave an invisible, empty button. Keep a glyph there so the
+              picker stays discoverable on phones. */}
+          <Languages aria-hidden="true" className="h-4 w-4 sm:hidden" />
           <Typography
             className="hidden sm:inline text-display tracking-wide text-xs"
           >
@@ -183,3 +187,4 @@ interface LanguageSwitcherProps {
   collapsed?: boolean;
   dropUp?: boolean;
 }
+

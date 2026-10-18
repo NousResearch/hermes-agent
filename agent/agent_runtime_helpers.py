@@ -1078,7 +1078,7 @@ def recover_with_credential_pool(
             failure_reason = effective_reason.value
             if effective_reason == FailoverReason.billing and billing_unverified:
                 # Ambiguous billing body: size the cooldown as transient, not a 1-hour bench.
-                from agent.credential_pool import FAILURE_REASON_BILLING_UNVERIFIED
+                from agent.credential_pool_cooldown import FAILURE_REASON_BILLING_UNVERIFIED
                 failure_reason = FAILURE_REASON_BILLING_UNVERIFIED
             kwargs["failure_reason"] = failure_reason
         model = getattr(agent, "model", None)

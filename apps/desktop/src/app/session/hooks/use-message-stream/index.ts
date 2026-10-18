@@ -21,6 +21,7 @@ import {
   toolCallOwnerMessageId,
   upsertToolPart
 } from '@/lib/chat-messages'
+import { coerceThinkingText } from '@/lib/chat-runtime'
 import type { ErrorSurface } from '@/lib/error-surface'
 import {
   dedupeGeneratedImageEchoesInParts,
@@ -730,7 +731,8 @@ export function useMessageStream({
       persistedTurn?: PersistedTurn | null,
       responseTransformed?: boolean,
       status?: string,
-      responseReused?: boolean
+      responseReused?: boolean,
+      reasoning?: string
     ) => {
       let shouldHydrate = false
 
@@ -773,6 +775,21 @@ export function useMessageStream({
         const durationS = state.turnStartedAt
           ? Math.max(1, Math.round((Date.now() - state.turnStartedAt) / 1000))
           : undefined
+
+        // Readable reasoning summary the gateway may attach to
+        // message.complete. Providers that deliver the summary only at response
+        // completion (Codex subscription) carry it here instead of streaming
+        // reasoning.delta frames; history hydration already renders it, so the
+        // live turn must agree. Missing, non-string, and whitespace-only values
+        // are treated as absent.
+        const completionReasoning = typeof reasoning === 'string' ? coerceThinkingText(reasoning) : ''
+
+        // Streamed reasoning always wins: append the completion summary as
+        // exactly one reasoning part only when the settling bubble holds none.
+        const appendCompletionReasoning = (parts: ChatMessagePart[]): ChatMessagePart[] =>
+          completionReasoning.trim() && !parts.some(part => part.type === 'reasoning')
+            ? appendReasoningPart(parts, completionReasoning, occurredAt)
+            : parts
 
         const replaceTextPart = (parts: ChatMessagePart[], interim: boolean) => {
           // The backend says every word of this final is already on screen; a
@@ -819,7 +836,7 @@ export function useMessageStream({
           const settled = {
             ...message,
             completedAt: occurredAt,
-            parts: completeOpenTimelineParts(message.parts, occurredAt),
+            parts: completeOpenTimelineParts(appendCompletionReasoning(message.parts), occurredAt),
             pending: false,
             interim: false,
             recovered: false,
@@ -846,10 +863,11 @@ export function useMessageStream({
           withPersistedIdentity({
             id: `assistant-${Date.now()}`,
             role: 'assistant',
-            parts:
+            parts: appendCompletionReasoning(
               completionError && !keepFailedPartialText
                 ? []
-                : [{ ...assistantTextPart(finalText, occurredAt), completedAt: occurredAt }],
+                : [{ ...assistantTextPart(finalText, occurredAt), completedAt: occurredAt }]
+            ),
             timestamp: occurredAt,
             completedAt: occurredAt,
             branchGroupId: state.pendingBranchGroup ?? undefined,

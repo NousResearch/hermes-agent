@@ -33,6 +33,7 @@ export const zhModelMenu = {
   poolAccount: (number: number) => `账户 ${number}`,
   poolUnknown: '用量暂不可用',
   poolUnavailable: '请重新登录',
+  poolIdle: '空闲：令牌已过期',
   usageTip: (provider: string) => `${provider} 即将达到用量上限。`,
   usageWindow: (label: string, percent: number, time: null | string) =>
     time ? `${label}：剩余 ${percent}%，${time} 重置` : `${label}：剩余 ${percent}%`

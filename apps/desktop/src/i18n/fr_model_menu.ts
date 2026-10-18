@@ -35,6 +35,7 @@ export const frModelMenu = {
   poolAccount: (number: number) => `Compte ${number}`,
   poolUnknown: 'Utilisation indisponible',
   poolUnavailable: 'Reconnectez-vous',
+  poolIdle: 'Inactif : jeton expiré',
   usageTip: (provider: string) => `${provider} approche de sa limite d’utilisation.`,
   usageWindow: (label: string, percent: number, time: null | string) =>
     time ? `${label} : ${percent} % restant, réinitialisation ${time}` : `${label} : ${percent} % restant`

@@ -4151,6 +4151,7 @@
     "shell.modelMenu.pickDeferred",
     "shell.modelMenu.poolAccount",
     "shell.modelMenu.poolAccounts",
+    "shell.modelMenu.poolIdle",
     "shell.modelMenu.poolLimited",
     "shell.modelMenu.poolUnavailable",
     "shell.modelMenu.poolUnknown",

@@ -35,6 +35,7 @@ export const jaModelMenu = {
   poolAccount: (number: number) => `アカウント ${number}`,
   poolUnknown: '使用量を取得できません',
   poolUnavailable: '再ログインしてください',
+  poolIdle: 'アイドル中：トークン期限切れ',
   usageTip: (provider: string) => `${provider} は利用上限に近づいています。`,
   usageWindow: (label: string, percent: number, time: null | string) =>
     time ? `${label}: 残り ${percent}%、${time} にリセット` : `${label}: 残り ${percent}%`

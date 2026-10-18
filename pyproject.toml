@@ -488,9 +488,15 @@ youtube = [
 # uvicorn pin without [standard] — httptools / watchfiles are now core deps,
 # and uvloop is gated behind the [uvloop] extra.  This keeps [web] safe for
 # termux-all which includes it.
+# >=0.53.0 also matters for correctness: 0.41.0 only recognised an exact
+# `Connection: close` request header, so a whitespace-padded value (Windows
+# Chrome sends `Connection: close     `) left the connection half-broken —
+# the dashboard never answered further requests on it and the browser hung
+# on a LAN/remote bind (#140860).  0.54.0 uses the parser's own
+# `should_keep_alive()` and handles the padded value correctly.
 web = [
   "fastapi==0.133.1",
-  "uvicorn==0.41.0",
+  "uvicorn==0.54.0",
   "starlette==1.3.1",
   "python-multipart==0.0.32",
 ]

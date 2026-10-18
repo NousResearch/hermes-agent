@@ -64,8 +64,6 @@ def _select(description: str, *options: str, **extra: Any) -> dict[str, Any]:
 
 # Manual overrides for fields that need select options or custom types.
 _SCHEMA_OVERRIDES: dict[str, dict[str, Any]] = {
-    "desktop.coding.default_checkout": _select(
-        "Default checkout for new coding drafts", "worktree", "current"),
     "timezone": _select(
         "IANA timezone (e.g. America/New_York). Blank uses the system timezone.",
         *_timezone_options(), searchable=True, clearable=True,
@@ -140,6 +138,8 @@ _SCHEMA_OVERRIDES: dict[str, dict[str, Any]] = {
     "dashboard.theme": _select(
         "Web dashboard visual theme", "default", "midnight", "ember", "mono", "cyberpunk", "rose"
     ),
+    "desktop.coding.default_checkout": _select(
+        "Default checkout for new coding drafts", "worktree", "current"),
     "display.resume_display": _select("How resumed sessions display history", "minimal", "full", "off"),
     "display.busy_input_mode": _select("Input behavior while agent is running", "interrupt", "queue", "steer"),
     "approvals.mode": _select("Dangerous command approval mode", "manual", "smart", "off"),

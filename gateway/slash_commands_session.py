@@ -950,7 +950,8 @@ class GatewaySessionCommandsMixin:
             return t("gateway.shared.warn_passthrough", error=e)
         # Mirror the title onto the Telegram forum topic name (auto titles already do this).
         try:
-            await asyncio.to_thread(self._schedule_telegram_topic_title_rename, source, session_id, sanitized)
+            await asyncio.to_thread(
+                lambda: self._schedule_telegram_topic_title_rename(source, session_id, sanitized, manual=True))
         except Exception:
             logger.debug("Failed to rename Telegram topic from /title", exc_info=True)
         return t("gateway.title.set_to", title=sanitized)

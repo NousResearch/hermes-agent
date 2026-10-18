@@ -651,13 +651,17 @@ def anchor_title(anchor: Optional[str], title: Optional[str]) -> Optional[str]:
     ``· subject`` only when the new subject is genuinely different from the name."""
     if not anchor:
         return title
+    from hermes_state import SessionDB
+    # The bare anchor collides with the first session's title, so the store appends " #N": leave room or
+    # the write fails validation, the session stays untitled and every turn pays another title call.
+    if len(anchor) > SessionDB.MAX_TITLE_LENGTH - 6:
+        anchor = anchor[:SessionDB.MAX_TITLE_LENGTH - 7].rstrip() + "…"
     subject = (title or "").strip()
     if subject == anchor or subject.startswith(anchor + THREAD_ANCHOR_SEPARATOR):
         return subject  # already anchored (re-titled turn, compression carry)
     words, anchor_words = _subject_words(subject), _subject_words(anchor)
     if not words or len(words - anchor_words) <= len(words) // 3:
         return anchor
-    from hermes_state import SessionDB
     room = SessionDB.MAX_TITLE_LENGTH - 4 - len(anchor) - len(THREAD_ANCHOR_SEPARATOR)
     if room < _MIN_ANCHOR_SUBJECT_CHARS:
         return anchor

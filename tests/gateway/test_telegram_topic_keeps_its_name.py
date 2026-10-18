@@ -71,3 +71,18 @@ async def test_second_session_in_a_named_topic_does_not_rename_it(tmp_path):
         _source(), "later", "OKX integration requirements review · OKX 82000 delisting rule questions")
 
     adapter.rename_dm_topic.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_manual_title_still_renames_a_named_topic(tmp_path):
+    """The user's own /title names the topic in any session; only automatic titles are anchored."""
+    db = _db(tmp_path)
+    db.create_session("first", source="telegram", chat_id="700", chat_type="dm", thread_id="42")
+    db.set_auto_title("first", "OKX integration requirements review", source="llm")
+    db.create_session("later", source="telegram", chat_id="700", chat_type="dm", thread_id="42")
+    _bind(db, "later")
+    runner, adapter = _runner(db)
+
+    await runner._rename_telegram_topic_for_session_title(_source(), "later", "Release plan", manual=True)
+
+    adapter.rename_dm_topic.assert_awaited_once_with(chat_id="700", thread_id="42", name="Release plan")

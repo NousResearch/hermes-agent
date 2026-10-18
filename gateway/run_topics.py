@@ -474,13 +474,15 @@ class GatewayTopicThreadsMixin:
             "Discord semantic thread rename",
         )
 
-    def _schedule_telegram_topic_title_rename(self, source: SessionSource, session_id: str, title: str) -> None:
-        """Schedule a topic rename from the auto-title background thread."""
+    def _schedule_telegram_topic_title_rename(
+        self, source: SessionSource, session_id: str, title: str, *, manual: bool = False,
+    ) -> None:
+        """Schedule a topic rename from the auto-title background thread (``manual``: the user's ``/title``)."""
         if not title or not self._is_telegram_topic_lane(source) or self._telegram_topic_auto_rename_disabled(source):
             return
         self._schedule_rename_from_title_thread(
             source,
-            lambda copied: self._rename_telegram_topic_for_session_title(copied, session_id, title),
+            lambda copied: self._rename_telegram_topic_for_session_title(copied, session_id, title, manual=manual),
             "Telegram topic title rename",
         )
 
@@ -492,8 +494,11 @@ class GatewayTopicThreadsMixin:
             return False
         return is_truthy_value((getattr(platform_cfg, "extra", None) or {}).get("disable_topic_auto_rename"))
 
-    async def _rename_telegram_topic_for_session_title(self, source: SessionSource, session_id: str, title: str) -> None:
-        """Best-effort rename of a Telegram DM topic when Hermes auto-titles a session."""
+    async def _rename_telegram_topic_for_session_title(
+        self, source: SessionSource, session_id: str, title: str, *, manual: bool = False,
+    ) -> None:
+        """Best-effort rename of a Telegram DM topic when Hermes titles a session (``manual``: the user's
+        own ``/title``, which renames the topic in any session)."""
         if not await asyncio.to_thread(self._is_telegram_topic_lane, source) or not source.chat_id or not source.thread_id:
             return
         # Operator kill-switch, e.g. user-managed topics (ad-hoc Threaded Mode) that auto-rename
@@ -528,9 +533,9 @@ class GatewayTopicThreadsMixin:
             # A topic is named once, by its first session. A later one (idle reset, /new, a Kanban
             # wake opening the topic after a quiet day) inherits that name as its own title prefix
             # (agent.title_generator.anchor_title); renaming the topic after it is what made long-lived
-            # topics show whatever the latest reply was about.
+            # topics show whatever the latest reply was about. A manual /title is the user naming it.
             try:
-                if await session_db.get_thread_anchor_title(session_id):
+                if not manual and await session_db.get_thread_anchor_title(session_id):
                     return
             except Exception:
                 logger.debug("Failed to read Telegram topic anchor before rename", exc_info=True)

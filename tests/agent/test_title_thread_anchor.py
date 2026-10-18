@@ -97,3 +97,24 @@ def test_anchor_title_stays_within_the_title_cap():
     assert title is not None
     assert title.startswith(f"OKX integration requirements review{THREAD_ANCHOR_SEPARATOR}Latency")
     assert len(title) <= SessionDB.MAX_TITLE_LENGTH - 4
+
+
+def test_a_maximum_length_thread_name_still_titles_later_sessions(tmp_path):
+    """The bare anchor collides with the first title and takes " #N": it must still fit, or the session
+    stays untitled and every turn pays another title call."""
+    db = _thread_db(tmp_path, first_title="x" * (SessionDB.MAX_TITLE_LENGTH - 2))
+    with patch("agent.title_generator.generate_title", return_value="x" * 20):
+        auto_title_session(db, "later", "same thing again")
+    title = db.get_session_title("later")
+    assert title is not None and title.startswith("x" * 20)
+    assert len(title) <= SessionDB.MAX_TITLE_LENGTH
+
+
+def test_another_persons_session_in_a_shared_thread_is_not_anchored(tmp_path):
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("alice", source="discord", user_id="a", chat_id="c", chat_type="thread", thread_id="t")
+    db.set_auto_title("alice", "Alice salary negotiation", source="llm")
+    db.create_session("bob", source="discord", user_id="b", chat_id="c", chat_type="thread", thread_id="t")
+    with patch("agent.title_generator.generate_title", return_value="Weekend trip planning"):
+        auto_title_session(db, "bob", "plan my weekend trip")
+    assert db.get_session_title("bob") == "Weekend trip planning"

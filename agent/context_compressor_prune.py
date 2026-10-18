@@ -13,6 +13,8 @@ import logging
 from typing import Any, Optional
 
 logger = logging.getLogger("agent.context_compressor")
+# Reclaim gate on an already-expired provider cache: there is no cache break to amortize.
+_COLD_CACHE_MIN_RECLAIM_TOKENS = 16_000
 
 
 def _cc():
@@ -43,8 +45,8 @@ class ProactivePruneMixin:
         ``proactive_prune_min_reclaim_tokens`` (less what cold prunes freed since the last warm one) and a
         full regrowth runway; otherwise returns the INPUT object as ``(messages, 0)``. ``cold_cache`` (the
         provider cache has already expired) has nothing to break: the gate drops to
-        ``_COLD_CACHE_MIN_RECLAIM_TOKENS`` and the runway is neither checked nor moved. The rearm gate is measured on message bodies only, so it is
-        bypassed (never the reclaim gate) when a provider-billed ``current_tokens`` reading already
+        ``_COLD_CACHE_MIN_RECLAIM_TOKENS`` and the runway is neither checked nor moved. The rearm gate is
+        measured on message bodies only, so it is bypassed (never the reclaim gate) when a provider-billed ``current_tokens`` reading already
         puts the request over ``threshold_tokens`` (#101889); every no-op taken while over threshold
         is logged once per distinct reason.
 
@@ -69,10 +71,9 @@ class ProactivePruneMixin:
         if (not cold_cache and before < self._proactive_prune_rearm_tokens
                 and not self._billed_basis_over_threshold(current_tokens)):
             return messages, 0
-        # Capability gate first: a store without archive_and_compact makes every prune a no-op.
-        session_db = getattr(self, "_session_db", None)
-        session_id = getattr(self, "_session_id", "")
-        if session_db and session_id and not callable(getattr(session_db, "archive_and_compact", None)):
+        # Capability gate first: a store that cannot archive (no archive_and_compact, or no bound row) loses the originals.
+        session_db, session_id = getattr(self, "_session_db", None), getattr(self, "_session_id", "")
+        if session_db and not (session_id and callable(getattr(session_db, "archive_and_compact", None))):
             self._warn_reclamation_no_op("prune:store_cannot_persist", current_tokens)
             return messages, 0
         pruned_msgs, pruned_count = self._prune_old_tool_results(
@@ -88,7 +89,7 @@ class ProactivePruneMixin:
         after = sum(_estimate_msg_budget_tokens(m) for m in pruned_msgs)
         reclaimed = max(0, before - after)
         gate = self.proactive_prune_min_reclaim_tokens
-        cold_gate = min(gate, _cc()._COLD_CACHE_MIN_RECLAIM_TOKENS)
+        cold_gate = min(gate, _COLD_CACHE_MIN_RECLAIM_TOKENS)
         if reclaimed < (cold_gate if cold_cache else max(cold_gate, gate - self._proactive_prune_cold_credit)):
             self._warn_reclamation_no_op("prune:reclaim_below_minimum", current_tokens, before=before)
             return messages, 0
@@ -99,7 +100,8 @@ class ProactivePruneMixin:
         if session_db and session_id:
             _cc_ = _cc()
             from hermes_state_errors import HeldRowRewrittenError
-            model_config_patch = {_cc_.PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: next_rearm_tokens}
+            model_config_patch = {_cc_.PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: next_rearm_tokens,
+                                  _cc_.PROACTIVE_PRUNE_COLD_CREDIT_MODEL_CONFIG_KEY: cold_credit}
             StaleHeldHistory = _cc_.StaleHeldHistory
             _DB_PERSISTED_MARKER = _cc_._DB_PERSISTED_MARKER
             rewritten = None

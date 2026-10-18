@@ -6,7 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.context_compressor import _COLD_CACHE_MIN_RECLAIM_TOKENS, ContextCompressor
+from agent.context_compressor import ContextCompressor
+from agent.context_compressor_prune import _COLD_CACHE_MIN_RECLAIM_TOKENS
 from agent.prompt_caching import provider_cache_expired
 from agent.turn_context_compaction import CompactionOutcome, run_turn_start_compaction
 from agent.turn_proactive_prune import run_proactive_prune, turn_start_cold_prune
@@ -128,10 +129,11 @@ def test_qwen_route_clamps_1h_to_5m():
 
 # --- call sites -------------------------------------------------------------------------------------------
 
-def _site_agent(prune, *, cold, session_db=True, checkpoint=False):
+def _site_agent(prune, *, cold, session_db=True, checkpoint=False, session_id="s1"):
     compressor = MagicMock()
     compressor.prune_tool_results_only = prune
     compressor._session_db = MagicMock() if session_db else None
+    compressor._session_id = session_id
     agent = MagicMock()
     agent.context_compressor = compressor
     agent.compression_enabled = True
@@ -171,10 +173,11 @@ def test_legacy_engine_signature_gets_no_cold_kwarg():
     assert seen == [123]
 
 
-@pytest.mark.parametrize("gate", ["no_store", "checkpoint"])
+@pytest.mark.parametrize("gate", ["no_store", "checkpoint", "no_session_id"])
 def test_post_tool_site_keeps_its_gates(gate):
     prune, calls = _recording_prune(lambda m, cold: (m[:1], 1))
-    agent = _site_agent(prune, cold=True, session_db=gate != "no_store", checkpoint=gate == "checkpoint")
+    agent = _site_agent(prune, cold=True, session_db=gate != "no_store", checkpoint=gate == "checkpoint",
+                        session_id="" if gate == "no_session_id" else "s1")
     msgs = _history(3, big=set())
     assert run_proactive_prune(agent, msgs, 100_000, "t") is msgs and calls == []
 
@@ -204,12 +207,19 @@ def test_turn_start_prunes_only_the_prefix_on_a_cold_cache():
     assert all(m["content"] == "x" for m in out.messages if m.get("role") == "tool")
 
 
-@pytest.mark.parametrize("case", ["warm", "compressed", "blocked", "disabled", "bad_idx"])
+@pytest.mark.parametrize("case", ["warm", "compressed", "blocked", "disabled", "bad_idx", "row_saved", "row_marked"])
 def test_turn_start_stands_down(case):
+    """``row_saved``/``row_marked``: TUI/Desktop wrote this turn's user row at submit; archiving only the prefix
+    would clone it under a new id while the live dict keeps the old ``_row_id`` (later api_content stamps miss)."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
     prune, calls = _recording_prune(lambda m, cold: (m[:1], 1))
     agent = _site_agent(prune, cold=case != "warm")
     agent.compression_enabled = case != "disabled"
     msgs, idx = _with_turn(_history(3, big={0}))
+    if case == "row_saved":
+        msgs[idx]["_row_id"] = 42
+    if case == "row_marked":
+        msgs[idx][_DB_PERSISTED_MARKER] = True
     out = _outcome(msgs, -1 if case == "bad_idx" else idx)
     out.compressed, out.blocked = case == "compressed", case == "blocked"
     with patch("agent.turn_context._preflight_request_tokens", return_value=100_000):
@@ -227,3 +237,47 @@ def test_turn_start_compaction_runs_the_cold_prune():
             agent, messages=msgs, system_message=None, active_system_prompt="sys", conversation_history=None,
             current_turn_user_idx=idx, user_message="next question", effective_task_id="t")
     cold.assert_called_once_with(agent, out, "t")
+
+
+def _bound(db, sid="s1"):
+    c = _shipped()
+    c.bind_session_state(session_db=db, session_id=sid)
+    return c
+
+
+def test_engine_refuses_a_store_without_a_session_row():
+    """Engine invariant (not only the call site): a store with no bound row cannot archive the originals."""
+    c = _bound(MagicMock(), sid="")
+    msgs = _small_batch()
+    out, n = c.prune_tool_results_only(msgs, current_tokens=100_000, cold_cache=True)
+    assert n == 0 and out is msgs
+
+
+def test_cold_credit_survives_a_rebuilt_compressor(tmp_path):
+    """api_server builds an agent per request and resumes rebuild the compressor: the credit is persisted with
+    the runway in the same commit, and restored on bind."""
+    from hermes_state import SessionDB
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s1", source="cli", model="m")
+    for m in _small_batch()[1:]:
+        db.append_message("s1", role=m["role"], content=m["content"], tool_calls=m.get("tool_calls"),
+                          tool_call_id=m.get("tool_call_id"))
+    live = [{"role": "system", "content": "sys"}] + db.get_messages_as_conversation("s1", include_row_ids=True)
+    for m in live[1:]:
+        m[_DB_PERSISTED_MARKER] = True
+    first = _bound(db)
+    _out, n = first.prune_tool_results_only(live, current_tokens=100_000, cold_cache=True)
+    assert n and first._proactive_prune_cold_credit >= _COLD_CACHE_MIN_RECLAIM_TOKENS
+    rebuilt = _bound(db)
+    assert rebuilt._proactive_prune_cold_credit == first._proactive_prune_cold_credit
+    assert rebuilt._proactive_prune_rearm_tokens == first._proactive_prune_rearm_tokens
+    rebuilt._clear_durable_proactive_prune_rearm()
+    assert _bound(db)._proactive_prune_cold_credit == 0
+
+
+def test_attempt_restore_keeps_the_cold_credit():
+    from agent.conversation_compression import _restore_prune_rearm_tokens
+    c = _shipped()
+    _restore_prune_rearm_tokens(c, {"_proactive_prune_rearm_tokens": 90_000, "_proactive_prune_cold_credit": 20_000})
+    assert (c._proactive_prune_rearm_tokens, c._proactive_prune_cold_credit) == (90_000, 20_000)

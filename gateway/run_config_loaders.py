@@ -535,25 +535,27 @@ class GatewayConfigLoadersMixin:
         from gateway.run import _gateway_config_home
         from hermes_constants import hermes_home_key
         home = _gateway_config_home()
-        by_home = getattr(self, "_fallback_model_by_home", None)
-        if by_home is None:
-            by_home = self._fallback_model_by_home = {}
+        # Partial runners may skip bootstrap; never seed from a worker-mutated shared slot.
+        by_home = self.__dict__.setdefault("_fallback_model_by_home", {})
         home_key = hermes_home_key(home)
         try:
             from hermes_cli.config_effective import load_user_config_effective
             cfg_path = home / "config.yaml"
             if not cfg_path.exists():
                 by_home[home_key] = self._fallback_model = None
-                return self._fallback_model
+                return None
             # fail_closed: a torn mid-edit write must raise so the per-home last known-good chain
             # below survives, instead of being WIPED by an empty fail-open result.
             cfg = load_user_config_effective(cfg_path, fail_closed=True)
         except Exception:
             logger.debug("fallback_providers refresh: config.yaml read failed; keeping last known-good chain", exc_info=True)
-            self._fallback_model = by_home.get(home_key, self._fallback_model)
-            return self._fallback_model
-        by_home[home_key] = self._fallback_model = get_fallback_chain(cfg) or None
-        return self._fallback_model
+            chain = by_home.get(home_key)
+            self._fallback_model = chain
+            return chain
+        chain = get_fallback_chain(cfg) or None
+        by_home[home_key] = self._fallback_model = chain
+        # The compatibility slot may be overwritten by another profile before we return.
+        return chain
 
     @staticmethod
     def _apply_fallback_chain_to_agent(agent: Any, chain: list | None) -> None:

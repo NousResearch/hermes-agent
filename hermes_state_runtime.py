@@ -5,12 +5,19 @@ SessionDB transaction owner, including its inode guard and SQLite retry policy.
 """
 import json
 import uuid
+from typing import NamedTuple, Optional
 
 from agent.conversation_compression_archive import ABSORBED_ROW_IDS
 from agent.message_metadata import (
     CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID, PERSISTENCE_ONLY_MESSAGE_FIELDS, TOOL_CALL_UID, TOOL_CALL_UIDS,
 )
 from hermes_state_keys import admission_fingerprint
+
+
+class SessionGoneEvent(NamedTuple):
+    """The ``on_session_delete`` event a committed runtime mutation owes its plugins."""
+    session_ids: tuple
+    reason: str
 
 
 class RuntimeStoreError(ValueError):
@@ -449,11 +456,12 @@ def mutate_runtime_session(db, *, epoch: int, principal_id: str, session_id: str
     key, digest = mutation_receipt_key(principal_id, session_id, request_id, operation=operation, payload=payload,
                                        expected_revision=expected_revision, expected_generation=expected_generation)
 
-    def write(conn):
+    def write(conn) -> tuple[dict, Optional[SessionGoneEvent]]:
+        """The receipt result plus the on_session_delete event this commit owes (None on replay)."""
         _epoch(conn, epoch)
         replay = replay_mutation_receipt(conn, key, digest)
         if replay is not None:
-            return replay
+            return replay, None
         session = conn.execute('SELECT * FROM sessions WHERE id=?', (session_id,)).fetchone()
         if session is None and operation != 'import':
             raise RuntimeStoreError('not_found')
@@ -475,8 +483,13 @@ def mutate_runtime_session(db, *, epoch: int, principal_id: str, session_id: str
                 # The branch commit's own idle rule (queued input too), before the owner starts servers.
                 from hermes_state_mutation_guards import require_idle
                 require_idle(db, conn, list({session_id, snapshot['target']}))
-            return {'snapshot': snapshot}
+            return {'snapshot': snapshot}, None
         affected, projection = apply_action(db, conn, session_id, operation, payload, prepared=_prepared)
+        event = None
+        if operation == 'delete':
+            event = SessionGoneEvent(tuple(projection.get('deleted_ids') or (session_id,)), 'delete')
+        elif payload.get('archived') is True and session is not None and not session['archived']:
+            event = SessionGoneEvent(tuple(affected) or (session_id,), 'archive')
         conn.executemany('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?',
                          [(target,) for target in affected])
         updated = conn.execute('SELECT * FROM sessions WHERE id=?', (session_id,)).fetchone()
@@ -485,8 +498,12 @@ def mutate_runtime_session(db, *, epoch: int, principal_id: str, session_id: str
                   'operation': operation, **projection}
         conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
                      (key, _json({'digest': digest, 'result': result})))
-        return result
-    return db._execute_write(write)
+        return result, event
+    result, event = db._execute_write(write)
+    if event is not None:
+        from hermes_state_common import emit_session_deleted
+        emit_session_deleted(db, event.session_ids, reason=event.reason, primary=session_id)
+    return result
 
 
 _IMPORT_KEY = 'gateway.prompt_admissions_import.v1'

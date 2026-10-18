@@ -7,6 +7,8 @@ import logging
 import os
 import re
 import sys
+from copy import deepcopy
+from functools import lru_cache
 from pathlib import Path, PurePath
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
@@ -63,6 +65,12 @@ def yaml_load(content: str):
     return _yaml_load_fn(content)
 
 
+@lru_cache(maxsize=256)
+def _load_frontmatter_yaml(content: str) -> Any:
+    """Reuse identical YAML blocks; parse_frontmatter copies the cached data."""
+    return yaml_load(content)
+
+
 def parse_frontmatter(content: str) -> tuple[dict[str, Any], str]:
     """Parse YAML frontmatter from markdown; returns (frontmatter_dict, body).
     Malformed YAML falls back to key:value line splitting. A leading UTF-8 BOM
@@ -75,7 +83,7 @@ def parse_frontmatter(content: str) -> tuple[dict[str, Any], str]:
     body = content[end_match.end() + 3 :]
     frontmatter: dict[str, Any] = {}
     try:
-        parsed = yaml_load(yaml_content)
+        parsed = deepcopy(_load_frontmatter_yaml(yaml_content))
         if isinstance(parsed, dict):
             frontmatter = parsed
     except Exception:

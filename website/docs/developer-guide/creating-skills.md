@@ -53,6 +53,7 @@ license: MIT
 platforms: [macos, linux]          # Optional — restrict to specific OS platforms
                                    #   Valid: macos, linux, windows
                                    #   Omit to load on all platforms (default)
+disable-model-invocation: false    # Optional — true keeps it out of the agent's skill index
 metadata:
   hermes:
     tags: [Category, Subcategory, Keywords]
@@ -109,6 +110,16 @@ platforms: [windows]          # Windows only
 ```
 
 When set, the skill is automatically hidden from the system prompt, `skills_list()`, and slash commands on incompatible platforms. If omitted or empty, the skill loads on all platforms (backward compatible).
+
+### Hiding a Skill from the Agent
+
+Set the Claude Code / Agent Skills key `disable-model-invocation` for skills that should only start when asked for:
+
+```yaml
+disable-model-invocation: true
+```
+
+The skill is left out of the system-prompt skill index and `skills_list()`, so the agent does not pick it on its own and it costs no index space. It still loads by exact name: `/skill-name`, `hermes -s skill-name`, and `skill_view(name)` (for example from a wrapper skill that delegates to it). Name resolution is unchanged: a hidden skill still owns its name, so a same-named skill in a lower-precedence directory stays shadowed.
 
 ### Conditional Skill Activation
 

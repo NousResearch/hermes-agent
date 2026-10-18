@@ -169,6 +169,17 @@ def skill_matches_environment(frontmatter: dict[str, Any]) -> bool:
     return any(_detect_environment(tag) for tag in tags if tag)
 
 
+def skill_model_invocable(frontmatter: dict[str, Any]) -> bool:
+    """False for ``disable-model-invocation: true`` (the Claude Code / Agent Skills key; YAML ``true`` or the
+    quoted word). Like the ``environments:`` gate this only removes the skill from what the model is offered
+    (the prompt index and ``skills_list``); an explicit load (skill_view by name, ``/name``, ``--skills``)
+    always succeeds."""
+    value = frontmatter.get("disable-model-invocation")
+    if isinstance(value, str):
+        return value.strip().lower() != "true"
+    return value is not True
+
+
 def skill_matches_apps(frontmatter: dict[str, Any]) -> bool:
     """True when every app named in ``requires_apps:`` has a registered declaration this host satisfies.
 

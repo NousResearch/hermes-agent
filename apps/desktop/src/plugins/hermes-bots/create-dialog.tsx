@@ -127,17 +127,19 @@ interface CreateAgentDialogProps {
  *  renames it) otherwise sat on a spinner forever. Debounced so typing a name
  *  does not mint a draft per keystroke. */
 function useCapabilitiesDraft(ready: boolean, slug: string, draft: null | string, materialize: () => void) {
+  // The timer is keyed on the name, but must run the LATEST callback: a title
+  // or description typed during the wait belongs in the created profile.
+  const latest = useRef(materialize)
+  latest.current = materialize
+
   useEffect(() => {
     if (!ready || draft === slug) {
       return
     }
 
-    const timer = window.setTimeout(materialize, 800)
+    const timer = window.setTimeout(() => latest.current(), 800)
 
     return () => window.clearTimeout(timer)
-    // materialize reads the current render's form state; re-arming on the
-    // identity inputs is what matters.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, slug, draft])
 }
 

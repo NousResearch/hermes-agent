@@ -1,4 +1,3 @@
-# health: allow FILE_LINES -- platform-tables refactor: core's PLATFORM_HINTS/_PLATFORM_DEFAULTS rows for this platform moved onto its register() call (hint text lives in adapter_hint.py); the growth is only those kwargs
 """
 Feishu/Lark platform adapter.
 
@@ -1344,6 +1343,8 @@ class FeishuAdapter(BasePlatformAdapter):
         self._approval_counter = itertools.count(1)
         self._update_prompt_state: dict[int, dict[str, str]] = {}
         self._update_prompt_counter = itertools.count(1)
+        # Model picker state (chat_id → {providers, session_key, callback, ...})
+        self._model_picker_state: Dict[str, Dict[str, Any]] = {}
         # Reaction deletion needs the opaque reaction_id from create, cached per message_id.
         self._pending_processing_reactions: OrderedDict[str, str] = OrderedDict()
         self._load_seen_message_ids()
@@ -1840,6 +1841,498 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.warning("[Feishu] send_update_prompt failed: %s", exc)
             return SendResult(success=False, error=str(exc))
 
+    _PROVIDER_PAGE_SIZE = 10
+    _MODEL_PAGE_SIZE = 8
+
+    async def send_model_picker(
+        self,
+        chat_id: str,
+        providers: list,
+        current_model: str,
+        current_provider: str,
+        session_key: str,
+        on_model_selected,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an interactive card with model picker (two-level: provider → model).
+
+        Two-step drill-down: provider selection → model selection.
+        Updates the same card in-place as the user navigates.
+        """
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            from hermes_cli.providers import get_label
+        except ImportError:
+            def get_label(slug):
+                return slug
+
+        try:
+            card = self._build_provider_card(providers, 0, current_model, current_provider)
+            payload = json.dumps(card, ensure_ascii=False)
+
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=payload,
+                reply_to=None,
+                metadata=metadata,
+            )
+
+            result = self._finalize_send_result(response, "send_model_picker failed")
+            if result.success:
+                self._model_picker_state[str(chat_id)] = {
+                    "message_id": result.message_id or "",
+                    "providers": providers,
+                    "session_key": session_key,
+                    "on_model_selected": on_model_selected,
+                    "current_model": current_model,
+                    "current_provider": current_provider,
+                    "provider_page": 0,
+                }
+            return result
+        except Exception as exc:
+            logger.warning("[Feishu] send_model_picker failed: %s", exc)
+            return SendResult(success=False, error=str(exc))
+
+    def _build_provider_card(
+        self, providers: list, page: int, current_model: str, current_provider: str
+    ) -> Dict[str, Any]:
+        """Build the provider selection card (first level)."""
+        try:
+            from hermes_cli.providers import get_label
+        except ImportError:
+            def get_label(slug):
+                return slug
+
+        try:
+            from hermes_cli.models_catalog_static import group_providers
+        except Exception:
+            group_providers = None
+
+        by_slug = {p.get("slug"): p for p in providers}
+
+        # Build provider buttons with grouping support
+        provider_entries = []
+        if group_providers is not None:
+            for row in group_providers([p.get("slug") for p in providers]):
+                if row["kind"] == "group":
+                    members = [by_slug[m] for m in row["members"] if m in by_slug]
+                    count = sum(
+                        m.get("total_models", len(m.get("models", []))) for m in members
+                    )
+                    label = f"{row['label']} ▸ ({count})"
+                    if any(m.get("is_current") for m in members):
+                        label = f"✓ {label}"
+                    provider_entries.append({
+                        "type": "group",
+                        "label": label,
+                        "value": {"action": f"mpg:{row['group_id']}"},
+                    })
+                else:
+                    p = by_slug.get(row["slug"])
+                    if p is not None:
+                        count = p.get("total_models", len(p.get("models", [])))
+                        label = f"{p['name']} ({count})"
+                        if p.get("is_current"):
+                            label = f"✓ {label}"
+                        provider_entries.append({
+                            "type": "provider",
+                            "label": label,
+                            "value": {"action": f"mp:{p['slug']}"},
+                        })
+        else:
+            for p in providers:
+                count = p.get("total_models", len(p.get("models", [])))
+                label = f"{p['name']} ({count})"
+                if p.get("is_current"):
+                    label = f"✓ {label}"
+                provider_entries.append({
+                    "type": "provider",
+                    "label": label,
+                    "value": {"action": f"mp:{p['slug']}"},
+                })
+
+        # Paginate
+        page_entries, page_meta = self._format_choice_page(
+            provider_entries, page, self._PROVIDER_PAGE_SIZE
+        )
+        page = page_meta["page"]
+        total_pages = page_meta["total_pages"]
+        page_info = page_meta["page_info"]
+
+        # Build buttons (Feishu: max 5 buttons per action row, 2 buttons per row for readability)
+        actions = []
+        current_row = []
+        for entry in page_entries:
+            current_row.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": entry["label"]},
+                "value": entry["value"],
+                "type": "default",
+            })
+            if len(current_row) >= 2:
+                actions.append({"tag": "action", "actions": current_row})
+                current_row = []
+        if current_row:
+            actions.append({"tag": "action", "actions": current_row})
+
+        # Pagination buttons
+        if total_pages > 1:
+            nav_buttons = []
+            if page > 0:
+                nav_buttons.append({
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "◀ Prev"},
+                    "value": {"action": f"mpv:{page - 1}"},
+                    "type": "default",
+                })
+            nav_buttons.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": f"{page + 1}/{total_pages}"},
+                "value": {"action": "mx:noop"},
+                "type": "default",
+            })
+            if page < total_pages - 1:
+                nav_buttons.append({
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "Next ▶"},
+                    "value": {"action": f"mpv:{page + 1}"},
+                    "type": "default",
+                })
+            actions.append({"tag": "action", "actions": nav_buttons})
+
+        # Cancel button
+        actions.append({
+            "tag": "action",
+            "actions": [{
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "✗ Cancel"},
+                "value": {"action": "mx"},
+                "type": "danger",
+            }],
+        })
+
+        provider_label = get_label(current_provider)
+        content = f"**当前模型**: `{current_model or 'unknown'}`\n**Provider**: {provider_label}\n\n选择 Provider:{page_info}"
+
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": "⚙ 模型配置"},
+                "template": "blue",
+            },
+            "elements": [
+                {"tag": "markdown", "content": content},
+                *actions,
+            ],
+        }
+
+    def _build_model_card(
+        self, models: list, page: int, provider_name: str, provider_slug: str, total_models: int
+    ) -> Dict[str, Any]:
+        """Build the model selection card (second level)."""
+        page_models, page_meta = self._format_choice_page(
+            models, page, self._MODEL_PAGE_SIZE
+        )
+        page = page_meta["page"]
+        total_pages = page_meta["total_pages"]
+        start = page_meta["start"]
+        page_info = page_meta["page_info"]
+
+        # Build model buttons
+        actions = []
+        current_row = []
+        for i, model_id in enumerate(page_models):
+            abs_idx = start + i
+            short = model_id.split("/")[-1] if "/" in model_id else model_id
+            if len(short) > 38:
+                short = short[:35] + "..."
+            current_row.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": short},
+                "value": {"action": f"mm:{abs_idx}"},
+                "type": "default",
+            })
+            if len(current_row) >= 2:
+                actions.append({"tag": "action", "actions": current_row})
+                current_row = []
+        if current_row:
+            actions.append({"tag": "action", "actions": current_row})
+
+        # Pagination buttons
+        if total_pages > 1:
+            nav_buttons = []
+            if page > 0:
+                nav_buttons.append({
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "◀ Prev"},
+                    "value": {"action": f"mg:{page - 1}"},
+                    "type": "default",
+                })
+            nav_buttons.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": f"{page + 1}/{total_pages}"},
+                "value": {"action": "mx:noop"},
+                "type": "default",
+            })
+            if page < total_pages - 1:
+                nav_buttons.append({
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "Next ▶"},
+                    "value": {"action": f"mg:{page + 1}"},
+                    "type": "default",
+                })
+            actions.append({"tag": "action", "actions": nav_buttons})
+
+        # Back and Cancel buttons
+        actions.append({
+            "tag": "action",
+            "actions": [
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "◀ Back"},
+                    "value": {"action": "mb"},
+                    "type": "default",
+                },
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "✗ Cancel"},
+                    "value": {"action": "mx"},
+                    "type": "danger",
+                },
+            ],
+        })
+
+        shown = len(models)
+        extra = f"\n_{total_models - shown} more available — type `/model <name>` directly_" if total_models > shown else ""
+        content = f"**Provider**: {provider_name}{page_info}\n\n选择模型:{extra}"
+
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": "⚙ 模型配置"},
+                "template": "blue",
+            },
+            "elements": [
+                {"tag": "markdown", "content": content},
+                *actions,
+            ],
+        }
+
+    async def _handle_model_picker_callback(
+        self, chat_id: str, action_value: dict, message_id: str, open_id: str, user_name: str
+    ) -> Optional[Dict[str, Any]]:
+        """Handle model picker button callbacks. Returns updated card JSON or None."""
+        state = self._model_picker_state.get(chat_id)
+        if not state:
+            logger.debug("[Feishu] Model picker state expired for chat %s", chat_id)
+            return None
+
+        # Authorization check
+        if not self._is_interactive_operator_authorized(open_id):
+            logger.warning("[Feishu] Unauthorized model picker click by %s", open_id)
+            return None
+
+        try:
+            from hermes_cli.providers import get_label
+        except ImportError:
+            def get_label(slug):
+                return slug
+
+        # Extract callback data
+        if isinstance(action_value, dict):
+            callback_data = action_value.get("action", action_value.get("value", ""))
+        else:
+            callback_data = str(action_value)
+        
+        if callback_data.startswith("mp:"):
+            # Provider selected: show model list
+            provider_slug = callback_data[3:]
+            provider = next(
+                (p for p in state["providers"] if p["slug"] == provider_slug),
+                None,
+            )
+            if not provider:
+                logger.warning("[Feishu] Provider %s not found", provider_slug)
+                return None
+
+            models = provider.get("models", [])
+            state["selected_provider"] = provider_slug
+            state["selected_provider_name"] = provider.get("name", provider_slug)
+            state["model_list"] = models
+            state["model_page"] = 0
+
+            total = provider.get("total_models", len(models))
+            return self._build_model_card(models, 0, provider.get("name", provider_slug), provider_slug, total)
+
+        elif callback_data.startswith("mg:"):
+            # Model page navigation
+            try:
+                page = int(callback_data[3:])
+            except ValueError:
+                return None
+
+            models = state.get("model_list", [])
+            state["model_page"] = page
+
+            provider_slug = state.get("selected_provider", "")
+            provider = next(
+                (p for p in state["providers"] if p["slug"] == provider_slug),
+                None,
+            )
+            total = provider.get("total_models", len(models)) if provider else len(models)
+            pname = state.get("selected_provider_name", "")
+            return self._build_model_card(models, page, pname, provider_slug, total)
+
+        elif callback_data.startswith("mpv:"):
+            # Provider page navigation
+            try:
+                page = int(callback_data[4:])
+            except ValueError:
+                return None
+
+            state["provider_page"] = page
+            return self._build_provider_card(
+                state["providers"], page, state["current_model"], state["current_provider"]
+            )
+
+        elif callback_data.startswith("mpg:"):
+            # Provider group selected: show group members
+            group_id = callback_data[4:]
+            try:
+                from hermes_cli.models import PROVIDER_GROUPS
+                _label, _desc, member_slugs = PROVIDER_GROUPS.get(group_id, ("", "", []))
+            except Exception:
+                _label, member_slugs = "", []
+
+            by_slug = {p["slug"]: p for p in state["providers"]}
+            members = [by_slug[m] for m in member_slugs if m in by_slug]
+            if not members:
+                logger.warning("[Feishu] Provider group %s not found or empty", group_id)
+                return None
+
+            # Build group member buttons
+            actions = []
+            current_row = []
+            for p in members:
+                count = p.get("total_models", len(p.get("models", [])))
+                label = f"{p['name']} ({count})"
+                if p.get("is_current"):
+                    label = f"✓ {label}"
+                current_row.append({
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": label},
+                    "value": {"action": f"mp:{p['slug']}"},
+                    "type": "default",
+                })
+                if len(current_row) >= 2:
+                    actions.append({"tag": "action", "actions": current_row})
+                    current_row = []
+            if current_row:
+                actions.append({"tag": "action", "actions": current_row})
+
+            # Back and Cancel buttons
+            actions.append({
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "◀ Back"},
+                        "value": {"action": "mb"},
+                        "type": "default",
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "✗ Cancel"},
+                        "value": {"action": "mx"},
+                        "type": "danger",
+                    },
+                ],
+            })
+
+            return {
+                "config": {"wide_screen_mode": True},
+                "header": {
+                    "title": {"tag": "plain_text", "content": "⚙ 模型配置"},
+                    "template": "blue",
+                },
+                "elements": [
+                    {"tag": "markdown", "content": f"**Provider Family**: {_label or group_id}\n\n选择 Provider:"},
+                    *actions,
+                ],
+            }
+
+        elif callback_data.startswith("mm:"):
+            # Model selected: perform the switch
+            try:
+                idx = int(callback_data[3:])
+            except ValueError:
+                return None
+
+            model_list = state.get("model_list", [])
+            if idx < 0 or idx >= len(model_list):
+                logger.warning("[Feishu] Model index %d out of range", idx)
+                return None
+
+            model_id = model_list[idx]
+            provider_slug = state.get("selected_provider", "")
+            callback = state.get("on_model_selected")
+
+            if not callback:
+                logger.warning("[Feishu] Model picker callback not found")
+                return None
+
+            switch_failed = False
+            try:
+                result_text = await callback(chat_id, model_id, provider_slug)
+            except Exception as exc:
+                logger.error("Model picker switch failed: %s", exc)
+                result_text = f"Error switching model: {exc}"
+                switch_failed = True
+
+            # Clean up state
+            self._model_picker_state.pop(chat_id, None)
+
+            # Return success card
+            icon = "❌" if switch_failed else "✅"
+            return {
+                "config": {"wide_screen_mode": True},
+                "header": {
+                    "title": {"tag": "plain_text", "content": f"{icon} 模型切换"},
+                    "template": "red" if switch_failed else "green",
+                },
+                "elements": [
+                    {"tag": "markdown", "content": result_text},
+                ],
+            }
+
+        elif callback_data == "mb":
+            # Back to provider list
+            page = int(state.get("provider_page", 0) or 0)
+            return self._build_provider_card(
+                state["providers"], page, state["current_model"], state["current_provider"]
+            )
+
+        elif callback_data == "mx" or callback_data == "mx:noop":
+            # Cancel or noop
+            if callback_data == "mx":
+                self._model_picker_state.pop(chat_id, None)
+                return {
+                    "config": {"wide_screen_mode": True},
+                    "header": {
+                        "title": {"tag": "plain_text", "content": "✗ 已取消"},
+                        "template": "grey",
+                    },
+                    "elements": [
+                        {"tag": "markdown", "content": "模型选择已取消。"},
+                    ],
+                }
+            return None  # noop
+
+        return None
+
     @staticmethod
     def _build_resolved_approval_card(*, choice: str, user_name: str) -> dict[str, Any]:
         """Raw card JSON shown in place of the buttons once an approval is resolved."""
@@ -2165,8 +2658,10 @@ class FeishuAdapter(BasePlatformAdapter):
     def _on_drive_comment_event(self, data: Any) -> None:
         """drive.notice.comment_add_v1 → feishu_comment.handle_drive_comment_event on the adapter loop."""
         from plugins.platforms.feishu.feishu_comment import handle_drive_comment_event
-        self._submit_if_ready("drive comment event", lambda: handle_drive_comment_event(
-            self._client, data, self_open_id=self._bot_open_id, secondary=bool(getattr(self, "_owner_profile", None))))
+        self._submit_if_ready(
+            "drive comment event",
+            lambda: handle_drive_comment_event(self._client, data, self_open_id=self._bot_open_id),
+        )
 
     def _on_meeting_invited_event(self, data: Any) -> None:
         """vc.bot.meeting_invited_v1 → feishu_meeting_invite.handle_meeting_invited_event."""
@@ -2206,11 +2701,40 @@ class FeishuAdapter(BasePlatformAdapter):
         event = getattr(data, "event", None)
         action = getattr(event, "action", None)
         action_value = getattr(action, "value", {}) or {}
+        hermes_action = action_value.get("hermes_action") if isinstance(action_value, dict) else None
+        update_prompt_action = (
+            action_value.get("hermes_update_prompt_action")
+            if isinstance(action_value, dict) else None
+        )
+
+        if hermes_action:
+            return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
+        if update_prompt_action:
+            return self._handle_update_prompt_card_action(
+                event=event,
+                action_value=action_value,
+                loop=loop,
+            )
+
+        # Check if this is a model picker action (local customization)
         if isinstance(action_value, dict):
-            if action_value.get("hermes_action"):
-                return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
-            if action_value.get("hermes_update_prompt_action"):
-                return self._handle_update_prompt_card_action(event=event, action_value=action_value, loop=loop)
+            # Check both "action" (new format) and "value" (old format) for backward compatibility
+            callback_value = action_value.get("action", action_value.get("value", ""))
+            if isinstance(callback_value, str) and (
+                callback_value.startswith("mp:")
+                or callback_value.startswith("mm:")
+                or callback_value.startswith("mg:")
+                or callback_value.startswith("mpv:")
+                or callback_value.startswith("mpg:")
+                or callback_value.startswith("mb")
+                or callback_value.startswith("mx")
+            ):
+                return self._handle_model_picker_card_action(
+                    event=event,
+                    action_value=action_value,
+                    loop=loop,
+                )
+
         self._submit_on_loop(loop, self._handle_card_action_event(data))
         return self._card_response()
 
@@ -2341,6 +2865,60 @@ class FeishuAdapter(BasePlatformAdapter):
         if not state:
             logger.debug("[Feishu] %s %s already resolved while validating callback", label, ident)
         return state
+
+    def _handle_model_picker_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
+        """Handle model picker card button clicks and return updated card inline."""
+        context = getattr(event, "context", None)
+        chat_id = str(getattr(context, "open_chat_id", "") or "")
+        operator = getattr(event, "operator", None)
+        open_id = str(getattr(operator, "open_id", "") or "")
+        user_name = self._get_cached_sender_name(open_id) or open_id
+        
+        if not chat_id:
+            logger.debug("[Feishu] Model picker card action missing chat_id")
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        # Get message_id from context
+        message_id = str(getattr(context, "open_message_id", "") or "")
+
+        # Schedule async handler and get updated card
+        from concurrent.futures import Future
+        
+        result_future: Future = Future()
+        
+        async def _async_handler():
+            try:
+                updated_card = await self._handle_model_picker_callback(
+                    chat_id=chat_id,
+                    action_value=action_value,
+                    message_id=message_id,
+                    open_id=open_id,
+                    user_name=user_name,
+                )
+                result_future.set_result(updated_card)
+            except Exception as exc:
+                logger.error("[Feishu] Model picker callback handler failed: %s", exc)
+                result_future.set_exception(exc)
+
+        self._submit_on_loop(loop, _async_handler())
+
+        # Wait for the result (with timeout)
+        try:
+            updated_card = result_future.result(timeout=5.0)
+        except Exception as exc:
+            logger.warning("[Feishu] Failed to get model picker card update: %s", exc)
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        if P2CardActionTriggerResponse is None:
+            return None
+
+        response = P2CardActionTriggerResponse()
+        if updated_card and CallBackCard is not None:
+            card = CallBackCard()
+            card.type = "raw"
+            card.data = updated_card
+            response.card = card
+        return response
 
     async def _resolve_approval(
         self, approval_id: Any, choice: str, user_name: str, *, open_id: str = "", chat_id: str = "",
@@ -2753,12 +3331,12 @@ class FeishuAdapter(BasePlatformAdapter):
         return await cache_image_from_url(image_url, ext=ext)
 
     async def _download_remote_document(self, file_url: str, *, default_ext: str, preferred_name: str) -> tuple[str, str]:
-        from gateway.platforms.base import ssrf_redirect_guard
+        from gateway.platforms.base import _ssrf_redirect_guard
         from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
         if not is_safe_url(file_url):
             raise ValueError(f"Blocked unsafe URL (SSRF protection): {file_url[:80]}")
         async with create_ssrf_safe_async_client(
-            timeout=30.0, follow_redirects=True, event_hooks={"response": [ssrf_redirect_guard]},
+            timeout=30.0, follow_redirects=True, event_hooks={"response": [_ssrf_redirect_guard]},
         ) as client:
             response = await client.get(
                 file_url, headers={"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)", "Accept": "*/*"},
@@ -4476,31 +5054,24 @@ def _apply_yaml_config(yaml_cfg: dict, feishu_cfg: dict) -> dict | None:
     return {"allow_bots": str(seeded["allow_bots"]).lower()} if seeded else None
 
 
+
 def _is_connected(config) -> bool:
     """Feishu counts as connected once app_id is configured."""
     extra = getattr(config, "extra", {}) or {}
     return bool(extra.get("app_id"))
 
 
+
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
-    from .adapter_hint import PLATFORM_HINT
-    from .send_targets import SEND_ENTRY_KWARGS
-    from .dashboard_card import DASHBOARD_CARD
-    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
     ctx.register_platform(
-        **SEND_ENTRY_KWARGS,  # send_message target syntax + routing
         name="feishu", label="Feishu / Lark", adapter_factory=FeishuAdapter,
-        **DASHBOARD_CARD,
         check_fn=feishu_deps_present, ensure_deps_fn=check_feishu_requirements,
         is_connected=_is_connected, validate_config=_is_connected,
         required_env=["FEISHU_APP_ID", "FEISHU_APP_SECRET"],
         install_hint="Run `hermes setup` to install Feishu support.", setup_fn=interactive_setup,
-        apply_yaml_config_fn=_apply_yaml_config, cron_deliver_env_var="FEISHU_HOME_CHANNEL",
+        apply_yaml_config_fn=_apply_yaml_config, allowed_users_env="FEISHU_ALLOWED_USERS",
+        allow_all_env="FEISHU_ALLOW_ALL_USERS", cron_deliver_env_var="FEISHU_HOME_CHANNEL",
         standalone_sender_fn=_standalone_send, max_message_length=8000, emoji="🪽",
         allow_update_command=True,
-        platform_hint=PLATFORM_HINT,
-        display_tier="medium",
-        env_overrides=gateway_env.ENV_OVERRIDES,
-        env_enable_credentials=gateway_env.ENV_ENABLE_CREDENTIALS, **gateway_env.AUTHZ,
     )

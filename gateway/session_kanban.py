@@ -1,5 +1,6 @@
 """Trusted dispatcher claims enter the ordinary owner's durable admission queue."""
 import asyncio
+import contextlib
 from contextlib import closing
 from dataclasses import asdict, replace
 import threading
@@ -104,6 +105,7 @@ async def run_task(connection, params):
     from hermes_cli import kanban_db as kb
     import os
     import psutil
+    from hermes_cli.process_identity import process_birth
     context = json.loads(policy.kanban_json)
 
     def admit_claim():
@@ -124,7 +126,7 @@ async def run_task(connection, params):
                     raise RuntimeStoreError('stale_kanban_claim')
                 kb._append_event(conn, task.id, 'owner_admitted',
                     {'db': owner_db, 'session_id': ref.session_id,
-                     'request_id': request_id, 'pid': os.getpid(), 'birth': psutil.Process().create_time()},
+                     'request_id': request_id, 'pid': os.getpid(), 'birth': process_birth(psutil.Process())},
                     run_id=task.current_run_id)
     from gateway.session_runtime_workers import tracked_write
     await tracked_write(authority, admit_claim)
@@ -226,13 +228,36 @@ def run_worker_turns(agent, frame, history):
         return _run_worker_turns(agent, frame, history)
 
 
+@contextlib.contextmanager
+def _worker_workspace(frame):
+    """A managed worker's chat turn in its session's workspace, as the in-process turn runner binds it
+    (#140665): the session id as the terminal task id, the route as the session key (persistent Docker
+    keys the workspace container from it) and the frozen cwd as the session's mount. Yields the task
+    id, or None for a frame with no session scope (nothing is bound then)."""
+    session_id = (frame.get('scope') or {}).get('session_id')
+    if not session_id:
+        yield None
+        return
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from gateway.session_policy import bind_turn_workspace, restore_policy
+    policy = restore_policy(frame['policy'])
+    tokens = set_session_vars(session_key=frame.get('route') or session_id, session_id=session_id)
+    try:
+        bind_turn_workspace(policy, session_id)
+        yield session_id
+    finally:
+        clear_session_vars(tokens)
+
+
 def _run_worker_turns(agent, frame, history):
     context = json.loads(frame['policy'].get('kanban_json') or 'null')
     if context is None:
         from gateway.session_display import worker_display_kwargs
         author = frame.get('turn_author')
-        return agent.run_conversation(frame['text'], conversation_history=history, **worker_display_kwargs(),
-                                      **({'turn_author': author} if author is not None else {}))
+        with _worker_workspace(frame) as task_id:
+            return agent.run_conversation(frame['text'], conversation_history=history, **worker_display_kwargs(),
+                                          **({'task_id': task_id} if task_id else {}),
+                                          **({'turn_author': author} if author is not None else {}))
     from hermes_cli.turn_exit import credential_failure_flags, turn_exit_code
     code, last_output = 1, ''
     try:

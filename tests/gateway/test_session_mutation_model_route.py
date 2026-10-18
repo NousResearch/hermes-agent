@@ -359,3 +359,34 @@ async def test_a_named_entry_that_moves_never_sends_its_old_launch_key_to_the_ne
     finally:
         await owner.close()
         store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_a_level_picked_with_the_model_survives_a_profile_edit_and_a_resume_refresh(home, endpoints):
+    """Desktop's model picker sends the reasoning level with the model. On a following session that level
+    is the next turn's, after the profile's default moves and after a resume re-reads the profile."""
+    from gateway.session_contract import SessionRef
+    from gateway.session_policy import policy_for_source
+    from gateway.session_policy_refresh import commit_refresh
+    (_, url), _ = endpoints
+
+    def profile(effort):
+        (home / 'config.yaml').write_text(json.dumps({
+            'model': {'provider': 'custom', 'default': 'original', 'base_url': url, 'api_key': 'key-a'},
+            'agent': {'reasoning_effort': effort}}), encoding='utf-8')
+    profile('low')
+    store, runner, authority, owner = _owner(home)
+    _bind_resolver(runner)
+    runner._set_session_reasoning_override = lambda key, value: None
+    try:
+        live = await _create(owner, authority, home, 'follow')
+        sid = next(sid for sid, value in authority.sessions.items() if value is live)
+        response = await _pick(owner, authority, sid, {'model': 'picked', 'provider': 'custom', 'reasoning': 'high'})
+        assert 'result' in response, response
+        profile('minimal')
+        assert policy_for_source(runner, live.source).current_reasoning_config(runner)['effort'] == 'high'
+        await commit_refresh(authority, SessionRef(authority.profile_id, sid))
+        assert policy_for_source(runner, live.source).current_reasoning_config(runner)['effort'] == 'high'
+    finally:
+        await owner.close()
+        store.close_all_db_handles()

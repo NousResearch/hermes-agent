@@ -175,6 +175,17 @@ class SubagentMonitor:
         # The loop's state is already the heading's badge; its prompt is the activity.
         return self.goal or self.loop_prompt or t('cli.subagents.next_queued', text=self.queued[0])
 
+    def queue_lines(self, rows):
+        """The queued-prompt block as plain text: ``(heading, prompt rows, '+N more' or '')``.
+        Each prompt is marked ``↳``; the heading advertises Alt+Up recall."""
+        shown = min(len(self.queued), session_rows.QUEUE_ROWS if rows >= 24 else 1)
+        controls = t('cli.subagents.queue_recall_hint') + (
+            '' if self.roster else t('cli.subagents.controls_collapse'))
+        heading = t('cli.subagents.queue_heading', count=len(self.queued), controls=controls)
+        items = [f'↳ {text}' for text in self.queued[:shown]]
+        hidden = len(self.queued) - shown
+        return heading, items, t('cli.subagents.more_queued', count=hidden) if hidden > 0 else ''
+
     def dock_text(self, *, columns, rows):
         if not self.has_rows:
             return ''
@@ -235,15 +246,9 @@ class SubagentMonitor:
                     ' ' + t('cli.subagents.more_processes', count=len(self.processes) - proc_count), columns))
         if self.queued:
             # Last, so the next prompt to run sits right above the input it came from.
-            shown = min(len(self.queued), session_rows.QUEUE_ROWS if rows >= 24 else 1)
-            controls = t('cli.subagents.queue_recall_hint') + (
-                '' if self.entries or self.processes else t('cli.subagents.controls_collapse'))
-            lines.append(_clip(
-                ' ' + t('cli.subagents.queue_heading', count=len(self.queued), controls=controls), columns))
-            for text in self.queued[:shown]:
-                lines.append(_clip(f'  ↳ {text}', columns))
-            if len(self.queued) > shown:
-                lines.append(_clip('  ' + t('cli.subagents.more_queued', count=len(self.queued) - shown), columns))
+            heading, items, more = self.queue_lines(rows)
+            lines.append(_clip(' ' + heading, columns))
+            lines += [_clip(f'  {text}', columns) for text in items + [more] if text]
         return '\n'.join(' ' + line for line in lines)
 
 

@@ -17,6 +17,7 @@ from gateway.platforms.event import MessageEvent
 from hermes_state_runtime import RuntimeStoreError, get_session_admission
 from tools.bot_failure_reasons import HELD_NOT_SENT
 from tools.bot_live_delivery import _TERMINAL, _delivery_id, _read
+logger = logging.getLogger(__name__)
 from gateway.session_bot_mailbox import (mailbox_lock, read_receipt, write_receipt,
     scan_receipts, remember_receipt, track_receipt_task, withdraw_pin, refuse_pin, requeue_pin)
 
@@ -180,8 +181,11 @@ def _home(authority, actor, profile):
 
 async def _target(authority, actor):
     ref = None
-    if authority.db.get_session_by_title('Bot Chat') is None:
-        ref = await _create_bot_chat(authority, actor)  # None: a concurrent delivery created it first
+    row = authority.db.get_session_by_title('Bot Chat')
+    if row is None or (displaced := displaceable_bot_chat(authority, row)) is not None:
+        # None: a concurrent delivery created it first. A title held by an API conversation no FIFO
+        # can own is moved aside first, under the same lock (MSG-21, #140769).
+        ref = await _create_bot_chat(authority, actor, displace=None if row is None else displaced)
     if ref is None:
         row = authority.db.get_session_by_title('Bot Chat')
         tip = authority.db.get_compression_tip(row['id'])
@@ -198,8 +202,52 @@ async def _target(authority, actor):
     return ref, live, entry
 
 
-async def _create_bot_chat(authority, actor):
-    """No Bot Chat yet: mint it the way ``hermes chat --in ~ -c "Bot Chat" --create-if-missing``
+def displaceable_bot_chat(authority, row):
+    """The id holding the canonical title when the Bot Chat is a conversation no FIFO can own (an
+    ``api_`` row an older gateway or a plain ``POST /api/sessions`` minted, a messaging row), else
+    None. Such a row can never be adopted (``validate_legacy_row``), renamed (the canonical title
+    is its identity) or renamed over the API, so it would refuse every delivery for good. A bound
+    local chat and old local history (CLI, TUI, Desktop rows a native open adopts) are never moved."""
+    from hermes_state_local import POLICY_PREFIX
+    from hermes_state_local_migration import LEGACY_LOCAL_SOURCES, LEGACY_PREFIX
+
+    def owned(candidate):
+        return (str(candidate.get('chat_id') or '').startswith('local-')
+                or candidate.get('source') in LEGACY_LOCAL_SOURCES)
+    if owned(row):  # every delivery asks: a bound local chat answers from its own row, with no read
+        return None
+    db = authority.db
+    tip = db.get_session(db.get_compression_tip(row['id']) or row['id'])
+    for candidate in (row, tip):
+        if candidate is None or owned(candidate):
+            return None
+        chat_id = str(candidate.get('chat_id') or '')
+        with db._read_ctx() as conn:
+            if conn.execute('SELECT 1 FROM state_meta WHERE key IN (?,?)',
+                            (POLICY_PREFIX + (chat_id or candidate['id']),
+                             LEGACY_PREFIX + (chat_id or candidate['id']))).fetchone():
+                return None
+    return row['id']
+
+
+def _displace_bot_chat(db, sid):
+    """Free the canonical title from *sid*: it keeps its id and history under a visible name the
+    user can find, rename or delete: ``Bot Chat (API <id>)`` for an API conversation, else named by
+    its platform (``Bot Chat (telegram <id>)``). False when the title moved meanwhile."""
+    source = str((db.get_session(sid) or {}).get('source') or '')
+    label = 'API' if source in ('', 'api_server', 'bot_peer_dm') else source
+    name = f'Bot Chat ({label} {sid})'
+    if len(name) > db.MAX_TITLE_LENGTH:
+        name = name[:db.MAX_TITLE_LENGTH - 2] + '…)'
+
+    def write(conn):
+        return conn.execute("UPDATE sessions SET title=?, title_source=?, hidden=0 WHERE id=? AND title='Bot Chat'",
+                            (name, db.TITLE_SOURCE_USER, sid)).rowcount
+    return bool(db._execute_write(write))
+
+
+async def _create_bot_chat(authority, actor, *, displace=None):
+    """No Bot Chat yet (or *displace*, an API conversation holding its title, is moved aside first): mint it the way ``hermes chat --in ~ -c "Bot Chat" --create-if-missing``
     did on the CLI lane this door replaced, so a fresh profile's first delivery has somewhere
     to land instead of being recorded as failed. Same owner step as ``session.create`` with a
     title: lookup, creation and title run under the authority's titled-create lock, with the
@@ -207,7 +255,7 @@ async def _create_bot_chat(authority, actor):
     principal (owner recovery) still gets ``not_found``."""
     if 'session:create' not in actor.capabilities:
         raise RuntimeStoreError('not_found')
-    from gateway.session_local import stage_local_session
+    from gateway.session_local import stage_local_session, staged_creation_follows
     from gateway.session_local_recovery import restore_local_session
     from gateway.session_local_title import title_new_session
     from gateway.session_runtime_workers import tracked_write
@@ -216,10 +264,22 @@ async def _create_bot_chat(authority, actor):
     if lock is None:
         lock = authority._titled_create_lock = asyncio.Lock()
     async with lock:
-        if authority.db.get_session_by_title('Bot Chat') is not None:
-            return None
-        ref = stage_local_session(authority, actor, {
-            'request_id': _bot_chat_creation_id(authority, actor), 'source': 'cli', 'cwd': str(Path.home())})
+        held = authority.db.get_session_by_title('Bot Chat')
+        if held is not None:
+            if displace is None or held['id'] != displace or displaceable_bot_chat(authority, held) != displace:
+                return None
+            logger.warning("Bot Chat title held by %s, a conversation no FIFO can own: moving it aside", displace)
+            if not await tracked_write(authority, partial(_displace_bot_chat, authority.db, displace)):
+                return None
+        # The Bot Chat follows its profile whoever mints it (a Bot or cron delivery, a peer DM),
+        # the same contract Desktop's create asks for. A later profile change reaches it.
+        request_id = _bot_chat_creation_id(authority, actor)
+        params = {'request_id': request_id, 'source': 'cli', 'cwd': str(Path.home()),
+                  'follow_profile_config': True}
+        # A creation staged by an older build, before this flag, resumes as it was staged.
+        if not staged_creation_follows(authority, actor, request_id):
+            params.pop('follow_profile_config')
+        ref = stage_local_session(authority, actor, params)
         if isinstance(ref, dict):
             await tracked_write(authority, partial(commit_local_session, authority.db, epoch=authority.epoch, receipt=ref))
             ref = restore_local_session(authority, ref['session_id'])

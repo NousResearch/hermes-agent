@@ -603,15 +603,28 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
     return count
 
 
+def _require_nonblank_read_path(path: object) -> None:
+    """Reject a missing/non-string/blank path before any resolution or I/O.
+
+    A model occasionally sends ``None`` or a number; ``Path(path)`` would raise
+    deeper in with a less actionable message, and a blank path would resolve to
+    the cwd rather than the file the caller meant.
+    """
+    if not isinstance(path, str) or not path.strip():
+        raise ValueError("read_file requires a non-empty string path.")
+
+
 def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default") -> str:
     """Read a file with pagination and line numbers.
 
-    Guard order: NT/device-namespace prefix (raw string, no resolution) →
-    device-path blocklist (no I/O) → stat-based special-file guard (host only)
-    → Hermes internal denylist → document extraction → binary-extension guard
-    → negative-result cache → dedup stub → real read.
+    Guard order: non-empty string path (raw, pre-resolution) → NT/device-namespace
+    prefix (raw string, no resolution) → device-path blocklist (no I/O) →
+    stat-based special-file guard (host only) → Hermes internal denylist →
+    document extraction → binary-extension guard → negative-result cache →
+    dedup stub → real read.
     """
     try:
+        _require_nonblank_read_path(path)
         offset, limit = normalize_read_pagination(offset, limit)
 
         # On the RAW model-supplied string, before any expanduser()/resolve():

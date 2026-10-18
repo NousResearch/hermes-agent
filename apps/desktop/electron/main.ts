@@ -1,8 +1,9 @@
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process'
 
 import type { GatewayEndpoint } from './local-gateway'
-import { configurePythonGatewayTicketClient, createLocalGatewayDials, createStaleGatewayRestarter, ensureLocalGateway, gatewayOwnerProfile, mintLocalGatewayTicket, nativeGatewayHttpHeaders, redialLocalGateway, routedGatewayEndpoint, runGatewayEnsure } from './local-gateway'
+import { configurePythonGatewayTicketClient, createLocalGatewayDials, createStaleGatewayRestarter, ensureLocalGateway, gatewayOwnerProfile, localGatewayDial, nativeGatewayHttpHeaders, redialLocalGateway, runGatewayEnsure } from './local-gateway'
 import { closeGatewayTicketBridges, createGatewayTicketResolver } from './local-gateway-python'
+import { createPluginWsUrlHandler } from './plugin-ws-url'
 const localGatewayDials = createLocalGatewayDials()
 configurePythonGatewayTicketClient(createGatewayTicketResolver(
   async () => ensureRuntime(await resolveHermesBackend([]), () => undefined), resolveHermesCwd))
@@ -325,6 +326,7 @@ import { buildHudWindowUrl } from './hud-url'
 import { linuxOzoneBackend, resolveHudWindowing } from './hud-windowing'
 import { INSTALL_STAMP, installShape } from './install-stamp'
 import type { InstallStamp } from './install-stamp'
+import { createKeepAwakeController } from './keep-awake-controller'
 import { applyLaunchProfileOverride } from './launch-profile'
 import { fetchLinkTitle, resolveFaviconCached } from './link-metadata'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
@@ -423,13 +425,6 @@ import {
   undialedSshRouteSeeds
 } from './plugin-profile-routes'
 import { createPortalSession, resolvePortalBaseUrl } from './portal-session'
-import {
-  createKeepAwake,
-  type KeepAwakeMode,
-  keepAwakeWanted,
-  parseKeepAwakeMode,
-  readKeepAwakeMode
-} from './power-save'
 import { readPreUpdateBackupEnabled } from './pre-update-backup-config'
 import { registerPreparedSubmissions } from './prepared-submissions'
 import { capturePreviewContents } from './preview-capture'
@@ -466,18 +461,18 @@ import {
   fetchAllProfilesAggregatePerProfile,
   fetchAllProfilesSessionsPerProfile,
   fetchPrimaryProfileSessions,
-  fetchRegistrySessionRows,
   fetchRemoteProfileSessions,
   findRemoteOwnerProfileForSession,
   hasPinnedRegistrySessionSource,
   isAllProfilesAggregateRequest,
   isAllProfilesSessionListRequest,
-  pathWithRemoteOwnerScope,
+  isRemoteSessionRequestPath,
+  mergeRegistrySessionRows,
   type RegistrySessionSource,
+  remoteOwnerRoutePath,
   remoteProfileQueryScope,
   settleRemoteProfileSessions,
   shouldIncludeLocalRegistrySessionSource,
-  spliceRegistrySessionRows,
   tagRegistrySessionResponse,
   tagRemoteSessionRows
 } from './profile-session-routing'
@@ -502,6 +497,14 @@ import {
   createQuitTeardownCoordinator,
   type QuitTeardownTask
 } from './quit-teardown'
+import {
+  boundedInstallId,
+  createPrimaryInstallIdResolver,
+  INSTALL_ID_NEGATIVE_TTL_MS,
+  INSTALL_ID_TTL_MS,
+  probeCachedConnectionInstallId,
+  rememberConnectionInstallId
+} from './registry-backend-identity'
 import * as remoteLifecycle from './remote-lifecycle'
 import {
   attachPowerResumeRemoteRevalidation,
@@ -609,6 +612,7 @@ import {
   type UpdaterStrategy
 } from './updater'
 import {
+  launcherInstallRoot,
   observeUpdaterHandoff,
   repairMacUpdaterHelper,
   resolveInstallationLauncher,
@@ -5059,10 +5063,9 @@ async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHerm
     }
   }
 
-  // 3. HERMES_DESKTOP_HERMES — an explicit deployment override (used by the
-  //    Nix wrapper), not a discovered PATH candidate. The pinned backend is
-  //    the only valid runtime there. Resolve it before any mutable install,
-  //    which may belong to an older release or a different Python environment.
+  // 3. HERMES_DESKTOP_HERMES — an explicit deployment override (the Nix wrapper), not a PATH
+  //    candidate; the pinned backend is the only valid runtime there. Resolve it before any
+  //    mutable install (older release, other Python env). It carries the root its launcher reports.
   const hermesOverride: string | undefined = process.env.HERMES_DESKTOP_HERMES
   let hermesCommand: string | null = null
 
@@ -5103,7 +5106,7 @@ async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHerm
             env: {},
             kind: 'command',
             shell: shellForProbe,
-            local: 'installed'
+            local: 'installed', root: await launcherInstallRoot(hermesCommand) // ticket minting needs it (#138774)
           }
         }
 
@@ -6401,6 +6404,8 @@ function registerPowerResumeListeners() {
     // 'resume' covers sleep/wake; 'unlock-screen' covers lock/unlock without a
     // full suspend. Either can drop an idle socket.
     powerMonitor.on('resume', sendPowerResume)
+    powerMonitor.on('suspend', () => keepAwake.noteSuspend(powerMonitor.getSystemIdleTime()))
+    powerMonitor.on('resume', () => keepAwake.noteResume())
     powerMonitor.on('unlock-screen', sendPowerResume)
     powerMonitor.on('on-battery', () => broadcastBatteryState(true))
     powerMonitor.on('on-ac', () => broadcastBatteryState(false))
@@ -7898,17 +7903,8 @@ async function freshGatewayWsUrl(profile, webContentsId) {
   const connection = await ensureBackend(profile)
 
   if (connection.gatewayEndpoint) {
-    return redialLocalGateway({
-      ensure: () => ensureBackend(profile),
-      forget: () => forgetLocalGatewayDescriptor(profile),
-      use: async current => {
-        // A shared-primary descriptor answers for a sibling profile too: the socket's
-        // ticket must name THAT profile's home or its sessions are another owner's.
-        const ticket = await mintLocalGatewayTicket(routedGatewayEndpoint(current.gatewayEndpoint, String(profile ?? ''), HERMES_HOME))
-
-        return localGatewayDials.prepare(current.baseUrl, ticket, webContentsId)
-      }
-    })
+    return localGatewayDial({ ensure: () => ensureBackend(profile), forget: () => forgetLocalGatewayDescriptor(profile), launchHome: HERMES_HOME,
+      prepare: (baseUrl, ticket) => localGatewayDials.prepare(baseUrl, ticket, webContentsId), profile: String(profile ?? '') })
   }
 
   if (connection.authMode === 'oauth') {
@@ -15100,47 +15096,10 @@ ipcMain.handle('hermes:connections:test', async (_event, id) => {
 // removing a connection or re-pointing it must evict them (`evictConnectionCaches`).
 const SSH_INVENTORY_RETRY_MS = 60_000
 
-// Stable backend identity per registered connection: the `install_id` its
-// /api/status reports (absent on backends older than the field). Enumeration
-// runs on the ~5s Bot Mode roster poll and only hits /api/profiles, so the
-// status probe is cached per connection with a TTL to avoid doubling roster
-// traffic; the Test button refreshes it eagerly. A missing id simply bypasses
-// the same-backend roster collapse — fully backward compatible.
-const INSTALL_ID_TTL_MS = 5 * 60_000
-const INSTALL_ID_NEGATIVE_TTL_MS = 60_000
-
-function rememberConnectionInstallId(connectionId: string, statusBody: any) {
-  const raw = statusBody && typeof statusBody === 'object' ? statusBody.install_id : undefined
-  const id = typeof raw === 'string' && raw.trim() ? raw.trim() : undefined
-  connectionInstallIds.set(connectionId, { id, ts: Date.now() })
-
-  return id
-}
-
-async function probeConnectionInstallId(connectionId: string, descriptor: any): Promise<string | undefined> {
-  const cached = connectionInstallIds.get(connectionId)
-
-  if (cached && Date.now() - cached.ts < (cached.id ? INSTALL_ID_TTL_MS : INSTALL_ID_NEGATIVE_TTL_MS)) {
-    return cached.id
-  }
-
-  try {
-    const status: any = await getJsonForBackend(descriptor, '/api/status', { timeoutMs: 8_000 })
-
-    return rememberConnectionInstallId(connectionId, status)
-  } catch {
-    // Keep any previously-known id (identity is stable; a transient fetch
-    // failure must not flap the roster collapse), but do not cache a MISS
-    // over it.
-    if (cached?.id) {
-      return cached.id
-    }
-
-    connectionInstallIds.set(connectionId, { id: undefined, ts: Date.now() })
-
-    return undefined
-  }
-}
+// Stable backend identity per registered connection: the `install_id` its /api/status reports,
+// TTL-cached in `connectionInstallIds` (see registry-backend-identity.ts).
+const probeConnectionInstallId = (connectionId: string, descriptor: any) =>
+  probeCachedConnectionInstallId(connectionId, () => getJsonForBackend(descriptor, '/api/status', { timeoutMs: 8_000 }))
 
 async function probeSshProfileInventory(connection) {
   if (
@@ -15426,20 +15385,18 @@ ipcMain.handle('hermes:gateway:ws-url-for', async (_event, payload) => {
     const connection = await ensureRegistryBackend(payload?.connectionId, payload?.profile)
 
     if (connection.gatewayEndpoint) {
-      return redialLocalGateway({
-        ensure: () => ensureRegistryBackend(payload?.connectionId, payload?.profile),
-        forget: () => forgetRegistryLocalGatewayDescriptor(payload?.connectionId, payload?.profile),
-        use: async (current: typeof connection) => {
-          const ticket = await mintLocalGatewayTicket(routedGatewayEndpoint(current.gatewayEndpoint, String(payload?.profile ?? ''), HERMES_HOME))
-
-          return localGatewayDials.prepare(current.baseUrl, ticket, _event.sender.id)
-        }
-      })
+      return localGatewayDial({ ensure: () => ensureRegistryBackend(payload?.connectionId, payload?.profile), launchHome: HERMES_HOME,
+        forget: () => forgetRegistryLocalGatewayDescriptor(payload?.connectionId, payload?.profile), profile: String(payload?.profile ?? ''),
+        prepare: (baseUrl, ticket) => localGatewayDials.prepare(baseUrl, ticket, _event.sender.id) })
     }
 
     return registryGatewayWsUrlHandler(payload)
   })
 })
+
+const pluginWsUrl = createPluginWsUrlHandler({ ensureBackend, ensureRegistryBackend, forgetLocalGatewayDescriptor,
+  forgetRegistryLocalGatewayDescriptor, launchHome: HERMES_HOME, prepare: localGatewayDials.preparePlugin })
+ipcMain.handle('hermes:plugin:ws-url', (event, payload) => pluginWsUrl(payload ?? {}, event.sender.id))
 
 // Transactional update for a Desktop-managed SSH install. Unlike the generic
 // fleet fan-out below, this path owns the remote serve lifecycle: it gates new
@@ -15985,9 +15942,8 @@ ipcMain.handle('hermes:window:readBelow', async event => {
 // request.profile. Either way, a remote profile's session lives only on its
 // remote host, so the request must go there (where it serves its own state.db).
 //   GET    /api/profiles/sessions        → splice each remote profile's rows in
-//   GET    /api/sessions/{id}[/messages] → read from remote
-//   DELETE /api/sessions/{id}            → delete on remote
-//   PATCH  /api/sessions/{id}            → rename/archive on remote
+//   GET    /api/sessions/{id}[/messages|/mutation-snapshot|/timeline|/messages/around] → read from remote
+//   DELETE/PATCH /api/sessions/{id}      → delete/rename/archive on remote
 async function interceptSessionRequestForRemote(request, registryConnectionId = null) {
   if (typeof request?.path !== 'string') {
     return undefined
@@ -16075,7 +16031,7 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
   //    param (it serves its own state.db natively).
   //  - global remote mode: ONE backend serves every profile via ?profile=, so
   //    route there and KEEP the profile param so it opens the right state.db.
-  if (/^\/api\/sessions\/[^/]+(\/messages)?$/.test(pathname)) {
+  if (isRemoteSessionRequestPath(pathname)) {
     let profile = (searchParams.get('profile') || request.profile || '').trim()
 
     if (!profile) {
@@ -16098,7 +16054,6 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
     // against paginating remote backends).
     const passthroughParams = new URLSearchParams(searchParams)
     passthroughParams.delete('profile')
-    const passthroughQuery = passthroughParams.toString()
 
     if (profileHasRemoteOverride(profile)) {
       // #64999: the override's remote can be a multi-profile backend — an
@@ -16110,11 +16065,10 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
         remoteProfileQueryScope(profile, profileSshOverride(readDesktopConnectionConfig(), profile)?.remoteProfile) ||
         profile
 
+      const ownerPath = remoteOwnerRoutePath(pathname, searchParams, ownerScope)
+
       if (method === 'GET') {
-        return fetchJsonForProfile(
-          profile,
-          pathWithRemoteOwnerScope(passthroughQuery ? `${pathname}?${passthroughQuery}` : pathname, ownerScope)
-        )
+        return fetchJsonForProfile(profile, ownerPath)
       }
 
       const body = request.body && typeof request.body === 'object' ? { ...request.body } : request.body
@@ -16123,7 +16077,8 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
         ;(body as Record<string, unknown>).profile = ownerScope
       }
 
-      return requestJsonForProfile(profile, pathname, method, body)
+      // A DELETE's mutation identity is query-only; a bare pathname 409s on the remote.
+      return requestJsonForProfile(profile, ownerPath, method, body)
     }
 
     if (globalRemoteActive()) {
@@ -16229,7 +16184,7 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registry
   const offset = Math.max(0, Number(searchParams.get('offset')) || 0)
   const order = searchParams.get('order') === 'created' ? 'started_at' : 'last_active'
 
-  const base = (await fetchPrimaryProfileSessions(searchParams, fetchJsonForProfile)) as any
+  const base = (await fetchPrimaryProfileSessions(searchParams, fetchJsonForProfile, { prefixForMerge: true })) as any
 
   // Over-fetch each remote from offset 0 (limit+offset rows) so the merged window
   // is correct for this page — mirrors the primary's per-profile over-fetch.
@@ -16271,18 +16226,18 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registry
   const registrySources = registrySourcesOverride || (await pooledRegistrySessionSources())
 
   if (registrySources.length) {
-    const registryRows = await fetchRegistrySessionRows(registrySources, remoteParams, (descriptor, path) =>
-      getJsonForBackend(descriptor, path, { timeoutMs: 10_000 })
-    )
-
-    const { added } = spliceRegistrySessionRows(merged, registryRows, profileTotals)
-    total += added
+    const getRegistryJson = (descriptor, path) => getJsonForBackend(descriptor, path, { timeoutMs: 10_000 })
+    // RT-42: count each backend (install_id) once; remote-override profiles are another backend.
+    const identity = { primaryBackendId: await primaryBackendInstallId(), unknownPrimaryProfiles: remoteProfiles }
+    total += await mergeRegistrySessionRows(registrySources, remoteParams, getRegistryJson, merged, profileTotals, identity)
   }
 
   const recency = s => s?.[order] ?? s?.started_at ?? 0
   merged.sort((a, b) => recency(b) - recency(a))
 
-  return composeUnifiedSessionResponse(base, merged, offset, limit, total, profileTotals, remoteErrors)
+  const archivedOnly = searchParams.get('archived') === 'only'
+
+  return composeUnifiedSessionResponse(base, merged, offset, limit, total, profileTotals, remoteErrors, { archivedOnly })
 }
 
 // Every CONNECTED registry gateway as a session source: resolved descriptors
@@ -16334,12 +16289,21 @@ async function pooledRegistrySessionSources(includeLocal = false): Promise<Regis
     }
 
     if (backends.length) {
-      sources.push({ backends, connectionId: connection.id, kind: connection.kind })
+      const backendId = await boundedInstallId(probeConnectionInstallId(connection.id, backends[0].descriptor))
+      sources.push({ backendId, backends, connectionId: connection.id, kind: connection.kind })
     }
   }
 
   return sources
 }
+
+// RT-42: install_id of the backend the primary session aggregate reads (see the module).
+const primaryBackendInstallId = createPrimaryInstallIdResolver({
+  resolve: () => ensureBackend(null, { passive: true }),
+  status: descriptor => getJsonForBackend(descriptor, '/api/status', { timeoutMs: 2_000 }),
+  ttlMs: INSTALL_ID_TTL_MS,
+  negativeTtlMs: INSTALL_ID_NEGATIVE_TTL_MS
+})
 
 async function dispatchRegistryApiRequest(
   request,
@@ -16359,7 +16323,7 @@ async function dispatchRegistryApiRequest(
         ensureRegistryBackend(registryConnectionId, routeProfile)
       )
 
-  const requestPath = pathForRegistryBackendRequest(request.path, requestProfile, connection)
+  const requestPath = pathForRegistryBackendRequest(request.path, requestProfile, connection, request?.method || 'GET')
 
   const response = await fetchJsonForBackend(connection, requestPath, {
     method: request?.method,
@@ -17139,43 +17103,29 @@ ipcMain.on('hermes:translucency', (_event, payload) => {
 // merged active-work picture that already drives stream throttling, so it is
 // held exactly while a turn is in flight and released at idle. See
 // store/keep-awake + power-save.ts.
-const KEEP_AWAKE_CONFIG_PATH = path.join(app.getPath('userData'), 'keep-awake.json')
-const keepAwake = createKeepAwake(powerSaveBlocker)
-let keepAwakeMode: KeepAwakeMode = 'off'
+const keepAwake = createKeepAwakeController({
+  blocker: powerSaveBlocker,
+  configPath: path.join(app.getPath('userData'), 'keep-awake.json'),
+  isWorking: () => isAnyTurnInFlight(),
+  log: rememberLog,
+  // The main chat window only: Quick Entry and the HUD have no toast surface.
+  offer: () => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return false
+    }
 
-function readPersistedKeepAwakeMode(): KeepAwakeMode {
-  try {
-    return readKeepAwakeMode(JSON.parse(fs.readFileSync(KEEP_AWAKE_CONFIG_PATH, 'utf8')))
-  } catch {
-    return 'off'
-  }
-}
+    mainWindow.webContents.send('hermes:keep-awake-offer')
 
-// Reconcile the blocker with the mode and the live turn picture. Called from
-// every mode change and every active-work report — both happen after app
-// ready, when `keepAwake` and `keepAwakeMode` above are initialised.
-function applyKeepAwake(working = isAnyTurnInFlight()) {
-  keepAwake.set(keepAwakeWanted(keepAwakeMode, working))
-}
-
-ipcMain.on('hermes:keep-awake', (_event, value) => {
-  // Accepts the mode string, or the boolean the pre-mode toggle sent.
-  const mode = parseKeepAwakeMode(value)
-
-  if (mode === null) {
-    return
-  }
-
-  keepAwakeMode = mode
-  applyKeepAwake()
-
-  try {
-    fs.mkdirSync(path.dirname(KEEP_AWAKE_CONFIG_PATH), { recursive: true })
-    fs.writeFileSync(KEEP_AWAKE_CONFIG_PATH, JSON.stringify({ mode }, null, 2), 'utf8')
-  } catch (error) {
-    rememberLog(`[keep-awake] write failed: ${error.message}`)
+    return true
   }
 })
+
+// Called from every mode change and every active-work report, after app ready.
+function applyKeepAwake(working = isAnyTurnInFlight()) {
+  keepAwake.apply(working)
+}
+
+ipcMain.on('hermes:keep-awake', (_event, value) => keepAwake.setMode(value))
 
 // Quick Entry: the renderer reads the live registration state on settings mount
 // and writes the preference back. Main is authoritative — it owns the OS
@@ -18247,8 +18197,7 @@ app.whenReady().then(() => {
   ensureWslWindowsFonts()
   configureSpellChecker()
   registerPowerResumeListeners()
-  keepAwakeMode = readPersistedKeepAwakeMode()
-  applyKeepAwake()
+  keepAwake.restore()
   void minimizeToTray.start()
   mainProcessLagWatchdog.start()
   f12Blocked = readPersistedDisableF12()

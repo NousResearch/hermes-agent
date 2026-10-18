@@ -31,10 +31,10 @@ from hermes_state_ids import new_session_id as mint_session_id
 from agent.i18n import t
 from agent.message_metadata import message_identity
 from agent.turn_context import extract_api_content_sidecar
-from hermes_cli.cli_agent_setup_mixin import _retire_agent
+from hermes_cli.cli_agent_setup_mixin import _gateway_owned_id, _retire_agent
 from hermes_cli.cli_commands_session_tools import (
     CLICommandsSessionToolsMixin, _TTYBuf, _accent, _accent_line, _command_arg, _cp, _dim,
-    _dim_line, _gt, _lines, _pr, _probe, _save, _say_block, _shlex_args, _t, _tn)
+    _dim_line, _gt, _lines, _pr, _probe, _rollback_kept, _save, _say_block, _shlex_args, _t, _tn)
 from hermes_cli.browser_connect import (
     DEFAULT_BROWSER_CDP_URL, discover_local_cdp_url, find_free_debug_port, is_browser_debug_ready,
     launch_chrome_debug, local_port_in_use, manual_chrome_debug_command)
@@ -613,15 +613,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         restored = dict(hash=result["restored_to"], reason=result["reason"])
         print(f"  {_t('rollback.restored_file', file=file_path, **restored)}" if file_path
               else f"  {_t('rollback.restored_all', **restored)}")
-        skipped = result.get("skipped_user_edits") or []
-        if skipped:
-            _pr(*_lines(_gt("rollback.kept_user_edits", files=_summarize_paths(skipped))))
-        oversize = result.get("skipped_oversize") or []
-        if oversize:
-            print(f"  {_gt('rollback.kept_oversize', files=_summarize_paths(oversize))}")
-        failed = result.get("failed_deletes") or []
-        if failed:
-            print(f"  {_gt('rollback.failed_deletes', files=_summarize_paths(failed))}")
+        _rollback_kept(result)
         print(f"  {_t('rollback.snapshot_saved')}")
         # Also undo the last conversation turn so the agent's context matches the restored files.
         if self.conversation_history:
@@ -752,9 +744,9 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             if not 1 <= idx <= len(snaps):
                 return print(f"  {_t('snapshot.invalid_number', max=len(snaps))}")
             snap_id = snaps[idx - 1]["id"]
-        # Close our SessionDB first so the restore doesn't contend with this process's live connection.
+        # Close our own SessionDB first (restore contention); an open gateway session's store must stay.
         local_session_db = getattr(self, "_session_db", None)
-        if local_session_db is not None:
+        if local_session_db is not None and not getattr(self, "_gateway_session_open", False):
             with suppress(Exception):
                 local_session_db.close()
                 self._session_db = None
@@ -1002,6 +994,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         from hermes_cli.kanban_resume_guard import kanban_resume_refusal
         if (kanban_refusal := kanban_resume_refusal(self._session_db, target_id)):
             return _cp(f"  {kanban_refusal}")
+        read_id, target_id = target_id, _gateway_owned_id(self._session_db, target_id)  # the receipt owner
         if target_id == self.session_id:
             return _cp(f"  {_t('resume.already_on')}")
         old_session_id = self.session_id
@@ -1010,7 +1003,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         _sync_process_session_id(target_id)
         # One lineage SELECT, two projections: model_history is alternation-repaired for live
         # replay (heals a durable user;user once); display_history is verbatim (as startup --resume).
-        model_history, display_history = self._session_db.get_resume_conversations(target_id)
+        model_history, display_history = self._session_db.get_resume_conversations(read_id)
         self.conversation_history = _without_session_meta(model_history)
         self._resume_display_history = _without_session_meta(display_history)
         with suppress(Exception):  # re-open the target session so it's not marked as ended
@@ -1039,9 +1032,8 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         self._restore_session_model(session_meta)
 
     def _resolve_resume_target(self, target: str):
-        """``(session_id, meta)`` for a numbered selection, title, or id; None after printing why
-        it could not be resolved. An empty compression-chain head redirects to the descendant
-        that actually holds the transcript."""
+        """``(session_id, meta)`` for a numbered selection, title, or id (an empty compression-chain head
+        redirects to the descendant holding the transcript); None after printing why it was not resolved."""
         if target.isdigit():
             sessions = self._list_recent_sessions(limit=10)
             index = int(target)
@@ -1094,22 +1086,22 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         from gateway.slash_commands_branch_thread import parse_branch_args
         _, branch_name = parse_branch_args(_command_arg(cmd_original))
         now = datetime.now()
-        new_session_id = self._new_session_id(now, branch_of=self.session_id)  # the gateway's branch child
-        branch_title = branch_name or self._session_db.get_next_title_in_lineage(
-            self._session_db.get_session_title(self.session_id) or "branch")
-        parent_session_id = self.session_id
-        # Create the child BEFORE ending the parent: a failed create_session must leave the session the
-        # user is still on open, not ended with end_reason="branched" and no branch (#11030).
+        from tools.approval_yolo import transfer_session_yolo, with_session_yolo
+        # Create the child BEFORE ending the parent: a failed create_session or gateway branch (or its /yolo
+        # carry) must leave the session the user is still on open, not ended "branched" with no branch (#11030).
         # The stable ``_branched_from`` marker keeps the branch visible in /resume + /sessions even after the
         # parent is re-ended with a different end_reason; with_session_yolo keeps a live /yolo on the branch.
-        # The child sends the parent's exact system prompt: a row without one makes the branch's first turn rebuild
-        # (re-probing the workspace), losing the copied transcript's warm cache whenever the repo moved since.
-        parent_prompt = getattr(self.agent, "_cached_system_prompt", None)
-        if not isinstance(parent_prompt, str) or not parent_prompt:
-            with suppress(Exception):
-                parent_prompt = (self._session_db.get_session(parent_session_id) or {}).get("system_prompt")
-        from tools.approval_yolo import transfer_session_yolo, with_session_yolo
+        # The child sends the parent's exact system prompt: a row without one makes the branch's first turn
+        # rebuild (re-probing the workspace), losing the copied transcript's warm cache if the repo moved since.
         try:
+            new_session_id = self._new_session_id(now, branch_of=self.session_id)  # the gateway's branch child
+            branch_title = branch_name or self._session_db.get_next_title_in_lineage(
+                self._session_db.get_session_title(self.session_id) or "branch")
+            parent_session_id = self.session_id
+            parent_prompt = getattr(self.agent, "_cached_system_prompt", None)
+            if not isinstance(parent_prompt, str) or not parent_prompt:
+                with suppress(Exception):
+                    parent_prompt = (self._session_db.get_session(parent_session_id) or {}).get("system_prompt")
             self._session_db.create_session(
                 session_id=new_session_id, source=os.environ.get("HERMES_SESSION_SOURCE", "cli"),
                 model=self.model, parent_session_id=parent_session_id, system_prompt=parent_prompt or None,
@@ -1532,7 +1524,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             if out is not None:
                 return print(out)
         from hermes_cli.gateway_tools import handle_skills_slash  # + the gateway's rescan
-        handle_skills_slash(cmd, ChatConsole())
+        handle_skills_slash(cmd, ChatConsole(), cli=self)
 
     def _handle_memory_command(self, cmd: str):
         """Handle /memory slash command — pending review + approval-gate toggle."""

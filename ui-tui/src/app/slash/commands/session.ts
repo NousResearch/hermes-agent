@@ -394,13 +394,10 @@ export const sessionCommands: SlashCommand[] = [
           ? normalized
           : 'status'
 
-      // `/voice tts` is the session's voice state, held by the owner's `/voice` handler (one behaviour
-      // on every surface); recording and playback stay in this terminal.
+      // Read-aloud ran in the sidecar's own turn; a shared-gateway turn runs on the owner, which
+      // never speaks a TUI reply, so the toggle would say "on" and stay silent.
       if (action === 'tts' && ctx.gateway.gw?.isCanonical) {
-        return ctx.gateway.gw
-          .request<SlashExecResponse>('slash.exec', { command: 'voice tts', session_id: ctx.sid })
-          .then(ctx.guarded<SlashExecResponse>(r => r.output && ctx.transcript.sys(r.output)))
-          .catch(ctx.guardedErr)
+        return ctx.transcript.sys(t('canonical.controls.notAvailable', 'voice tts'))
       }
 
       ctx.gateway.rpc<VoiceToggleResponse>('voice.toggle', { action }).then(
@@ -634,6 +631,8 @@ export const sessionCommands: SlashCommand[] = [
     name: 'reasoning',
     run: (arg, ctx) => {
       if (!arg) {
+        ctx.ran?.()
+
         return ctx.gateway
           .rpc<ConfigGetValueResponse>('config.get', { key: 'reasoning', session_id: ctx.sid })
           .then(
@@ -789,6 +788,8 @@ export const sessionCommands: SlashCommand[] = [
     name: 'usage',
     run: (_arg, ctx) => {
       if (ctx.sid && ctx.gateway.gw?.isCanonical) {
+        ctx.ran?.()
+
         return canonicalUsage(ctx)
       }
 

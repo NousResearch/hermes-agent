@@ -1,5 +1,6 @@
 """Editor prompts fail recoverably when their FIFO becomes unknown."""
 import asyncio
+from contextlib import suppress
 from unittest.mock import AsyncMock
 
 import acp
@@ -47,9 +48,168 @@ async def test_editor_refuses_new_prompt_until_lost_turn_is_resolved():
     agent = GatewayACPAgent()
     agent._gateway = AsyncMock()
     agent._snapshots['s'] = {'pending': [{'admission_id': 'lost', 'status': 'unknown'}]}
+    agent._gateway.rpc.return_value = {'pending': [{'admission_id': 'lost', 'status': 'unknown'}]}
     with pytest.raises(GatewayClientError, match='unknown_execution'):
         await asyncio.wait_for(agent.prompt([acp.text_block('new input')], 's'), 5)
-    agent._gateway.rpc.assert_not_awaited()
+    agent._gateway.rpc.assert_awaited_once_with('session.resume', session_id='s')
+
+
+@pytest.mark.asyncio
+async def test_editor_rechecks_lost_turn_after_discard_in_another_viewer():
+    agent = GatewayACPAgent()
+    agent._gateway = AsyncMock()
+    lost = [{'admission_id': 'lost', 'status': 'unknown'}]
+    agent._snapshots['s'] = {'pending': lost, 'replay_epoch': 'owner', 'last_sequence': 1}
+    owner_pending = list(lost)
+    calls = []
+
+    async def rpc(method, **params):
+        calls.append(method)
+        if method == 'session.resume':
+            return {'pending': list(owner_pending), 'replay_epoch': 'owner', 'last_sequence': 2}
+        assert method == 'prompt.submit' and params['session_id'] == 's'
+        await agent._project({'session_id': 's', 'type': 'message.complete',
+                              'admission_id': 'next', 'payload': {'outcome': 'completed'}})
+        return {'admission_id': 'next'}
+
+    agent._gateway.rpc.side_effect = rpc
+    with pytest.raises(GatewayClientError, match='unknown_execution'):
+        await agent.prompt([acp.text_block('still blocked')], 's')
+    assert 'prompt.submit' not in calls
+
+    owner_pending.clear()  # The classic chat acknowledged the lost turn with /discard.
+    response = await asyncio.wait_for(agent.prompt([acp.text_block('next prompt')], 's'), 5)
+    assert response.stop_reason == 'end_turn'
+    assert calls.count('prompt.submit') == 1
+
+
+@pytest.mark.asyncio
+async def test_unknown_refresh_keeps_unread_reply_events_without_restoring_old_pending():
+    agent = GatewayACPAgent()
+    agent._gateway = AsyncMock()
+    agent._gateway.events = asyncio.Queue()
+    agent._conn = AsyncMock()
+    approval_seen, release_approval = asyncio.Event(), asyncio.Event()
+
+    async def show_approval(_session_id, _prompt):
+        approval_seen.set()
+        await release_approval.wait()
+        return True
+
+    agent._answer_permission = show_approval
+    agent._snapshots['s'] = {'pending': [{'admission_id': 'lost', 'status': 'unknown'}],
+                             'replay_epoch': 'owner', 'last_sequence': 1}
+    agent._gateway.rpc.return_value = {'pending': [], 'replay_epoch': 'owner', 'last_sequence': 4}
+
+    await agent._refresh_unknown('s')
+    assert not agent._has_unknown('s')
+    # The event pump was busy while the owner discarded the head and ran a follower.
+    # Its old pending event must not undo the refresh; its reply still reaches the editor.
+    await agent._gateway.events.put({'params': {
+        'session_id': 's', 'replay_epoch': 'owner', 'seq': 2, 'type': 'session.info',
+        'payload': {'pending': [{'admission_id': 'lost', 'status': 'unknown'}]}}})
+    await agent._gateway.events.put({'params': {
+        'session_id': 's', 'replay_epoch': 'owner', 'seq': 3, 'type': 'approval.request',
+        'payload': {'kind': 'approval', 'prompt_id': 'approval-1', 'execution_generation': 1}}})
+    await agent._gateway.events.put({'params': {
+        'session_id': 's', 'replay_epoch': 'owner', 'seq': 4, 'type': 'message.delta',
+        'admission_id': 'follower', 'payload': {'text': 'Follower answer'}}})
+    task = asyncio.create_task(agent._events())
+    try:
+        await async_wait_until(lambda: approval_seen.is_set() and agent._conn.session_update.await_count == 1,
+                               what='the buffered approval and follower reply reached the editor')
+        assert agent._conn.session_update.await_args.kwargs['update'].content.text == 'Follower answer'
+        assert not agent._has_unknown('s')
+    finally:
+        release_approval.set()
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+        await asyncio.gather(*agent._permissions.values(), return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('newer_pending', [False, True])
+async def test_unknown_refresh_orders_pending_state_independently_of_reply_events(newer_pending):
+    agent = GatewayACPAgent()
+    agent._gateway = AsyncMock()
+    agent._gateway.events = asyncio.Queue()
+    agent._conn = AsyncMock()
+    lost = [{'admission_id': 'lost', 'status': 'unknown'}]
+    agent._snapshots['s'] = {'pending': lost, 'replay_epoch': 'owner', 'last_sequence': 1}
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def rpc(method, **params):
+        if method == 'session.resume':
+            entered.set()
+            await release.wait()
+            return {'pending': [], 'replay_epoch': 'owner', 'last_sequence': 3}
+        assert method == 'prompt.submit'
+        await agent._project({'session_id': 's', 'type': 'message.complete',
+                              'admission_id': 'next', 'payload': {'outcome': 'completed'}})
+        return {'admission_id': 'next'}
+
+    agent._gateway.rpc.side_effect = rpc
+    pump = asyncio.create_task(agent._events())
+    prompt = asyncio.create_task(agent.prompt([acp.text_block('next prompt')], 's'))
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        # While the resume reply is assembled, the pump drains old pending state and a
+        # follower's newer reply. Only a newer pending event can supersede the snapshot.
+        await agent._gateway.events.put({'params': {
+            'session_id': 's', 'replay_epoch': 'owner', 'seq': 2,
+            'type': 'session.info', 'payload': {'pending': lost}}})
+        await agent._gateway.events.put({'params': {
+            'session_id': 's', 'replay_epoch': 'owner', 'seq': 4, 'type': 'message.delta',
+            'admission_id': 'follower', 'payload': {'text': 'Follower answer'}}})
+        if newer_pending:
+            await agent._gateway.events.put({'params': {
+                'session_id': 's', 'replay_epoch': 'owner', 'seq': 5, 'type': 'session.info',
+                'payload': {'pending': [{'admission_id': 'follower', 'status': 'unknown'}]}}})
+        await async_wait_until(lambda: agent._snapshots['s']['last_sequence'] == (5 if newer_pending else 4),
+                               what='the follower events reached the editor before the resume response')
+        assert agent._conn.session_update.await_args.kwargs['update'].content.text == 'Follower answer'
+        release.set()
+        if newer_pending:
+            with pytest.raises(GatewayClientError, match='unknown_execution'):
+                await asyncio.wait_for(prompt, 5)
+        else:
+            assert (await asyncio.wait_for(prompt, 5)).stop_reason == 'end_turn'
+        methods = [call.args[0] for call in agent._gateway.rpc.await_args_list]
+        assert methods.count('prompt.submit') == (0 if newer_pending else 1)
+    finally:
+        release.set()
+        prompt.cancel()
+        pump.cancel()
+        await asyncio.gather(prompt, pump, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_stop_during_unknown_refresh_cancels_the_unsent_prompt():
+    agent = GatewayACPAgent()
+    agent._gateway = AsyncMock()
+    agent._snapshots['s'] = {'pending': [{'admission_id': 'lost', 'status': 'unknown'}]}
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls = []
+
+    async def rpc(method, **params):
+        calls.append(method)
+        if method == 'session.resume':
+            entered.set()
+            await release.wait()
+            return {'pending': []}
+        assert method == 'prompt.submit'
+        await agent._project({'session_id': 's', 'type': 'message.complete',
+                              'admission_id': 'next', 'payload': {'outcome': 'completed'}})
+        return {'admission_id': 'next'}
+
+    agent._gateway.rpc.side_effect = rpc
+    prompt = asyncio.create_task(agent.prompt([acp.text_block('new input')], 's'))
+    await asyncio.wait_for(entered.wait(), 5)
+    await agent.cancel('s')
+    release.set()
+    assert (await asyncio.wait_for(prompt, 5)).stop_reason == 'cancelled'
+    assert calls == ['session.resume']
 
 
 @pytest.mark.asyncio
@@ -61,7 +221,7 @@ async def test_resumed_unknown_turn_names_the_existing_discard_recovery():
     agent._conn = AsyncMock()
     lost = 'admission-lost-0123456789abcdef'
     agent._gateway.rpc.side_effect = lambda method, **params: {
-        'session.info': {}, 'session.resume': {
+        'session.info': {}, 'config.set': {}, 'session.resume': {
             'session_id': 's', 'messages': [], 'prompts': [],
             'pending': [{'admission_id': lost, 'status': 'unknown', 'execution_generation': 4}]},
     }[method]
@@ -73,7 +233,9 @@ async def test_resumed_unknown_turn_names_the_existing_discard_recovery():
         assert 'chat --cli --resume s' in text and f'/discard {lost}' in text, text
         assert 'do not resend' in text
     assert 'nothing was submitted' in str(refused.value)
-    assert [call.args[0] for call in agent._gateway.rpc.await_args_list] == ['session.info', 'session.resume']
+    # The prompt refreshed the owner's pending rows; no prompt was submitted.
+    asked = [call.args[0] for call in agent._gateway.rpc.await_args_list]
+    assert asked == ['session.info', 'session.resume', 'config.set', 'session.resume']
 
 
 @pytest.mark.asyncio

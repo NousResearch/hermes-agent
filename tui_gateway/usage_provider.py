@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import atexit
 import concurrent.futures
+import contextlib
 import logging
 import threading
 from typing import Any
@@ -22,6 +23,25 @@ atexit.register(lambda: _account_usage_pool.shutdown(wait=False, cancel_futures=
 _ACCOUNT_USAGE_TIMEOUT_SECONDS = 10.0
 
 
+def _usage_provider_fields(session: dict) -> dict[str, list[str]]:
+    """Account, rate and credit blocks shared by both usage surfaces."""
+    from agent.account_usage import nous_credits_lines
+    from tui_gateway.launch_profile_policy import launch_profile_runtime_scope
+    from tui_gateway.server import _launch_home, _session_profile_runtime_scope
+
+    account_lines, rate_limit_lines = _usage_provider_lines(session)
+    fields = {key: lines for key, lines in (
+        ("account_lines", account_lines), ("rate_limit_lines", rate_limit_lines)) if lines}
+    # Quota hydration stays in the bounded worker; credits reuse the owning
+    # profile's hydrated secrets and have their own bounded portal fetch.
+    credit_scope = (_session_profile_runtime_scope(session, hydrate_secrets=False) if session.get("profile_home")
+                    else launch_profile_runtime_scope(_launch_home()))
+    with contextlib.suppress(Exception), credit_scope:
+        if credits := nous_credits_lines():
+            fields["credits_lines"] = credits
+    return fields
+
+
 def _usage_provider_identity(session: dict) -> tuple[str, str, Any]:
     """Resolve quota inputs without persisting or returning credentials."""
     from tui_gateway.server import _load_cfg
@@ -30,7 +50,8 @@ def _usage_provider_identity(session: dict) -> tuple[str, str, Any]:
     agent = session.get("agent")
     mirror = _metadata_mirror(session)
     live_provider = str(getattr(agent, "provider", "") or "").strip()
-    provider = live_provider or str(mirror.get("provider") or "").strip()
+    pick = session.get("model_override") or {}
+    provider = live_provider or str(pick.get("provider") or mirror.get("provider") or "").strip()
     base_url = str(getattr(agent, "base_url", "") or "").strip() if live_provider else ""
     api_key = getattr(agent, "api_key", None) if live_provider else None
     if not base_url and provider == str(mirror.get("provider") or "").strip():

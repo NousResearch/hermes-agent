@@ -21,6 +21,8 @@ _RESULTS_BUDGET_BYTES = 384 * 1024
 
 
 class HostedRoomAuthorityRPC:
+    accepts_attachments = True  # submit resolves event-bound bytes per member
+
     def __init__(self, authority, loop, *, room_id, member_id, profile, principal,
                  authorize, authorize_write=None, timeout=30):
         self.authority, self.loop = authority, loop
@@ -195,9 +197,14 @@ class HostedRoomAuthorityRPC:
                 self._terminal(row, task, generation)
 
     async def _history(self, params):
-        from gateway.session_local_recovery import local_history
+        from gateway.session_local_recovery import local_history, prepare_history
+        # Authorize (restoring a cold room session) before the read names its live entry, and again after
+        # the await (``_rows``): a delete in between answers not_found, never a KeyError.
+        self.authority.authorize(self.principal, self.ref, 'session:read')
+        prepared = await prepare_history(self.authority, self.ref)
         rows = self._rows()
-        history = list(local_history(self.authority, self.ref))
+        history = self.authority.unless_deleted(
+            self.ref, lambda: list(local_history(self.authority, self.ref, prepared)))
         for row, task, generation in rows:
             if row['status'] == 'terminal':
                 receipt = self._terminal(row, task, generation)

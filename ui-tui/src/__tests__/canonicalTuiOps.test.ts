@@ -89,7 +89,14 @@ it('/rollback list, diff and restore call the owner\'s rollback verbs with main\
     'rollback.restore': { success: true, reason: 'before write_file', history_removed: 2 }
   })
 
-  for (const cmd of ['/rollback', '/rollback diff 1', '/rollback 1 src/a.py', '/rollback 1']) {
+  for (const cmd of [
+    '/rollback',
+    '/rollback diff 1',
+    '/rollback 1 src/a.py',
+    '/rollback 1',
+    '/rollback 1 --all',
+    '/rollback 1 src/a.py --force'
+  ]) {
     slash(cmd)
     await flush()
   }
@@ -98,14 +105,43 @@ it('/rollback list, diff and restore call the owner\'s rollback verbs with main\
     ['rollback.list', { session_id: 'owner' }],
     ['rollback.diff', { hash: '1', session_id: 'owner' }],
     ['rollback.restore', { file_path: 'src/a.py', hash: '1', session_id: 'owner' }],
-    ['rollback.restore', { hash: '1', session_id: 'owner' }]
+    ['rollback.restore', { hash: '1', session_id: 'owner' }],
+    // Main's --all/--force reverts hand-edits too; it is a flag, never part of the file path.
+    ['rollback.restore', { all: true, hash: '1', session_id: 'owner' }],
+    ['rollback.restore', { file_path: 'src/a.py', hash: '1', session_id: 'owner' }]
   ])
   expect(panel).toHaveBeenCalledWith('Rollback checkpoints', [{ rows: [['1. abcdef1234', 't1 · before write_file']] }])
   expect(page).toHaveBeenCalledWith(' a.txt | 2 +-\n\n-old\n+new', expect.any(String))
   expect(notices(sys)).toEqual([
     'rollback restored src/a.py: before write_file',
-    'rollback restored workspace: before write_file'
+    'rollback restored workspace: before write_file',
+    'rollback restored workspace: before write_file',
+    'rollback restored src/a.py: before write_file'
   ])
   // A whole-tree restore rewound the transcript (history_removed > 0): the view drops the exchange.
   expect(setHistoryItems).toHaveBeenCalled()
+})
+
+it('/rollback restore names the hand-edits it kept, oversize skips and failed deletions, as main\'s CLI does', async () => {
+  const { slash, sys } = harness({
+    'rollback.restore': {
+      failed_deletes: ['locked.txt'],
+      history_removed: 0,
+      reason: 'before write_file',
+      skipped_oversize: ['big.bin'],
+      skipped_user_edits: ['a.md', 'b.md', 'c.md', 'd.md', 'e.md', 'f.md', 'g.md'],
+      success: true
+    }
+  })
+
+  slash('/rollback 1')
+  await flush()
+
+  // The gateway-backed classic CLI's lines (hermes_cli/gateway_rollback.py), with its --all hint.
+  expect(notices(sys)).toEqual([
+    'rollback restored workspace: before write_file',
+    '↷ Kept your hand-edits: a.md, b.md, c.md, d.md, e.md (+2 more)\nUse /rollback <N> --all to restore those too.',
+    '↷ Kept (too large for checkpoints, no stored copy to revert to): big.bin',
+    '⚠️ Could not remove (left in place): locked.txt'
+  ])
 })

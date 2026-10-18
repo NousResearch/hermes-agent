@@ -194,18 +194,29 @@ def test_quota_worker_replaces_an_inherited_foreign_scope(tmp_path, monkeypatch,
 
 
 @pytest.mark.parametrize("identity", [
-    "live", "mirror", "config",
+    "live", "mirror", "config", "composer",
     pytest.param("external", marks=pytest.mark.platforms("posix")),
 ])
 def test_usage_windows_resolve_real_profile_credentials(usage_runtime, identity):
     runtime = usage_runtime
     environment = dict(os.environ)
-    if identity == "live":
-        runtime.session["agent"] = SimpleNamespace(
-            provider="openai-codex", base_url=runtime.base_url, api_key="live-test-token")
-    elif identity == "mirror":
+    runtime.session.update({
+        "live": {"agent": SimpleNamespace(
+            provider="openai-codex", base_url=runtime.base_url, api_key="live-test-token")},
         # No usage snapshot yet: provider limits must still be visible.
-        runtime.session["_metadata_mirror"] = {"provider": "openai-codex"}
+        "mirror": {"_metadata_mirror": {"provider": "openai-codex"}},
+        "composer": {
+            "model_override": {"provider": "openai-codex"},
+            "_metadata_mirror": {"provider": "openrouter", "base_url": "https://mirror.invalid"},
+        },
+    }.get(identity, {}))
+    if identity == "composer":
+        from pathlib import Path
+
+        # A fresh composer selection wins over both the previous metadata and
+        # profile default, without borrowing either provider's endpoint.
+        Path(runtime.session["profile_home"], "config.yaml").write_text(
+            "model:\n  provider: openrouter\n  base_url: https://config.invalid\n")
     elif identity == "external":
         from pathlib import Path
 

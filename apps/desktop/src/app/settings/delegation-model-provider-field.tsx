@@ -1,7 +1,7 @@
 import type { ModelOptionProvider } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
-import { type ReactNode, useMemo, useState } from 'react'
+import { type ReactNode, useMemo } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -11,25 +11,24 @@ import { getGlobalModelOptions, type ProfileScope, profileScopeKey } from '@/her
 import { useI18n } from '@/i18n'
 import { findCatalogProvider } from '@/lib/model-options'
 import { cn } from '@/lib/utils'
-import { $customModels, customModelSlug, withCustomModels } from '@/store/custom-models'
+import { $customModels, withCustomModels } from '@/store/custom-models'
 
 import { CONTROL_TEXT } from './constants'
+import {
+  CUSTOM_PROVIDER_VALUE,
+  type DelegationModelProviderValue,
+  type DelegationRouteDraft,
+  DIRECT_VALUE,
+  INHERIT_VALUE,
+  MODEL_ONLY_VALUE,
+  providerItem,
+  useDelegationRouteDraft
+} from './delegation-route-draft'
 import { ModelSelect } from './model-select'
 import { ListRow } from './primitives'
 
-export interface DelegationModelProviderValue {
-  model: string
-  provider: string
-  /** Explicitly leave direct-endpoint routing. Other request settings stay intact. */
-  resetDirectEndpoint: boolean
-}
-
-export const INHERIT_VALUE = '__inherit__'
-export const MODEL_ONLY_VALUE = '__model_only__'
-const DIRECT_VALUE = '__direct__'
-const CUSTOM_PROVIDER_VALUE = '__custom_provider__'
-// Provider item values have a separate namespace from editor actions.
-const providerItem = (provider: string) => `provider:${provider}`
+export type { DelegationModelProviderValue } from './delegation-route-draft'
+export { INHERIT_VALUE, MODEL_ONLY_VALUE } from './delegation-route-draft'
 
 interface DelegationModelProviderFieldProps {
   model: string
@@ -40,11 +39,49 @@ interface DelegationModelProviderFieldProps {
   onChange: (next: DelegationModelProviderValue) => void
 }
 
+const ROW_CONTROL = 'w-full min-w-0 max-w-full @2xl:w-72'
+
 /** A route draft belongs to the same immutable owner as the config that seeded it. */
 export function DelegationModelProviderField(props: DelegationModelProviderFieldProps) {
   const identity = JSON.stringify([profileScopeKey(props.scope), props.model, props.provider, props.baseUrl ?? ''])
 
   return <DelegationRouteEditor key={identity} {...props} />
+}
+
+/** Catalog rows for the owner being edited; custom ids enrich only providers returned for that owner. */
+function useOwnerCatalog(scope: ProfileScope | undefined) {
+  const query = useQuery({
+    queryKey: ['model-options', 'delegation', profileScopeKey(scope)],
+    queryFn: () => getGlobalModelOptions(undefined, scope),
+    retry: false
+  })
+
+  const customModels = useStore($customModels)
+
+  const providers = useMemo(
+    () =>
+      withCustomModels(
+        (query.data?.providers ?? []).filter(p => p.slug),
+        customModels
+      ),
+    [query.data?.providers, customModels]
+  )
+
+  return { providers, query }
+}
+
+/** A saved provider the catalog lacks (alias, display name, custom) stays visible as-is. */
+function displayProviders(
+  providers: readonly ModelOptionProvider[],
+  draftProvider: string
+): readonly ModelOptionProvider[] {
+  if (!draftProvider || providers.some(p => p.slug === draftProvider)) {
+    return providers
+  }
+
+  const found = findCatalogProvider(providers, draftProvider)
+
+  return [{ name: found?.name ?? draftProvider, slug: draftProvider, models: found?.models ?? [] }, ...providers]
 }
 
 function DelegationRouteEditor({
@@ -55,191 +92,162 @@ function DelegationRouteEditor({
   scope,
   onChange
 }: DelegationModelProviderFieldProps) {
-  const { t } = useI18n()
-  const c = t.settings.config
-  // Match tools/delegate_tool_config.py: native SDK routes ignore a direct URL.
-  const nativeSdk = ['bedrock', 'vertex', 'google', 'google-genai'].includes(provider.trim().toLowerCase())
-  const hasDirectEndpoint = Boolean(baseUrl.trim()) && !nativeSdk
-
-  const initialMode = hasDirectEndpoint
-    ? DIRECT_VALUE
-    : provider
-      ? providerItem(provider)
-      : model
-        ? MODEL_ONLY_VALUE
-        : INHERIT_VALUE
-
-  const [mode, setMode] = useState(initialMode)
-  const [draftModel, setDraftModel] = useState(model)
-  const [draftProvider, setDraftProvider] = useState(provider)
-  const [useParentModel, setUseParentModel] = useState(Boolean(provider && !model))
-
-  const modelOptions = useQuery({
-    queryKey: ['model-options', 'delegation', profileScopeKey(scope)],
-    queryFn: () => getGlobalModelOptions(undefined, scope),
-    retry: false
-  })
-
-  const customModels = useStore($customModels)
-
-  // Custom ids enrich only providers actually returned for this owner. They
-  // cannot introduce another profile's endpoints/provider rows.
-  const providers = useMemo(
-    () =>
-      withCustomModels(
-        (modelOptions.data?.providers ?? []).filter(p => p.slug),
-        customModels
-      ),
-    [modelOptions.data?.providers, customModels]
-  )
-
-  const selectedProvider: ModelOptionProvider | undefined = findCatalogProvider(providers, draftProvider)
-
-  const displayProviders =
-    draftProvider && !providers.some(p => p.slug === draftProvider)
-      ? [
-          {
-            name: selectedProvider?.name ?? draftProvider,
-            slug: draftProvider,
-            models: selectedProvider?.models ?? []
-          },
-          ...providers
-        ]
-      : providers
-
-  const inherit = mode === INHERIT_VALUE
-  const direct = mode === DIRECT_VALUE
-  const modelOnly = mode === MODEL_ONLY_VALUE
-  const manualProvider = mode === CUSTOM_PROVIDER_VALUE
-  const nextProvider = inherit || modelOnly ? '' : draftProvider
-  const nextModel = inherit || useParentModel ? '' : draftModel
-  const resetDirectEndpoint = !direct && (hasDirectEndpoint || mode !== initialMode)
-  const changed = nextProvider !== provider || nextModel !== model || (Boolean(baseUrl.trim()) && resetDirectEndpoint)
-  const validProvider = inherit || modelOnly || direct || Boolean(selectedProvider || customModelSlug(nextProvider))
-  const validModel = inherit || useParentModel || Boolean(customModelSlug(nextModel))
-  const pending = mode !== initialMode || draftModel !== model || draftProvider !== provider || changed
-
-  const reset = () => {
-    setMode(initialMode)
-    setDraftModel(model)
-    setDraftProvider(provider)
-    setUseParentModel(Boolean(provider && !model))
-  }
-
-  const chooseProvider = (value: string) => {
-    setMode(value)
-    setUseParentModel(false)
-
-    if (value === INHERIT_VALUE) {
-      setDraftModel('')
-    } else if (value === CUSTOM_PROVIDER_VALUE) {
-      setDraftProvider('')
-      setDraftModel('')
-    } else if (value.startsWith('provider:')) {
-      const selected = value.slice('provider:'.length)
-      setDraftProvider(selected)
-
-      // Never reinterpret a model from the previous route as a completed switch.
-      if (selected !== draftProvider) {
-        setDraftModel('')
-      }
-    }
-  }
+  const { providers, query } = useOwnerCatalog(scope)
+  const draft = useDelegationRouteDraft({ model, provider, baseUrl }, providers)
+  const showsModel = draft.mode !== INHERIT_VALUE && !draft.useParentModel
 
   return (
     <div className="grid gap-1">
-      <ListRow
-        action={
-          <div className="grid w-full min-w-0 max-w-full @2xl:w-72 gap-2">
-            <Select onValueChange={chooseProvider} value={mode}>
-              <SelectTrigger
-                aria-label={c.delegationProviderSelectLabel}
-                className={cn(CONTROL_TEXT, '[&_[data-slot=select-value]]:truncate')}
-              >
-                <SelectValue placeholder={t.settings.model.provider} />
-              </SelectTrigger>
-              <SelectContent>
-                {hasDirectEndpoint && <SelectItem value={DIRECT_VALUE}>{c.delegationDirect}</SelectItem>}
-                <SelectItem value={INHERIT_VALUE}>{c.delegationInherit}</SelectItem>
-                <SelectItem value={MODEL_ONLY_VALUE}>{c.delegationModelOnly}</SelectItem>
-                {displayProviders.map(p => (
-                  <SelectItem key={p.slug} value={providerItem(p.slug)}>
-                    {p.name}
-                  </SelectItem>
-                ))}
-                <SelectItem value={CUSTOM_PROVIDER_VALUE}>{c.delegationCustomProvider}</SelectItem>
-              </SelectContent>
-            </Select>
-            {manualProvider && (
-              <Input
-                aria-label={c.delegationCustomProviderLabel}
-                onChange={event => setDraftProvider(event.target.value)}
-                placeholder="custom:provider"
-                value={draftProvider}
-              />
-            )}
-          </div>
-        }
-        description={inherit || useParentModel ? modelDescription : undefined}
-        title={c.delegationProviderSelectLabel}
+      <ProviderRow
+        description={showsModel ? undefined : modelDescription}
+        draft={draft}
+        providers={displayProviders(providers, draft.provider)}
       />
-      {!inherit && !useParentModel && (
-        <ListRow
-          action={
-            <ModelSelect
-              aria-label={c.delegationModelSelectLabel}
-              className="w-full min-w-0 max-w-full @2xl:w-72 [&_[data-slot=select-value]]:truncate"
-              models={direct || modelOnly || manualProvider ? [] : (selectedProvider?.models ?? [])}
-              onValueChange={setDraftModel}
-              provider={direct || modelOnly || manualProvider ? undefined : selectedProvider}
-              providerSlug={modelOnly || direct || manualProvider ? '' : draftProvider}
-              value={draftModel}
-            />
-          }
-          description={modelDescription}
-          title={c.delegationModelSelectLabel}
-        />
-      )}
+      {showsModel && <ModelRow description={modelDescription} draft={draft} providers={providers} />}
       <div className="grid justify-items-end gap-3 pb-3 text-right">
-        {!inherit && !modelOnly && (
-          <label className="flex items-center gap-2 text-xs text-muted-foreground">
-            <Checkbox checked={useParentModel} onCheckedChange={checked => setUseParentModel(checked === true)} />
-            {c.delegationParentModel}
-          </label>
-        )}
-        {useParentModel && <p className="text-xs text-muted-foreground">{c.delegationParentModelWarning}</p>}
-        {hasDirectEndpoint && (
-          <p className="text-xs text-muted-foreground">{direct ? c.delegationDirectActive : c.delegationDirectClear}</p>
-        )}
-        {modelOptions.isError && (
-          <div className="flex flex-wrap items-center gap-2" role="status">
-            <p className="text-xs text-muted-foreground">{c.delegationCatalogFailed}</p>
-            <Button
-              disabled={modelOptions.isFetching}
-              onClick={() => void modelOptions.refetch()}
-              size="xs"
-              variant="secondary"
-            >
-              {t.common.retry}
-            </Button>
-          </div>
-        )}
-        {pending && (
-          <div className="flex flex-wrap items-center justify-end gap-2">
-            <span className="text-xs text-muted-foreground">{c.delegationDraftHint}</span>
-            <Button onClick={reset} size="sm" variant="text">
-              {t.common.cancel}
-            </Button>
-            <Button
-              disabled={!changed || !validProvider || !validModel}
-              onClick={() => onChange({ model: nextModel, provider: nextProvider, resetDirectEndpoint })}
-              size="sm"
-            >
-              {t.common.apply}
-            </Button>
-          </div>
-        )}
+        <RouteNotes draft={draft} />
+        {query.isError && <CatalogRetry fetching={query.isFetching} onRetry={() => void query.refetch()} />}
+        {draft.pending && <ApplyBar draft={draft} onApply={() => onChange(draft.value)} />}
       </div>
+    </div>
+  )
+}
+
+function ProviderRow({
+  draft,
+  providers,
+  description
+}: {
+  draft: DelegationRouteDraft
+  providers: readonly ModelOptionProvider[]
+  description?: ReactNode
+}) {
+  const { t } = useI18n()
+  const s = t.settings.model.subagents
+
+  return (
+    <ListRow
+      action={
+        <div className={cn('grid gap-2', ROW_CONTROL)}>
+          <Select onValueChange={draft.chooseMode} value={draft.mode}>
+            <SelectTrigger
+              aria-label={s.providerLabel}
+              className={cn(CONTROL_TEXT, '[&_[data-slot=select-value]]:truncate')}
+            >
+              <SelectValue placeholder={t.settings.model.provider} />
+            </SelectTrigger>
+            <SelectContent>
+              {draft.hasDirectEndpoint && <SelectItem value={DIRECT_VALUE}>{s.direct}</SelectItem>}
+              <SelectItem value={INHERIT_VALUE}>{s.inherit}</SelectItem>
+              <SelectItem value={MODEL_ONLY_VALUE}>{s.modelOnly}</SelectItem>
+              {providers.map(p => (
+                <SelectItem key={p.slug} value={providerItem(p.slug)}>
+                  {p.name}
+                </SelectItem>
+              ))}
+              <SelectItem value={CUSTOM_PROVIDER_VALUE}>{s.customProvider}</SelectItem>
+            </SelectContent>
+          </Select>
+          {draft.mode === CUSTOM_PROVIDER_VALUE && (
+            <Input
+              aria-label={s.customProviderLabel}
+              onChange={event => draft.setProvider(event.target.value)}
+              placeholder="custom:provider"
+              value={draft.provider}
+            />
+          )}
+        </div>
+      }
+      description={description}
+      title={s.providerLabel}
+    />
+  )
+}
+
+function ModelRow({
+  draft,
+  providers,
+  description
+}: {
+  draft: DelegationRouteDraft
+  providers: readonly ModelOptionProvider[]
+  description?: ReactNode
+}) {
+  const { t } = useI18n()
+  const s = t.settings.model.subagents
+  // Direct, model-only and hand-typed providers have no catalog list: free text only.
+  const listed = draft.mode.startsWith(providerItem(''))
+  const selected = listed ? findCatalogProvider(providers, draft.provider) : undefined
+
+  return (
+    <ListRow
+      action={
+        <ModelSelect
+          aria-label={s.modelLabel}
+          className={cn(ROW_CONTROL, '[&_[data-slot=select-value]]:truncate')}
+          models={selected?.models ?? []}
+          onValueChange={draft.setModel}
+          provider={selected}
+          providerSlug={listed ? draft.provider : ''}
+          value={draft.model}
+        />
+      }
+      description={description}
+      title={s.modelLabel}
+    />
+  )
+}
+
+function RouteNotes({ draft }: { draft: DelegationRouteDraft }) {
+  const { t } = useI18n()
+  const s = t.settings.model.subagents
+  const allowsParentModel = draft.mode !== INHERIT_VALUE && draft.mode !== MODEL_ONLY_VALUE
+  const note = 'text-xs text-muted-foreground'
+
+  return (
+    <>
+      {allowsParentModel && (
+        <label className={cn('flex items-center gap-2', note)}>
+          <Checkbox
+            checked={draft.useParentModel}
+            onCheckedChange={checked => draft.setUseParentModel(checked === true)}
+          />
+          {s.parentModel}
+        </label>
+      )}
+      {draft.useParentModel && <p className={note}>{s.parentModelWarning}</p>}
+      {draft.hasDirectEndpoint && (
+        <p className={note}>{draft.mode === DIRECT_VALUE ? s.directActive : s.directClear}</p>
+      )}
+    </>
+  )
+}
+
+function CatalogRetry({ fetching, onRetry }: { fetching: boolean; onRetry: () => void }) {
+  const { t } = useI18n()
+
+  return (
+    <div className="flex flex-wrap items-center gap-2" role="status">
+      <p className="text-xs text-muted-foreground">{t.settings.model.subagents.catalogFailed}</p>
+      <Button disabled={fetching} onClick={onRetry} size="xs" variant="secondary">
+        {t.common.retry}
+      </Button>
+    </div>
+  )
+}
+
+function ApplyBar({ draft, onApply }: { draft: DelegationRouteDraft; onApply: () => void }) {
+  const { t } = useI18n()
+
+  return (
+    <div className="flex flex-wrap items-center justify-end gap-2">
+      <span className="text-xs text-muted-foreground">{t.settings.model.subagents.draftHint}</span>
+      <Button onClick={draft.reset} size="sm" variant="text">
+        {t.common.cancel}
+      </Button>
+      <Button disabled={!draft.canApply} onClick={onApply} size="sm">
+        {t.common.apply}
+      </Button>
     </div>
   )
 }

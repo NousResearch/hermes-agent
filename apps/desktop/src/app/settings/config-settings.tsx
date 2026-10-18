@@ -38,6 +38,7 @@ import { PanelEmpty } from '../overlays/panel'
 
 import { ConfigField } from './config-field'
 import { configSubpageForField } from './config-subpages'
+import { DELEGATION_ROUTE_COMPANION_KEY, DelegationRouteRow } from './delegation-route-row'
 import {
   clearsEnabledToolsets,
   diffConfig,
@@ -442,12 +443,9 @@ function ConfigSettingsInner({
     return <SettingsSkeleton sections={[{ rows: 6 }]} />
   }
 
-  const visibleFields = activeSectionId === 'voice' ? fields.filter(([key]) => voiceFieldVisible(key, config)) : fields
-
-  const filteredVisibleFields =
-    activeSectionId === 'model' && (subpage === undefined || subpage === 'delegation')
-      ? visibleFields.filter(([key]) => key !== 'delegation.provider')
-      : visibleFields
+  const visibleFields = (
+    activeSectionId === 'voice' ? fields.filter(([key]) => voiceFieldVisible(key, config)) : fields
+  ).filter(([key]) => key !== DELEGATION_ROUTE_COMPANION_KEY)
 
   const showEmptyState =
     visibleFields.length === 0 &&
@@ -506,47 +504,36 @@ function ConfigSettingsInner({
       ) : null}
       {showEmptyState ? (
         <EmptyState description={c.emptyDesc} title={c.emptyTitle} />
-      ) : filteredVisibleFields.length === 0 ? null : (
+      ) : visibleFields.length === 0 ? null : (
         <div className="grid gap-1">
-          {filteredVisibleFields.map(([key, field]) => (
+          {visibleFields.map(([key, field]) => (
             <div className="scroll-mt-6 rounded-lg" id={`setting-field-${key}`} key={key}>
-              <ConfigField
-                delegationBaseUrl={
-                  key === 'delegation.model' ? String(getNested(config, 'delegation.base_url') ?? '') : undefined
-                }
-                delegationProvider={
-                  key === 'delegation.model' ? String(getNested(config, 'delegation.provider') ?? '') : undefined
-                }
-                descriptionExtra={
-                  key === 'memory.provider' && isExternalMemoryProvider(getNested(config, key)) ? (
-                    <MemoryConnect profile={scopeProfile} provider={String(getNested(config, key))} />
-                  ) : undefined
-                }
-                enumOptions={
-                  key === 'tts.elevenlabs.voice_id'
-                    ? enumOptionsFor(key, getNested(config, key), config, elevenLabsVoiceOptions ?? undefined)
-                    : enumOptionsFor(key, getNested(config, key), config)
-                }
-                onChange={value => updateConfig(setNested(config, key, value))}
-                onDelegationChange={({ model: nextModel, provider: nextProvider, resetDirectEndpoint }) => {
-                  let next = setNested(
-                    setNested(config, 'delegation.model', nextModel),
-                    'delegation.provider',
-                    nextProvider
-                  )
-
-                  if (resetDirectEndpoint) {
-                    next = setNested(setNested(next, 'delegation.base_url', ''), 'delegation.api_key', '')
+              {key === 'delegation.model' ? (
+                <DelegationRouteRow
+                  config={config}
+                  onConfigChange={updateConfig}
+                  schema={field}
+                  scope={writeScope ?? scopeProfile}
+                />
+              ) : (
+                <ConfigField
+                  descriptionExtra={
+                    key === 'memory.provider' && isExternalMemoryProvider(getNested(config, key)) ? (
+                      <MemoryConnect profile={scopeProfile} provider={String(getNested(config, key))} />
+                    ) : undefined
                   }
-
-                  updateConfig(next)
-                }}
-                optionLabels={key === 'tts.elevenlabs.voice_id' ? elevenLabsVoiceLabels : undefined}
-                schema={field}
-                schemaKey={key}
-                scope={writeScope ?? scopeProfile}
-                value={getNested(config, key)}
-              />
+                  enumOptions={
+                    key === 'tts.elevenlabs.voice_id'
+                      ? enumOptionsFor(key, getNested(config, key), config, elevenLabsVoiceOptions ?? undefined)
+                      : enumOptionsFor(key, getNested(config, key), config)
+                  }
+                  onChange={value => updateConfig(setNested(config, key, value))}
+                  optionLabels={key === 'tts.elevenlabs.voice_id' ? elevenLabsVoiceLabels : undefined}
+                  schema={field}
+                  schemaKey={key}
+                  value={getNested(config, key)}
+                />
+              )}
               {key === 'memory.provider' && isExternalMemoryProvider(getNested(config, key)) ? (
                 <ProviderConfigPanel
                   key={String(getNested(config, key))}

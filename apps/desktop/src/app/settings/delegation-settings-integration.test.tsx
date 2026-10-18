@@ -30,6 +30,7 @@ vi.mock('@/store/settings-scope', () => ({
 vi.mock('./profile-scope', () => ({ SettingsProfileScope: () => null }))
 vi.mock('../hooks/use-on-profile-switch', () => ({ useOnProfileSwitch: () => {} }))
 vi.mock('@/store/projects', () => ({
+  $worktreeRefreshToken: atom(0),
   repoDiscoveryPolicyFromConfig: () => ({ enabled: true, roots: [], exclude_paths: [] }),
   repoDiscoveryPolicySignature: (policy: unknown) => JSON.stringify(policy),
   scanAndRecordRepos: vi.fn().mockResolvedValue(undefined)
@@ -178,8 +179,8 @@ describe('real settings route and autosave integration', () => {
       const route = (saves[0].body as { config: HermesConfigRecord }).config.delegation as Record<string, unknown>
       expect(route.base_url).toBe('')
       expect(route.api_key).toBe('')
+      expect(route.api_mode).toBe('')
       expect(route).not.toHaveProperty('request_overrides')
-      expect(route).not.toHaveProperty('api_mode')
       expect(route.model ?? 'old-model').toBe(
         choice === 'Inherit from main agent' ? '' : choice === 'Anthropic' ? 'claude-sonnet-4-6' : 'old-model'
       )

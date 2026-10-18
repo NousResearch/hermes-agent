@@ -1,7 +1,6 @@
 import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 
 import { enAppTour } from './en_app_tour'
-import { enAuxTasks } from './en_aux_tasks'
 import { enBilling } from './en_billing'
 import { enBoot } from './en_boot'
 import { enCatalogInstall } from './en_catalog_install'
@@ -12,6 +11,7 @@ import { enGatewayGroupOpen, enSkillDeepLink } from './en_deep_links'
 import { enFirstRun } from './en_first_run'
 import { enLocalModels } from './en_local_models'
 import { enModelMenu } from './en_model_menu'
+import { enModelSettings } from './en_model_settings'
 import { enNotices } from './en_notices'
 import { enOnboarding } from './en_onboarding'
 import { enProjects } from './en_projects'
@@ -1231,23 +1231,7 @@ export const en: Translations = {
       voiceShortcutHintTitle: 'Voice recording shortcut',
       voiceShortcutHintDesc:
         'Set the voice recording shortcut in Settings → Keyboard Shortcuts ("Start / stop voice conversation"). The voice.record_key config value only applies to the CLI and TUI.',
-      showOptions: 'Show options',
-      delegationInherit: 'Inherit from main agent',
-      delegationModelOnly: 'Custom model (use parent credentials)',
-      delegationProviderSelectLabel: 'Subagent Provider',
-      delegationModelSelectLabel: 'Subagent Model',
-      delegationDirect: 'Direct endpoint override',
-      delegationCustomProvider: 'Custom provider...',
-      delegationCustomProviderLabel: 'Custom subagent provider',
-      delegationParentModel: 'Use parent model',
-      delegationParentModelWarning:
-        'The chosen provider must support the parent model. A provider-only route can fail if the model is incompatible.',
-      delegationDirectActive:
-        'A direct endpoint is active and takes precedence over the saved provider. Its endpoint and credentials are kept while this mode is selected.',
-      delegationDirectClear:
-        'Applying this route clears the direct endpoint and its stored key. Other request settings are kept.',
-      delegationCatalogFailed: 'Model catalog unavailable. Enter a provider and model manually, or retry.',
-      delegationDraftHint: 'Changes stay local until applied.'
+      showOptions: 'Show options'
     },
     hudModifier: {
       title: 'Tap to summon HUD',
@@ -1604,64 +1588,7 @@ export const en: Translations = {
       deepLinkErrorUrl: 'Only http:// and https:// server URLs are allowed.',
       deepLinkErrorTooLarge: 'The config payload exceeds the 32KB limit.'
     },
-    model: {
-      setupProviderFallback: 'provider',
-      setUpProvider: name => `Set up ${name}`,
-      staleAuxBefore: (count, names) => `${count} auxiliary task${count === 1 ? '' : 's'} (${names}) still run on `,
-      staleAuxAfter: ', not your main model.',
-      staleAuxOtherProviders: 'other providers',
-      moaEnabled: 'Enabled',
-      moaSetDefault: 'Set default',
-      moaNewPresetPlaceholder: 'new preset',
-      moaAddPreset: 'Add preset',
-      customModel: 'Custom model…',
-      customModelPlaceholder: 'Model id',
-      chooseFromList: 'Choose from list',
-      moaDefault: 'Default:',
-      moaReferenceToggle: (enabled, index) => `${enabled ? 'Disable' : 'Enable'} reference ${index}`,
-      moaReferenceTitle: index => `Reference ${index}`,
-      moaAddReference: 'Add reference model',
-      loading: 'Loading model configuration...',
-      appliesDesc: 'Applies to new sessions. Use the model picker in the composer to hot-swap the active chat.',
-      provider: 'Provider',
-      model: 'Model',
-      applying: 'Applying...',
-      mainAppliedTitle: 'Main model updated',
-      mainAppliedMessage: model => `New sessions will use ${model}.`,
-      defaultsLabel: 'Defaults',
-      reasoning: 'Reasoning',
-      reasoningOff: 'Off',
-      speed: 'Speed',
-      speedStandard: 'Standard',
-      defaultsFailed: 'Failed to save model defaults',
-      loadFailed: 'Could not load models',
-      restartRequired: 'This backend is running old code after an update. Restart it to load the new code.',
-      restartBackend: 'Restart backend',
-      restartingBackend: 'Restarting backend...',
-      restartFailed: 'Could not restart the backend',
-      auxiliaryTitle: 'Auxiliary models',
-      resetAllToMain: 'Reset all to main',
-      staleAuxDismiss: "Don't show again",
-      auxiliaryDesc: 'Helper tasks run on the main model by default. Assign a dedicated model to any task to override.',
-      setToMain: 'Set to main',
-      change: 'Change',
-      autoUseMain: 'auto · use main model',
-      inheritMainEffort: 'inherit · main model effort',
-      inheritsFrom: task => `inherits ${task}`,
-      followTask: task => `Follow ${task}`,
-      providerDefault: '(provider default)',
-      fallbackAdd: 'Add fallback',
-      fallbackEmpty: 'No fallback models — the default model is used unless it fails.',
-      notInCatalog: "isn't in this provider's model list — calls may fall back to a backup.",
-      moaTitle: 'Mixture of Agents',
-      moaPreset: 'Preset',
-      moaDescription:
-        'Configure named presets that appear as models under the Mixture of Agents provider. The aggregator is the acting model — it runs every step of the tool loop, and almost all of the run’s cost is billed to its provider. References only advise once per user turn by default.',
-      moaAggregator: 'Aggregator',
-      moaAggregatorBilled: 'acting model · billed for the run',
-      moaReferenceHint: 'advises once per turn by default',
-      tasks: enAuxTasks
-    },
+    model: enModelSettings,
     localModels: enLocalModels,
     billing: {
       perMonth: amount => `${amount}/mo`,
@@ -3543,7 +3470,8 @@ export const en: Translations = {
     restoreImageDraft: 'Restore image draft',
     queueCancelFailed: "Couldn't remove the queued turn",
     queueLostDiscard: 'Discard',
-    queueLostDiscardTip: 'The gateway restarted mid-turn and cannot finish this one. Discard it so the queued turns behind it run.',
+    queueLostDiscardTip:
+      'The gateway restarted mid-turn and cannot finish this one. Discard it so the queued turns behind it run.',
     queueResume: 'Resume',
     queueResumeTip: 'Paused by Stop — resume sending the queued turns',
     queueStuckTitle: 'Queued message not sent',
@@ -4701,7 +4629,14 @@ export const en: Translations = {
           title: 'Hermes got stuck in a loop',
           body: 'The reply kept repeating the same steps, so Hermes stopped it. Retry, or start a new chat if it happens again.'
         },
-        SESSION_OWNER_BUSY: { title: 'Hermes is busy in this chat', body: 'Another turn is running here and your message could not join its queue. Nothing was sent. Retry once that turn ends.' }, SESSION_OWNER_UNCONFIRMED: { title: 'Your message may already be queued', body: 'The gateway did not confirm your message in time. If it was queued, it runs once the earlier turn finishes or is resolved. Check the chat before sending it again.' },
+        SESSION_OWNER_BUSY: {
+          title: 'Hermes is busy in this chat',
+          body: 'Another turn is running here and your message could not join its queue. Nothing was sent. Retry once that turn ends.'
+        },
+        SESSION_OWNER_UNCONFIRMED: {
+          title: 'Your message may already be queued',
+          body: 'The gateway did not confirm your message in time. If it was queued, it runs once the earlier turn finishes or is resolved. Check the chat before sending it again.'
+        },
         SESSION_NOT_OWNED: {
           title: 'This chat is open somewhere else',
           body: 'This chat is currently open in another Hermes window or terminal. Close it there and send your message again, or start a new chat here.'

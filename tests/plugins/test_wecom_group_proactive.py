@@ -1,17 +1,31 @@
 """Known group classification must not prevent native delivery (#140883)."""
 
+import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
+import pytest_asyncio
 
 from gateway.config import PlatformConfig
 from plugins.platforms.wecom.adapter import APP_CMD_SEND, WeComAdapter
 
 
+@pytest_asyncio.fixture
+async def adapter():
+    instance = WeComAdapter(PlatformConfig(enabled=True))
+    try:
+        yield instance
+    finally:
+        workers = list(instance._chat_workers.values()) + list(instance._control_workers.values())
+        for worker in workers:
+            worker.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
+        assert all(worker.done() for worker in workers)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("context", ["unknown", "known", "stale", "fresh", "explicit"])
-async def test_send_uses_native_route_without_rejecting_known_groups(context):
-    adapter = WeComAdapter(PlatformConfig(enabled=True))
+async def test_send_uses_native_route_without_rejecting_known_groups(context, adapter):
     chat_id = "fixture-group"
     if context != "unknown":
         adapter._group_chat_ids.add(chat_id)
@@ -48,8 +62,7 @@ async def test_send_uses_native_route_without_rejecting_known_groups(context):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ["rejected", "exception", "timeout"])
-async def test_known_group_reports_native_failure_without_retry(failure):
-    adapter = WeComAdapter(PlatformConfig(enabled=True))
+async def test_known_group_reports_native_failure_without_retry(failure, adapter):
     adapter._group_chat_ids.add("fixture-group")
     errors = {
         "rejected": "WeCom errcode 600039: device type not support",

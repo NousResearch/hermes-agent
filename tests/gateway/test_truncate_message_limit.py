@@ -82,3 +82,10 @@ def test_a_slack_link_label_is_never_cut_across_chunks():
     bodies = [chunk.rsplit(" (", 1)[0] for chunk in chunks]
     assert len(bodies) > 1
     assert all(body.count("<") == body.count(">") for body in bodies)
+
+
+def test_a_split_moved_off_an_open_code_span_keeps_a_word_with_an_ampersand():
+    """A hard cut inside an inline code span moves back to the line break before it, a natural
+    break: ``R&D`` just before that break must stay whole."""
+    chunks = truncate("x" * 15 + "R&D\n`" + "y" * 80 + "`", 60)
+    assert chunks[0].rsplit(" (", 1)[0] == "x" * 15 + "R&D"

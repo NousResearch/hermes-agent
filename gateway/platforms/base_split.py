@@ -40,7 +40,7 @@ def _unbroken_split(candidate: str, hard_cut: bool, floor: int) -> int:
         if last_bt > 0:
             safe = max(candidate.rfind(" ", 0, last_bt), candidate.rfind("\n", 0, last_bt))
             if safe > floor:
-                split_at = safe
+                split_at, hard_cut = safe, False  # now a natural break
     amp = candidate.rfind("&", 0, split_at)
     entity_head = candidate[amp + 1:split_at].lstrip("#")
     # An empty head is a cut right after the ``&``: the next chunk would open on ``amp;``.

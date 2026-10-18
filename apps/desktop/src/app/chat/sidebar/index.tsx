@@ -493,7 +493,7 @@ export function ChatSidebar({
   const sessionsLoadError = useStore($sessionsLoadError)
   const sessionProfilesTruncated = useStore($sessionProfilesTruncated)
   const unreadCount = useStore($unreadFinishedSessionIds).length
-  // What the sidebar badge reads out (see SidebarUnreadBadge).
+  // The header's aggregate badge; the per-chat counts ride the rows.
   const unreadBadgeCount = useStore($unreadSessionCount)
   const profiles = useStore($profiles)
   const profileScope = useStore($profileScope)

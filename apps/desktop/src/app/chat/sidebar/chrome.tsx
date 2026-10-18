@@ -30,13 +30,12 @@ export function SidebarSectionMeta({ children }: { children: React.ReactNode }) 
   return <span className="shrink-0 text-[0.6875rem] font-medium text-(--ui-text-quaternary)">{children}</span>
 }
 
-/** How many listed chats have new activity since they were last read — the
- *  sidebar's readout of the same number the titlebar badge carries
- *  (`$unreadSessionCount`; cron runs are excluded there by design, so this
- *  can't become a cron-run counter). Counts are a readout, not an affordance:
- *  it stays visible where the section's own buttons only appear on hover.
- *  `--ui-success` is the unread dot's ink, so the number and the dots it
- *  summarizes agree. */
+/** The sidebar's aggregate readout: how many listed chats have new activity
+ *  since they were last read (`$unreadSessionCount`, the same number the
+ *  titlebar badge carries; cron runs are excluded there by design). Per-chat
+ *  counts live on the rows themselves — this is the total. Counts are a
+ *  readout, not an affordance: it stays visible where the section's own
+ *  buttons only appear on hover. */
 export function SidebarUnreadBadge({ count }: { count: number }) {
   const { t } = useI18n()
   const label = t.titlebar.unreadSessions(count)
@@ -53,6 +52,7 @@ export function SidebarUnreadBadge({ count }: { count: number }) {
     </Tip>
   )
 }
+
 
 // Row geometry lives in `row-geometry.ts` — see that file for why each class
 // belongs to the box it belongs to. Re-exported here because this module is

@@ -35,6 +35,7 @@ from gateway.platforms.event import MessageEvent, MessageType
 from utils import env_float
 
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
+from gateway.platforms.send_targets import StandaloneSendPolicy, parse_nonempty
 from plugins.platforms.wecom.send_queue import ChatSendQueueMixin
 from plugins.platforms.wecom.media import WeComMediaMixin, APP_CMD_SEND
 from plugins.platforms.wecom.streaming import (
@@ -167,10 +168,8 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
         try:
             # Tighter keepalive so idle CLOSE_WAIT drains promptly.
             # See #18451.
-            from gateway.platforms._http_client_limits import platform_httpx_limits
-            from gateway.platforms.base import _ssrf_redirect_guard
-            from tools.url_safety import create_ssrf_safe_async_client
-            self._http_client = create_ssrf_safe_async_client(timeout=30.0, follow_redirects=True, event_hooks={"response": [_ssrf_redirect_guard]}, limits=platform_httpx_limits())
+            from gateway.platforms.helpers import platform_http_client
+            self._http_client = platform_http_client()
             await self._open_connection()
             self._mark_connected()
             self._listen_task, self._heartbeat_task = asyncio.create_task(self._listen_loop()), asyncio.create_task(self._heartbeat_loop())
@@ -225,13 +224,12 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
 
     async def _open_connection(self) -> None:
         await self._cleanup_ws()
-        # certifi's CA bundle so aiohttp trusts the same roots as urllib/requests (macOS stale OpenSSL path).
+        # certifi's CA bundle so aiohttp trusts the same roots as urllib/requests (macOS stale OpenSSL path),
+        # re-derived when an install-environment rotation deleted the imported one (#137255).
         import ssl as _ssl
-        try:
-            import certifi
-            cafile = certifi.where()
-        except ImportError:
-            cafile = None
+
+        from agent.ssl_verify import certifi_bundle_path
+        cafile = certifi_bundle_path()
         _ssl_ctx = _ssl.create_default_context(cafile=cafile)
         self._session = aiohttp.ClientSession(trust_env=gateway_trust_env(), connector=aiohttp.TCPConnector(ssl=_ssl_ctx))
         self._ws = await self._session.ws_connect(self._ws_url, heartbeat=HEARTBEAT_INTERVAL_SECONDS * 2, timeout=CONNECT_TIMEOUT_SECONDS)
@@ -834,19 +832,55 @@ def _build_callback_adapter(config):
     return WecomCallbackAdapter(config)
 
 
+# System-prompt platform hint (PlatformEntry.platform_hint); cached-prompt bytes, keep stable.
+_WECOM_PLATFORM_HINT = (
+    "You are on WeCom (\u4f01\u4e1a\u5fae\u4fe1). Markdown is supported. "
+    "You can send files natively: write MEDIA:/absolute/path/to/file in your response. "
+    "Images (.jpg, .png, .webp) send as photos (\u226410 MB), other files as documents (\u226420 MB), videos "
+    "(.mp4) play inline. Voice messages must be AMR \u2014 other audio formats send as file attachments. Image "
+    "URLs via ![alt](url) are downloaded and sent as photos. Never claim you lack file-sending."
+)
+
+
 def register(ctx) -> None:
     common = dict(install_hint="Run `hermes setup` to install WeCom support.", emoji="💼", allow_update_command=True)
+    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
     ctx.register_platform(
+        target_ref_syntax_fn=parse_nonempty,
+        standalone_send=StandaloneSendPolicy(text_direct=True),
         name="wecom", label="WeCom (Enterprise WeChat)", adapter_factory=WeComAdapter, check_fn=check_wecom_requirements,
+        dashboard_label="WeCom (group bot)",
+        dashboard_description="Send-only WeCom group bot via webhook.",
+        docs_url="https://developer.work.weixin.qq.com/document/path/91770",
+        dashboard_env_vars=("WECOM_BOT_ID", "WECOM_SECRET"),
+        dashboard_required_env=("WECOM_BOT_ID",),
         is_connected=_is_connected, validate_config=_is_connected, required_env=["WECOM_BOT_ID", "WECOM_SECRET"],
-        setup_fn=interactive_setup, allowed_users_env="WECOM_ALLOWED_USERS", allow_all_env="WECOM_ALLOW_ALL_USERS",
+        setup_fn=interactive_setup,
         cron_deliver_env_var="WECOM_HOME_CHANNEL", standalone_sender_fn=_standalone_send, max_message_length=4000, **common,
+        platform_hint=_WECOM_PLATFORM_HINT,
+        display_tier="low",
+        # Non-editable, but its native "stream" msgtype gives a typing animation + cumulative updates.
+        display_overrides={"streaming": True},
+        env_overrides=gateway_env.ENV_OVERRIDES,
+        env_enable_credentials=gateway_env.ENV_ENABLE_CREDENTIALS, **gateway_env.AUTHZ,
     )
     from plugins.platforms.wecom.callback_adapter import check_wecom_callback_requirements, ensure_wecom_callback_requirements
     ctx.register_platform(
         name="wecom_callback", label="WeCom Callback (self-built apps)", adapter_factory=_build_callback_adapter,
+        dashboard_label="WeCom (app)",
+        dashboard_description="Two-way WeCom integration via callback app.",
+        docs_url="https://developer.work.weixin.qq.com/document/path/90930",
+        dashboard_env_vars=(
+            "WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_CORP_SECRET", "WECOM_CALLBACK_AGENT_ID",
+            "WECOM_CALLBACK_TOKEN", "WECOM_CALLBACK_ENCODING_AES_KEY",
+        ),
+        dashboard_required_env=(
+            "WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_CORP_SECRET", "WECOM_CALLBACK_AGENT_ID",
+        ),
         check_fn=check_wecom_callback_requirements, ensure_deps_fn=ensure_wecom_callback_requirements,
         is_connected=_callback_is_connected, validate_config=_callback_is_connected,
-        required_env=["WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_CORP_SECRET"],
-        allowed_users_env="WECOM_CALLBACK_ALLOWED_USERS", allow_all_env="WECOM_CALLBACK_ALLOW_ALL_USERS", **common,
+        required_env=["WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_CORP_SECRET"], **common,
+        display_tier="low",
+        env_overrides=gateway_env.CALLBACK_ENV_OVERRIDES,
+        env_enable_credentials=gateway_env.CALLBACK_ENV_ENABLE_CREDENTIALS, **gateway_env.CALLBACK_AUTHZ,
     )

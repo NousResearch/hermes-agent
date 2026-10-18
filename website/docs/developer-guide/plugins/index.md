@@ -141,6 +141,40 @@ the package's entry, including its trust. Other harnesses ignore this extension.
 `trust` can sit beside `app`, `requires` and `liveness` in the same server
 entry (see [Application declarations](./application-declarations.md)).
 
+A long-running server can also declare a Hermes-specific tool-call `timeout`
+(in seconds) in `plugin.json`, without changing other servers' defaults:
+
+```json
+{
+  "extensions": {
+    "com.nousresearch.hermes": {
+      "servers": { "analysis": { "timeout": 1000 } }
+    }
+  }
+}
+```
+
+The value must be a positive finite number within the platform's thread-wait
+limit. It maps to the native per-server `timeout`; omission preserves the
+existing `timeouts.mcp.tool_call` fallback. A same-name native `mcp_servers`
+entry still replaces the entire package entry, including its timeout. This
+extends the wait budget, not the cancellation or permission policy. Configure
+any server-internal analysis deadline separately and leave time for its result
+to reach the client. Other harnesses ignore this extension.
+
+A server entry key this Hermes does not know (one a newer release added) is
+ignored with a warning, which `hermes plugins validate` lists, and the package
+still installs. Releases from before this rule reject the package instead, and a
+release that ignores a key may behave less safely than intended, so declare a new
+key together with a catalog `requires_hermes` floor.
+
+An explicit per-server MCP call budget also reaches Hermes' outer tool executor. A call
+whose budget exceeds the shared concurrent-batch deadline becomes a sequential
+barrier, whether called directly or through tool search. It gets its own budget
+without extending unrelated tools in the same model response. Existing shorter
+MCP calls retain their normal parallel-admission policy; interruption and
+approval handling are unchanged.
+
 The [rendered specification](https://agent-plugins.org/specification) currently
 labels v1.0.0 a Working Draft, while the
 [versioned specification repository](https://github.com/agentplugins/agent-plugins-spec/blob/main/spec/1.0.0.md)
@@ -527,14 +561,16 @@ venv and the checkout, never the home directory.
 
 ### Dependency security policy
 
-Hermes quarantines **its own** dependencies: the checkout's `[tool.uv] exclude-newer = "14 days"`
-keeps a freshly published release of any package Hermes itself depends on out of `hermes update`
-and the built-in lazy installs for two weeks, so a hijacked upload is caught upstream before it
-reaches users. **That quarantine does not apply to your plugin's dependencies.** When Hermes
-resolves your plugin into its environment, the cutoff stays on the packages Hermes itself locks
-and nowhere else, so a plugin can floor on a release published yesterday and install today — and the
-plugin's author, not Hermes, is responsible for what that pulls in. (A plugin that needs a newer
-version of a package Hermes itself depends on still waits out that package's window.)
+Hermes checks the age of **its own** dependencies when it locks them: the checkout's
+`[tool.uv] exclude-newer = "3 days"` keeps any release younger than three days out of `uv.lock`,
+so a hijacked upload has time to be caught upstream before it reaches users. Users install from
+that vetted lock; their machines never re-check dates. **The check does not apply to your
+plugin's dependencies.** When Hermes resolves your plugin into its environment, Hermes's exact
+pins stay put, other packages Hermes uses may move within the ranges Hermes declares, and
+everything else follows your requirements, so a plugin can floor on a release published
+yesterday and install today. The plugin's author, not Hermes, is responsible for what that pulls
+in. A plugin that requires a different version of a package Hermes pins exactly fails to install
+until Hermes's pin moves.
 
 Set your own policy and hold yourself to it. Strongly recommended:
 
@@ -543,8 +579,8 @@ Set your own policy and hold yourself to it. Strongly recommended:
 - **Floor on the oldest API-compatible version**, not the release of the week. A floor on a
   fresh wheel forces every installer onto it the day it appears; `>=old,!=broken,<next` keeps the
   wide range and skips the one bad release.
-- **Adopt a new-release quarantine of your own** — wait ~14 days before floors move to a new
-  release, and resolve with `uv --exclude-newer "14 days"` (or `UV_EXCLUDE_NEWER`) in your own CI so
+- **Adopt a release-age check of your own**: wait a few days before floors move to a new
+  release, and resolve with `uv --exclude-newer "3 days"` (or `UV_EXCLUDE_NEWER`) in your own CI so
   the lock you test is the one users get.
 - **Pin your lock, review your bumps.** Treat a dependency bump as a code change: read the
   upstream diff, then re-pin.
@@ -1001,6 +1037,40 @@ skill_view("my-workflow")              # → built-in version (unchanged)
 The old `shutil.copy2` pattern (copying a skill into `~/.hermes/skills/`) still works but creates name collision risk with built-in skills. Prefer `ctx.register_skill()` for new plugins.
 :::
 
+### Read the skill catalog
+
+A plugin that shows which skills the agent can see (a catalog view, "open this skill", drift checks
+against the installed copy) should call the same helpers the `skills_list` and `skill_view` tools use,
+not walk the skill directories itself. These names are public and covered by the compatibility
+contract:
+
+| Import | What it gives you |
+|---|---|
+| `tools.skills_tool.find_all_skills(*, skip_disabled=False)` | Loadable skills as `{"name", "description", "category"}` dicts: the cached, first-wins, platform/environment-gated walk `skills_list` uses. `name` is what `skill_view()` accepts. |
+| `tools.skills_tool.sort_skills(skills)` | The one listing order (category, then name). |
+| `tools.skills_tool.skill_search_dirs()` | `(roots, active_dir)`: `(tier, dir)` roots in precedence order (project, local, `create_dir`, external) and the live profile's skills dir. |
+| `tools.skills_tool.skill_lookup_path_error(name)` | An error string if `name` is absolute or contains `..`, else `None`. Check it before any lookup. |
+| `tools.skills_tool.locate_skill(name, local_category_name, roots)` | `(error_json, skill_dir, skill_md)` for one name over `roots`: tier precedence, same-tier collision refusal and the project-skill quarantine gate. `local_category_name` is an extra relative path to try (it is not a category filter), so pass `None` unless you need one. `skill_md` is set only when `error_json` is `None`. |
+| `tools.skills_sync.dir_hash(directory)` | The package hash the bundled-skill sync stores, so you can tell whether a user's copy still matches what was installed. |
+| `tools.skill_usage.read_skill_name(skill_md, fallback)` | The frontmatter `name:` of a `SKILL.md`, else `fallback`. |
+
+```python
+from tools.skills_tool import find_all_skills, locate_skill, skill_lookup_path_error, skill_search_dirs, sort_skills
+
+def list_skills():
+    return sort_skills(find_all_skills())
+
+def open_skill(name):
+    if err := skill_lookup_path_error(name):
+        return err
+    roots, _active = skill_search_dirs()
+    error, _skill_dir, skill_md = locate_skill(name, None, roots)
+    return error or skill_md.read_text(encoding="utf-8-sig", errors="replace")
+```
+
+Plugin-registered skills (`ctx.register_skill`) are not on disk under these roots; `find_all_skills()`
+returns the on-disk catalog only.
+
 ### Ship a language pack
 
 A plugin can add a UI language or override the wording of an existing one for every surface at once —
@@ -1282,6 +1352,8 @@ Each hook is documented in full on the **[Event Hooks reference](../../user-guid
 | [`on_session_end`](../../user-guide/features/hooks.md#on_session_end) | End of every `run_conversation` call + CLI exit | `session_id: str, completed: bool, interrupted: bool, model: str, platform: str` | ignored |
 | [`on_session_finalize`](../../user-guide/features/hooks.md#on_session_finalize) | CLI/gateway tears down an active session | `session_id: str \| None, platform: str` | ignored |
 | [`on_session_reset`](../../user-guide/features/hooks.md#on_session_reset) | Gateway swaps in a new session key (`/new`, `/reset`) | `session_id: str, platform: str` | ignored |
+| [`on_session_delete`](../../user-guide/features/hooks.md#on_session_delete) | A session delete or deliberate archive commits (every surface, sweeps, prune) | `session_id: str, reason: str, profile: str \| None`, optional `deleted_ids: list[str]`, `sessions_dir: str` | ignored |
+| [`post_compaction`](../../user-guide/features/hooks.md#post_compaction) | A compaction committed (any path: auto, `/compress`, gateway, Codex, micro, prune) | `session_id: str, old_session_id: str, kind: str, reason: str, before_tokens: int \| None, after_tokens: int \| None, messages_removed: int \| None` | ignored |
 | [`gateway_platform_event`](../../user-guide/features/hooks.md#gateway_platform_event) | An authorized platform-native event is normalized at the gateway boundary (Telegram reactions currently) | `platform: str, event_type: str, payload: dict` | ignored |
 | `kanban_task_claimed` | A kanban task is claimed (dispatcher process, before the worker spawns) | `task_id: str, board: str \| None, assignee: str \| None, run_id: int \| None, profile_name: str` | ignored |
 | `kanban_task_completed` | A kanban task completes (worker process) | `task_id, board, assignee, run_id, profile_name, summary: str \| None` | ignored |
@@ -1508,7 +1580,7 @@ After registration, users can type `/mystatus` in any session. The command appea
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `name` | `str` | Command name without the leading slash (e.g. `"lcm"`, `"mystatus"`) |
-| `handler` | `Callable[[str], str \| None]` | Called with the raw argument string. May also be `async`. |
+| `handler` | `Callable[[str], str \| None]` | Called with the raw argument string, plus any calling-session keywords it declares (see below). May also be `async`. |
 | `description` | `str` | Shown in `/help`, autocomplete, and Telegram bot menu |
 
 **Key differences from `register_cli_command()`:**
@@ -1517,20 +1589,45 @@ After registration, users can type `/mystatus` in any session. The command appea
 |---|---|---|
 | Invoked as | `/name` in a session | `hermes name` in a terminal |
 | Where it works | CLI sessions, Telegram, Discord, etc. | Terminal only |
-| Handler receives | Raw args string | argparse `Namespace` |
+| Handler receives | Raw args string (+ opt-in session context) | argparse `Namespace` |
 | Use case | Diagnostics, status, quick actions | Complex subcommand trees, setup wizards |
 
 **Conflict protection:** If a plugin tries to register a name that conflicts with a built-in command (`help`, `model`, `new`, etc.), the registration is silently rejected with a log warning. Built-in commands always take precedence.
 
-**Async handlers:** The gateway dispatch automatically detects and awaits async handlers, so you can use either sync or async functions:
+**Calling-session context:** a handler can learn which chat and session invoked it by declaring any of these keyword parameters (or `**kwargs` for all of them). Handlers that declare none keep the one-argument `handler(raw_args)` call, so existing plugins are unaffected:
+
+| Keyword | Value |
+|---|---|
+| `session_id` | The calling session's id (the one `on_session_reset` later reports as `old_session_id`). Empty when the chat has no session yet. |
+| `session_key` | The routing key of the calling chat. |
+| `platform` | Where the command came from: `telegram`, `discord`, …, `local` (CLI/Desktop sessions owned by the gateway), `cli`, `tui`, `desktop`. |
+| `source` | The adapter-derived `gateway.session.SessionSource` (`user_id`, `chat_id`, `chat_type`, `thread_id`, …) when the gateway dispatched the command, else `None`. |
+
+Every surface passes them: messaging platforms, the classic CLI, the TUI and Desktop. Sync handlers run in the gateway executor and async handlers are awaited, as before.
 
 ```python
-async def _handle_check(raw_args: str) -> str:
-    result = await some_async_operation()
-    return f"Check result: {result}"
+def _handle_whoami(raw_args: str, *, session_id: str = "", platform: str = "", source=None) -> str:
+    user = source.user_id if source is not None else "local user"
+    return f"{user} on {platform}, session {session_id or '(none yet)'}"
 
 def register(ctx):
-    ctx.register_command("check", handler=_handle_check, description="Run async check")
+    ctx.register_command("whoami", handler=_handle_whoami, description="Show the calling session")
+```
+
+`source` is transport identity, not an authorization grant: authorize from stable ids (`source.user_id`, `source.chat_id`), never from display names or the command text, and fail closed when a sensitive command gets `source=None`. Handler exceptions propagate; Hermes never retries the call with fewer arguments.
+
+**Where handlers run:** a slash command handler runs in the gateway process that owns the session, also when the user types the command in the classic `hermes chat` CLI. The handler is not running in the user's terminal or directory, so:
+
+- Return the text to show. `print()` writes to the gateway's stdout, and the user never sees it.
+- Take the session's working directory from `agent.runtime_cwd.resolve_agent_cwd()`, not `os.getcwd()`, which is the gateway's own directory. Resolve relative paths against it.
+- Read session identity with `gateway.session_context.get_session_env("HERMES_SESSION_PLATFORM")` and the other `HERMES_SESSION_*` names, not `os.environ`.
+
+```python
+from agent.runtime_cwd import resolve_agent_cwd
+
+def _handle_todo(raw_args: str) -> str:
+    todo = resolve_agent_cwd() / "TODO.md"  # the session's folder, not the gateway's
+    return todo.read_text() if todo.exists() else "No TODO.md here."
 ```
 
 ### Dispatch tools from slash commands

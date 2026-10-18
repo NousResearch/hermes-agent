@@ -64,8 +64,10 @@ class _HealthyAdapter(BasePlatformAdapter):
 
 def _runner(monkeypatch, tmp_path, platforms, create_adapter) -> GatewayRunner:
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    # No plugin registers any platform here, so a None adapter is the "plugin never registered" case.
-    monkeypatch.setattr("gateway.platform_registry.platform_registry.is_registered", lambda name: False)
+    # Only the bundled bluebubbles plugin counts as registered here, so a None adapter elsewhere is the
+    # "plugin never registered" case and a None bluebubbles adapter is "registered but failed".
+    monkeypatch.setattr("gateway.platform_registry.platform_registry.is_registered",
+                        lambda name: name == "bluebubbles")
     runner = GatewayRunner(GatewayConfig(platforms=platforms, sessions_dir=tmp_path / "sessions"))
     monkeypatch.setattr(runner, "_create_adapter", create_adapter)
 
@@ -152,8 +154,8 @@ async def test_missing_adapter_degrades_only_the_unserved_enabled_platform(monke
             Platform.TELEGRAM: PlatformConfig(enabled=True, token="***"),
             Platform.DISCORD: PlatformConfig(enabled=True, token="***"),
             Platform.SLACK: PlatformConfig(enabled=False, token="***"),
-            # A builtin whose probe fails on missing creds needs a config change: flagged once, never
-            # queued (else it re-warns forever at the backoff cap on fleet nodes, #5196).
+            # A registered plugin whose adapter creation fails on missing creds needs a config change:
+            # flagged once, never queued (else it re-warns forever at the backoff cap on fleet nodes, #5196).
             Platform.BLUEBUBBLES: PlatformConfig(enabled=True),
         },
         lambda platform, platform_config: _HealthyAdapter() if platform is Platform.TELEGRAM else None,

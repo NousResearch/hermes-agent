@@ -142,6 +142,27 @@ def test_target_worktree_owns_admission_and_fork_comparison(installation, monkey
     assert {str(p.relative_to(root)): p.read_bytes() for p in (root / ".git").rglob("*") if p.is_file()} == before
 
 
+def test_bare_git_off_path_reads_through_the_updaters_git(installation, monkeypatch, tmp_path):
+    """Desktop passes a bare ``git`` when it found none; a Windows install's only git is PM's
+    store copy, off PATH outside ``hermes update``. The check must read HEAD through that git."""
+    import shutil
+
+    from hermes_cli import update_pause_record
+    from hermes_cli.source_check import check_for_updates
+
+    root, _linked, home, _base, head, responses, _requests, _git = installation
+    responses["/repos/fixture/fork/commits/main"] = (200, head)
+    store_git = shutil.which("git")
+    empty = tmp_path / "no-git-on-path"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    monkeypatch.setattr(update_pause_record, "_git_executable", lambda: store_git)
+    status = check_for_updates(install_root=root, home=home, git="git", force=True)
+    assert status.get("error") is None, status
+    assert status["currentSha"] == head
+    assert status["behind"] == 0
+
+
 @pytest.mark.parametrize("tip_kind,compare,expected", [
     ("head", None, 0), ("base", None, 0),
     ("unknown", {"ahead_by": 61}, 61), ("unknown", {"ahead_by": 0}, 0),
@@ -545,3 +566,26 @@ def test_branch_tip_failure_names_the_cause(installation):
     status = check_for_updates(install_root=root, home=home, force=True)
     assert status["error"] == "fetch-failed"
     assert "HTTP 503" in status["message"]
+
+
+@pytest.mark.parametrize("on,release,rollback", [("head", "base", True), ("base", "head", False)])
+def test_stable_release_the_checkout_already_contains_is_a_rollback(installation, tmp_path, on, release, rollback):
+    """A release HEAD contains is a move back (#137714); an older checkout is a real update."""
+    from hermes_cli.source_check import check_for_updates
+
+    root, _linked, home, base, head, responses, _requests, git = installation
+    shas = {"base": base, "head": head}
+    bare = tmp_path / "origin.git"
+    git("clone", "-q", "--bare", str(root), str(bare), cwd=tmp_path)
+    git("tag", "v1.2.3", shas[release], cwd=bare)
+    git("remote", "set-url", "origin", str(bare))
+    git("checkout", "-q", "--detach", shas[on])
+    api = "/repos/NousResearch/hermes-agent"
+    responses[f"{api}/releases/latest"] = (200, {"draft": False, "prerelease": False, "tag_name": "v1.2.3"})
+    responses[f"{api}/commits/v1.2.3"] = (200, {"sha": shas[release]})
+
+    status = check_for_updates(install_root=root, home=home, channel="stable", force=True)
+
+    assert status.get("targetSha") == shas[release], status
+    assert status["updateAvailable"] is True
+    assert status["rollback"] is rollback

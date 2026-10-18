@@ -85,6 +85,7 @@ import {
 import { secondaryProfileOwnerForEvent } from './session-event-provenance'
 import { $focusedStoredSessionId, TILE_PANE_PREFIX } from './session-focus'
 import { turnHasReply, withNoReplyNotice } from './session-no-reply'
+import { sameSessionOwner } from './session-owner-equality'
 import { assertSessionOwnerResolved } from './session-owner-resolution'
 import {
   isSessionOwnerRoute,
@@ -1472,23 +1473,6 @@ export function patchSessionTile(storedSessionId: string, patch: Partial<Session
   saveTiles($sessionTiles.get().map(t => (t.storedSessionId === storedSessionId ? { ...t, ...patch } : t)))
 }
 
-function sameSessionOwner(left: SessionOwnerScope, right: SessionOwnerScope): boolean {
-  if (isSessionOwnerRoute(left) && isSessionOwnerRoute(right)) {
-    return (
-      left.connectionId.trim() === right.connectionId.trim() &&
-      normalizeProfileKey(left.profile) === normalizeProfileKey(right.profile) &&
-      normalizeProfileKey(left.targetProfile ?? left.profile) ===
-        normalizeProfileKey(right.targetProfile ?? right.profile)
-    )
-  }
-
-  if (typeof left === 'string' && typeof right === 'string') {
-    return normalizeProfileKey(left) === normalizeProfileKey(right)
-  }
-
-  return false
-}
-
 function tileWorkspaceMode(tile: SessionTile): WorkspaceMode {
   return tile.workspaceMode ?? 'sessions'
 }
@@ -2676,7 +2660,9 @@ export function closeSessionTile(storedSessionId: string) {
   saveTiles($sessionTiles.get().filter(t => t.storedSessionId !== storedSessionId))
 
   // A settled session may never publish again, so the publish-time eviction
-  // in publishSessionState can't reach it — drop its cached state here. A
+  // in publishSessionState can't reach it — release its transcript here. Keep
+  // the same cheap identity projection as publish-time eviction: background
+  // processes and async children can outlive both the turn and its tile. A
   // BUSY one stays: its turn keeps streaming in the background, the sidebar
   // dot reads it, and settle evicts it. ⌘⇧T reopen re-publishes from the
   // wiring cache (resumeTile's warm path), so nothing is lost.
@@ -2684,7 +2670,7 @@ export function closeSessionTile(storedSessionId: string) {
   const state = runtimeId ? $sessionStates.get()[runtimeId] : undefined
 
   if (runtimeId && state && evictable(runtimeId, state)) {
-    dropSessionState(runtimeId)
+    releaseSessionTranscript(runtimeId, state)
   }
 }
 

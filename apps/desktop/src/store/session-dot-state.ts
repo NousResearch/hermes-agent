@@ -158,11 +158,9 @@ export const $sessionDotStateById = computed(
     claim(persistedUnread, 'unread')
 
     claim(background, 'background')
-    // Async delegation: the parent turn has ended but its subagents are still
-    // running, so the session's work continues in child sessions. Same visual
-    // claim as background processes — and it yields to `working` below the
-    // moment the parent turn itself is live (synchronous orchestrator children).
-    claim(delegating, 'background')
+    // Delegated agents are real work, not watch-only background presence.
+    // They keep the working treatment even after their parent's turn ends.
+    claim(delegating, 'working')
     claim(working, 'working')
 
     // Stalled REFINES working rather than rivalling it — the turn is still

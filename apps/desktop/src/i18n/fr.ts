@@ -13,6 +13,7 @@ import { frNotices } from './fr_notices'
 import { frOnboarding } from './fr_onboarding'
 import { frProjects } from './fr_projects'
 import { frSharedMetrics } from './fr_shared_metrics'
+import { frSidebarRow } from './fr_sidebar_row'
 import { frThemePicker } from './fr_theme_picker'
 import { frUpdateChannel } from './fr_update_channel'
 import { introFr } from './intro-fr'
@@ -3748,51 +3749,7 @@ export const frOverrides = {
     loadCount: step => `Charger ${step} de plus`,
     messageCount: count => `${count} ${count === 1 ? 'message' : 'messages'}`,
     toolCallCount: count => `${count} ${count === 1 ? "appel d'outil" : "appels d'outil"}`,
-    row: {
-      pin: 'Épingler',
-      unpin: 'Désépingler',
-      markUnread: 'Marquer comme non lue',
-      markRead: 'Marquer comme lue',
-      unreadFailed: "Impossible de mettre à jour l'état de lecture",
-      copyId: "Copier l'ID",
-      export: 'Exporter',
-      branchFrom: 'Branche',
-      rename: 'Renommer',
-      archive: 'Archiver',
-      unarchive: 'Restaurer',
-      newWindow: 'Nouvelle fenêtre',
-      openInTerminal: 'Ouvrir dans le terminal',
-      hideTabBar: "Masquer la barre d'onglets",
-      openInNewTab: 'Ouvrir dans un nouvel onglet',
-      openInSplit: 'Ouvrir en split',
-      copyIdFailed: "Impossible de copier l'ID de session",
-      sessionActions: 'Actions de session',
-      sessionRunning: 'Session en cours',
-      needsInput: 'Nécessite votre saisie',
-      waitingForAnswer: 'En attente de votre réponse',
-      finishedUnread: 'Terminée — non lue',
-      backgroundRunning: 'Tâche en arrière-plan en cours',
-      draftSession: 'Brouillon — aucun message envoyé',
-      handoffOrigin: platform => `Transférée depuis ${platform}`,
-      continuationOrigin: 'Continuation automatique — cette conversation a été compressée puis poursuivie',
-      ownedByProfile: profile => `Profil : ${profile}`,
-      renamed: 'Renommée',
-      renameFailed: 'Échec du renommage',
-      renameTitle: 'Renommer la session',
-      renameDesc: 'Laissez vide pour effacer.',
-      untitledPlaceholder: 'Session sans titre',
-      deleteTitle: 'Supprimer la session ?',
-      deleteDesc: title => `« ${title} » sera définitivement supprimée. Cette action est irréversible.`,
-      deleting: 'Suppression…',
-      deleted: 'Session supprimée',
-      untitledChat: id => `Conversation ${id}`,
-      messageCount: count => `${count} message${count === 1 ? '' : 's'}`,
-      todoProgress: 'Tâches terminées',
-      ageNow: 'maintenant',
-      ageDay: 'j',
-      ageHour: 'h',
-      ageMin: 'm'
-    },
+    row: frSidebarRow,
     dateDivider: {
       today: "Aujourd'hui",
       yesterday: 'Hier',

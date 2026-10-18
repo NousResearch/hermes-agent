@@ -14,6 +14,7 @@ import { jaOnboarding } from './ja_onboarding'
 import { jaPluginSettings } from './ja_plugins'
 import { jaProjects } from './ja_projects'
 import { jaSharedMetrics } from './ja_shared_metrics'
+import { jaSidebarRow } from './ja_sidebar_row'
 import { jaThemePicker } from './ja_theme_picker'
 import { jaUpdateChannel } from './ja_update_channel'
 
@@ -2273,46 +2274,7 @@ export const jaOverrides = {
     loadCount: step => `さらに ${step} 件を読み込む`,
     messageCount: count => `${count} 件のメッセージ`,
     toolCallCount: count => `${count} 件のツール呼び出し`,
-    row: {
-      pin: 'ピン留め',
-      unpin: 'ピン留めを解除',
-      markUnread: '未読にする',
-      markRead: '既読にする',
-      unreadFailed: '未読状態を更新できませんでした',
-      copyId: 'ID をコピー',
-      export: 'エクスポート',
-      branchFrom: '分岐',
-      rename: '名前を変更…',
-      archive: 'アーカイブ',
-      unarchive: 'アーカイブを解除',
-      newWindow: '新しいウィンドウ',
-      openInTerminal: 'ターミナルで開く',
-      copyIdFailed: 'セッション ID をコピーできませんでした',
-
-      sessionActions: 'セッションアクション',
-      sessionRunning: 'セッション実行中',
-      needsInput: '入力が必要です',
-      waitingForAnswer: '回答を待っています',
-      finishedUnread: '完了 — 未読',
-      backgroundRunning: 'バックグラウンドタスク実行中',
-      draftSession: '下書き — 未送信',
-      handoffOrigin: platform => `${platform} から引き継ぎ`,
-      ownedByProfile: profile => `プロファイル: ${profile}`,
-      renamed: '名前を変更しました',
-      renameFailed: '名前の変更に失敗しました',
-      renameTitle: 'セッションの名前を変更',
-      renameDesc: '空欄にするとクリアされます。',
-      untitledPlaceholder: '無題のセッション',
-      deleteTitle: 'セッションを削除しますか？',
-      deleteDesc: title => `「${title}」を完全に削除します。この操作は元に戻せません。`,
-      deleting: '削除中…',
-      deleted: 'セッションを削除しました',
-      untitledChat: id => `セッション ${id}`,
-      ageNow: 'たった今',
-      ageDay: '日',
-      ageHour: '時間',
-      ageMin: '分'
-    },
+    row: jaSidebarRow,
     dateDivider: {
       today: '今日の早い時間',
       yesterday: '昨日',

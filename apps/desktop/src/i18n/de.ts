@@ -12,6 +12,7 @@ import { deNotices } from './de_notices'
 import { deOnboarding } from './de_onboarding'
 import { deProjects } from './de_projects'
 import { deSharedMetrics } from './de_shared_metrics'
+import { deSidebarRow } from './de_sidebar_row'
 import { deThemePicker } from './de_theme_picker'
 import { deUpdateChannel } from './de_update_channel'
 import { defineLocale, type TranslationOverrides } from './define-locale'
@@ -3740,51 +3741,7 @@ export const deOverrides = {
     loadCount: step => `${step} mehr laden`,
     messageCount: count => `${count} ${count === 1 ? 'Nachricht' : 'Nachrichten'}`,
     toolCallCount: count => `${count} ${count === 1 ? 'Tool-Aufruf' : 'Tool-Aufrufe'}`,
-    row: {
-      pin: 'Anpinnen',
-      unpin: 'Lösen',
-      markUnread: 'Als ungelesen markieren',
-      markRead: 'Als gelesen markieren',
-      unreadFailed: 'Ungelesen-Status konnte nicht aktualisiert werden',
-      copyId: 'ID kopieren',
-      export: 'Exportieren',
-      branchFrom: 'Branch',
-      rename: 'Umbenennen…',
-      archive: 'Archivieren',
-      unarchive: 'Archivierung aufheben',
-      newWindow: 'Neues Fenster',
-      openInTerminal: 'Im Terminal öffnen',
-      hideTabBar: 'Tab-Leiste ausblenden',
-      openInNewTab: 'In neuem Tab öffnen',
-      openInSplit: 'Im Split öffnen',
-      copyIdFailed: 'Session-ID konnte nicht kopiert werden',
-      sessionActions: 'Session-Aktionen',
-      sessionRunning: 'Session läuft',
-      needsInput: 'Braucht Ihre Eingabe',
-      waitingForAnswer: 'Wartet auf Ihre Antwort',
-      finishedUnread: 'Abgeschlossen – ungelesen',
-      backgroundRunning: 'Hintergrundaufgabe läuft',
-      draftSession: 'Entwurf – noch nichts gesendet',
-      handoffOrigin: platform => `Übergeben von ${platform}`,
-      continuationOrigin: 'Automatische Fortsetzung — dieser Chat wurde komprimiert und fortgesetzt',
-      ownedByProfile: profile => `Profil: ${profile}`,
-      renamed: 'Umbenannt',
-      renameFailed: 'Umbenennen fehlgeschlagen',
-      renameTitle: 'Session umbenennen',
-      renameDesc: 'Leer lassen, um zu löschen.',
-      untitledPlaceholder: 'Unbenannte Session',
-      deleteTitle: 'Session löschen?',
-      deleteDesc: title => `Das löscht “${title}” dauerhaft. Das kann nicht rückgängig gemacht werden.`,
-      deleting: 'Wird gelöscht…',
-      deleted: 'Session gelöscht',
-      untitledChat: id => `Chat ${id}`,
-      messageCount: count => `${count} ${count === 1 ? 'Nachricht' : 'Nachrichten'}`,
-      todoProgress: 'Aufgaben abgeschlossen',
-      ageNow: 'jetzt',
-      ageDay: 'T',
-      ageHour: 'h',
-      ageMin: 'Min'
-    },
+    row: deSidebarRow,
     dateDivider: {
       today: 'Heute früher',
       yesterday: 'Gestern',

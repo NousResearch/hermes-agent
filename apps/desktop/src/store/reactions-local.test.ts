@@ -36,6 +36,7 @@ vi.mock('@/store/session', async () => {
   const $messages = nanoAtom<unknown[]>([])
 
   return {
+    $activeSessionId: nanoAtom<string | null>(null),
     $messages,
     $sessions: nanoAtom<unknown[]>([]),
     $unreadFinishedSessionIds: nanoAtom<string[]>([]),

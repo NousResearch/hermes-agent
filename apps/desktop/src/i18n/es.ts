@@ -13,6 +13,7 @@ import { esNotices } from './es_notices'
 import { esOnboarding } from './es_onboarding'
 import { esProjects } from './es_projects'
 import { esSharedMetrics } from './es_shared_metrics'
+import { esSidebarRow } from './es_sidebar_row'
 import { esThemePicker } from './es_theme_picker'
 import { esUpdateChannel } from './es_update_channel'
 import { introEs } from './intro-es'
@@ -3734,51 +3735,7 @@ export const esOverrides = {
     loadCount: step => `Cargar ${step} más`,
     messageCount: (count: number) => `${count} ${count === 1 ? 'mensaje' : 'mensajes'}`,
     toolCallCount: (count: number) => `${count} ${count === 1 ? 'llamada a herramienta' : 'llamadas a herramientas'}`,
-    row: {
-      pin: 'Fijar',
-      unpin: 'Desfijar',
-      markUnread: 'Marcar como no leído',
-      markRead: 'Marcar como leído',
-      unreadFailed: 'No se pudo actualizar el estado de no leído',
-      copyId: 'Copiar ID',
-      export: 'Exportar',
-      branchFrom: 'Rama',
-      rename: 'Renombrar',
-      archive: 'Archivar',
-      unarchive: 'Desarchivar',
-      newWindow: 'Nueva ventana',
-      openInTerminal: 'Abrir en el terminal',
-      hideTabBar: 'Ocultar barra de pestañas',
-      openInNewTab: 'Abrir en una pestaña nueva',
-      openInSplit: 'Abrir en vista dividida',
-      copyIdFailed: 'No se pudo copiar el ID de sesión',
-      sessionActions: 'Acciones de sesión',
-      sessionRunning: 'Sesión en ejecución',
-      needsInput: 'Necesita tu respuesta',
-      waitingForAnswer: 'Esperando tu respuesta',
-      finishedUnread: 'Finalizada — sin leer',
-      backgroundRunning: 'Tarea en segundo plano en ejecución',
-      draftSession: 'Borrador — aún no se ha enviado nada',
-      handoffOrigin: platform => `Transferido desde ${platform}`,
-      continuationOrigin: 'Continuación automática: esta conversación fue comprimida y continuada',
-      ownedByProfile: profile => `Perfil: ${profile}`,
-      renamed: 'Renombrada',
-      renameFailed: 'No se pudo renombrar',
-      renameTitle: 'Renombrar sesión',
-      renameDesc: 'Déjalo vacío para limpiarlo.',
-      untitledPlaceholder: 'Sesión sin título',
-      deleteTitle: '¿Eliminar la sesión?',
-      deleteDesc: (title: string) => `Se eliminará “${title}” de forma permanente. No se puede deshacer.`,
-      deleting: 'Eliminando…',
-      deleted: 'Sesión eliminada',
-      untitledChat: id => `Chat ${id}`,
-      messageCount: count => `${count} ${count === 1 ? 'mensaje' : 'mensajes'}`,
-      todoProgress: 'Tareas completadas',
-      ageNow: 'ahora',
-      ageDay: 'd',
-      ageHour: 'h',
-      ageMin: 'm'
-    },
+    row: esSidebarRow,
     dateDivider: {
       today: 'Hoy, más temprano',
       yesterday: 'Ayer',

@@ -45,6 +45,7 @@ import logging
 import math
 import os
 import re
+import stat
 import time
 import uuid
 from pathlib import Path
@@ -395,10 +396,21 @@ def append_audit(
     service_key: Optional[str] = None,
     detail: str = "",
 ) -> None:
-    """Atomically append one JSONL audit record (O_APPEND write + fsync).
+    """Append one JSONL audit record (single-writer O_APPEND + fsync).
 
-    Audit is best-effort evidence, never a gate: a failed append is logged and
-    the decision still stands (the result record is the authoritative outcome).
+    Guarantee scope (degraded by contract): every applicable decision or replay
+    event is ATTEMPTED, failures are reported via ``logger.warning``, and the
+    authoritative outcome is always the result record. The audit chain MAY have
+    gaps under storage failure — it is evidence, never a gate, and no
+    no-gaps completeness is promised.
+
+    Hardening (gate 2, G2-R4): writes loop over ``os.write`` and check the
+    returned length (a short write is never treated as success); an incomplete
+    tail line left by a crashed writer is isolated before the next append so
+    earlier complete events and the next event stay individually readable; the
+    file is opened without following symlinks and is verified to be a regular
+    file owned by the current user (create-mode 0600 only governs NEW files, so
+    over-open permissions on pre-existing files are tightened with fchmod).
     """
     record = {
         "schema_version": PROTOCOL_SCHEMA_VERSION,
@@ -410,14 +422,60 @@ def append_audit(
         "service_key": service_key,
         "detail": detail,
     }
+    payload = (json.dumps(record, default=str) + "\n").encode("utf-8")
     try:
-        fd = os.open(_audit_path(), os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
-        with os.fdopen(fd, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(record, default=str) + "\n")
-            fh.flush()
-            os.fsync(fh.fileno())
+        fd = _open_audit_file()
+        try:
+            _isolate_partial_tail(fd)
+            written = 0
+            while written < len(payload):
+                n = os.write(fd, payload[written:])
+                if n <= 0:
+                    raise OSError("audit append short write")
+                written += n
+            os.fsync(fd)
+        finally:
+            os.close(fd)
     except Exception as exc:
         logger.warning("defer-restart: audit append failed: %s", exc)
+
+
+def _open_audit_file() -> int:
+    """Open the audit file for append with link/owner/type/permission checks."""
+    fd = os.open(
+        _audit_path(),
+        os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+        0o600,
+    )
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise OSError("audit path is not a regular file")
+        if st.st_uid != os.getuid():
+            raise OSError("audit file is not owned by the current user")
+        if st.st_mode & 0o077:  # create-mode applies to NEW files only — repair old ones
+            os.fchmod(fd, 0o600)
+    except Exception:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _isolate_partial_tail(fd: int) -> None:
+    """If a previous writer died mid-record, terminate its half-written line.
+    Single-writer condition: the tail is either empty, complete (ends with
+    ``\\n``), or a crashed partial record. Appending a bare ``\\n`` turns the
+    partial record into one non-JSON line that readers skip, keeping every
+    earlier complete event and the next appended event individually readable.
+    """
+    st = os.fstat(fd)
+    if st.st_size == 0:
+        return
+    os.lseek(fd, st.st_size - 1, os.SEEK_SET)
+    last = os.read(fd, 1)
+    if last != b"\n":
+        os.write(fd, b"\n")
+        logger.warning("defer-restart: audit file had an incomplete tail record; isolated")
 
 
 def write_result(
@@ -453,6 +511,10 @@ def write_result(
     if ok and not path.exists():  # pragma: no cover - defensive
         return False
     if ok:
+        # Audit placement (gate 2, G2-R4): the decision audit fires only AFTER
+        # the authoritative result record is persisted. A failed acceptance
+        # write that cancels the schedule never emits a premature "accepted"
+        # audit event.
         append_audit(request_id, outcome, actor_ref=actor_ref,
                      generation=payload["generation"], service_key=service_key, detail=detail)
     return ok

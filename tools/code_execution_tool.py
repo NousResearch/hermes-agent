@@ -763,19 +763,6 @@ def execute_code(
                 "it could complete (SIGTERM propagates to child processes). "
                 "Run the lifecycle command from a shell outside the gateway."
             )
-        # G3 layer 3 mirror (gateway-deferred-restart spec): execute_code must not launder the
-        # deferred-restart entrypoint through os.system()/subprocess in a cron execution context.
-        from cron.execution_identity import current_cron_execution
-        from cron.lifecycle_guard import contains_deferred_restart_command
-        from tools.approval_context import _is_cron_approval_context
-        if ((current_cron_execution() is not None or _is_cron_approval_context())
-                and contains_deferred_restart_command(code)):
-            return tool_error(
-                "Blocked: `hermes gateway defer-restart` is not available in a cron "
-                "execution context. Scheduled jobs must not drive gateway restarts — even "
-                "the deferred channel (gateway-deferred-restart spec, G3). Run it from an "
-                "ordinary chat turn instead."
-            )
     from tools.terminal_tool import _get_env_config, _docker_has_host_access
     _env_config = _get_env_config()
     env_type = _env_config["env_type"]

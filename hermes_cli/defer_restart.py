@@ -40,6 +40,8 @@ EXIT_NO_TARGET = 3
 EXIT_NO_SUPERVISOR = 4
 EXIT_COOLDOWN = 5
 EXIT_UNKNOWN = 6
+#: Refused: invoked with trusted cron provenance (scheduled jobs must not drive restarts).
+EXIT_CRON_REFUSED = 7
 
 
 def _print(msg: str) -> None:
@@ -233,8 +235,37 @@ def _write_request_file(payload: dict[str, Any]) -> bool:
     return _atomic_write_json(_request_path(payload["request_id"]), payload)
 
 
+def _trusted_cron_provenance() -> Optional[str]:
+    """Name of the trusted cron provenance marker present in this process environment, else None.
+
+    Control-point backstop for G3 (review gate 2, G2-R1): the lexical guard layers cannot see
+    commands assembled at shell-runtime (``hermes gateway "$left-$right"``), so the entrypoint
+    itself refuses when the invocation carries trusted cron provenance — the same markers the
+    in-process L3 guard keys on (session ``HERMES_CRON_SESSION`` bridged into subprocess env by
+    the session-env pipeline, and ``_HERMES_CRON_EXTERNAL_WORKER`` inside an external fire
+    worker). These are set by the scheduler infrastructure, not by model output. Disclosed
+    residual: a script that deliberately scrubs its own environment can evade every static and
+    env-based layer; actor_ref stays audit-only and is never consulted here.
+    """
+    from utils import env_var_enabled
+
+    for name in ("HERMES_CRON_SESSION", "_HERMES_CRON_EXTERNAL_WORKER"):
+        if env_var_enabled(name):
+            return name
+    return None
+
+
 def cmd_defer_restart(args) -> None:  # noqa: ARG001 - argparse contract
     """Entry point for ``hermes gateway defer-restart``. Exits via SystemExit."""
+    marker = _trusted_cron_provenance()
+    if marker is not None:
+        _print(
+            f"✗ deferred restart refused: this invocation carries trusted cron provenance "
+            f"({marker}). Scheduled jobs must not drive gateway restarts — even the deferred "
+            f"channel — or an agent-authored payload can produce a fire/restart loop "
+            f"(gateway-deferred-restart spec, G3). Run it from an ordinary chat turn instead."
+        )
+        raise SystemExit(EXIT_CRON_REFUSED)
     if os.name == "nt" or not hasattr(signal, "SIGUSR1"):
         _print("✗ deferred restart is not supported on this platform (no SIGUSR1 / no supervisor contract)")
         raise SystemExit(EXIT_NO_SUPERVISOR)

@@ -1325,15 +1325,21 @@ class DeferredRestartBlocked(ValueError):
 def contains_deferred_restart_command(text: str) -> bool:
     """Return True if *text* references ``hermes gateway defer-restart``.
 
-    Same three passes as ``contains_gateway_lifecycle_command``: raw text after inert-heredoc
-    masking and line-continuation normalization, then each shell-tokenized segment with
+    Mention-level strictness (review gate 2, G2-R1): NO inert-heredoc masking here —
+    a literal mention inside a data heredoc is refused too, because a payload can
+    write-then-run (``cat > child.sh <<'EOF' ... EOF; bash child.sh``): heredoc body is
+    data at scan time but code at execution time. G1's data-argument exemption stays
+    unchanged in ``contains_gateway_lifecycle_command``. Known lexical limit (disclosed,
+    G2-R1): shell-runtime assembly (``hermes gateway "$left-$right"``) is invisible to
+    any lexical pass — the CLI entrypoint's trusted-cron-provenance refusal is the
+    control-point backstop.
+
+    Same three passes as ``contains_gateway_lifecycle_command`` (minus the masking):
+    line-continuation normalization, then each shell-tokenized segment with
     quotes/escapes resolved (closes splice bypasses like ``defer-re""start``), then the
     argv-list-punctuation-stripped re-join (``subprocess.run([...])`` Python source)."""
     if not text:
         return False
-    from tools.shell_heredoc import strip_inert_heredoc_bodies
-
-    text = strip_inert_heredoc_bodies(text)
     normalized = _SHELL_LINE_CONTINUATION.sub(" ", text)
     if _DEFERRED_RESTART_PATTERN.search(normalized):
         return True
@@ -1364,21 +1370,36 @@ def check_deferred_restart_job(job: dict) -> None:
 
     Every G3 layer funnels through here — definition paths (create/edit/import/re-enable)
     and the dispatch preflight — so the layers can never drift apart.
+
+    Carriers are scanned INDEPENDENTLY through the single detector, and then their
+    concatenation is scanned too (review gate 2, G2-R2): the per-carrier pass means one
+    carrier's shell syntax can never mask another carrier's content (a prompt ending in
+    ``cat <<'true'`` must not swallow the script body), and the concatenated pass catches
+    a command split across carriers ("exec hermes" / "gateway defer-restart"). One rule
+    set, one detector — no parallel scanner to drift.
     """
-    combined = "\n".join(part for part in (
-        job.get("prompt") or "",
-        job.get("monitor_script") or "",
-    ) if part)
-    check_deferred_restart_payload(combined, job.get("script") or None)
+    check_deferred_restart_carriers(
+        prompt=job.get("prompt") or "",
+        monitor_source=job.get("monitor_script") or "",
+        script=job.get("script") or None,
+    )
 
 
 def check_deferred_restart_payload(prompt: Optional[str], script: Optional[str] = None) -> None:
-    """Raise ``DeferredRestartBlocked`` if *prompt* or *script* references the deferred-restart
-    entrypoint. Mirrors ``check_gateway_lifecycle``: the script is read from disk and concatenated
-    with the prompt so a command cannot slip through by being split across the two. Callers let the
+    """``check_deferred_restart_carriers`` for callers without a monitor source."""
+    check_deferred_restart_carriers(prompt=prompt or "", monitor_source="", script=script or None)
+
+
+def check_deferred_restart_carriers(
+    *, prompt: str, monitor_source: str, script: Optional[str],
+) -> None:
+    """Raise ``DeferredRestartBlocked`` when any payload carrier references the deferred-restart
+    entrypoint. The script is read from disk and scanned as its OWN carrier (and as part of the
+    concatenated pass), so a command cannot slip through by being split across carriers and one
+    carrier's heredoc syntax can never mask another's content. Callers let the
     ``ValueError``-shaped exception propagate."""
-    combined = prompt or ""
-    refusal: Optional[str] = None
+    script_text = ""
+    script_cwd = _resolve_script_directory(script) if script else None
     if script:
         resolved_script = _resolve_script_path(script)
         if resolved_script is not None and _on_cloud_path(resolved_script):
@@ -1391,26 +1412,36 @@ def check_deferred_restart_payload(prompt: Optional[str], script: Optional[str] 
                 "(e.g. ~/.hermes/scripts/) and recreate the job."
             )
         script_text, refusal = _read_script_for_scanning(script)
-        if script_text:
-            combined = f"{combined}\n{script_text}"
+        if refusal:
+            raise DeferredRestartBlocked(
+                f"Blocked: the deferred-restart guard could not scan this cron job or referenced "
+                f"script: {refusal}. Nothing in the job is known to reference the deferred-restart "
+                "entrypoint, but a script the job executes must be scannable (a regular text file "
+                "under 1 MiB) before it can run."
+            )
 
-    if refusal:
-        unsafe = True
-    else:
-        unsafe, refusal = scan_deferred_restart(
-            combined, cwd=_resolve_script_directory(script) if script else None
-        )
-    if unsafe and refusal:
-        raise DeferredRestartBlocked(
-            f"Blocked: the deferred-restart guard could not scan this cron job or referenced "
-            f"script: {refusal}. Nothing in the job is known to reference the deferred-restart "
-            "entrypoint, but a script the job executes must be scannable (a regular text file "
-            "under 1 MiB) before it can run."
-        )
-    if unsafe:
-        raise DeferredRestartBlocked(
-            "Blocked: cron job references `hermes gateway defer-restart`. Scheduled jobs must "
-            "not drive gateway restarts — even the deferred channel — or an agent-authored "
-            "payload can produce a fire/restart loop (gateway-deferred-restart spec, G3). "
-            "Run `hermes gateway defer-restart` from an ordinary chat turn instead."
-        )
+    carriers: list[tuple[str, Optional[str]]] = [
+        (text, None) for text in (prompt, monitor_source) if text
+    ]
+    if script_text:
+        carriers.append((script_text, script_cwd))
+    # Per-carrier pass first (G2-R2), then the concatenation for cross-carrier splits.
+    scans = list(carriers)
+    if len(carriers) > 1:
+        scans.append(("\n".join(text for text, _ in carriers), script_cwd))
+    for text, cwd in scans:
+        unsafe, refusal = scan_deferred_restart(text, cwd=cwd)
+        if unsafe and refusal:
+            raise DeferredRestartBlocked(
+                f"Blocked: the deferred-restart guard could not scan this cron job or referenced "
+                f"script: {refusal}. Nothing in the job is known to reference the deferred-restart "
+                "entrypoint, but a script the job executes must be scannable (a regular text file "
+                "under 1 MiB) before it can run."
+            )
+        if unsafe:
+            raise DeferredRestartBlocked(
+                "Blocked: cron job references `hermes gateway defer-restart`. Scheduled jobs must "
+                "not drive gateway restarts — even the deferred channel — or an agent-authored "
+                "payload can produce a fire/restart loop (gateway-deferred-restart spec, G3). "
+                "Run `hermes gateway defer-restart` from an ordinary chat turn instead."
+            )

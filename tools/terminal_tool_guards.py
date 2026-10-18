@@ -260,30 +260,6 @@ def gateway_lifecycle_block(
             "separate shell outside the running gateway.",
             "error",
         )
-    # G3 layer 3 (gateway-deferred-restart spec): `hermes gateway defer-restart` deliberately
-    # passes the scan above in ordinary chat turns — that is the deferred channel. A CRON execution
-    # context must never drive it. Provenance is in-process (the cron execution ContextVar and the
-    # session-scoped HERMES_CRON_SESSION marker), so model output cannot forge it; this check runs
-    # only in that context, so ordinary turns pay one contextvar read.
-    from cron.execution_identity import current_cron_execution
-    from tools.approval_context import _is_cron_approval_context
-    if current_cron_execution() is not None or _is_cron_approval_context():
-        from cron.lifecycle_guard import scan_deferred_restart
-
-        unsafe, refusal = scan_deferred_restart(
-            command,
-            cwd=guard_cwd,
-            read_remote_script=lambda p: _read_script_for_guard(env, guard_cwd, p, _MAX_REFERENCED_SCRIPT_BYTES),
-        )
-        if unsafe:
-            reason = f" ({refusal})" if refusal else ""
-            return _blocked_json(
-                "Blocked: `hermes gateway defer-restart` is not available in a cron execution "
-                "context. Scheduled jobs must not drive gateway restarts — even the deferred "
-                f"channel (gateway-deferred-restart spec, G3){reason}. Run it from an ordinary "
-                "chat turn instead.",
-                "error",
-            )
     return None
 
 

@@ -209,3 +209,107 @@ def test_systemd_pid_binding_rejects_hand_started_gateway(monkeypatch):
     ok, why = hd._precheck_systemd("hermes-gateway", FAKE_GENERATION["pid"])
     assert ok is False
     assert "MainPID" in why
+
+
+# --- real-chain tests (gate 2, G2-R1): bash assembly → real entrypoint -----------
+# A cron payload can assemble the command at runtime ("$left-$right"), which lexical
+# guards cannot see. The chain below is REAL: bash variable expansion → `hermes` on
+# PATH → the actual cmd_defer_restart entrypoint. Stubs sit exactly at the side-effect
+# boundaries (request publish + signal), so "zero restart side effects" is measured,
+# not assumed. The control variant proves the chain reaches those boundaries.
+
+_CHAIN_JOB = (
+    "#!/bin/sh\n"
+    "left=defer\n"
+    "right=restart\n"
+    'hermes gateway "$left-$right"\n'
+)
+
+_CHAIN_SHIM = '''#!/usr/bin/env python3
+import os, sys, types
+sys.path.insert(0, os.environ["CHAIN_REPO"])
+from pathlib import Path
+
+LOG = Path(os.environ["CHAIN_LOG"])
+
+def _log(msg):
+    LOG.parent.mkdir(parents=True, exist_ok=True)
+    with LOG.open("a") as fh:
+        fh.write(msg + "\\n")
+
+import gateway.defer_restart as dr
+import hermes_cli.defer_restart as hd
+
+# Boundary stubs: everything below here is the restart side effect the test measures.
+dr.cleanup_expired = lambda *a, **k: None
+dr.compute_service_identity = lambda: {"kind": "stub", "service_id": "hermes-gateway",
+                                       "hermes_home": "/tmp/stub"}
+hd._resolve_target_generation = lambda: {"pid": 4242, "start_time": 1_760_000_000}
+hd._supervisor_precheck = lambda identity, pid: (True, "stub supervisor")
+dr.cooldown_active_for = lambda key: None
+
+def _write(payload):
+    _log("REQUEST_PUBLISHED " + str(payload.get("request_id")))
+    return True
+hd._write_request_file = _write
+os.kill = lambda pid, sig: _log("SIGNAL %s %s" % (pid, sig))
+dr.read_result = lambda req_id: {"request_id": req_id, "outcome": "accepted"}
+
+try:
+    hd.cmd_defer_restart(types.SimpleNamespace(max_wait=90.0))
+except SystemExit as exc:
+    sys.exit(int(exc.code or 0))
+'''
+
+
+def _run_real_chain(tmp_path, *, cron_context: bool):
+    """Execute the job script through bash with a real `hermes` CLI shim on PATH."""
+    import os
+    import subprocess as sp
+    import sys
+    from pathlib import Path
+
+    repo = Path(hd.__file__).resolve().parents[1]
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    shim_py = bin_dir / "shim.py"
+    shim_py.write_text(_CHAIN_SHIM)
+    shim = bin_dir / "hermes"
+    shim.write_text(f'#!/bin/bash\nexec "{sys.executable}" "{shim_py}" "$@"\n')
+    shim.chmod(0o755)
+    job = tmp_path / "job.sh"
+    job.write_text(_CHAIN_JOB)
+    log = tmp_path / "side_effects.log"
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
+    env["CHAIN_REPO"] = str(repo)
+    env["CHAIN_LOG"] = str(log)
+    env.pop("HERMES_CRON_SESSION", None)
+    env.pop("_HERMES_CRON_EXTERNAL_WORKER", None)
+    if cron_context:
+        # Real cron sessions publish "1" (scheduler sets the ContextVar to "1");
+        # `_trusted_cron_provenance` truthiness matches that contract.
+        env["HERMES_CRON_SESSION"] = "1"
+    proc = sp.run(["bash", str(job)], env=env, capture_output=True, text=True, timeout=120)
+    side_effects = log.read_text() if log.exists() else ""
+    return proc, side_effects
+
+
+def test_dynamic_assembly_in_cron_chain_reaches_entrypoint_and_is_refused(tmp_path):
+    """G2-R1 chain A, cron variant: the assembled command reaches the REAL entrypoint
+    and the trusted-cron-provenance refusal stops it — zero restart side effects."""
+    proc, side_effects = _run_real_chain(tmp_path, cron_context=True)
+    assert proc.returncode == 7
+    assert "trusted cron provenance" in proc.stdout + proc.stderr
+    assert "REQUEST_PUBLISHED" not in side_effects
+    assert "SIGNAL" not in side_effects
+
+
+def test_dynamic_assembly_control_reaches_request_and_signal(tmp_path):
+    """G2-R1 chain A, control (no cron marker): the same chain DOES reach the
+    request-publish and signal boundaries — proving the sentinel stubs are live and
+    the cron variant's zero is a real zero."""
+    proc, side_effects = _run_real_chain(tmp_path, cron_context=False)
+    assert proc.returncode == 0
+    assert "REQUEST_PUBLISHED" in side_effects
+    assert "SIGNAL 4242" in side_effects

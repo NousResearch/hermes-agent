@@ -1,23 +1,25 @@
 """G3 (gateway-deferred-restart spec): `hermes gateway defer-restart` is forbidden to cron.
 
-Three layers, all funnelling through `check_deferred_restart_job` so they cannot drift:
+Thin, cron-scoped shape (PR slim decision, 2026-10-18), all funneling through
+`check_deferred_restart_job` so the layers cannot drift:
 
   L1  definition paths — create / edit / import / re-enable
       (`cron/jobs.py`, `cron/job_definition.py`),
-  L2  fail-closed dispatch preflight, INCLUDING pre-existing jobs
-      (`cron/scheduler.py` `_run_one_job_body`),
-  L3  runtime refusal inside a cron execution context, provenance = the in-process
-      cron execution ContextVar + session `HERMES_CRON_SESSION` marker
-      (`tools/terminal_tool_guards.gateway_lifecycle_block`,
-       `tools/code_execution_tool.py` mirror).
+  L2  fail-closed dispatch preflight at the REAL dispatch entry
+      (`cron/scheduler.py` `_run_one_job_body`), INCLUDING pre-existing jobs,
+  LB  the CLI entrypoint's trusted-cron-provenance refusal (tests live in
+      `tests/hermes_cli/test_gateway_defer_restart.py`) — the backstop for what
+      lexical layers cannot see (runtime assembly like `hermes gateway "$left-$right"`).
 
-The last test module pins the 15 fact-finding G1 probe verdicts byte-for-byte: adding the
+Mention-level strictness (gate 2, G2-R1/R2): NO inert-heredoc masking for the deferred
+detector, and carriers (prompt / monitor source / script) are scanned independently
+through one detector, then concatenated so cross-carrier splits are caught too.
+
+The last section pins the 15 fact-finding G1 probe verdicts byte-for-byte: adding the
 deferred channel must not shift a single existing guard decision.
 """
 
 from __future__ import annotations
-
-import types
 
 import pytest
 
@@ -48,6 +50,10 @@ DEFERRED_REFERENCES = [
     # which is stricter than G1's data-argument exemption — fail-closed in a payload.
     "echo 'hermes gateway defer-restart' >> notes.md",
     "bash <<'EOF'\nhermes gateway defer-restart\nEOF",  # executed heredoc body
+    # G2-R1 counterexample B: a data heredoc that GENERATES a script which is then
+    # executed. No masking for this detector — the literal mention is refused.
+    "cat > child.sh <<'EOF'\nhermes gateway defer-restart\nEOF\nbash child.sh",
+    "cat <<'EOF'\ngateway defer-restart\nEOF",
 ]
 
 NOT_DEFERRED_REFERENCES = [
@@ -55,7 +61,6 @@ NOT_DEFERRED_REFERENCES = [
     "hermes gateway restart",
     "hermes gateway restart --deferred 30",
     "deploy gateway; restart services",
-    "cat <<'EOF'\ngateway defer-restart\nEOF",  # inert data heredoc is masked (G1 parity)
 ]
 
 
@@ -67,6 +72,12 @@ def test_detector_flags_deferred_restart_references(text):
 @pytest.mark.parametrize("text", NOT_DEFERRED_REFERENCES)
 def test_detector_ignores_other_shapes(text):
     assert contains_deferred_restart_command(text) is False
+
+
+def test_data_heredoc_masking_still_applies_to_g1_only():
+    """One rule set, one口径: G1 keeps its data-argument exemption, G3 refuses mentions."""
+    assert contains_gateway_lifecycle_command("cat <<'EOF'\ngateway defer-restart\nEOF") is False
+    assert contains_deferred_restart_command("cat <<'EOF'\ngateway defer-restart\nEOF") is True
 
 
 def test_referenced_script_walk_catches_nested_deferred_restart(tmp_path):
@@ -95,10 +106,36 @@ def test_payload_script_reference_is_rejected(tmp_path):
 
 
 def test_payload_split_across_prompt_and_script_is_rejected(tmp_path):
+    """The combined pass catches a command split across carriers."""
     script = tmp_path / "job.sh"
     script.write_text("#!/bin/sh\ngateway defer-restart\n")
     with pytest.raises(DeferredRestartBlocked):
         check_deferred_restart_payload("exec hermes", str(script))
+
+
+def test_cross_field_heredoc_cannot_mask_the_script_carrier(tmp_path):
+    """G2-R2 counterexample chain: a prompt ending in an unclosed data heredoc must not
+    swallow the script body when carriers are merged. Per-carrier scanning closes it."""
+    script = tmp_path / "job.sh"
+    script.write_text("#!/bin/sh\nhermes gateway defer-restart\ntrue\n")
+    with pytest.raises(DeferredRestartBlocked):
+        check_deferred_restart_payload("dump this:\ncat <<'true'", str(script))
+
+
+def test_each_carrier_is_scanned_independently():
+    """A shell-syntax trick in one carrier never hides another carrier's mention."""
+    with pytest.raises(DeferredRestartBlocked):
+        check_deferred_restart_job({
+            "prompt": "intro <<'X'",
+            "script": None,
+            "monitor_script": "hermes gateway defer-restart",
+        })
+    with pytest.raises(DeferredRestartBlocked):
+        check_deferred_restart_job({
+            "prompt": "hermes gateway defer-restart",
+            "script": None,
+            "monitor_script": "exit 0\n<<'X'",
+        })
 
 
 def test_clean_payload_passes(tmp_path):
@@ -194,61 +231,107 @@ def test_import_path_rejects_deferred_restart_record():
         })
 
 
-# --- L3: runtime refusal in cron execution context ------------------------------
+# --- L2 at the REAL dispatch entry ----------------------------------------------
+# Gate 2 (G2-R2) demanded real-entry proof: a refused job entering `_run_one_job_body`
+# must reach ZERO user-code/model side effects and book the execution failed with the
+# named reason. `run_job` is THE execution entry for agent turns, user scripts and
+# monitor scripts alike — a counter there is the side-effect sentinel.
 
-def _patch_runtime(monkeypatch, *, in_cron: bool):
-    monkeypatch.setattr("tools.process_registry._is_supervised_gateway_process", lambda: True)
-    monkeypatch.setattr("tools.terminal_tool.get_session_cwd", lambda key: None)
-    monkeypatch.setattr("tools.terminal_tool._resolve_command_cwd", lambda **kw: "/tmp")
-    monkeypatch.setattr(
-        "cron.execution_identity.current_cron_execution",
-        lambda: object() if in_cron else None,
-    )
-    monkeypatch.setattr("tools.approval_context._is_cron_approval_context", lambda: False)
-    return types.SimpleNamespace(cwd=None)
+def _dispatch(job_dict, monkeypatch):
+    """Run the real dispatch body with side-effect sentinels. Returns (result, seen)."""
+    from cron import executions, scheduler
 
+    seen = {"run_job": 0, "finish": None}
 
-def _block(command: str, *, in_cron: bool, monkeypatch):
-    from tools.terminal_tool_guards import gateway_lifecycle_block
+    def _forbidden_run(job, **kwargs):  # pragma: no cover - must never run
+        seen["run_job"] += 1
+        return True, "", "", None
 
-    env = _patch_runtime(monkeypatch, in_cron=in_cron)
-    return gateway_lifecycle_block(
-        command=command, env=env, env_type="local", cwd="/tmp",
-        workdir=None, session_key="s",
-    )
+    def _finish(execution_id, *, success, error=None, **kwargs):
+        seen["finish"] = {"execution_id": execution_id, "success": success, "error": error}
 
-
-def test_cron_context_refuses_deferred_restart(monkeypatch):
-    out = _block("hermes gateway defer-restart", in_cron=True, monkeypatch=monkeypatch)
-    assert out is not None
-    assert "cron execution context" in out
-
-
-def test_cron_context_refuses_session_env_marker(monkeypatch):
-    """The session HERMES_CRON_SESSION marker is an independent trusted provenance source."""
-    from tools.terminal_tool_guards import gateway_lifecycle_block
-
-    env = _patch_runtime(monkeypatch, in_cron=False)
-    monkeypatch.setattr("tools.approval_context._is_cron_approval_context", lambda: True)
-    out = gateway_lifecycle_block(
-        command="hermes gateway defer-restart", env=env, env_type="local", cwd="/tmp",
-        workdir=None, session_key="s",
-    )
-    assert out is not None and "cron execution context" in out
+    monkeypatch.setattr(scheduler, "run_job", _forbidden_run)
+    monkeypatch.setattr(scheduler, "claim_dispatch", lambda job_id: True)
+    monkeypatch.setattr(scheduler, "finish_execution", _finish)
+    # `_start_owned_run` CASes the execution row (claimed → running); feed it a
+    # REAL row instead of stubbing the ownership check away.
+    fire = executions.create_execution(job_dict["id"], source="test")
+    result = scheduler._run_one_job_body(dict(job_dict, execution_id=fire["id"]))
+    return result, seen
 
 
-def test_ordinary_turn_still_allows_deferred_restart(monkeypatch):
-    assert _block("hermes gateway defer-restart", in_cron=False, monkeypatch=monkeypatch) is None
+def _assert_refused_before_any_side_effect(result, seen):
+    assert result is True  # dispatch handled the fire: booked failed, never re-queued
+    assert seen["run_job"] == 0  # zero model launches / user-script or monitor runs
+    assert seen["finish"] is not None
+    assert seen["finish"]["success"] is False
+    assert "Pre-execution guard refused this job" in seen["finish"]["error"]
+    assert "hermes gateway defer-restart" in seen["finish"]["error"]
 
 
-def test_cron_context_clean_command_passes(monkeypatch):
-    assert _block("ls -la", in_cron=True, monkeypatch=monkeypatch) is None
+def test_real_dispatch_refuses_agent_shape(tmp_path, monkeypatch):
+    with jobs.use_cron_store(tmp_path / "cron"):
+        result, seen = _dispatch(
+            {"id": "legacy-a", "prompt": "run hermes gateway defer-restart",
+             "enabled": True, "schedule": "every 1h"},
+            monkeypatch)
+    _assert_refused_before_any_side_effect(result, seen)
 
 
-def test_existing_g1_block_message_unchanged_in_cron_context(monkeypatch):
-    out = _block("hermes gateway restart", in_cron=True, monkeypatch=monkeypatch)
-    assert out is not None
-    assert "cannot restart, stop, or uninstall the gateway" in out
+def test_real_dispatch_refuses_script_shape(tmp_path, monkeypatch):
+    script = tmp_path / "job.sh"
+    script.write_text("#!/bin/sh\nhermes gateway defer-restart\n")
+    with jobs.use_cron_store(tmp_path / "cron"):
+        result, seen = _dispatch(
+            {"id": "legacy-s", "prompt": "clean", "script": str(script),
+             "enabled": True, "schedule": "every 1h"},
+            monkeypatch)
+    _assert_refused_before_any_side_effect(result, seen)
+
+
+def test_real_dispatch_refuses_monitor_shape(tmp_path, monkeypatch):
+    with jobs.use_cron_store(tmp_path / "cron"):
+        result, seen = _dispatch(
+            {"id": "legacy-m", "prompt": "clean", "monitor_script": "hermes gateway defer-restart",
+             "enabled": True, "schedule": "every 1h"},
+            monkeypatch)
+    _assert_refused_before_any_side_effect(result, seen)
+
+
+def test_real_dispatch_refuses_heredoc_write_then_run(tmp_path, monkeypatch):
+    """G2-R1 counterexample B through the real entry: the payload GENERATES its command
+    via a data heredoc and executes it. Mention-level detection refuses it at dispatch —
+    before the generator ever runs."""
+    script = tmp_path / "job.sh"
+    script.write_text(
+        "#!/bin/sh\ncat > child.sh <<'EOF'\nhermes gateway defer-restart\nEOF\nbash child.sh\n")
+    with jobs.use_cron_store(tmp_path / "cron"):
+        result, seen = _dispatch(
+            {"id": "legacy-h", "prompt": "clean", "script": str(script),
+             "enabled": True, "schedule": "every 1h"},
+            monkeypatch)
+    _assert_refused_before_any_side_effect(result, seen)
+
+
+def test_script_resolution_follows_the_active_home(tmp_path, monkeypatch):
+    """G2-R2 path binding: the referenced script resolves under the ACTIVE home binding
+    (the routed fire's profile home), never a caller-default home. Same-named script in
+    another home must be invisible to the scan."""
+    from cron import lifecycle_guard
+
+    active_home = tmp_path / "active-home"
+    (active_home / "scripts").mkdir(parents=True)
+    (active_home / "scripts" / "job.sh").write_text("#!/bin/sh\necho safe\n")
+    other_home = tmp_path / "other-home"
+    (other_home / "scripts").mkdir(parents=True)
+    (other_home / "scripts" / "job.sh").write_text("#!/bin/sh\nhermes gateway defer-restart\n")
+
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: active_home)
+    check_deferred_restart_job({"prompt": "clean", "script": "job.sh"})  # scans ACTIVE home
+
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: other_home)
+    with pytest.raises(DeferredRestartBlocked):
+        check_deferred_restart_job({"prompt": "clean", "script": "job.sh"})  # active = other → refused
 
 
 # --- G1 regression: the 15 fact-finding probes, verdicts byte-identical ----------

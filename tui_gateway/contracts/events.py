@@ -337,6 +337,17 @@ class ReviewSummaryPayload(Payload):
 event("review.summary", ReviewSummaryPayload, doc="Background review of the last turn finished.")
 
 
+class ReviewStatusPayload(Payload):
+    """Worker ownership snapshot mirrored by the isolated compute-host parent."""
+
+    pending: bool
+    revision: int
+    shutdown_timeout_s: float
+
+
+event("review.status", ReviewStatusPayload, doc="Background review worker ownership changed.")
+
+
 class AgentPrintPayload(Payload):
     """A session-authority local-viewer turn: one line the agent printed through ``_print_fn``
     (subagent completion, compaction, errors, budget notices), which main's classic CLI rendered

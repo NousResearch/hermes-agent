@@ -641,6 +641,8 @@ def _close_agent(agent, session_db, relay_session_id=None) -> None:
         # close() kill_all()s the task and the dying parent owns the children's stdout pipes, so
         # exiting now destroys in-flight deliveries (e.g. Bot Mode handoff replies).
         _quietly("background completion wait", _linger_for_background_completions)
+        from agent.review_lifecycle import drain_background_reviews
+        _quietly("background review wait", lambda: drain_background_reviews(agent))
         if relay_session_id:
             # run_conversation ends the turn but keeps the Relay root resumable; one-shot has no
             # next turn and os._exit skips atexit, so close the root (and fire on_session_finalize).

@@ -319,6 +319,13 @@ def _wait_for_oneshot_background_completions(cli) -> None:
         )
 
 
+def _wait_for_oneshot_reviews(cli) -> None:
+    from agent.review_lifecycle import drain_background_reviews
+    from cli import _oneshot_agent_and_session
+    agent, _session_id = _oneshot_agent_and_session(cli)
+    drain_background_reviews(agent)
+
+
 def _finalize_single_query(cli) -> None:
     """Settle the session, then release its lease, then linger as a bystander.
 
@@ -358,6 +365,10 @@ def _finalize_single_query(cli) -> None:
     import cli as cli_module
     from cli import _flush_one_shot_session_store, _notify_single_query_session_finalize, _run_cleanup, _shutdown_agent_memory_provider, _wait_for_oneshot_background_completions
     try:
+        try:
+            _wait_for_oneshot_reviews(cli)
+        except Exception:
+            logger.debug("one-shot background review wait failed", exc_info=True)
         try:
             _flush_one_shot_session_store(cli)
         except Exception:

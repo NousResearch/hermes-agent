@@ -5668,6 +5668,12 @@ export interface ReactionPayload {
 export interface ReviewSummaryPayload {
   text: string
 }
+/** Worker ownership snapshot mirrored by the isolated compute-host parent. */
+export interface ReviewStatusPayload {
+  pending: boolean
+  revision: number
+  shutdown_timeout_s: number
+}
 /** A session-authority local-viewer turn: one line the agent printed through ``_print_fn`` (subagent completion, compaction, errors, budget notices), which main's classic CLI rendered through ``_agent_status_print``. */
 export interface AgentPrintPayload {
   text: string
@@ -6988,6 +6994,8 @@ export interface BackendGatewayEventMap {
   'reasoning.delta': StreamDeltaPayload
   /** The backend withdrew an open server→client request; clear the matching card only. */
   'request.cancel': RequestCancelPayload
+  /** Background review worker ownership changed. */
+  'review.status': ReviewStatusPayload
   /** Background review of the last turn finished. */
   'review.summary': ReviewSummaryPayload
   /** Persisted goal / loop / heartbeat state changed. */
@@ -7101,6 +7109,7 @@ export const GATEWAY_EVENT_TYPES = [
   'reasoning.available',
   'reasoning.delta',
   'request.cancel',
+  'review.status',
   'review.summary',
   'session.control.update',
   'session.info',

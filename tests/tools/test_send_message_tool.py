@@ -726,6 +726,118 @@ class TestMatrixMediaLiveAdapterReuse:
             ("disconnect",),
         ]
 
+    def test_live_adapter_on_foreign_loop_dispatches_to_gateway_loop(self):
+        """A live adapter whose session is bound to the gateway loop must be driven ON that
+        loop: awaiting it from a foreign loop (the cron standalone lane's asyncio.run) makes
+        aiohttp's TimerContext raise "Timeout context manager should be used inside a task"
+        (aiohttp#10153)."""
+        import threading
+
+        calls = []
+
+        class LiveAdapter:
+            async def send(self, chat_id, message, metadata=None):
+                calls.append(("send", chat_id, message, asyncio.get_running_loop()))
+                return SimpleNamespace(success=True, message_id="$text")
+
+        gateway_loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=gateway_loop.run_forever, daemon=True)
+        thread.start()
+        try:
+            fake_runner = SimpleNamespace(
+                adapters={Platform.MATRIX: LiveAdapter()},
+                _gateway_loop=gateway_loop,
+            )
+            with patch(
+                "gateway.run._gateway_runner_ref",
+                return_value=fake_runner,
+            ), patch.dict(
+                sys.modules, {"plugins.platforms.matrix.adapter": SimpleNamespace()}
+            ):
+                result = asyncio.run(
+                    _send_matrix_via_adapter(
+                        SimpleNamespace(enabled=True, token="tok", extra={}),
+                        "!room:example.com",
+                        "hello",
+                    )
+                )
+        finally:
+            gateway_loop.call_soon_threadsafe(gateway_loop.stop)
+            thread.join(timeout=5)
+            gateway_loop.close()
+
+        assert result["success"] is True
+        # The send ran on the gateway loop, never the asyncio.run loop (pre-fix it ran on
+        # the caller's loop, which is what crashed aiohttp's TimerContext).
+        assert len(calls) == 1
+        assert calls[0][1] == "!room:example.com"
+        assert calls[0][2] == "hello"
+        assert calls[0][3] is gateway_loop
+
+    def test_live_adapter_gateway_loop_not_running_falls_back_to_ephemeral(self, tmp_path):
+        """Foreign loop with the gateway loop not running (shutdown): the live session is
+        unusable from this loop, so the ephemeral connect stands in — the standalone
+        fallback leg stays delivery-capable while the gateway is down."""
+        doc_path = tmp_path / "doc.pdf"
+        doc_path.write_bytes(b"%PDF-1.4")
+
+        calls = []
+
+        class LiveAdapter:
+            async def send(self, chat_id, message, metadata=None):
+                calls.append(("live_send", chat_id, message))
+                return SimpleNamespace(success=True, message_id="$text")
+
+        class EphemeralAdapter:
+            def __init__(self, _config):
+                pass
+
+            async def connect(self):
+                calls.append(("connect",))
+                return True
+
+            async def send(self, chat_id, message, metadata=None):
+                calls.append(("send", chat_id, message))
+                return SimpleNamespace(success=True, message_id="$txt")
+
+            async def send_document(self, chat_id, path, metadata=None):
+                calls.append(("send_document", chat_id, path))
+                return SimpleNamespace(success=True, message_id="$doc")
+
+            async def disconnect(self):
+                calls.append(("disconnect",))
+
+        # A real loop object that is never started: is_running() is False.
+        gateway_loop = asyncio.new_event_loop()
+        fake_runner = SimpleNamespace(
+            adapters={Platform.MATRIX: LiveAdapter()},
+            _gateway_loop=gateway_loop,
+        )
+        try:
+            with patch(
+                "gateway.run._gateway_runner_ref", return_value=fake_runner
+            ), patch.dict(sys.modules, {"plugins.platforms.matrix.adapter": SimpleNamespace(
+                MatrixAdapter=EphemeralAdapter)}):
+                result = asyncio.run(
+                    _send_matrix_via_adapter(
+                        SimpleNamespace(enabled=True, token="tok", extra={}),
+                        "!room:example.com",
+                        "report attached",
+                        media_files=[(str(doc_path), False)],
+                    )
+                )
+        finally:
+            gateway_loop.close()
+
+        assert result["success"] is True
+        # The live adapter was never touched; the ephemeral connect carried the delivery.
+        assert calls == [
+            ("connect",),
+            ("send", "!room:example.com", "report attached"),
+            ("send_document", "!room:example.com", str(doc_path)),
+            ("disconnect",),
+        ]
+
 # ---------------------------------------------------------------------------
 # HTML auto-detection in Telegram send
 # ---------------------------------------------------------------------------

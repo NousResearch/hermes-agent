@@ -421,12 +421,27 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
     media_files = media_files or []
     metadata = {"thread_id": thread_id} if thread_id else None
     from gateway.config import Platform
-    _, live_adapter = _live_adapter(Platform.MATRIX, lookup_failed_warning=(
+    runner, live_adapter = _live_adapter(Platform.MATRIX, lookup_failed_warning=(
         "Matrix: live gateway adapter lookup failed; falling back to an "
         "ephemeral connect (may re-init E2EE per send)"))
     if live_adapter is not None:
         # Owned by the gateway — must NOT be disconnected (return before the ephemeral ``finally``).
-        return await _matrix_send_core(live_adapter, chat_id, message, media_files, metadata)
+        # Its mautrix/aiohttp session is bound to the gateway loop: awaiting it from a foreign loop
+        # (the cron standalone lane runs asyncio.run) makes aiohttp's TimerContext raise
+        # "Timeout context manager should be used inside a task" (aiohttp#10153) — dispatch onto
+        # the gateway loop, the same pattern _send_via_adapter uses for the plugin platforms.
+        from tools.send_message_tool import _dispatch_on_gateway_loop
+        gateway_loop = getattr(runner, "_gateway_loop", None)
+        foreign_loop = gateway_loop is not None and asyncio.get_running_loop() is not gateway_loop
+        if foreign_loop and gateway_loop.is_running():
+            return await _dispatch_on_gateway_loop(
+                runner,
+                lambda: _matrix_send_core(live_adapter, chat_id, message, media_files, metadata),
+                "Matrix: failed to schedule send on gateway loop")
+        if not foreign_loop:
+            return await _matrix_send_core(live_adapter, chat_id, message, media_files, metadata)
+        # Foreign loop with the gateway loop not running (shutdown): the live session is
+        # unusable from this loop — fall through to the ephemeral connect below.
     try:
         from plugins.platforms.matrix.adapter import MatrixAdapter
     except ImportError:

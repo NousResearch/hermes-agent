@@ -15,6 +15,7 @@ import contextvars
 import json
 import os
 import time
+from contextlib import suppress
 from agent.i18n import DEFAULT_LANGUAGE, t
 from agent.session_activity import format_iteration_progress
 from gateway.config import Platform
@@ -101,7 +102,10 @@ def _same_chat_key_slots(
 
 
 class GatewayBusySessionMixin:
-    """Busy-session queueing, slot claims, slash dispatch tables, destructive-slash confirmation."""
+    """Busy-session queueing, slot claims, slash dispatch tables, destructive-slash confirmation, and
+    the busy fast-path a message takes while its session's turn is running (slash/photo handling,
+    steer/queue/interrupt, and the plugin-command rejection that keeps a plugin command's text out of
+    the running turn)."""
 
     def _queue_during_drain_enabled(self, busy_input_mode: Optional[str] = None) -> bool:
         # "queue"/"steer" mean messages survive a restart (queued for the new process); "interrupt" drops.
@@ -1526,3 +1530,261 @@ class GatewayBusySessionMixin:
         except Exception:
             return {}
         return cfg if isinstance(cfg, dict) else {}
+
+    async def _hm_busy_slash_or_photo(
+        self, event: MessageEvent, source: SessionSource, _quick_key: str
+    ) -> tuple[bool, Optional[str]]:
+        """Slash-command / photo-burst handling on the busy fast-path → ``(handled, result)``. Each
+        core command's mid-run behavior is declared on its CommandDef (busy_policy / busy_handler);
+        a plugin-registered command has no CommandDef and is rejected here (see
+        ``_hm_busy_plugin_command_reject``)."""
+        from hermes_cli.commands import resolve_command as _resolve_cmd_inner
+        _evt_cmd = event.get_command()
+        _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
+
+        if _cmd_def_inner:
+            # /status and /context are intentionally pre-gate so users always see session state.
+            if _cmd_def_inner.name == "status":
+                return True, await self._handle_status_command(event)
+            if _cmd_def_inner.name == "context":
+                return True, await self._handle_context_command(event)
+            # Slash access control mirrors the cold-path gate so non-admins can't bypass gating
+            # just because an agent is busy. /help and /whoami are the always-allowed floor.
+            _denied = self._check_slash_access(source, _cmd_def_inner.name)
+            if _denied is not None:
+                return True, _denied
+            if _cmd_def_inner.name in ("stop", "new"):
+                await self._hm_stop_owner_turn(_quick_key)
+            # Any recognized slash command dispatches per its declared busy_policy (dispatch /
+            # interrupt_then_dispatch / reject). Unrecognized commands and plain text fall through.
+            return True, await self._dispatch_busy_slash_command(event, _cmd_def_inner, _quick_key, source)
+
+        # A plugin command resolves in its own registry (hermes_cli.plugins._plugin_commands), never
+        # in the core one — intercept it before the steer/queue/interrupt fall-through below, or its
+        # raw argument text lands in the running turn's model context while the handler never runs.
+        _plugin_reject = self._hm_busy_plugin_command_reject(_evt_cmd)
+        if _plugin_reject is not None:
+            return True, _plugin_reject
+
+        # Telegram photo bursts arrive as near-simultaneous updates — never interrupt for a
+        # photo-only follow-up; adapter-level batching absorbs them.
+        if event.message_type == MessageType.PHOTO:
+            logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
+            self._hm_merge_pending_for_source(source, _quick_key, event)
+            return True, None
+        return False, None
+
+    def _hm_busy_plugin_command_reject(self, command: Optional[str]) -> Optional[str]:
+        """Reject text when *command* is a plugin-registered slash command, else ``None``.
+
+        The busy fast-path resolves core commands against ``hermes_cli.commands`` only; plugin
+        slash commands live in a separate registry (``hermes_cli.plugins._plugin_commands``) and
+        used to fall through to steer/queue/interrupt — their raw argument text entered the running
+        turn's model context while the handler never ran (a private-ish command's prompt reached the
+        cloud model for nothing).
+
+        The mid-run policy for plugin commands is owned HERE, not by the plugin: rejecting is the
+        only promise the core can keep for a handler it did not write. Dispatching a plugin handler
+        concurrently with a live turn is not something the core can offer (a handler may block or
+        touch session state, and its reply would race the running turn's), while queueing the event
+        would only replay the same raw text as a model turn once the current one ends. So the
+        command is rejected with a visible message and nothing is steered, queued or interrupted.
+
+        Unrecognized names and plain text return ``None`` and fall through unchanged.
+        """
+        if not command:
+            return None
+        try:
+            from hermes_cli.plugins import get_plugin_command_handler
+        except Exception:  # plugins unavailable in this install — keep the plain-text path
+            logger.debug("Plugin command registry unavailable on the busy path", exc_info=True)
+            return None
+        # Telegram's underscored autocomplete form must still match a hyphen-registered command;
+        # the exact name wins over its ``_`` → ``-`` twin (same order as the idle-path dispatch).
+        registered = next((name for name in dict.fromkeys((command, command.replace("_", "-")))
+                           if get_plugin_command_handler(name)), None)
+        if registered is None:
+            return None
+        logger.info(
+            "Rejected plugin command /%s on the busy path — a plugin command never steers, queues "
+            "or interrupts a running turn", registered,
+        )
+        return t("gateway.busy.plugin_command_rejected", command=registered)
+
+    async def _hm_stop_owner_turn(self, _quick_key: str) -> None:
+        """Messaging /stop and /new (busy, idle or confirmed) act on the authority's turn, as main
+        cancelled the adapter task that ran it and dropped its pending slot. Cancels the still-queued
+        ``messaging:*`` rows of this route's logical owner first (automation wakes, LOCAL/API input
+        and ``unknown`` rows are untouched; settled silently, no pause notice), then interrupts the
+        claimed generation: a turn still constructing its agent latches the Stop for adopt_agent."""
+        from gateway.session_authorities import active_authority
+        authority = active_authority(self)
+        sid = authority.logical_owner(self.session_store.peek_session_id(_quick_key)) if authority else None
+        if not sid or sid not in authority.sessions:
+            return
+        from gateway.session_contract import Principal, SessionRef
+        from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+        ref = SessionRef(authority.profile_id, sid)
+        actor = Principal('messaging-control', authority.profile_id,
+                          frozenset({'session:submit', 'session:control'}), 'busy-command')
+        rows = await asyncio.to_thread(list_session_admissions, authority.db, session_id=sid)
+        # A FIFO paused on a lost (``unknown``) turn is the operator's to resume: its pause notice
+        # promised the queued followers stay saved, so a /new from the chat leaves them queued.
+        paused = any(row['status'] == 'unknown' for row in rows)
+        for row in [] if paused else rows:
+            if row['status'] == 'queued' and row['principal_id'].startswith('messaging:'):
+                # Claimed meanwhile (stale_generation): it runs as main's post-claim race does.
+                with suppress(RuntimeStoreError):
+                    await authority.cancel_queued(actor, ref, row['admission_id'])
+        handle = authority._handle(ref)
+        if handle.execution_state == 'running':
+            # Settled meanwhile (stale_generation): there is no claimed turn left to stop.
+            with suppress(RuntimeStoreError):
+                await authority.interrupt(actor, ref, handle.execution_generation)
+
+    def _hm_busy_telegram_grace_queue(
+        self, event: MessageEvent, source: SessionSource, _quick_key: str, effective_busy_input_mode: str
+    ) -> bool:
+        """Queue a Telegram text follow-up that lands within the post-start grace window."""
+        _grace = float(os.getenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "3.0"))
+        _grace_state = self._peek_session_state(_quick_key)
+        _started_at = _grace_state.turn.started_ts if _grace_state else 0
+        if not (
+            source.platform == Platform.TELEGRAM and event.message_type == MessageType.TEXT
+            and _grace > 0 and _started_at and (time.time() - _started_at) <= _grace
+        ):
+            return False
+        logger.debug(
+            "Telegram follow-up arrived %.2fs after run start for %s — queueing without interrupt",
+            time.time() - _started_at, _quick_key,
+        )
+        if effective_busy_input_mode != "queue":
+            self._hm_merge_pending_for_source(source, _quick_key, event, merge_text=True)
+        else:
+            adapter = self._delivery_adapter_for(source)
+            if adapter:
+                self._enqueue_fifo(_quick_key, event, adapter)
+        return True
+
+    @staticmethod
+    def _hm_text_only(event: MessageEvent) -> bool:
+        return event.message_type == MessageType.TEXT and not event.media_urls and not event.media_types
+
+    def _hm_busy_steer(self, event: MessageEvent, running_agent: Any, _quick_key: str) -> None:
+        """Steer mode: inject text mid-run via ``agent.steer()``, else fall back to queue semantics."""
+        steer_text = (event.text or "").strip()
+        steered = False
+        if self._hm_text_only(event) and steer_text and hasattr(running_agent, "steer"):
+            try:
+                steered = self._steer_running_agent(running_agent, self._steer_text_with_origin(steer_text, event))
+            except Exception as exc:
+                logger.warning("PRIORITY steer failed for session %s: %s", _quick_key, exc)
+        if steered:
+            self._fold_into_running_turn(running_agent, _quick_key, event)
+            logger.debug("PRIORITY steer for session %s", _quick_key)
+            return
+        logger.debug("PRIORITY steer-fallback-to-queue for session %s", _quick_key)
+        self._queue_or_replace_pending_event(_quick_key, event)
+
+    async def _hm_busy_interrupt(
+        self, event: MessageEvent, source: SessionSource, running_agent: Any, _quick_key: str
+    ) -> None:
+        """Interrupt path: redirect text-only corrections when supported, else ``agent.interrupt()``."""
+        from gateway.run import _build_media_placeholder
+        # Text-only corrections redirect the live turn (preserving displayed context) when the
+        # runtime supports it; media/voice and older runtimes use the interrupt path below.
+        _can_redirect = getattr(running_agent, "_supports_active_turn_redirect", False) is True
+        if self._hm_text_only(event) and _can_redirect and hasattr(running_agent, "redirect"):
+            if self._redirect_active_turn(running_agent, (event.text or "").strip(), _quick_key, event):
+                logger.debug("PRIORITY redirect for session %s", _quick_key)
+                return
+        logger.debug("PRIORITY interrupt for session %s", _quick_key)
+        _interrupt_text = event.text
+        if self._pending_event_audio_paths(event):
+            _interrupt_text, _ = await self._transcribe_and_echo_pending_voice(
+                event, self._delivery_adapter_for(source), source, event.text or "",
+                log_context="Voice-priority-interrupt",
+            )
+        elif not _interrupt_text and getattr(event, "media_urls", None):
+            _interrupt_text = _build_media_placeholder(event)
+        # Delivered via adapter._pending_messages (read by _run_agent); never also buffered on self
+        # — that copy was never consumed and grew unbounded.
+        running_agent.interrupt(_interrupt_text)
+
+    async def _hm_busy_preempt(self, event: MessageEvent, source: SessionSource, _quick_key: str) -> bool:
+        """busy_input_mode for a follow-up the durable FIFO is about to admit, through main's own busy
+        resolution (voice transcribed into steer/interrupt, steer folded into the turn, busy ack).
+        Returns True when the text already landed inside the running turn (steer / redirect), so it
+        must NOT also be admitted as its own turn; False when the caller should admit it (queue mode,
+        a demotion, or an interrupt — the ended turn lets the FIFO run the follow-up next)."""
+        from gateway.run import _AGENT_PENDING_SENTINEL
+        mode = self._effective_busy_input_mode(source)
+        state = self._peek_session_state(_quick_key)
+        running_agent = state.turn.agent if state else None
+        adapter = self._delivery_adapter_for(source)
+        if (self._draining or adapter is None or running_agent is None or running_agent is _AGENT_PENDING_SENTINEL
+                or (event.message_type == MessageType.TEXT and mode != "steer"
+                    and self._effective_busy_text_mode(source) == "queue")):
+            return False
+        outcome = await self._resolve_busy_steer_or_redirect(event, _quick_key, mode, running_agent)
+        await self._busy_interrupt_and_ack(event, _quick_key, adapter, state, running_agent, outcome)
+        return bool(outcome.steered or outcome.redirected)
+
+    async def _hm_handle_running_session_message(
+        self, event: MessageEvent, source: SessionSource, _quick_key: str
+    ) -> Optional[str]:
+        """Fast-path while this session's agent is running: interrupt by default (minimal latency);
+        busy_input_mode queue/steer, subagent and compression protection demote to queue."""
+        from gateway.run import _AGENT_PENDING_SENTINEL
+        if getattr(event, "internal", False) and not event.get_command():
+            # Main's rule (run_busy's busy handler, which the shared runtime's busy dispatch skips):
+            # an internal synthetic event never interrupts or steers the running turn.
+            self._queue_or_replace_pending_event(_quick_key, event)
+            return None
+        _handled, _result = await self._hm_busy_slash_or_photo(event, source, _quick_key)
+        if _handled:
+            return _result
+
+        effective_busy_input_mode = self._effective_busy_input_mode(source)
+        if self._hm_busy_telegram_grace_queue(event, source, _quick_key, effective_busy_input_mode):
+            return None
+
+        _ra_state = self._peek_session_state(_quick_key)
+        running_agent = _ra_state.turn.agent if _ra_state else None
+        if running_agent is _AGENT_PENDING_SENTINEL:  # agent still being set up
+            if event.get_command() == "stop":  # force-clean the sentinel so the session is unlocked
+                self._release_running_agent_state(_quick_key)
+                logger.info("HARD STOP (pending) for session %s — sentinel cleared", _quick_key)
+                return EphemeralReply(t("gateway.stop.force_stopped_pending"))
+            self._hm_merge_pending_for_source(source, _quick_key, event, merge_text=True)  # picked up after start
+            return None
+        if self._draining:
+            queue_during_drain = self._queue_during_drain_enabled(effective_busy_input_mode)
+            if queue_during_drain:
+                self._queue_or_replace_pending_event(_quick_key, event)
+            return (
+                t("gateway.busy.drain_queued", action=self._status_action_gerund())
+                if queue_during_drain
+                else t("gateway.busy.drain_rejected", action=self._status_action_gerund())
+            )
+        if effective_busy_input_mode == "queue":
+            logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
+            self._queue_or_replace_pending_event(_quick_key, event)
+            return None
+        if effective_busy_input_mode == "steer":
+            self._hm_busy_steer(event, running_agent, _quick_key)
+            return None
+        # Subagent protection: an interrupt cascades through ``_active_children`` and aborts
+        # in-flight delegate_task work (/stop reached its handler above — still an escape hatch).
+        # Compression protection: an interrupt would start a new turn on the pre-rotation parent
+        # while compression rotates the id away, forking orphaned siblings.
+        if self._agent_has_active_subagents(running_agent):
+            _demote = "because the running agent has active subagents (#30170)"
+        elif await self._session_has_compression_in_flight(_quick_key):
+            _demote = "because context compression is in flight (#56391)"
+        else:
+            await self._hm_busy_interrupt(event, source, running_agent, _quick_key)
+            return None
+        logger.info("PRIORITY interrupt demoted to queue for session %s %s", _quick_key, _demote)
+        self._queue_or_replace_pending_event(_quick_key, event)
+        return None

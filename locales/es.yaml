@@ -724,6 +724,7 @@ gateway:
     interrupting_head: "⚡ Interrumpiendo la tarea actual"
     interrupting_tail: ". Responderé a tu mensaje en breve."
     slash_rejected: "⏳ El agente está en ejecución — `/{command}` no puede ejecutarse a mitad de turno. Espera la respuesta actual o usa `/stop` primero."
+    plugin_command_rejected: "⏳ El agente está en ejecución — `/{command}` es un comando de plugin y no puede ejecutarse a mitad de turno. Tu texto no se envió al modelo. Espera la respuesta actual o usa `/stop` primero."
     reject_goal: "El agente está en ejecución — usa /goal status / pause / clear / wait durante la ejecución, o /stop antes de definir un nuevo objetivo."
     reject_loop: "El agente está en ejecución — usa /loop status / pause / stop durante la ejecución, o /stop antes de definir un nuevo bucle."
     draining_maintenance: "⏳ Este agente se está vaciando para una acción de mantenimiento y ahora mismo no acepta turnos nuevos. Volverá en un momento — reenvía tu mensaje en breve."

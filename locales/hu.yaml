@@ -734,6 +734,7 @@ gateway:
     interrupting_head: "⚡ A jelenlegi feladat megszakítása"
     interrupting_tail: ". Hamarosan válaszolok az üzenetedre."
     slash_rejected: "⏳ Az ügynök fut — a `/{command}` nem futtatható kör közben. Várd meg a jelenlegi választ, vagy előbb add ki a `/stop` parancsot."
+    plugin_command_rejected: "⏳ Az ügynök fut — a `/{command}` beépülő parancs, ezért nem futtatható kör közben. A szöveged nem került a modellhez. Várd meg a jelenlegi választ, vagy előbb add ki a `/stop` parancsot."
     reject_goal: "Az ügynök fut — futás közben a /goal status / pause / clear / wait használható, új cél megadása előtt pedig a /stop."
     reject_loop: "Az ügynök fut — futás közben a /loop status / pause / stop használható, új ciklus megadása előtt pedig a /stop."
     draining_maintenance: "⏳ Ez az ügynök egy karbantartási művelet miatt éppen leürül, és most nem fogad új köröket. Hamarosan visszatér — küldd el újra kis idő múlva."

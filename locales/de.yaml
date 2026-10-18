@@ -724,6 +724,7 @@ gateway:
     interrupting_head: "⚡ Aktuelle Aufgabe wird unterbrochen"
     interrupting_tail: ". Ich antworte gleich auf Ihre Nachricht."
     slash_rejected: "⏳ Agent läuft — `/{command}` kann nicht mitten im Zug ausgeführt werden. Warten Sie auf die aktuelle Antwort oder verwenden Sie zuerst `/stop`."
+    plugin_command_rejected: "⏳ Agent läuft — `/{command}` ist ein Plugin-Befehl und kann nicht mitten im Zug ausgeführt werden. Ihr Text wurde nicht an das Modell gesendet. Warten Sie auf die aktuelle Antwort oder verwenden Sie zuerst `/stop`."
     reject_goal: "Agent läuft — verwenden Sie währenddessen /goal status / pause / clear / wait, oder /stop, bevor Sie ein neues Ziel setzen."
     reject_loop: "Agent läuft — verwenden Sie währenddessen /loop status / pause / stop, oder /stop, bevor Sie eine neue Schleife setzen."
     draining_maintenance: "⏳ Dieser Agent wird für eine Wartungsaktion geleert und nimmt gerade keine neuen Züge an. Er ist gleich wieder da — bitte senden Sie in Kürze erneut."

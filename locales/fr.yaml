@@ -845,6 +845,7 @@ gateway:
     interrupting_head: "⚡ Interruption de la tâche en cours"
     interrupting_tail: ". Je réponds à votre message dans un instant."
     slash_rejected: "⏳ L'agent est en cours d'exécution — `/{command}` ne peut pas s'exécuter au milieu d'un tour. Attendez la fin de la réponse en cours ou faites `/stop` d'abord."
+    plugin_command_rejected: "⏳ L'agent est en cours d'exécution — `/{command}` est une commande de plugin et ne peut pas s'exécuter au milieu d'un tour. Votre texte n'a pas été envoyé au modèle. Attendez la fin de la réponse en cours ou faites `/stop` d'abord."
     reject_goal: "L'agent est en cours d'exécution — utilisez /goal status / pause / clear / wait pendant l'exécution, ou /stop avant de définir un nouvel objectif."
     reject_loop: "L'agent est en cours d'exécution — utilisez /loop status / pause / stop pendant l'exécution, ou /stop avant de définir une nouvelle boucle."
     draining_maintenance: "⏳ Cet agent se vide pour une opération de maintenance et n'accepte pas de nouveaux tours pour le moment. Il sera de retour dans un instant — merci de renvoyer votre message d'ici peu."

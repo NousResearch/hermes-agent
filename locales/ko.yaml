@@ -724,6 +724,7 @@ gateway:
     interrupting_head: "⚡ 현재 작업 중단 중"
     interrupting_tail: ". 곧 메시지에 응답할게요."
     slash_rejected: "⏳ 에이전트가 실행 중이에요 — `/{command}`은(는) 턴 도중에 실행할 수 없어요. 현재 응답을 기다리거나 먼저 `/stop`하세요."
+    plugin_command_rejected: "⏳ 에이전트가 실행 중이에요 — `/{command}`은(는) 플러그인 명령이라 턴 도중에 실행할 수 없어요. 입력한 텍스트는 모델로 전송되지 않았어요. 현재 응답을 기다리거나 먼저 `/stop`하세요."
     reject_goal: "에이전트가 실행 중이에요 — 실행 중에는 /goal status / pause / clear / wait를 사용하거나, 새 목표를 설정하기 전에 /stop하세요."
     reject_loop: "에이전트가 실행 중이에요 — 실행 중에는 /loop status / pause / stop을 사용하거나, 새 루프를 설정하기 전에 /stop하세요."
     draining_maintenance: "⏳ 이 에이전트는 유지 관리 작업을 위해 정리 중이어서 지금은 새 턴을 받지 않아요. 곧 돌아올 테니 잠시 후 다시 보내 주세요."

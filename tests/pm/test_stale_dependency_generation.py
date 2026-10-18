@@ -14,7 +14,9 @@ def _generation(state_dir, name):
 
 
 def _record(path, venv):
-    path.write_text(json.dumps({"packages": {"venv": {"environment": str(venv)}}}), encoding="utf-8")
+    path.write_text(
+        json.dumps({"packages": {"venv": {"environment": str(venv)}}}), encoding="utf-8"
+    )
 
 
 def _install_state(tmp_path, monkeypatch):

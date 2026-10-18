@@ -28,8 +28,8 @@ class TestValidateCronScriptPath:
         inside Python (#129350). .py stays accepted."""
         scripts_dir = get_hermes_home() / "scripts"
         scripts_dir.mkdir(parents=True, exist_ok=True)
-        (scripts_dir / "job.cjs").write_text("const dash = 1;\n")
-        (scripts_dir / "job.py").write_text("print('ok')\n")
+        (scripts_dir / "job.cjs").write_text("const dash = 1;\n", encoding="utf-8")
+        (scripts_dir / "job.py").write_text("print('ok')\n", encoding="utf-8")
         error = _validate_cron_script_path("job.cjs")
         assert error is not None
         assert ".cjs" in error

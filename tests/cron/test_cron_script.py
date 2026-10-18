@@ -152,7 +152,7 @@ class TestRunJobScript:
         from cron.scheduler_script import _run_job_script
 
         script = cron_env / "scripts" / "job.cjs"
-        script.write_text("const dash = 1 — 2;\n")
+        script.write_text("const dash = 1 — 2;\n", encoding="utf-8")
 
         success, output = _run_job_script("job.cjs")
         assert success is False

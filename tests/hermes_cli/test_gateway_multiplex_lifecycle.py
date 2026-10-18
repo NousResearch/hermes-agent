@@ -143,6 +143,54 @@ def test_force_restart_keeps_parked_profile_gateway_ownership(homes, monkeypatch
     assert profile_lifecycle('restart', SimpleNamespace()) is False
 
 
+def test_stop_parks_a_served_profile_instead_of_stopping_the_host(homes, monkeypatch, capsys):
+    """The host publishes its own pid into a served profile's runtime record (#141133)."""
+    from hermes_cli import gateway as gw
+    from gateway import control_socket
+    root, secondary = homes
+    marker = secondary / 'gateway.parked'
+    host_pid = 4242
+    owner = SimpleNamespace(home=root, pid=host_pid, profile_label='default',
+                            profiles=('default', 'worker'), describe=lambda: 'test host')
+    monkeypatch.setenv('HERMES_HOME', str(secondary))
+    monkeypatch.setattr(gw, '_current_profile_name', lambda: 'worker')
+    monkeypatch.setattr(gw, '_refuse_from_inside_gateway', lambda *a: None)
+    monkeypatch.setattr(gw, 'find_gateway_pids', lambda **kw: [host_pid])
+    monkeypatch.setattr(gw, 'host_multiplexer_serving', lambda *a: owner)
+    monkeypatch.setattr(gw, '_served_by_another_host_gateway', lambda *a: owner)
+    monkeypatch.setattr(gw, 'named_profile_served_by_running_multiplexer', lambda *a: True)
+    calls = []
+
+    def unserve(home, name):
+        assert home == root and name == 'worker' and marker.exists()
+        calls.append('unserve')
+        return {'unserved': name, 'served_profiles': ['default']}
+
+    def host_stop(*args, **kwargs):
+        raise AssertionError('stop killed the host gateway pid')
+
+    monkeypatch.setattr(control_socket, 'request_unserve_profile', unserve, raising=False)
+    monkeypatch.setattr(gw, 'stop_profile_gateway', host_stop)
+    gw._cmd_stop(SimpleNamespace())
+    assert calls == ['unserve']
+    assert marker.exists()
+    assert "parked; its bots and cron are stopped" in capsys.readouterr().out
+
+
+def test_separate_gateway_beside_the_host_keeps_its_own_lifecycle(homes, monkeypatch):
+    from hermes_cli import gateway as gw
+    from hermes_cli.gateway_profile_lifecycle import profile_lifecycle
+    root, secondary = homes
+    host_pid = 4242
+    owner = SimpleNamespace(home=root, pid=host_pid, profile_label='default',
+                            profiles=('default', 'worker'), describe=lambda: 'test host')
+    monkeypatch.setenv('HERMES_HOME', str(secondary))
+    monkeypatch.setattr(gw, '_current_profile_name', lambda: 'worker')
+    monkeypatch.setattr(gw, 'find_gateway_pids', lambda **kw: [host_pid, 5151])
+    monkeypatch.setattr(gw, 'host_multiplexer_serving', lambda *a: owner)
+    assert profile_lifecycle('stop', SimpleNamespace()) is False
+
+
 def test_parked_status_and_topology_keep_roster(homes, monkeypatch, capsys):
     from hermes_cli import gateway as gw, profiles
     from hermes_cli.web_server_gateway import _collect_profile_gateway_topology

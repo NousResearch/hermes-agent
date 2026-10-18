@@ -413,8 +413,9 @@ def _should_auto_start(env: dict[str, str]) -> bool:
 # ---- idle auto-stop -------------------------------------------------------------------------------
 # A desktop nobody is using still holds ~220 MiB (plus whatever browser was left open). Every use —
 # a computer_use action, a browser spawn onto the screen, a viewer attached, a human takeover — stamps
-# ``activity``; the gateway's display watcher stops a screen idle past ``bot_desktop.idle_stop_minutes``
-# unless a human holds it. The next use starts it again (auto_start or the pane's Start).
+# ``activity``; :func:`stop_if_idle` stops a screen idle past ``bot_desktop.idle_stop_minutes`` unless a
+# human holds it. Two callers apply it: the gateway's display watcher and the screen's own launcher
+# (``idle_watch``), so a screen whose gateway never came back still stops. The next use starts it again.
 DEFAULT_IDLE_STOP_MINUTES = 30
 
 
@@ -736,6 +737,10 @@ def _spawn_and_wait(sd: Path, wait_seconds: float) -> DesktopStatus:
             "HERMES_BD_ENV_FILE": str(env_file),
             "HERMES_BD_CONFIG_HOME": str(sd / "xdg"),
             "HERMES_BD_GEOMETRY": geometry(),
+            # The launcher's idle self-stop runs tools.bot_desktop.idle_watch with this interpreter and home.
+            "HERMES_BD_PYTHON": sys.executable,
+            "HERMES_BD_SRC_ROOT": str(Path(__file__).resolve().parents[2]),
+            "HERMES_BD_HOME": str(get_hermes_home()),
         })
         from tools.bot_desktop.browser import dock_exec_line, dock_launch
         if (browser := dock_launch()) is not None:

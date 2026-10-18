@@ -9,6 +9,7 @@ import json
 import logging
 import sqlite3
 import time
+from contextlib import suppress
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_state_common import (
@@ -51,6 +52,15 @@ _CHAIN_STEP_SQL = f"""
 
 # Turn-lease rows expired longer than this are swept by the next acquisition of any conversation.
 _TURN_LEASE_SWEEP_GRACE_S = 86400.0
+_TURN_LEASE_RECHECK_TIMEOUT_S = 0.5
+
+
+def _set_bounded_read_busy_timeout(conn, deadline: float, max_busy_timeout_s: float) -> None:
+    """Cap this connection's SQLite busy wait to the remaining ownership-read budget."""
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("session turn lease ownership read exceeded its deadline")
+    conn.execute(f"PRAGMA busy_timeout={int(min(remaining, max_busy_timeout_s) * 1000)}")
 
 
 def _cooldown_row(exists: bool, cooldown_until, error) -> dict[str, Any]:
@@ -584,7 +594,10 @@ class SessionCompressionMixin:
             "DELETE FROM compression_locks WHERE session_id = ? AND holder = ?",
             (session_id, holder))
 
-    def _session_turn_lease_key_on_conn(self, conn, session_id: str) -> str:
+    def _session_turn_lease_key_on_conn(
+        self, conn, session_id: str, *, deadline: Optional[float] = None,
+        busy_timeout_s: Optional[float] = None,
+    ) -> str:
         """Walk compression parents on ``conn`` to the conversation lease key. Must share
         the connection of the lease INSERT/UPDATE/DELETE: a failed lookup must not yield a
         child id the write then persists. Markers bind to ``parent_session_id``. Lock
@@ -592,9 +605,15 @@ class SessionCompressionMixin:
         if not session_id:
             return session_id
         def _row(sid: str):
+            if deadline is not None:
+                _set_bounded_read_busy_timeout(
+                    conn, deadline, busy_timeout_s if busy_timeout_s is not None else 0.0,
+                )
             row = conn.execute(
                 "SELECT id, parent_session_id, source, model_config, end_reason FROM sessions WHERE id = ?",
                 (sid,)).fetchone()
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError("session turn lease ownership read exceeded its deadline")
             return dict(row) if row else None
 
         current = _row(session_id)
@@ -715,6 +734,50 @@ class SessionCompressionMixin:
                 (self._session_turn_lease_key_on_conn(conn, session_id), holder),
             ).fetchone()
         return float(row[0]) if row else None
+
+    def session_turn_lease_expires_at_bounded(
+        self, session_id: str, holder: str, *, timeout_s: float = _TURN_LEASE_RECHECK_TIMEOUT_S,
+    ) -> Optional[float]:
+        """Read the holder's committed expiry without waiting past the ownership-check budget.
+
+        Unlike the general reader, this narrow scheduler-path read bounds both SessionDB's mutex
+        acquisition and each SQLite busy wait. It only executes SELECTs; timeout/read errors remain
+        unknown to the caller. The usual reader remains unchanged for all other callers.
+        """
+        if not session_id or not holder:
+            return None
+        timeout_s = max(0.0, float(timeout_s))
+        deadline = time.monotonic() + timeout_s
+        if not self._lock.acquire(timeout=timeout_s):
+            raise TimeoutError("timed out acquiring SessionDB lock for lease ownership read")
+        conn = None
+        previous_busy_timeout_ms = None
+        try:
+            conn = self._conn
+            if conn is None:
+                raise sqlite3.ProgrammingError("SessionDB is closed during lease ownership read")
+            previous_busy_timeout_ms = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+            from hermes_state import _READ_BUSY_TIMEOUT_S
+
+            _set_bounded_read_busy_timeout(conn, deadline, _READ_BUSY_TIMEOUT_S)
+            conversation_id = self._session_turn_lease_key_on_conn(
+                conn, session_id, deadline=deadline, busy_timeout_s=_READ_BUSY_TIMEOUT_S,
+            )
+            _set_bounded_read_busy_timeout(conn, deadline, _READ_BUSY_TIMEOUT_S)
+            row = conn.execute(
+                "SELECT expires_at FROM session_turn_leases WHERE conversation_id = ? AND holder = ?",
+                (conversation_id, holder),
+            ).fetchone()
+            if time.monotonic() >= deadline:
+                raise TimeoutError("session turn lease ownership read exceeded its deadline")
+            return float(row[0]) if row else None
+        finally:
+            try:
+                if conn is not None and previous_busy_timeout_ms is not None:
+                    with suppress(sqlite3.Error):
+                        conn.execute(f"PRAGMA busy_timeout={int(previous_busy_timeout_ms)}")
+            finally:
+                self._lock.release()
 
     def refresh_session_turn_lease(
         self, session_id: str, holder: str, *, ttl_seconds: float = 300.0, patience_s: Optional[float] = None,

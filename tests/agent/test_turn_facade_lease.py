@@ -179,10 +179,11 @@ class _MovingClock:
 
 
 def test_lock_tolerance_never_outlives_the_committed_row_expiry(tmp_path, monkeypatch):
-    """Real SessionDB + a real second-connection write lock. The local deadline never runs past the
-    row's committed expiry (a renewal that waited for the lock), and a renewal blocked near expiry
-    gives up and stops the turn BEFORE the row becomes reclaimable, never after a successor could
-    take it. Control: the lock clearing lets the delayed renewal succeed with no interrupt."""
+    """A real write lock cannot stop a turn while the row still belongs to it, even after expiry.
+
+    Once the lock clears, the next scheduled renewal can recover the same holder's expired row;
+    holder-fenced writes still prevent revival after a real takeover.
+    """
     import hermes_state
     import hermes_state_compression
     from agent import turn_facade_lease
@@ -236,20 +237,212 @@ def test_lock_tolerance_never_outlives_the_committed_row_expiry(tmp_path, monkey
     assert row_expiry() > admitted_expiry, "the delayed renewal must have renewed the row"
     assert lease._authority_deadline <= row_expiry()
 
-    # Near expiry with the lock held throughout: the renewal must give up and interrupt while the
-    # row is still unexpired, so no successor can reclaim it under a running turn.
+    # Near expiry with the lock held: the bounded renewal gives up, then the ownership read sees
+    # that the lease row still belongs to this turn. That is a missed write, not lease loss.
+    current_expiry = row_expiry()
     clock.set(lease._authority_deadline - 3.0)
     blocker = write_lock()
     try:
-        assert lease.refresh_tick() is False
+        assert lease.refresh_tick() is None
+        assert row_expiry() == current_expiry
+        assert events == []
     finally:
         blocker.rollback()
         blocker.close()
-    assert [msg for _, msg in events] == [
-        "Session turn lease could not be refreshed; stopping to protect the transcript."
-    ]
-    assert events[0][0] < row_expiry()
+
+    # The scheduled retry is allowed to renew after the cached deadline when no successor has
+    # reclaimed the row. This is a real SQLite UPDATE, not a synthetic success result.
+    clock.set(current_expiry + 5.0)
+    assert lease.refresh_tick() is None
+    assert events == []
+    assert row_expiry() > current_expiry
+    assert lease._authority_deadline <= row_expiry()
     db.close()
+
+
+def test_unreadable_exhausted_lease_recheck_is_unknown_not_loss(tmp_path, monkeypatch):
+    """A locked read-only lease recheck is unknown, not evidence of a takeover."""
+    import hermes_state
+    import hermes_state_compression
+    from agent import turn_facade_lease
+
+    clock = _MovingClock(1000.0)
+    fake_time = SimpleNamespace(time=clock.time, monotonic=time.monotonic, sleep=time.sleep)
+    monkeypatch.setattr(turn_facade_lease, "time", fake_time)
+    monkeypatch.setattr(hermes_state_compression, "time", fake_time)
+    monkeypatch.setattr(turn_facade_lease, "_REFRESH_WRITE_PATIENCE_S", 0.01)
+
+    path = tmp_path / "state.db"
+    writer = hermes_state.SessionDB(path)
+    writer.create_session("s1", source="test")
+    assert writer.try_acquire_session_turn_lease("s1", "h")
+    writer.close()
+    # Switch the disposable database after the writer has closed, then attach only the established
+    # read-only SessionDB interface. The rollback-journal exclusive lock makes its bounded SELECT
+    # raise SQLITE_BUSY without adding any production store API or schema.
+    with sqlite3.connect(path, timeout=0) as setup:
+        journal_mode = setup.execute("PRAGMA journal_mode=DELETE").fetchone()[0]
+    assert journal_mode.lower() == "delete"
+    reader = hermes_state.SessionDB(path, read_only=True)
+
+    class _LockedWriteDb:
+        def session_turn_lease_expires_at(self, session_id, holder):
+            return reader.session_turn_lease_expires_at(session_id, holder)
+
+        def session_turn_lease_expires_at_bounded(self, session_id, holder):
+            return reader.session_turn_lease_expires_at_bounded(session_id, holder)
+
+        def refresh_session_turn_lease(self, session_id, holder, **kwargs):
+            conn = sqlite3.connect(path, timeout=0, isolation_level=None)
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                updated = conn.execute(
+                    "UPDATE session_turn_leases SET expires_at = ? "
+                    "WHERE conversation_id = ? AND holder = ?",
+                    (clock.time() + LEASE_TTL_SECONDS, session_id, holder),
+                ).rowcount
+                conn.commit()
+                return updated > 0
+            finally:
+                conn.close()
+
+    events = []
+    agent = SimpleNamespace(session_id="s1", interrupt=lambda msg, **kw: events.append(msg))
+    lease = DurableTurnLease(agent, _LockedWriteDb(), "s1", "h", expires_at=1000.0)
+    lease.turn_active = True
+    clock.set(1001.0)
+    blocker = sqlite3.connect(path, timeout=0, isolation_level=None)
+    blocker.execute("BEGIN EXCLUSIVE")
+    try:
+        read_started = time.monotonic()
+        try:
+            reader.session_turn_lease_expires_at_bounded("s1", "h")
+        except (sqlite3.OperationalError, TimeoutError) as exc:
+            assert any(token in str(exc).lower() for token in ("locked", "deadline"))
+        else:
+            raise AssertionError("exclusive lock did not make the read-only lease check unreadable")
+        assert time.monotonic() - read_started < (
+            hermes_state_compression._TURN_LEASE_RECHECK_TIMEOUT_S + 2.0
+        ), "SQLite busy timeout exceeded the bounded ownership-read deadline"
+
+        started = time.monotonic()
+        # The bounded ownership SELECT encounters the real lock. It is unknown, not proof that the
+        # row is absent or belongs to another process, so this tick returns for a later retry.
+        assert lease.refresh_tick() is None
+        assert events == []
+        assert lease.stop.is_set() is False
+    finally:
+        blocker.rollback()
+        blocker.close()
+        reader.close()
+    assert time.monotonic() - started < 2.0, "read-only ownership probe exceeded its bound"
+
+
+def test_exhausted_recheck_bounds_sessiondb_lock_and_later_renews(tmp_path):
+    """A fallback mutex timeout returns the tick; a later tick renews the same expired holder."""
+    import hermes_state
+    import hermes_state_compression
+
+    path = tmp_path / "state.db"
+    db = hermes_state.SessionDB(path)
+    db.create_session("s1", source="test")
+    assert db.try_acquire_session_turn_lease("s1", "h")
+    db._wal_active = False
+    interrupts = []
+    agent = SimpleNamespace(session_id="s1", interrupt=lambda msg, **kw: interrupts.append(msg))
+    lease = DurableTurnLease(agent, db, "s1", "h", expires_at=0.0)
+    lease.turn_active = True
+    assert db._lock.acquire(blocking=False)
+    finished = threading.Event()
+    tick_results = []
+
+    def run_tick():
+        tick_results.append(lease.refresh_tick())
+        finished.set()
+
+    worker = threading.Thread(target=run_tick)
+    started = time.monotonic()
+    worker.start()
+    try:
+        # The 0.5s production bound plus scheduling margin is well below the legacy unbounded wait.
+        assert finished.wait(2.5), "refresh callback blocked behind SessionDB._lock"
+        assert tick_results == [None]
+        assert interrupts == [] and lease.stop.is_set() is False
+        recheck_timeout = getattr(hermes_state_compression, "_TURN_LEASE_RECHECK_TIMEOUT_S", 0.5)
+        assert time.monotonic() - started < recheck_timeout + 2.0
+    finally:
+        db._lock.release()
+        worker.join(10)
+    assert not worker.is_alive()
+
+    previous_expiry = db.session_turn_lease_expires_at("s1", "h")
+    assert previous_expiry is not None
+    assert lease.refresh_tick() is None
+    renewed_expiry = db.session_turn_lease_expires_at("s1", "h")
+    assert renewed_expiry is not None and renewed_expiry > previous_expiry
+    assert lease._authority_deadline <= renewed_expiry
+    assert interrupts == [] and lease.stop.is_set() is False
+    db.close()
+
+
+def test_missing_bounded_recheck_reader_still_retries_holder_fenced_renewal():
+    """A store adapter without the optional reader remains on its renewal fallback path."""
+
+    class _AdapterDb:
+        def __init__(self):
+            self.attempts = 0
+
+        def refresh_session_turn_lease(self, session_id, holder, **kwargs):
+            self.attempts += 1
+            return True
+
+    db = _AdapterDb()
+    interrupts = []
+    agent = SimpleNamespace(session_id="s1", interrupt=lambda msg, **kw: interrupts.append(msg))
+    lease = DurableTurnLease(agent, db, "s1", "h", expires_at=0.0)
+    lease.turn_active = True
+
+    assert lease.refresh_tick() is None
+    assert db.attempts == 1
+    assert lease._authority_deadline > 0.0
+    assert interrupts == [] and lease.stop.is_set() is False
+
+
+def test_expired_owned_row_retries_after_non_lock_renewal_error():
+    """A failed retry does not stop an expired row that still names this holder."""
+
+    class _RetryDb:
+        def __init__(self):
+            self.attempts = 0
+
+        def session_turn_lease_expires_at(self, session_id, holder):
+            return 0.0  # expired, but still held by this turn
+
+        def session_turn_lease_expires_at_bounded(self, session_id, holder):
+            return self.session_turn_lease_expires_at(session_id, holder)
+
+        def refresh_session_turn_lease(self, session_id, holder, **kwargs):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise OSError("temporary store error")
+            return True
+
+    db = _RetryDb()
+    interrupts = []
+    agent = SimpleNamespace(session_id="s1", interrupt=lambda msg, **kw: interrupts.append(msg))
+    lease = DurableTurnLease(agent, db, "s1", "h", expires_at=0.0)
+    lease.turn_active = True
+
+    assert lease.refresh_tick() is None
+    assert db.attempts == 1
+    assert lease._authority_deadline == 0.0, "a failed update must not extend cached authority"
+    assert interrupts == []
+    assert lease.stop.is_set() is False
+
+    assert lease.refresh_tick() is None
+    assert db.attempts == 2
+    assert lease._authority_deadline > 0.0
+    assert interrupts == []
 
 
 def test_interrupt_turn_only_while_active():

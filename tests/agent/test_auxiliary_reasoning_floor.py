@@ -20,6 +20,11 @@ _PORTAL_400 = (
     "other parameters. Additional info: Reasoning is mandatory for this endpoint and cannot be disabled.'}"
 )
 
+_VOCABULARY_400 = (
+    "Error code: 400 - request param validation error, Value error, "
+    "reasoning_effort must be [low, high, max] for glm-5.3"
+)
+
 
 @pytest.fixture(autouse=True)
 def _fresh_memo():
@@ -42,12 +47,13 @@ def _call(client):
         )
 
 
-def test_reasoning_required_400_steps_effort_up_to_the_floor_and_remembers_the_route():
+@pytest.mark.parametrize("rejection", [_PORTAL_400, _VOCABULARY_400], ids=["mandatory", "vocabulary"])
+def test_reasoning_required_400_steps_effort_up_to_the_floor_and_remembers_the_route(rejection):
     """First call: ``none`` → 400 → retry at the floor with everything else intact. Second call on the
     same route+model: the floor goes out up front, no 400 round-trip."""
     client = MagicMock()
     client.base_url = "http://127.0.0.1:8765/v1"
-    client.chat.completions.create.side_effect = [RuntimeError(_PORTAL_400), {"ok": True}, {"ok": True}]
+    client.chat.completions.create.side_effect = [RuntimeError(rejection), {"ok": True}, {"ok": True}]
 
     assert _call(client) == {"ok": True}
     first, retry = (c.kwargs for c in client.chat.completions.create.call_args_list[:2])

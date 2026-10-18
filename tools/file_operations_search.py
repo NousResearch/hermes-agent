@@ -200,20 +200,61 @@ def _maybe_warn_line_oriented_newline_pattern(result: SearchResult, pattern: str
     return result
 
 
-# Match lines are "file:lineno:content". Windows paths carry a drive letter
-# ("C:\path"), so a naive split(":") breaks — the regex handles both.
+# Match lines are "file:lineno:content" ("file:lineno:column:content" for rg,
+# which runs with --column). Windows paths carry a drive letter ("C:\path"), so
+# a naive split(":") breaks — the regex handles both.
 _MATCH_LINE_RE = re.compile(r'^([A-Za-z]:)?(.*?):(\d+):(.*)$')
+_COLUMN_MATCH_LINE_RE = re.compile(r'^([A-Za-z]:)?(.*?):(\d+):(\d+):(.*)$')
+
+# Per-line budget for match/context content, and how much of the line a match
+# window keeps ahead of the match.
+_LINE_CHARS = 500
+_MATCH_LEAD_CHARS = 100
+# A line longer than this many bytes (--max-columns, giant-line containment) is
+# printed by rg as its first this-many characters plus a note such as
+# " [... 1 more match]".
+_RG_MAX_COLUMNS = 2000
+_RG_PREVIEW_NOTE_RE = re.compile(r' \[\.\.\. (?:omitted end of long line|\d+ more match(?:es)?)\]$')
+
+
+def _clip_line(content: str, column: Optional[int] = None) -> str:
+    """Fit one match/context line into ``_LINE_CHARS``, keeping the match visible.
+
+    ``column`` is rg's 1-based byte column of the line's first match. A clipped
+    line is marked with "…". A match the line start would hide gets a window
+    around it instead; one past the part of the line rg printed is named by
+    column. A column past the end of a whole line is a zero-width match there
+    (``$``), so the line start is shown."""
+    if column is not None and len(content.encode("utf-8", "surrogatepass")) > _RG_MAX_COLUMNS:
+        content = _RG_PREVIEW_NOTE_RE.sub("", content)
+    rg_cut = column is not None and len(content) >= _RG_MAX_COLUMNS
+    if len(content) <= _LINE_CHARS:
+        return content
+    start = -1 if column is None else len(
+        content.encode("utf-8", "surrogatepass")[:column - 1].decode("utf-8", "ignore"))
+    if start >= len(content) and rg_cut:
+        note = f" … [match at column {column}, past the part of this line shown]"
+        return content[:_LINE_CHARS - len(note)] + note
+    if _LINE_CHARS - _MATCH_LEAD_CHARS < start < len(content):
+        width = _LINE_CHARS - 2  # room for a "…" on each side
+        begin = min(start - _MATCH_LEAD_CHARS, len(content) - width)
+        window = content[begin:begin + width]
+        return "…" + window + ("…" if rg_cut or begin + width < len(content) else "")
+    return content[:_LINE_CHARS - 1] + "…"
+
 
 # Output-mode → engine flag (identical for rg and grep).
 _OUTPUT_MODE_FLAGS = {"files_only": "-l", "count": "-c"}
 
 
 def _parse_search_output(result, output_mode: str, limit: int, offset: int,
-                         context: int, warning: Optional[str] = None) -> SearchResult:
+                         context: int, warning: Optional[str] = None,
+                         columns: bool = False) -> SearchResult:
     """Parse rg/grep ``| head`` output into a SearchResult (shared by both engines).
     Exit codes: 0=matches, 1=none, 2=error — but both tools return 2 on PARTIAL
     errors (one unreadable file), so an error is surfaced only when exit==2 AND no
-    usable payload remains. ``warning`` is attached to files_only/content results."""
+    usable payload remains. ``warning`` is attached to files_only/content results.
+    ``columns``: match lines carry rg's ``--column`` field."""
     stdout, limit_reason = _search_stdout_and_limit(result)
     diagnostics, payload = _split_tool_diagnostics(stdout)
     if result.exit_code == 2 and not payload.strip():
@@ -240,17 +281,19 @@ def _parse_search_output(result, output_mode: str, limit: int, offset: int,
     for line in lines:
         if line == "--":
             continue
-        m = _MATCH_LINE_RE.match(line)
+        m = (_COLUMN_MATCH_LINE_RE if columns else _MATCH_LINE_RE).match(line)
         if m:
+            column = int(m.group(4)) if columns else None
             matches.append(SearchMatch(
-                path=(m.group(1) or '') + m.group(2), line_number=int(m.group(3)), content=m.group(4)[:500],
+                path=(m.group(1) or '') + m.group(2), line_number=int(m.group(3)),
+                content=_clip_line(m.group(5 if columns else 4), column),
             ))
             continue
         # Context lines only when requested, to avoid false positives on dashy paths.
         if context > 0:
             parsed = _parse_search_context_line(line)
             if parsed:
-                matches.append(SearchMatch(path=parsed[0], line_number=parsed[1], content=parsed[2][:500]))
+                matches.append(SearchMatch(path=parsed[0], line_number=parsed[1], content=_clip_line(parsed[2])))
     total = len(matches)
     return SearchResult(
         matches=matches[offset:offset + limit], total_count=total,
@@ -1022,7 +1065,7 @@ class SearchMixin:
 
     def _run_search_pipeline(self, cmd_parts: list[str], output_mode: str, limit: int,
                              offset: int, context: int, warning: Optional[str] = None,
-                             line_cap: bool = False) -> SearchResult:
+                             line_cap: bool = False, columns: bool = False) -> SearchResult:
         """Run ``cmd_parts | head -n <fetch_limit>`` under pipefail and parse. Extra
         rows report the true total (context mode also emits "--" separators, so
         grab 200 more). pipefail keeps the engine's exit 2 alive across ``| head``
@@ -1039,7 +1082,7 @@ class SearchMixin:
         else:
             result = self._run_rg_bounded(cmd_parts, fetch_limit, timeout=60, merge_stderr=True,
                                           shell_prefix="set -o pipefail; ")
-        return _parse_search_output(result, output_mode, limit, offset, context, warning=warning)
+        return _parse_search_output(result, output_mode, limit, offset, context, warning=warning, columns=columns)
 
     def _search_with_rg(self, pattern: str, path: str, file_glob: Optional[str],
                         limit: int, offset: int, output_mode: str, context: int,
@@ -1052,10 +1095,12 @@ class SearchMixin:
         # Giant-single-line containment (cline#13525): a match inside a multi-MB
         # single-line dump makes rg emit the ENTIRE line (``head -n`` counts lines).
         # --max-columns bounds each printed line at the rg layer; --max-columns-preview
-        # keeps a truncated prefix so the model still sees the hit. 2000 cols exceeds
-        # the 500-char content clamp, so nothing previously visible is lost.
-        if output_mode not in ("files_only", "count"):
-            cmd_parts.extend(["--max-columns", "2000", "--max-columns-preview"])
+        # keeps its first 2000 bytes. --column says where the match starts, so a hit
+        # deeper in the line than the 500-char content clamp is shown in a window
+        # around it, and one past the preview is named by column.
+        columns = output_mode not in ("files_only", "count")
+        if columns:
+            cmd_parts.extend(["--max-columns", str(_RG_MAX_COLUMNS), "--max-columns-preview", "--column"])
         # A regex \n hard-errors in line-oriented mode; enable -U up front and say so.
         multiline = _pattern_has_regex_newline(pattern)
         if multiline:
@@ -1074,7 +1119,8 @@ class SearchMixin:
             "Pattern contains \\n — multiline mode (-U) was enabled automatically "
             "so the regex can match across line boundaries."
         ) if multiline else None
-        return self._run_search_pipeline(cmd_parts, output_mode, limit, offset, context, warning=ml_note)
+        return self._run_search_pipeline(cmd_parts, output_mode, limit, offset, context, warning=ml_note,
+                                         columns=columns)
 
     def _grep_cmd(self, head: list[str], pattern: str, output_mode: str, context: int,
                   file_glob: Optional[str] = None) -> list[str]:

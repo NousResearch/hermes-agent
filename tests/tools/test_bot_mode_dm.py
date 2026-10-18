@@ -5,6 +5,7 @@ canonical Bot Chat session on a Bot-Mode-managed install, and must refuse to
 deliver from anywhere else even if a schema leaks.
 """
 
+import hashlib
 import json
 import os
 import shlex
@@ -336,6 +337,14 @@ def test_local_delivery_admits_canonically_and_acks(tmp_path, monkeypatch):
     assert result["status"] == "queued"
     assert result["to"] == "@researcher"
     assert result["process_id"] == "proc_test1234"
+    assert result["delivery_id"]  # the admission id, addressed by the receipt wait
+    # P9(a)/§1.2: the ack is a RECEIPT — additive to upstream's dispatch acknowledgement
+    # (``queued`` + ``delivery_id``): accepted and retained, so the sender must not resend.
+    assert result["result"] == "receipt"
+    assert len(result["delivery_id"]) == 64  # content-addressed, never a send_id
+    assert "do NOT wait" in result["detail"]
+    assert "not a delivery receipt" in result["detail"]
+    assert "queue_position" in result
 
     # Exactly one canonical admission, on the target profile's own authority.
     assert [h for h, _p in authority.calls] == [target.resolve()]
@@ -771,7 +780,9 @@ def test_live_dm_wait_reports_reply_after_initial_wait_budget(tmp_path, monkeypa
         settling.join(timeout=2)
     notice = json.loads(capsys.readouterr().out)
     assert exit_code == 0
-    assert (notice["status"], notice["reply"]) == ("settled", "PONG")
+    # ENUM B (§4.8): the wait's sender-facing word is the boundary translation of the stored
+    # ``settled`` — the transport keeps its own vocabulary on disk.
+    assert (notice["status"], notice["reply"]) == ("delivered", "PONG")
 
 
 @pytest.mark.parametrize("lookup", ["raises", "holds"])
@@ -860,6 +871,8 @@ def test_local_delivery_runner_surfaces_refusal_and_retains_payload(tmp_path, mo
 
     returncode = bot_mode_dm._run_delivery(["hermes", "-p", "ops"], str(dm_file), stdin_file=False)
 
+    # A definite no-send exits non-zero (the runner's completion is a FAILURE), while the typed
+    # payload is still printed for the sender and the evidence file is retained.
     assert returncode == 1
     payload = json.loads(capsys.readouterr().out)
     assert payload["reason"] == "runtime_unavailable"

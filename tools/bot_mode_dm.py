@@ -402,6 +402,49 @@ def _write_dm_file(content: str) -> str:
     return path
 
 
+def _delivery_fingerprint(dm_file: str) -> str:
+    """Content-addressed delivery id for a payload file (§10.4's live-path idiom)."""
+    return hashlib.sha256(str(Path(dm_file).resolve()).encode()).hexdigest()
+
+
+def _delivery_target(argv: list[str]) -> str:
+    """The target profile name of a local transport argv, when it names one."""
+    return argv[2] if len(argv) >= 3 and argv[1] == "-p" else ""
+
+
+def _delivery_turn_env(base: Optional[dict] = None) -> dict:
+    """The child transport's environment, marked as a DELIVERY turn (P12's flag, §5.2).
+
+    Only deliveries carry it, so an ordinary turn keeps the plain SESSION_NOT_OWNED refusal.
+    ``base`` is the caller's environment (the relay's author-carrying ``delivery_env``);
+    it defaults to this process's own environment.
+    """
+    from hermes_cli.active_sessions import DELIVERY_TURN_ENV
+
+    return {**(os.environ if base is None else base), DELIVERY_TURN_ENV: "1"}
+
+
+def _delivery_receipt(delivery_id: str, profile: str, *, status_detail: str,
+                      waited_seconds: float = 0.0) -> dict:
+    """The sender-visible receipt for a delivery that was RETAINED instead of failing (§3.1).
+
+    The record is synthesized — the receiver's durable queue owns the real row — so this
+    reports only what is true here: status ``queued``, ``attempts`` 0, ``busy`` true, and
+    ``result`` "receipt". Exactly the §1.3 envelope fields, no extras.
+    """
+    from tools import bot_delivery_queue as delivery_queue
+
+    record = {
+        "status": delivery_queue.STATUS_QUEUED,
+        "status_detail": status_detail,
+        "delivery_id": delivery_id,
+        "target_profile": profile,
+        "attempts": 0,
+        "created_at": time.time_ns(),
+    }
+    return delivery_queue.build_receipt(record, waited_seconds=waited_seconds)
+
+
 def _delivery_lock(argv: list[str], *, stdin_file: bool):
     """Per-profile turn lock for a LOCAL teammate delivery: local and relay deliveries
     into one profile both run a Bot Chat turn here, so the turn window is serialized on
@@ -417,9 +460,13 @@ def _delivery_lock(argv: list[str], *, stdin_file: bool):
     if stdin_file or len(argv) < 3 or cli not in ("hermes", "hermes.exe") or argv[1] != "-p":
         return contextlib.nullcontext()
     from tools.bot_mode_probe import _hermes_root
-    from tools.bot_relay import acquire_turn_lock
+    from tools.bot_relay import acquire_delivery_turn_lock
 
-    return acquire_turn_lock(_hermes_root(Path(_default_home())), argv[2])
+    # §2.5 step 1 / P10: the DELIVERY path probes the turn lock non-blockingly. The lock is a
+    # mutual-exclusion primitive here, never a waiting room: a held lock raises TurnBusyError at
+    # once, the delivery is retained by the receiver queue, and ``_delivery_main`` reports the
+    # receipt (exit 0) rather than parking the sender or failing the delivery.
+    return acquire_delivery_turn_lock(_hermes_root(Path(_default_home())), argv[2])
 
 
 def _live_intent_file(dm_file: str | os.PathLike) -> str:
@@ -536,7 +583,10 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
 
 def _wait_live_dm(home: str, delivery_id: str, *, dm_file: str | os.PathLike | None = None) -> int:
     from tools.bot_failure_reasons import RUNTIME_OFFLINE
-    from tools.bot_live_delivery import await_delivery, cancel_queued_delivery, owner_holds_delivery
+    from tools.bot_live_delivery import (
+        await_delivery, cancel_queued_delivery, owner_holds_delivery,
+        public_delivery_status, read_delivery_result,
+    )
 
     deadline = time.monotonic() + _LIVE_WAIT_MAX_SECONDS
     missed = 0
@@ -569,7 +619,10 @@ def _wait_live_dm(home: str, delivery_id: str, *, dm_file: str | os.PathLike | N
             break
     status = record["status"] if record else "ambiguous"
     payload = {key: record[key] for key in ("reply", "error", "reason") if record and record.get(key)}
-    payload.update(status=status, delivery_id=delivery_id)
+    # §4.8/P11: translate the transport's storage words at the BOUNDARY only — the sender sees
+    # ENUM B ("claimed" -> "running", "settled" -> "delivered"). Exit codes below stay keyed on
+    # the internal word; the storage layer keeps queued/claimed/settled.
+    payload.update(status=public_delivery_status(status), delivery_id=delivery_id)
     if status in ("queued", "claimed", "ambiguous"):
         payload["detail"] = "Delivery remains pending or its outcome is unknown. Do not resend; receipt is retained."
     elif status == "settled" and dm_file is not None:
@@ -580,6 +633,32 @@ def _wait_live_dm(home: str, delivery_id: str, *, dm_file: str | os.PathLike | N
         _unlink_dm_file(str(dm_file))
     print(json.dumps(payload))
     return 0 if status in ("settled", "queued", "claimed") else 1
+
+
+def _argv_profile(command: str) -> str:
+    """Target profile named by a local delivery command line (``hermes -p <name> …``)."""
+    with contextlib.suppress(ValueError):
+        parts = shlex.split(command)
+        if len(parts) >= 3 and parts[1] == "-p":
+            return parts[2]
+    return ""
+
+
+def _queue_position(target_profile: str) -> Optional[int]:
+    """Best-effort 1-based position of this delivery in its target's queue (§3.2).
+
+    A snapshot only — never an ETA. ``None`` when the target cannot be resolved.
+    """
+    if not target_profile:
+        return None
+    home = _local_delivery_home(["hermes", "-p", target_profile])
+    if home is None:
+        return None
+    from tools import bot_delivery_queue as delivery_queue
+
+    with contextlib.suppress(Exception):
+        return int(delivery_queue.queue_depth(home, target_profile)) + 1
+    return None
 
 
 def _local_delivery_home(argv: list[str]) -> Path | None:
@@ -691,8 +770,21 @@ def _start_delivery(argv: list[str], content: str, label: str, *, stdin_file: bo
         if record is not None:
             command = _delivery_command(argv, dm_file, stdin_file=False, profile_home=profile_home, author=author)
             notification = json.loads(_spawn_delivery(command, label, task_id=task_id, agent=agent))
-            result = dict(status=record["status"], delivery_id=record["delivery_id"], to=label,
-                          detail="Durably queued for the live Bot Chat owner. Do NOT wait or resend; finish your turn.")
+            from tools import bot_delivery_queue as delivery_queue
+            from tools.bot_live_delivery import public_delivery_status
+
+            # §1.2/P9(a): the live-owner hand-off is the same kind of acknowledgement as the dispatch
+            # one — a RECEIPT. The delivery is accepted and retained by the owner's queue, so the
+            # sender must not resend; ``detail`` says it is not a DELIVERY receipt.
+            detail = ("Durably queued for the live Bot Chat owner: accepted and retained, so do NOT resend "
+                      "and do NOT wait or poll — finish your turn. This is a hand-off receipt, not a "
+                      "delivery receipt: the completion notification carries the outcome — the reply "
+                      "(relay it, attributed to that agent) or the delivery failure.")
+            result = dict(status=public_delivery_status(record["status"]),
+                          delivery_id=record["delivery_id"], to=label,
+                          result=delivery_queue.RESULT_RECEIPT,
+                          queue_position=_queue_position(_argv_profile(command)),
+                          detail=detail)
             if notification.get("error"):
                 result["notification_error"] = notification["error"]
             elif notification.get("process_id"):
@@ -701,7 +793,9 @@ def _start_delivery(argv: list[str], content: str, label: str, *, stdin_file: bo
                 if result["reply_delivery"] == "poll":
                     # Same runner, same stdout-borne reply (#101142): a non-push sender must get
                     # the poll instruction here too, not 'finish your turn'.
-                    result["detail"] = f"Durably queued for the live Bot Chat owner. Do NOT resend. {notification['detail']}"
+                    result["detail"] = (
+                        "Durably queued for the live Bot Chat owner: accepted and retained, so do NOT "
+                        f"resend. This is a hand-off receipt, not a delivery receipt. {notification['detail']}")
             return json.dumps(result)
     try:
         command = _delivery_command(argv, dm_file, stdin_file=stdin_file, profile_home=profile_home, author=author)
@@ -761,9 +855,16 @@ def _spawn_delivery(command: str, label: str, *, dm_file: Optional[str] = None, 
                       "Finish your turn now; that process's completion notification carries the "
                       "delivery outcome — the reply (relay it then, attributed to that agent) or "
                       "the delivery failure (report it; the message was NOT delivered).")
+        from tools import bot_delivery_queue as delivery_queue
         return json.dumps({
             "status": "queued",
             "delivery_id": delivery_id or (_dm_delivery_id(dm_file) if dm_file else ""),
+            # §1.2/P9(a): additive to the dispatch acknowledgement above — the hand-off is a
+            # RECEIPT (accepted and retained by the receiver), so the sender must not resend or
+            # duplicate. It is not a DELIVERY receipt: ``detail`` below says so, and the tool
+            # schema carries the same wording.
+            "result": delivery_queue.RESULT_RECEIPT,
+            "queue_position": _queue_position(_argv_profile(command)),
             "to": label,
             "reply_delivery": "poll" if parsed.get("notify_on_complete") is False else "notification",
             "detail": detail,
@@ -866,9 +967,21 @@ def _delivery_main(args: list[str]) -> int:
             profile_home, argv = Path(argv[1]), argv[2:]
         return _run_delivery(argv, dm_file, stdin_file=mode == "stdin", profile_home=profile_home, author=author)
     except Exception as exc:
-        # Every refusal ships a typed reason on stdout so the completion notification carries it
-        # back to the sender (#93091): 'target_busy' from the queue's bounded wait, otherwise the
-        # same vocabulary-guarded classification the relay lane applies.
+        # 'target_busy': the delivery never got the turn slot. It is RETAINED by the receiver
+        # queue (whose drainer re-offers it), so the sender gets a RECEIPT and exit 0 — not a
+        # failure: ``target_busy`` is never a reason to resend (§3.1/P9b). See #93091.
+        if getattr(exc, "reason", "") == "target_busy":
+            from tools.bot_delivery_queue import STATUS_DETAIL_TARGET_BUSY
+
+            print(json.dumps(_delivery_receipt(
+                _delivery_fingerprint(args[2]), _delivery_target(argv),
+                status_detail=STATUS_DETAIL_TARGET_BUSY,
+                waited_seconds=float(getattr(exc, "waited_seconds", 0.0) or 0.0),
+            )))
+            return 0
+        # Every other refusal ships a typed reason on stdout so the completion notification
+        # carries it back to the sender (#93091): the same vocabulary-guarded classification
+        # the relay lane applies.
         from tools.bot_failure_reasons import delivery_failure_reason
 
         print(json.dumps({"error": str(exc), "reason": delivery_failure_reason(exc)}))

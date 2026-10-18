@@ -144,7 +144,8 @@ def test_launcher_shape_preserves_profile_and_lock(tmp_path, monkeypatch, name):
     monkeypatch.setattr(bot_mode_probe, "_roster", lambda root: [("researcher", target)])
     locked = []
     @contextlib.contextmanager
-    def lock(root, profile):
+    def lock(root, profile, **kwargs):
+        # The delivery path probes non-blockingly: ``timeout_seconds=0`` rides as a keyword.
         locked.append((root, profile))
         yield
     monkeypatch.setattr(bot_relay, "acquire_turn_lock", lock)

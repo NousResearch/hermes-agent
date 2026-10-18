@@ -282,13 +282,16 @@ def local_taken_forms(root: Path) -> set[str]:
     return {_handle(name) for name, _d in _roster(root)} | set(local_alias_map(root))
 
 
-def _remote_paragraph(root: Path, viewer: Path | None = None) -> str:
-    """Addendum for agents on OTHER connected machines; only when the relay roster is non-empty.
-    With ``viewer``, only rows in the viewer's circle — the relay row carries ``circle`` for this."""
-    roster = _remote_roster(root)
-    if viewer is not None:
-        mine = _circle_of(viewer)
-        roster = [row for row in roster if str(row.get("circle") or "") == mine]
+def _visible_remote_roster(root: Path, viewer: Path) -> list[dict]:
+    """Relay rows in the viewer's circle — the relay row carries ``circle`` for this. Shared by the
+    paragraph and the epoch so what an agent is shown and what refreshes it cannot drift apart."""
+    mine = _circle_of(viewer)
+    return [row for row in _remote_roster(root) if str(row.get("circle") or "") == mine]
+
+
+def _remote_paragraph(root: Path, viewer: Path) -> str:
+    """Addendum for agents on OTHER connected machines; only when the viewer can see any of them."""
+    roster = _visible_remote_roster(root, viewer)
     if not roster:
         return ""
     from tools.bot_relay import remote_target_forms
@@ -491,7 +494,7 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
     # surface too: registering a peer or (dis)connecting a machine must show up.
     surface["peers"] = _peers(root)
     surface["remote_roster"] = sorted(
-        f"{r['connection_id']}:{r['profile']}:{r['title']}" for r in _remote_roster(resolved)
+        f"{r['connection_id']}:{r['profile']}:{r['title']}" for r in _visible_remote_roster(resolved, resolved)
     )
     return _swallow(
         lambda: hashlib.sha256(json.dumps(surface, sort_keys=True).encode("utf-8")).hexdigest()[:12],

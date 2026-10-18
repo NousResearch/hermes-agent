@@ -445,24 +445,37 @@ def test_the_flag_reads_every_yaml_spelling_of_on_and_fails_open_on_the_rest(tmp
     assert ("@lucky" in bot_mode_probe.get_bot_mode_protocol_section(home)) is (not private)
 
 
-@pytest.mark.parametrize("change", ["lucky-goes-private", "force-private"])
-def test_a_mesh_change_that_rewrites_the_roster_also_moves_the_epoch(tmp_path, change):
-    """Bot Chat prompts are rebuilt only when the epoch moves. A teammate leaving the mesh rewrites
-    the roster block, so a fingerprint blind to the flag would keep advertising it to everyone."""
+@pytest.mark.parametrize("change", ["lucky-goes-private", "force-private", "lucky-changes-circle",
+                                    "viewer-changes-circle", "remote-row-changes-circle"])
+def test_a_mesh_change_that_rewrites_the_roster_also_moves_the_epoch(tmp_path, monkeypatch, change):
+    """Bot Chat prompts are rebuilt only when the epoch moves. Anything that rewrites the roster
+    block a viewer sees must move it too, or every eternal Bot Chat keeps advertising stale
+    teammates."""
     home = tmp_path / ".hermes"
     home.mkdir()
-    _make_bot_profile(home, "researcher")
+    me = _make_bot_profile(home, "reviewer")
+    _set_circle(me, "work")
     lucky = _make_bot_profile(home, "lucky")
-    section, epoch = bot_mode_probe.get_bot_mode_protocol_section(home), bot_mode_probe.capability_fingerprint(home)
+    _set_circle(lucky, "work")
+    rows = [{"profile": "programmer", "handle": "programmer", "connection_id": "mini", "connection_label": "mini",
+             "title": "", "description": "", "circle": "work"}]
+    monkeypatch.setattr(bot_mode_probe, "_remote_roster", lambda root: rows)
+    section, epoch = bot_mode_probe.get_bot_mode_protocol_section(me), bot_mode_probe.capability_fingerprint(me)
 
     if change == "lucky-goes-private":
-        _set_private(lucky)
-    else:
+        _set_circle(lucky, "work", private="true")
+    elif change == "force-private":
         (home / "config.yaml").write_text("bots:\n  force_private: true\n", encoding="utf-8")
+    elif change == "lucky-changes-circle":
+        _set_circle(lucky, "hobby")
+    elif change == "viewer-changes-circle":
+        _set_circle(me, "hobby")
+    else:
+        rows[0]["circle"] = "hobby"
     bot_mode_probe._reset_cache_for_tests()
 
-    assert bot_mode_probe.get_bot_mode_protocol_section(home) != section
-    assert bot_mode_probe.capability_fingerprint(home) != epoch
+    assert bot_mode_probe.get_bot_mode_protocol_section(me) != section
+    assert bot_mode_probe.capability_fingerprint(me) != epoch
 
 
 # ── circles: several meshes on one machine ───────────────────────────────────

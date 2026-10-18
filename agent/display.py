@@ -519,11 +519,12 @@ def _primary_arg_preview(tool_name: str, args: dict, max_len: int) -> str | None
 
 def prepare_tool_preview(tool_name: str, args: dict | None, *, fallback: str, max_len: int) -> ToolPreview:
     """Compact preview plus explicit truncation/URL facts (the uncapped preview is
-    rebuilt from the arguments so an upstream display cap cannot drop its link target)."""
+    rebuilt from the arguments so an upstream display cap cannot drop its link target).
+    ``url`` is set whenever the full preview is an http(s) URL, truncated or not."""
     full_text = build_tool_preview(tool_name, args, max_len=0) or fallback
     text = _tail_trunc(full_text, max_len)
     truncated = text != full_text
-    url = _http_url(_display_url(full_text)) if truncated else None
+    url = _http_url(_display_url(full_text))
     return ToolPreview(text=text, truncated=truncated, url=url)
 
 

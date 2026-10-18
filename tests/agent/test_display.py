@@ -139,7 +139,7 @@ class TestPrepareToolPreview:
         assert preview.truncated is True
         assert preview.url == url
 
-    def test_untruncated_url_has_no_link_target(self):
+    def test_untruncated_url_keeps_link_target(self):
         url = "https://example.com/page"
         preview = prepare_tool_preview(
             "browser_navigate", None, fallback=url, max_len=40
@@ -147,7 +147,7 @@ class TestPrepareToolPreview:
 
         assert preview.text == url
         assert preview.truncated is False
-        assert preview.url is None
+        assert preview.url == url
 
     def test_truncated_non_url_has_no_link_target(self):
         preview = prepare_tool_preview(

@@ -101,15 +101,41 @@ class TestDiscordToolPreviewFormatting:
         assert out is not None
         assert f"[{visible.removeprefix('https://')}](<{url}>)" in out
 
-    def test_untruncated_url_remains_plain(self):
+    def test_untruncated_url_is_linked_without_embed(self):
         from agent.display import ToolPreview
 
         adapter = _make_discord_adapter()
         url = "https://example.com/page"
 
-        out = adapter.format_tool_preview(ToolPreview(url))
+        out = adapter.format_tool_preview(ToolPreview(url, url=url))
 
-        assert out == url
+        assert out == f"[example.com/page](<{url}>)"
+
+    def test_untruncated_root_url_label_drops_trailing_slash(self):
+        from agent.display import ToolPreview
+
+        adapter = _make_discord_adapter()
+        url = "https://portal.nousresearch.com/"
+
+        out = adapter.format_tool_preview(ToolPreview(url, url=url))
+
+        assert out == f"[portal.nousresearch.com](<{url}>)"
+
+    def test_structured_tool_event_links_untruncated_url(self):
+        from gateway.stream_events import ToolCallChunk
+
+        adapter = _make_discord_adapter()
+        url = "https://portal.nousresearch.com/"
+
+        out = adapter.format_tool_event(
+            ToolCallChunk("web_extract", preview=url, args={"urls": [url]}),
+            mode="all",
+            preview_max_len=40,
+        )
+
+        assert out is not None
+        assert f"[portal.nousresearch.com](<{url}>)" in out
+        assert f" {url}" not in out
 
     def test_truncated_non_url_remains_plain(self):
         from agent.display import ToolPreview

@@ -135,5 +135,3 @@ class TestLegacyClarifyResults:
                     assert json.dumps(sentinel, ensure_ascii=False)[:70] in summary
                 else:
                     assert summary == "[clarify] asked user a question"
-
-

@@ -79,9 +79,9 @@ def test_pinned_missing_key_names_effective_route(compression_config, monkeypatc
     assert "no request was dispatched" in rendered
     assert "credential missing" in rendered
     assert "aux-A" not in rendered and "aux.example" not in rendered
-    assert not comp._last_aux_call_model
+    assert not comp._last_aux_route.dispatched
     assert comp._summary_failure_identity()[:2] == ("groq", "pinned-B")
-    assert comp._aux_route_label({}) == "(provider=groq model=pinned-B)"
+    assert comp._aux_route_label() == "(provider=groq model=pinned-B)"
 
 
 @pytest.mark.parametrize("endpoint", [
@@ -118,7 +118,7 @@ def test_aux_failure_retries_main_at_wire(compression_config, monkeypatch):
     assert result and "valid main summary" in result
     assert wire == [("aux.example", "aux-A", "Bearer aux-key"),
                     ("main.example", "main-B", "Bearer main-key")]
-    assert comp._last_aux_call_model == "main-B"
+    assert comp._last_aux_route.model == "main-B"
 
 
 @pytest.mark.parametrize("content,finish_reason", [("", "stop"), ("partial", "length")])
@@ -196,7 +196,7 @@ def test_managed_relay_reports_final_wire_model(tmp_path, monkeypatch, rewrite, 
                     auxiliary_relay._relay_sync_completion(client, kwargs, create=lambda r: create(**r))
         assert wire == [final_model]
         assert route_info == {"provider": "custom", "model": final_model}
-        assert comp._aux_route_label(route_info) == f"(provider=custom model={final_model})"
+        assert comp._aux_route_label() == f"(provider=custom model={final_model})"
         comp._last_attempt_failure_class = "other"
         rendered = diagnostic(comp)
         assert f"Model: {final_model}" in rendered
@@ -265,7 +265,7 @@ def test_nous_self_heal_updates_all_summary_identity_consumers(tmp_path, monkeyp
             comp._call_summary_llm("summarize", time.monotonic())
         assert wire[-1] == "healed-model"
         assert wire[:-1] and set(wire[:-1]) == {"stale-model"}
-        assert comp._last_aux_call_model == "healed-model"
+        assert comp._last_aux_route.model == "healed-model"
         assert comp._last_aux_resolved_model == "healed-model"
         assert comp._active_compression_telemetry["aux_model"] == "healed-model"
         assert "model=healed-model" in str(raised.value)

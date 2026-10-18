@@ -353,3 +353,13 @@ def _fail_relay_auxiliary_call(exc: BaseException) -> None:
         _complete_relay_auxiliary_call(outcome="failed")
     except Exception:
         logger.warning("Relay auxiliary failure finalization failed", exc_info=True)
+
+
+def notify_configured_route(callback, provider, model, base_url) -> None:
+    """Observe the task resolution before client construction, without re-resolving config."""
+    if callback is None:
+        return
+    try:
+        callback(provider, model, str(base_url or "").split("#", 1)[0].split("?", 1)[0])
+    except Exception:
+        logger.debug("configured_route_callback error in auxiliary resolution", exc_info=True)

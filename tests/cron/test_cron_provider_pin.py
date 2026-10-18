@@ -271,3 +271,65 @@ class TestNamedCustomPin:
                 "shared-model", "https://models.example.invalid/v1", "synthetic-key-b")
             released = jobs.update_job(saved["id"], {"pinned": False})
             assert (released["provider"], released["model"], released["base_url"]) == (None, None, None)
+
+
+@pytest.mark.parametrize(("style", "auth"), [
+    ("providers", "api_key"), ("providers", "key_env"),
+    ("providers", "key_cmd"), ("providers", "headers"),
+    ("custom_providers", "api_key"), ("custom_providers", "key_env"),
+    ("custom_providers", "headers"),
+])
+def test_named_provider_migration_requires_rebinding(tmp_path, monkeypatch, style, auth):
+    """A new service's credentials must never be paired with the job's old endpoint."""
+    from cron import jobs
+    from cron.scheduler import _CronJobConfig, _resolve_job_runtime
+    from hermes_cli import runtime_provider as rp
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(jobs, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **kw: None)
+    monkeypatch.setattr("agent.command_token_source.build_command_token_provider",
+                        lambda command, label: lambda: command)
+
+    def entry(generation):
+        row = {"name": "route-b", "base_url": f"https://{generation}.example.invalid/v1"}
+        credential = f"synthetic-{generation}"
+        if auth == "headers":
+            row["extra_headers"] = {"Authorization": credential}
+        elif auth == "key_env":
+            monkeypatch.setenv("CRON_MIGRATION_KEY", credential)
+            row[auth] = "CRON_MIGRATION_KEY"
+        else:
+            row[auth] = credential
+        return row
+
+    cfg = {"model": {"provider": "route-b", "default": "model-b"}}
+
+    def configure(generation):
+        row = entry(generation)
+        cfg[style] = {"route-b": row} if style == "providers" else [row]
+        (tmp_path / "config.yaml").write_text(json.dumps(cfg))
+
+    # Patch the live config source, keeping frozen_runtime_config effective.
+    monkeypatch.setattr(rp._config_mod, "load_config", lambda: cfg)
+    configure("old")
+    job = jobs.create_job(prompt="hello", schedule="every 1 hour", pinned=True)
+    configure("new")
+    jc = _CronJobConfig(cfg=cfg, model="model-b", model_cfg=cfg["model"], cron_default_provider="")
+    with patch.object(rp, "resolve_runtime_provider", wraps=rp.resolve_runtime_provider) as resolve:
+        with pytest.raises(RuntimeError, match="endpoint.*changed.*rebind"):
+            _resolve_job_runtime(job, job["id"], jc)
+        resolve.assert_not_called()
+    # Rebinding explicitly accepts the provider's new destination and credentials.
+    jobs.update_job(job["id"], {"pinned": False})
+    rebound = jobs.update_job(job["id"], {"pinned": True})
+    runtime, _ = _resolve_job_runtime(rebound, rebound["id"], jc)
+    assert runtime["base_url"] == "https://new.example.invalid/v1"
+    if auth == "headers":
+        assert runtime["extra_headers"]["Authorization"] == "synthetic-new"
+    else:
+        key = runtime["api_key"]
+        assert (key() if callable(key) else key) == "synthetic-new"
+    stored = json.dumps(jobs.load_jobs())
+    assert "synthetic-" not in stored
+    assert "CRON_MIGRATION_KEY" not in stored

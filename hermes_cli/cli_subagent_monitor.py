@@ -219,6 +219,16 @@ class SubagentMonitor:
             return t('cli.subagents.title_live_work')
         return t('cli.subagents.title_subagents') if self.entries else t('cli.subagents.title_processes')
 
+    def queue_lines(self, rows):
+        """The queued-prompt block as plain text: ``(heading, prompt rows, '+N more' or '')``.
+        Like ``goal`` and ``loop``, the monitor words the session rows and the footer styles them."""
+        shown = min(len(self.queued), session_rows.QUEUE_ROWS if rows >= 24 else 1)
+        controls = '' if self.roster else t('cli.subagents.controls_collapse')
+        heading = t('cli.subagents.queue_heading', count=len(self.queued), controls=controls)
+        items = [f'{index}. {text}' for index, text in enumerate(self.queued[:shown], 1)]
+        hidden = len(self.queued) - shown
+        return heading, items, t('cli.subagents.more_queued', count=hidden) if hidden > 0 else ''
+
     def dock_text(self, *, columns, rows, selecting=False):
         """The live-work footer as plain text (``cli_dock_footer.dock_lines`` without styles)."""
         from hermes_cli import cli_dock_footer as footer

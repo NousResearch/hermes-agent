@@ -94,17 +94,20 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     for table in ("deliveries", "delivery_tombstones"):
         row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
         if row and "'suppressed'" not in row[0]:
-            conn.execute("SAVEPOINT notification_disposition")
-            try:
+            with conn:
+                # A worker may have migrated and added columns since the first
+                # lookup. Re-read under the writer lock before rebuilding, or
+                # the stale CREATE statement can no longer hold its rows.
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,),
+                ).fetchone()
+                if not row or "'suppressed'" in row[0]:
+                    continue
                 conn.execute(f"ALTER TABLE {table} RENAME TO {table}_old")
                 conn.execute(row[0].replace("'unknown'", "'unknown','suppressed'"))
                 conn.execute(f"INSERT INTO {table} SELECT * FROM {table}_old")
                 conn.execute(f"DROP TABLE {table}_old")
-                conn.execute("RELEASE notification_disposition")
-            except BaseException:
-                conn.execute("ROLLBACK TO notification_disposition")
-                conn.execute("RELEASE notification_disposition")
-                raise
 
     conn.execute(
         """CREATE TABLE IF NOT EXISTS deliveries (

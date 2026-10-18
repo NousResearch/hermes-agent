@@ -245,7 +245,7 @@ function ConfigSettingsInner({
 
           // The server merges the patch; untouched draft fields may be stale.
           // Publish server truth while keeping the local draft baseline above.
-          await refetchConfig()
+          void refetchConfig().catch(err => notifyError(err, c.autosaveFailed))
           const savedScope = writeScope ?? scopeProfile
 
           recordSettingsSaved(patch, schema ?? {}, typeof savedScope === 'string' ? savedScope : savedScope?.profile)

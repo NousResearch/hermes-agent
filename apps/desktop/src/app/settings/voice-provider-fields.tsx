@@ -72,14 +72,15 @@ export function VoiceProviderFields({
   // pattern): the seeded record is a default-expanded snapshot, and echoing it
   // whole would overwrite keys other surfaces changed since it loaded. The
   // baseline advances to each successfully saved draft.
-  const [baseline, setBaseline] = useState<HermesConfigRecord | null>(null)
+  const baselineRef = useRef<HermesConfigRecord | null>(null)
+  const saveQueueRef = useRef<Promise<void>>(Promise.resolve())
   const seeded = useRef(false)
 
   // eslint-disable-next-line no-restricted-syntax -- one-shot config seed flag, not an atom mirror
   useEffect(() => {
     if (loadedConfig && !seeded.current) {
       seeded.current = true
-      setBaseline(loadedConfig)
+      baselineRef.current = loadedConfig
       setConfig(loadedConfig)
     }
   }, [loadedConfig])
@@ -87,23 +88,31 @@ export function VoiceProviderFields({
   const saveVersionRef = useRef(0)
   const [saveVersion, setSaveVersion] = useState(0)
 
+  const queueSave = (snapshot: HermesConfigRecord) => {
+    // Compute against the last acknowledgment, including when an edit was
+    // reverted while its predecessor was still in flight.
+    saveQueueRef.current = saveQueueRef.current.then(async () => {
+      try {
+        await saveHermesConfigRecord(diffConfig(baselineRef.current ?? {}, snapshot), writeScope ?? profile)
+        baselineRef.current = snapshot
+        // Cache reads can pause offline; they must not hold up IPC writes.
+        void refetchConfig().catch(err => notifyError(err, t.settings.config.autosaveFailed))
+      } catch (err) {
+        notifyError(err, t.settings.config.autosaveFailed)
+      }
+    })
+  }
+
   useEffect(() => {
     if (!config || saveVersion === 0) {
       return
     }
 
-    const timeout = window.setTimeout(() => {
-      void saveHermesConfigRecord(diffConfig(baseline ?? {}, config), writeScope ?? profile)
-        .then(async () => {
-          setBaseline(config)
-          await refetchConfig()
-        })
-        .catch(err => notifyError(err, t.settings.config.autosaveFailed))
-    }, 550)
+    const timeout = window.setTimeout(() => queueSave(config), 550)
 
     return () => window.clearTimeout(timeout)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- read-origin identity changes on refetch, not edits; profile/baseline use scopeKey; copy is stable
-  }, [config, scopeKey, saveVersion, refetchConfig])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- capture the edit's read origin; only edits or scope changes re-arm autosave
+  }, [config, scopeKey, saveVersion])
 
   // ElevenLabs cloned/library voices from the live account, when available —
   // mirrors the Settings → Voice dynamic voice list.

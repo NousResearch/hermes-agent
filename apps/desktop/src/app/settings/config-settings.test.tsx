@@ -1,5 +1,5 @@
 import type { QueryClient } from '@tanstack/react-query'
-import { QueryClientProvider } from '@tanstack/react-query'
+import { onlineManager, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { createRef } from 'react'
@@ -132,7 +132,7 @@ describe('ConfigSettings autosave', () => {
             <VoiceProviderFields profile="default" providerKey="openai" section="stt" />
           </QueryClientProvider>
         )
-        await screen.findByRole('combobox')
+        await screen.findByDisplayValue('whisper-1')
       }
 
       disk = { ...disk, model: 'external' }
@@ -140,7 +140,7 @@ describe('ConfigSettings autosave', () => {
         if (surface === 'settings') {
           screen.getByRole('switch').click()
         } else {
-          fireEvent.change(screen.getByRole('combobox'), { target: { value: 'gpt-4o-transcribe' } })
+          fireEvent.change(screen.getByDisplayValue('whisper-1'), { target: { value: 'gpt-4o-transcribe' } })
         }
 
         await vi.advanceTimersByTimeAsync(700)
@@ -155,6 +155,113 @@ describe('ConfigSettings autosave', () => {
       await waitFor(() => expect(client.getQueryData(['hermes-config-record', 'default'])).toEqual(disk))
       await act(async () => void (await vi.advanceTimersByTimeAsync(6500)))
       expect(saveHermesConfig).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it.each(['paused', 'failed'])('keeps writing while the config refresh is %s', async refresh => {
+    let disk = { checkpoints: { enabled: false } }
+    getHermesConfigRecord.mockImplementation(async () => structuredClone(disk))
+    saveHermesConfig.mockImplementation(async patch => {
+      disk = { ...disk, ...patch }
+
+      return { ok: true }
+    })
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
+    try {
+      renderConfigSettings()
+      const toggle = await screen.findByRole('switch')
+
+      if (refresh === 'paused') {
+        onlineManager.setOnline(false)
+      } else {
+        getHermesConfigRecord.mockRejectedValueOnce(new Error('refresh failed'))
+      }
+
+      await act(async () => {
+        toggle.click()
+        await vi.advanceTimersByTimeAsync(700)
+      })
+      expect(saveHermesConfig).toHaveBeenCalledTimes(1)
+
+      if (refresh === 'paused') {
+        expect(queryClient.getQueryState(['hermes-config-record', 'default'])?.fetchStatus).toBe('paused')
+        expect(getHermesConfigRecord).toHaveBeenCalledTimes(1)
+      }
+
+      await act(async () => {
+        toggle.click()
+        await vi.advanceTimersByTimeAsync(700)
+      })
+      expect(saveHermesConfig).toHaveBeenCalledTimes(2)
+      expect(saveHermesConfig.mock.calls[1][0]).toEqual({ checkpoints: { enabled: false } })
+      expect(disk.checkpoints.enabled).toBe(false)
+      await act(async () => {
+        onlineManager.setOnline(true)
+        await queryClient.refetchQueries({ queryKey: ['hermes-config-record', 'default'] })
+        await vi.advanceTimersByTimeAsync(2000)
+      })
+      expect(queryClient.getQueryData(['hermes-config-record', 'default'])).toEqual(disk)
+      expect(saveHermesConfig).toHaveBeenCalledTimes(2)
+    } finally {
+      onlineManager.setOnline(true)
+      vi.useRealTimers()
+    }
+  })
+
+  it.each([
+    { section: 'stt' as const, field: 'model', original: 'whisper-1', edited: 'gpt-4o-transcribe' },
+    { section: 'tts' as const, field: 'voice', original: 'alloy', edited: 'nova' }
+  ])('orders a pending voice $section / $field edit and revert at its read origin', async ({ section, field, original, edited }) => {
+    let disk = { [section]: { openai: { [field]: original } } }
+    const origin = { connectionId: 'voice-origin', profile: 'default' }
+    getHermesConfigRecord.mockImplementation(async () => {
+      const record = structuredClone(disk)
+      bindConfigReadOrigin(record, origin)
+
+      return record
+    })
+    let acknowledge!: () => void
+    saveHermesConfig.mockImplementation(async patch => {
+      if (saveHermesConfig.mock.calls.length === 1) {
+        await new Promise<void>(resolve => { acknowledge = resolve })
+      }
+
+      disk = { ...disk, ...patch }
+
+      return { ok: true }
+    })
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
+    try {
+      const { VoiceProviderFields } = await import('./voice-provider-fields')
+      render(
+        <QueryClientProvider client={queryClient}>
+          <VoiceProviderFields profile="default" providerKey="openai" section={section} />
+        </QueryClientProvider>
+      )
+      const input = await screen.findByDisplayValue(original)
+      await act(async () => {
+        fireEvent.change(input, { target: { value: edited } })
+        await vi.advanceTimersByTimeAsync(700)
+      })
+      expect(saveHermesConfig).toHaveBeenCalledTimes(1)
+      await act(async () => {
+        fireEvent.change(input, { target: { value: original } })
+        await vi.advanceTimersByTimeAsync(700)
+      })
+      expect(saveHermesConfig).toHaveBeenCalledTimes(1)
+      await act(async () => { acknowledge() })
+      await waitFor(() => expect(saveHermesConfig).toHaveBeenCalledTimes(2))
+      expect(saveHermesConfig.mock.calls).toEqual([
+        [{ [section]: { openai: { [field]: edited } } }, origin],
+        [{ [section]: { openai: { [field]: original } } }, origin]
+      ])
+      await waitFor(() => expect(queryClient.getQueryData(['hermes-config-record', 'default'])).toEqual(disk))
+      expect(disk[section].openai[field]).toBe(original)
+      expect((input as HTMLInputElement).value).toBe(original)
     } finally {
       vi.useRealTimers()
     }

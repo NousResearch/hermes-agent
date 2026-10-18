@@ -1345,14 +1345,17 @@ def test_relay_delivery_obeys_the_callers_circle(tmp_path, monkeypatch, circle, 
     home = _managed_home(tmp_path, teammates=("reviewer",))
     with open(home / "profiles" / "reviewer" / "profile.yaml", "a", encoding="utf-8") as fh:
         fh.write(f"    circle: {circle}\n")
-    bot_relay.write_remote_roster(home, [
-        {"profile": "programmer", "handle": "programmer", "connection_id": "mini", "connection_label": "mini",
-         "circle": "work"},
-    ])
+    sender = home / "profiles" / "reviewer"
+    # main reads the relay from the sender's profile for a bare target and from the shared root for
+    # a connection-qualified one; seed both so each route is held to the circle.
+    for relay_home in (home, sender):
+        bot_relay.write_remote_roster(relay_home, [
+            {"profile": "programmer", "handle": "programmer", "connection_id": "mini", "connection_label": "mini",
+             "circle": "work"},
+        ])
 
-    result = json.loads(bot_mode_dm.message_agent_tool(
-        target=target, message="hi", agent=_FakeAgent(home / "profiles" / "reviewer")))
+    result = json.loads(bot_mode_dm.message_agent_tool(target=target, message="hi", agent=_FakeAgent(sender)))
 
-    envelopes = bot_relay.claim_pending_envelopes(home)
+    envelopes = bot_relay.claim_pending_envelopes(home) + bot_relay.claim_pending_envelopes(sender)
     assert [e["target_connection"] for e in envelopes] == (["mini"] if delivered else []), result
     assert ("error" in result) is not delivered

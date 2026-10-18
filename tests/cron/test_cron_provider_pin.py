@@ -333,3 +333,43 @@ def test_named_provider_migration_requires_rebinding(tmp_path, monkeypatch, styl
     stored = json.dumps(jobs.load_jobs())
     assert "synthetic-" not in stored
     assert "CRON_MIGRATION_KEY" not in stored
+
+
+def test_pin_resolution_keeps_validated_config_when_live_provider_is_replaced(tmp_path, monkeypatch):
+    """Replacing live config after validation cannot mix new credentials with the old URL."""
+    import copy
+    from cron import jobs
+    from cron.scheduler import _CronJobConfig, _resolve_job_runtime
+    from hermes_cli import runtime_provider as rp
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(jobs, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **kw: None)
+    cfg = {
+        "model": {"provider": "route-b", "default": "model-b"},
+        "providers": {"route-b": {
+            "base_url": "https://old.example.invalid/v1", "api_key": "synthetic-old",
+            "extra_headers": {"Authorization": "synthetic-old-header"},
+        }},
+    }
+    monkeypatch.setattr(rp._config_mod, "load_config", lambda: copy.deepcopy(cfg))
+    (tmp_path / "config.yaml").write_text(json.dumps(cfg))
+    job = jobs.create_job(prompt="hello", schedule="every 1 hour", pinned=True)
+    real_resolve = rp.resolve_runtime_provider
+
+    def replace_live_config_then_resolve(**kwargs):
+        cfg["providers"]["route-b"] = {
+            "base_url": "https://new.example.invalid/v1", "api_key": "synthetic-new",
+            "extra_headers": {"Authorization": "synthetic-new-header"},
+        }
+        return real_resolve(**kwargs)
+
+    monkeypatch.setattr(rp, "resolve_runtime_provider", replace_live_config_then_resolve)
+    jc = _CronJobConfig(cfg=cfg, model="model-b", model_cfg=cfg["model"], cron_default_provider="")
+    runtime, model = _resolve_job_runtime(job, job["id"], jc)
+    assert model == "model-b"
+    assert runtime["base_url"] == "https://old.example.invalid/v1"
+    assert runtime["api_key"] == "synthetic-old"
+    assert runtime["extra_headers"]["Authorization"] == "synthetic-old-header"
+    assert rp.load_config()["providers"]["route-b"]["base_url"] == "https://new.example.invalid/v1"
+    assert "synthetic-" not in json.dumps(jobs.load_jobs())

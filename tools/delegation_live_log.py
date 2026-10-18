@@ -26,7 +26,7 @@ LIVE_RETENTION_DAYS = 7
 
 # Per-line truncation budgets (chars): the .log is a compact operational view;
 # the child's SessionDB transcript and summary spill files carry full text.
-_ASSISTANT_MAX = 600
+_ASSISTANT_MAX = 2000
 _THINKING_MAX = 300
 _ARGS_MAX = 220
 _RESULT_MAX = 400
@@ -66,6 +66,22 @@ def _one_line(text: Any, limit: int) -> str:
     if len(s) > limit:
         s = s[:limit] + f" …(+{len(s) - limit} chars)"
     return s
+
+
+def _write_result_sidecar(path: Optional[Path], text: Any) -> None:
+    """Write a child's complete final answer next to its transcript.
+
+    Transcript lines are elided to keep the live view readable, which loses the
+    one payload a reader usually wants afterwards: the child's actual answer. The
+    sidecar holds it whole, redacted the same way, at ``task-N.result.md``.
+    """
+    if path is None or not text:
+        return
+    try:
+        sidecar = path.with_suffix(".result.md")
+        sidecar.write_text(_redact(str(text)), encoding="utf-8")
+    except Exception as exc:
+        logger.debug("Live transcript result sidecar failed (%s): %s", path, exc)
 
 
 def _redact(text: str) -> str:
@@ -175,6 +191,7 @@ class LiveTranscriptWriter:
     def _on_complete(self, tool_name, preview, args, kwargs):
         dur = kwargs.get("duration_seconds")
         summary = kwargs.get("summary") or preview
+        _write_result_sidecar(self.path, kwargs.get("summary"))
         self.marker(_joined(
             f"status={kwargs.get('status', '?')}",
             f"duration={dur}s" if dur is not None else "",
@@ -204,6 +221,8 @@ class LiveTranscriptWriter:
 
     def finalize(self, entry: dict[str, Any]) -> None:
         """Terminal marker with exit-reason detail subagent.complete lacks."""
+        # A child that died before subagent.complete still has its answer here.
+        _write_result_sidecar(self.path, entry.get("summary") or entry.get("result"))
         exit_reason = entry.get("exit_reason")
         self.marker(_joined(
             f"end status={entry.get('status', '?')}",

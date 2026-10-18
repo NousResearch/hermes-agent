@@ -8,18 +8,22 @@ once it is gone only ``sudo`` can.
 
 Persistent sandbox dirs outlive their container, and root refuses some host-owned files: git stops
 at "dubious ownership", ssh at "Bad owner" on ``~/.ssh/config``. So the handback records the exact
-paths it changed beside the dirs (on the host, outside every mount), and the next container that
+paths it changes beside the dirs (on the host, outside every mount), and the next container that
 mounts them gives exactly those paths back to root before its first command. Files the user added
-on the host in between keep their owner. Mounts nested under the sandbox paths (read-only skills,
-credentials, caches, user volumes) are pruned, so host data outside the sandbox dir is never touched.
+on the host in between keep their owner. Every walk is ``find -P`` (no symlinks followed) and prunes
+each mount Docker reports nested under the sandbox paths (read-only skills, credentials, caches,
+``docker_volumes`` and ``docker_extra_args`` binds), so host data outside the sandbox dir is never touched.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -27,8 +31,8 @@ from tools.environments.remote_common import run_capture
 
 logger = logging.getLogger(__name__)
 
-# Bounded so a huge workspace cannot hold teardown past the atexit drain (15s); a partial walk
-# still records and changes everything it reached.
+# Bounded so a huge workspace cannot hold teardown past the atexit drain (15s). Paths are recorded
+# before any chown, so a timeout mid-chown never leaves a changed path unrecorded.
 _CHOWN_TIMEOUT_S = 10
 HANDBACK_RECORD = ".hermes-owner-handback"
 
@@ -64,69 +68,98 @@ def _record_path(mounts: list[tuple[str, str]]) -> Optional[Path]:
     return Path(mounts[0][0]).parent / HANDBACK_RECORD if mounts else None
 
 
-def handback_argv(mounts: list[tuple[str, str]], other_mounts: list[str], uid: int, gid: int) -> list[str]:
-    """``find`` argv that chowns every root-owned entry under the sandbox mounts to ``uid:gid`` and
-    prints each changed path NUL-terminated, pruning the *other_mounts* nested below them."""
+def _container_mount_points(docker_exe: str, container_id: str) -> Optional[list[str]]:
+    """Destination of every mount the container really has, including ``docker_extra_args``
+    ``-v``/``--mount`` binds and named volumes, or ``None`` when Docker cannot say (then the
+    walk is skipped: a same-filesystem bind is invisible to ``find -xdev``)."""
+    try:
+        result = run_capture([docker_exe, "inspect", "--format", "{{json .Mounts}}", container_id], timeout=10)
+        if result.returncode == 0:
+            return [m["Destination"] for m in json.loads(result.stdout)]
+    except (subprocess.TimeoutExpired, OSError, ValueError, TypeError, KeyError) as e:
+        logger.debug("docker inspect mounts of %s failed: %s", container_id[:12], e)
+    return None
+
+
+def walk_argv(mounts: list[tuple[str, str]], mount_points: list[str], owner: int) -> list[str]:
+    """``find`` argv printing, NUL-terminated, every entry owned by *owner* under the sandbox
+    mounts. It never follows symlinks (``-P``) and prunes each mount point nested below them."""
     targets = [container for _, container in mounts]
     prune: list[str] = []
-    for mount in (m.rstrip("/") for m in other_mounts):
-        if any(mount.startswith(t.rstrip("/") + "/") for t in targets):
-            prune += [*(["-o"] if prune else []), "-path", mount]
-    return ["find", *targets, "-xdev", *(["(", *prune, ")", "-prune", "-o"] if prune else []),
-            "-user", "0", "-print0", "-exec", "chown", "-h", f"{uid}:{gid}", "{}", "+"]
+    for point in sorted({p.rstrip("/") for p in mount_points}):
+        if any(point.startswith(t.rstrip("/") + "/") for t in targets):
+            prune += [*(["-o"] if prune else []), "-path", re.sub(r"([][*?\\])", r"\\\1", point)]
+    return ["find", "-P", *targets, "-xdev", *(["(", *prune, ")", "-prune", "-o"] if prune else []),
+            "-user", str(owner), "-print0"]
+
+
+def _walk(docker_exe: str, container_id: str, mounts: list[tuple[str, str]], owner: int,
+          deadline: float) -> Optional[list[bytes]]:
+    points = _container_mount_points(docker_exe, container_id)
+    if points is None:
+        return None
+    result = subprocess.run([docker_exe, "exec", "-u", "0:0", container_id, *walk_argv(mounts, points, owner)],
+                            capture_output=True, timeout=max(1.0, deadline - time.monotonic()),
+                            stdin=subprocess.DEVNULL, check=False)
+    if result.returncode != 0:
+        logger.debug("ownership walk in %s exited %d: %s", container_id[:12], result.returncode,
+                     result.stderr.decode("utf-8", "replace").strip()[:500])
+    return [p for p in result.stdout.split(b"\0") if p]
+
+
+def _chown(docker_exe: str, container_id: str, paths: list[bytes], owner: str, deadline: float) -> int:
+    result = subprocess.run(
+        [docker_exe, "exec", "-i", "-u", "0:0", container_id, "xargs", "-0", "-r", "chown", "-h", owner, "--"],
+        input=b"".join(p + b"\0" for p in paths), capture_output=True,
+        timeout=max(1.0, deadline - time.monotonic()), check=False)
+    return result.returncode
 
 
 def hand_back_sandbox_files(docker_exe: str, container_id: str, mounts: list[tuple[str, str]],
-                            other_mounts: list[str], ids: tuple[int, int]) -> None:
+                            ids: tuple[int, int]) -> None:
     """Before the container is stopped: give its root-owned sandbox files (``mounts`` are
-    ``(host_dir, container_path)``) to the host user and record which. Best-effort: a gone
-    container, an image without ``find`` or a timeout logs at debug and never raises."""
+    ``(host_dir, container_path)``) to the host user and record which. The paths are recorded
+    before any of them changes owner, so a timeout mid-chown still leaves a complete record.
+    Best-effort: a gone container, an image without ``find`` or a timeout logs at debug."""
     record = _record_path(mounts)
     if record is None:
         return
-    argv = [docker_exe, "exec", "-u", "0:0", container_id, *handback_argv(mounts, other_mounts, *ids)]
+    deadline = time.monotonic() + _CHOWN_TIMEOUT_S
     try:
-        result = subprocess.run(argv, capture_output=True, timeout=_CHOWN_TIMEOUT_S,
-                                stdin=subprocess.DEVNULL, check=False)
+        paths = _walk(docker_exe, container_id, mounts, 0, deadline)
+        if not paths:
+            return
+        with record.open("ab") as fh:  # append: an unreclaimed earlier record still applies
+            fh.write(b"".join(p + b"\0" for p in paths))
+        _chown(docker_exe, container_id, paths, f"{ids[0]}:{ids[1]}", deadline)
     except (subprocess.TimeoutExpired, OSError) as e:
         logger.debug("ownership handback in %s failed: %s", container_id[:12], e)
-        return
-    if result.returncode != 0:
-        logger.debug("ownership handback in %s exited %d: %s", container_id[:12], result.returncode,
-                     result.stderr.decode("utf-8", "replace").strip()[:500])
-    if result.stdout:
-        try:
-            with record.open("ab") as fh:  # append: an unreclaimed earlier record still applies
-                fh.write(result.stdout)
-        except OSError as e:
-            logger.debug("could not record ownership handback at %s: %s", record, e)
-
-
-def _under(path: bytes, roots: list[str]) -> bool:
-    encoded = [r.rstrip("/").encode() for r in roots]
-    return any(path == r or path.startswith(r + b"/") for r in encoded)
 
 
 def reclaim_sandbox_files(docker_exe: str, container_id: str, mounts: list[tuple[str, str]],
-                          other_mounts: list[str]) -> None:
+                          runs_as_host_user: bool) -> None:
     """After a container mounts sandbox dirs an earlier teardown handed back: return the recorded
-    paths to root (so git/ssh ownership checks pass again), then drop the record. Only paths still
-    under this container's sandbox mounts and outside its other mounts are touched, so a config
-    change that now binds a real host directory at ``/workspace`` never gets it chowned."""
+    paths to root (so git/ssh ownership checks pass again), then drop the record. A container that
+    runs as the host user already owns them, so the record is just dropped. Only recorded paths a
+    fresh no-symlink walk of this container's sandbox mounts still finds (outside every nested
+    mount) are touched, so a symlinked directory or a real host dir now bound inside is never chowned."""
     record = _record_path(mounts)
     if record is None or not record.is_file():
         return
+    if runs_as_host_user or sys.platform != "linux":
+        record.unlink(missing_ok=True)
+        return
     try:
-        sandbox_roots = [container for _, container in mounts]
-        paths = b"".join(
-            p + b"\0" for p in record.read_bytes().split(b"\0")
-            if p and _under(p, sandbox_roots) and not _under(p, other_mounts))
-        result = subprocess.run(
-            [docker_exe, "exec", "-i", "-u", "0:0", container_id, "xargs", "-0", "-r", "chown", "-h", "0:0", "--"],
-            input=paths, capture_output=True, timeout=_CHOWN_TIMEOUT_S, check=False)
+        recorded = set(record.read_bytes().split(b"\0"))
+        owned = _walk(docker_exe, container_id, mounts, os.geteuid(),  # windows-footgun: ok — linux-gated
+                      time.monotonic() + _CHOWN_TIMEOUT_S)
+        if owned is None:
+            return  # keep the record for the next container
+        paths = [p for p in owned if p in recorded]
+        if paths:
+            rc = _chown(docker_exe, container_id, paths, "0:0", time.monotonic() + _CHOWN_TIMEOUT_S)
+            logger.debug("ownership reclaim in %s exited %d", container_id[:12], rc)
     except (subprocess.TimeoutExpired, OSError) as e:
         logger.debug("ownership reclaim in %s failed: %s", container_id[:12], e)
         return
-    # Nonzero is expected when the user deleted some recorded files; everything else was restored.
-    logger.debug("ownership reclaim in %s exited %d", container_id[:12], result.returncode)
     record.unlink(missing_ok=True)

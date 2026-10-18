@@ -753,10 +753,7 @@ class DockerEnvironment(BaseEnvironment):
             task_label, profile_name, egress_label, network)
         if not reused:
             self._container_id = self._docker_run(cwd)
-        # Container paths of every other bind mount: the owner handback never descends into them.
-        self._other_mount_paths = [
-            parsed[1] for parsed in map(_split_volume_spec, volume_args) if parsed]
-        reclaim_sandbox_files(self._docker_exe, self._container_id, self._sandbox_mounts, self._other_mount_paths)
+        reclaim_sandbox_files(self._docker_exe, self._container_id, self._sandbox_mounts, bool(user_args))
 
         # Init-time env forwarding args seed the snapshot.
         self._init_env_args = self._build_init_env_args()
@@ -1296,14 +1293,13 @@ class DockerEnvironment(BaseEnvironment):
         docker_exe = self._docker_exe
         log_id = container_id[:12]
         sandbox_mounts = list(getattr(self, "_sandbox_mounts", []))
-        other_mounts = list(getattr(self, "_other_mount_paths", []))
         runs_as_host_user = bool(getattr(self, "_run_as_host_user", False))
 
         def _do_cleanup() -> None:
             # Root in the still-running container is the only non-sudo way to give its files back.
             ids = handback_ids(docker_exe, runs_as_host_user) if sandbox_mounts else None
             if ids is not None:
-                hand_back_sandbox_files(docker_exe, container_id, sandbox_mounts, other_mounts, ids)
+                hand_back_sandbox_files(docker_exe, container_id, sandbox_mounts, ids)
             for argv, fail_msg in ((["stop", "-t", "10"], "docker stop %s timed out / failed: %s"),
                                    (["rm", "-f"], "docker rm -f %s failed: %s")):
                 try:

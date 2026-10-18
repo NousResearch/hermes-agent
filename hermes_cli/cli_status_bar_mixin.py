@@ -1181,11 +1181,15 @@ class CLIStatusBarMixin:
 
                 # OMP-style semantic degradation: collapse path parents, then
                 # dirty details, then the optional repo groups; never clip a
-                # glyph or counter in half.
+                # glyph or counter in half. Path + branch are identity — keep
+                # them visible whenever the model itself fits; only degrade
+                # when even the rail would collapse.
                 path_options = [workspace]
                 if workspace:
                     short = "/".join(workspace.rstrip("/").split("/")[-2:])
-                    path_options.extend([short, ""])
+                    # Also try basename alone before giving up on the path.
+                    base = workspace.rstrip("/").split("/")[-1]
+                    path_options.extend([short, base, ""])
                 else:
                     path_options.append("")
                 git_options = [git]
@@ -1195,17 +1199,35 @@ class CLIStatusBarMixin:
                     git_options.append("")
                 title_text = f" {title} " if title else ""
                 title_width = self._status_bar_display_width(title_text)
+                # Reserve only a minimal rail (pct + max) so path/git win
+                # over decorative rail space on narrow panes.
+                min_rail = 8
                 left = _left("", "")
                 for path_option in path_options:
                     for git_option in git_options:
                         candidate = _left(path_option, git_option)
                         candidate_width = sum(self._status_bar_display_width(text) for _, text in candidate)
-                        if candidate_width + title_width + 12 <= width:
+                        if candidate_width + title_width + min_rail <= width:
                             left = candidate
                             break
                     else:
                         continue
                     break
+                # If even the minimal rail doesn't fit, try dropping the
+                # title before degrading path/git.
+                if left == _left("", "") and title_text:
+                    title_text = ""
+                    title_width = 0
+                    for path_option in path_options:
+                        for git_option in git_options:
+                            candidate = _left(path_option, git_option)
+                            candidate_width = sum(self._status_bar_display_width(text) for _, text in candidate)
+                            if candidate_width + min_rail <= width:
+                                left = candidate
+                                break
+                        else:
+                            continue
+                        break
 
                 left_width = sum(self._status_bar_display_width(text) for _, text in left)
                 rail_width = max(1, width - left_width - title_width)

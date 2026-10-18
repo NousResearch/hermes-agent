@@ -2169,11 +2169,17 @@ def _finalize_cron_session(session_db, agent, job_id: str, job_name: str, cron_s
             _set_cron_session_title(_session_db, _final_cron_session_id, f"cron {job_id}")
     except (Exception, KeyboardInterrupt) as e:
         logger.debug("Job '%s': failed to set cron session title: %s", job_id, e)
-        # Never leave the session untitled.
+        # Never leave the session untitled. Guard against a disabled (timed-out) session db so
+        # the fallback cannot raise "session finalization disabled after prior cleanup failure".
+        if getattr(_session_db, "_disabled", False):
+            return
         # Try the next free title in the lineage, then a bare id-stamped title. See #50535.
-        for _fallback in (
-            getattr(_session_db, "get_next_title_in_lineage", lambda b: b)(f"cron {job_id}"),
-            f"cron {job_id} {_final_cron_session_id[-6:]}"):
+        _fallbacks = [f"cron {job_id} {_final_cron_session_id[-6:]}"]
+        try:
+            _fallbacks.insert(0, getattr(_session_db, "get_next_title_in_lineage", lambda b: b)(f"cron {job_id}"))
+        except (Exception, KeyboardInterrupt):
+            pass
+        for _fallback in _fallbacks:
             try:
                 if _set_cron_session_title(_session_db, _final_cron_session_id, _fallback):
                     break

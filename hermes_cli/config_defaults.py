@@ -492,6 +492,22 @@ DEFAULT_CONFIG = {
         # browser_cdp / browser_evaluate capabilities.
         "extension_control": {"enabled": False, "developer_mode": False},
     },
+    # Stale git worktree lifecycle (`hermes -w`, `/worktree new`, subagent isolation, Desktop). The
+    # sweep runs at `hermes -w` startup and every 6h from the cron ticker over every repo Hermes made
+    # a worktree in. Trees idle past their tier (hermes-*/subagent-* 24h, named 72h) that are clean
+    # and merged are removed; dirty or unpushed ones are archived to refs/hermes/archive/<tree>
+    # first (`hermes worktree restore <name>`). Live trees and Kanban t_<hex> trees are never touched.
+    "worktrees": {
+        # false = never remove a dirty/unpushed tree (the pre-archive behaviour, exactly).
+        "archive_dirty": True,
+        # Untracked files larger than this (MB) are not archived, so a tree holding one is kept.
+        "archive_max_file_mb": 50,
+        # The sweep deletes archive refs older than this many days. 0 keeps them forever.
+        "archive_retention_days": 30,
+        # Optional size budget (GB) for idle trees: past it the oldest idle trees are archived and
+        # removed first. Live, young and Kanban trees are never counted or touched. 0 = off.
+        "max_total_gb": 0,
+    },
     # Filesystem checkpoints: snapshot the working directory once per turn (on the first
     # write_file/patch call); restore with /rollback. Opt-in via `hermes chat --checkpoints` or
     # enabled=True (most users never use /rollback). Single shared shadow store with real pruning.
@@ -2722,44 +2738,7 @@ DEFAULT_CONFIG = {
 }
 
 
-def _env(description, prompt, **keys):
-    """One OPTIONAL_ENV_VARS entry; keyword order is preserved as dict key order."""
-    return {"description": description, "prompt": prompt, **keys}
-
-
-_OMIT = object()
-
-
-def _category(category, password, advanced):
-    """Entry factory for one category with its usual password/advanced defaults.
-
-    ``url``/``help``/``tools`` are only written when passed; ``password=None`` omits the key;
-    ``advanced`` is only written when true. Key order matches the plain ``_env`` entries.
-    """
-    def make(description, prompt, url=_OMIT, *, help=_OMIT, tools=_OMIT, password=password,
-             advanced=advanced):
-        d = {"description": description, "prompt": prompt}
-        d.update((k, v) for k, v in (("help", help), ("url", url), ("tools", tools)) if v is not _OMIT)
-        if password is not None:
-            d["password"] = password
-        d["category"] = category
-        if advanced:
-            d["advanced"] = True
-        return d
-    return make
-
-
-_prov = _category("provider", password=True, advanced=True)
-_tool = _category("tool", password=True, advanced=False)
-_msg = _category("messaging", password=False, advanced=False)
-_skill = _category("skill", password=True, advanced=True)
-_setting = _category("setting", password=False, advanced=False)
-
-
-def _base_url(name, prompt_name=None):
-    """Provider ``*_BASE_URL`` override entry (advanced, not a secret)."""
-    prompt = f"{prompt_name or name} base URL (leave empty for default)"
-    return _prov(f"{name} base URL override", prompt, None, password=False)
+from hermes_cli.config_defaults_env import _base_url, _env, _msg, _prov, _setting, _skill, _tool
 
 
 # Optional environment variables that enhance functionality. Feeds the dashboard keys page and setup

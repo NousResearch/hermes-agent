@@ -130,6 +130,45 @@ ensure_uv
     assert server[0].requests == (["/primary", "/mirror"] if mode in ("missing", "both-missing") else ["/primary"])
 
 
+@pytest.mark.platforms("posix")
+def test_posix_uv_digest_ignores_sha256sum_escaping_marker(tmp_path, server):
+    # GNU coreutils prefixes the digest line with a backslash when the file name
+    # had to be escaped (a backslash or newline in TMPDIR), so
+    # `sha256sum "$file" | cut -d' ' -f1` can hand back `<hash>` and fail a
+    # byte-identical comparison. Emulate that host: the stub marks every
+    # file-name invocation the way an escaping path makes coreutils do.
+    primary, _, digest = fixture_bytes(server, "primary", uv_archive())
+    stub_dir = tmp_path / "stub-bin"
+    stub_dir.mkdir()
+    stub = stub_dir / "sha256sum"
+    stub.write_text(
+        "#!/bin/sh\n"
+        "if [ $# -eq 0 ]; then\n"
+        "  exec python3 -c 'import hashlib,sys;print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())'\n"
+        "fi\n"
+        "digest=\"$(python3 -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],\"rb\").read()).hexdigest())' \"$1\")\" || exit 1\n"
+        "printf '\\\\%s  %s\\n' \"$digest\" \"$1\"\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    script = f"""
+source '{ROOT / 'scripts/install.sh'}'
+command() {{ if [ "$*" = '-v uv' ]; then return 1; fi; builtin command "$@"; }}
+uv_bootstrap_pin() {{ UV_PIN_VERSION=fixture; UV_PIN_URL='{primary}'; UV_PIN_MIRROR=''; UV_PIN_SHA256='{digest}'; }}
+ensure_uv
+"""
+    env = {
+        **os.environ,
+        "HERMES_HOME": str(tmp_path / "home"),
+        "HOME": str(tmp_path / "home"),
+        "HERMES_RUNTIME_DIR": str(tmp_path / "tools"),
+        "PATH": f"{stub_dir}{os.pathsep}{os.environ['PATH']}",
+    }
+    result = subprocess.run(["bash", "-c", script], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "digest mismatch" not in result.stderr
+
+
 @pytest.mark.platforms("windows")
 def test_generated_windows_pins_match_the_shared_authority(tmp_path):
     from pm.artifact_mirror import mirror_url

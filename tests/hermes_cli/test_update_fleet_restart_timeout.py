@@ -190,6 +190,10 @@ class TestGracefulSigusr1Eligibility:
         assert not _service_unit_supports_graceful_sigusr1_restart(
             "hermes-serve-work"
         )
+        assert not _service_unit_supports_graceful_sigusr1_restart("hermes-dashboard")
+        assert not _service_unit_supports_graceful_sigusr1_restart(
+            "hermes-dashboard-work"
+        )
 
     def test_process_errors_other_than_timeout_still_propagate(self):
         def process_unit(_svc_name: str) -> None:

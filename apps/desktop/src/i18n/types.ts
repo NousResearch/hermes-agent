@@ -8,6 +8,7 @@
 import type { ErrorCodeKey } from '@/lib/error-surface'
 import type { TipId } from '@/lib/tips/catalog'
 
+import type { CompletionSoundCopy } from './completion-sound-copy'
 import type { AppTourTranslations } from './types_app_tour'
 import type { AuxTaskCopyMap } from './types_aux_tasks'
 import type { BillingTranslations } from './types_billing'
@@ -759,7 +760,7 @@ export interface Translations extends NoticeTranslations {
         masterPasswordPlaceholder: string
       }
     }
-    notifications: {
+    notifications: CompletionSoundCopy & {
       title: string
       intro: string
       enableAll: string
@@ -774,9 +775,6 @@ export interface Translations extends NoticeTranslations {
       testBody: string
       testSent: string
       testUnsupported: string
-      completionSoundTitle: string
-      completionSoundDesc: string
-      completionSoundPreview: string
     }
     sections: Record<string, string>
     searchPlaceholder: Record<'about' | 'config' | 'gateway' | 'keys' | 'mcp' | 'sessions', string>

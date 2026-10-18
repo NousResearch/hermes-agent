@@ -3637,6 +3637,8 @@
     "settings.notifications.completionSoundDesc",
     "settings.notifications.completionSoundPreview",
     "settings.notifications.completionSoundTitle",
+    "settings.notifications.completionSoundVolumeDesc",
+    "settings.notifications.completionSoundVolumeTitle",
     "settings.notifications.enableAll",
     "settings.notifications.enableAllDesc",
     "settings.notifications.focusedHint",

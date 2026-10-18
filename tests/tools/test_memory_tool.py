@@ -1017,3 +1017,53 @@ class TestBackgroundReviewDeleteGate:
             reset_current_write_origin(token)
         assert result["success"] is True
         assert "rewritten by refine" in store._entries_for("memory")
+
+
+class TestMemoryRefusalGuidanceParity:
+    """Refusal copy parity across single-op, batch-op, and store levels (#140966)."""
+
+    def test_batch_validation_error_messages_contain_field_and_action_guidance(self, store):
+        # Batch add missing content
+        res_add = store.apply_batch("memory", [{"action": "add", "content": ""}])
+        assert res_add["success"] is False
+        assert "content is required — set this operation object's own 'content' to the new entry to add." in res_add["error"]
+
+        # Batch remove missing old_text
+        res_rem = store.apply_batch("memory", [{"action": "remove", "old_text": ""}])
+        assert res_rem["success"] is False
+        assert "old_text is required — set this operation object's own 'old_text' to a short unique substring of the entry to remove." in res_rem["error"]
+
+        # Batch patch missing old_text
+        res_patch = store.apply_batch("memory", [{"action": "patch", "old_text": "", "content": "foo"}])
+        assert res_patch["success"] is False
+        assert "old_text is required — set this operation object's own 'old_text' to a short unique substring of the entry to patch." in res_patch["error"]
+
+    def test_store_level_empty_argument_error_messages_carry_guidance(self, store):
+        add_err = store.add("memory", "   ")
+        assert add_err["success"] is False
+        assert add_err["error"] == "Content cannot be empty — provide the memory entry to add."
+
+        rep_err = store.replace("memory", "   ", "new content")
+        assert rep_err["success"] is False
+        assert rep_err["error"] == "old_text cannot be empty — provide a short unique substring of the entry to replace."
+
+        patch_err = store.patch("memory", "   ", "new text")
+        assert patch_err["success"] is False
+        assert patch_err["error"] == "old_text cannot be empty — provide the exact text span in the entry to patch."
+
+        rem_err = store.remove("memory", "   ")
+        assert rem_err["success"] is False
+        assert rem_err["error"] == "old_text cannot be empty — provide a short unique substring of the entry to remove."
+
+    def test_single_op_add_missing_content_error_message(self, store):
+        res = json.loads(memory_tool(action="add", content="", store=store))
+        assert res["success"] is False
+        assert "Content is required for 'add' action — provide the entry text to add." in res["error"]
+
+    def test_unknown_staged_action_error_message_names_available_actions(self, store):
+        from tools.memory_tool import apply_memory_pending
+        payload = {"action": "invalid_act", "target": "memory", "matched_entry": "entry"}
+        res = apply_memory_pending(payload, store)
+        assert res["success"] is False
+        assert res["error"] == "Unknown staged action 'invalid_act'. Use add, patch, or remove."
+

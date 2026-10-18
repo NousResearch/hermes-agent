@@ -454,11 +454,21 @@ class GatewayBusySessionMixin:
         "notification_category",
     )
 
-    def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
+    def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> bool:
         from gateway.platforms.base import merge_pending_message_event
         adapter = self._delivery_adapter_for(event.source)
         if not adapter:
-            return
+            return False
+        if not getattr(event, "internal", False):
+            try:
+                from gateway.shutdown_flush import record_durable_inbound_event
+
+                if not record_durable_inbound_event(session_key, event):
+                    logger.error("Rejecting queued input without durable record for session %s", session_key)
+                    return False
+            except Exception:
+                logger.exception("Durable pending-input record failed for session %s", session_key)
+                return False
         # FIFO so each follow-up gets its own turn in arrival order (the single pending slot used to
         # be silently OVERWRITTEN). Photo bursts still merge into the head slot (album semantics).
         pending_slot = getattr(adapter, "_pending_messages", None)
@@ -496,16 +506,22 @@ class GatewayBusySessionMixin:
                 merge_text=event.message_type == MessageType.TEXT,
             )
             event._gateway_accepted = True
-            return
+            return True
 
         if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
             logger.warning(
                 "Dropping busy-mode follow-up for session %s — pending queue at cap (%d).",
                 session_key, self._BUSY_QUEUE_MAX_PENDING,
             )
-            return
+            if not getattr(event, "internal", False):
+                with contextlib.suppress(Exception):
+                    from gateway.shutdown_flush import acknowledge_durable_inbound_event
+
+                    acknowledge_durable_inbound_event(event)
+            return False
 
         self._enqueue_fifo(session_key, event, adapter)
+        return True
 
     async def _prepare_busy_steer_text(self, event: MessageEvent) -> str:
         """Steerable text for a busy follow-up, transcribing voice-message media first.
@@ -587,8 +603,11 @@ class GatewayBusySessionMixin:
         if not adapter:
             return
         if self._queue_during_drain_enabled(effective_mode):
-            self._queue_or_replace_pending_event(session_key, event)
-            message = t("gateway.busy.drain_queued", action=self._status_action_gerund())
+            accepted = self._queue_or_replace_pending_event(session_key, event)
+            message = (
+                t("gateway.busy.drain_queued", action=self._status_action_gerund())
+                if accepted else t("gateway.busy.drain_rejected", action=self._status_action_gerund())
+            )
         else:
             message = t("gateway.busy.drain_rejected", action=self._status_action_gerund())
         await self._send_busy_reply(event, adapter, message)
@@ -943,8 +962,17 @@ class GatewayBusySessionMixin:
         _steer = await self._resolve_busy_steer_or_redirect(event, session_key, effective_mode, running_agent)
         # Queue as the next turn — skipped after a successful steer/redirect (the text is already in
         # the run and must NOT replay). FIFO gives each text its own turn (raw merge would join them).
-        if not _steer.steered and not _steer.redirected:
-            self._queue_or_replace_pending_event(session_key, event)
+        queued = True
+        redirected = _steer.redirected
+        if not _steer.steered and not redirected:
+            queued = self._queue_or_replace_pending_event(session_key, event)
+        if not queued:
+            await self._send_busy_ack_reply(
+                event, adapter,
+                "⚠️ I could not safely queue that follow-up while the current request is running. "
+                "Please send it again after the current turn finishes.",
+            )
+            return True
         # Store the message so it's processed as the next turn after the current run finishes (or is
         # interrupted). Skip this for a successful steer — the text already landed inside the run and must
         # NOT also be replayed as a next-turn user message. Route through _queue_or_replace_pending_event

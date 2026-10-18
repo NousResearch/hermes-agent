@@ -47,31 +47,47 @@ def test_program_status_rejects_invalid_state_or_kind():
         terminal_notify.program_status_sequence("working", kind="permission")
 
 
-def test_program_status_does_not_write_without_an_interactive_stdout(monkeypatch):
+def test_program_status_follows_the_screen_through_one_owner(monkeypatch):
+    """Prompt on screen -> blocked; prompt closed mid-turn -> working (no per-prompt bookkeeping);
+    a connection card working in the background is not blocked; a lost result claims no outcome."""
     written = []
     monkeypatch.setattr(terminal_notify, "write_tty", written.append)
-    monkeypatch.setattr("sys.stdout.isatty", lambda: False)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
     cli = HermesCLI.__new__(HermesCLI)
-    cli.program_status_enabled = True
-    cli._report_program_status("working")
+    cli.program_status_enabled, cli._agent_running = True, True
+
+    def states():
+        out = [s.split(";", 1)[1].removesuffix("\x1b\\").split(":msg=")[0].replace(":app=hermes", "") for s in written]
+        written.clear()
+        return out
+
+    cli._approval_state = {"command": "rm -rf build"}
+    cli._sync_program_status()
+    cli._approval_state = None
+    cli._connection_state = {"phase": "waiting"}
+    cli._sync_program_status()
+    cli._connection_state = {"phase": "url"}
+    cli._sync_program_status()
+    cli._sync_program_status()  # unchanged: no repeat report
+    assert states() == ["state=blocked:kind=permission", "state=working", "state=blocked:kind=auth"]
+
+    cli._connection_state, cli._agent_running = None, False
+    cli._program_turn_outcome = None  # monitor gave up on a still-running agent
+    cli._sync_program_status()
+    assert states() == ["state=idle"]
+
+
+def test_display_program_status_false_from_config_writes_nothing(monkeypatch):
+    from tests.hermes_cli.test_cli_init import _make_cli
+
+    cli = _make_cli(config_overrides={"display": {"compact": False, "program_status": False}})
+    assert cli.program_status_enabled is False
+    written = []
+    monkeypatch.setattr(terminal_notify, "write_tty", written.append)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    cli._approval_state = {"command": "x"}
+    cli._sync_program_status()
     assert written == []
-
-
-def test_running_app_does_not_receive_program_status_when_stdout_is_redirected(monkeypatch):
-    monkeypatch.setattr("sys.stdout.isatty", lambda: False)
-
-    class _Output:
-        def write_raw(self, _data):
-            pytest.fail("program status leaked to redirected app output")
-
-    class _App:
-        _is_running = True
-        output = _Output()
-
-    cli = HermesCLI.__new__(HermesCLI)
-    cli.program_status_enabled = True
-    cli._app = _App()
-    cli._report_program_status("working")
 
 
 def test_warp_osc777_only_under_supported_warp_build(monkeypatch):

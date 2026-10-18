@@ -31,7 +31,7 @@ class CLITuiRuntimeMixin:
     def _tui_process_loop(self):
         """REPL worker thread: drain ``_pending_input``, run idle housekeeping, dispatch each input."""
         held = None
-        self._report_program_status("idle")
+        self._sync_program_status()
         while not self._should_exit:
             try:
                 if held is not None:
@@ -157,8 +157,9 @@ class CLITuiRuntimeMixin:
             from hermes_cli.cli_inline_images import print_inline_images
             print_inline_images(self, submit_images)
 
-        self._report_program_status("working")
+        self._program_turn_outcome = None
         self._agent_running = self._interactive_turn = True
+        self._sync_program_status()
         self._pet_turn_error = self._pet_reasoning = False
         self._turn_summary_begin()
         self._app.invalidate()
@@ -187,6 +188,7 @@ class CLITuiRuntimeMixin:
         """Post-turn bookkeeping after chat() returns (normal, error, or interrupt)."""
         from cli import _DIM, _RST, _cprint
         self._agent_running = self._pet_reasoning = False
+        self._sync_program_status()  # setup failures and early returns land here too
         self._spinner_text = self._last_scrollback_tool = ""
         self._tool_start_time = 0.0
         self._pending_tool_info.clear()

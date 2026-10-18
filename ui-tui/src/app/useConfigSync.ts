@@ -331,7 +331,11 @@ export const applyDisplay = (
   setBell(!!d.bell_on_complete)
 
   setBellOnPrompt?.(!!d.bell_on_prompt)
-  $programStatusEnabled.set(d.program_status !== false)
+
+  // A failed read (cfg null) keeps the last known setting.
+  if (cfg?.config) {
+    $programStatusEnabled.set(d.program_status !== false)
+  }
 
   applyConfiguredTuiTheme(d.tui_theme)
 

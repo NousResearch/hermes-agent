@@ -299,6 +299,7 @@ class GatewayRolloverMixin:
             binding.pop("mode")
             binding.update(
                 profile_home=home,
+                transcript_watermark=closing.get("rollover_transcript_watermark"),
                 reason="native_context_backstop" if lane.fallback_used else "context_pressure",
                 bootstrap_prompt=(
                     "[Internal continuity context — not a user command or new approval]\n" +

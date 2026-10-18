@@ -672,6 +672,10 @@ binds the route/profile, old and sole successor IDs, generation, packet path/has
 exact restart message and bootstrap text. The packet hash is checked again after
 tool-capable bootstrap and before continuation admission; changed content cannot
 supply a new directive mode under the old receipt.
+The authoring turn also captures the active-transcript watermark before releasing
+its durable turn lease. The receipt binds that watermark; the ownership transaction
+rejects a changed transcript even if an intervening writer has already released
+its lease. The old owner remains live and the handoff must be refreshed.
 
 ```mermaid
 stateDiagram-v2
@@ -700,8 +704,10 @@ still-authorized directive, including newer stops or cancellations.
 The commit ends the predecessor with `session_reset`, creates a fresh child with
 `parent_session_id`/`_reset_from`, and publishes native fresh-reset semantics. It
 does not copy the prior transcript. Adapter routing metadata, including delivery
-watermarks, survives the continuity boundary. Recovery of a committed, not-yet-started
-bootstrap uses the **same successor**. Interrupted authoring, bootstrap or
+watermarks advanced by arrivals during commit, is copied from the current route
+under the publication lock. Recovery likewise preserves the persisted route's
+latest metadata rather than restoring the authoring snapshot. Recovery of a
+committed, not-yet-started bootstrap uses the **same successor**. Interrupted authoring, bootstrap or
 continuation is visibly blocked for reconciliation, never blindly replayed.
 Missing or changed committed packets also block that successor before bootstrap;
 the triggering input is not repeatedly requeued against a failing packet check.

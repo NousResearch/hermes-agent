@@ -156,6 +156,14 @@ class TurnFacadeMixin:
                         title_user_message=title_user_message,
                         prelude=prelude,
                     )
+                    if (
+                        lease is not None and isinstance(result, dict)
+                        and getattr(getattr(self, "_session_rollover", None), "phase", None) == "authoring"
+                    ):
+                        # Capture before releasing the authoring lease, never from a later gateway read.
+                        result["rollover_transcript_watermark"] = self._session_db.get_active_message_watermark(
+                            self.session_id,
+                        )
                 finally:
                     # Post-loop relay/task finalization must not receive a late refresh interrupt;
                     # the interrupt clear itself waits for the thread join in the outer finally.

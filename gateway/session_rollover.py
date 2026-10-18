@@ -148,6 +148,7 @@ class SessionRolloverMixin:
             "restart_message": restart_message,
             "bootstrap_prompt": bootstrap_prompt,
             "reason": binding.get("reason") or "",
+            "transcript_watermark": binding.get("transcript_watermark"),
         }, expected_new_session_id=expected_new_session_id)
         with self._lock:
             current = self._entries.get(session_key)
@@ -218,6 +219,8 @@ class SessionRolloverMixin:
                 expected_session_id, expected_new_session_id,
             }:
                 raise ValueError("Rollover route changed after database cutover")
+            if current is not None:
+                successor.metadata = dict(current.metadata)
             self._entries[session_key] = successor
         try:
             with self._lock:
@@ -327,6 +330,8 @@ class SessionRolloverMixin:
                         not receipt.get("owner_committed") or current.prev_session_id == receipt["old_session_id"]
                     )
                     if not route_changed and not already_current:
+                        if current is not None:
+                            route.metadata = dict(current.metadata)
                         self._entries[key] = route
                         recovered = True
                 if route_changed:
@@ -473,5 +478,7 @@ class SessionRolloverMixin:
             if current is not None and current.session_id == route_session_id:
                 if not owner_committed or current.prev_session_id == receipt["old_session_id"]:
                     return current
+            if current is not None:
+                recovered.metadata = dict(current.metadata)
             self._entries[session_key] = recovered
         return recovered

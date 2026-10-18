@@ -1330,6 +1330,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             "rollover_requested": result.get("rollover_requested", False),
             "rollover_fallback": result.get("rollover_fallback", False),
             "rollover_restart_message": result.get("final_response"),
+            "rollover_transcript_watermark": result.get("rollover_transcript_watermark"),
             "tools": ctx.tools_holder[0] or [],
             "history_offset": history_offset, "compacted_in_place": compacted_in_place, "session_id": effective_session_id,
             # Same rule as the direct API path (``_finish_turn_result``): the returned `messages` replaced the

@@ -96,7 +96,10 @@ def lane(tmp_path, monkeypatch):
         if receipt["phase"] == "authoring":
             message = _packet(Path(receipt["packet_path"]), authority)
             authored.append(message)
-            return {"completed": True, "rollover_restart_message": message, "final_response": message}
+            return {
+                "completed": True, "rollover_restart_message": message, "final_response": message,
+                "rollover_transcript_watermark": db.get_active_message_watermark(current.session_id),
+            }
         return {"completed": True, "final_response": "Recentered: continue-authorized; only the synthetic next action."}
 
     runner._rollover_internal_turn = model
@@ -400,7 +403,10 @@ async def test_startup_recovers_healthy_successor_despite_other_lane_failure(lan
         )
         binding = validate_packet(packet, message)
         binding.pop("mode")
-        binding.update(profile_home=str(home), bootstrap_prompt="Read the bound packet.\n\n" + message)
+        binding.update(
+            profile_home=str(home), bootstrap_prompt="Read the bound packet.\n\n" + message,
+            transcript_watermark=lane.db.get_active_message_watermark(entry.session_id),
+        )
         lane.store.prepare_rollover(
             entry.session_key, entry.session_id, lane.generation, binding,
             expected_new_session_id=receipt["new_session_id"],

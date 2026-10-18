@@ -181,10 +181,13 @@ class SessionRolloverMixin:
         """Seal the exact authoring receipt; never allocate a second successor."""
         required = (
             "session_key", "old_session_id", "generation", "profile_home", "packet_path",
-            "packet_sha256", "restart_message", "bootstrap_prompt", "reason",
+            "packet_sha256", "restart_message", "bootstrap_prompt", "reason", "transcript_watermark",
         )
         if any(name not in binding for name in required):
             raise ValueError("Rollover handoff binding is incomplete")
+        watermark = binding["transcript_watermark"]
+        if type(watermark) is not int or watermark < 0:
+            raise ValueError("Rollover requires the authoring turn's transcript watermark")
 
         def _do(conn):
             receipt = self._rollover_receipt_on_conn(conn, binding["session_key"])
@@ -198,7 +201,7 @@ class SessionRolloverMixin:
                 raise ValueError("Rollover authoring binding changed")
             if receipt["phase"] == "prepared":
                 if any(receipt.get(name) != binding.get(name) for name in (
-                    "packet_sha256", "restart_message", "bootstrap_prompt", "reason",
+                    "packet_sha256", "restart_message", "bootstrap_prompt", "reason", "transcript_watermark",
                 )):
                     raise ValueError("Rollover handoff binding changed after preparation")
                 return receipt
@@ -214,6 +217,7 @@ class SessionRolloverMixin:
                 "restart_message": binding["restart_message"],
                 "bootstrap_prompt": binding["bootstrap_prompt"],
                 "reason": binding["reason"],
+                "transcript_watermark": watermark,
                 "phase": "prepared",
             })
             self._write_rollover_receipt_on_conn(conn, prepared)
@@ -252,6 +256,12 @@ class SessionRolloverMixin:
                 conn, expected_session_id, compression_lock_holder=None,
                 reject_active_turn_lease=True, reject_active_compression_lock=True,
             )
+            watermark = conn.execute(
+                "SELECT COALESCE(MAX(id), 0) FROM messages WHERE session_id = ? AND active = 1",
+                (expected_session_id,),
+            ).fetchone()[0]
+            if watermark != receipt["transcript_watermark"]:
+                raise ValueError("Rollover transcript changed after handoff authoring; refresh the handoff")
             successor_id = receipt["new_session_id"]
             if conn.execute("SELECT 1 FROM sessions WHERE id = ?", (successor_id,)).fetchone():
                 raise ValueError("Rollover successor id is already present")

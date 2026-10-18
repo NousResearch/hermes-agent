@@ -54,8 +54,8 @@ mcp_servers:
 | `client_cert` | string or list | HTTP | mTLS client certificate. String = path to a PEM file containing cert + key. List `[cert, key]` = separate files. List `[cert, key, password]` = encrypted key |
 | `client_key` | string | HTTP | Path to the client private key, when `client_cert` is a string and the key is in a separate file |
 | `enabled` | bool | both | Skip the server entirely when false |
-| `timeout` | number | both | Per-tool-call timeout in seconds (default: `300`). Bounds a single tool invocation only, never the connection phase |
-| `connect_timeout` | number | both | Connection timeout in seconds (default: `60`), bounding the initial connect and every session (re)negotiation. Distinct from `timeout` |
+| `timeout` | number | both | Per-tool-call timeout in seconds (default: `300`, or `timeouts.mcp.tool_call` when set); connecting is bounded by `connect_timeout` |
+| `connect_timeout` | number | both | Connection timeout in seconds (default: `60`): the initial connect and MCP `initialize` handshake, each reconnect, and the HTTP client's connect phase for HTTP and SSE servers |
 | `protocol` | string | both | Protocol-era negotiation: `auto` (default — legacy `initialize` handshake first, falling back to the 2026-07-28 `server/discover` stateless probe when the server rejects the handshake as modern-only), `stateless` (probe `server/discover` first; one legacy retry), or `legacy` (handshake only, no fallback) |
 | `supports_parallel_tool_calls` | bool | both | Allow tools from this server to run concurrently |
 | `skip_preflight` | bool | HTTP | Bypass the fail-fast content-type probe for valid Streamable HTTP endpoints whose HEAD/GET answers a non-MCP content type (default: `false`) |

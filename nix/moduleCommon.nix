@@ -88,7 +88,7 @@ let
       timeout = mkOption {
         type = types.nullOr types.int;
         default = null;
-        description = "Tool call timeout in seconds (default: 120).";
+        description = "Tool call timeout in seconds (default: 300).";
       };
       connect_timeout = mkOption {
         type = types.nullOr types.int;

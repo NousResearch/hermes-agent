@@ -1016,7 +1016,7 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 | `mcpServers.<name>.headers` | `attrsOf str` | `{}` | HTTP headers, e.g. `Authorization` |
 | `mcpServers.<name>.auth` | `null` or `"oauth"` | `null` | Authentication method. `"oauth"` enables OAuth 2.1 PKCE |
 | `mcpServers.<name>.enabled` | `bool` | `true` | Enable or disable this server |
-| `mcpServers.<name>.timeout` | `null` or `int` | `null` | Tool call timeout in seconds (default: 120) |
+| `mcpServers.<name>.timeout` | `null` or `int` | `null` | Tool call timeout in seconds (default: 300) |
 | `mcpServers.<name>.connect_timeout` | `null` or `int` | `null` | Connection timeout in seconds (default: 60) |
 | `mcpServers.<name>.tools` | `null` or `submodule` | `null` | Tool filtering (`include`/`exclude` lists) |
 | `mcpServers.<name>.sampling` | `null` or `submodule` | `null` | Sampling config for server-initiated LLM requests |

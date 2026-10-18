@@ -496,8 +496,8 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 | `client_cert` | string \| list | Client certificate for mTLS — a combined PEM path, or `[cert, key]` / `[cert, key, password]` |
 | `client_key` | string | Client private-key PEM path (when separate from `client_cert`) |
 | `identity_header` | mapping | Optional per-user identity header for HTTP/SSE servers — `{name, value_from: static\|profile, value}` |
-| `timeout` | number | Per-tool-call timeout in seconds. Bounds a single tool invocation only, never the connection phase |
-| `connect_timeout` | number | Connection timeout in seconds, bounding the initial connect and every session (re)negotiation. Distinct from `timeout` |
+| `timeout` | number | Per-tool-call timeout in seconds (default `300`, or `timeouts.mcp.tool_call` when set); connecting is bounded by `connect_timeout` |
+| `connect_timeout` | number | Connection timeout in seconds (default `60`): the initial connect and MCP `initialize` handshake, each reconnect, and the HTTP client's connect phase for HTTP and SSE servers |
 | `lazy` | bool | If `true`, register the server's tools from the schema cache at startup and only start/connect it on the first tool call (default `false`). Needs one prior live connect to fill the cache. |
 | `idle_timeout_seconds` | number | Recycle a stdio server after this many seconds without a tool call (`0` = never, default). The server restarts transparently on the next tool call. |
 | `max_lifetime_seconds` | number | Recycle a stdio server after this total age (`0` = never, default). Restarts transparently on next use. |

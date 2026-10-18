@@ -1559,9 +1559,11 @@ platform_toolsets:
 #   headers: HTTP headers (e.g., for authentication)
 #
 # Optional per-server settings:
-#   timeout: per-tool-call timeout in seconds (default: 300)
-#   connect_timeout: connection timeout in seconds, bounding the initial connect
-#     and each session (re)negotiation (default: 60)
+#   timeout: per-tool-call timeout in seconds (default: 300, or timeouts.mcp.tool_call
+#     when that is set); connecting is bounded by connect_timeout
+#   connect_timeout: connection timeout in seconds (default: 60): the initial connect
+#     and MCP initialize handshake, each reconnect, and the HTTP client's connect
+#     phase for HTTP and SSE servers
 #   keepalive_interval: liveness ping cadence in seconds (floored at 5s).
 #     HTTP servers default to 180s; lower it below the server's session TTL for
 #     servers that expire idle sessions quickly (e.g. Unreal Engine editor MCP,

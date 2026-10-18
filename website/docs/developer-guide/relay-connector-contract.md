@@ -54,7 +54,7 @@ JSON object. Source of truth: `gateway/relay/descriptor.py`.
 | `markdown_dialect` | string | yes | `"plain"`, `"markdown_v2"`, `"discord"`, … (drives `supports_code_blocks`). |
 | `len_unit` | string | yes | `"chars"` (builtin len) or `"utf16"` (Telegram UTF-16 code units). |
 | `emoji` | string | no | Display emoji (default 🔌). |
-| `platform_hint` | string | no | System-prompt platform hint. |
+| `platform_hint` | string | no | Non-empty hint for this platform's new system-prompt builds, after built-in and registered adapter hints. Uses the profile's live negotiated descriptor; re-handshakes leave cached session prompts unchanged. User `platform_hints.<platform>` append/replace overrides still apply. |
 | `pii_safe` | bool | no | Redact PII in session descriptions. |
 | `supports_context` | bool | no | Whether the connector can supply surrounding channel/group **context** for an addressed turn on this platform (Model A on-demand history fetch — Discord/Slack/Matrix; Model B passive buffer — Telegram/Signal/WhatsApp). Default false ⇒ no `context` is attached to inbound events. See §3. |
 | `supports_inchannel_continuable` | bool | no | Whether the platform can host a **flat continuable cron surface** (native Slack's `cron_continuable_surface: in_channel`): the brief posts top-level in the channel/DM and a plain reply continues the job via the flat `(platform, chat_id, None)` session. Default false ⇒ the gateway's scheduler fails safe to thread mode (D6 gate), so an older connector keeps today's thread behavior. |

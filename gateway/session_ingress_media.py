@@ -513,10 +513,18 @@ def collect_unheld_api_images(db):
         return 0
 
 
+# Every needle starts with its candidate's 64-hex digest directly followed by a separator ('/', '\',
+# or the first '\' of an escaped one), so one regex pass finds every digest a text can mention.
+_DIGEST_BEFORE_SEPARATOR = re.compile(r'([0-9a-f]{64})[/\\]')
+# Up to this many digests, SQLite's per-digest ``instr`` prefilter is fastest (it ships only rows
+# that could match; a settled turn offers one or two inputs). Above it every row is read once and
+# only the digests it names are tested, so the cost stays messages + candidates, never their product.
+_INSTR_PREFILTER_MAX = 16
+
+
 def _history_mentions(conn, references, after_id=0):
     """Candidate paths any transcript row (id > after_id) mentions raw or JSON-escaped, in ONE
-    messages pass. Rows are prefiltered in SQL on the literal text before each candidate's digest
-    directory, so only rows that could name a candidate reach Python's exact substring test."""
+    messages pass. A row's exact substring test covers only the candidates whose digest it names."""
     # Matched by the content-addressed tail ``<sha256>/<name>`` with either separator, so every
     # spelling a note can carry (the host path, a sandbox backend's ``to_agent_visible_cache_path``)
     # counts as a mention.
@@ -524,22 +532,30 @@ def _history_mentions(conn, references, after_id=0):
     for reference in references:
         raw = reference['path']
         for tail in (reference['sha256'] + sep + Path(raw).name for sep in ('/', '\\')):
-            needles[tail] = needles[json.dumps(tail)[1:-1]] = raw
-    prefixes = sorted({reference['sha256'] for reference in references})
-    # The digests are ONE bound JSON array, never one ``instr`` term each: the statement's size
-    # must not grow with the candidate count (SQLite's expression-depth limit fails at ~1000 terms).
-    query = ('WITH digests(value) AS MATERIALIZED (SELECT value FROM json_each(?)) SELECT content FROM messages '
-             'WHERE EXISTS (SELECT 1 FROM digests WHERE instr(content, digests.value))' + (' AND id>?' if after_id else ''))
+            needles.setdefault(reference['sha256'], {}).update({tail: raw, json.dumps(tail)[1:-1]: raw})
+    if len(needles) <= _INSTR_PREFILTER_MAX:
+        # The digests are ONE bound JSON array, never one ``instr`` term each: the statement's size
+        # must not grow with the candidate count (SQLite's expression-depth limit fails at ~1000 terms).
+        query = ('WITH digests(value) AS MATERIALIZED (SELECT value FROM json_each(?)) SELECT content FROM messages '
+                 'WHERE EXISTS (SELECT 1 FROM digests WHERE instr(content, digests.value))')
+        params = [json.dumps(sorted(needles))]
+    else:
+        query, params = 'SELECT content FROM messages WHERE content IS NOT NULL', []
+    if after_id:
+        query, params = query + ' AND id>?', [*params, after_id]
     mentioned = set()
-    for (content,) in conn.execute(query, (json.dumps(prefixes), *((after_id,) if after_id else ()))):
+    for (content,) in conn.execute(query, params):
         text = content.decode('utf-8', 'replace') if isinstance(content, bytes) else str(content)
-        mentioned.update(raw for needle, raw in needles.items() if needle in text)
+        for digest in needles.keys() & set(_DIGEST_BEFORE_SEPARATOR.findall(text)):
+            mentioned.update(raw for needle, raw in needles[digest].items() if needle in text)
     return mentioned
 
 
 def _collectable(references, root):
+    # Only a real digest directory: the history scan finds mentions by their 64-hex digest.
     return [reference for reference in references if Path(reference['path']).parent.parent == root
-            and Path(reference['path']).parent.name == reference['sha256'] and Path(reference['path']).exists()]
+            and Path(reference['path']).parent.name == reference['sha256']
+            and _SHA256_NAME.fullmatch(reference['sha256']) and Path(reference['path']).exists()]
 
 
 def release_unheld_media(db, references, *, retain_history=True):
@@ -559,7 +575,13 @@ def release_unheld_media(db, references, *, retain_history=True):
             conn.execute('BEGIN')  # one snapshot: the id watermark and the scan agree
             try:
                 last_id = conn.execute('SELECT coalesce(max(id), 0) FROM messages').fetchone()[0]
-                seen = _history_mentions(conn, references)
+                if len(references) > _INSTR_PREFILTER_MAX:
+                    # Startup and every API delete offer every retained image, held or not. An
+                    # admission-held path stays whatever the transcript says: it needs no scan. A
+                    # smaller set (a settled turn's inputs) scans for less than the holder projection.
+                    held = _held_media_paths(conn)
+                    references = [reference for reference in references if reference['path'] not in held]
+                seen = _history_mentions(conn, references) if references else set()
             finally:
                 if conn.in_transaction:
                     conn.execute('ROLLBACK')

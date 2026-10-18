@@ -316,20 +316,56 @@ def owns_api_run(adapter, run_id, owner_scope):
 
 def recover_api_turns(adapter):
     """Recover committed work only after the real API adapter is published. A parked profile's
-    retained (retiring) authority is not served: its store is never read here."""
+    retained (retiring) authority is not served: its store is never read here. Returns the image
+    collections it started off the loop, each already tracked as its authority's work."""
     from gateway.session_authorities import owner_scope, serving_authorities
+    pending = []
     for authority in serving_authorities(adapter.gateway_runner):
         # Startup is unscoped (the launch profile's home): each profile's media root, config and
         # API bindings must pair with its own state.db, never the launch profile's.
         with owner_scope(authority):
-            recover_authority_api_turns(adapter, authority)
+            pending.append(recover_authority_api_turns(adapter, authority))
+    return [collection for collection in pending if collection is not None]
+
+
+def _collect_images_off_loop(authority):
+    """Image collection scans the transcript: on the owner loop (boot, reconnect, hot-serve) it would
+    freeze every session, so it runs on a worker thread under the caller's profile context. Recovery
+    need not wait for it: admissions and capture leases hold their images and the under-lock recheck
+    sees rows written meanwhile, as when an API delete collects. No running loop: collect inline.
+
+    It unlinks files, so it is the authority's tracked work until the THREAD returns: retirement
+    keeps ownership and shutdown keeps state.db open until then, even when the task is cancelled
+    (a closed store would only reopen under a late write)."""
+    import contextvars
+    import logging
+    from gateway.session_ingress_media import collect_unheld_api_images
+    from gateway.session_runtime_workers import track_mutation
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        collect_unheld_api_images(authority.db)
+        return None
+    worker = loop.run_in_executor(None, contextvars.copy_context().run, collect_unheld_api_images, authority.db)
+
+    async def owned():
+        cancelled = False
+        while not worker.done():
+            try:
+                await asyncio.wait({worker})  # never cancels the worker's future
+            except asyncio.CancelledError:
+                cancelled = True  # takes effect once the thread has returned
+        if worker.exception() is not None:
+            logging.getLogger(__name__).error('API image collection failed', exc_info=worker.exception())
+        if cancelled:
+            raise asyncio.CancelledError
+    return track_mutation(authority, owned())
 
 
 def recover_authority_api_turns(adapter, authority):
     from hermes_state_runtime import list_session_admissions
-    from gateway.session_ingress_media import collect_unheld_api_images
     import logging
-    collect_unheld_api_images(authority.db)
+    collection = _collect_images_off_loop(authority)
     from gateway.session_api_media import compact_settled_api_payloads
     compact_settled_api_payloads(authority.db)
     with authority.db._read_ctx() as conn:
@@ -347,6 +383,7 @@ def recover_authority_api_turns(adapter, authority):
             authority._schedule(ref)
         except RuntimeStoreError as exc:
             logging.getLogger(__name__).warning('API session %s paused: %s', sid, exc.reason)
+    return collection
 
 
 async def run_api_turn(adapter, *, approval_notify_callback=None, approval_session_key=None, **kwargs):

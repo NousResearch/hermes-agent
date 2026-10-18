@@ -312,3 +312,45 @@ class TestNormalizeLocalModel:
                 )
         finally:
             os.unlink(audio_file)
+
+
+class TestExtractTranscriptText:
+    """_extract_transcript_text() normalizes provider bodies, including gateways
+    that nest the ASR response inside the outer ``text`` field (double-encoded
+    JSON observed on Bifrost)."""
+
+    def test_plain_string_passes_through(self):
+        from tools.transcription_cloud import _extract_transcript_text
+        assert _extract_transcript_text("  hello world  ") == "hello world"
+
+    def test_sdk_object_with_text(self):
+        from tools.transcription_cloud import _extract_transcript_text
+        assert _extract_transcript_text(SimpleNamespace(text="Hallo, bist du da?")) == "Hallo, bist du da?"
+
+    def test_double_encoded_bifrost_body(self):
+        import json
+
+        from tools.transcription_cloud import _extract_transcript_text
+        inner = json.dumps(
+            {"text": "So I just tried Neufonic, and I'm genuinely impressed.", "usage": {"type": "duration", "seconds": 14}}
+        )
+        body = {"text": inner, "extra_fields": {"request_type": "transcription"}}
+        assert _extract_transcript_text(body) == "So I just tried Neufonic, and I'm genuinely impressed."
+
+    def test_triple_encoded_body(self):
+        import json
+
+        from tools.transcription_cloud import _extract_transcript_text
+        inner = json.dumps({"text": "hello"})
+        triple = json.dumps({"text": json.dumps({"text": inner})})
+        assert _extract_transcript_text(triple) == "hello"
+
+    def test_dictated_json_code_without_text_field_stays_intact(self):
+        from tools.transcription_cloud import _extract_transcript_text
+        assert _extract_transcript_text('{"a":1}') == '{"a":1}'
+
+    def test_structured_response_without_text_raises(self):
+        from tools.transcription_cloud import _extract_transcript_text
+        from tools.transcription_common import STTResponseError
+        with pytest.raises(STTResponseError):
+            _extract_transcript_text(SimpleNamespace(text=None, error="boom"))

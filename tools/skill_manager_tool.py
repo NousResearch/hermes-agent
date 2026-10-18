@@ -208,22 +208,49 @@ def _description_preview(content: str) -> str:
     return ""
 
 
-def _resolve_skill_dir(name: str, category: str | None = None) -> Path:
-    """New-skill dir; honors ``skills.create_dir`` (e.g. a shared fleet dir)."""
+def _skill_create_base() -> Path:
+    """Root new skills are created under; honors ``skills.create_dir`` (e.g. a shared fleet dir)."""
     base = _skills_dir()
     try:
         from agent.skill_utils import get_skill_create_dir
         base = get_skill_create_dir() or base
     except Exception:
         logger.debug("skills.create_dir lookup failed", exc_info=True)
-    return base / (category or "") / name
+    return base
+
+
+def _resolve_skill_dir(name: str, category: str | None = None) -> Path:
+    """New-skill dir under :func:`_skill_create_base`."""
+    return _skill_create_base() / (category or "") / name
 
 
 def _iter_skill_dirs(root: Path):
-    from agent.skill_utils import is_excluded_skill_path
-    for skill_md in root.rglob("SKILL.md"):
+    """Skill dirs under ``root`` — through directory symlinks, like discovery does.
+
+    ``Path.rglob`` does not descend into a directory symlink, so a profile whose
+    ``skills/<name>`` points into a checkout was invisible here while ``skill_view``/
+    ``skills_list`` loaded it (they scan with ``iter_skill_index_files``). Same walk, same
+    exclusions, so the resolver and discovery see one set (#141050).
+    """
+    from agent.skill_utils import is_excluded_skill_path, iter_skill_index_files
+    for skill_md in iter_skill_index_files(root, "SKILL.md"):
         if not is_excluded_skill_path(skill_md):
             yield skill_md.parent
+
+
+def _enclosing_skill_dir(target: Path, base: Path) -> Optional[Path]:
+    """The existing skill directory ``target`` would be created INSIDE, if any (never ``base``).
+
+    A new skill dir under another skill scans as a nested duplicate: ``create(name,
+    category)`` used to land ``skills/heal/heal/SKILL.md`` inside the real skill — and, when
+    that skill was a symlink into a checkout, left an untracked file there (#141050).
+    """
+    for parent in target.parents:
+        if parent == base or not parent.is_relative_to(base):
+            return None
+        if (parent / "SKILL.md").is_file():
+            return parent
+    return None
 
 
 def _read_frontmatter_name(skill_md: Path) -> Optional[str]:
@@ -475,6 +502,9 @@ def _create_skill(name: str, content: str, category: str | None = None) -> dict[
     if existing := _find_skill(name):
         return _err(f"A skill named '{name}' already exists at {existing['path']}.")
     skill_dir = _resolve_skill_dir(name, category)
+    if enclosing := _enclosing_skill_dir(skill_dir, _skill_create_base()):
+        return _err(f"Cannot create skill '{name}': {skill_dir} would land inside the existing skill "
+                    f"at {enclosing}. Choose another name, or a category that is not a skill.")
     from hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(skill_dir.parent)
     try:

@@ -123,3 +123,57 @@ def test_new_sanitizes_name(repo):
     _run(_Stub(), "/worktree new " + "weird name!@#")
     name = os.path.basename(cli_mod._active_worktree["path"])
     assert name == "weird-name"
+
+
+def _gateway_stub(rpc=None):
+    """A CLI attached to a (scripted) gateway session: the tools run there, not in this process."""
+    from hermes_cli.gateway_connection import GatewayConnection
+    from hermes_cli.gateway_session_store import GatewaySessionStore
+    from tests.hermes_cli.test_gateway_agent import connect_with
+    from tests.hermes_cli.test_gateway_session_store import FakeClient
+    client = FakeClient(known=("local-s",))
+    if rpc is not None:
+        client.rpc = rpc.__get__(client)
+    conn = GatewayConnection(connect=connect_with(client))
+    conn.start(5)
+    stub = _Stub()
+    stub._session_db, stub._gateway_session_open, stub.session_id = GatewaySessionStore(conn), True, "local-s"
+    return stub, client, conn
+
+
+@requires_git
+def test_new_moves_the_gateway_sessions_workspace_into_the_tree(repo):
+    """CLI-15: the session's tools run in the gateway under its frozen cwd, so /worktree new must move
+    that (``session.mutate workspace``, generation-fenced) — a chdir of this process moved nothing."""
+    stub, client, conn = _gateway_stub()
+    try:
+        out = _run(stub, "/worktree new moved")
+    finally:
+        conn.close()
+    wt = repo / ".worktrees" / "moved"
+    (params,) = [p for method, p in client.calls if method == "session.mutate"]
+    assert (params["operation"], params["payload"], params["session_id"]) == ("workspace", {"cwd": str(wt)}, "local-s")
+    assert params["expected_generation"] == 0
+    assert t("cli.commands.worktree.tools_in_worktree") in out
+
+
+@requires_git
+def test_new_refused_by_the_gateway_never_claims_the_tools_moved(repo):
+    """A refused move (e.g. ``session_busy`` mid-turn) leaves the session where it was: say so, and
+    keep this process (and a later /new's cwd) in the original checkout too."""
+    from hermes_cli.gateway_client import GatewayRPCError
+    from tests.hermes_cli.test_gateway_session_store import snapshot
+
+    async def refuse(self, method, *, _timeout=None, **params):
+        self.calls.append((method, params))
+        if method == "session.mutate":
+            raise GatewayRPCError("session_busy")
+        return snapshot("local-s")
+    stub, _client, conn = _gateway_stub(refuse)
+    try:
+        out = _run(stub, "/worktree new busy")
+    finally:
+        conn.close()
+    assert "session_busy" in out and t("cli.commands.worktree.tools_in_worktree") not in out
+    assert os.path.realpath(os.getcwd()) == os.path.realpath(str(repo))
+    assert "TERMINAL_CWD" not in os.environ and cli_mod._active_worktree is None

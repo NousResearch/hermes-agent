@@ -43,7 +43,7 @@ _GATEWAY_OWNED = frozenset({
     "maybe_auto_prune_and_vacuum", "set_meta", "update_token_counts", "close",
 })
 # Mutations the owner refuses without the execution generation they were read at (hermes_state_runtime).
-_GENERATION_FENCED = frozenset({"delete", "rewind", "reset", "branch", "model", "compress"})
+_GENERATION_FENCED = frozenset({"delete", "rewind", "reset", "branch", "model", "compress", "workspace"})
 _COUNTED_REPAIRS = frozenset({"prune_empty_ghost_sessions", "finalize_orphaned_compression_sessions"})
 # Launch options main's ``cli.main`` takes that are creation policy on the gateway session.
 _LAUNCH_POLICY = ("model", "provider", "toolsets", "reasoning", "api_key", "base_url", "max_turns",
@@ -507,6 +507,18 @@ def _check_resume_launch(launch, snapshot):
     differs = [key for key, value in _classic_only_policy(launch).items() if frozen.get(key) != value]
     if differs:
         raise resume_policy_error(differs)
+
+
+def move_cli_workspace(cli, cwd):
+    """``/worktree new``: the session's tools run in the gateway under the cwd frozen in its policy, so
+    move that first (``session.mutate workspace``, Desktop's Move to project; a refusal raises before
+    anything moved). Then this process's cwd and TERMINAL_CWD follow, so a later /new creates its session
+    from the tree; a chdir OSError leaves both where they were (the gateway session has moved by then)."""
+    from hermes_cli.gateway_automation import gateway_connection
+    if gateway_connection(cli) is not None:
+        cli._session_db._mutate(cli.session_id, "workspace", {"cwd": cwd})
+    os.chdir(cwd)
+    os.environ["TERMINAL_CWD"] = cwd
 
 
 def session_store():

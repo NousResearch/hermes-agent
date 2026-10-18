@@ -150,7 +150,7 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
         self._last_chat_req_ids: dict[str, str] = {}
         # Turns keyed f"{chat_id}:{req_id|turn_id}"; expired chats clear on the next inbound req_id.
         self._stream_turns: dict[str, StreamTurn] = {}
-        self._stream_expired_chats, self._group_chat_ids = set(), set()  # groups can't receive proactive APP_CMD_SEND
+        self._stream_expired_chats, self._group_chat_ids = set(), set()  # groups prefer cached passive replies
         # Per-chat FIFO send queues (normal + control lanes) + token buckets — see send_queue.py.
         self._chat_queues, self._chat_workers, self._control_queues, self._control_workers, self._chat_token_usage = {}, {}, {}, {}, {}
 
@@ -612,10 +612,9 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
                     # req_id may be stale after a reconnect — proactive send needs none.
                     logger.warning("[%s] Passive reply failed (%s), falling back to proactive send", self.name, passive_err)
                     response = await self._send_proactive_markdown(chat_id, content)
-            elif chat_id in self._group_chat_ids:
-                logger.warning("[%s] No cached req_id for group chat %s — cannot send (groups require passive reply via req_id)", self.name, chat_id)
-                return SendResult(success=False, error="No req_id available for group chat (passive reply required)")
             else:
+                # Group delivery capabilities vary; let the native API decide
+                # when no passive context exists, just as after a stale reply.
                 response = await self._send_proactive_markdown(chat_id, content)
         except TimeoutError:
             return SendResult(success=False, error="Timeout sending message to WeCom")

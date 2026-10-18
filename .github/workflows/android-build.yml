@@ -96,7 +96,9 @@ jobs:
       - name: Update version in build.gradle
         run: |
           # Update versionCode and versionName in build.gradle
-          sed -i "s/versionCode 1/versionCode ${{ steps.version.outputs.version | replace('.', '') }}/" android/app/build.gradle
+          VERSION_CODE=${{ steps.version.outputs.version }}
+          VERSION_CODE=$(echo "$VERSION_CODE" | tr -d '.')
+          sed -i "s/versionCode 1/versionCode $VERSION_CODE/" android/app/build.gradle
           sed -i "s/versionName \"1.0.0\"/versionName \"${{ steps.version.outputs.version }}\"/" android/app/build.gradle
 
       - name: Build debug APK

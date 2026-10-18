@@ -20,6 +20,7 @@ import {
   $sessions,
   $sessionsLoadError,
   $sessionsLoading,
+  $unreadFinishedSessionIds,
   $workspaceCwdOwner
 } from '@/store/session'
 import { $removedSessionIds } from '@/store/session-removal'
@@ -499,5 +500,26 @@ describe('ChatSidebar messaging owners', () => {
     expect(telegramGroups()).toHaveLength(0)
     expect(screen.queryByText('work-1')).toBeNull()
     expect(within(row('default-1')).queryByRole('img', { name: /^Profile:/ })).toBeNull()
+  })
+})
+
+describe('sidebar unread badge', () => {
+  it('reads out how many listed chats are unread, and stays out of the way at zero', () => {
+    $sessions.set(sessionRows)
+    $unreadFinishedSessionIds.set([])
+
+    const first = renderSidebar('/', 'chat')
+    expect(screen.queryByTestId('sidebar-unread-badge')).toBeNull()
+    first.unmount()
+
+    // One of the two listed rows is waiting unread; the badge counts it and
+    // names itself for screen readers with the same copy the titlebar uses.
+    $unreadFinishedSessionIds.set(['tile-one'])
+
+    renderSidebar('/', 'chat')
+    const badge = screen.getByTestId('sidebar-unread-badge')
+
+    expect(badge.textContent).toBe('1')
+    expect(badge.getAttribute('aria-label')).toMatch(/unread/i)
   })
 })

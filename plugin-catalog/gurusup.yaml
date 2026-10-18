@@ -9,7 +9,7 @@ description: >-
   Plugins v1 package (mcp.json + skills/), remote streamable-http with OAuth 2.1, no
   local code and no API keys. Disclosure: hosted-only connector; every tool call goes
   to Gurusup's MCP server at mcp.brain.gurusup.com and answers are limited to what the
-  signed-in Gurusup account can see. Write tools save knowledge to the company's Brain
+  signed-in Gurusup account can see. Write tools save knowledge to the company's Gurusup workspace
   (add_company_knowledge, skills_publish) and send issue reports or feedback to Gurusup
   (report_issue, send_feedback); request_human_info can message a teammate on Slack or
   call them when its dispatch flag is set. OAuth must be enabled with

@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 from gateway.config import GatewayConfig, PlatformConfig
-from gateway.platforms.yuanbao import (
+from plugins.platforms.yuanbao.adapter import (
     DecodeMiddleware,
     InboundContext,
     RecallGuardMiddleware,

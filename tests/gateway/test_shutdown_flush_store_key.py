@@ -23,7 +23,7 @@ import pytest
 
 from gateway.config import GatewayConfig
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms.yuanbao import RecallGuardMiddleware
+from plugins.platforms.yuanbao.adapter import RecallGuardMiddleware
 from gateway.session import SessionStore
 from gateway.shutdown_flush import flush_pending_to_file, recover_pending_to_db
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source

@@ -35,8 +35,9 @@ def test_osc9_body_emitted_and_sanitized_only_when_flag_on(monkeypatch):
 
 
 def test_program_status_uses_st_and_encodes_safe_message():
-    seq = terminal_notify.program_status_sequence("blocked", kind="permission", message="Allow\ncommand?")
-    assert seq == "\x1b]7501;state=blocked:app=hermes:kind=permission:msg=QWxsb3djb21tYW5kPw==\x1b\\"
+    # Controls (C0, DEL, C1) collapse to one space: the spec drops a whole report whose msg holds one.
+    seq = terminal_notify.program_status_sequence("blocked", kind="permission", message="Allow\ncommand?\x85 x")
+    assert seq == "\x1b]7501;state=blocked:app=hermes:kind=permission:msg=QWxsb3cgY29tbWFuZD8geA==\x1b\\"
 
 
 def test_program_status_rejects_invalid_state_or_kind():

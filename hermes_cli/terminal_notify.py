@@ -27,6 +27,8 @@ _WARP_LAST_BROKEN = {"stable": "v0.2026.03.25.08.24.stable_05", "preview": "v0.2
 _PROGRAM_STATES = frozenset({"idle", "working", "done", "blocked", "error"})
 _PROGRAM_KINDS = frozenset({"permission", "question", "auth"})
 _PROGRAM_MESSAGE_LIMIT = 2048
+# OSC 7501 discards a whole report whose decoded msg holds C0, DEL or C1 controls.
+_PROGRAM_MSG_CONTROLS = re.compile(r"[\x00-\x1f\x7f-\x9f]+")
 
 
 def write_tty(seq: str) -> None:
@@ -58,7 +60,7 @@ def program_status_sequence(state: str, *, kind: str = "", message: str = "") ->
     pairs = [f"state={state}", "app=hermes"]
     if kind:
         pairs.append(f"kind={kind}")
-    clean_message = _C0_AND_DEL.sub("", message)
+    clean_message = " ".join(_PROGRAM_MSG_CONTROLS.sub(" ", message).split())
     if clean_message:
         message_bytes = clean_message.encode("utf-8")[:_PROGRAM_MESSAGE_LIMIT]
         clean_message = message_bytes.decode("utf-8", "ignore")

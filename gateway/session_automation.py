@@ -28,15 +28,23 @@ def completion_admission(runner, event):
     entry = runner.session_store.lookup_by_session_key(str(event.get('session_key') or ''))
     if entry is None:
         return None
-    from hermes_state_runtime import list_session_admissions
+    from hermes_state_runtime import find_session_admission, list_principal_admissions
     identity = producer_identity(runner, event)
     # Compression moves the route's transcript to a child; admissions stay on the logical root.
+    # admit_automation stores this identity as the request id. A coalesced batch also lists
+    # sibling identities on that one row, so a request-id miss still searches this principal
+    # only — never the chat's whole ledger, which used to run on the gateway loop.
     sid = (entry.origin.chat_id if entry.origin.platform == Platform.LOCAL
            else authority.logical_owner(entry.session_id))
-    for row in list_session_admissions(authority.db, session_id=sid, pending_only=False):
-        descriptor = row['payload'].get('local_automation_v1') or row['payload'].get('native_text_v1', {}).get('automation', {})
+    principal = 'automation:' + entry.session_key
+    row = find_session_admission(authority.db, principal_id=principal, session_id=sid, request_id=identity)
+    rows = [row] if row is not None else list_principal_admissions(
+        authority.db, principal_id=principal, session_id=sid)
+    for candidate in rows:
+        payload = candidate['payload']
+        descriptor = payload.get('local_automation_v1') or payload.get('native_text_v1', {}).get('automation', {})
         if identity in descriptor.get('identities', [descriptor.get('identity')]):
-            return row
+            return candidate
     return None
 
 
@@ -113,13 +121,9 @@ def _route_identity(source):
 def committed_route_envelope(authority, entry):
     """The route's last committed native envelope with connector provenance (what a producer turn
     borrows), or ``None`` while no human message was admitted there."""
-    from hermes_state_runtime import list_session_admissions
+    from hermes_state_runtime import latest_native_envelope
     # Admissions belong to the logical root; ``entry.session_id`` is only the transcript tip.
-    prior = list_session_admissions(authority.db, session_id=authority.logical_owner(entry.session_id),
-                                    pending_only=False)
-    envelope = next((r['payload']['native_text_v1'] for r in reversed(prior)
-                     if 'native_text_v1' in r['payload']), None)
-    return envelope if envelope is not None and 'provenance' in envelope else None
+    return latest_native_envelope(authority.db, session_id=authority.logical_owner(entry.session_id))
 
 
 def snapshot_automation(authority, adapter, event, identity):

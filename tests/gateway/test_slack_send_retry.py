@@ -129,3 +129,34 @@ class TestSlackSendRetryable:
         assert result.success is False
         assert "api_error=message_not_found" in caplog.text
 
+
+class TestSlackSendOffLoop:
+    @pytest.mark.asyncio
+    async def test_real_client_posts_on_a_worker_thread(self, monkeypatch):
+        """A live AsyncWebClient must not post on the gateway loop. A stalled loop
+        expires aiohttp's 30s timer and drops the reply."""
+        from plugins.platforms.slack import adapter as slack_mod
+
+        if not isinstance(slack_mod.AsyncWebClient, type):
+            pytest.skip("slack_sdk is not the real client in this process")
+        seen = {}
+
+        def fake(token, proxy, method, kwargs, team_id=None):
+            seen.update(token=token, proxy=proxy, method=method, kwargs=kwargs, team_id=team_id)
+            return {"ok": True, "ts": "9.9"}
+
+        monkeypatch.setattr(slack_mod, "_slack_sync_api", fake)
+        adapter = _make_adapter()
+        adapter._proxy_url = None
+        client = slack_mod.AsyncWebClient(token="xoxb-real-shape")
+        adapter._get_client = lambda cid, team_id="": client
+
+        result = await adapter.send("C123", "hello")
+
+        assert result.success is True
+        assert result.message_id == "9.9"
+        assert seen["method"] == "chat_postMessage"
+        assert seen["token"] == "xoxb-real-shape"
+        assert seen["kwargs"]["channel"] == "C123"
+        assert "hello" in seen["kwargs"]["text"]
+

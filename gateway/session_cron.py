@@ -129,9 +129,9 @@ async def operation(authority, name, params, actor=None):
             raise RuntimeStoreError('invalid_params')
         request_id = cron_request_id(params['job_id'], params['request_id'])
         sid = local_identity(authority.profile_id, actor.subject, request_id)
-        from hermes_state_runtime import list_session_admissions
-        rows = list_session_admissions(authority.db, session_id=sid, pending_only=False)
-        row = next((r for r in rows if r['request_id'] == request_id and r['principal_id'] == actor.subject), None)
+        from hermes_state_runtime import find_session_admission
+        row = find_session_admission(authority.db, principal_id=actor.subject, session_id=sid,
+                                     request_id=request_id)
         if row is None:
             return {'status': 'missing', 'result': None}
         state = await operation(authority, 'status', {'session_id': sid, 'admission_id': row['admission_id']}, actor)

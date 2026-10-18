@@ -41,6 +41,11 @@ DEFAULT_LOOP_WATCHDOG_TIMEOUT_S = 10.0
 # the loop it monitors) is fixed at the root by the off-loop heartbeat write + two-witness probe (#90502),
 # so the default stays tight for genuine wedges.
 DEFAULT_LOOP_WATCHDOG_MAX_STRIKES = 3
+# A parked deadlock accrues microseconds of CPU. Long turns (file search, terminals, model
+# calls) accrue seconds and starve the loop via the GIL; that is work, not a wedge. Unlike the
+# startup watchdog there is no extension cap: a multi-hour task must not be killed for still running.
+_LOOP_CPU_PROGRESS_MIN_S = 1.0
+_LOOP_CPU_FORGIVE_LOG_INTERVAL_S = 600.0
 _HEARTBEAT_RELATIVE = ("state", "gateway.heartbeat")
 _WATCHDOG_DUMP_RELATIVE = ("logs", "gateway-shutdown-watchdog.log")
 
@@ -84,6 +89,18 @@ def _arm_loop_floor_timer(
     return _LoopFloorTimerHandle(loop, iv if iv > 0 else DEFAULT_LOOP_FLOOR_TIMER_INTERVAL_S)
 
 
+def _process_cpu_seconds() -> Optional[float]:
+    """Process-wide CPU time, or None when the platform cannot report it.
+
+    Includes every thread. A futex deadlock stays near zero; file search and model turns do not.
+    """
+    try:
+        value = time.process_time()
+    except Exception:
+        return None
+    return value if isinstance(value, (int, float)) else None
+
+
 def start_loop_liveness_watchdog(
     loop: asyncio.AbstractEventLoop, *, probe_interval: float = DEFAULT_LOOP_WATCHDOG_INTERVAL_S,
     probe_timeout: float = DEFAULT_LOOP_WATCHDOG_TIMEOUT_S,
@@ -92,11 +109,15 @@ def start_loop_liveness_watchdog(
 ) -> Optional[_LoopLivenessWatchdogHandle]:
     """Start an out-of-loop watchdog that hard-exits after missed probes. The caller
     (``GatewayRunner._start_loop_liveness_guards``) enforces the ``gateway.loop_watchdog: false``
-    opt-out."""
+    opt-out. A miss while the process is still burning CPU does not count: long-running turns
+    starve the loop without being a wedge. A quiet miss still counts, so a real deadlock exits
+    on the same strike budget."""
     stop_event = threading.Event()
 
     def _watchdog() -> None:
         strikes = 0
+        last_cpu = _process_cpu_seconds()
+        last_forgive_log = 0.0
         while not stop_event.wait(timeout=probe_interval):
             probe_event = threading.Event()
             try:
@@ -115,9 +136,25 @@ def start_loop_liveness_watchdog(
                 return
             if probe_event.is_set():
                 strikes = 0
+                last_cpu = _process_cpu_seconds()
                 continue
             if stop_event.is_set():  # re-checked before each irreversible step: a late stop() wins
                 return
+            cpu = _process_cpu_seconds()
+            delta = cpu - last_cpu if cpu is not None and last_cpu is not None else None
+            last_cpu = cpu
+            if delta is not None and delta >= _LOOP_CPU_PROGRESS_MIN_S:
+                strikes = 0
+                now = time.monotonic()
+                if now - last_forgive_log >= _LOOP_CPU_FORGIVE_LOG_INTERVAL_S:
+                    last_forgive_log = now
+                    logger.warning(
+                        "Gateway event loop missed a liveness probe but the process consumed "
+                        "%.1fs CPU in this window; not counting it toward restart. Long-running "
+                        "turns hold the interpreter.",
+                        delta,
+                    )
+                continue
             strikes += 1
             if strikes < max_strikes:
                 continue

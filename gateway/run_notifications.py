@@ -899,8 +899,12 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             logger.warning("Watch notification not admitted for %s chat=%s: %s",
                            platform_name, source.chat_id, exc)
             # Durable callers refund the claim; ordinary watch callers just requeue.
+            # admission_conflict is a stale route (the chat's session moved). Retrying
+            # the same event never succeeds and the watcher requeues it every tick.
             if raise_not_accepted:
                 raise
+            if str(exc) == "admission_conflict":
+                return None
             return False
         except Exception as e:
             logger.error("Watch notification injection error: %s", e)

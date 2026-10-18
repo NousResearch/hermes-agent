@@ -139,6 +139,45 @@ def test_loop_liveness_watchdog_stop_after_first_recheck_skips_final_actions():
     dump.assert_not_called()
     hard_exit.assert_not_called()
 
+def test_loop_liveness_watchdog_forgives_misses_while_cpu_advances():
+    """Long turns starve the loop and still burn CPU. That must not exit 75.
+
+    A following quiet miss (CPU frozen) still counts, so a real deadlock exits.
+    """
+    loop = MagicMock(spec=asyncio.AbstractEventLoop)
+    busy = {"on": True, "value": 0.0}
+    exit_codes = []
+    fired = threading.Event()
+
+    def cpu() -> float:
+        if busy["on"]:
+            busy["value"] += 2.0
+        return busy["value"]
+
+    def fake_exit(code: int) -> None:
+        exit_codes.append(code)
+        fired.set()
+
+    with (
+        patch("gateway.shutdown_watchdog._process_cpu_seconds", side_effect=cpu),
+        patch("gateway.shutdown_watchdog._mark_exited_quietly"),
+        patch("gateway.shutdown_watchdog.faulthandler.dump_traceback"),
+        patch("gateway.shutdown_watchdog.os._exit", side_effect=fake_exit),
+    ):
+        handle = start_loop_liveness_watchdog(
+            loop, probe_interval=0.01, probe_timeout=0.01, max_strikes=1
+        )
+        assert handle is not None
+        time.sleep(0.25)
+        assert exit_codes == []
+        busy["on"] = False
+        assert fired.wait(timeout=2.0), "a quiet deadlock should still restart the gateway"
+        handle.stop()
+        handle.join(timeout=1.0)
+
+    assert exit_codes == [75]
+
+
 def test_gateway_config_loop_watchdog_round_trip():
     """loop_watchdog is a config.yaml knob: default on, nested-gateway form honored."""
     from gateway.config import GatewayConfig

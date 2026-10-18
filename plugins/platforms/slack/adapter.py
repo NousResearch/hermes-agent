@@ -811,6 +811,41 @@ def _apply_slack_proxy(client: Any, proxy_url: Optional[str]) -> None:
         client.proxy = proxy_url
 
 
+# Socket timeout for a blocking Web API call. aiohttp's 30s timer follows the event-loop
+# clock, so a loop stalled by a long turn expires the post even when Slack answered.
+_SLACK_SYNC_TIMEOUT_S = 90
+
+
+def _real_async_web_client(client: Any) -> bool:
+    """True only for the SDK client. A mocked import binds ``AsyncWebClient`` to a
+    non-class, and test doubles are not instances of the real client."""
+    cls = AsyncWebClient
+    if not isinstance(cls, type):
+        return False
+    try:
+        return isinstance(client, cls)
+    except TypeError:
+        return False
+
+
+def _slack_sync_api(
+    token: str, proxy_url: Optional[str], method: str, kwargs: dict,
+    team_id: Optional[str] = None,
+) -> Any:
+    """Blocking Slack Web API call, run off the gateway loop.
+
+    Long turns hold the interpreter and the loop does not read the socket. The async
+    client's timer still advances, so ``chat.postMessage`` raises an empty
+    ``TimeoutError`` and the reply is dropped. ``urllib`` waits in the kernel.
+    """
+    from slack_sdk import WebClient
+    client = WebClient(
+        token=token, timeout=_SLACK_SYNC_TIMEOUT_S, team_id=team_id,
+        user_agent_prefix=_HERMES_SLACK_USER_AGENT_PREFIX)
+    _apply_slack_proxy(client, proxy_url)
+    return getattr(client, method)(**kwargs)
+
+
 def _slack_per_request_proxy_middleware(proxy_url: Optional[str]) -> Callable[..., Awaitable[Any]]:
     """Bolt ``before_authorize`` middleware re-applying *proxy_url* per request: Bolt builds a fresh
     ``AsyncWebClient`` per request and ``slack_sdk`` treats ``proxy=None`` as "unspecified" (reloads
@@ -2204,13 +2239,22 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
         return None
 
+    async def _invoke_web_method(self, client: Any, method: str, kwargs: dict[str, Any]) -> Any:
+        """Call one Web API method. A real async client goes through a blocking client on a
+        worker thread so a stalled gateway loop cannot expire the post."""
+        if _real_async_web_client(client):
+            return await asyncio.to_thread(
+                _slack_sync_api, client.token, self._proxy_url, method, dict(kwargs),
+                getattr(client, "team_id", None))
+        return await getattr(client, method)(**kwargs)
+
     async def _call_with_block_fallback(
         self, client_fn: Callable[[], Any], method: str, kwargs: dict[str, Any], verb: str) -> Any:
         """``client_fn().<method>(**kwargs)``; on a Block Kit rejection retry once without
         ``blocks`` (an edit sends ``blocks=[]`` so the message drops its stale layout). The client
         is re-resolved for the retry."""
         try:
-            return await getattr(client_fn(), method)(**kwargs)
+            return await self._invoke_web_method(client_fn(), method, kwargs)
         except Exception as e:
             if kwargs.get("blocks") and self._is_block_payload_rejection(e):
                 retry_kwargs = dict(kwargs)
@@ -2220,7 +2264,7 @@ class SlackAdapter(BasePlatformAdapter):
                     retry_kwargs.pop("blocks", None)
                 logger.info(
                     "[Slack] Block Kit payload rejected; retrying %s without blocks: %s", verb, e)
-                return await getattr(client_fn(), method)(**retry_kwargs)
+                return await self._invoke_web_method(client_fn(), method, retry_kwargs)
             raise
 
     async def send(

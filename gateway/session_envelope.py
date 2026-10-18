@@ -221,16 +221,24 @@ def _snapshot_native(runner, event, provenance, fresh_roles=False, encoded_sourc
     # Only an exact persisted legacy retry retains its old fingerprint. New
     # ordinary admissions must bind homes too, including execution after restart.
     if provenance is not None and not getattr(runner.config, 'multiplex_profiles', False):
-        from hermes_state_runtime import list_session_admissions
         from gateway.session_authorities import active_authority
         authority = active_authority(runner)
         entry = runner.session_store.lookup_by_session_key(envelope['route'])
-        if entry is not None:
+        if entry is not None and event.message_id:
             legacy = deepcopy(payload)
             legacy['native_text_v1'].pop('provenance')
-            for row in list_session_admissions(authority.db, session_id=entry.session_id, pending_only=False):
-                if row['request_id'] == event.message_id and row['payload'] == legacy:
-                    return legacy
+            # Redelivery of one message. The UNIQUE (principal, target, request) key is a point
+            # lookup. Scanning every admission for the session decoded the whole ledger on the
+            # gateway loop and froze it for as long as that chat's history was long.
+            identity = json.dumps([event.source.profile, event.source.platform.value, event.source.chat_id,
+                                   event.source.thread_id, event.source.user_id], separators=(',', ':'))
+            from hermes_state_runtime import find_session_admission
+            row = find_session_admission(
+                authority.db, principal_id='messaging:' + identity,
+                session_id=authority.logical_owner(entry.session_id),
+                request_id=str(event.message_id))
+            if row is not None and row['payload'] == legacy:
+                return legacy
     return payload
 
 

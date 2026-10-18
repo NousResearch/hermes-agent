@@ -174,6 +174,19 @@ def find_session_admission(db, *, principal_id: str, session_id: str, request_id
                                  'AND request_id=?', (principal_id, session_id, request_id)).fetchone())
 
 
+def list_principal_admissions(db, *, principal_id: str, session_id: str) -> list[dict]:
+    """This principal's rows on one session. The UNIQUE index prefix skips every other principal.
+
+    A coalesced automation batch stores sibling identities on the primary row, so a request-id
+    miss still has to see those payloads. It must not decode the chat's whole ledger to do it.
+    """
+    with db._read_ctx() as conn:
+        rows = conn.execute(
+            'SELECT * FROM session_admissions WHERE principal_id=? AND target_session_id=? ORDER BY seq',
+            (principal_id, session_id))
+        return [_row(row) for row in rows]
+
+
 def list_session_admissions(db, *, session_id: str, pending_only: bool = True) -> list[dict]:
     with db._read_ctx() as conn:
         # Pending is an explicit index-range IN, not ``!='terminal'``: a negated status cannot
@@ -181,6 +194,56 @@ def list_session_admissions(db, *, session_id: str, pending_only: bool = True) -
         sql = ("SELECT * FROM session_admissions WHERE target_session_id=? "
                + ("AND status IN ('queued','started','unknown') " if pending_only else "") + "ORDER BY seq")
         return [_row(row) for row in conn.execute(sql, (session_id,))]
+
+
+_ADMISSION_STATUSES = ('queued', 'started', 'unknown', 'terminal')
+
+
+def latest_native_envelope(db, *, session_id: str, hops: int = 256) -> dict | None:
+    """Newest ``native_text_v1`` on this session, when that row still has connector provenance.
+
+    Each step is ``MAX(seq)`` on ``(target_session_id, status, seq)``, then one payload read.
+    Callers that ``SELECT *`` the whole ledger decoded every historical payload on the gateway
+    loop, so a busy chat froze liveness probes and Socket Mode for the duration.
+    """
+    with db._read_ctx() as conn:
+        before = None
+        for _ in range(hops):
+            seq = _max_admission_seq(conn, session_id, before)
+            if seq is None:
+                return None
+            before = seq
+            raw = conn.execute('SELECT payload_json FROM session_admissions WHERE seq=?', (seq,)).fetchone()
+            if raw is None:
+                continue
+            try:
+                payload = json.loads(raw['payload_json'])
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(payload, dict) or 'native_text_v1' not in payload:
+                continue
+            envelope = payload['native_text_v1']
+            if isinstance(envelope, dict) and 'provenance' in envelope:
+                return envelope
+            return None
+        return None
+
+
+def _max_admission_seq(conn, session_id: str, before):
+    best = None
+    for status in _ADMISSION_STATUSES:
+        if before is None:
+            row = conn.execute(
+                'SELECT MAX(seq) AS seq FROM session_admissions WHERE target_session_id=? AND status=?',
+                (session_id, status)).fetchone()
+        else:
+            row = conn.execute(
+                'SELECT MAX(seq) AS seq FROM session_admissions WHERE target_session_id=? AND status=? AND seq<?',
+                (session_id, status, before)).fetchone()
+        seq = None if row is None else row['seq']
+        if seq is not None and (best is None or seq > best):
+            best = seq
+    return best
 
 
 _ANY_HEAD = object()

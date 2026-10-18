@@ -1307,7 +1307,21 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
     entry: dict[str, Any] = {"role": "user", "content": marker, "display_kind": "model_switch"}
     with session.get("history_lock") or contextlib.nullcontext():
         history = session.setdefault("history", [])
-        history[:] = [h for h in history if not _is_model_switch_marker(h)]
+        retained = []
+        for row in history:
+            if not _is_model_switch_marker(row):
+                retained.append(row)
+                continue
+            marker_text, separator, prompt = row["content"].partition("\n\n")
+            if separator and marker_text.endswith("]") and prompt:
+                # Alternation repair can fold a real prompt into this display row.
+                row = {**row, "content": prompt}
+                from agent.turn_context import drop_stale_api_content
+                drop_stale_api_content(row)
+                for key in ("display_kind", "_db_persisted", "_merged_turn_prefix"):
+                    row.pop(key, None)
+                retained.append(row)
+        history[:] = retained
         history.append(entry)
         session["history_version"] = int(session.get("history_version", 0)) + 1
     try:

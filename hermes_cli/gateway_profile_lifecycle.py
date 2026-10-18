@@ -15,6 +15,18 @@ def ack_failure(answer):
     return "host control socket did not answer"
 
 
+def mark_planned_stop(pid: int | None = None) -> None:
+    """Best-effort planned-stop marker for ``pid`` (default: the recorded gateway PID)."""
+    try:
+        from gateway.status import get_running_pid, write_planned_stop_marker
+        if pid is None:
+            pid = get_running_pid(cleanup_stale=False)
+        if pid is not None:
+            write_planned_stop_marker(pid)
+    except Exception:
+        pass
+
+
 def host_scope_for_all_verb(owner):
     """Home a ``--all`` verb acts as: the live host owner's, else the default root.
 

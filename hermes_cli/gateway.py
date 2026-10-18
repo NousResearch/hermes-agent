@@ -1965,16 +1965,7 @@ def _force_kill_survivors(survivors, *, kill=None) -> None:
             kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
 
 
-def _mark_planned_stop(pid: int | None = None) -> None:
-    """Best-effort planned-stop marker for ``pid`` (default: the recorded gateway PID)."""
-    try:
-        from gateway.status import get_running_pid, write_planned_stop_marker
-        if pid is None:
-            pid = get_running_pid(cleanup_stale=False)
-        if pid is not None:
-            write_planned_stop_marker(pid)
-    except Exception:
-        pass
+from hermes_cli.gateway_profile_lifecycle import mark_planned_stop as _mark_planned_stop
 
 
 def stop_profile_gateway() -> bool:
@@ -1994,6 +1985,15 @@ def stop_profile_gateway() -> bool:
     pid = get_running_pid()
     if pid is None:
         return _reap_unsupervised_gateway_orphans()
+    host = _host_multiplexer_for_all_verb()
+    if host is not None and pid == host.pid and not _host_multiplexer_is_ours(host):
+        # Second blind spot of #141133: this profile's ``gateway.lock`` names the host multiplexer.
+        # When the control socket (or the host probe) does not answer, ``profile_lifecycle`` and
+        # ``_cmd_stop``'s own guard both miss it, and the SIGTERM below took every served profile
+        # offline. A pid that belongs to the live host is never this profile's gateway to stop.
+        print_error(f"PID {pid} is the host gateway serving this profile; stopping it would take "
+                    f"every served profile offline. Stop the host instead: hermes gateway stop --all")
+        return False
 
     if is_windows():
         # Windows maps SIGTERM to TerminateProcess. The marker watcher is the

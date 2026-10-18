@@ -154,6 +154,7 @@ describe('useVoiceConversation full-duplex barge-in', () => {
   beforeEach(() => {
     monitorCalls.length = 0
     vi.clearAllMocks()
+    $voicePlayback.set({ ...$voicePlayback.get(), status: 'idle' })
     micHandle.start.mockResolvedValue(undefined)
     micHandle.stop.mockResolvedValue(null)
   })
@@ -195,7 +196,10 @@ describe('useVoiceConversation full-duplex barge-in', () => {
     }
   })
 
-  it('interrupts the in-flight turn when speech trips mid-generation', async () => {
+  // Speaking over Domino while it is still WORKING (thinking, running tools) must
+  // not cancel the turn: a cough or an aside would kill a half-done tool chain.
+  // The utterance is captured and queued behind the turn instead.
+  it('does not interrupt a turn that is working (thinking or running tools)', async () => {
     const { hook, onInterrupt } = renderConversation()
 
     await act(async () => {
@@ -208,9 +212,76 @@ describe('useVoiceConversation full-duplex barge-in', () => {
       monitorCalls.at(-1)?.onSpeech()
     })
 
+    expect(onInterrupt).not.toHaveBeenCalled()
+    expect(stopVoicePlayback).not.toHaveBeenCalled()
+  })
+
+  it('still interrupts mid-generation once the reply is being spoken', async () => {
+    const { hook, onInterrupt } = renderConversation()
+
+    await act(async () => {
+      await hook.result.current.start()
+    })
+    await enterThinking(hook)
+    await waitFor(() => expect(monitorCalls.length).toBeGreaterThan(0))
+
+    $voicePlayback.set({ ...$voicePlayback.get(), status: 'speaking' })
+
+    act(() => {
+      monitorCalls.at(-1)?.onSpeech()
+    })
+
     expect(onInterrupt).toHaveBeenCalledTimes(1)
     expect(markVoicePlaybackInterrupted).toHaveBeenCalled()
     expect(stopVoicePlayback).toHaveBeenCalled()
+  })
+
+  it('submits (for the queue) what was said while the turn kept working', async () => {
+    const { hook, onInterrupt, onSubmit } = renderConversation({ transcript: 'also check the logs' })
+
+    await act(async () => {
+      await hook.result.current.start()
+    })
+    await enterThinking(hook)
+    await waitFor(() => expect(monitorCalls.length).toBeGreaterThan(0))
+
+    const monitor = monitorCalls.at(-1)
+
+    act(() => {
+      monitor?.onSpeech()
+    })
+
+    // Still busy: no interrupt was sent, so nothing waits for one to settle —
+    // the text goes straight to onSubmit, whose composer wrapper queues it.
+    await act(async () => {
+      monitor?.onUtterance?.(new Blob(['x'], { type: 'audio/webm' }))
+    })
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('also check the logs'))
+    expect(onInterrupt).not.toHaveBeenCalled()
+  })
+
+  it('a spoken stop command interrupts a turn that is still working', async () => {
+    const { hook, onInterrupt, onStopWord } = renderConversation({ transcript: 'stop' })
+
+    await act(async () => {
+      await hook.result.current.start()
+    })
+    await enterThinking(hook)
+    await waitFor(() => expect(monitorCalls.length).toBeGreaterThan(0))
+
+    const monitor = monitorCalls.at(-1)
+
+    act(() => {
+      monitor?.onSpeech()
+    })
+
+    await act(async () => {
+      monitor?.onUtterance?.(new Blob(['s'], { type: 'audio/webm' }))
+    })
+
+    await waitFor(() => expect(onStopWord).toHaveBeenCalledTimes(1))
+    expect(onInterrupt).toHaveBeenCalledTimes(1)
   })
 
   it('submits the captured interruption once the interrupt settles (busy clears)', async () => {
@@ -547,6 +618,10 @@ describe('useVoiceConversation parks an undeliverable barge transcript (#123357)
     await waitFor(() => expect(monitorCalls.length).toBeGreaterThan(0))
 
     const monitor = monitorCalls.at(-1)
+
+    // The reply is already being spoken, so this barge interrupts the turn
+    // (speech over a turn that is only working queues instead).
+    $voicePlayback.set({ ...$voicePlayback.get(), status: 'speaking' })
 
     act(() => {
       monitor?.onSpeech()

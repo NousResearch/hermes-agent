@@ -32,6 +32,8 @@ export interface DirectSttConfig {
   /** Silence-hallucination contract the relay path applies (`is_whisper_hallucination`);
    *  absent on older backends — a matching transcript is still returned as-is then. */
   hallucination_filter?: null | { phrases: string[]; repeat_regex: string }
+  /** ElevenLabs only: `stt.elevenlabs.tag_audio_events`. Absent (older backends) = false, the relay's default. */
+  tag_audio_events?: boolean
 }
 
 export interface DirectTtsConfig {
@@ -364,6 +366,10 @@ export async function transcribeAudioClientDirect(audio: Blob, owner?: ResolvedO
       form.set('language_code', stt.language)
     }
 
+    // ElevenLabs defaults to tagging non-speech ("[clicking]", "[beeping]"), which
+    // turns a mic-open pop into a user message. Match the relay: off unless configured.
+    form.set('tag_audio_events', String(stt.tag_audio_events === true))
+
     const response = await sttFetch(stt, `${stt.base_url.replace(/\/+$/, '')}/speech-to-text`, {
       method: 'POST',
       headers: { 'xi-api-key': stt.api_key },
@@ -397,8 +403,38 @@ export async function directTtsConfig(owner?: OwnerScope): Promise<DirectTtsConf
   return config?.tts && config.tts.mode === 'direct' ? config.tts : null
 }
 
-/** Synthesize one text segment to audio bytes (mp3). Throws on provider rejection. */
-export async function synthesizeSpeechClientDirect(tts: DirectTtsConfig, text: string): Promise<ArrayBuffer> {
+/** One sentence of speech; a provider that hasn't answered by now is hung, and
+ *  the playback queue behind it must not wait forever. */
+const TTS_REQUEST_TIMEOUT_MS = 20_000
+
+/** Synthesize one text segment to audio bytes (mp3). Throws on provider
+ *  rejection, on timeout, and when `signal` aborts (barge-in). */
+export async function synthesizeSpeechClientDirect(
+  tts: DirectTtsConfig,
+  text: string,
+  signal?: AbortSignal
+): Promise<ArrayBuffer> {
+  const controller = new AbortController()
+  const abort = () => controller.abort()
+  const timer = setTimeout(abort, TTS_REQUEST_TIMEOUT_MS)
+
+  if (signal?.aborted) {
+    abort()
+  } else {
+    signal?.addEventListener('abort', abort, { once: true })
+  }
+
+  try {
+    // The body is read under the same deadline: a stream that stalls after
+    // the headers is as hung as one that never answers.
+    return await synthesizeWith(tts, text, controller.signal)
+  } finally {
+    clearTimeout(timer)
+    signal?.removeEventListener('abort', abort)
+  }
+}
+
+async function synthesizeWith(tts: DirectTtsConfig, text: string, signal: AbortSignal): Promise<ArrayBuffer> {
   if (tts.wire === 'openai-speech') {
     const body: Record<string, unknown> = {
       ...(tts.extra_body ?? {}),
@@ -418,7 +454,8 @@ export async function synthesizeSpeechClientDirect(tts: DirectTtsConfig, text: s
         Authorization: `Bearer ${tts.api_key}`,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      signal
     })
 
     if (!response.ok) {
@@ -438,7 +475,8 @@ export async function synthesizeSpeechClientDirect(tts: DirectTtsConfig, text: s
           'Content-Type': 'application/json',
           Accept: 'audio/mpeg'
         },
-        body: JSON.stringify({ text, model_id: tts.model })
+        body: JSON.stringify({ text, model_id: tts.model }),
+        signal
       }
     )
 

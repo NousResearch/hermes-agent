@@ -64,3 +64,45 @@ def test_settings_writes_the_plugin_namespace_and_refuses_secrets_and_bad_types(
     for values in ({"api_key": "leak"}, {"retries": "two"}, {"mode": "reckless"}, {"unknown": 1}):
         assert _manage(action="settings", key="demo-plugin", values=values)["error"]["code"] == 4021
     assert "api_key" not in (plugins_home / "config.yaml").read_text(encoding="utf-8")
+
+
+def test_dotted_setting_round_trip_matches_plugin_reader(plugins_home):
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+
+    manifest = plugins_home / "plugins" / "demo-plugin" / "plugin.yaml"
+    manifest.write_text(MANIFEST + "  retry.policy: {type: str, default: standard}\n", encoding="utf-8")
+    response = _manage(action="settings", key="demo-plugin", values={"retry.policy": "careful", "retries": 9})
+    ctx = PluginContext(PluginManifest(name="demo-plugin"), PluginManager())
+
+    assert response["result"]["ok"] is True
+    assert ctx.get_config("retry.policy") == "careful"
+    saved_fields = {field["key"]: field for field in response["result"]["plugin"]["settings_schema"]}
+    assert saved_fields["retry.policy"]["value"] == ctx.get_config("retry.policy")
+    row = next(row for row in _manage(action="list")["result"]["plugins"] if row["key"] == "demo-plugin")
+    fields = {field["key"]: field for field in row["settings_schema"]}
+    assert fields["retry.policy"]["value"] == "careful"
+    assert fields["retries"]["value"] == 9
+
+
+@pytest.mark.parametrize("settings, expected", [
+    ({"retry": {"policy": None}}, None),
+    ({"retry": {"policy": ""}}, ""),
+    ({"retry": {}}, "standard"),
+    ({"retry": None}, "standard"),
+    ({"retry.policy": "noncanonical"}, "standard"),
+])
+def test_dotted_setting_read_preserves_values_and_defaults(plugins_home, settings, expected):
+    import hermes_yaml as yaml
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+
+    manifest = plugins_home / "plugins" / "demo-plugin" / "plugin.yaml"
+    manifest.write_text(MANIFEST + "  retry.policy: {type: str, default: standard}\n", encoding="utf-8")
+    (plugins_home / "config.yaml").write_text(yaml.safe_dump({
+        "plugins": {"entries": {"demo-plugin": {"settings": settings}}},
+    }), encoding="utf-8")
+
+    ctx = PluginContext(PluginManifest(name="demo-plugin"), PluginManager())
+    assert ctx.get_config("retry.policy", default="standard") == expected
+    row = next(row for row in _manage(action="list")["result"]["plugins"] if row["key"] == "demo-plugin")
+    field = next(field for field in row["settings_schema"] if field["key"] == "retry.policy")
+    assert field["value"] == expected

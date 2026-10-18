@@ -1,0 +1,16 @@
+name: anyapi
+title: AnyAPI.ai
+repo: https://github.com/es697/hermes-provider-anyapi
+sha: e5b7b985b5aa56bc585ef1924858978696eb0c3a
+subdir: anyapi
+description: AnyAPI.ai — unified OpenAI-compatible access to 400+ models; /model picker filtered to tool-capable routes.
+maintainer: AnyAPI
+tier: community
+category: models
+docs_url: https://github.com/es697/hermes-provider-anyapi#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - ANYAPI_API_KEY

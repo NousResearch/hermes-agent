@@ -2012,8 +2012,8 @@ DEFAULT_CONFIG = {
             # budget-gated mode; keep it the default so explicit "on"/"off" pins are unaffected).
             # "off" = pass-through, no bridge.
             "enabled": "auto",
-            # Listing budget as % of the model's context length; effective budget = min(this % of
-            # context, listing_max_tokens). Range 0..100.
+            "kanban_worker_policy": "off",  # Opt-in overlay for dispatcher-owned Kanban workers; other contexts stay unchanged.
+            # Listing budget = min(threshold_pct% of context, listing_max_tokens). Range 0..100.
             "threshold_pct": 5,
             # Hits per query when the model omits `limit`. Range 1..max_search_limit.
             "search_default_limit": 5,

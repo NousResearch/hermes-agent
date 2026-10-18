@@ -92,7 +92,7 @@ else:
         "tools.process_registry.restart_safe_gateway_child_argv", dispatch
     )
     with use_cron_store(home):
-        # A lost worker must obey the same bounded history as normal finishes.
+        # A lost worker cannot evict recent outcomes even when the row cap is full.
         monkeypatch.setattr(executions, "MAX_TERMINAL_EXECUTIONS", 2)
         for index in range(executions.MAX_TERMINAL_EXECUTIONS):
             old = executions.create_execution(f"old-{index}", source="direct")
@@ -122,7 +122,7 @@ else:
         assert result["claim_released"], result
         assert "worker-probe-startup-sentinel" in (result["job_error"] or ""), result
         assert len(delivered) == 1, result
-        assert len(executions.list_executions()) <= executions.MAX_TERMINAL_EXECUTIONS
+        assert len(executions.list_executions()) == executions.MAX_TERMINAL_EXECUTIONS + 1
         from cron.scheduler_worker_failure import record_unknown_worker_outcome
 
         # Re-observing an old terminal row cannot notify twice or erase a newer fire.

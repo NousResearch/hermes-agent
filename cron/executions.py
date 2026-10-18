@@ -15,7 +15,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 # home.
 EXECUTIONS_FILE: Optional[Path] = None
 MAX_TERMINAL_EXECUTIONS = 1000
+MIN_TERMINAL_RETENTION_DAYS = 30
 HANDOFF_ADOPTION_GRACE_SECONDS = 30.0
 # Floor for the live-owner stale-claim bound (#115692); see _live_owner_stale_after_seconds.
 LIVE_OWNER_STALE_CLAIM_FLOOR_SECONDS = 7200.0
@@ -199,14 +200,16 @@ def touch_execution_progress(execution_id: str) -> bool:
 
 
 def _prune_unlocked(conn: sqlite3.Connection) -> None:
+    cutoff = (_hermes_now() - timedelta(days=MIN_TERMINAL_RETENTION_DAYS)).isoformat()
     conn.execute(
-        """DELETE FROM executions WHERE id IN (
+        """DELETE FROM executions
+           WHERE julianday(finished_at) < julianday(?) AND id IN (
              SELECT id FROM executions
              WHERE status IN ('completed','failed','unknown')
              ORDER BY julianday(finished_at) DESC, finished_at DESC,
                       julianday(claimed_at) DESC, claimed_at DESC, id DESC LIMIT -1 OFFSET ?
            )""",
-        (max(0, int(MAX_TERMINAL_EXECUTIONS)),),
+        (cutoff, max(0, int(MAX_TERMINAL_EXECUTIONS))),
     )
 
 

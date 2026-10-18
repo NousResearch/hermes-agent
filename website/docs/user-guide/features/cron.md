@@ -425,8 +425,12 @@ a worker deadlocked on a lock stops stamping and is released once the bound
 passes. Unknown attempts are audit records and are never automatically rerun.
 
 Inspect recent attempts with `hermes cron runs [job-id] --limit 20` (alias:
-`history`). Terminal history is bounded; active attempts are never pruned. The
-ledger is included in quick backups.
+`history`). Terminal outcomes are retained for at least 30 days after finishing,
+even when there are more than 1,000 attempts in that window. Older terminal
+outcomes are pruned only when they fall outside the latest 1,000 terminal
+attempts; active attempts are never pruned. The ledger is included in quick
+backups. This retention policy does not restore records that were already
+removed by an older version.
 
 Scheduled attempts also record their exact scheduled instant, separately from
 the time they were claimed. If an old `jobs.json` snapshot re-arms an occurrence

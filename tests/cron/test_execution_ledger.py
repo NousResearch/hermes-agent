@@ -7,6 +7,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 
@@ -168,12 +169,17 @@ def test_terminal_execution_cannot_be_rewritten(monkeypatch, tmp_path):
 def test_retention_bounds_terminal_history_but_preserves_inflight(monkeypatch, tmp_path):
     executions = _point_ledger(monkeypatch, tmp_path)
     monkeypatch.setattr(executions, "MAX_TERMINAL_EXECUTIONS", 3)
+    now = datetime(2026, 10, 18, tzinfo=UTC)
+    monkeypatch.setattr(executions, "_hermes_now", lambda: now - timedelta(days=31))
     inflight = executions.create_execution("live", source="builtin")
     executions.mark_execution_running(inflight["id"])
     for index in range(8):
         row = executions.create_execution(f"done-{index}", source="builtin")
         executions.finish_execution(row["id"], success=True)
 
+    monkeypatch.setattr(executions, "_hermes_now", lambda: now)
+    with executions._transaction() as conn:
+        executions._prune_unlocked(conn)
     records = executions.list_executions(limit=100)
     assert len([row for row in records if row["status"] == "completed"]) == 3
     assert executions.latest_execution("live")["status"] == "running"
@@ -189,6 +195,8 @@ def test_recently_finished_long_running_execution_survives_retention(
     newer = executions.create_execution("newer", source="builtin")
     assert executions.finish_execution(newer["id"], success=True) is not None
 
+    now = executions._hermes_now()
+    monkeypatch.setattr(executions, "_hermes_now", lambda: now + timedelta(days=31))
     finished = executions.finish_execution(long_running["id"], success=True)
 
     assert finished is not None

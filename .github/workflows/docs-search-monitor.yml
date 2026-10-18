@@ -45,11 +45,22 @@ jobs:
           node-version: 24.11.1
 
       - name: Install headless Chromium
+        id: browser
         run: |
           npm install --no-save --no-audit --no-fund --prefix "$RUNNER_TEMP/pw" playwright@1.62.1
           npx --prefix "$RUNNER_TEMP/pw" playwright install --with-deps chromium-headless-shell
 
+      - name: Regression test the browser probe offline
+        env:
+          PLAYWRIGHT_DIR: ${{ runner.temp }}/pw
+        run: |
+          node --test website/scripts/check-live-search.test.mjs || {
+            echo "::error title=Docs search::offline browser-probe regression test failed"
+            exit 1
+          }
+
       - name: Probe live docs search
+        if: ${{ !cancelled() && steps.browser.outcome == 'success' }}
         timeout-minutes: 9
         env:
           PLAYWRIGHT_DIR: ${{ runner.temp }}/pw

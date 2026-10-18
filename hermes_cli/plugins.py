@@ -2104,6 +2104,9 @@ class PluginContext:
         handler: Callable,
         description: str = "",
         args_hint: str = "",
+        *,
+        contextual: bool = False,
+        subcommands: Optional[Mapping[str, str]] = None,
     ) -> Optional[PluginRegistration]:
         """Register a slash command (e.g. ``/lcm``) available in CLI and gateway sessions.
 
@@ -2120,6 +2123,15 @@ class PluginContext:
         command picker. Plugin commands without ``args_hint`` register as
         parameterless in Discord and still accept trailing text when invoked
         as free-form chat.
+
+        ``contextual=True`` opts into authenticated gateway invocation as
+        ``handler(raw_args, context=PluginCommandContext(...))`` before busy
+        input routing. It may return ``PluginAgentDispatch`` to continue the
+        same event through the normal agent. CLI callers have no command
+        context; contextual handlers must default ``context=None`` and deny
+        unsupported surfaces. Legacy handlers and their busy behavior do not
+        change. ``subcommands`` maps native picker names to descriptions;
+        each accepts optional text arguments and is equivalent to typed text.
 
         Names conflicting with built-in commands are rejected with a warning.
         """
@@ -2144,6 +2156,14 @@ class PluginContext:
         except Exception:
             pass  # If commands module isn't available, skip the check
 
+        groups = dict(subcommands or {})
+        if len(groups) > 25 or any(
+            not re.fullmatch(r"[a-z0-9_-]{1,32}", key)
+            or not isinstance(value, str) or not value or len(value) > 100
+            for key, value in groups.items()
+        ):
+            raise ValueError("subcommands require up to 25 named descriptions (1–100 chars)")
+
         previous = self._manager._plugin_commands.get(clean)
         entry = {
             "handler": handler,
@@ -2151,6 +2171,8 @@ class PluginContext:
             "plugin": self.manifest.name,
             "plugin_key": self.manifest.key or self.manifest.name,
             "args_hint": (args_hint or "").strip(),
+            "contextual": bool(contextual),
+            "subcommands": groups,
         }
         self._manager._plugin_commands[clean] = entry
         handle = self._track_replacement(

@@ -16223,6 +16223,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         7. Return response
         """
         source = event.source
+        from hermes_cli.plugin_commands import _command_context
+        _command_context.set(None)
 
         # 🔴 Cross-session leak guard. This handler runs inside a per-message
         # asyncio task created via create_task(), which snapshots the spawning
@@ -16518,13 +16520,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _recognized_cmd = None
                 if cmd:
                     try:
-                        from hermes_cli.commands import resolve_command as _resolve_update_cmd
+                        from hermes_cli.commands import (
+                            resolve_command as _resolve_update_cmd,
+                            should_bypass_active_session as _bypass_update_prompt,
+                        )
                     except Exception:
                         _resolve_update_cmd = None
                     if _resolve_update_cmd is not None:
                         try:
                             _cmd_def = _resolve_update_cmd(cmd)
                             _recognized_cmd = _cmd_def.name if _cmd_def else None
+                            if not _recognized_cmd and _bypass_update_prompt(cmd):
+                                _recognized_cmd = cmd
                         except Exception:
                             _recognized_cmd = None
                 if _recognized_cmd:
@@ -16704,6 +16711,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # clearly moved on.
             _slash_confirm_mod.clear_if_stale(_quick_key)
 
+        # Authenticated contextual plugins may turn THIS event into a normal
+        # user request before busy routing. Legacy plugin dispatch is unchanged.
+        from gateway.plugin_commands import dispatch_contextual_command
+        _plugin_handled, _plugin_reply = await dispatch_contextual_command(
+            self, event, _quick_key,
+        )
+        if _plugin_handled:
+            return _plugin_reply
         # PRIORITY handling when an agent is already running for this session.
         # Default behavior is to interrupt immediately so user text/stop messages
         # are handled with minimal latency.

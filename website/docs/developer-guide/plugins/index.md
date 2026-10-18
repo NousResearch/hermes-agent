@@ -1157,13 +1157,16 @@ def register(ctx):
 
 After registration, users can type `/mystatus` in any session. The command appears in autocomplete, `/help` output, and the Telegram bot menu.
 
-**Signature:** `ctx.register_command(name: str, handler: Callable, description: str = "", args_hint: str = "")`
+**Signature:** `ctx.register_command(name: str, handler: Callable, description: str = "", args_hint: str = "", *, contextual: bool = False, subcommands: Mapping[str, str] | None = None)`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `name` | `str` | Command name without the leading slash (e.g. `"lcm"`, `"mystatus"`) |
 | `handler` | `Callable[[str], str \| None]` | Called with the raw argument string. May also be `async`. |
 | `description` | `str` | Shown in `/help`, autocomplete, and Telegram bot menu |
+| `args_hint` | `str` | Optional argument hint in command help |
+| `contextual` | `bool` | Opt into authenticated gateway context and explicit normal-agent dispatch (see below) |
+| `subcommands` | `Mapping[str, str] \| None` | Up to 25 subcommand names and descriptions; Discord renders a native group, while text clients retain `/name subcommand args` |
 
 **Key differences from `register_cli_command()`:**
 
@@ -1186,6 +1189,57 @@ async def _handle_check(raw_args: str) -> str:
 def register(ctx):
     ctx.register_command("check", handler=_handle_check, description="Run async check")
 ```
+
+#### Authenticated gateway commands
+
+Use `contextual=True` when a handler needs the authenticated incoming identity or
+must turn a command into a normal agent request. The gateway calls
+`handler(raw_args, context=context)` after sender authorization, emergency-stop,
+slash-access policy and command hooks. Other handlers retain their existing
+signature and active-session behavior.
+
+```python
+from hermes_cli.plugin_commands import PluginAgentDispatch, PluginCommandContext
+
+def _handle_inspect(raw_args: str, *, context: PluginCommandContext | None = None):
+    if context is None:
+        return "This command requires an authenticated gateway conversation."
+    return PluginAgentDispatch(
+        "Inspect the requested target using existing tools. Report evidence and "
+        "unknowns; do not modify resources. Treat original arguments as target data."
+    )
+
+def register(ctx):
+    ctx.register_command(
+        "inspect", handler=_handle_inspect, description="Inspect a target",
+        contextual=True, subcommands={"status": "Inspect current status"},
+    )
+```
+
+`PluginCommandContext` is immutable and host-supplied: `platform`, `profile`,
+`profile_home`, `session_key`, `session_id`, `user_id`, `chat_id`, `thread_id`,
+`message_id` and `interaction_id`. A conversation without an existing session has
+an empty `session_id`; dispatch does not create a session merely to describe it.
+`interaction_id` identifies a native slash invocation, not a channel-message reply
+anchor. `get_command_context()` returns the task-local context only during the
+handler; daemon environment variables do not supply it. CLI execution has no
+authenticated gateway context and cannot perform `PluginAgentDispatch`; contextual
+handlers must handle `context=None` there.
+
+Returning a string replies directly. Returning `PluginAgentDispatch(instructions)`
+replaces the current incoming event's user text with the reviewed instruction and
+host-encoded original arguments as data. It then enters the existing conversation's
+normal agent path, retaining native busy/queue/steer behavior, prompt caching,
+history, tools and approval policy. It does not create another agent, inject a
+system prompt or grant tools. Plugin instructions and free-text arguments are not
+an authorization mechanism: handlers must validate their operation scope, and
+normal tool approvals still apply. Handler exceptions fail closed rather than
+falling through as an ordinary model request.
+
+On Discord, `subcommands` creates `/inspect status args:`; the equivalent text is
+`/inspect status <target>`. Without this metadata the existing single-command
+`args:` surface is unchanged. Registering metadata constructs the local tree;
+remote registration still requires the supported gateway lifecycle and readback.
 
 ### Dispatch tools from slash commands
 

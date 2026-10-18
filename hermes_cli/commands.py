@@ -543,7 +543,18 @@ def should_bypass_active_session(command_name: str | None) -> bool:
     ACTIVE_SESSION_BYPASS_COMMANDS remains the subset of commands with
     explicit Level-2 handlers; the rest fall through to the catch-all.
     """
-    return resolve_command(command_name) is not None if command_name else False
+    if not command_name:
+        return False
+    if resolve_command(command_name) is not None:
+        return True
+    # Opt-in contextual plugins must reach authenticated runner dispatch before
+    # their text is queued/steered. Legacy plugin busy behavior stays unchanged.
+    try:
+        from hermes_cli.plugins import get_plugin_commands
+        entry = get_plugin_commands().get(command_name.replace("_", "-"), {})
+        return bool(entry.get("contextual"))
+    except Exception:
+        return False
 
 
 def _resolve_config_gates() -> set[str]:

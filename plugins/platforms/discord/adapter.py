@@ -6007,7 +6007,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # This ensures new commands added to COMMAND_REGISTRY in
         # hermes_cli/commands.py automatically appear as Discord slash
         # commands without needing a manual entry here.
-        def _build_auto_slash_command(_name: str, _description: str, _args_hint: str = ""):
+        def _build_auto_slash_command(_name: str, _description: str, _args_hint: str = "", _prefix: str = "", _preserve_args: bool = False):
             """Build a discord.app_commands.Command that proxies to _run_simple_slash."""
             discord_name = _name.lower()[:32]
             desc = (_description or f"Run /{_name}")[:100]
@@ -6017,13 +6017,14 @@ class DiscordAdapter(BasePlatformAdapter):
                 def _make_args_handler(__name: str, __hint: str):
                     @discord.app_commands.describe(args=f"Arguments: {__hint}"[:100])
                     async def _handler(interaction: discord.Interaction, args: str = ""):
+                        text = f"/{__name} {args}"
                         await self._run_simple_slash(
-                            interaction, f"/{__name} {args}".strip()
+                            interaction, text if _preserve_args else text.strip()
                         )
                     _handler.__name__ = f"auto_slash_{__name.replace('-', '_')}"
                     return _handler
 
-                handler = _make_args_handler(_name, _args_hint)
+                handler = _make_args_handler(f"{_prefix} {_name}".strip(), _args_hint)
             else:
                 def _make_simple_handler(__name: str):
                     async def _handler(interaction: discord.Interaction):
@@ -6031,7 +6032,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     _handler.__name__ = f"auto_slash_{__name.replace('-', '_')}"
                     return _handler
 
-                handler = _make_simple_handler(_name)
+                handler = _make_simple_handler(f"{_prefix} {_name}".strip())
 
             return discord.app_commands.Command(
                 name=discord_name,
@@ -6092,6 +6093,9 @@ class DiscordAdapter(BasePlatformAdapter):
         # API needed — plugin commands are platform-agnostic.
         try:
             from hermes_cli.commands import _iter_plugin_command_entries
+            from hermes_cli.plugins import get_plugin_commands
+
+            plugin_metadata = get_plugin_commands()
 
             for plugin_name, plugin_desc, plugin_args_hint in _iter_plugin_command_entries():
                 discord_name = plugin_name.lower()[:32]
@@ -6100,11 +6104,20 @@ class DiscordAdapter(BasePlatformAdapter):
                 if len(already_registered) >= slot_cap:
                     dropped_over_cap += 1
                     continue
-                auto_cmd = _build_auto_slash_command(
-                    plugin_name,
-                    plugin_desc,
-                    plugin_args_hint,
-                )
+                subcommands = plugin_metadata.get(plugin_name, {}).get("subcommands", {})
+                if subcommands:
+                    auto_cmd = discord.app_commands.Group(
+                        name=discord_name, description=plugin_desc[:100],
+                    )
+                    for sub_name, sub_desc in subcommands.items():
+                        auto_cmd.add_command(_build_auto_slash_command(
+                            sub_name, sub_desc, "target", plugin_name, True,
+                        ))
+                else:
+                    auto_cmd = _build_auto_slash_command(
+                        plugin_name, plugin_desc, plugin_args_hint,
+                        _preserve_args=bool(plugin_metadata.get(plugin_name, {}).get("contextual")),
+                    )
                 try:
                     tree.add_command(auto_cmd)
                     already_registered.add(discord_name)
@@ -6420,6 +6433,7 @@ class DiscordAdapter(BasePlatformAdapter):
             text=text,
             message_type=msg_type,
             source=source,
+            interaction_id=str(getattr(interaction, "id", "") or ""),
             raw_message=interaction,
             channel_prompt=self._resolve_channel_prompt(channel_id, parent_id or None),
         )

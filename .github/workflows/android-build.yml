@@ -1,0 +1,165 @@
+name: Android APK Build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'android/**'
+      - '.github/workflows/android-build.yml'
+  pull_request:
+    paths:
+      - 'android/**'
+      - '.github/workflows/android-build.yml'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version number for the APK (e.g., 1.0.0)
+        required: false
+        type: string
+        default: ''
+      release:
+        description: Build a release APK (signed)
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          android-version: 34
+          build-tools-version: 34.0.0
+          ndk-version: 26.2.11394342
+          cmake-version: 3.22.1
+
+      - name: Install Android dependencies
+        run: |
+          echo "y" | android update sdk --no-ui --all --filter "platform-tools,platforms;android-34,build-tools;34.0.0"
+          echo "y" | android update sdk --no-ui --all --filter "emulator,tools"
+
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('android/**/*.gradle') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Set version
+        id: version
+        run: |
+          VERSION=${{ inputs.version }}
+          if [ -z "$VERSION" ]; then
+            # Get version from git tag or use timestamp
+            if [ -n "$GITHUB_REF" ] && echo "$GITHUB_REF" | grep -q "refs/tags/v"; then
+              VERSION=$(echo "$GITHUB_REF" | sed 's/refs\/tags\/v//')
+            else
+              VERSION="1.0.0-$(date +%Y%m%d%H%M)"
+            fi
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Building version: $VERSION"
+
+      - name: Create keystore directory
+        run: mkdir -p android/app/keystore
+
+      - name: Create debug keystore
+        run: |
+          # Create a debug keystore for unsigned builds
+          keytool -genkey -v -keystore android/app/keystore/debug.keystore \
+            -storepass android -alias androiddebugkey -keypass android \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+
+      - name: Update version in build.gradle
+        run: |
+          # Update versionCode and versionName in build.gradle
+          sed -i "s/versionCode 1/versionCode ${{ steps.version.outputs.version | replace('.', '') }}/" android/app/build.gradle
+          sed -i "s/versionName \"1.0.0\"/versionName \"${{ steps.version.outputs.version }}\"/" android/app/build.gradle
+
+      - name: Build debug APK
+        run: |
+          cd android
+          chmod +x gradle/wrapper/gradle-wrapper.jar
+          ./gradlew clean assembleDebug --stacktrace --no-daemon
+
+      - name: Rename APK
+        run: |
+          APK_NAME="Hermes-Agent-${{ steps.version.outputs.version }}-debug.apk"
+          cp android/app/build/outputs/apk/debug/app-debug.apk "$APK_NAME"
+          echo "apk_name=$APK_NAME" >> $GITHUB_OUTPUT
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-agent-apk
+          path: Hermes-Agent-*.apk
+          retention-days: 7
+
+      - name: Create release (if tagged)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Hermes-Agent-*.apk
+          generate_release_notes: true
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release:
+    name: Build Release APK
+    if: inputs.release == true && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Download APK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: hermes-agent-apk
+
+      - name: Set up signing
+        if: env.SIGNING_KEY != ''
+        run: |
+          echo "${{ secrets.ANDROID_STORE_PASSWORD }}" > store_password.txt
+          echo "${{ secrets.ANDROID_KEY_ALIAS }}" > key_alias.txt
+          echo "${{ secrets.ANDROID_KEY_PASSWORD }}" > key_password.txt
+        env:
+          SIGNING_KEY: ${{ secrets.ANDROID_SIGNING_KEY }}
+
+      - name: Sign APK
+        if: env.SIGNING_KEY != ''
+        run: |
+          # This would sign the APK with the release keystore
+          # For now, we'll just use the debug APK
+          echo "Signing would happen here with proper keystore"
+
+      - name: Upload release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-agent-release-apk
+          path: Hermes-Agent-*.apk
+          retention-days: 30

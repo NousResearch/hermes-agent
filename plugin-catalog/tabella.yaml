@@ -1,6 +1,6 @@
 name: tabella
 repo: https://github.com/dyiapanis/tabella
-sha: 21432b31bfa8f65f094f1e6b9252f5f110110e23
+sha: b70f2097e551d16adfc2239ed3340956577aa161
 description: >-
   Document lifecycle for agents in one package: create .docx/.xlsx/.pptx/.pdf/.odt/.ods/.odp
   from structured JSON or raw HTML/CSS, convert between formats via pandoc + LaTeX, and read
@@ -13,7 +13,13 @@ description: >-
   and requires Bearer auth out of the box: a random token is generated into
   PLUGIN_DATA on first run (TABELLA_TOKEN overrides); requests with an Origin
   header or a non-JSON body are rejected, and model-supplied HTML cannot fetch
-  network or local-file resources (data: URIs only). Disclosure — Python
+  network or local-file resources (data: URIs only — the same fetcher now also
+  guards CSS input, not just HTML). Pandoc invocations are argument-safe:
+  extra_args is allowlisted (--toc, --number-sections, -V key=value) and
+  from_format/to_format are validated against the built-in format-name grammar
+  (^[a-z0-9_]+([+-][a-z0-9_]+)*$), closing pandoc's *.lua reader/writer
+  code-exec path; both servers re-exec into the dependency venv after
+  bootstrap. Disclosure — Python
   deps (python-docx, openpyxl, python-pptx, weasyprint, odfpy, Pillow, lxml, PyMuPDF,
   firecrawl-anydoc, liteparse — 10 direct packages, transitives included in a 25-package
   closure) are pinned to exact versions with sha256 hashes in requirements-pinned.txt and

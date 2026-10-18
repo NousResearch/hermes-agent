@@ -328,12 +328,13 @@ def test_status_flags_a_gateway_this_hermes_cannot_attach(homes, monkeypatch, ca
 
 @pytest.mark.parametrize('served', [True, False])
 def test_process_discovery_excludes_host_even_after_unserve(homes, monkeypatch, served):
-    from gateway import status
-    from hermes_cli import gateway as gw
+    from gateway import status, host_attach
+    from hermes_cli import gateway as gw, dashboard_procs
     root, secondary = homes
     owner = SimpleNamespace(pid=4242, home=root, profiles=('default', 'worker') if served else ('default',))
     monkeypatch.setenv('HERMES_HOME', str(secondary))
-    monkeypatch.setattr(gw, '_host_multiplexer_for_all_verb', lambda: owner)
+    monkeypatch.setattr(host_attach, '_probe_host_gateway', lambda wait: owner)
+    monkeypatch.setattr(dashboard_procs, '_hermes_home_for_pid', lambda pid: str(root if pid == 4242 else secondary))
     monkeypatch.setattr(gw, '_get_service_pids', lambda **kw: [])
     monkeypatch.setattr(gw, '_scan_gateway_pids', lambda *a, **kw: [])
     monkeypatch.setattr(status, 'get_running_pid', lambda **kw: owner.pid)
@@ -346,3 +347,61 @@ def test_process_discovery_excludes_host_even_after_unserve(homes, monkeypatch, 
     monkeypatch.setenv('HERMES_HOME', str(root))
     monkeypatch.setattr(status, 'get_running_pid', lambda **kw: owner.pid)
     assert gw.find_gateway_pids() == [owner.pid]
+
+
+@pytest.mark.parametrize('probe', ['cached_absent', 'failure', 'switched'])
+def test_stop_never_owns_shared_pid_from_an_absent_or_old_probe(homes, monkeypatch, probe):
+    import time
+    from gateway import host_attach, status
+    from hermes_cli import gateway as gw, dashboard_procs
+    root, secondary = homes
+    monkeypatch.setenv('HERMES_HOME', str(secondary))
+    monkeypatch.setattr(status, 'get_running_pid', lambda **kw: 4242)
+    monkeypatch.setattr(gw, '_get_service_pids', lambda **kw: [])
+    monkeypatch.setattr(gw, '_scan_gateway_pids', lambda *a, **kw: [])
+    monkeypatch.setattr(dashboard_procs, '_hermes_home_for_pid', lambda pid: str(root))
+    old = host_attach.HostGateway(4141, root, ('default', 'worker'))
+    current = host_attach.HostGateway(4242, root, ('default', 'worker'))
+    monkeypatch.setattr(host_attach, '_cached_probe', (time.monotonic(), old if probe == 'switched' else None))
+
+    def fresh(_wait):
+        if probe == 'failure':
+            raise OSError('rendezvous unavailable')
+        return current
+
+    monkeypatch.setattr(host_attach, '_probe_host_gateway', fresh)
+    monkeypatch.setattr(gw.os, 'kill', lambda *a: pytest.fail('shared host was signalled'))
+    assert gw.find_gateway_pids() == []
+    assert gw.stop_profile_gateway() is False
+
+
+@pytest.mark.parametrize('process_home', [None, 'foreign', 'error'])
+def test_absent_host_requires_positive_process_ownership(homes, monkeypatch, process_home):
+    from gateway import host_attach, status
+    from hermes_cli import gateway as gw, dashboard_procs
+    root, secondary = homes
+    monkeypatch.setenv('HERMES_HOME', str(secondary))
+    monkeypatch.setattr(status, 'get_running_pid', lambda **kw: 4242)
+    monkeypatch.setattr(host_attach, '_probe_host_gateway', lambda wait: None)
+
+    def home(pid):
+        if process_home == 'error':
+            raise PermissionError('process inaccessible')
+        return str(root) if process_home == 'foreign' else None
+
+    monkeypatch.setattr(dashboard_procs, '_hermes_home_for_pid', home)
+    monkeypatch.setattr(gw, '_reap_unsupervised_gateway_orphans', lambda: pytest.fail('unproven PID fell through to reaper'))
+    monkeypatch.setattr(gw.os, 'kill', lambda *a: pytest.fail('unproven PID was signalled'))
+    assert gw.stop_profile_gateway() is False
+
+
+def test_owner_switch_during_probe_is_rejected(homes, monkeypatch):
+    from gateway import host_attach, status
+    from hermes_cli import gateway as gw, dashboard_procs
+    _, secondary = homes
+    monkeypatch.setenv('HERMES_HOME', str(secondary))
+    pids = iter([4343, 4242])
+    monkeypatch.setattr(status, 'get_running_pid', lambda **kw: next(pids))
+    monkeypatch.setattr(host_attach, '_probe_host_gateway', lambda wait: None)
+    monkeypatch.setattr(dashboard_procs, '_hermes_home_for_pid', lambda pid: str(secondary))
+    assert gw._owned_gateway_pid() is None

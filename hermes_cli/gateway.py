@@ -1984,16 +1984,7 @@ def stop_profile_gateway() -> bool:
 
     pid = _owned_gateway_pid()
     if pid is None:
-        return _reap_unsupervised_gateway_orphans()
-    host = _host_multiplexer_for_all_verb()
-    if host is not None and pid == host.pid and not _host_multiplexer_is_ours(host):
-        # Second blind spot of #141133: this profile's ``gateway.lock`` names the host multiplexer.
-        # When the control socket (or the host probe) does not answer, ``profile_lifecycle`` and
-        # ``_cmd_stop``'s own guard both miss it, and the SIGTERM below took every served profile
-        # offline. A pid that belongs to the live host is never this profile's gateway to stop.
-        print_error(f"PID {pid} is the host gateway serving this profile; stopping it would take "
-                    f"every served profile offline. Stop the host instead: hermes gateway stop --all")
-        return False
+        return False if get_running_pid() is not None else _reap_unsupervised_gateway_orphans()
 
     if is_windows():
         # Windows maps SIGTERM to TerminateProcess. The marker watcher is the

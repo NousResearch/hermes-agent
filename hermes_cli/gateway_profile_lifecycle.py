@@ -1,8 +1,13 @@
 """Named-profile lifecycle inside the host gateway, never a service-manager action."""
 from __future__ import annotations
 
+import logging
+
 from hermes_constants import get_hermes_home, get_default_hermes_root
 from hermes_cli.profiles import parked_marker_path, profile_is_parked, profile_is_standalone, profiles_to_serve
+
+
+logger = logging.getLogger(__name__)
 
 
 def ack_confirmed(answer, key, name):
@@ -144,18 +149,31 @@ def print_parked_status() -> bool:
 
 
 def owned_gateway_pid() -> int | None:
-    """A gateway this profile may stop, excluding its shared host's liveness PID.
+    """Return only a freshly confirmed process owned by this profile.
 
-    Runtime status for a satellite reports the host PID, including briefly after
-    unserve while status catches up. Check host ownership regardless of its roster.
-    A separate forced/standalone gateway still owns its normal process lifecycle.
+    A missing (or cached missing) host is not ownership evidence. Refresh the host
+    probe, then resolve the candidate's live process home independently of runtime
+    status: a satellite's status legitimately carries another home's shared PID.
     """
-    from gateway.status import get_running_pid
-    from hermes_cli import gateway as gw
+    from gateway import host_attach
+    from gateway.status import get_running_pid, _get_process_hermes_home, _same_hermes_home
+    from hermes_cli.dashboard_procs import _hermes_home_for_pid
 
-    pid = get_running_pid()
-    if pid is not None:
-        owner = gw._host_multiplexer_for_all_verb()
-        if owner is not None and owner.pid == pid and not gw._host_multiplexer_is_ours(owner):
+    try:
+        pid = get_running_pid()
+        if pid is None:
             return None
-    return pid
+        host_attach.invalidate_host_gateway_cache()
+        owner = host_attach.host_gateway()
+        home = _get_process_hermes_home()
+        if owner is not None and owner.pid == pid and not _same_hermes_home(owner.home, home):
+            return None
+        process_home = _hermes_home_for_pid(pid)
+        if process_home is None or not _same_hermes_home(process_home, home):
+            return None
+        # The runtime may have switched owners while the OS/control probes ran.
+        return pid if get_running_pid() == pid else None
+    except Exception:
+        # An inaccessible rendezvous or process is never permission to kill it.
+        logger.debug("Could not prove gateway process ownership", exc_info=True)
+        return None

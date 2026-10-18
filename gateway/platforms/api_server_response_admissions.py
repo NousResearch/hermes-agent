@@ -119,11 +119,29 @@ def _stored_owner(adapter, session_id):
     return authority.logical_owner(session_id) if authority is not None else session_id
 
 
+def _last_user_turn_index(messages: list) -> int | None:
+    """Index of the newest message that can drive this turn.
+
+    Responses clients replay tool-call items from the previous response's ``output`` as the
+    next ``input``, so the tail of ``messages`` may hold an ``assistant`` entry (or nothing)
+    even though the user is asking for a continuation. The turn is driven by the newest
+    *user* message with visible payload, never blindly by ``messages[-1]``.
+    """
+    from gateway.platforms.api_server import _content_has_visible_payload
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if str(message.get('role') or '') != 'user':
+            continue
+        if _content_has_visible_payload(message.get('content')):
+            return index
+    return None
+
+
 async def prepare_context(adapter, request, body, gateway_session_key, durable_key, scope, key):
     """Validate first-time requests; exact retries use the accepted payload and result only."""
     import asyncio
     from gateway.platforms.api_server import (
-        _auto_truncate_response_history, _content_has_visible_payload, _error_response)
+        _auto_truncate_response_history, _error_response)
     from gateway.platforms.api_server_openai_routes import _parse_responses_input, _parse_conversation_history
     request_id = f'responses:{scope}:{key}' if durable_key else None
     if durable_key:
@@ -155,10 +173,13 @@ async def prepare_context(adapter, request, body, gateway_session_key, durable_k
             return None, error
         if instructions is None:
             instructions = stored.get('instructions')
-    history.extend(messages[:-1])
-    user_message = messages[-1].get('content', '') if messages else ''
-    if not _content_has_visible_payload(user_message):
+    turn_index = _last_user_turn_index(messages)
+    if turn_index is None:
         return None, _error_response('No user message found in input', 400)
+    # Keep everything else as context — including an assistant message the client replayed
+    # after a tool call — without duplicating the turn's own user message.
+    history.extend(message for index, message in enumerate(messages) if index != turn_index)
+    user_message = messages[turn_index].get('content', '')
     if body.get('truncation') == 'auto':
         history = _auto_truncate_response_history(history)
     declared_selected = not stored_session_id and bool(gateway_session_key)

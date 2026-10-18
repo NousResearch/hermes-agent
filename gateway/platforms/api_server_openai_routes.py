@@ -200,6 +200,40 @@ def _is_reasoning_input_item(item: Any) -> bool:
     return isinstance(item, dict) and item.get("type") == "reasoning"
 
 
+_NON_MESSAGE_INPUT_ITEM_TYPES = frozenset({
+    "function_call",
+    "function_call_output",
+    "local_shell_call",
+    "local_shell_call_output",
+    "computer_call",
+    "computer_call_output",
+    "web_search_call",
+    "file_search_call",
+    "image_generation_call",
+    "mcp_call",
+    "mcp_approval_request",
+    "mcp_approval_response",
+    "item_reference",
+})
+
+
+def _is_non_message_input_item(item: Any) -> bool:
+    """True for replayed tool/reference items, which are not conversational messages.
+
+    After a turn that used tools, clients (Codex, the Responses SDKs) replay the previous
+    response's ``output`` items as the next ``input``. Those carry ``call_id``/``output``
+    instead of ``content``, so parsing them as ``role="user"`` produced an empty user turn
+    and the whole request failed with ``No user message found in input``.
+    """
+    if not isinstance(item, dict):
+        return False
+    item_type = str(item.get("type") or "").strip().lower()
+    if item_type in _NON_MESSAGE_INPUT_ITEM_TYPES:
+        return True
+    # Nothing that carries neither a role nor content can be a chat message.
+    return "role" not in item and "content" not in item
+
+
 def _turn_reasoning_text(
         conversation_history: list[dict[str, Any]], user_message: Any, result: dict[str, Any]) -> str:
     """Reasoning the model produced on this turn, joined for a non-streaming
@@ -692,7 +726,7 @@ def _parse_responses_input(raw_input: Any) -> tuple:
         for idx, item in enumerate(raw_input):
             if isinstance(item, str):
                 input_messages.append({"role": "user", "content": item})
-            elif _is_reasoning_input_item(item):
+            elif _is_reasoning_input_item(item) or _is_non_message_input_item(item):
                 continue
             elif isinstance(item, dict):
                 try:

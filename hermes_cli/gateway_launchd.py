@@ -915,6 +915,17 @@ def _query_launchd_service(label: str) -> tuple[bool | None, str]:
     return None, ""
 
 
+def _probe_launchd_service_running() -> bool | None:
+    """Whether launchd runs this profile's service; None when this shell cannot query it."""
+    gw = _gw()
+    if not gw.get_launchd_plist_path().exists():
+        return False
+    listed, output = _query_launchd_service(gw.get_launchd_label())
+    if listed is not True:
+        return listed
+    return gw._parse_launchd_pid_from_list_output(output) is not None
+
+
 def launchd_status(deep: bool = False):
     plist_path = _gw().get_launchd_plist_path()
     label = _gw().get_launchd_label()

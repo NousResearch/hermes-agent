@@ -1521,17 +1521,6 @@ def _locate_launchd_gateway_service(label: str) -> tuple[str | None, int | None]
     return (None, None)
 
 
-def _probe_launchd_service_running() -> bool | None:
-    """Whether launchd runs this profile's service; None when this shell cannot query it."""
-    from hermes_cli.gateway_launchd import _query_launchd_service
-    if not get_launchd_plist_path().exists():
-        return False
-    listed, output = _query_launchd_service(get_launchd_label())
-    if listed is not True:
-        return listed
-    return _parse_launchd_pid_from_list_output(output) is not None
-
-
 def _s6_gateway_snapshot(gateway_pids: tuple[int, ...]) -> GatewayRuntimeSnapshot | None:
     """Snapshot for an s6-supervised container gateway, or None when s6 isn't the service manager."""
     from hermes_cli.service_manager import detect_service_manager, get_service_manager
@@ -3926,6 +3915,7 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
 
 from hermes_cli.gateway_launchd import (
     get_launchd_label,
+    _probe_launchd_service_running,
     _probe_launchd_domain_for_label,
     _launchd_domain,
     _LAUNCHD_JOB_UNLOADED_EXIT_CODES,

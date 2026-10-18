@@ -105,10 +105,13 @@ def _gateway_status() -> str:
         from hermes_cli.gateway import get_gateway_runtime_snapshot
         snapshot = get_gateway_runtime_snapshot()
         if snapshot.running:
-            mode = "manual" if snapshot.has_process_service_mismatch else snapshot.manager
+            mode = (f"{snapshot.manager} supervision unknown" if not snapshot.service_status_known
+                    else "manual" if snapshot.has_process_service_mismatch else snapshot.manager)
             # A supervised gateway may have no scannable PID (s6 `python -c` launcher, #125390).
             pid = f", pid {snapshot.gateway_pids[0]}" if snapshot.gateway_pids else ""
             return f"running ({mode}{pid})"
+        if not snapshot.service_status_known:
+            return f"unknown ({snapshot.manager} supervision unavailable)"
         return f"stopped ({snapshot.manager})"
     except Exception:
         return "unknown" if sys.platform.startswith(("linux", "darwin")) else "N/A"

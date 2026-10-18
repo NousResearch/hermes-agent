@@ -1555,10 +1555,12 @@ TERMINAL_SCHEMA = {
                 "type": "boolean",
                 "default": False,
                 "description": "With background=true: survive session end, /new, compression and other cleanup (not host exit). Only for jobs the user explicitly wants to outlive the conversation."
+            },
+            "notify_on_complete": {
+                "type": "boolean",
+                "default": False,
+                "description": "With background=true: notify on process exit. Alias for notify=true."
             }
-            # Legacy aliases (unadvertised, still accepted): notify_on_complete
-            # (bool) and watch_patterns (list). notify=true|[...] maps onto
-            # them in the dispatch wrapper; explicit notify wins on conflict.
         },
         "required": ["command"]
     }

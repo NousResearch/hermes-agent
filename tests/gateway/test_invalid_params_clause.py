@@ -579,6 +579,93 @@ def test_the_panel_seals_a_value_the_frame_already_carried():
     assert REDACTED_KEY in shown
 
 
+_WRAPPED = '__ghp_' + 'AbCdEf1234' * 4 + '_disabled'
+
+
+def test_a_disabled_mcp_server_name_is_not_echoed(tmp_path):
+    """The name is the client's pick of a configured server, so it is sealed like the others."""
+    from gateway.session_policy import build_policy
+
+    servers = {_WRAPPED: {'command': 'echo', 'enabled': False}}
+    with pytest.raises(RuntimeStoreError) as caught:
+        build_policy({'cwd': str(tmp_path), 'source': 'cli', 'toolsets': [_WRAPPED]}, {'mcp_servers': servers})
+    assert caught.value.field == 'toolsets'
+    assert caught.value.detail == f'MCP server {REDACTED_KEY} is disabled in config'
+
+
+@pytest.mark.parametrize('name', [
+    'mcp-ghp_' + 'AbCdEf1234' * 4,
+    'x-ghp_' + 'AbCdEf1234' * 4 + '-y',
+])
+def test_a_hyphen_does_not_hide_a_token(tmp_path, name):
+    """The redactor reads ``-`` beside a token as part of it, as it reads ``_``."""
+    from gateway.session_policy import build_policy
+
+    with pytest.raises(RuntimeStoreError) as caught:
+        build_policy({'cwd': str(tmp_path), 'source': 'cli', 'toolsets': [name]}, {})
+    assert 'AbCdEf1234' not in caught.value.detail
+    assert REDACTED_KEY in caught.value.detail
+
+
+def test_a_hyphenated_toolset_name_is_still_echoed(tmp_path):
+    from gateway.session_policy import build_policy
+
+    with pytest.raises(RuntimeStoreError) as caught:
+        build_policy({'cwd': str(tmp_path), 'source': 'cli', 'toolsets': ['mcp-gone_server']}, {})
+    assert "'mcp-gone_server'" in caught.value.detail
+
+
+@pytest.mark.parametrize('detail', [
+    f'unknown or invalid toolset name: {_WRAPPED!r}',
+    f'MCP server {_WRAPPED!r} is disabled in config',
+    # A padded token: the redactor's ``gAAAA`` pattern counts the ``=`` toward its length.
+    "MCP server '__gAAAAAbCdEf1234AbCdEf12==_disabled' is disabled in config; choose another toolset",
+])
+def test_a_long_detail_does_not_hide_a_wrapped_token(detail):
+    """Over 80 characters the redactor's own pass reads the underscores as part of the token. A
+    raise site that did not seal the value, and an older owner's frame, are still sealed."""
+    from hermes_cli.cli_chat_error_copy import refusal_text
+    from hermes_cli.gateway_client import rpc_error
+
+    assert len(detail) > 80
+    raised = RuntimeStoreError('invalid_params', field='toolsets', detail=detail)
+    shown = refusal_text(rpc_error({'code': 4001, 'message': 'invalid_params', 'data': {
+        'reason': 'invalid_params', 'field': 'toolsets', 'detail': detail}}))
+    for text in (raised.detail, shown):
+        assert 'AbCdEf1234' not in text
+        assert REDACTED_KEY in text
+
+
+def test_a_long_safe_detail_is_kept():
+    from hermes_cli.cli_chat_error_copy import refusal_text
+    from hermes_cli.gateway_client import rpc_error
+
+    detail = ('not available on this surface: browser, code_execution, image_gen, '
+              'mcp-filesystem, web_search, terminal_extra')
+    raised = RuntimeStoreError('invalid_params', field='toolsets', detail=detail)
+    shown = refusal_text(rpc_error({'code': 4001, 'message': 'invalid_params', 'data': {
+        'reason': 'invalid_params', 'field': 'toolsets', 'detail': detail}}))
+    assert raised.detail == detail
+    assert shown == f'invalid_params (toolsets: {detail})'
+
+
+def test_a_long_detail_is_probed_within_its_kept_prefix(monkeypatch):
+    from agent import redact
+
+    real = redact.redact_sensitive_text
+    probes = []
+
+    def counting(text, **kwargs):
+        probes.append(text)
+        return real(text, **kwargs)
+
+    monkeypatch.setattr(redact, 'redact_sensitive_text', counting)
+    raised = RuntimeStoreError('invalid_params', detail='x ' + 'a_' * 2000)
+    assert raised.detail.startswith('x a_a_') and len(raised.detail) == 160
+    # About 4000 runs over the whole word; the kept prefix and one clause past it give about 200.
+    assert len(probes) < 500
+
+
 def _blob(error, logs, shown):
     return ' '.join([
         str(error['data'].get('field')), str(error['data'].get('detail')),

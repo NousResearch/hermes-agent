@@ -25,14 +25,16 @@ class SessionGoneEvent(NamedTuple):
 # A client-chosen loc is published only when every dot-separated segment is a short
 # identifier or a list index. Whether that loc is a secret is the log redactor
 # (``redact_sensitive_text(..., force=True)``), not a second prefix list. Its
-# lookbehind and lookahead both treat ``_`` as part of a token, and some bodies
-# do not cross ``.``, so a hit on any run of the text cut at ``_`` or ``.`` on
-# both ends (dots kept and removed) becomes ``<redacted-key>``. Names longer
+# lookbehind and lookahead both treat ``_`` and ``-`` as part of a token, and some
+# bodies do not cross ``.``, so a hit on any run of the text cut at ``_``, ``.`` or
+# ``-`` on both ends (dots kept and removed) becomes ``<redacted-key>``. Names longer
 # than ``_MAX_CLAUSE`` get one redactor pass and are never echoed: the run probe
-# is quadratic. At most ``_MAX_LOCS`` locs are classified, the same bound
+# is quadratic. A stored sentence longer than that is probed word by word, over
+# the prefix it keeps. At most ``_MAX_LOCS`` locs are classified, the same bound
 # ``rpc_error`` already applies to error-data lists.
 _SEGMENT = re.compile(r'^[A-Za-z_][A-Za-z0-9_]{0,40}$')
 _INDEX = re.compile(r'^[0-9]{1,6}$')
+_WORD = re.compile(r'[A-Za-z0-9_.=-]+')  # the redactor's token alphabet, with a padded token's ``=``
 _MAX_CLAUSE = 80
 _MAX_LOCS = 16
 _FIELD_LIMIT = 80
@@ -51,10 +53,11 @@ def _redactor_alters(text):
         return True
 
 
-def _secret_probes(text):
-    """Every run of *text* cut at ``_`` or ``.`` on both ends, dots kept and removed."""
-    cuts = [at for at, char in enumerate(text) if char in '_.']
-    starts = (0, *(at + 1 for at in cuts))
+def _secret_probes(text, before=None):
+    """Every run of *text* cut at ``_``, ``.`` or ``-`` on both ends, dots kept and removed;
+    only the runs that start before *before*, when it is given."""
+    cuts = [at for at, char in enumerate(text) if char in '_.-']
+    starts = [start for start in (0, *(at + 1 for at in cuts)) if before is None or start < before]
     ends = (*cuts, len(text))
     runs = (text[start:end] for start in starts for end in ends if end > start)
     return list(dict.fromkeys(probe for run in runs for probe in (run, run.replace('.', '')) if probe))
@@ -63,9 +66,8 @@ def _secret_probes(text):
 def _secret_text(text):
     """True when *text* is not safe to echo.
 
-    Over ``_MAX_CLAUSE`` characters only the redactor's own pass runs. A token
-    hidden by underscores on both sides is caught by sealing the client value
-    before it is interpolated into a longer sentence.
+    Over ``_MAX_CLAUSE`` characters only the redactor's own pass runs here;
+    ``_seal`` probes such a sentence word by word before it is stored.
     """
     if not isinstance(text, str) or not text:
         return False
@@ -175,6 +177,20 @@ def publish_client_repr(value):
     return publish_client_value(value)
 
 
+def _hides_wrapped_token(text, limit):
+    """True when a word of the first *limit* characters holds a token with ``_``, ``.`` or ``-``
+    against it, which the redactor's own pass over a long sentence reads as part of the word.
+
+    Only runs that start inside the kept prefix are probed, and the text is read at most
+    ``_MAX_CLAUSE`` past it so a token across the cut is probed whole: the cost is bounded by
+    *limit* however long *text* is.
+    """
+    shown = text[:limit + _MAX_CLAUSE]
+    probes = dict.fromkeys(probe for word in _WORD.finditer(shown) if word.start() < limit
+                           for probe in _secret_probes(word.group(), before=limit - word.start()))
+    return any(_redactor_alters(probe) for probe in probes)
+
+
 def _seal(value, limit):
     """Store *value* only when the redactor would leave it alone, clipped to *limit*."""
     if value is None:
@@ -182,7 +198,7 @@ def _seal(value, limit):
     text = value if isinstance(value, str) else str(value)
     if not text:
         return None
-    if _secret_text(text):
+    if _secret_text(text) or (len(text) > _MAX_CLAUSE and _hides_wrapped_token(text, limit)):
         return REDACTED_KEY
     return text[:limit]
 

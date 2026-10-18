@@ -386,7 +386,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
                   message: `${displayName(bot, current)} ${wasPrivate ? b.roster.madePublic : b.roster.madePrivate}`
                 })
               })
-              .catch(error => host.notifyError?.(error, 'Could not load bot metadata'))
+              .catch(error => host.notifyError?.(error, b.bot.metadataLoadFailed))
           }}
         >
           {isPrivate ? b.roster.makePublic : b.roster.makePrivate}

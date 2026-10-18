@@ -240,6 +240,9 @@ describe('the menu toggles mesh visibility (private/public)', () => {
     [true, false]
   ])('backend private=%s: "Make public" writes private=%s through profiles.configure', async (backendPrivate, written) => {
     ensureBotMetadata.mockResolvedValue({ private: backendPrivate })
+    requestProfile.mockImplementation(async (_route: unknown, method: string) =>
+      method === 'profiles.list' ? { profiles: [{ name: 'backend-lucky' }] } : {}
+    )
 
     const bot = {
       connectionId: 'remote-a',

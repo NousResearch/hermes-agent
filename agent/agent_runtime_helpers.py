@@ -660,6 +660,10 @@ def _prune_unanswered_tool_calls(messages: list[dict]) -> tuple[list[dict], int]
     return pruned, repairs
 
 
+def _is_lcm_summary_row(msg: dict) -> bool:
+    return isinstance(msg, dict) and bool(msg.get("_compressed_summary"))
+
+
 def _merge_consecutive_users(messages: list[dict]) -> tuple[list[dict], int]:
     """Pass 3: merge consecutive plain-text user messages (no user input lost)."""
     from agent.context_compressor import _DB_PERSISTED_MARKER, split_user_originated_turn
@@ -680,6 +684,8 @@ def _merge_consecutive_users(messages: list[dict]) -> tuple[list[dict], int]:
             # A summary carrier followed by a new user row is a deliberate durable shape after
             # retry/rewind; never mutate the persisted carrier (sanitizers merge copies later).
             and split_user_originated_turn(prev)[0] is None
+            # LCM per-node summary rows are never merged; they are structural cache anchors.
+            and not _is_lcm_summary_row(prev) and not _is_lcm_summary_row(msg)
             # A /steer row that ended the previous run is already persisted; merging the next
             # prompt into it would rewrite it in place and re-break replay parity.
             and prev.get("display_kind") != STEER_DISPLAY_KIND
@@ -1268,7 +1274,11 @@ def drop_thinking_only_and_merge_users(
     for m in kept:
         prev = merged[-1] if merged else None
         content = _UNMERGEABLE
-        if prev is not None and prev.get("role") == "user" and m.get("role") == "user":
+        if (
+            prev is not None and prev.get("role") == "user" and m.get("role") == "user"
+            # LCM per-node summary rows are never merged; they are structural cache anchors.
+            and not _is_lcm_summary_row(prev) and not _is_lcm_summary_row(m)
+        ):
             content = _merge_user_content(prev.get("content", ""), m.get("content", ""))
         if content is _UNMERGEABLE:
             # Not a user pair, or an unknown content shape: append separately (the latter violates

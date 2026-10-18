@@ -534,6 +534,34 @@ class TestSearchFilesFallbackHiddenPaths:
         assert set(result.files) == {str(visible_file), str(visible_nested_file)}
 
 
+@pytest.mark.platforms("posix")  # native rg lane is POSIX-only
+@pytest.mark.parametrize("script, fetch_limit", [
+    ("printf 'n1\\nn2\\n'; exec >&-; sleep 0.3", 5),  # stdout hits EOF, then the child exits 0
+    ("printf 'n1\\nn2\\n'; sleep 0.3", 2),            # the read bound is hit, then the child exits 0
+], ids=["eof-then-exit", "bound-then-exit"])
+def test_native_rg_keeps_drained_output_when_the_child_exits_before_group_cleanup(
+        tmp_path, monkeypatch, script, fetch_limit):
+    """The child is alive when the runner polls it and exits normally before the group cleanup
+    looks it up (macOS answers ``getpgid`` with ESRCH for the unreaped zombie). Cleanup of an
+    exited child is not a failure: the drained lines come back, not ``[Errno 3] No such process``
+    (#123930, #127652)."""
+    import psutil
+
+    from tests.waiting import wait_until
+
+    real_getpgid = os.getpgid
+
+    def getpgid_once_exited(pid):  # the child exits on its own and stays unreaped
+        wait_until(lambda: psutil.Process(pid).status() == psutil.STATUS_ZOMBIE, what="child exit")
+        return real_getpgid(pid)
+
+    env = MagicMock(cwd=str(tmp_path), env={})
+    ops = ShellFileOperations(env, cwd=str(tmp_path))
+    monkeypatch.setattr(os, "getpgid", getpgid_once_exited)
+    result = ops._run_rg_native(["sh", "-c", f'"{script}"'], fetch_limit, timeout=10)
+    assert (result.exit_code, result.stdout) == (0, "n1\nn2\n")
+
+
 class TestShellFileOpsWriteDenied:
     def test_write_file_denied_path(self, file_ops):
         result = file_ops.write_file("~/.ssh/authorized_keys", "evil key")

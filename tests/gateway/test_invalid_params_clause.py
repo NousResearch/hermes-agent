@@ -259,17 +259,40 @@ def test_messaging_refusal_names_the_clause_not_the_class(caplog):
     from agent.i18n import t
     from gateway.session_controls import named_turn_error
 
-    exc = RuntimeStoreError('invalid_params', field='native.provenance_missing(multiplex)',
-                            detail='a multiplex gateway message needs provenance')
+    exc = RuntimeStoreError('invalid_params', field='media_urls')
     with caplog.at_level(logging.DEBUG, logger='gateway.session_controls'):
         error_type, error_detail = named_turn_error(exc, 'no details available')
     text = t('gateway.notify.turn_error_detailed', error_type=error_type, error_detail=error_detail)
     assert 'RuntimeStoreError' not in text
-    assert 'native.provenance_missing(multiplex)' in text
+    assert 'media_urls' in text
     assert 'invalid_params' in text
     warnings = [rec for rec in caplog.records if rec.levelno >= logging.WARNING]
     assert len(warnings) == 1
-    assert 'field=native.provenance_missing(multiplex)' in warnings[0].getMessage()
+    assert 'field=media_urls' in warnings[0].getMessage()
+
+
+@pytest.mark.parametrize('field', [
+    'native.provenance_missing(roles)', 'native.relay_provenance',
+    'multiplex_without_provenance', 'authorization_home_without_provenance',
+])
+def test_a_trust_clause_stays_generic_in_the_notice(caplog, field):
+    """The notice reaches the whole chat, like the admission reply: a trust or provenance check
+    reads there exactly like a bare refusal, and only gateway.log names it."""
+    from agent.i18n import t
+    from gateway.session_controls import named_turn_error
+
+    def notice(exc):
+        error_type, error_detail = named_turn_error(exc, 'no details')
+        return t('gateway.notify.turn_error_detailed', error_type=error_type, error_detail=error_detail)
+
+    bare = notice(RuntimeStoreError('invalid_params'))
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger='gateway.session_controls'):
+        text = notice(RuntimeStoreError('invalid_params', field=field, detail='a message needs provenance'))
+    assert text == bare
+    assert field not in text and 'provenance' not in text
+    warnings = [rec.getMessage() for rec in caplog.records if rec.levelno >= logging.WARNING]
+    assert len(warnings) == 1 and f'field={field}' in warnings[0]
 
 
 def test_a_bare_turn_error_stays_at_debug(caplog):
@@ -318,13 +341,13 @@ def _refusal_warnings(caplog):
 @pytest.mark.asyncio
 async def test_notify_turn_error_sends_the_named_refusal(caplog):
     adapter, event = _turn_error_adapter()
-    exc = RuntimeStoreError('invalid_params', field='native.media_urls', detail='must be a list of strings')
+    exc = RuntimeStoreError('invalid_params', field='media_urls')
     with caplog.at_level(logging.WARNING, logger='gateway.session_controls'):
         await adapter._notify_turn_error(event, exc)
     assert adapter.sent
     body = adapter.sent[0]
     assert 'RuntimeStoreError' not in body
-    assert 'native.media_urls' in body
+    assert 'media_urls' in body
     assert len(_refusal_warnings(caplog)) == 1
 
 
@@ -335,12 +358,12 @@ async def test_turn_error_log_names_the_gateway_profile(tmp_path, monkeypatch, c
     home.mkdir(parents=True)
     monkeypatch.setenv('HERMES_HOME', str(home))
     adapter, event = _turn_error_adapter()
-    exc = RuntimeStoreError('invalid_params', field='native.media_urls', detail='must be a list of strings')
+    exc = RuntimeStoreError('invalid_params', field='media_urls')
     with caplog.at_level(logging.WARNING, logger='gateway.session_controls'):
         await adapter._notify_turn_error(event, exc)
     warnings = _refusal_warnings(caplog)
     assert len(warnings) == 1
-    assert 'native.admit refused for profile=coder: invalid_params field=native.media_urls' in warnings[0]
+    assert 'native.admit refused for profile=coder: invalid_params field=media_urls' in warnings[0]
 
 
 @pytest.mark.asyncio
@@ -366,12 +389,11 @@ async def test_turn_error_log_names_the_routed_profile(tmp_path, monkeypatch, ca
 
     adapter, event = _turn_error_adapter()
     adapter.gateway_runner = SimpleNamespace(_media_delivery_scope_for_source=routed_scope)
-    exc = RuntimeStoreError('invalid_params', field='native.provenance_missing(multiplex)',
-                            detail='a multiplex gateway message needs provenance')
+    exc = RuntimeStoreError('invalid_params', field='media_urls')
     with caplog.at_level(logging.WARNING, logger='gateway.session_controls'):
         await adapter._notify_turn_error(event, exc)
     warnings = _refusal_warnings(caplog)
-    assert adapter.sent
+    assert adapter.sent and 'media_urls' in adapter.sent[0]
     assert len(warnings) == 1
     assert 'profile=ops:' in warnings[0]
 
@@ -388,6 +410,62 @@ async def test_role_gated_missing_provenance_names_the_clause(caplog):
     assert caught.value.field == 'native.provenance_missing(roles)'
     assert str(caught.value) == 'invalid_params'
     assert caplog.records == []
+
+
+@pytest.mark.asyncio
+async def test_a_role_gated_refusal_the_reply_answers_is_logged_once(caplog):
+    """``admit_message`` answers a role-gated refusal with the generic reply. Role re-authorization
+    raises before ``_validate_native``, so nothing logged it yet: the reply's boundary writes the
+    one line, with the platform, the chat and the field."""
+    from types import SimpleNamespace
+
+    from gateway.session_envelope import prepare_native
+    from gateway.session_ingress import admit_message
+
+    async def admit_native(event):
+        return await prepare_native(_runner(multiplex=True), event)
+
+    event = _native_event()
+    event.source.role_authorized = True
+    with caplog.at_level(logging.WARNING):
+        reply = await admit_message(SimpleNamespace(admit_native=admit_native), event)
+    assert 'invalid_params' in reply and 'provenance' not in reply and 'roles' not in reply
+    lines = [rec.getMessage() for rec in caplog.records if rec.levelno >= logging.WARNING]
+    assert len(lines) == 1, lines
+    assert 'native.provenance_missing(roles)' in lines[0]
+    assert 'platform=telegram' in lines[0] and 'chat=chat' in lines[0]
+
+
+@pytest.mark.asyncio
+async def test_permission_denied_writes_one_warning(caplog):
+    """The admission re-check refuses an unauthorized sender (``_refuse``, which logs).
+    ``admit_message`` re-raises ``permission_denied``, the adapter's turn handler catches it and
+    sends the turn-error notice: that notice must not write a second warning."""
+    from types import SimpleNamespace
+
+    from gateway.session_envelope import prepare_native
+    from gateway.session_ingress import admit_message
+
+    runner = _runner(multiplex=False)
+    runner._is_user_authorized_for_source = lambda source, allow_adapter_delegation=False: False
+    runner._adapter_flag = lambda platform, flag, profile: False
+    runner._adapter_profile_for_source = lambda source: None
+
+    async def admit_native(event):
+        return await prepare_native(runner, event)
+
+    authority = SimpleNamespace(admit_native=admit_native)
+    adapter, event = _turn_error_adapter()
+    adapter.set_message_handler(lambda incoming: admit_message(authority, incoming))
+    with caplog.at_level(logging.WARNING):
+        await adapter._process_message_background(event, 'agent:main:telegram:dm:42')
+    warnings = [rec.getMessage() for rec in caplog.records if rec.levelno == logging.WARNING]
+    assert len(warnings) == 1, warnings
+    assert 'permission_denied' in warnings[0] and 'user_not_authorized' in warnings[0]
+    # The adapter's own ERROR line for a failed turn is unchanged, and the notice stays generic.
+    assert any(rec.levelno == logging.ERROR and 'permission_denied' in rec.getMessage()
+               for rec in caplog.records)
+    assert adapter.sent and 'user_not_authorized' not in adapter.sent[-1]
 
 
 @pytest.mark.asyncio

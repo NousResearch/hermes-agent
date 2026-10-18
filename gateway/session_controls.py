@@ -84,15 +84,20 @@ def _log_refusal(profile, method, exc: RuntimeStoreError) -> None:
 def named_turn_error(exc, empty_detail: str) -> tuple[str, str]:
     """Messaging copy for a failed turn, and the one log line for that notice.
 
-    A named ``invalid_params`` is ``field: detail`` in the notice, not the class name. The log
-    follows the create-path rule (warning when the raiser named the check, debug for a bare
-    reason code) and names the profile whose home is current, so the adapter calls this inside
-    the routed delivery scope.
+    The notice reaches the whole chat, so it follows the admission reply's rule
+    (``gateway.session_ingress._CONTENT_CLAUSES``): a content clause is ``field: detail`` instead of
+    the class name, and a trust or provenance check reads like a bare refusal and is named in
+    gateway.log alone. The log follows the create-path rule (warning when the raiser named the
+    check, debug for a bare reason code) and names the profile whose home is current, so the
+    adapter calls this inside the routed delivery scope. A refusal its raise site already logged
+    (native admission's ``_refuse``) is not logged again.
     """
     if isinstance(exc, RuntimeStoreError):
-        _log_refusal(str(get_hermes_home()), 'native.admit', exc)
-        if exc.reason == 'invalid_params' and (exc.field or exc.detail):
-            shown = exc.field or 'unnamed field'
+        if not exc.logged:
+            _log_refusal(str(get_hermes_home()), 'native.admit', exc)
+        from gateway.session_ingress import _CONTENT_CLAUSES
+        if exc.reason == 'invalid_params' and exc.field in _CONTENT_CLAUSES:
+            shown = exc.field
             if exc.detail:
                 shown = f'{shown}: {exc.detail}'
             return exc.reason, shown[:300]

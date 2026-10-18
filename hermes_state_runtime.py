@@ -201,7 +201,10 @@ class RuntimeStoreError(ValueError):
 
     Client-chosen text that the log redactor would mask is stored as ``<redacted-key>`` instead.
     Logging stays at the boundary that turns the refusal into a frame or a user notice, so a raise
-    and that boundary do not each write a line."""
+    and that boundary do not each write a line. Native admission's ``_refuse`` is the one raise site
+    that logs; it sets ``logged`` so the boundary that answers the refusal does not log it again."""
+
+    logged = False
 
     def __init__(self, reason: str, *, field: str | None = None, detail: str | None = None):
         self.reason = reason

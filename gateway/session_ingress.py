@@ -6,7 +6,7 @@ from contextlib import nullcontext
 from dataclasses import replace
 
 from gateway.platforms.event import MessageEvent
-from gateway.session_envelope import restore_native
+from gateway.session_envelope import log_native_refusal, restore_native
 from hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
@@ -38,6 +38,9 @@ async def admit_message(authority, event):
             # Refused before commit (_validate_native): a refusal notice instead of a generic turn error.
             # The reply reaches the whole chat, so only content clauses are named; trust and provenance
             # clauses (and any new one) stay generic, and gateway.log keeps the clause (``_refuse``).
+            if not exc.logged:
+                # Raised before ``_validate_native`` (role re-authorization): still its one line.
+                log_native_refusal(event, exc.reason, exc.field)
             named = f'{exc.reason}: {exc.field}' if exc.field in _CONTENT_CLAUSES else exc.reason
             return (f'⚠️ Hermes refused this message ({named}), so it was not saved '
                     'or answered. Ask the operator to check gateway.log.')

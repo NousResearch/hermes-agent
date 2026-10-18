@@ -66,13 +66,20 @@ def _adapter_event(event, **changes):
     return replace(event, **changes) if changes else event
 
 
-def _refuse(event, reason, clause):
-    """Name the refused clause in gateway.log and on the error; the wire reason stays stable."""
+def log_native_refusal(event, reason, clause):
+    """The one gateway.log line for a refused native message: reason, clause, platform, chat, message."""
     source = event.source
     logger.warning('Native admission refused: %s (%s) platform=%s chat=%s message=%s', reason, clause,
                    getattr(getattr(source, 'platform', None), 'value', None), getattr(source, 'chat_id', None),
                    event.message_id)
-    raise RuntimeStoreError(reason, field=clause)
+
+
+def _refuse(event, reason, clause):
+    """Name the refused clause in gateway.log and on the error; the wire reason stays stable."""
+    log_native_refusal(event, reason, clause)
+    exc = RuntimeStoreError(reason, field=clause)
+    exc.logged = True  # the boundary that answers it must not write a second line
+    raise exc
 
 
 def _media_clause(event):

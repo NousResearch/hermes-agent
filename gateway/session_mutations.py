@@ -344,6 +344,15 @@ def retire_live_sessions(authority, session_ids, *, require_fence=False):
             except Exception as exc:
                 logger.warning('could not fence shared routing rows for deleted sessions', exc_info=True)
                 fence_error = exc
+        # The dropped routes stay in sessions.json until the next full save, which an idle gateway
+        # may not make before a prune's fence ages out; the next start would then import them back.
+        # Strip them now, after the fences, whatever write_sessions_json says.
+        strip = getattr(store, 'strip_retired_mirror_routes', None)
+        if session_ids and callable(strip):
+            try:
+                strip(session_ids)
+            except Exception:
+                logger.warning('could not strip retired routes from sessions.json', exc_info=True)
     from gateway.session_policy import release_launch_secrets
     release_launch_secrets(authority, session_ids)
     from tools.async_delegation import allow_for_session

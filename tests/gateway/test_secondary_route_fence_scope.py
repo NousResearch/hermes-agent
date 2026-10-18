@@ -340,13 +340,17 @@ async def test_a_secondary_delete_fence_outlives_the_horizon_while_a_prune_fence
 
 
 @pytest.mark.asyncio
-async def test_a_start_within_the_horizon_strips_a_pruned_route_from_an_older_mirror(tmp_path, monkeypatch):
+@pytest.mark.parametrize('mirror', [True, False], ids=['default', 'write_sessions_json-false'])
+async def test_a_start_within_the_horizon_strips_a_pruned_route_from_an_older_mirror(tmp_path, monkeypatch, mirror):
     """A sessions.json an earlier release wrote unfiltered (or one left by a crash before the next
-    save) still names the pruned route. The first start while the fence holds skips it and rewrites
-    the mirror, so the route cannot come back once the fence ages out."""
+    save) still names the pruned route. The first start while the fence holds skips it and strips
+    it from the mirror, so the route cannot come back once the fence ages out. With
+    ``gateway.write_sessions_json: false`` that start's save writes state.db only, and an existing
+    mirror is still stripped."""
     async with _served(tmp_path, monkeypatch) as served:
         store = served.store
         key, _sid, stale = await _pruned_alpha_route(served, tmp_path)
+        store._write_sessions_json = mirror
         store._save_sessions_json(stale[0])
         _restart(store)
         assert key not in store._entries
@@ -354,6 +358,60 @@ async def test_a_start_within_the_horizon_strips_a_pruned_route_from_an_older_mi
         _past_the_horizon(served.alpha.db, served.launch.db)
         _restart(store)
         assert key not in store._entries, 'a pruned route came back on startup after its fence aged out'
+
+
+def _routed_entry(key, sid, chat):
+    """A routing entry with the origin native recovery binds a session's route by."""
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+    entry = _entry(key, sid)
+    entry.origin = SessionSource(platform=Platform.TELEGRAM, chat_id=chat, chat_type='dm', user_id='u' + chat)
+    return entry
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mirror', [True, False], ids=['default', 'write_sessions_json-false'])
+async def test_a_pruned_route_stays_out_of_the_mirror_and_a_reused_id_keeps_one_route(tmp_path, monkeypatch, mirror):
+    """Alpha's routed session is pruned through the owner path. Per-turn saves never touch
+    sessions.json, so with no full save before the prune's fence aged out (an idle week), or with
+    ``gateway.write_sessions_json: false`` and the mirror a full save left earlier, the next start
+    imported the route back. When the launch profile then reused the id, two routes named it and
+    native recovery refused both with ``admission_conflict``, leaving a queued turn queued."""
+    from gateway.run import _profile_runtime_scope
+    from gateway.session_local import create_local_session
+    async with _served(tmp_path, monkeypatch) as served:
+        store, key, launch_key = served.store, 'agent:alpha:telegram:333', 'agent:main:telegram:444'
+        with _profile_runtime_scope(served.home, {}):
+            ref = create_local_session(served.alpha, served.actor, {
+                'request_id': 'r', 'source': 'gui', 'cwd': str(tmp_path), 'model': 'frozen', 'toolsets': []})
+            sid = ref.session_id
+            store._entries[key] = _routed_entry(key, sid, '333')
+            with store._lock:
+                store._save()  # a full save while mirror writes are on
+            assert key in _mirror(store)
+            store._write_sessions_json = mirror
+            await _prune(served, ref)
+        if not mirror:
+            _restart(store)
+            assert key not in store._entries, 'a start inside the horizon restored the pruned route'
+        _age_retirements(served.alpha.db, served.launch.db)  # a quiet week: no full save, no restart
+        _restart(store)
+        assert key not in store._entries, 'the first start past the horizon restored the pruned route'
+        assert key not in _mirror(store)
+
+        status, text = await _create(served, sid)  # the launch profile reuses the id
+        assert status == 201, text
+        store._entries[launch_key] = _routed_entry(launch_key, sid, '444')
+        with store._lock:
+            store._save()
+        _restart(store)
+        routes = sorted(k for k, v in _durable(store).items() if json.loads(v).get('session_id') == sid)
+        assert routes == [launch_key], routes
+        bindings = [(sid, entry.origin, None) for entry in store.list_sessions()
+                    if entry.session_id == sid and entry.origin is not None]
+        assert len(bindings) == 1, bindings
+        verdict = await served.launch.recover_native_sessions(bindings)
+        assert 'admission_conflict' not in str(verdict), verdict
 
 
 @pytest.mark.asyncio

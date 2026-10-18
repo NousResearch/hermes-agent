@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli.plugin_validate_core_override import check_core_override
 from hermes_cli.plugin_validate_desktop import check_desktop_surface
+from hermes_cli.plugin_validate_private_imports import check_private_imports
 from hermes_cli.plugin_validate_locales import check_language_packs
 from hermes_cli.plugins_manifest import _CONFIG_SCHEMA_TYPES
 
@@ -40,12 +41,12 @@ _PROBE_SENTINEL = "HERMES_VALIDATE_JSON:"
 class ValidationReport:
     """Result of validating one plugin directory."""
 
-    checks: List[Tuple[str, bool, str]] = field(default_factory=list)
-    warnings: List[str] = field(default_factory=list)
-    isolation: Optional[Dict[str, Any]] = None  # plugin-host readiness; informational, never fails
+    checks: list[tuple[str, bool, str]] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    isolation: Optional[dict[str, Any]] = None  # plugin-host readiness; informational, never fails
 
     @property
-    def failures(self) -> List[str]:
+    def failures(self) -> list[str]:
         return [detail or name for name, ok, detail in self.checks if not ok]
 
     @property
@@ -62,7 +63,7 @@ class ValidationReport:
     def warn(self, message: str) -> None:
         self.warnings.append(message)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "ok": self.ok,
             "checks": [
@@ -133,7 +134,7 @@ def _check_config_spec(report: ValidationReport, manifest: dict) -> None:
     if raw in (None, [], {}):
         report.add("config schema", True, "not declared")
         return
-    problems: List[str] = []
+    problems: list[str] = []
     if not isinstance(raw, dict):
         problems.append("config_schema: must be a mapping of key -> spec")
     else:
@@ -162,7 +163,7 @@ def _check_config_spec(report: ValidationReport, manifest: dict) -> None:
 
 def _check_requires_env(report: ValidationReport, manifest: dict) -> None:
     raw = manifest.get("requires_env") or []
-    problems: List[str] = []
+    problems: list[str] = []
     if not isinstance(raw, list):
         problems.append("requires_env: must be a list")
         raw = []
@@ -324,20 +325,25 @@ def _probe_options(manifest: dict) -> dict:
     }
 
 
-def _run_capability_probe(plugin_dir: Path, manifest: dict) -> Tuple[Optional[dict], str]:
+def _run_capability_probe(
+    plugin_dir: Path, manifest: dict, probe: Optional[tuple[list[str], dict[str, str]]] = None,
+) -> tuple[Optional[dict], str]:
     """Run the recording probe in a scratch subprocess.
+
+    *probe* is ``(python argv prefix, env)`` of the dependency environment to import the plugin
+    from (``pm.environments.venv_command``); None probes this interpreter.
 
     Returns ``(recorded, error)`` — exactly one is meaningful: *recorded*
     is the ``{tools, hooks, middleware, commands, providers}`` dict on
     success, and *error* is a human-readable failure description otherwise.
     """
     with tempfile.TemporaryDirectory(prefix="hermes-validate-") as scratch:
-        env = dict(os.environ)
+        env = dict(probe[1] if probe else os.environ)
         env["HERMES_HOME"] = scratch
         try:
             result = subprocess.run(
                 [
-                    sys.executable,
+                    *(probe[0] if probe else [sys.executable]),
                     "-c",
                     _PROBE_SCRIPT,
                     str(plugin_dir),
@@ -348,6 +354,7 @@ def _run_capability_probe(plugin_dir: Path, manifest: dict) -> Tuple[Optional[di
                 text=True, encoding="utf-8", errors="replace",
                 timeout=_PROBE_TIMEOUT,
                 env=env,
+                check=False,
             )
         except subprocess.TimeoutExpired:
             return None, f"capability probe timed out after {_PROBE_TIMEOUT}s"
@@ -371,7 +378,7 @@ def _run_capability_probe(plugin_dir: Path, manifest: dict) -> Tuple[Optional[di
     return payload, ""
 
 
-def _declared_list(manifest: dict, key: str) -> List[str]:
+def _declared_list(manifest: dict, key: str) -> list[str]:
     raw = manifest.get(key) or []
     if not isinstance(raw, list):
         return []
@@ -379,7 +386,8 @@ def _declared_list(manifest: dict, key: str) -> List[str]:
 
 
 def _check_capabilities(
-    report: ValidationReport, manifest: dict, plugin_dir: Path
+    report: ValidationReport, manifest: dict, plugin_dir: Path,
+    probe: Optional[tuple[Path, dict[str, str]]] = None,
 ) -> Optional[dict]:
     """Probe actual registrations and diff against declared capabilities.
 
@@ -393,7 +401,7 @@ def _check_capabilities(
         report.add("capability probe", True, "skipped (no __init__.py)")
         return None
 
-    recorded, error = _run_capability_probe(plugin_dir, manifest)
+    recorded, error = _run_capability_probe(plugin_dir, manifest, probe)
     if recorded is None:
         report.add("capability probe", False, error)
         return None
@@ -431,7 +439,7 @@ def _check_capabilities(
     return recorded
 
 
-def _builtin_tool_names() -> List[str]:
+def _builtin_tool_names() -> list[str]:
     """Return the built-in tool registry names (discovery-timing safe).
 
     ``tools.registry`` starts empty — built-in tool modules self-register on
@@ -472,8 +480,11 @@ def _check_builtin_collisions(
 # ─── Entry point ─────────────────────────────────────────────────────────────
 
 
-def validate_plugin_dir(plugin_dir: Path) -> ValidationReport:
-    """Run every admission check against *plugin_dir* and return the report."""
+def validate_plugin_dir(
+    plugin_dir: Path, probe: Optional[tuple[list[str], dict[str, str]]] = None,
+) -> ValidationReport:
+    """Run every admission check against *plugin_dir* and return the report. *probe* is
+    ``(python argv prefix, env)`` for the capability probe (see ``_run_capability_probe``)."""
     report = ValidationReport()
     plugin_dir = Path(plugin_dir)
 
@@ -520,11 +531,12 @@ def validate_plugin_dir(plugin_dir: Path) -> ValidationReport:
     _check_requires_env(report, manifest)
     _check_loadable(report, plugin_dir, manifest)
     _check_python_dependencies(report, plugin_dir)
-    recorded = _check_capabilities(report, manifest, plugin_dir)
+    recorded = _check_capabilities(report, manifest, plugin_dir, probe)
     _check_builtin_collisions(report, manifest, recorded)
     _check_trusted_inbound(report, recorded)
     _check_security_scan(report, plugin_dir)
     check_core_override(report, plugin_dir)
+    check_private_imports(report, plugin_dir)
     check_desktop_surface(report, plugin_dir)
     check_language_packs(report, manifest, plugin_dir)
     from hermes_cli.plugin_isolation_audit import audit_plugin_dir
@@ -634,6 +646,10 @@ def _validate_portable_plugin(report: ValidationReport, plugin_dir: Path) -> Val
         bool(name),
         "name present" if name else "plugin.json missing required 'name'",
     )
+    for server_name, config in package.mcp_servers.items():
+        if config.get("trust") == "untrusted":
+            report.add(f"server trust: {server_name}", True,
+                       "untrusted (Hermes asks before every write-capable tool call)")
     for server_name, server_decl in package.server_declarations.items():
         result = availability(server_decl.declaration)
         detail = result.state

@@ -644,6 +644,7 @@ def _stage_first_contact_onboarding_note(session: dict, agent, history_empty: bo
             get_hermes_home() / "config.yaml",
             session_history_empty=history_empty,
             install_has_prior_sessions=_install_has_prior_sessions(session),
+            onboarding_run_active="setup_beat" in (getattr(agent, "valid_tool_names", None) or ()),
         )
         if not note:
             return
@@ -696,6 +697,7 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     # Install-first-message onboarding (#82750): gateway parity for the TUI/Desktop
     # surface — no-op unless this is the install's very first message ever.
     _stage_first_contact_onboarding_note(session, agent, not st.history)
+    _stage_onboarding_turn_note(sid, agent, not st.history)
     cwd = _session_cwd(session)
     _register_session_cwd(session)
     cols = session.get("cols", 80)
@@ -728,6 +730,7 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     if take_speech_interrupted():
         run_message = _prepend_note(run_message, SPEECH_INTERRUPTED_NOTE)
     run_message = _prepend_note(run_message, _pending_reaction_notes(session))
+    agent._voice_turn_pending = bool(session.pop("voice_turn", False))  # auxiliary.voice_chat route
     return prompt, _prepend_note(run_message, _hud_surface_note(session)), cols, streamer
 
 
@@ -790,6 +793,10 @@ def _invoke_agent(
         run_kwargs["persist_user_display_metadata"] = display_metadata
     if turn_author and "turn_author" in run_params:
         run_kwargs["turn_author"] = turn_author
+    if "prelude" in run_params:
+        prelude = _onboarding_prelude(agent, st.history)
+        if prelude is not None:
+            run_kwargs["prelude"] = prelude
     _adopt_submit_user_row(session, agent, run_kwargs["persist_user_message"], text)
     # Live-rename hook: auto-titling fires inside the turn prologue.
     _title_key = session.get("session_key") or sid
@@ -871,50 +878,20 @@ def _absorb_turn_result(
 
 
 def _persisted_turn_receipt(st: _TurnRun, raw: Any, status: str) -> dict | None:
-    """Report committed row addresses, never a text/timestamp search for a matching turn.
-
-    The agent's persistence cursor is re-anchored during compaction. A partial receipt can
-    address its surviving rows, but cannot retire a client's entire streamed turn. Full coverage
-    additionally requires the unchanged pre-turn prefix and no redirected user boundary.
-    """
-    from agent.context_compressor import _DB_PERSISTED_MARKER
+    """Committed row addresses of this turn (``agent.persisted_turn_receipt``); the pre-turn
+    prefix is unchanged when every history row kept its committed row id."""
+    from agent.persisted_turn_receipt import committed_row_id, persisted_turn_receipt
 
     messages = st.result.get("messages")
-    start = getattr(st.agent, "_persist_user_message_idx", None)
-    if (not isinstance(messages, list) or type(start) is not int or not 0 <= start < len(messages)
-            or messages[start].get("role") != "user"):
-        return None
-
-    def committed_id(message):
-        row_id = message.get("_row_id")
-        return row_id if message.get(_DB_PERSISTED_MARKER) and type(row_id) is int and row_id > 0 else None
-
-    tail = messages[start:]
-    anchor_id = committed_id(tail[0])
-    if any(before is tail[0] or (anchor_id is not None and anchor_id == committed_id(before))
-           for before in st.history):
-        return None  # preflight returned the old transcript, not a new turn
-    row_ids = [rid for message in tail if (rid := committed_id(message)) is not None]
-    if not row_ids:
-        return None
-    receipt = {"row_ids": row_ids, "complete": False}
-    if (user_row_id := committed_id(tail[0])) is not None:
-        receipt["user_row_id"] = user_row_id
-    last = tail[-1]
-    # Equality only verifies the structurally selected final row's body: it never selects an identity.
-    if (status == "complete" and last.get("role") == "assistant" and not last.get("tool_calls")
-            and last.get("content") == raw and (final_id := committed_id(last)) is not None):
-        receipt["final_assistant_row_id"] = final_id
-    prefix_unchanged = start == len(st.history) and all(
-        committed_id(before) is not None and committed_id(before) == committed_id(after)
-        for before, after in zip(st.history, messages[:start]))
-    receipt["complete"] = bool(
-        prefix_unchanged and type(st.compression_count) is int
-        and st.compression_count == getattr(getattr(st.agent, "context_compressor", None), "compression_count", None)
-        and len(row_ids) == len(tail)
-        and sum(message.get("role") == "user" for message in tail) == 1
-        and "final_assistant_row_id" in receipt)
-    return receipt
+    if not isinstance(messages, list):
+        return None  # no turn suffix to address (failed/preflight turns never staged history)
+    return persisted_turn_receipt(
+        messages, getattr(st.agent, "_persist_user_message_idx", None), st.history,
+        raw, status,
+        compression_unchanged=type(st.compression_count) is int and st.compression_count == getattr(
+            getattr(st.agent, "context_compressor", None), "compression_count", None),
+        prefix_row_matches=lambda before, after: (
+            committed_row_id(before) is not None and committed_row_id(before) == committed_row_id(after)))
 
 
 def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None, cols: int):
@@ -947,6 +924,9 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
     was_delivered = getattr(agent, "_interim_text_was_delivered", None)
     if result.get("response_previewed") or (callable(was_delivered) and was_delivered(raw) is True):
         payload["response_previewed"] = True
+    # Only the agent's reuse site sets this; never inferred from equal text (a model may say the same words twice).
+    if raw and result.get("response_reused"):
+        payload["response_reused"] = True
     # transform_llm_output may rewrite the final after streaming: the renderer must treat
     # this payload as the authoritative replacement even without a prefix relationship.
     if result.get("response_transformed"):
@@ -1176,6 +1156,10 @@ def _run_prompt_submit(
             status_note = _absorb_turn_result(
                 sid, session, st, text, display_kind, display_metadata)
             payload, raw, status = _complete_turn_payload(session, st, status_note, cols)
+            if status == "complete":
+                # Before message.complete: the desktop re-reads the sign-in offer on that event.
+                from tui_gateway.free_tier_task_done import note_task_done
+                note_task_done(session, st.result, st.agent, display_kind)
             _emit("message.complete", sid, payload)
             goal_followup = _goal_followup_after_turn(sid, session, st.result, status, raw)
             if status == "complete":
@@ -1195,6 +1179,7 @@ def _run_prompt_submit(
                 with session["history_lock"]:
                     session["running"] = False
                     session["last_active"] = time.time()
+                    session.pop("_turn_user_input", None)  # per turn: never leaks into the next one
                     if not st.error_retained:
                         _clear_inflight_turn(session)
                     _release_hosted_room_turn_slot(session)

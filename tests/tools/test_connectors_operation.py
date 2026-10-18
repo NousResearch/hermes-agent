@@ -82,7 +82,7 @@ def test_request_payload_carries_the_live_target_snapshot():
     operation.transition("gmail", c.TargetState.initiated, c.Actor.backend_watcher, connect_url="https://l/gmail")
     payload = operation.request_payload()
     (target,) = payload["targets"]
-    assert target == {"name": "gmail", "kind": "connector", "action": "reconnect", "state": "initiated",
+    assert target == {"name": "gmail", "kind": "connector", "action": "reconnect", "state": "initiated", "resolved": False,
                       "instructions": "Finish setup", "connect_url": "https://l/gmail"}
     # The model's own id keys the card to its tool row; a later op for the same apps gets a new one.
     assert payload["tool_call_id"] == "call-1"

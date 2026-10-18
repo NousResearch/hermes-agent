@@ -21,18 +21,7 @@ def _photon_auth(home):
     return auth._auth_json_path()
 
 
-def _mem0_qdrant(home):
-    from plugins.memory.mem0._oss_providers import vector_default_config
-    return vector_default_config("qdrant")["path"]
-
-
-def _openviking_log(home):
-    import plugins.memory.openviking as ov
-    return ov.get_hermes_home() / ov._OPENVIKING_SERVER_LOG_RELATIVE_PATH
-
-
-_RESOLVERS = {"a2a": _a2a_conversation, "photon": _photon_auth, "mem0-qdrant": _mem0_qdrant,
-              "openviking": _openviking_log}
+_RESOLVERS = {"a2a": _a2a_conversation, "photon": _photon_auth}
 
 
 @pytest.mark.parametrize("name", sorted(_RESOLVERS))

@@ -25,6 +25,7 @@ import urllib.request
 from pathlib import Path
 
 from hermes_cli.local_runtime.binaries import runtimes_root
+from hermes_cli.local_runtime.endpoint import child_query
 from hermes_cli.local_runtime.processes import server_child_env, spawn_server
 
 logger = logging.getLogger(__name__)
@@ -280,7 +281,7 @@ class LlamaServerSupervisor:
                 self._wait_health(120)
                 if self.primary_model:
                     self.ensure_model_ready(self.primary_model)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.error("llama-server restart failed: %s", exc)
 
     def stop(self) -> None:
@@ -350,7 +351,7 @@ class LlamaServerSupervisor:
             import psutil
 
             exe = str(self.binary)
-        except Exception:  # noqa: BLE001
+        except Exception:
             return
         own_pid = self.proc.pid if self.proc is not None else None
         for p in psutil.process_iter(["exe", "ppid"]):
@@ -387,7 +388,7 @@ class LlamaServerSupervisor:
             try:
                 if self.models().get(model_id) not in (*_RESIDENT, "unloading"):
                     return
-            except Exception:  # noqa: BLE001
+            except Exception:
                 return
             time.sleep(0.3)
 
@@ -400,7 +401,7 @@ class LlamaServerSupervisor:
         unloaded: list[str] = []
         try:
             statuses = self.models()
-        except Exception:  # noqa: BLE001
+        except Exception:
             return unloaded
         for model_id, status in statuses.items():
             if status not in _RESIDENT:
@@ -422,7 +423,7 @@ class LlamaServerSupervisor:
                 self._idle_since.pop(model_id, None)
                 unloaded.append(model_id)
                 logger.info("idle-unloaded %s (idle %ds)", model_id, int(now - first_idle))
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning("idle unload of %s failed: %s", model_id, exc)
         return unloaded
 
@@ -436,7 +437,7 @@ class LlamaServerSupervisor:
             msg = resp["choices"][0]["message"]
             blob = (msg.get("content") or "") + " " + (msg.get("reasoning_content") or "")
             return TOUCH_EXPECT in blob.lower()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("touch generation failed for %s: %s", model_id, exc)
             return False
 
@@ -460,20 +461,26 @@ class LlamaServerSupervisor:
     def _probe_idle(self, model_id: str | None = None) -> bool | None:
         """Tri-state idle probe for the sweeper: True = confirmed idle, False = confirmed
         busy, None = the probe itself failed. The sweeper must never mistake a dead probe
-        for activity — that resets the idle clock and pins the model's VRAM."""
+        for activity — that resets the idle clock and pins the model's VRAM. A model that
+        isn't loaded is idle: the router answers 400 for it (the reads don't autoload)."""
         try:
             loaded = ([model_id] if model_id is not None
                       else [m for m, status in self.models().items() if status in _RESIDENT])
             for mid in loaded:
-                slots = self._request(f"/slots?model={mid}")
+                try:
+                    slots = self._request(f"/slots?{child_query(mid)}")
+                except urllib.error.HTTPError as exc:
+                    if exc.code == 400:
+                        continue
+                    raise
                 if any(s.get("is_processing") for s in slots):
                     return False
-                with self._open(f"/metrics?model={mid}", timeout_s=10, json_type=False) as r:
+                with self._open(f"/metrics?{child_query(mid)}", timeout_s=10, json_type=False) as r:
                     text = r.read().decode()
                 for line in text.splitlines():
                     if (line.startswith("llamacpp:requests_processing")
                             and float(line.split()[-1]) != 0.0):
                         return False
             return True
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None

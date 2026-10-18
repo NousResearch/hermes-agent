@@ -776,7 +776,7 @@ def _record_approval(event: str, command: str) -> None:
 
 def revoke(command: str) -> int:
     """Remove every allowlist entry for ``command``; returns the count. A gateway unregisters it at its
-    next local session open (``sync_from_config``) unless an opt-in approves every hook; other live
+    next allowlist check (``sync_from_config``, about every 30 s) unless an opt-in approves every hook; other live
     processes keep it until restart."""
     with _locked_update_approvals() as data:
         before = len(data.get("approvals", []))

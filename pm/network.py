@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import http.client
 import logging
+import re
 import socket
 import ssl
 import time
@@ -27,9 +28,23 @@ _NETWORK_ERRNOS = frozenset({
 })
 
 
-def is_transient(exc: Exception) -> bool:
+def http_status(exc: Exception) -> int | None:
+    """Recover CONNECT status too: http.client exposes it only in an OSError."""
     if isinstance(exc, urllib.error.HTTPError):
-        return exc.code in _HTTP_RETRY
+        return exc.code
+    if isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, Exception):
+        return http_status(exc.reason)
+    if isinstance(exc, OSError) and exc.errno is None:
+        match = re.fullmatch(r"Tunnel connection failed: ([1-5][0-9]{2})(?: .*)?", str(exc))
+        if match:
+            return int(match[1])
+    return None
+
+
+def is_transient(exc: Exception) -> bool:
+    status = http_status(exc)
+    if status is not None:
+        return status in _HTTP_RETRY
     if isinstance(exc, urllib.error.URLError):
         return isinstance(exc.reason, Exception) and is_transient(exc.reason)
     if isinstance(exc, (ssl.SSLEOFError, ssl.SSLZeroReturnError)):

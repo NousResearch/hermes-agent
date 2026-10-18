@@ -535,7 +535,7 @@ class TestReconnectKeepsInboundDedup:
         failed = _Telegram(installed or (None if mode == "connect-raises" else False), hold=in_connect, salvage=salvaged)
         predecessor._set_fatal_error("telegram_network_error", "stall", retryable=True)
 
-        async def attempt(*_args):
+        async def attempt(*_args, **_kwargs):
             success = await failed.connect(is_reconnect=True)
             runner._running = installed  # stop after this one failed attempt
             return failed, success

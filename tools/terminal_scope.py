@@ -15,7 +15,7 @@ import os
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from pathlib import Path
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, Dict, Iterator, Mapping, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +44,7 @@ class TerminalPolicyRefusal(dict[str, str]):
         self.reason = reason
 
 
-def set_terminal_scope(mapping: Optional[dict[str, str]]) -> Token:
+def set_terminal_scope(mapping: Optional[Mapping[str, str]]) -> Token:
     """Install *mapping* as the current context's terminal policy."""
     return _terminal_scope_var.set(mapping)
 
@@ -53,7 +53,7 @@ def reset_terminal_scope(token: Token) -> None:
     _terminal_scope_var.reset(token)
 
 
-def get_terminal_scope() -> Optional[dict[str, str]]:
+def get_terminal_scope() -> Optional[Mapping[str, str]]:
     """The active scope mapping/refusal, or ``None`` when no scope is bound."""
     return _terminal_scope_var.get()
 
@@ -201,14 +201,20 @@ def _resolve_scope_cwd_placeholder(scope: dict[str, str]) -> None:
         scope["TERMINAL_CWD"] = resolved
 
 
+def prepare_profile_terminal_scope(
+    hermes_home: Any, *, env_overlay: Optional[dict[str, str]] = None) -> dict[str, str]:
+    """Resolve policy or refusal without binding the worker's ContextVar."""
+    try:
+        return build_profile_terminal_scope(hermes_home, env_overlay=env_overlay)
+    except TerminalPolicyUnavailable as exc:
+        logger.warning("terminal policy unavailable: %s", exc)
+        return TerminalPolicyRefusal(str(exc))
+
+
 def install_profile_terminal_scope(
     hermes_home: Any, *, env_overlay: Optional[dict[str, str]] = None) -> Token:
     """Build AND install a profile's policy; on failure install the refusal scope. Never raises."""
-    try:
-        return set_terminal_scope(build_profile_terminal_scope(hermes_home, env_overlay=env_overlay))
-    except TerminalPolicyUnavailable as exc:
-        logger.warning("terminal policy unavailable: %s", exc)
-        return _terminal_scope_var.set(TerminalPolicyRefusal(str(exc)))
+    return set_terminal_scope(prepare_profile_terminal_scope(hermes_home, env_overlay=env_overlay))
 
 
 @contextmanager

@@ -233,17 +233,15 @@ def _secondary_recovery_runner(*, running=True):
 
 
 def _install_secondary_reconnect_context(
-    monkeypatch, runner, adapter, scoped_homes=None, hydration_flags=None
+    monkeypatch, runner, adapter, scoped_homes=None
 ):
     @contextmanager
-    def fake_scope(profile_home, *, hydrate_secrets=True):
+    def fake_scope(prepared):
         if scoped_homes is not None:
-            scoped_homes.append(Path(profile_home))
-        if hydration_flags is not None:
-            hydration_flags.append(hydrate_secrets)
+            scoped_homes.append(Path(prepared.home))
         yield
 
-    monkeypatch.setattr(gateway_run, "_profile_runtime_scope", fake_scope)
+    monkeypatch.setattr("gateway.run_profile_scope.bind_profile_runtime_scope", fake_scope)
     monkeypatch.setattr(
         "hermes_cli.profiles.get_profile_dir", lambda name: Path("/profiles") / name
     )
@@ -267,12 +265,12 @@ class TestSecondaryProfileFatalRecovery:
     async def test_secondary_hydrates_secrets_off_the_event_loop(self, monkeypatch, entry):
         """#99519 class: both secondary entry points (initial start + reconnect)
         hydrate external secret sources in a worker thread, exactly once, and
-        enter the runtime scope with hydration disabled."""
+        bind the prepared runtime scope without re-hydrating."""
         runner = _secondary_recovery_runner()
         replacement = _SecondaryRecoveryAdapter()
-        hydration_flags = []
+        scoped_homes = []
         _install_secondary_reconnect_context(
-            monkeypatch, runner, replacement, hydration_flags=hydration_flags
+            monkeypatch, runner, replacement, scoped_homes=scoped_homes
         )
         loop_thread_id = threading.get_ident()
         hydration_started = threading.Event()
@@ -325,7 +323,7 @@ class TestSecondaryProfileFatalRecovery:
         assert len(hydration_thread_ids) == 1
         assert hydration_thread_ids[0] != loop_thread_id
         assert ticks_during_hydration > 0
-        assert hydration_flags and set(hydration_flags) == {False}
+        assert scoped_homes and set(scoped_homes) == {Path("/profiles/reviewer")}
         assert runner._profile_adapters["reviewer"][Platform.DISCORD] is replacement
 
     @pytest.mark.asyncio
@@ -1059,9 +1057,10 @@ class TestSecondaryProfileConfigHandling:
         """Only paired secondaries start a profile-local WhatsApp adapter."""
         runner = _secondary_recovery_runner()
         direct = _SecondaryRecoveryAdapter()
-        _real_profile_scope = gateway_run._profile_runtime_scope
+        from gateway import run_profile_scope
+        _real_bind = run_profile_scope.bind_profile_runtime_scope
         _install_secondary_reconnect_context(monkeypatch, runner, direct)
-        monkeypatch.setattr(gateway_run, "_profile_runtime_scope", _real_profile_scope)
+        monkeypatch.setattr(run_profile_scope, "bind_profile_runtime_scope", _real_bind)
         home = tmp_path / "secondary"
         session = home / "platforms/whatsapp/session"
         session.mkdir(parents=True)

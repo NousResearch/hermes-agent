@@ -52,10 +52,12 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
-try:  # sibling module; support both package and flat plugin-dir import
+try:  # sibling modules; support both package and flat plugin-dir import
     from .block_kit import render_blocks, sanitize_blocks
+    from .standalone_chunks import post_chunks, standalone_post_kwargs as _standalone_post_kwargs
 except ImportError:  # pragma: no cover - plugin loaded outside package context
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
+    from standalone_chunks import post_chunks, standalone_post_kwargs as _standalone_post_kwargs  # type: ignore
 
 
 logger = logging.getLogger(__name__)
@@ -6594,16 +6596,6 @@ async def _resolve_slack_user_dm(token: str, user_id: str) -> Optional[str]:
         return None
 
 
-def _standalone_post_kwargs(
-    chat_id: str, text: Any, unfurl_kwargs: dict[str, Any], thread_id: Optional[str]
-) -> dict[str, Any]:
-    """``chat.postMessage`` kwargs for the standalone senders (key order is the wire order)."""
-    kwargs: dict[str, Any] = {"channel": chat_id, "text": text, "mrkdwn": True, **unfurl_kwargs}
-    if thread_id:
-        kwargs["thread_ts"] = thread_id
-    return kwargs
-
-
 async def _standalone_post_text(
     client, chat_id: str, text: Any, unfurl_kwargs: dict[str, Any], thread_id: Optional[str]
 ) -> dict[str, Any]:
@@ -6664,8 +6656,8 @@ async def _standalone_send_media(
     text_to_send = "" if caption_as_upload_comment else (formatted_caption or formatted or "")
     if text_to_send.strip():
         try:
-            post_payload = await _standalone_post_text(
-                client, chat_id, text_to_send, unfurl_kwargs, thread_id)
+            post_payload = await post_chunks(lambda chunk: _standalone_post_text(
+                client, chat_id, chunk, unfurl_kwargs, thread_id), text_to_send, SlackAdapter.MAX_MESSAGE_LENGTH)
             if not post_payload.get("ok", True):
                 return send_error(f"Slack API error: {post_payload.get('error', 'unknown')}")
             last_message_id = post_payload.get("ts")
@@ -6760,6 +6752,8 @@ async def _standalone_send(
         chat_id = resolved
     formatted = _standalone_format_mrkdwn(message) if message else message
     formatted_caption = _standalone_format_mrkdwn(caption) if caption else caption
+    if formatted_caption and len(formatted_caption) > SlackAdapter.MAX_MESSAGE_LENGTH:
+        formatted, formatted_caption = formatted_caption, None  # too long to ride an upload: post it split
     unfurl_kwargs = _slack_unfurl_kwargs(getattr(pconfig, "extra", None))
     if media_files:
         return await _standalone_send_media(
@@ -6774,20 +6768,25 @@ async def _standalone_send(
         return send_error("aiohttp not installed. Run: pip install aiohttp")
     try:
         _sess_kw, _req_kw = _standalone_proxy_kwargs()
-        last_error = "unknown"
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
-            payload = _standalone_post_kwargs(chat_id, formatted, unfurl_kwargs, thread_id)
-            for tok in tokens:
-                data = await _slack_json_post(session, tok, "chat.postMessage", payload, _req_kw)
-                if data.get("ok"):
-                    return {
-                        "success": True, "platform": "slack", "chat_id": chat_id,
-                        "message_id": data.get("ts")}
-                last_error = data.get("error", "unknown")
-                if last_error not in _WRONG_WORKSPACE_TOKEN_ERRORS:
-                    break
-        return send_error(f"Slack API error: {last_error}")
+
+            async def post(chunk: str) -> dict:
+                nonlocal tokens
+                for tok in tokens:
+                    data = await _slack_json_post(session, tok, "chat.postMessage", _standalone_post_kwargs(
+                        chat_id, chunk, unfurl_kwargs, thread_id), _req_kw)
+                    if data.get("ok"):
+                        tokens = [tok]  # the workspace that took the first chunk gets the rest
+                        break
+                    if data.get("error", "unknown") not in _WRONG_WORKSPACE_TOKEN_ERRORS:
+                        break
+                return data
+            data = await post_chunks(post, formatted, SlackAdapter.MAX_MESSAGE_LENGTH)
+        if data.get("ok"):
+            return {"success": True, "platform": "slack", "chat_id": chat_id, "message_id": data.get("ts")}
+        partial = {key: data[key] for key in ("delivered_chunks", "total_chunks") if key in data}
+        return {**send_error(f"Slack API error: {data.get('error', 'unknown')}"), **partial}
     except Exception as e:
         return send_error(f"Slack send failed: {e}")
 

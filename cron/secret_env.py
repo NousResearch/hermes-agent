@@ -346,17 +346,54 @@ def public_job_view(job: Any) -> Any:
 _LINE_BREAKS = re.compile(r"[\r\n]+")
 
 
+def _occurrences(text: str, variant: str) -> Iterator[tuple[int, int]]:
+    """Every ``(start, end)`` where ``variant`` occurs, overlapping ones included. A line break
+    inside it matches any run of CR/LF: the pipes decode with universal newlines (CRLF comes back
+    as LF) and a child writing in text mode doubles it first (CR CR LF -> LF LF)."""
+    pieces = _LINE_BREAKS.split(variant.strip("\r\n"))
+    if len(pieces) == 1:
+        start = text.find(pieces[0])
+        while start >= 0:
+            yield start, start + len(pieces[0])
+            start = text.find(pieces[0], start + 1)
+        return
+    # Possessive break runs: every piece starts with a non-break character, so giving a break back
+    # can never help a match, and an edge break is dropped because a pattern opening on a run
+    # would retry it from every position of a blank stretch.
+    pattern = re.compile(r"[\r\n]++".join(map(re.escape, pieces)))
+    match = pattern.search(text)
+    while match:
+        yield match.span()
+        match = pattern.search(text, match.start() + 1)
+
+
+def _merged(spans: Iterable[tuple[int, int]]) -> Iterator[tuple[int, int]]:
+    """Maximal runs covered by ``spans`` (sorted by start); touching spans join one run."""
+    run_start, run_end = -1, -1
+    for start, end in spans:
+        if start > run_end:
+            if run_end >= 0:
+                yield run_start, run_end
+            run_start = start
+        run_end = max(run_end, end)
+    if run_end >= 0:
+        yield run_start, run_end
+
+
 def scrub_secret_values(text: str, values: Iterable[str]) -> str:
-    """Exact-match scrub, applied whatever ``security.redact_secrets`` says. Longest first, so a
-    value that contains another is replaced whole; CR/LF-trimmed forms are covered too. A line
-    break inside a value matches any run of CR/LF: the pipes decode with universal newlines (CRLF
-    comes back as LF) and a child writing in text mode doubles it first (CR CR LF -> LF LF)."""
+    """Exact-match scrub, applied whatever ``security.redact_secrets`` says; CR/LF-trimmed forms
+    are covered too. Every match is found in the ORIGINAL text, and each maximal run of hidden
+    characters (overlapping, nested or adjacent matches) becomes one token, so a replacement is
+    never scanned again and no fragment of an overlapping value survives. A token stands for at
+    least one character and two tokens always have a kept character between them, hence
+    ``len(result) <= n + (len(SECRET_ENV_REDACTION) - 1) * ceil(n / 2)`` for ``n = len(text)``,
+    however many or short the values. Work is O(n * total variant length)."""
     variants = {form for value in values if value
-                for form in (value, value.strip(), _LINE_BREAKS.sub("", value))}
-    # Ranked by length without breaks: a pattern matches any break run, so raw length misorders them.
-    for variant in sorted((v for v in variants if v.strip()), reverse=True,
-                          key=lambda v: (len(_LINE_BREAKS.sub("", v)), len(v))):
-        # Edge breaks dropped: a pattern opening on [\r\n]+ backtracks quadratically on blank runs.
-        pattern = r"[\r\n]+".join(map(re.escape, _LINE_BREAKS.split(variant.strip("\r\n"))))
-        text = re.sub(pattern, lambda _match: SECRET_ENV_REDACTION, text)
-    return text
+                for form in (value, value.strip(), _LINE_BREAKS.sub("", value)) if form.strip()}
+    runs = sorted(run for variant in variants for run in _merged(_occurrences(text, variant)))
+    kept, cursor = [], 0
+    for start, end in _merged(runs):
+        kept += (text[cursor:start], SECRET_ENV_REDACTION)
+        cursor = end
+    kept.append(text[cursor:])
+    return "".join(kept)

@@ -683,6 +683,8 @@ _TEXT_SENDERS = {
     "qqbot": lambda pc, cid, chunk, tid: _send_qqbot(pc, cid, chunk),
     "yuanbao": lambda pc, cid, chunk, tid: _send_yuanbao(cid, chunk)}
 
+_SPLIT_AFTER_FORMAT = frozenset({"slack"})
+
 _MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp, slack and qqbot"
 
 
@@ -703,7 +705,10 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             disable_link_previews=bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews")))
     from gateway.platforms.base import BasePlatformAdapter
     max_len = _platform_max_length(platform)
-    chunks = BasePlatformAdapter.truncate_message(message, max_len) if max_len else [message]
+    # Slack's senders (live adapter and standalone) split the mrkdwn-formatted text: escaping grows
+    # it, so a split of the raw text bounds no post and would stack a second (i/n) run on theirs.
+    split = max_len and platform_name not in _SPLIT_AFTER_FORMAT
+    chunks = BasePlatformAdapter.truncate_message(message, max_len) if split else [message]
     if (platform_name == "discord" or (platform_name == "whatsapp" and mentions)
             or (media_files and platform_name in _PLUGIN_STANDALONE_MEDIA)):
         return await _send_plugin_standalone(platform_name, pconfig, chat_id, message, chunks, media_files,

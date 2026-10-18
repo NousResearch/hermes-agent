@@ -36,9 +36,13 @@ def gateway_loop():
     loop.call_soon_threadsafe(loop.stop)
 
 
-def _deliver_through_router(monkeypatch, loop, *, live_error: str):
+_TOKENLESS = (None, "You must pass the token from BotFather")
+
+
+def _deliver_through_router(monkeypatch, loop, *, live_error: str, standalone=_TOKENLESS):
     """Run the live lane against a transport whose send is rejected with ``live_error`` (the router
-    raises it), then the standalone lane on a token-less worker. Returns (standalone calls, errors)."""
+    raises it), then the standalone lane returning ``standalone`` (default: a token-less worker).
+    Returns (standalone calls, errors)."""
     class Transport:
         adapter = type("Adapter", (), {"_owner_profile": "satellite"})()
         is_relay = False
@@ -54,7 +58,7 @@ def _deliver_through_router(monkeypatch, loop, *, live_error: str):
     standalone_calls = []
     monkeypatch.setattr(
         sd, "_standalone_send",
-        lambda t, content, media: standalone_calls.append(content) or (None, "You must pass the token from BotFather"))
+        lambda t, content, media: standalone_calls.append(content) or standalone)
     target_errors, delivery_errors = [], []
     assert not sd._deliver_via_live_adapter(
         t, "the report", [], target_errors=target_errors, delivery_errors=delivery_errors, unverified_targets=[])
@@ -74,4 +78,14 @@ def test_other_live_failures_still_fall_to_standalone_and_queue_nothing(monkeypa
     standalone_calls, errors = _deliver_through_router(monkeypatch, gateway_loop, live_error="chat not found")
     assert standalone_calls == ["the report"]
     assert any("BotFather" in e for e in errors) and not any("queued" in e for e in errors)
+    assert dl.sweep_failed_for_runtime("telegram", profile="satellite") == []
+
+
+def test_a_split_send_that_failed_midway_is_not_queued_for_a_full_replay(monkeypatch, gateway_loop):
+    """The head chunks are already on screen: a ledger replay of the whole text would repeat them."""
+    partial = {"error": "Slack API error: ratelimited", "delivered_chunks": 1, "total_chunks": 3}
+    standalone_calls, errors = _deliver_through_router(
+        monkeypatch, gateway_loop, live_error="send_path_degraded", standalone=(partial, None))
+    assert standalone_calls == ["the report"]
+    assert any("ratelimited" in e for e in errors) and not any("queued" in e for e in errors)
     assert dl.sweep_failed_for_runtime("telegram", profile="satellite") == []

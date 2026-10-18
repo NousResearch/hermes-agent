@@ -1691,9 +1691,7 @@ def _deliver_via_live_adapter(
         if adapter_ok:
             # Log WHERE it went: a ghost delivery in the wrong lane is otherwise indistinguishable.
             logger.info(
-                # Log WHERE it went, not just that it went: a ghost delivery that landed in the wrong lane
-                # (General topic instead of the routed thread) is indistinguishable from a real one without
-                # the routing identity (#77763).
+                # #77763: a ghost delivery in the wrong lane (General topic, not the routed thread).
                 "Job '%s': delivered to %s:%s via live adapter thread=%s message_id=%s",
                 job["id"], t.platform_name, t.chat_id,
                 route_thread_id if route_thread_id is not None else "-",
@@ -1823,9 +1821,10 @@ def _deliver_standalone(
     if err is not None:
         target_errors.append(err)
         delivery_errors.extend(target_errors)
-        # A satellite profile's worker has no platform token, so standalone cannot stand in for a
-        # live adapter that is only waiting to reconnect: keep the payload for that adapter.
-        _queue_for_live_reconnect(t, content, media_files, delivery_errors)
+        # A satellite worker has no platform token: keep the payload for the reconnecting adapter,
+        # unless a split send already put its head on screen (a replay would repeat it).
+        if not (result or {}).get("delivered_chunks"):
+            _queue_for_live_reconnect(t, content, media_files, delivery_errors)
         return
     # Standalone senders report per-file attachment failures in ``warnings`` while returning
     # success; surface them so a vanished attachment doesn't mark the run ok.

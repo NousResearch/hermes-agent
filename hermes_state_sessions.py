@@ -947,7 +947,7 @@ class SessionSessionsMixin:
             return ids, bool(archived and ids and row is not None and not row[0])
         ids, newly_archived = self._execute_write(_do)
         if newly_archived and notify:
-            emit_session_deleted(self, [session_id], reason="archive")
+            emit_session_deleted(self, ids, reason="archive", primary=session_id)
         return bool(ids)
 
     def _auto_archive_lineage(self, session_id: str) -> bool:
@@ -1761,12 +1761,12 @@ class SessionSessionsMixin:
             removed_ids.extend(scope)
             return True
         deleted = self._execute_write(_do)
+        if deleted:
+            emit_session_deleted(self, removed_ids, reason="delete", primary=session_id, sessions_dir=sessions_dir)
         from hermes_state_media import collect_retired_media
         collect_retired_media(self)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
-        if deleted:
-            emit_session_deleted(self, removed_ids, reason="delete", primary=session_id, sessions_dir=sessions_dir)
         return bool(deleted)
 
     def discard_unadmitted_session(self, session_id: str) -> bool:
@@ -1823,11 +1823,12 @@ class SessionSessionsMixin:
             self._delete_unreferenced_system_prompts(conn)
             return True
         deleted = self._execute_write(_do)
+        if deleted:
+            emit_session_deleted(self, [session_id], reason="empty_sweep", sessions_dir=sessions_dir)
         from hermes_state_media import collect_retired_media
         collect_retired_media(self)
         if deleted:
             self._remove_session_files(sessions_dir, session_id)
-            emit_session_deleted(self, [session_id], reason="empty_sweep", sessions_dir=sessions_dir)
         return deleted
 
     def delete_sessions(
@@ -1911,13 +1912,13 @@ class SessionSessionsMixin:
             # 3 rows, however many physical links those rows had.
             return len(existing)
         count = self._execute_write(_do)
+        if count:
+            emit_session_deleted(self, removed_ids, reason="delete", primary=unique_ids[0] if len(unique_ids) == 1 else None,
+                                 sessions_dir=sessions_dir)
         from hermes_state_media import collect_retired_media
         collect_retired_media(self)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
-        if count:
-            emit_session_deleted(self, removed_ids, reason="delete", primary=unique_ids[0] if len(unique_ids) == 1 else None,
-                                 sessions_dir=sessions_dir)
         return count
 
     # Shared by count_empty_sessions / delete_empty_sessions so badge and sweep agree. message_count
@@ -1956,12 +1957,12 @@ class SessionSessionsMixin:
             self._delete_unreferenced_system_prompts(conn)
             return len(session_ids)
         count = self._execute_write(_do)
+        if count:
+            emit_session_deleted(self, removed_ids, reason="empty_sweep", sessions_dir=sessions_dir)
         from hermes_state_media import collect_retired_media
         collect_retired_media(self)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
-        if count:
-            emit_session_deleted(self, removed_ids, reason="empty_sweep", sessions_dir=sessions_dir)
         return count
 
     def archive_sessions(

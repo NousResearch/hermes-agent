@@ -395,29 +395,36 @@ def _id_chunks(ids, size: int = _SQL_IN_CHUNK):
 def emit_session_deleted(db, deleted_ids, *, reason, primary=None, sessions_dir=None):
     """Fire ``on_session_delete`` after a committed delete or deliberate archive (#124511).
 
-    Call only after the write transaction commits, with the ids it actually removed (or, for
-    ``reason="archive"``, hid). *primary* is the session the caller asked for; without it the
-    first removed id stands in (bulk sweeps). ``deleted_ids`` rides along only when more than
-    one row went. Late-bound and fail-open: the state layer never imports ``hermes_cli`` at module
-    top level, and a missing or raising plugin stack never breaks the delete.
+    Call right after the write transaction commits (before follow-up cleanup that can raise), with
+    the ids it removed or, for ``reason="archive"``, hid. *primary* is the session the caller asked
+    for; without it the first id stands in (bulk sweeps). ``deleted_ids`` rides along when more
+    than one row went. Dispatch runs under the store's own profile home, so a process touching
+    another profile's store (``sessions repair-profiles``) reaches THAT profile's plugins.
+    Late-bound and fail-open: never breaks the delete.
     """
     ids = sorted({sid for sid in (deleted_ids or ()) if isinstance(sid, str) and sid})
     if not ids:
         return
     try:
         from hermes_cli.lifecycle import invoke_hook
-        from hermes_constants import profile_name_for_home
+        from hermes_constants import (
+            get_hermes_home, profile_name_for_home, reset_hermes_home_override, set_hermes_home_override,
+        )
 
-        payload: dict = {
-            "session_id": primary if primary in ids else ids[0],
-            "reason": reason,
-            "profile": profile_name_for_home(os.path.dirname(os.fspath(db.db_path))),
-        }
+        home = os.path.dirname(os.path.abspath(os.fspath(db.db_path)))
+        profile = profile_name_for_home(home)
+        payload: dict = {"session_id": primary if primary in ids else ids[0], "reason": reason, "profile": profile}
         if len(ids) > 1:
             payload["deleted_ids"] = ids
         if sessions_dir is not None:
             payload["sessions_dir"] = str(sessions_dir)
-        invoke_hook("on_session_delete", **payload)
+        rebind = profile is not None and os.path.realpath(home) != os.path.realpath(get_hermes_home())
+        token = set_hermes_home_override(home) if rebind else None
+        try:
+            invoke_hook("on_session_delete", **payload)
+        finally:
+            if token is not None:
+                reset_hermes_home_override(token)
     except Exception:
         logger.warning("on_session_delete dispatch failed", exc_info=True)
 

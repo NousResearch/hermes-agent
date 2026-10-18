@@ -132,12 +132,11 @@ class SessionMaintenanceMixin:
                 self._delete_unreferenced_system_prompts(conn)
             return ids
         removed_ids = self._execute_write(_do) or []
+        emit_session_deleted(self, removed_ids, reason="ghost_prune", sessions_dir=sessions_dir)
         from hermes_state_media import collect_retired_media
         collect_retired_media(self)
         for sid in removed_ids if sessions_dir else ():
             self._remove_session_files(sessions_dir, sid)
-        if removed_ids:
-            emit_session_deleted(self, removed_ids, reason="ghost_prune", sessions_dir=sessions_dir)
         return len(removed_ids)
 
     def _guarded_ids(self, conn, ids: Iterable[str]) -> set:
@@ -400,14 +399,14 @@ class SessionMaintenanceMixin:
             self._delete_unreferenced_system_prompts(conn)
             return len(session_ids)
         count = self._execute_write(_do)
+        if count:
+            emit_session_deleted(self, removed_ids, reason="prune", sessions_dir=sessions_dir)
         from hermes_state_media import collect_retired_media
         collect_retired_media(self)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
         if deleted_ids is not None:
             deleted_ids.extend(removed_ids)
-        if count:
-            emit_session_deleted(self, removed_ids, reason="prune", sessions_dir=sessions_dir)
         return count
 
     def _page_pragmas(self, names: tuple[str, ...], fail_msg: str) -> Optional[list]:

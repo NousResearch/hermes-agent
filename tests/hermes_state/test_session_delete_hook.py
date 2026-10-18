@@ -53,6 +53,12 @@ def test_every_delete_and_archive_path_fires_once_after_commit(db, hook):
             db.append_message(sid, role="user", content="hi")
     db.end_session("empty", "done")
     db.end_session("old", "done")
+    for tip in ("arch", "desk-arch"):  # compression chains: archiving the tip hides the root too
+        db.create_session(f"{tip}-root", source="cli")
+        db.append_message(f"{tip}-root", role="user", content="hi")
+        db.end_session(f"{tip}-root", "compression")
+        db._execute_write(lambda c, t=tip: c.execute(
+            "UPDATE sessions SET parent_session_id = ? WHERE id = ?", (f"{t}-root", t)))
 
     assert db.delete_session("cli")                          # hermes sessions delete, /exit --delete
     assert db.delete_session("missing") is False             # unknown id: silent
@@ -73,8 +79,8 @@ def test_every_delete_and_archive_path_fires_once_after_commit(db, hook):
         ("empty", "empty_sweep", None, None),
         ("old", "prune", None, None),
         ("desk", "delete", None, None),
-        ("arch", "archive", None, True),
-        ("desk-arch", "archive", None, True),
+        ("arch", "archive", ["arch", "arch-root"], True),
+        ("desk-arch", "archive", ["desk-arch", "desk-arch-root"], True),
     ]
     assert all(e["profile"] == events[0]["profile"] for e in events)
 

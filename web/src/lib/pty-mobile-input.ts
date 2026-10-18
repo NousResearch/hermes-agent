@@ -102,10 +102,13 @@ export function mobileBeforeInputCommit(
   isMobileLike: boolean,
 ): string | null {
   if (!isMobileLike) return null;
-  if (inputType !== "insertText" && inputType !== "insertLineBreak") return null;
+  // Browsers report insertLineBreak with a null payload (the line break is
+  // the whole event), so Enter cannot be gated on the data check below;
+  // xterm sends "\r" for Enter.
+  if (inputType === "insertLineBreak") return "\r";
+  if (inputType !== "insertText") return null;
   if (typeof data !== "string" || data.length === 0) return null;
-  // xterm sends "\r" for Enter; the browser reports "\n" for line breaks.
-  return inputType === "insertLineBreak" ? "\r" : data;
+  return data;
 }
 
 export function updatePtyInputLine(currentLine: string, data: string): string {

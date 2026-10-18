@@ -30,12 +30,16 @@ describe("mobileBeforeInputCommit", () => {
   });
 
   it("maps insertLineBreak to the carriage return xterm sends for Enter", () => {
+    // #137986 real-device evidence: browsers deliver insertLineBreak with
+    // data === null (the line break is the event itself), so the Enter
+    // branch must not depend on a non-empty payload.
+    expect(mobileBeforeInputCommit("insertLineBreak", null, true)).toBe("\r");
     expect(mobileBeforeInputCommit("insertLineBreak", "\n", true)).toBe("\r");
   });
 
   it("stays off desktop browsers", () => {
     expect(mobileBeforeInputCommit("insertText", "a", false)).toBeNull();
-    expect(mobileBeforeInputCommit("insertLineBreak", "\n", false)).toBeNull();
+    expect(mobileBeforeInputCommit("insertLineBreak", null, false)).toBeNull();
   });
 
   it("does not forward composition-in-progress or non-inserting events", () => {

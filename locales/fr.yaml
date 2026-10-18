@@ -183,6 +183,8 @@ gateway:
     codex_nothing: "🗜️ Rien à compacter : cette session tourne sur le runtime app-server de Codex, dont le contexte réside dans un fil géré par Codex qui n'existe que tant que l'agent est actif. Envoyez d'abord un message, puis /compress — ou /reset pour repartir de zéro."
     codex_compacted: "🗜️ Fil app-server Codex compacté (thread/compact). Le miroir de la transcription est volontairement inchangé — c'est désormais l'app-server qui porte le contexte compacté."
     codex_incomplete: "⚠️ La compaction app-server Codex ne s'est pas terminée — le fil est inchangé. Consultez les journaux de l'app-server, relancez /compress, ou /reset pour une session propre."
+  curator:
+    parse_error: "⚠️ Impossible d'analyser les arguments de `/curator` : {error}.\nLes guillemets vont par paires — placez entre guillemets doubles tout texte contenant une apostrophe, par exemple : `/curator \"it's\"`."
   debug:
     upload_failed: "✗ Échec de l'envoi du rapport de débogage : {error}"
     header: "**Rapport de débogage envoyé :**"
@@ -239,6 +241,7 @@ gateway:
     error: "Erreur lors de la génération des analyses : {error}"
   kanban:
     error_prefix: "⚠ erreur kanban : {error}"
+    parse_error: "⚠️ Impossible d'analyser les arguments de `/kanban` : {error}.\nLes guillemets vont par paires — placez entre guillemets doubles tout texte contenant une apostrophe, par exemple : `/kanban show \"it's\"`."
     subscribed_suffix: "(abonné — vous serez notifié lorsque {task_id} se terminera ou sera bloqué)"
     truncated_suffix: "… (tronqué ; utilisez `hermes kanban …` dans votre terminal pour la sortie complète)"
     no_output: "(aucune sortie)"

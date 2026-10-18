@@ -157,6 +157,8 @@ gateway:
     codex_nothing: "🗜️ Niente da compattare: questa sessione usa il runtime app-server di Codex, il cui contesto vive in un thread gestito da Codex che esiste solo mentre l'agente è attivo. Invia prima un messaggio, poi /compress — oppure /reset per ricominciare da zero."
     codex_compacted: "🗜️ Thread dell'app-server Codex compattato (thread/compact). La copia della trascrizione resta invariata per design — ora è l'app-server a contenere il contesto compattato."
     codex_incomplete: "⚠️ La compattazione dell'app-server Codex non è stata completata — il thread è invariato. Controlla i log dell'app-server, riprova /compress oppure usa /reset per una sessione pulita."
+  curator:
+    parse_error: "⚠️ Impossibile analizzare gli argomenti di `/curator`: {error}.\nLe virgolette devono essere in coppia — racchiudi tra virgolette doppie il testo contenente un apostrofo, ad esempio: `/curator \"it's\"`."
   debug:
     upload_failed: "✗ Caricamento del report di debug non riuscito: {error}"
     header: "**Report di debug caricato:**"
@@ -213,6 +215,7 @@ gateway:
     error: "Errore nella generazione degli insight: {error}"
   kanban:
     error_prefix: "⚠ errore kanban: {error}"
+    parse_error: "⚠️ Impossibile analizzare gli argomenti di `/kanban`: {error}.\nLe virgolette devono essere in coppia — racchiudi tra virgolette doppie il testo contenente un apostrofo, ad esempio: `/kanban show \"it's\"`."
     subscribed_suffix: "(iscritto — riceverai notifica quando {task_id} verrà completato o si bloccherà)"
     truncated_suffix: "… (troncato; usa `hermes kanban …` nel terminale per l'output completo)"
     no_output: "(nessun output)"

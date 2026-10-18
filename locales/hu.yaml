@@ -160,6 +160,8 @@ gateway:
     codex_nothing: "🗜️ Nincs mit tömöríteni: ez a munkamenet a Codex app-server futtatókörnyezeten fut, amelynek kontextusa egy Codex által kezelt szálban él, és csak addig létezik, amíg az ügynök aktív. Küldj előbb egy üzenetet, majd /compress — vagy /reset a tiszta kezdéshez."
     codex_compacted: "🗜️ A Codex app-server szál tömörítve (thread/compact). Az átirat tükre szándékosan változatlan — a tömörített kontextust mostantól az app-server hordozza."
     codex_incomplete: "⚠️ A Codex app-server tömörítése nem fejeződött be — a szál változatlan. Nézd meg az app-server naplóit, próbáld újra a /compress parancsot, vagy /reset a tiszta munkamenethez."
+  curator:
+    parse_error: "⚠️ Nem sikerült elemezni a `/curator` argumentumokat: {error}.\nAz idézőjeleknek párosan kell lenniük — tedd az aposztrófot tartalmazó szöveget dupla idézőjelek közé, például: `/curator \"it's\"`."
   debug:
     upload_failed: "✗ Nem sikerült feltölteni a hibakeresési jelentést: {error}"
     header: "**Hibakeresési jelentés feltöltve:**"
@@ -216,6 +218,7 @@ gateway:
     error: "Hiba a betekintések generálásakor: {error}"
   kanban:
     error_prefix: "⚠ kanban hiba: {error}"
+    parse_error: "⚠️ Nem sikerült elemezni a `/kanban` argumentumokat: {error}.\nAz idézőjeleknek párosan kell lenniük — tedd az aposztrófot tartalmazó szöveget dupla idézőjelek közé, például: `/kanban show \"it's\"`."
     subscribed_suffix: "(feliratkozva — értesítést kapsz, ha a {task_id} befejeződik vagy elakad)"
     truncated_suffix: "… (csonkítva; használd a `hermes kanban …` parancsot a terminálban a teljes kimenethez)"
     no_output: "(nincs kimenet)"

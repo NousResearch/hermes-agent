@@ -357,7 +357,12 @@ class GatewaySlashCommandsMixin(
         if text.startswith("kanban"):
             text = text[len("kanban"):].lstrip()
         requested_board = action = None
-        tokens = iter(shlex.split(text) if text else [])
+        try:
+            # An unclosed quote (``/kanban show it's``) cannot run in the CLI either — run_slash
+            # parses with shlex — so it is refused by name, not an internal error (#140803).
+            tokens = iter(shlex.split(text) if text else [])
+        except ValueError as exc:
+            return t("gateway.kanban.parse_error", error=exc)
         for tok in tokens:  # leading --board/--board=<b> options, then the action verb
             if tok == "--board":
                 requested_board = next(tokens, requested_board)
@@ -1244,7 +1249,12 @@ class GatewaySlashCommandsMixin(
         import io
         from contextlib import redirect_stderr, redirect_stdout
         from hermes_cli.curator import cli_main
-        tokens = shlex.split(event.get_command_args() or "") or ["status"]
+        try:
+            # An unclosed quote (``/curator it's``) is a parse failure of the argument itself,
+            # answered by name like /kanban and /resume, not an internal error (#140803).
+            tokens = shlex.split(event.get_command_args() or "") or ["status"]
+        except ValueError as exc:
+            return t("gateway.curator.parse_error", error=exc)
 
         def _run() -> str:
             out = io.StringIO()

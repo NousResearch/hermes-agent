@@ -157,6 +157,8 @@ gateway:
     codex_nothing: "🗜️ Níl aon rud le dlúthú: ritheann an seisiún seo ar am rite app-server Codex, a bhfuil a chomhthéacs i snáithe faoi úinéireacht Codex nach ann dó ach fad a bhíonn an gníomhaire gníomhach. Seol teachtaireacht ar dtús, ansin /compress — nó /reset chun tosú as an nua."
     codex_compacted: "🗜️ Dlúthaíodh snáithe app-server Codex (thread/compact). Tá scáthán na traschríbhinne gan athrú d'aon ghnó — is ag an app-server atá an comhthéacs dlúthaithe anois."
     codex_incomplete: "⚠️ Níor críochnaíodh dlúthú app-server Codex — tá an snáithe gan athrú. Seiceáil logaí an app-server, bain triail eile as /compress, nó /reset le haghaidh seisiún glan."
+  curator:
+    parse_error: "⚠️ Níorbh fhéidir argóintí `/curator` a pharsáil: {error}.\nNí mór do chomharthaí athfhriotail a bheith ina bpéire — cuir téacs ina bhfuil uaschamóg idir comharthaí athfhriotail dúbailte, m.sh.: `/curator \"it's\"`."
   debug:
     upload_failed: "✗ Theip ar uaslódáil tuairisce dífhabhtaithe: {error}"
     header: "**Tuairisc dhífhabhtaithe uaslódáilte:**"
@@ -213,6 +215,7 @@ gateway:
     error: "Earráid agus léargais á gcruthú: {error}"
   kanban:
     error_prefix: "⚠ earráid kanban: {error}"
+    parse_error: "⚠️ Níorbh fhéidir argóintí `/kanban` a pharsáil: {error}.\nNí mór do chomharthaí athfhriotail a bheith ina bpéire — cuir téacs ina bhfuil uaschamóg idir comharthaí athfhriotail dúbailte, m.sh.: `/kanban show \"it's\"`."
     subscribed_suffix: "(síntiúsaithe — cuirfear in iúl duit nuair a chríochnóidh nó a stopfaidh {task_id})"
     truncated_suffix: "… (giorraithe; úsáid `hermes kanban …` i do theirminéal le haghaidh aschur iomláin)"
     no_output: "(gan aschur)"

@@ -157,6 +157,8 @@ gateway:
     codex_nothing: "🗜️ 압축할 내용이 없어요: 이 세션은 Codex app-server 런타임에서 실행되고, 컨텍스트는 에이전트가 활성 상태일 때만 존재하는 Codex 소유 스레드에 있어요. 먼저 메시지를 보낸 뒤 /compress를 실행하거나, /reset으로 새로 시작하세요."
     codex_compacted: "🗜️ Codex app-server 스레드를 압축했어요(thread/compact). 설계상 트랜스크립트 미러는 바뀌지 않고, 이제 app-server가 압축된 컨텍스트를 가지고 있어요."
     codex_incomplete: "⚠️ Codex app-server 압축이 완료되지 않아 스레드는 그대로예요. app-server 로그를 확인하고 /compress를 다시 시도하거나, /reset으로 깨끗한 세션을 시작하세요."
+  curator:
+    parse_error: "⚠️ `/curator` 인자를 구문 분석할 수 없습니다: {error}.\n따옴표는 짝을 이뤄야 합니다 — 아포스트로피가 포함된 텍스트는 큰따옴표로 감싸세요. 예: `/curator \"it's\"`."
   debug:
     upload_failed: "✗ 디버그 보고서 업로드 실패: {error}"
     header: "**디버그 보고서가 업로드되었습니다:**"
@@ -213,6 +215,7 @@ gateway:
     error: "인사이트 생성 중 오류: {error}"
   kanban:
     error_prefix: "⚠ kanban 오류: {error}"
+    parse_error: "⚠️ `/kanban` 인자를 구문 분석할 수 없습니다: {error}.\n따옴표는 짝을 이뤄야 합니다 — 아포스트로피가 포함된 텍스트는 큰따옴표로 감싸세요. 예: `/kanban show \"it's\"`."
     subscribed_suffix: "(구독 중 — {task_id}이(가) 완료되거나 차단되면 알림을 받습니다)"
     truncated_suffix: "… (잘림; 전체 출력을 보려면 터미널에서 `hermes kanban …`을 사용하세요)"
     no_output: "(출력 없음)"

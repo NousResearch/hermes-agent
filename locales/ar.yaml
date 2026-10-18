@@ -157,6 +157,8 @@ gateway:
     codex_nothing: "🗜️ لا شيء لضغطه: هذه الجلسة تعمل على بيئة Codex app-server، وسياقها يعيش في سلسلة يملكها Codex ولا توجد إلا أثناء نشاط الوكيل. أرسل رسالة أولًا ثم /compress — أو /reset للبدء من جديد."
     codex_compacted: "🗜️ تم ضغط سلسلة Codex app-server (thread/compact). نسخة النص المرآتية لم تتغيّر عن قصد — يحمل الـ app-server الآن السياق المضغوط."
     codex_incomplete: "⚠️ لم يكتمل ضغط Codex app-server — السلسلة لم تتغيّر. راجع سجلات الـ app-server، أو أعد المحاولة بـ /compress، أو استخدم /reset لجلسة نظيفة."
+  curator:
+    parse_error: "⚠️ تعذّر تحليل وسيطات `/curator`: {error}.\nيجب أن تكون علامات الاقتباس متزاوجة — ضع النص الذي يحتوي على فاصلة عليّة بين علامتي اقتباس مزدوجتين، مثال: `/curator \"it's\"`."
   debug:
     upload_failed: "✗ فشل رفع تقرير التصحيح: {error}"
     header: "**تم رفع تقرير التصحيح:**"
@@ -213,6 +215,7 @@ gateway:
     error: "خطأ في توليد الرؤى: {error}"
   kanban:
     error_prefix: "⚠ خطأ kanban: {error}"
+    parse_error: "⚠️ تعذّر تحليل وسيطات `/kanban`: {error}.\nيجب أن تكون علامات الاقتباس متزاوجة — ضع النص الذي يحتوي على فاصلة عليّة بين علامتي اقتباس مزدوجتين، مثال: `/kanban show \"it's\"`."
     subscribed_suffix: "(مُشترك — ستُخطَر عند اكتمال {task_id} أو حجبها)"
     truncated_suffix: "… (مقتطع؛ استخدم `hermes kanban …` في الطرفية للخرج الكامل)"
     no_output: "(لا يوجد خرج)"

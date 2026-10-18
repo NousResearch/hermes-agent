@@ -157,6 +157,8 @@ gateway:
     codex_nothing: "🗜️ 没有可压缩的内容：此会话运行在 Codex app-server 运行时上，其上下文保存在 Codex 管理的线程中，仅在代理活跃时存在。请先发送一条消息再 /compress——或用 /reset 重新开始。"
     codex_compacted: "🗜️ Codex app-server 线程已压缩（thread/compact）。转录副本按设计保持不变——压缩后的上下文现由 app-server 承载。"
     codex_incomplete: "⚠️ Codex app-server 压缩未完成——线程保持不变。请检查 app-server 日志、重试 /compress，或用 /reset 开始一个干净的会话。"
+  curator:
+    parse_error: "⚠️ 无法解析 `/curator` 参数：{error}。\n引号必须成对 — 包含撇号的文本请用双引号括起来，例如：`/curator \"it's\"`。"
   debug:
     upload_failed: "✗ 无法上传调试报告：{error}"
     header: "**调试报告已上传：**"
@@ -213,6 +215,7 @@ gateway:
     error: "生成洞察时出错：{error}"
   kanban:
     error_prefix: "⚠ kanban 错误：{error}"
+    parse_error: "⚠️ 无法解析 `/kanban` 参数：{error}。\n引号必须成对 — 包含撇号的文本请用双引号括起来，例如：`/kanban show \"it's\"`。"
     subscribed_suffix: "（已订阅 — 当 {task_id} 完成或被阻塞时将通知您）"
     truncated_suffix: "…（已截断；如需完整输出请在终端运行 `hermes kanban …`）"
     no_output: "（无输出）"

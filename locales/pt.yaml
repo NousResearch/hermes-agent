@@ -157,6 +157,8 @@ gateway:
     codex_nothing: "🗜️ Nada para compactar: esta sessão roda no runtime app-server do Codex, cujo contexto fica em um tópico controlado pelo Codex que só existe enquanto o agente está ativo. Envie uma mensagem primeiro e depois /compress — ou /reset para começar do zero."
     codex_compacted: "🗜️ Tópico do app-server do Codex compactado (thread/compact). O espelho da transcrição permanece inalterado por design — o app-server agora carrega o contexto compactado."
     codex_incomplete: "⚠️ A compactação do app-server do Codex não foi concluída — o tópico permanece inalterado. Verifique os logs do app-server, tente /compress novamente ou use /reset para uma sessão limpa."
+  curator:
+    parse_error: "⚠️ Não foi possível analisar os argumentos de `/curator`: {error}.\nAs aspas devem vir em pares — envolva entre aspas duplas o texto que contenha um apóstrofo, por exemplo: `/curator \"it's\"`."
   debug:
     upload_failed: "✗ Falha ao carregar relatório de depuração: {error}"
     header: "**Relatório de depuração carregado:**"
@@ -213,6 +215,7 @@ gateway:
     error: "Erro ao gerar análise: {error}"
   kanban:
     error_prefix: "⚠ erro do kanban: {error}"
+    parse_error: "⚠️ Não foi possível analisar os argumentos de `/kanban`: {error}.\nAs aspas devem vir em pares — envolva entre aspas duplas o texto que contenha um apóstrofo, por exemplo: `/kanban show \"it's\"`."
     subscribed_suffix: "(subscrito — receberás uma notificação quando {task_id} terminar ou bloquear)"
     truncated_suffix: "… (truncado; usa `hermes kanban …` no teu terminal para a saída completa)"
     no_output: "(sem saída)"

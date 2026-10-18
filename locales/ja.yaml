@@ -157,6 +157,8 @@ gateway:
     codex_nothing: "🗜️ 圧縮するものがありません: このセッションは Codex app-server ランタイムで動作しており、そのコンテキストはエージェントの動作中にのみ存在する Codex 管理のスレッドにあります。先にメッセージを送ってから /compress を実行するか、/reset で新しく始めてください。"
     codex_compacted: "🗜️ Codex app-server のスレッドを圧縮しました (thread/compact)。トランスクリプトのミラーは設計上変更されません。圧縮後のコンテキストは app-server が保持します。"
     codex_incomplete: "⚠️ Codex app-server の圧縮が完了しなかったため、スレッドは変更されていません。app-server のログを確認し、/compress を再試行するか、/reset でクリーンなセッションを始めてください。"
+  curator:
+    parse_error: "⚠️ `/curator` の引数を解析できませんでした：{error}。\n引用符はペアである必要があります。アポストロフィを含むテキストは二重引用符で囲んでください。例：`/curator \"it's\"`。"
   debug:
     upload_failed: "✗ デバッグレポートのアップロードに失敗しました: {error}"
     header: "**デバッグレポートをアップロードしました:**"
@@ -213,6 +215,7 @@ gateway:
     error: "インサイトの生成中にエラーが発生しました: {error}"
   kanban:
     error_prefix: "⚠ kanban エラー: {error}"
+    parse_error: "⚠️ `/kanban` の引数を解析できませんでした：{error}。\n引用符はペアである必要があります。アポストロフィを含むテキストは二重引用符で囲んでください。例：`/kanban show \"it's\"`。"
     subscribed_suffix: "(購読しました — {task_id} が完了またはブロックされたときに通知されます)"
     truncated_suffix: "… (切り詰めました; 完全な出力にはターミナルで `hermes kanban …` を使用してください)"
     no_output: "(出力なし)"

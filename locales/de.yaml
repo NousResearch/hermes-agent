@@ -157,6 +157,8 @@ gateway:
     codex_nothing: "🗜️ Nichts zu komprimieren: Diese Sitzung läuft auf der Codex-App-Server-Runtime, deren Kontext in einem Codex-eigenen Thread liegt, der nur existiert, solange der Agent aktiv ist. Senden Sie zuerst eine Nachricht, dann /compress — oder /reset für einen Neustart."
     codex_compacted: "🗜️ Codex-App-Server-Thread komprimiert (thread/compact). Der Transkript-Spiegel bleibt absichtlich unverändert — der App-Server trägt jetzt den komprimierten Kontext."
     codex_incomplete: "⚠️ Die Komprimierung im Codex-App-Server wurde nicht abgeschlossen — der Thread ist unverändert. Prüfen Sie die App-Server-Logs, wiederholen Sie /compress oder verwenden Sie /reset für eine saubere Sitzung."
+  curator:
+    parse_error: "⚠️ Die Argumente von `/curator` konnten nicht geparst werden: {error}.\nAnführungszeichen müssen paarweise auftreten — schließen Sie Text mit Apostroph in doppelte Anführungszeichen ein, z. B.: `/curator \"it's\"`."
   debug:
     upload_failed: "✗ Debug-Bericht konnte nicht hochgeladen werden: {error}"
     header: "**Debug-Bericht hochgeladen:**"
@@ -213,6 +215,7 @@ gateway:
     error: "Fehler beim Erstellen der Auswertung: {error}"
   kanban:
     error_prefix: "⚠ Kanban-Fehler: {error}"
+    parse_error: "⚠️ Die Argumente von `/kanban` konnten nicht geparst werden: {error}.\nAnführungszeichen müssen paarweise auftreten — schließen Sie Text mit Apostroph in doppelte Anführungszeichen ein, z. B.: `/kanban show \"it's\"`."
     subscribed_suffix: "(abonniert — Sie werden benachrichtigt, wenn {task_id} abgeschlossen oder blockiert wird)"
     truncated_suffix: "… (gekürzt; verwenden Sie `hermes kanban …` im Terminal für die vollständige Ausgabe)"
     no_output: "(keine Ausgabe)"

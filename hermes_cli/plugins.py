@@ -128,7 +128,7 @@ VALID_HOOKS: set[str] = {
     # Run-all-then-pick-first (see get_plugin_error_classification). Privacy: error_message/
     # error_body may be unredacted.
     "transform_api_error_classification", "on_session_start", "on_session_end",
-    "on_session_finalize", "on_session_reset", "on_session_identity",
+    "on_session_finalize", "on_session_reset", "on_session_delete", "on_session_identity",
     # Native idle boundary; synchronous submit(message, terminal_callback) capability.
     "on_session_idle",
     # on_skill_lifecycle: successful skill lifecycle facts (local skill name visible to plugins).
@@ -197,10 +197,10 @@ VALID_HOOKS: set[str] = {
     # returns IGNORED in v1. Deliberately NOT fired for the gateway's running-agent intercept path
     # (/stop, /approve, busy_policy) — a slow/hostile plugin must not touch the operator's escape
     # hatches. Kwargs: surface, command (canonical), alias_used, args_raw, session_key, platform.
-    # Slash-command dispatch observer (#64204, observer-first per #64182 ground rule 3). Return values are
-    # IGNORED in v1 — a plugin returning a directive-shaped dict gets a debug log so future block/rewrite
-    # adopters are discoverable once the middleware variant ships against the #64231 taxonomy.
+    # Observer-first (#64204, #64182 rule 3); a directive-shaped return gets a debug log so future
+    # block/rewrite adopters are discoverable once the middleware variant ships (#64231 taxonomy).
     "pre_command",
+    "post_compaction",  # once per committed compaction on every path; observer (hooks.md, #118382)
 }
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as

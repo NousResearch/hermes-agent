@@ -119,7 +119,7 @@ def _cli_skills():
     saved = skills_tool._SKILLS_CACHE.pop(key, None)
     try:
         with scoped_kanban_toolset_selection(["kanban"]):
-            found = skills_tool._find_all_skills()
+            found = skills_tool.find_all_skills()
     finally:
         skills_tool._SKILLS_CACHE.pop(key, None)
         if saved is not None:

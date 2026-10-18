@@ -171,7 +171,6 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
-        ws_client = SimpleNamespace()
         owned_executor = object()
         submitted_executors = []
 

@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 from utils import atomic_json_write
 
 if TYPE_CHECKING:
-    from gateway.session import SessionEntry
+    from gateway.session import SessionEntry, SessionSource
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.session")
@@ -39,6 +39,53 @@ def _is_live_system_guard(exc: BaseException) -> bool:
 
 class SessionPersistenceMixin:
     """SessionStore storage plumbing: SessionDB handle resolution and routing-index load/save."""
+
+    def retire_runtime_sessions(self, session_ids):
+        """Publish committed retirement; durable fences reject delayed saves."""
+        with self._lock:
+            targets = set(session_ids)
+            for key, entry in list(self._entries.items()):
+                if entry.session_id in targets:
+                    del self._entries[key]
+            for sid in targets:
+                self._session_owner_hints.pop(sid, None)
+
+    def fence_retired_routes(self, session_ids, *, namespace, expiring=()) -> None:
+        """Durably retire *session_ids* in the routing index's own database (fences + route
+        drop in one transaction). A delete committed in another profile's store fences only that
+        store; the shared index lives in the launch home, so its saves need the fence here too,
+        keyed by the deleting profile's routing *namespace* (``retire_gateway_routes``).
+        Raises when the routing store cannot take the fence: the delete must not report success."""
+        retire = self._routing_db_method("retire_gateway_routes")
+        if retire is None:
+            raise RuntimeError("routing store unavailable for deletion fence")
+        retire(session_ids, namespace=namespace, expiring=expiring)
+
+    def strip_retired_mirror_routes(self, session_ids=None) -> None:
+        """Drop from an existing sessions.json every route a routing save now skips as retired
+        (``route_retired``, the check ``replace_gateway_routing_entries`` applies), only those naming
+        *session_ids* when given. Runs whatever ``write_sessions_json`` says and never creates the
+        file: the mirror is derived, and a retired route left in it would come back through the
+        next start's legacy import once a prune's fence ages out."""
+        db = self._routing_db
+        sessions_file = self.sessions_dir / "sessions.json"
+        if db is None or not sessions_file.exists():
+            return
+        from hermes_state_mutation_retirement import route_retired
+        targets = None if session_ids is None else set(session_ids)
+        with self._lazy("_save_lock", threading.Lock):  # never interleaves with a full save's write
+            with open(sessions_file, "r", encoding="utf-8-sig") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                return
+            kept = {}
+            for key, entry in data.items():
+                sid = entry.get("session_id") if isinstance(entry, dict) else None
+                if (key.startswith("_") or not isinstance(sid, str) or (targets is not None and sid not in targets)
+                        or not route_retired(db, key, json.dumps({"session_id": sid}))):
+                    kept[key] = entry
+            if len(kept) < len(data):
+                atomic_json_write(sessions_file, kept, mode=0o600)
 
     def _open_session_db_for_active_scope(self, db_path: Optional[Path] = None):
         """SessionDB for the active profile scope. ``db_path`` pins the store; otherwise
@@ -234,6 +281,38 @@ class SessionPersistenceMixin:
         method = getattr(self._routing_db or None, name, None)
         return method if callable(method) else None
 
+    @staticmethod
+    def _chat_labels_meta_key(platform, scope_id, chat_id) -> str:
+        return f"gateway_chat_labels:{getattr(platform, 'value', platform)}:{scope_id or ''}:{chat_id}"
+
+    def record_chat_labels(self, source: SessionSource) -> bool:
+        """Persist *source*'s ``chat_name`` / ``chat_topic`` as the chat's current labels, at the
+        moment they are observed; True once written. A session origin cannot answer "what is this
+        chat called now": it is written when its session is created, which can be after a newer
+        observation (a delayed first turn), and a reset inherits it under a fresh ``created_at``.
+
+        False when there is no database handle right now (open failed, backoff, JSONL fallback):
+        nothing was written, so the caller must not treat these labels as recorded."""
+        setter = self._routing_db_method("set_meta")
+        if setter is None:
+            return False
+        setter(self._chat_labels_meta_key(source.platform, source.scope_id, source.chat_id),
+               json.dumps([source.chat_name, source.chat_topic]))
+        return True
+
+    def chat_labels(self, platform, scope_id, chat_id) -> Optional[tuple]:
+        """The ``(chat_name, chat_topic)`` last recorded for a chat, or None when none was. Raises
+        when the store cannot be read, including when there is no database handle right now:
+        "unreadable now" is not "never labelled"."""
+        getter = self._routing_db_method("get_meta")
+        if getter is None:
+            raise LookupError("session database unavailable")
+        raw = getter(self._chat_labels_meta_key(platform, scope_id, chat_id))
+        if not raw:
+            return None
+        chat_name, chat_topic = json.loads(raw)
+        return chat_name, chat_topic
+
     def _load_routing_rows_locked(self) -> bool:
         """Load state.db routing entries into ``_entries``; False when there is no loader or the
         load failed (warned). Lock held."""
@@ -276,19 +355,32 @@ class SessionPersistenceMixin:
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         db_load_succeeded = self._load_routing_rows_locked()
         db_had_entries = db_load_succeeded and bool(self._entries)
-        self._import_legacy_sessions_json(db_had_entries)
+        mirror_retired = self._import_legacy_sessions_json(db_had_entries)
         self._loaded = True
         self._routing_db_loaded = db_load_succeeded
         self._routing_fallback_baseline = None if db_load_succeeded else self._entries_as_dicts()
+        if mirror_retired and db_load_succeeded:
+            # Rewrite the mirror while the fences that kept those routes out still hold: a prune's
+            # ages out, and the import would then restore the retired route.
+            self._save()
+            if not getattr(self, "_write_sessions_json", True):
+                # That save left an existing mirror as it was: strip the routes from it directly,
+                # or every later start imports them again.
+                try:
+                    self.strip_retired_mirror_routes()
+                except Exception:
+                    logger.warning("gateway.session: could not strip retired routes from sessions.json", exc_info=True)
         # A hard crash skips graceful shutdown and leaves sessions.json pointing at ended sessions.
         self._prune_stale_sessions_locked()
 
-    def _import_legacy_sessions_json(self, db_had_entries: bool) -> None:
-        """Legacy import: sessions.json fills only keys the DB lacks. Lock held."""
+    def _import_legacy_sessions_json(self, db_had_entries: bool) -> int:
+        """Legacy import: sessions.json fills only keys the DB lacks. Lock held. Returns how many
+        mirror entries it skipped as retired routes."""
         from gateway.session import SessionEntry
         sessions_file = self.sessions_dir / "sessions.json"
+        retired = 0
         if not sessions_file.exists():
-            return
+            return retired
         try:
             with open(sessions_file, "r", encoding="utf-8-sig") as f:
                 data = json.load(f)
@@ -303,6 +395,12 @@ class SessionPersistenceMixin:
                         type(entry_data).__name__)
                     continue
                 try:
+                    from hermes_state_mutation_retirement import route_retired
+                    db = self._routing_db
+                    if db is not None and route_retired(db, key, json.dumps(
+                            {'session_id': entry_data['session_id']})):
+                        retired += 1
+                        continue
                     self._entries[key] = SessionEntry.from_dict(entry_data)
                     imported += 1
                 except (ValueError, KeyError, TypeError) as e:
@@ -313,6 +411,7 @@ class SessionPersistenceMixin:
                     "state.db routing table", imported, "y" if imported == 1 else "ies")
         except Exception as e:
             print(f"[gateway] Warning: Failed to load sessions: {e}")
+        return retired
 
     def _prune_stale_sessions_locked(self) -> None:
         """Remove routing entries whose session has ended in state.db (startup, lock held). Stale ==
@@ -455,8 +554,12 @@ class SessionPersistenceMixin:
             replacer = self._routing_db_method("replace_gateway_routing_entries")
             if replacer is not None:
                 try:
-                    replacer({k: json.dumps(v) for k, v in data.items()}, scope=self._routing_scope())
+                    retired = replacer({k: json.dumps(v) for k, v in data.items()}, scope=self._routing_scope())
                     db_saved = True
+                    # A retired route the save skipped stays out of the mirror too: its fence may
+                    # age out (a prune's), and the next start's legacy import would restore it.
+                    if retired:
+                        data = {k: v for k, v in data.items() if k not in retired}
                 except Exception as exc:
                     logger.warning("gateway.session: state.db routing save failed: %s", exc)
             if getattr(self, "_write_sessions_json", True) or not db_saved:

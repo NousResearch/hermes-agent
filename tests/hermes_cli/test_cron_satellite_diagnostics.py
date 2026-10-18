@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 import json
 import os
 import time
@@ -84,7 +84,7 @@ def test_status_preserves_profile_health_contract(served_root, capsys, monkeypat
         assert "STALLED" not in output
 
 
-def test_host_record_rung_names_the_roster_and_a_runnable_restart(served_root, capsys, monkeypatch):
+def test_host_record_rung_names_the_roster_and_a_runnable_restart(served_root, capsys, monkeypatch, request):
     """The OTHER rung: a published host record answers before the config-derived one.
 
     Both rungs print a "Scheduler host: the host gateway…" line, so they are only distinguishable
@@ -96,6 +96,9 @@ def test_host_record_rung_names_the_roster_and_a_runnable_restart(served_root, c
     from gateway import host_rendezvous as hr
     from hermes_cli import cron
 
+    # A live owner holds the host lock for its lifetime (run.py claims before it publishes).
+    assert hr.claim_host_lock(hr.ROLE_GATEWAY)[0] is hr.HostLockOutcome.ACQUIRED
+    request.addfinalizer(lambda: hr.release_host_lock(hr.ROLE_GATEWAY))
     hr.publish_record(hr.ROLE_GATEWAY, profiles=("default", "probe"))
 
     cron.cron_status()
@@ -281,7 +284,7 @@ def test_doctor_reports_persisted_dispatch_health(served_root, capsys, dispatch)
     else:
         records = jobs.load_jobs()
         delay = timedelta(hours=5) if dispatch == "catch_up" else timedelta(minutes=6)
-        records[0]["next_run_at"] = (datetime.now(timezone.utc) - delay).isoformat()
+        records[0]["next_run_at"] = (datetime.now(UTC) - delay).isoformat()
         jobs.save_jobs(records)
         assert len(jobs.get_due_jobs()) == 1
         persisted = jobs.get_job(job["id"])
@@ -300,7 +303,7 @@ def test_doctor_reports_persisted_dispatch_health(served_root, capsys, dispatch)
         assert cron_doctor() == 1
         capsys.readouterr()
         records = jobs.load_jobs()
-        records[0]["next_run_at"] = datetime.now(timezone.utc).isoformat()
+        records[0]["next_run_at"] = datetime.now(UTC).isoformat()
         jobs.save_jobs(records)
         assert len(jobs.get_due_jobs()) == 1
         persisted = jobs.get_job(job["id"])

@@ -31,7 +31,7 @@ import os
 import re
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 
 # Bootstrap the repo root onto sys.path so the canary tag shape can come
@@ -66,7 +66,8 @@ FALLBACK_COMMIT = "0" * 40
 def _run_git(*args: str, cwd: str | Path = _REPO_ROOT) -> str | None:
     try:
         result = subprocess.run(
-            ["git", *args], capture_output=True, text=True, timeout=5, cwd=str(cwd)
+            ["git", *args], capture_output=True, text=True, timeout=5, cwd=str(cwd),
+            check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -255,7 +256,7 @@ def build_stamp(
         "commit": commit,
         "commitDate": commit_date,
         "branch": branch,
-        "builtAt": datetime.now(timezone.utc).isoformat(),
+        "builtAt": datetime.now(UTC).isoformat(),
         "dirty": dirty,
         "source": source,
         "distribution": distribution,

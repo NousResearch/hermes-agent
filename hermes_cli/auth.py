@@ -25,7 +25,7 @@ import webbrowser
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from functools import partial
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -631,8 +631,8 @@ def _lock_holder_hint(lock_path: Path) -> str:
             return ""
         except OSError:
             pass  # exists but is not signalable (e.g. EPERM): still a live holder
-    return (f"another hermes process (pid {pid}) probably still holds it "
-            "(e.g. a dashboard or a slow credential refresh)")
+    # No example holder: many stores use this lock; the caller's timeout_message names which one.
+    return f"another hermes process (pid {pid}) probably still holds it"
 
 
 def _stamp_lock_holder_pid(lock_file: Any) -> None:
@@ -798,7 +798,7 @@ def _save_auth_store(auth_store: dict[str, Any], target_path: Optional[Path] = N
     an explicit *target_path* (e.g. the global-root write-through for rotating xAI OAuth grants)."""
     auth_file = target_path if target_path is not None else _auth_file_path()
     auth_store["version"] = AUTH_STORE_VERSION
-    auth_store["updated_at"] = datetime.now(timezone.utc).isoformat()
+    auth_store["updated_at"] = datetime.now(UTC).isoformat()
     _save_private_json(auth_file, auth_store, fsync_dir=True)
     if target_path is not None:
         # A write-through to the global root must not be masked by the mtime memo: on coarse-mtime
@@ -1544,9 +1544,9 @@ def _logged_in_oauth_active_provider(*, skip_free_tier: bool = False) -> Optiona
     try:
         _maybe = _load_auth_store().get("active_provider")
         if _maybe == "nous":
-            from hermes_cli.anon_auth import guest_enabled, has_guest
-            if has_guest() and (skip_free_tier or not guest_enabled()):
-                return None  # the free tier is off (or being discounted), so a guest is not a login
+            from hermes_cli.anon_auth import free_inference_active, has_guest
+            if has_guest() and (skip_free_tier or not free_inference_active()):
+                return None  # this guest carries no inference here (or is being discounted): not a login
         if _maybe and _maybe in PROVIDER_REGISTRY and get_auth_status(_maybe).get("logged_in"):
             return _maybe
     except Exception as e:
@@ -1637,7 +1637,7 @@ def resolve_provider(
     "auto" priority (explicit intent beats a stale OAuth login): 1. CLI api_key/base_url ->
     "openrouter"; 2. config.yaml ``model.provider``; 3. OPENROUTER_API_KEY (or an sk-or- key in
     OPENAI_API_KEY) -> "openrouter"; 4. OpenRouter pool; 5. provider env keys; 6. auth.json ``active_provider``;
-    7. Nous free tier when it is on and its identity exists (never created here);
+    7. Nous free tier when a claimed guest exists on the desktop's local backend (never created here);
     8. AWS Bedrock chain; 9. AuthError(no_provider_configured).
 
     ``skip_free_tier`` hides rungs 6-for-a-free-tier-identity and 7: the boot bootstrap asks
@@ -1690,16 +1690,16 @@ def resolve_provider(
                 _oauth_active)
         return _oauth_active
 
-    # Nous free tier, when it is on and its identity already exists. This rung sits ABOVE the Bedrock
+    # Nous free tier, when this guest claimed the welcome trial and this is the desktop's local
+    # backend (``anon_auth.free_inference_active``). This rung sits ABOVE the Bedrock
     # chain on purpose: every rung above this line is explicit user intent (CLI creds, config, env
     # keys, a sign-in); the boto chain below is implicit host state, and a leftover ~/.aws profile
     # used to win the first turn of a fresh install (NS-829). The rung never CREATES the identity:
-    # that is the boot bootstrap's job (free_tier_bootstrap), so provider resolution stays free of
-    # network and a fresh install without the bootstrap resolves exactly as upstream does.
+    # only the desktop's trial claim does (welcome_trial), so provider resolution stays free of network.
     if not skip_free_tier:
         try:
-            from hermes_cli.anon_auth import guest_enabled, has_guest
-            if guest_enabled() and has_guest():
+            from hermes_cli.anon_auth import free_inference_active
+            if free_inference_active():
                 return "nous"
         except Exception as exc:
             logger.debug("free tier check during provider resolution skipped: %s", exc)
@@ -1707,15 +1707,15 @@ def resolve_provider(
     # below explicit keys and below the free tier.
     try:
         from agent.bedrock_adapter import has_aws_credentials
-        if has_aws_credentials():
+        from hermes_cli.anon_auth import on_local_desktop_backend  # a laptop: no EC2 metadata lookup
+        if has_aws_credentials(instance_metadata=not on_local_desktop_backend()):
             return "bedrock"
     except ImportError:
         pass  # boto3 not installed
     from hermes_constants import display_hermes_home
     raise AuthError(
-        "Hermes is not connected to any AI provider yet. Run `hermes model` to pick one (the free "
-        "Nous tier needs no API key), type `/login` in chat, or add a key with "
-        f"`hermes auth add <provider>`. (Advanced: put an API key such as OPENROUTER_API_KEY in "
+        "Hermes is not connected to any AI provider yet. Run `hermes model` to pick one, type `/login` in chat, "
+        f"or add a key with `hermes auth add <provider>`. (Advanced: put an API key such as OPENROUTER_API_KEY in "
         f"{display_hermes_home()}/.env.)",
         code="no_provider_configured")
 
@@ -1724,7 +1724,7 @@ def resolve_provider(
 
 def _utc_now_z() -> str:
     """Current UTC time as an ISO-8601 string with a ``Z`` suffix (last_refresh format)."""
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _parse_iso_timestamp(value: Any) -> Optional[float]:
@@ -1738,7 +1738,7 @@ def _parse_iso_timestamp(value: Any) -> Optional[float]:
     except Exception:
         return None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
     return parsed.timestamp()
 
 
@@ -1753,19 +1753,19 @@ def _tls_state_from_verify(verify: Any) -> dict[str, Any]:
 
 
 def _last_auth_error_marker(
-    provider: str, error: "AuthError", *, reason: str, default_code: Optional[str] = None,
+    provider: str, error: AuthError, *, reason: str, default_code: Optional[str] = None,
 ) -> dict[str, Any]:
     """The ``last_auth_error`` record persisted when dead OAuth material is quarantined."""
     return {
         "provider": provider, "message": str(error), "reason": reason, "relogin_required": True,
         "code": error.code if default_code is None else (error.code or default_code),
-        "at": datetime.now(timezone.utc).isoformat()}
+        "at": datetime.now(UTC).isoformat()}
 
 
 _FLAT_OAUTH_TOKEN_KEYS = ("access_token", "refresh_token", "expires_at", "expires_in", "obtained_at")
 
 
-def _quarantine_flat_oauth_state(state: dict[str, Any], provider: str, exc: "AuthError") -> None:
+def _quarantine_flat_oauth_state(state: dict[str, Any], provider: str, exc: AuthError) -> None:
     """Strip dead tokens from a flat OAuth state after a terminal runtime refresh failure so
     subsequent calls fail fast without a network retry (mirrors the Nous / xAI / Codex pattern)."""
     for _k in _FLAT_OAUTH_TOKEN_KEYS:
@@ -1798,7 +1798,7 @@ _NOUS_PORTAL_ALLOWED_HOSTS: frozenset[str] = frozenset({
 # per-turn HERMES_HOME override a multiplex gateway sets), so a single slot would hand profile A's
 # Portal bearer to profile B for up to the TTL.
 _RESOLVE_TOKEN_CACHE_LOCK = threading.Lock()
-_RESOLVE_TOKEN_CACHE: "dict[str, tuple[float, str]]" = {}
+_RESOLVE_TOKEN_CACHE: dict[str, tuple[float, str]] = {}
 _RESOLVE_TOKEN_CACHE_TTL_S = 5.0
 
 
@@ -1808,10 +1808,9 @@ def resolve_nous_access_token(
     insecure: Optional[bool] = None,
     ca_bundle: Optional[str] = None,
     refresh_skew_seconds: int = ACCESS_TOKEN_REFRESH_SKEW_SECONDS) -> str:
-    """Resolve a refresh-aware Nous Portal access token for managed tool gateways.
-
-    A free-tier exchange may be answered with a browser challenge (``anon_challenge``); it is worked
-    here, after the exchange's locks have unwound, and the exchange is then run once more."""
+    """Refresh-aware Nous Portal token for managed tool gateways, connectors and account reads, never
+    the free model: a guest gets a live held token, else a connectors-only mint NAS never challenges.
+    Only a NAS from before hermes-portal#1516 challenges that mint; it is worked here as before."""
     from hermes_cli.anon_challenge import run_with_challenge
     return run_with_challenge(lambda: _resolve_nous_access_token(
         timeout_seconds=timeout_seconds, insecure=insecure, ca_bundle=ca_bundle,
@@ -1850,20 +1849,17 @@ def _resolve_nous_access_token(
 
         lock_timeout = max(timeout_seconds + 5.0, AUTH_LOCK_TIMEOUT_SECONDS)
         with _nous_shared_store_lock(timeout_seconds=lock_timeout):
-            from hermes_cli.anon_auth import is_guest_state, refresh_guest_state
+            from hermes_cli.anon_auth import held_connectors_token, is_guest_state, refresh_guest_state
             if is_guest_state(state):
-                # Guest seam: the anon_ credential is the identity; a first use has no access token
-                # yet and an expired one is re-exchanged. No refresh token, no quarantine.
-                access_token = state.get("access_token")
-                if isinstance(access_token, str) and access_token and not _is_expiring(
-                        state.get("expires_at"), refresh_skew_seconds):
+                # A live held token serves (an inference one is a superset); else mint connectors-only.
+                if access_token := held_connectors_token(state, skew_seconds=refresh_skew_seconds):
                     return _memo(access_token)
                 with httpx.Client(timeout=httpx.Timeout(timeout_seconds or 15.0),
                                   headers={"Accept": "application/json"}, verify=verify) as client:
-                    refresh_guest_state(state, client)
+                    minted = refresh_guest_state(state, client, purpose="connectors")
                 persist()
                 _write_shared_nous_state(state)
-                return _memo(state["access_token"])
+                return _memo(minted)
 
             merged_shared = _merge_shared_nous_oauth_state(state)
             access_token = state.get("access_token")

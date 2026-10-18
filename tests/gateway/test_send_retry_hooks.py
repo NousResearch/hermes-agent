@@ -7,7 +7,7 @@ the numeric form; both now go through ``agent.retry_utils.parse_retry_after_seco
 """
 
 from email.utils import format_datetime
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from types import SimpleNamespace
 from typing import Any, Dict
 
@@ -77,7 +77,7 @@ async def test_server_retry_after_is_honoured_by_every_adapter(monkeypatch):
 
 
 def _http_date_in(seconds: int) -> str:
-    return format_datetime(datetime.now(timezone.utc) + timedelta(seconds=seconds), usegmt=True)
+    return format_datetime(datetime.now(UTC) + timedelta(seconds=seconds), usegmt=True)
 
 
 def test_slack_retry_after_understands_http_date():

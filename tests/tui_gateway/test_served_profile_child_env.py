@@ -43,7 +43,7 @@ def mux_homes(tmp_path, monkeypatch):
 
 
 def _child_view(env: dict) -> dict:
-    out = subprocess.run([sys.executable, "-c", _PROBE], env=env, capture_output=True, text=True, encoding="utf-8", timeout=60)
+    out = subprocess.run([sys.executable, "-c", _PROBE], env=env, capture_output=True, text=True, encoding="utf-8", timeout=60, check=False)
     return json.loads(out.stdout.strip().splitlines()[-1])
 
 

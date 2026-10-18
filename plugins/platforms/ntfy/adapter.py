@@ -14,7 +14,7 @@ import json
 import logging
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Dict, List, Optional
 
 try:
@@ -32,6 +32,7 @@ from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms._shared import (
     extra_or_secret as _extra_or_secret, seed_extra_from_env as _seed_extra_from_env
 )
+from gateway.platforms.send_targets import parse_nonempty
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +128,7 @@ class NtfyAdapter(BasePlatformAdapter):
         self._publish_topic: str = _extra_or_secret(extra, "publish_topic", "NTFY_PUBLISH_TOPIC") or self._topic
         self._token: str = _extra_or_secret(extra, "token", "NTFY_TOKEN")
         self._stream_task: Optional[asyncio.Task] = None
-        self._http_client: Optional["httpx.AsyncClient"] = None
+        self._http_client: Optional[httpx.AsyncClient] = None
         self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE, ttl_seconds=DEDUP_WINDOW_SECONDS)
 
     # -- Connection lifecycle -----------------------------------------------
@@ -256,9 +257,9 @@ class NtfyAdapter(BasePlatformAdapter):
         topic = event.get("topic") or self._topic
         source = self.build_source(
             chat_id=topic, chat_name=topic, chat_type="dm", user_id=topic, user_name=topic, message_id=msg_id)
-        unix_ts, timestamp = event.get("time"), datetime.now(tz=timezone.utc)
+        unix_ts, timestamp = event.get("time"), datetime.now(tz=UTC)
         try:
-            timestamp = datetime.fromtimestamp(int(unix_ts), tz=timezone.utc) if unix_ts else timestamp
+            timestamp = datetime.fromtimestamp(int(unix_ts), tz=UTC) if unix_ts else timestamp
         except (ValueError, OSError, TypeError):
             pass
         message_event = MessageEvent(
@@ -357,7 +358,10 @@ async def _standalone_send(
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system at startup."""
     ctx.register_platform(
+        target_ref_syntax_fn=parse_nonempty,
         name="ntfy", label="ntfy", adapter_factory=lambda cfg: NtfyAdapter(cfg),
+        dashboard_description="Chat with Hermes over ntfy push topics (ntfy.sh or self-hosted).",
+        docs_url="https://hermes-agent.nousresearch.com/docs/user-guide/messaging/ntfy",
         check_fn=check_requirements, validate_config=validate_config, is_connected=is_connected,
         required_env=["NTFY_TOPIC"], install_hint="pip install httpx   # already a Hermes dependency",
         env_enablement_fn=_env_enablement,  # env-only setups show in `gateway status`

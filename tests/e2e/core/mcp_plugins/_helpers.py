@@ -193,7 +193,7 @@ class HttpMcpServer:
     def url(self) -> str:
         return f"http://127.0.0.1:{self.port}/mcp"
 
-    def start(self) -> "HttpMcpServer":
+    def start(self) -> HttpMcpServer:
         with contextlib.suppress(FileNotFoundError):
             self.port_file.unlink()
         env = {k: v for k, v in os.environ.items() if k in _PASSTHROUGH_ENV}
@@ -258,7 +258,7 @@ def call_tool(body: dict[str, Any], name: str, args: dict[str, Any] | str) -> To
 def run_chat_q(eh: E2EHome, prompt: str, *, timeout: float = TURN_TIMEOUT,
                env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(hermes_argv("chat", "-q", prompt, "-Q"), cwd=eh.project, env=eh.env(env),
-                          capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+                          capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL, check=False)
 
 
 # Observation ------------------------------------------------------------------------------------

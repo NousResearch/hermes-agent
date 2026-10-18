@@ -201,7 +201,7 @@ class BrowserControlBroker:
         else:
             self._artifact_stores[profile_id] = store
 
-    def _artifact_store_for_scope(self, scope: "ControllerScope") -> Any:
+    def _artifact_store_for_scope(self, scope: ControllerScope) -> Any:
         store = self._artifact_stores.get(getattr(scope, "profile_id", None) or None)
         return store if store is not None else self._artifact_stores.get(None)
 

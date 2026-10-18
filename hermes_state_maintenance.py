@@ -110,7 +110,7 @@ def _not_pinned_sql(alias: str = "s") -> str:
 class SessionMaintenanceMixin:
     """Retention pruning, stale-session archiving and VACUUM policy for SessionDB."""
 
-    def prune_empty_ghost_sessions(self, sessions_dir: "Optional[Path]" = None) -> int:
+    def prune_empty_ghost_sessions(self, sessions_dir: Optional[Path] = None) -> int:
         """Remove empty TUI ghost sessions (no messages, no title, >24hr old)."""
         cutoff = time.time() - 86400
         def _do(conn):
@@ -124,12 +124,16 @@ class SessionMaintenanceMixin:
                       SELECT 1 FROM messages WHERE messages.session_id = sessions.id
                   )
             """, (cutoff,)).fetchall()]
+            from hermes_state_mutation_retirement import retire_prunable
+            ids = retire_prunable(conn, ids)
             for chunk in _id_chunks(ids):
                 conn.execute(f"DELETE FROM sessions WHERE id IN ({_placeholders(chunk)})", chunk)
             if ids:
                 self._delete_unreferenced_system_prompts(conn)
             return ids
         removed_ids = self._execute_write(_do) or []
+        from hermes_state_media import collect_retired_media
+        collect_retired_media(self)
         for sid in removed_ids if sessions_dir else ():
             self._remove_session_files(sessions_dir, sid)
         return len(removed_ids)
@@ -213,18 +217,21 @@ class SessionMaintenanceMixin:
 
     @staticmethod
     def _prune_filter_where(*, archived: Optional[bool] = None, include_pinned: bool = False,
-                            lineage_tips_only: bool = False, **filters) -> tuple[str, list]:
+                            lineage_tips_only: bool = False, include_open: bool = False,
+                            **filters) -> tuple[str, list]:
         """Shared WHERE clause for bulk prune/archive selection (alias ``s``): ``_PRUNE_FILTERS``
         AND together, only ended sessions are ever candidates, ``archived`` is tri-state
         (None = both), ``*_like`` are case-insensitive substrings, the rest exact.
         ``lineage_tips_only`` (bulk archive) drops compression ancestors: they are archived with
         their tip, never on their own age — matching an old ancestor would fan out over the lineage
-        and hide its OPEN, recently active tip (#115489)."""
+        and hide its OPEN, recently active tip (#115489). ``include_open`` lifts the ended guard
+        for reversible archive only — never for prune/delete (#139597: desktop sessions never set
+        ``ended_at``)."""
         unknown = set(filters) - _PRUNE_FILTER_NAMES
         if unknown:
             raise TypeError("SessionMaintenanceMixin._prune_filter_where() got an unexpected "
-                            f"keyword argument {sorted(unknown)[0]!r}")
-        clauses = ["s.ended_at IS NOT NULL"]
+                            f"keyword argument {min(unknown)!r}")
+        clauses = [] if include_open else ["s.ended_at IS NOT NULL"]
         if lineage_tips_only:
             clauses.append("COALESCE(s.end_reason, '') <> 'compression'")
         params: list = []
@@ -284,7 +291,10 @@ class SessionMaintenanceMixin:
 
     def count_open_prune_matches(self, older_than_days: Optional[float] = None, source: str | None = None,
                                  **filters) -> int:
-        """Count open sessions a matching prune skips (``ended_at`` guard inverted); visibility-only."""
+        """Count open sessions a matching prune/archive skips (``ended_at`` guard inverted);
+        visibility-only. With ``include_open`` the selection already contains them: nothing is skipped."""
+        if filters.get("include_open"):
+            return 0
         where, params = self._prune_where(older_than_days, source, filters)
         ended_guard = "s.ended_at IS NOT NULL"
         if not where.startswith(ended_guard):
@@ -321,14 +331,20 @@ class SessionMaintenanceMixin:
 
     def prune_sessions(self, older_than_days: Optional[float] = 90, source: str | None = None,
                        sessions_dir: Optional[Path] = None, exclude_active_write_guards: bool = False,
-                       **filters) -> int:
+                       deleted_ids: Optional[list] = None, **filters) -> int:
         """Delete ended sessions inactive for ``older_than_days`` (an explicit ``started_before`` /
         ``last_active_before`` overrides it; None = no implicit bound) matching the filters.
         Children outside the window are orphaned (parent NULLed), not cascade-deleted.  With
         *sessions_dir*, transcript files are removed outside the DB transaction.
         ``exclude_active_write_guards`` (automatic maintenance) skips rows under a live turn lease
         or compression lock while expired/dead holders are reclaimed and fenced.  A compression
-        ancestor is deleted only together with every continuation after it (``whole_lineages``)."""
+        ancestor is deleted only together with every continuation after it (``whole_lineages``).
+        ``deleted_ids`` (the owning gateway) receives the removed ids, so it can retire their
+        in-memory routes and live sessions after the commit."""
+        if filters.get("include_open"):
+            # Deletion is not reversible, so the ended-session guard is structural here: the
+            # archive-only escape hatch (#139597) must never reach the delete path.
+            raise ValueError("prune_sessions() never deletes open sessions: include_open is archive-only")
         where, where_params = self._prune_where(older_than_days, source, filters, whole_lineages=True)
         removed_ids: list[str] = []
         def _do(conn):
@@ -336,6 +352,9 @@ class SessionMaintenanceMixin:
             session_ids = {row["id"] for row in cursor.fetchall()}
             if exclude_active_write_guards:
                 session_ids -= self._guarded_ids(conn, session_ids)
+            from hermes_state_mutation_retirement import prune_retired_tombstones, retire_prunable
+            session_ids = retire_prunable(conn, sorted(session_ids))
+            prune_retired_tombstones(conn)  # every prune pass also reclaims expired deletion tombstones
             if not session_ids:
                 return 0
             # Batched: a cron-heavy store prunes tens of thousands of ids in one call.
@@ -348,8 +367,12 @@ class SessionMaintenanceMixin:
             self._delete_unreferenced_system_prompts(conn)
             return len(session_ids)
         count = self._execute_write(_do)
+        from hermes_state_media import collect_retired_media
+        collect_retired_media(self)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
+        if deleted_ids is not None:
+            deleted_ids.extend(removed_ids)
         return count
 
     def _page_pragmas(self, names: tuple[str, ...], fail_msg: str) -> Optional[list]:

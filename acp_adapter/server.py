@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 import contextlib
 import contextvars
 import logging
@@ -251,6 +251,12 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
     _MODE_TO_EDIT_APPROVAL_POLICY = {mode: spec[0] for mode, spec in _MODES.items()}
     _EDIT_APPROVAL_POLICY_TO_MODE = {spec[0]: mode for mode, spec in _MODES.items()}
 
+    def __new__(cls, session_manager=None):
+        if session_manager is None:
+            from acp_adapter.gateway_server import GatewayACPAgent
+            return GatewayACPAgent()
+        return super().__new__(cls)
+
     def __init__(self, session_manager: SessionManager | None = None):
         super().__init__()
         self.session_manager = session_manager or SessionManager()
@@ -415,7 +421,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         update = SessionInfoUpdate(
             session_update="session_info_update",
             title=title if isinstance(title, str) and title.strip() else None,
-            updated_at=datetime.now(timezone.utc).isoformat(),
+            updated_at=datetime.now(UTC).isoformat(),
             field_meta=self._provenance_meta(
                 session_id, current_hermes_session_id or session_id, previous_hermes_session_id
             ),

@@ -307,8 +307,7 @@ def _settings() -> dict:
             "a client_id — either as env vars (HERMES_DASHBOARD_OIDC_ISSUER + "
             "HERMES_DASHBOARD_OIDC_CLIENT_ID) or under "
             "dashboard.oauth.self_hosted.{issuer,client_id} in config.yaml — or pass "
-            "--insecure to skip the OAuth gate entirely. (issuer set: %s; client_id set: %s)"
-            % (bool(issuer), bool(client_id)))
+            f"--insecure to skip the OAuth gate entirely. (issuer set: {bool(issuer)}; client_id set: {bool(client_id)})")
     return {
         "issuer": issuer, "client_id": client_id,
         "scopes": setting("HERMES_DASHBOARD_OIDC_SCOPES", "scopes") or _DEFAULT_SCOPES,

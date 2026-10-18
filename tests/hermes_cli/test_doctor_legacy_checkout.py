@@ -13,6 +13,7 @@ def _git(cwd, *args):
     result = subprocess.run(
         ["git", "-C", str(cwd), *args],
         capture_output=True, text=True, encoding="utf-8",
+        check=False,
     )
     assert result.returncode == 0, f"git {args} failed: {result.stderr}"
     return result.stdout.strip()

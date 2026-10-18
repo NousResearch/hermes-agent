@@ -56,8 +56,7 @@ def _tts_tool_row(path: str) -> dict[str, Any]:
     return {
         "role": "tool",
         "content": (
-            '{"success": true, "file_path": "%s", "media_tag": "MEDIA:%s"}'
-            % (path, path)
+            f'{{"success": true, "file_path": "{path}", "media_tag": "MEDIA:{path}"}}'
         ),
     }
 

@@ -20,8 +20,10 @@ from starlette.concurrency import run_in_threadpool
 from fastapi import HTTPException, Request
 from gateway.status import (
     derive_gateway_busy, derive_gateway_drainable, normalize_updated_at, parse_active_agents,
-    profile_platforms_from_multiplexer, resolve_gateway_liveness, retained_gateway_state,
+    profile_platforms_from_multiplexer, resolve_gateway_liveness,
+    retained_gateway_state,
     runtime_status_heartbeat_age_s, runtime_status_is_stale)
+from gateway.status_served import local_liveness_pid
 from hermes_cli import __release_date__
 from hermes_cli.config import get_config_path, get_env_path
 from hermes_cli.version_info import get_version_info
@@ -54,6 +56,7 @@ _profile_cli_args = late("_profile_cli_args", "hermes_cli.web_server_profiles")
 get_install_id = late("get_install_id")
 get_running_pid_cached = late("get_running_pid_cached", "gateway.status")
 get_runtime_status_running_pid = late("get_runtime_status_running_pid", "gateway.status")
+served_profile_runtime = late("served_profile_runtime", "gateway.status_served")
 load_config = late("load_config", "hermes_cli.config")
 read_runtime_status = late("read_runtime_status", "gateway.status")
 _open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_cli.web_server_sessions")
@@ -95,7 +98,7 @@ async def _status_active_sessions() -> int:
         return await asyncio.wait_for(
             run_in_threadpool(_count_status_active_sessions),
             timeout=_STATUS_ACTIVE_SESSIONS_TIMEOUT)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         _log.debug("/api/status active session count exceeded %.2fs; returning 0",
                    _STATUS_ACTIVE_SESSIONS_TIMEOUT)
     except Exception as exc:
@@ -185,7 +188,7 @@ def _is_profile_platform_status_key(key: object) -> bool:
     return isinstance(key, str) and bool(_PROFILE_PLATFORM_STATUS_KEY_RE.fullmatch(key))
 
 
-def _status_platform_key_allowed(key: object, configured: "set[str] | None") -> bool:
+def _status_platform_key_allowed(key: object, configured: set[str] | None) -> bool:
     """Whether a runtime-status platform key may appear publicly: namespaced
     ``<profile>:<platform>`` keys are validated against the grammar *unconditionally* (a
     failed config-set load must not fail open into projecting arbitrary keys from a
@@ -261,7 +264,7 @@ def _bounded_health_probe():
             return False, None
 
 
-def _project_gateway_platforms(gateway_platforms: dict, configured: "set[str] | None",
+def _project_gateway_platforms(gateway_platforms: dict, configured: set[str] | None,
                                gateway_running: bool, gateway_state) -> dict:
     """Public projection of a runtime's platform map (see ``_status_platform_key_allowed``
     for the key rules). A cleanly stopped gateway's platform states are stale noise and are
@@ -310,15 +313,28 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> di
     runtime = local_runtime
     if runtime is None and remote_health_body and remote_health_body.get("gateway_state"):
         runtime = remote_health_body
+    # Unscoped, the profile is the process's own home (a pooled ``hermes --profile X serve``).
+    own_home = profile_dir or get_process_hermes_home()
     if liveness.runtime is not None:
         # Served by the multiplexer: its record is this profile's runtime, with the profile's own
-        # adapters under ``<profile>:<platform>`` re-keyed to the standalone shape. Unscoped, the
-        # profile is the process's own home (a pooled ``hermes --profile X serve``).
+        # adapters under ``<profile>:<platform>`` re-keyed to the standalone shape.
         # Fold on the profile NAME, never ``profile_dir.name``: ``?profile=default`` resolves the
         # root itself, whose basename (``.hermes``) matched nothing and read as a named id (#123088).
-        served_name = profile_name_for_home(profile_dir or get_process_hermes_home())
+        served_name = profile_name_for_home(own_home)
         runtime = {**liveness.runtime,
                    "platforms": profile_platforms_from_multiplexer(liveness.runtime, served_name or "")}
+    elif local_liveness_pid(liveness) is not None:
+        # The PID rung answers before the multiplexer rung, and a served profile's gateway.lock is
+        # held by the multiplexer itself, so the ladder returns without its record while the
+        # profile's own gateway_state.json may be a retired standalone gateway's (#139080). The
+        # shared rule (also the messaging card's) picks the multiplexer record only when the lock
+        # holder IS the multiplexer and the profile's own record proves no live gateway.
+        try:
+            runtime = await run_in_threadpool(
+                served_profile_runtime, own_home, local_runtime, gateway_pid=local_liveness_pid(liveness)) or runtime
+        except Exception:  # health: allow BLE001 -- status route must never 500; traceback is logged
+            # A failed lookup keeps the profile's own record.
+            _log.warning("/api/status multiplexer record lookup failed", exc_info=True)
 
     gateway_state = None
     gateway_platforms: dict = {}
@@ -353,15 +369,15 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> di
     if gateway_running and gateway_state is None and remote_health_body is not None:
         gateway_state = "running"
 
-    # ``liveness.runtime`` is set only when the shared multiplexer answered for a served profile: its
-    # gateway IS that process, so name every bot a restart would blip ("default, alpha, beta").
-    served = (liveness.runtime or {}).get("served_profiles")
+    # A live multiplexer's record (the host's own, or the one serving this profile) names every
+    # profile a restart would blip ("default, alpha, beta"); a standalone gateway's names none.
+    shared_with = (runtime or {}).get("served_profiles") if gateway_running else None
     return {
         "runtime": runtime, "gateway_running": gateway_running, "gateway_pid": liveness.pid,
         "gateway_state": gateway_state, "gateway_platforms": gateway_platforms,
         "gateway_exit_reason": gateway_exit_reason, "gateway_updated_at": gateway_updated_at,
         "gateway_heartbeat_stale_s": gateway_heartbeat_stale_s,
-        "gateway_shared_with": [str(p) for p in served] if isinstance(served, list) else None}
+        "gateway_shared_with": [str(p) for p in shared_with] if isinstance(shared_with, list) else None}
 
 
 def _auth_gate_status() -> dict[str, Any]:

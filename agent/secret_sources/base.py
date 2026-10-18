@@ -118,7 +118,7 @@ class FetchResult:
     def ok(self) -> bool:
         return self.error is None
 
-    def fail(self, error: str, kind: ErrorKind) -> "FetchResult":
+    def fail(self, error: str, kind: ErrorKind) -> FetchResult:
         self.error, self.error_kind = error, kind
         return self
 
@@ -191,7 +191,7 @@ class SecretSource(ABC):
         """Informational ``{key: {"description": str, "default": Any}}`` for setup UIs."""
         return {}
 
-    def remediation(self, kind: Optional["ErrorKind"], cfg: dict) -> str:
+    def remediation(self, kind: Optional[ErrorKind], cfg: dict) -> str:
         """One-line actionable next step for a failed fetch (pure); "" suppresses the hint."""
         if kind is None:
             return ""
@@ -227,6 +227,7 @@ def run_cli(argv: Sequence[str], *, env: dict[str, str], timeout: float, label: 
         return subprocess.run(
             list(argv), env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=timeout, stdin=stdin,
+            check=False,
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(timeout_message) from exc

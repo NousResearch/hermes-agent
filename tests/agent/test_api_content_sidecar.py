@@ -652,7 +652,7 @@ class TestPrologueMoaAndInPlaceBackfill:
             get_active_compression_failure_cooldown=lambda: None,
         )
 
-        def _compress(messages, _system, approx_tokens=None, task_id=None):
+        def _compress(messages, _system, approx_tokens=None, task_id=None, trigger=None):
             # Emulate compress_context in in_place mode: archive_and_compact
             # already inserted these rows (api_content=NULL — the stamp has
             # not happened yet), fresh copies replace the live dicts.
@@ -844,7 +844,7 @@ class TestFlushSanitizeDivergenceCapture:
         """get_messages_as_conversation strips <memory-context> fences on
         load; the sent bytes must survive in the sidecar so a reloaded
         session replays what was actually on the wire."""
-        from agent.memory_manager import sanitize_context
+        from agent.memory_context import sanitize_context
 
         db = SessionDB(db_path=tmp_path / "state.db")
         sid = "sess-fence"

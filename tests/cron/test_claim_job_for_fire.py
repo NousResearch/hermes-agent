@@ -11,6 +11,7 @@ import threading
 import time
 
 import pytest
+from datetime import UTC
 
 
 @pytest.fixture
@@ -323,7 +324,7 @@ def test_claim_seconds_before_the_slot_owns_it_once(temp_home, monkeypatch):
     executions.finish_execution(row["id"], success=True)
     jobs.mark_job_run(job["id"], True)
 
-    backstop = slot_dt.astimezone(timezone.utc) + timedelta(minutes=11)
+    backstop = slot_dt.astimezone(UTC) + timedelta(minutes=11)
     monkeypatch.setattr(jobs, "_hermes_now", lambda: backstop)
     monkeypatch.setattr(executions, "_hermes_now", lambda: backstop)
     assert jobs.claim_job_for_fire(job["id"], return_job=True) is False, (

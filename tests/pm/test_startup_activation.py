@@ -11,7 +11,7 @@ import pm
 from pm import paths, registry
 from pm.lock import Lockfile
 from pm.packages import BinaryPackage
-from tests.pm._fixtures import make_tar, served as served
+from tests.pm._fixtures import make_tar, served as served  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 
 
 @pytest.fixture

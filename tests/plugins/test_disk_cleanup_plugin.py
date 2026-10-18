@@ -19,7 +19,7 @@ import os
 import shutil
 import sys
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 
 import pytest
@@ -278,7 +278,7 @@ class TestProtectedDirsNeverRmtreed:
         old_file.write_text("x")
         assert dg.guess_category(cache) is None, "the cache dir itself is never tracked"
         assert dg.guess_category(old_file) == "temp", "files under cache/ still age out as temp"
-        old_ts = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()
+        old_ts = (datetime.now(UTC) - timedelta(days=8)).isoformat()
         dg.save_tracked([
             {"path": str(cache), "category": "temp", "timestamp": old_ts, "size": 0},
             {"path": str(old_file), "category": "temp", "timestamp": old_ts, "size": 1},
@@ -301,7 +301,7 @@ class TestProtectedDirsNeverRmtreed:
         assert dg.guess_category(att) is None
         # A stale pre-fix entry must be dropped by re-validation instead of deleted.
         dg.save_tracked([{"path": str(att), "category": "test",
-                          "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
+                          "timestamp": datetime.now(UTC).isoformat(), "size": 1}])
         # A kanban file the call itself CREATES must not be tracked either.
         new_att = att.with_name("test_new.sh")
         _run_tool(pi, "write_file", {"path": str(new_att), "content": "x"},
@@ -335,7 +335,7 @@ class TestGitWorktreeFilesNeverCleaned:
         f.write_text("x")
         assert dg.guess_category(f) is None
         dg.save_tracked([{"path": str(f), "category": "test",
-                          "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
+                          "timestamp": datetime.now(UTC).isoformat(), "size": 1}])
         result = dg.quick()
         assert f.exists(), "git-owned test files must never be auto-deleted"
         assert result["deleted"] == 0
@@ -352,7 +352,7 @@ class TestGitWorktreeFilesNeverCleaned:
         scratch.write_text("x")
         assert dg.guess_category(scratch) == "test"
         dg.save_tracked([{"path": str(scratch), "category": "test",
-                          "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
+                          "timestamp": datetime.now(UTC).isoformat(), "size": 1}])
         result = dg.quick()
         assert not scratch.exists()
         assert result["deleted"] == 1
@@ -390,7 +390,7 @@ class TestGitWorktreeFilesNeverCleaned:
 
         # A stale pre-fix entry is dropped by quick()'s re-validation, not deleted, while
         # untracked scratch beside it in the same repo is still cleaned.
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         dg.save_tracked([{"path": str(p), "category": "test", "timestamp": now, "size": 1}
                          for p in (tracked, scratch)])
         result = dg.quick()
@@ -482,8 +482,8 @@ class TestStaleCronEntryMigration:
         run_md.write_text("x")
 
         # Old enough to be deleted (>14 days)
-        from datetime import datetime, timezone, timedelta
-        old_ts = (datetime.now(timezone.utc) - timedelta(days=20)).isoformat()
+        from datetime import datetime, timedelta
+        old_ts = (datetime.now(UTC) - timedelta(days=20)).isoformat()
 
         tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
         tracked_file.parent.mkdir(parents=True, exist_ok=True)

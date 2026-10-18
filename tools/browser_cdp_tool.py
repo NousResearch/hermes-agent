@@ -45,7 +45,13 @@ _CDP_FLAGGED_BINARY_PATHS: dict[str, tuple] = {
 }
 
 
-def _redact_cdp_output(value: Any, *, always_paths: tuple = (), flagged_paths: tuple = ()) -> Any:
+def _redact_cdp_output(
+    value: Any,
+    *,
+    always_paths: tuple = (),
+    flagged_paths: tuple = (),
+    _depth: int = 0,
+) -> Any:
     """Redact browser-originated CDP result text; opaque bytes stay byte-identical.
 
     Exemptions come ONLY from the calling method's spec as exact result paths. Path
@@ -53,13 +59,24 @@ def _redact_cdp_output(value: Any, *, always_paths: tuple = (), flagged_paths: t
     solely as a sibling on the trusted carrier object — never as ambient trust a
     ``Runtime.evaluate`` by-value object could spoof.
 
+    ``_depth`` stops a page-controlled tree from raising RecursionError. The
+    unread remainder is replaced, not returned raw.
+
     See #94138, #94142.
     """
-    from agent.redact import redact_sensitive_text
+    from agent.redact import (
+        REDACT_WALK_DEPTH_MARKER,
+        REDACT_WALK_MAX_DEPTH,
+        redact_sensitive_text,
+    )
+    if _depth >= REDACT_WALK_MAX_DEPTH:
+        return REDACT_WALK_DEPTH_MARKER
     if isinstance(value, str):
         return redact_sensitive_text(value, force=True)
     if isinstance(value, (list, tuple)):
-        return type(value)(_redact_cdp_output(item) for item in value)
+        return type(value)(
+            _redact_cdp_output(item, _depth=_depth + 1) for item in value
+        )
     if not isinstance(value, dict):
         return value
     base64_flagged = value.get("base64Encoded") is True
@@ -72,7 +89,11 @@ def _redact_cdp_output(value: Any, *, always_paths: tuple = (), flagged_paths: t
         opaque = leaf(always_paths, key) or (leaf(flagged_paths, key) and base64_flagged)
         out_key = redact_sensitive_text(key, force=True) if isinstance(key, str) else key  # by-value objects can carry a secret as a KEY
         redacted[out_key] = item if isinstance(item, str) and opaque else _redact_cdp_output(
-            item, always_paths=descend(always_paths, key), flagged_paths=descend(flagged_paths, key))
+            item,
+            always_paths=descend(always_paths, key),
+            flagged_paths=descend(flagged_paths, key),
+            _depth=_depth + 1,
+        )
     return redacted
 
 
@@ -302,9 +323,9 @@ def browser_cdp(method: str, params: Optional[dict[str, Any]] = None, target_id:
     safe_timeout = max(1.0, min(safe_timeout, 300.0))
     try:
         result = _run_async(_cdp_call(endpoint, method, call_params, target_id, safe_timeout))
-    except asyncio.TimeoutError as exc:
+    except TimeoutError as exc:
         return tool_error(f"CDP call timed out after {safe_timeout}s: {exc}", method=method)
-    except (TimeoutError, RuntimeError) as exc:
+    except RuntimeError as exc:
         return tool_error(str(exc), method=method)
     except WebSocketException as exc:
         return tool_error(f"WebSocket error talking to CDP at {endpoint}: {exc}. The browser may have "

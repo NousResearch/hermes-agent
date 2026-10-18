@@ -136,7 +136,18 @@ def _toolset_configuration_platform(ts_key: str, default: str = "cli") -> str:
     """Platform a platform-less configuration UI should target: a toolset restricted away from ``default``
     must be configured on a supported platform, else the save helper drops it and the UI reports a no-op."""
     allowed = _TOOLSET_PLATFORM_RESTRICTIONS.get(ts_key)
-    return default if not allowed or default in allowed else sorted(allowed)[0]
+    return default if not allowed or default in allowed else min(allowed)
+
+
+# A classic CLI on a gateway session reads plugin toolsets from the gateway instead of loading plugins
+# (installed by ``_ensure_gateway_session``): ``() -> ([(key, label, description)], {portable MCP})`` or
+# None (off the gateway: this process's own registry).
+_gateway_plugin_toolsets = None
+
+
+def _projected_plugin_toolsets():
+    provider = _gateway_plugin_toolsets
+    return provider() if provider is not None else None
 
 
 def _get_effective_configurable_toolsets():
@@ -144,9 +155,11 @@ def _get_effective_configurable_toolsets():
     result = list(CONFIGURABLE_TOOLSETS)
     seen = {ts_key for ts_key, _, _ in result}
     try:
-        from hermes_cli.plugins import discover_plugins, get_plugin_toolsets
-        discover_plugins()  # idempotent — ensures plugins are loaded
-        for entry in get_plugin_toolsets():
+        projected = _projected_plugin_toolsets()
+        if projected is None:
+            from hermes_cli.plugins import discover_plugins, get_plugin_toolsets
+            discover_plugins()  # idempotent — ensures plugins are loaded
+        for entry in projected[0] if projected is not None else get_plugin_toolsets():
             if entry[0] not in seen:
                 seen.add(entry[0])
                 result.append(entry)
@@ -158,6 +171,8 @@ def _get_effective_configurable_toolsets():
 def _get_plugin_toolset_keys() -> set:
     """Return the set of toolset keys provided by plugins."""
     try:
+        if (projected := _projected_plugin_toolsets()) is not None:
+            return {key for key, _, _ in projected[0]}
         # Non-blocking on CLI startup: while background discovery is still importing, serve last
         # launch's persisted key set instead of joining the discovery thread.
         from hermes_cli.plugins import get_plugin_toolset_keys_nowait
@@ -221,8 +236,6 @@ _NOUS = {"requires_nous_auth": True}
 _OPENAI_VOICE_KEY = _key("VOICE_TOOLS_OPENAI_KEY", "OpenAI API key", "https://platform.openai.com/api-keys")
 _ELEVENLABS_KEY = _key("ELEVENLABS_API_KEY", "ElevenLabs API key", "https://elevenlabs.io/app/settings/api-keys")
 _DEEPINFRA_KEY = _key("DEEPINFRA_API_KEY", "DeepInfra API key", "https://deepinfra.com/dash/api_keys")
-_LANGFUSE_PUBLIC = ("HERMES_LANGFUSE_PUBLIC_KEY", "Langfuse public key (pk-lf-...)")
-_LANGFUSE_SECRET = ("HERMES_LANGFUSE_SECRET_KEY", "Langfuse secret key (sk-lf-...)")
 
 TOOL_CATEGORIES = {
     "tts": {
@@ -357,16 +370,6 @@ TOOL_CATEGORIES = {
                  computer_use_backend="cua", post_setup="cua_driver"),
         ],
     },
-    "langfuse": {
-        "name": "Langfuse Observability", "icon": "📊",
-        "providers": [
-            _row("Langfuse Cloud", tag="Hosted Langfuse (cloud.langfuse.com)", post_setup="langfuse",
-                 env_vars=[_key(*_LANGFUSE_PUBLIC, "https://cloud.langfuse.com"), _key(*_LANGFUSE_SECRET, "https://cloud.langfuse.com")]),
-            _row("Langfuse Self-Hosted", tag="Self-hosted Langfuse instance", post_setup="langfuse",
-                 env_vars=[_key(*_LANGFUSE_PUBLIC), _key(*_LANGFUSE_SECRET),
-                           _key("HERMES_LANGFUSE_BASE_URL", "Langfuse server URL (e.g. http://localhost:3000)", default="http://localhost:3000")]),
-        ],
-    },
 }
 
 # Env-var fallback for toolsets NOT in TOOL_CATEGORIES. `vision` is only a presence marker (reconfigure menu +
@@ -415,8 +418,10 @@ def enabled_mcp_server_names(config: dict) -> set[str]:
         if isinstance(server_cfg, dict) and mcp_server_enabled(server_cfg)
     }
     try:
-        from hermes_cli.plugins import get_portable_mcp_server_names_nowait
-        portable = get_portable_mcp_server_names_nowait()
+        projected = _projected_plugin_toolsets()
+        if projected is None:
+            from hermes_cli.plugins import get_portable_mcp_server_names_nowait
+        portable = projected[1] if projected is not None else get_portable_mcp_server_names_nowait()
         names |= portable - set(mcp_servers)  # native config wins on a name collision (mirrors _load_mcp_config)
     except Exception:
         logger.debug("Failed to include portable MCP servers", exc_info=True)
@@ -697,11 +702,19 @@ def _merge_mcp_servers(
     """Explicit passthrough entries plus this platform's MCP servers: listed names form an allowlist, else every
     globally enabled server (when ``include_default_mcp_servers``); the ``no_mcp`` sentinel disables all."""
     enabled_mcp_servers = enabled_mcp_server_names(config)
-    result = explicit_passthrough - enabled_mcp_servers
+    configured = config.get("mcp_servers") if isinstance(config.get("mcp_servers"), dict) else {}
+    known = enabled_mcp_servers | {str(name) for name in configured}
+    # ``mcp-<server>`` names the same server as its bare alias: either spelling selects only that server
+    # (unless a server is literally named ``mcp-<server>``).
+    explicit_passthrough = {ts[4:] if ts.startswith("mcp-") and ts not in known
+                            and ts[4:] in known else ts for ts in explicit_passthrough}
+    result = explicit_passthrough - known
     if "no_mcp" in toolset_names:
         return result - {"no_mcp"}
     explicit_mcp_servers = explicit_passthrough & enabled_mcp_servers
-    if include_default_mcp_servers and not explicit_mcp_servers:
+    # A listed server that is configured but disabled is still the user's server selection: it stays
+    # off, and it must not fall through to every enabled server.
+    if include_default_mcp_servers and not explicit_passthrough & known:
         return result | enabled_mcp_servers
     return result | explicit_mcp_servers
 

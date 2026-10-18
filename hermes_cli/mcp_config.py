@@ -457,7 +457,7 @@ def _probe_single_server(
             details["initialized"] = False
         try:
             server = await asyncio.wait_for(_connect_server(name, config), timeout=connect_timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             # str(TimeoutError()) is '' — printed verbatim it was a blank "Authentication failed:".
             raise TimeoutError(
                 f"Connecting to MCP server '{name}' timed out after {float(connect_timeout):.0f}s "

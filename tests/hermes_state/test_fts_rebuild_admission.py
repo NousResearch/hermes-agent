@@ -170,7 +170,7 @@ class TestSchemaPathAdmission:
         # Drop one sync trigger out-of-band: next open takes the
         # triggers_need_repair branch in _init_schema.
         raw = sqlite3.connect(str(db_path))
-        raw.execute(f"DROP TRIGGER IF EXISTS {sorted(_FTS_TRIGGERS)[0]}")
+        raw.execute(f"DROP TRIGGER IF EXISTS {min(_FTS_TRIGGERS)}")
         raw.commit()
         raw.close()
 

@@ -35,6 +35,24 @@ class GatewaySessionEndMixin:
                 adapter, str(source.chat_id), message, source.platform.value if source.platform else "",
                 "Failed to send session-end plugin message to %s:%s: %s", metadata=metadata)
 
+    async def _reset_session_off_loop(self, *, session_key: Optional[str] = None, **kwargs: Any) -> None:
+        """Plugin ``on_session_reset`` off-loop under the profile owning ``session_key``, bounded like
+        finalize: a viewer's ``/new`` resets its conversation on the owner (gateway/session_viewer_close)."""
+        def _call() -> None:
+            from hermes_cli.lifecycle import invoke_hook
+            invoke_hook("on_session_reset", **kwargs)
+
+        try:
+            await asyncio.wait_for(
+                self._run_housekeeping_in_executor(self._run_release_in_profile_scope, _call, (), session_key),
+                timeout=self._FINALIZE_TIMEOUT_S,
+            )
+        except TimeoutError:
+            logger.warning("Session reset hooks (%s) exceeded %ss; proceeding without blocking the event loop.",
+                           kwargs.get("old_session_id"), self._FINALIZE_TIMEOUT_S)
+        except Exception:
+            logger.debug("Session reset hooks (%s) failed", kwargs.get("old_session_id"), exc_info=True)
+
     async def _finalize_session_off_loop(
         self, *, session_id: Any, platform: str, reason: str, session_key: Optional[str] = None, **extra: Any,
     ) -> list[str]:
@@ -54,7 +72,7 @@ class GatewaySessionEndMixin:
                 self._run_housekeeping_in_executor(self._run_release_in_profile_scope, _call, (), session_key),
                 timeout=self._FINALIZE_TIMEOUT_S,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 "Session finalize hooks (%s, reason=%s) exceeded %ss; proceeding without blocking the event loop "
                 "(the worker thread is left to finish on its own).", session_id, reason, self._FINALIZE_TIMEOUT_S,

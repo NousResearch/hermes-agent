@@ -3049,6 +3049,25 @@ _DYNAMIC_TOP_LEVEL_KEYS = frozenset({
 # both top-level and under ``gateway``; anything below the name is accepted (open ``extra``).
 _PLATFORM_CONTAINER_KEYS = frozenset({"platforms"})
 
+# Containers whose immediate child is user-named but whose descendants follow the schema of a
+# template child in DEFAULT_CONFIG. This keeps dynamic names open without making their fields open.
+_DYNAMIC_SCHEMA_TEMPLATES = {
+    ("moa", "presets"): "default",
+}
+
+
+def _dynamic_template_fields(container: tuple[str, ...]) -> tuple[str, ...]:
+    """Known fields of a templated container's children that the template omits.
+
+    The seeded ``moa.presets.default`` carries only its slots and the budget, while the preset
+    schema also accepts ``fanout``, ``reference_timeout``, the temperatures, and the policy. The
+    preset normalizer owns that list, so it is the source of truth here.
+    """
+    if container == ("moa", "presets"):
+        from hermes_cli.moa_config import _FLAT_PRESET_KEYS
+        return _FLAT_PRESET_KEYS
+    return ()
+
 
 # Top-level keys whose sub-keys are accepted without deep checking.
 _OPEN_SUBKEY_TOP_LEVEL_KEYS = _OPEN_DICT_TOP_LEVEL_KEYS | _DYNAMIC_TOP_LEVEL_KEYS | _SCHEMA_DEFINED_DICT_KEYS
@@ -3110,6 +3129,17 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
     for seg in segments[1:]:
         if seg in _PLATFORM_CONTAINER_KEYS or not isinstance(node, dict) or not node:
             return True, None
+        template_key = _DYNAMIC_SCHEMA_TEMPLATES.get(tuple(consumed))
+        if template_key is not None:
+            template = node.get(template_key)
+            if isinstance(template, dict):
+                # Scalar placeholders for fields the template omits; seeded children keep
+                # their real shape so ``aggregator.<field>`` is still checked.
+                fields = _dynamic_template_fields(tuple(consumed))
+                template = {**dict.fromkeys(fields), **template}
+            node = template
+            consumed.append(seg)
+            continue
         if seg not in node:
             # ``gateway.discord.<field>``: the path minus its wrong prefix is itself a known key.
             # Checked BEFORE the fuzzy sibling: a structural match is proof, a fuzzy match is a

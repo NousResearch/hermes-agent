@@ -9,6 +9,9 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
+from hermes_cli.moa_config import normalize_moa_config
 from hermes_cli.web_models import MoaConfigPayload, MoaModelSlot, MoaPresetPayload
 from hermes_cli.web_routers.models import set_moa_models
 
@@ -82,6 +85,82 @@ class TestSetMoaModelsPreservesUndeclaredKeys:
         )
 
 
+def _put_payload(payload: MoaConfigPayload) -> tuple[dict, dict]:
+    saved_cfg = {}
+
+    def fake_save_config(cfg, **_kwargs):
+        saved_cfg.update(cfg)
+
+    with (
+        patch("hermes_cli.config.load_config", return_value={}),
+        patch("hermes_cli.config.save_config", side_effect=fake_save_config),
+        patch("hermes_cli.web_server_profiles._profile_scope"),
+    ):
+        response = set_moa_models(payload)
+    return response, saved_cfg
+
+
+@pytest.mark.parametrize("budget", [200, 12_000, 50_000])
+def test_named_preset_put_round_trip_preserves_reference_tool_result_budget(budget):
+    get_response = normalize_moa_config({
+        "default_preset": "review",
+        "presets": {
+            "review": {
+                "reference_models": [{"provider": "openai-codex", "model": "gpt-5.5"}],
+                "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+                "reference_tool_result_budget": budget,
+            },
+        },
+    })
+
+    response, saved_cfg = _put_payload(MoaConfigPayload(**get_response))
+
+    assert response["presets"]["review"]["reference_tool_result_budget"] == budget
+    assert saved_cfg["moa"]["presets"]["review"]["reference_tool_result_budget"] == budget
+
+
+@pytest.mark.parametrize("budget", [200, 12_000, 50_000])
+def test_legacy_flat_put_round_trip_preserves_reference_tool_result_budget(budget):
+    payload = MoaConfigPayload(
+        reference_models=[MoaModelSlot(provider="openai-codex", model="gpt-5.5")],
+        aggregator=MoaModelSlot(provider="openrouter", model="anthropic/claude-opus-4.8"),
+        reference_tool_result_budget=budget,
+    )
+
+    response, saved_cfg = _put_payload(payload)
+
+    assert response["reference_tool_result_budget"] == budget
+    assert saved_cfg["moa"]["presets"]["default"]["reference_tool_result_budget"] == budget
+
+
+def test_legacy_flat_payload_survives_real_dashboard_save(tmp_path, monkeypatch):
+    """Legacy payloads retain their settings through a real save and reload."""
+    import yaml
+
+    from hermes_cli.config import get_config_path, read_raw_config
+    from hermes_cli.web_routers.models import get_moa_models
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    legacy = {
+        "reference_models": [{"provider": "openrouter", "model": "example/reference"}],
+        "aggregator": {"provider": "openrouter", "model": "example/aggregator"},
+        "reference_temperature": 0.3,
+        "aggregator_temperature": 0.7,
+        "reference_timeout": 45,
+        "fanout": "every_n:3",
+        "degraded_reference_policy": "silent",
+        "enabled": True,
+    }
+    get_config_path().write_text(
+        yaml.safe_dump({"moa": legacy, "agent": {"max_iterations": 7}}),
+        encoding="utf-8",
+    )
+    expected = normalize_moa_config(legacy)
+
+    before = read_raw_config()["moa"]
+    set_moa_models(MoaConfigPayload(**before))
+    assert get_moa_models() == expected
+    assert read_raw_config()["agent"]["max_iterations"] == 7
 
 
 def test_moa_save_writes_only_the_moa_section(tmp_path, monkeypatch):

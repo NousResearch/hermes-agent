@@ -8,12 +8,15 @@ Compression and reset may later advance the physical target, never FIFO identity
 from dataclasses import asdict, replace
 from datetime import datetime
 import json
+import logging
 from pathlib import Path
 
 from gateway.config import Platform
 from gateway.session import SessionEntry, SessionSource
 from gateway.session_contract import SessionRef
 from hermes_state_runtime import RuntimeStoreError
+
+logger = logging.getLogger(__name__)
 
 
 def bind_native_transport(authority, actor, identity):
@@ -126,6 +129,37 @@ def _route_is_usage_stamp(row):
     return str(row.get('billing_provider') or '').strip().lower() == 'custom'
 
 
+def _is_own_process_endpoint(provider, base_url):
+    """True when *base_url* is the fixed endpoint the registered external-process *provider* declares
+    (``process://<name>``, copilot-acp's ``acp://copilot``). Its runtime records that pseudo-URL as the
+    session's route and never reads a configured ``base_url``, so it names no endpoint of its own: the
+    provider alone is the route. Only the saved provider's own registration counts, never another
+    provider's nor an unregistered ``process://`` name.
+
+    A row stamped under a runtime override of the provider's endpoint (e.g. copilot-acp's
+    ``COPILOT_ACP_BASE_URL``) will not match the registered profile's own ``base_url`` here, and
+    falls through to the ordinary refusal path below — failing closed, not silently adopting an
+    endpoint this check never saw."""
+    if not isinstance(provider, str) or not provider.strip() or not isinstance(base_url, str):
+        return False
+    from hermes_cli.runtime_provider_backends import _is_external_process_provider
+    if not _is_external_process_provider(provider):
+        return False
+    try:
+        from providers import get_provider_profile
+        own = str(getattr(get_provider_profile(provider.strip().lower()), 'base_url', '') or '')
+    except Exception:
+        # health: allow BLE001 -- a provider's own plugin module runs arbitrary third-party init
+        # code during discovery; any exception it raises must not crash Bot Chat adoption, but it
+        # also must not vanish silently, hence the log.
+        logger.debug('provider lookup failed while checking %r for its own process endpoint', provider,
+                     exc_info=True)
+        return False
+    from hermes_cli.route_identity import normalize_route_base_url
+    own = normalize_route_base_url(own.strip().rstrip('/'))
+    return bool(own) and normalize_route_base_url(base_url.strip().rstrip('/')) == own
+
+
 def _configured_owner(saved, config):
     """The configured named entry (``providers:``/``custom_providers:``) serving the saved URL, or None."""
     from gateway.session_route_identity import resolved_route, same_route
@@ -178,10 +212,19 @@ def adopt_legacy_session(authority, actor, row):
     model_cfg = config.get('model')
     if isinstance(model_cfg, dict) and ('provider' in params or 'base_url' in params):
         from gateway.session_route_identity import ROUTE_BOUND_KEYS, resolved_route, same_route
-        saved = {'provider': params.get('provider', model_cfg.get('provider')), 'base_url': params.get('base_url')}
+        saved_provider = params.get('provider', model_cfg.get('provider'))
+        process_route = _is_own_process_endpoint(saved_provider, params.get('base_url'))
+        if process_route:
+            # The provider's own pseudo-endpoint is implied by the provider and is no launch override
+            # (the http(s)-only base_url check would refuse it). A profile that still selects this
+            # provider is the same route whatever stale ``model.base_url`` it carries, which the
+            # external-process runtime never reads.
+            params.pop('base_url', None)
+        saved = {'provider': saved_provider, 'base_url': params.get('base_url')}
         # ``auto`` matches every route, so an ``auto`` side proves nothing about the saved endpoint.
         if ('auto' not in (resolved_route(model_cfg, config)[0], resolved_route(saved, config)[0])
-                and same_route(saved, model_cfg, config)):
+                and (resolved_route(saved, config)[0] == resolved_route(model_cfg, config)[0] if process_route
+                     else same_route(saved, model_cfg, config))):
             # The profile still selects this endpoint: resume on the profile's route, so its own
             # credential (inline key, ${ENV} key, key_env) keeps its normal precedence.
             params.pop('provider', None)

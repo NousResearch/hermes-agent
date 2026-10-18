@@ -12,7 +12,7 @@ description: >-
 maintainer: scalekit-inc
 tier: community
 category: tools
-requires_hermes: ">=0.19.0"
+requires_hermes: ">=0.20.0"
 docs_url: https://github.com/scalekit-inc/hermes-tools#readme
 version: "0.1.0"
 image: https://raw.githubusercontent.com/scalekit-inc/hermes-tools/35bfcedf59442377a930c4c3ed1c818ca425c11a/screenshots/catalog-card.png

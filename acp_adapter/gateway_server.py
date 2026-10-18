@@ -613,9 +613,15 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         self._admissions[session_id] = admission_id
         if receipt.get("status") == "terminal":
             # A retry of an un-acked submit whose turn already settled: report that turn once.
-            await self._settled_receipt(client, held_id, session_id, receipt)
+            try:
+                await self._settled_receipt(client, held_id, session_id, receipt)
+            except BaseException:
+                # The cancel latch belongs to this prompt; never let it reach the next one.
+                self._pending_cancels.discard(session_id)
+                raise
         elif receipt.get("status") == "unknown":
             # A retry of an un-acked submit the owner lost in a restart: never a second turn.
+            self._pending_cancels.discard(session_id)
             self._admissions.pop(session_id, None)
             raise GatewayClientError(self._unknown_recovery(session_id, admission_id))
         self._inflight[(session_id, admission_id)] = None

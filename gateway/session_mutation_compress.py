@@ -4,6 +4,20 @@ import json
 
 from hermes_state_runtime import RuntimeStoreError
 
+# A manual /compress runs outside a turn, so no execution stamp exists to hang a status on, and the
+# canonical mutation published nothing: a TUI/dashboard viewer's status bar sat on "ready" for the
+# whole summarization (main's in-process path pinned the pair itself —
+# ``tui_gateway/methods_session.py::_compress_live`` — and that path is unreachable now that the Ink
+# TUI attaches to the shared owner). Publish the pair the auto-compaction flow already uses, which
+# both Ink (``createGatewayEventHandler``) and Desktop match, under the short-session guard and the
+# wording main used. The terminal frame keeps kind ``compacted`` whatever the outcome — Ink clears
+# its compacting state on that kind alone (``status``/``ready`` would leave the ticker frozen) — so
+# its text carries the outcome instead of main's bare ``ready``.
+_VIEWER_COMPACT_MIN_MESSAGES = 4
+_COMPACTED_STATUS = "✓ Context compression complete"
+_NO_CHANGES_STATUS = "Context compression: no changes"
+_FAILED_STATUS = "Context compression did not complete"
+
 
 def compress_request(payload):
     """``session.mutate(compress)`` payload → the shared ``CompressRequest``.
@@ -60,6 +74,15 @@ async def prepare_compress(authority, live, payload, prepared):
     # (cold session, or a managed worker that runs out of process) means no provider to call.
     cached_agent = getattr(authority.runner, '_cached_agent_for', None)
     resident = cached_agent(live.route) if callable(cached_agent) else None
+    # ``head`` is the portion being summarized — the whole history for a full run, the prefix for a
+    # partial one — so both the count and the guard follow the summarized portion: a long session
+    # whose ``here N`` leaves a short head stays silent while the summarizer runs, where main's
+    # guard read the whole history.
+    announced = len(head) >= _VIEWER_COMPACT_MIN_MESSAGES
+    if announced:
+        _publish_compaction_status(live, snapshot, 'compacting',
+                                   _compacting_status(len(head), _request_tokens(resident, head),
+                                                      request.focus_topic))
 
     def summarize():
         with policy_scope(policy, authority=authority):
@@ -76,7 +99,22 @@ async def prepare_compress(authority, live, payload, prepared):
             if not any(m.get('_compressed_summary') for m in compressed):
                 return None, compressor
             return rejoin_compressed_head_and_tail(compressed, tail), compressor
-    compressed, compressor = await asyncio.to_thread(summarize)
+    # Pessimistic until the summarizer answers, so anything that escapes it (a raise, an interrupt)
+    # retires the status without claiming a completion that did not happen.
+    # The frame still leaves prepare, one durable write ahead of the commit (``session_mutations``):
+    # another viewer's metadata edit or a model switch during the summarization bumps the revision
+    # that commit re-validates, so it can refuse (``revision_conflict``) after viewers have been told
+    # the summary completed; the requester's error and the unchanged transcript are the authority
+    # then. Publishing after the commit would move the terminal publication into
+    # ``session_mutations``, so the lifecycle stays in one module and takes that window.
+    terminal = _FAILED_STATUS
+    try:
+        compressed, compressor = await asyncio.to_thread(summarize)
+        terminal = _NO_CHANGES_STATUS if compressed is None else _COMPACTED_STATUS
+    finally:
+        # Retired on success, no-op and raise alike: a viewer must never be left showing "compacting".
+        if announced:
+            _publish_compaction_status(live, snapshot, 'compacted', terminal)
     # The same report every native /compress prints ("Compressed: N → M messages").
     from agent.manual_compression_feedback import summarize_manual_compression
     if compressed is None:
@@ -96,3 +134,19 @@ def _request_tokens(agent, messages):
     from agent.model_metadata import estimate_request_tokens_rough
     return estimate_request_tokens_rough(messages, system_prompt=getattr(agent, '_cached_system_prompt', '') or '',
                                          tools=getattr(agent, 'tools', None) or None)
+
+
+def _compacting_status(count, tokens, focus_topic):
+    focus_suffix = f', focus: "{focus_topic}"' if focus_topic else ''
+    return f"⠋ compressing {count} messages (~{tokens:,} tok){focus_suffix}…"
+
+
+def _publish_compaction_status(live, snapshot, kind, text):
+    """A manual /compress's viewer lifecycle, on the session's own stream.
+
+    The id is the receipt's logical session id (what a viewer is attached with and what the client
+    filters frames by), not ``snapshot['target']``, which follows a non-in-place rotation to the new
+    physical transcript.
+    """
+    live.event_stream.publish(snapshot['receipt']['session_id'], {'kind': kind, 'text': text},
+                              event_type='status.update')

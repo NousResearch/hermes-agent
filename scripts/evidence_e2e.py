@@ -196,9 +196,8 @@ def main() -> int:
     def bump():
         try:
             smt.skill_manage(action="patch", name="e2e-skill", evidence_merge={"success_count": 1})
-        except Exception as exc:
+        except Exception as exc:  # health: allow BLE001 -- E2E boundary: the check below asserts concurrent writers raise nothing, so any escape is recorded here, not raised
             errs.append(repr(exc))
-
     ts = [threading.Thread(target=bump) for _ in range(2)]
     for t in ts:
         t.start()

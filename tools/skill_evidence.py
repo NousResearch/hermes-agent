@@ -102,6 +102,27 @@ def _validate_evidence(value: Any) -> dict[str, Any]:
     return result
 
 
+def _merge_evolution(current: dict[str, Any], additions: list[Any]) -> None:
+    """Append validated evolution items; each one advances version and updated."""
+    for item in additions:
+        if not isinstance(item, dict) or set(item) != _EVOLUTION_KEYS:
+            raise EvidenceMergeError("each merge evolution item has exactly from, to, date, reason")
+        frm = _int(item["from"], "merge evolution.from")
+        to = _int(item["to"], "merge evolution.to")
+        if not isinstance(item["date"], str) or not item["date"]:
+            raise EvidenceMergeError("merge evolution.date must be a non-empty string")
+        if not isinstance(item["reason"], str) or not item["reason"]:
+            raise EvidenceMergeError("merge evolution.reason must be a non-empty string")
+        expected = current.get("version", 0)
+        if frm != expected:
+            raise EvidenceMergeError("merge evolution.from must equal current version")
+        if to <= frm:
+            raise EvidenceMergeError("merge evolution.to must increase")
+        current["evolution"].append(dict(item))
+        current["version"] = to
+        current["updated"] = item["date"]
+
+
 def merge_evidence(content: str, delta: dict[str, Any]) -> str:
     """Return a merged SKILL.md or raise EvidenceMergeError; never writes files."""
     if not isinstance(delta, dict) or not delta:
@@ -134,23 +155,7 @@ def merge_evidence(content: str, delta: dict[str, Any]) -> str:
         additions = delta["evolution"]
         if not isinstance(additions, list):
             raise EvidenceMergeError("merge evolution must be a list")
-        for item in additions:
-            if not isinstance(item, dict) or set(item) != _EVOLUTION_KEYS:
-                raise EvidenceMergeError("each merge evolution item has exactly from, to, date, reason")
-            frm = _int(item["from"], "merge evolution.from")
-            to = _int(item["to"], "merge evolution.to")
-            if not isinstance(item["date"], str) or not item["date"]:
-                raise EvidenceMergeError("merge evolution.date must be a non-empty string")
-            if not isinstance(item["reason"], str) or not item["reason"]:
-                raise EvidenceMergeError("merge evolution.reason must be a non-empty string")
-            expected = current.get("version", 0)
-            if frm != expected:
-                raise EvidenceMergeError("merge evolution.from must equal current version")
-            if to <= frm:
-                raise EvidenceMergeError("merge evolution.to must increase")
-            current["evolution"].append(dict(item))
-            current["version"] = to
-            current["updated"] = item["date"]
+        _merge_evolution(current, additions)
     if "version" in delta or "updated" in delta:
         if set(delta) & {"version", "updated"} != {"version", "updated"}:
             raise EvidenceMergeError("version and updated must be supplied together")

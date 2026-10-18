@@ -532,6 +532,39 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                     return expand_result.stdout.strip() + path[1 + len(username):]
         return path
 
+    def canonicalize_workspace_path(self, path: str) -> str:
+        """Resolve a path in the active backend's filesystem namespace.
+
+        ``Path.resolve()`` on Hermes' host cannot see symlinks inside a
+        container or SSH target. Resolve there instead, and encode the result
+        so unusual path bytes and login-shell noise cannot be mistaken for a
+        valid path. Callers must refuse when this probe cannot be trusted.
+        """
+        script = (
+            "import base64,os,sys; "
+            "value=os.path.realpath(sys.argv[1]); "
+            "print('__HERMES_WORKSPACE_PATH__' + "
+            "base64.b64encode(os.fsencode(value)).decode('ascii'))"
+        )
+        expanded = self._expand_path(path)
+        result = self._exec(
+            f"python3 -c {self._escape_shell_arg(script, translate_path=False)} "
+            f"{self._escape_shell_arg(expanded, translate_path=False)}",
+            timeout=10,
+        )
+        if result.cwd_error or result.exit_code != 0:
+            raise ValueError("backend path resolution failed")
+        prefix = "__HERMES_WORKSPACE_PATH__"
+        matches = [line[len(prefix):] for line in (result.stdout or "").splitlines()
+                   if line.startswith(prefix)]
+        if len(matches) != 1:
+            raise ValueError("backend path resolution returned no unique path")
+        try:
+            resolved = base64.b64decode(matches[0], validate=True)
+            return os.fsdecode(resolved)
+        except (binascii.Error, ValueError, UnicodeError) as exc:
+            raise ValueError("backend path resolution returned invalid data") from exc
+
     def _escape_shell_arg(self, arg: str, translate_path: bool = True) -> str:
         """Escape a string for safe use in shell commands.
 

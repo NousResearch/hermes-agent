@@ -504,9 +504,13 @@ def _run_plugin_command(handler, arg: str, session=None) -> str:
     saw ``""`` or the launch process's inherited values. Same class as the messaging gateway's
     #108698; ``_set_session_context`` is the turn path's own seam."""
     plugins = _tools_mod("hermes_cli.plugins")
-    tokens = _set_session_context(session.get("session_key", "") or "", cwd=str(session.get("cwd") or "")) if session else []
+    invoke = _tools_mod("hermes_cli.plugin_command_dispatch").invoke_plugin_command
+    key = str(session.get("session_key") or "") if session else ""
+    tokens = _set_session_context(key, cwd=str(session.get("cwd") or "")) if session else []
+    context = {"source": None, "session_key": key, "platform": _session_source(session),
+               "session_id": getattr(session.get("agent"), "session_id", None) or key if session else ""}
     try:
-        return str(plugins.resolve_plugin_command_result(handler(arg)) or "")
+        return str(plugins.resolve_plugin_command_result(invoke(handler, arg, **context)) or "")
     finally:
         _clear_session_context(tokens)
 

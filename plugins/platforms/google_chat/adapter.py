@@ -1501,7 +1501,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         latest inbound sender's token (legacy token as fallback; text notice when neither).
         ``messages.patch`` cannot add attachments, so the typing card is patched with the
         caption (or a single space) to retire it without a tombstone."""
-        if not os.path.exists(path):
+        if not await asyncio.to_thread(os.path.exists, path):
             return SendResult(success=False, error=f"file not found: {path}")
         filename = override_filename or os.path.basename(path) or "upload.bin"
         mime = mime_hint or "application/octet-stream"

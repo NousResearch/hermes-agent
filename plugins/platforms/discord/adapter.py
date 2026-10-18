@@ -6120,9 +6120,22 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 normalized_content = raw_content
         if self._self_is_explicitly_mentioned(message):
             mention_prefix = True
-            if self._client.user:
-                normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
-                normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
+            # Human summons and ordinary bot tags do not need the routing token in the transcript.
+            # A structured bot handoff does: Discord admission authenticated the literal recipient,
+            # and stripping the ``To: <@id>`` value here made valid packets look unaddressed downstream.
+            client_user = getattr(self._client, "user", None)
+            recipient_id = getattr(client_user, "id", None)
+            is_bot_handoff_recipient = bool(
+                recipient_id
+                and getattr(message.author, "bot", False)
+                and re.search(
+                    rf"(?mi)^\s*To:\s*<@!?{re.escape(str(recipient_id))}>\s*$",
+                    normalized_content,
+                )
+            )
+            if client_user and not is_bot_handoff_recipient:
+                normalized_content = normalized_content.replace(f"<@{client_user.id}>", "").strip()
+                normalized_content = normalized_content.replace(f"<@!{client_user.id}>", "").strip()
             message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}

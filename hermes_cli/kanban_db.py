@@ -30,7 +30,11 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from hermes_cli.kanban_workflow import DEFAULT_STATUSES as VALID_STATUSES
-from hermes_cli.kanban_db_skills import _normalize_task_skills
+from hermes_cli.kanban_db_skills import (
+    _normalize_task_skills,
+    assert_task_skills_for_assignee,
+    validate_task_skills_for_assignee,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -1199,6 +1203,9 @@ def create_task(
     )
     parents = tuple(p for p in parents if p)
     skills_list = _normalize_task_skills(skills)
+    # Profiles are islands: resolve against the ASSIGNEE's trees, never the creating
+    # session's, or the worker aborts at boot on every retry.
+    validate_task_skills_for_assignee(skills_list, assignee)
 
     # Idempotency check BEFORE the write txn (no lock held); a concurrent-create
     # race may insert twice, the next lookup stabilises on the newest.
@@ -1435,7 +1442,7 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
     profile = _canonical_assignee(profile)
     with write_txn(conn):
         row = conn.execute(
-            "SELECT status, claim_lock, assignee FROM tasks WHERE id = ?", (task_id,)
+            "SELECT status, claim_lock, assignee, skills FROM tasks WHERE id = ?", (task_id,)
         ).fetchone()
         if not row:
             return False
@@ -1444,6 +1451,11 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
                 f"cannot reassign {task_id}: currently running (claimed). "
                 "Wait for completion or reclaim the stale lock first."
             )
+        # A handoff moves the card onto another profile's island: its skills must
+        # resolve THERE, or the next dispatch boots without them. Validated before any
+        # UPDATE so a refused handoff mutates nothing.
+        if profile and row["skills"]:
+            validate_task_skills_for_assignee(json.loads(row["skills"]), profile)
         if row["assignee"] != profile:
             # The failure streak is per task/profile; a new profile starts fresh.
             conn.execute(
@@ -2488,6 +2500,9 @@ def reassign_task(
 ) -> bool:
     """Reassign (None unassigns); a running task is refused unless
     ``reclaim_first`` releases its claim — the "this profile's model is broken" path."""
+    # Validate the stored skills against the NEW profile BEFORE reclaiming: a refused
+    # handoff must not release a live claim (partial mutation leaves the card unrunnable).
+    assert_task_skills_for_assignee(conn, task_id, profile)
     if reclaim_first:
         # Safe to call even if nothing to reclaim.
         reclaim_task(conn, task_id, reason=reason or "reassign")

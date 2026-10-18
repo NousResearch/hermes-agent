@@ -697,7 +697,9 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
         # current implementer before the task is routed to the reviewer.
         review_assignee_deferred = payload.status == "review" and payload.assignee is not None
         if payload.assignee is not None and not review_assignee_deferred:
-            with _map_errors(409, RuntimeError):
+            # A skill that cannot resolve in the new assignee's profile is a 400 domain
+            # refusal; a claimed/running refusal keeps its 409.
+            with _map_errors(409, RuntimeError), _map_errors(400, ValueError):
                 _require_ok(kanban_db.assign_task(conn, task_id, payload.assignee or None))
         if payload.status is not None:
             _patch_status(conn, task_id, payload, review_assignee_deferred)
@@ -842,7 +844,7 @@ def _bulk_apply_one(conn, tid: str, payload: BulkTaskBody, board: Optional[str],
                   else kanban_db.assign_task(conn, tid, payload.assignee or None))
             if not ok:
                 entry.update(ok=False, error="assign refused")
-        except RuntimeError as e:
+        except (RuntimeError, ValueError) as e:
             entry.update(ok=False, error=str(e))
     if payload.priority is not None:
         _set_priority(conn, tid, payload.priority, board)

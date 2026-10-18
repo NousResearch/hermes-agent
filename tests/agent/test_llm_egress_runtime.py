@@ -192,7 +192,7 @@ def test_codex_generated_context_is_redacted_without_using_untrusted_budget(tmp_
         + "Protocol sample: c2VjcmV0LXBheWxvYWQ=\n"
     )
 
-    authorized, receipt = authorize_agent_sdk_kwargs(
+    _authorized, receipt = authorize_agent_sdk_kwargs(
         agent,
         {
             "model": "gpt-5.6-terra",

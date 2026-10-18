@@ -837,11 +837,11 @@ def _contains_grant_substring(grant_content: bytes, candidate: bytes) -> bool:
         if window >= 4:
             source_windows = {
                 variant[offset : offset + window]
-                for offset in range(0, len(variant) - window + 1)
+                for offset in range(len(variant) - window + 1)
             }
             if any(
                 candidate[offset : offset + window] in source_windows
-                for offset in range(0, len(candidate) - window + 1)
+                for offset in range(len(candidate) - window + 1)
             ):
                 return True
     return False
@@ -1666,8 +1666,8 @@ __all__ = [
     "OutboundText",
     "SanitizedSegment",
     "SourceBoundSegment",
-    "SourcePresentationSegment",
     "SourceGrant",
+    "SourcePresentationSegment",
     "TypedOutboundRequest",
     "UntrustedProvenanceSegment",
     "ValidatedToolSyntaxSegment",

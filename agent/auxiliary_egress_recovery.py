@@ -170,7 +170,7 @@ def auxiliary_egress_binding(
     )
     turn_id = str(
         raw_runtime.get("turn_id")
-        or f"{session_id}:aux:{str(relay.get('task') or 'call')}"
+        or f"{session_id}:aux:{relay.get('task') or 'call'!s}"
     )
     policy_digest = str(
         raw_runtime.get("policy_digest")
@@ -283,7 +283,6 @@ def local_main_supports_vision(provider, model, entry):
                 return modalities["vision"]
         except Exception:
             logger.debug("Optional metadata or provenance operation failed", exc_info=True)
-            pass
     caps = get_model_capabilities(provider, model, allow_network=False)
     return True if caps is None or caps.supports_vision is None else caps.supports_vision
 

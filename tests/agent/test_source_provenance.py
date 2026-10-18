@@ -410,8 +410,8 @@ def test_tool_executor_records_only_opaque_trusted_read_grant_metadata(tmp_path:
 
 def test_provenance_responsibilities_live_outside_authority_godfiles():
     import agent.source_provenance_tools as provenance_tools
-    import agent.tool_executor as tool_executor
-    import tools.file_tools as file_tools
+    from agent import tool_executor
+    from tools import file_tools
 
     assert provenance_tools.source_provenance_activation
     assert provenance_tools.attach_trusted_source_provenance_metadata

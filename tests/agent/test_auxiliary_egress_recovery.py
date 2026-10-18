@@ -60,10 +60,9 @@ def test_blocked_recovery_screens_remote_auth_before_resolving_local(
     # Observe the credential I/O boundary; use the real config/router/SDK.
     def read_remote_auth():
         auth_reads.append("nous")
-        return None
     monkeypatch.setattr(auxiliary, "_read_nous_auth", read_remote_auth)
-    import hermes_cli.runtime_provider as runtime_provider
-    import agent.model_metadata as model_metadata
+    from hermes_cli import runtime_provider
+    from agent import model_metadata
     key_reads = []
     import hermes_cli.runtime_provider_custom as custom_owner
     original_getenv = custom_owner.get_secret_str
@@ -165,7 +164,7 @@ def test_blocked_recovery_screens_remote_auth_before_resolving_local(
 def test_blocked_custom_main_preserves_live_endpoint_and_key(monkeypatch, tmp_path, base_url):
     import hermes_yaml as yaml
     import agent.auxiliary_client as auxiliary
-    import agent.model_metadata as model_metadata
+    from agent import model_metadata
 
     home = tmp_path / "main-pin-home"
     home.mkdir()

@@ -102,8 +102,13 @@ def build_kanban_stop_nudge(
     )
 
 
-__all__ = ["build_kanban_stop_nudge", "kanban_stop_nudge_enabled", "session_called_kanban_terminal",
-           "successful_kanban_terminal_transition", "reconcile_kanban_stop_to_review"]
+__all__ = [
+    "build_kanban_stop_nudge",
+    "kanban_stop_nudge_enabled",
+    "reconcile_kanban_stop_to_review",
+    "session_called_kanban_terminal",
+    "successful_kanban_terminal_transition",
+]
 
 
 _MAX_REVIEW_SUMMARY_CHARS = 4000

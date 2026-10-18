@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 _METADATA = frozenset({'rename', 'archive', 'sidebar'})
 # Prepared off the commit like model, then published as a new frozen policy.
 _POLICY = frozenset({'model', 'reasoning', 'workspace', 'editor_mcp'})
+# Controls that leave the transcript alone authorize on the lineage owner (see ``_owner_ref``).
+_OWNER_AUTHORIZED = _METADATA | {'delete'}
 _FIELDS = frozenset({'session_id', 'request_id', 'expected_revision', 'operation', 'payload'})
 
 
@@ -34,8 +36,9 @@ def _authorize_import(authority, actor, ref, params):
     return tuple(item['session']['id'] for item in normalized)
 
 
-def _authorize_control(authority, actor, ref, params):
-    """Control authorization; True when the session is cold history the write must claim."""
+def _authorize_control(authority, actor, ref, params, owner=None):
+    """Control authorization; True when the session is cold history the write must claim. *owner* is
+    ``_owner_ref``'s answer when the caller already resolved it (one read per mutation, not two)."""
     from hermes_state_mutation_retirement import has_mutation_receipt
     if actor.profile_id != authority.profile_id or ref.profile_id != authority.profile_id:
         raise RuntimeStoreError('profile_mismatch')
@@ -45,7 +48,7 @@ def _authorize_control(authority, actor, ref, params):
     # A receipt authorizes only its original principal's exact retry; the
     # transaction still verifies the entire digest and current epoch.
     if not has_mutation_receipt(authority.db, actor.subject, ref.session_id, params['request_id']):
-        ref = _owner_ref(authority, ref, params)
+        ref = owner or _owner_ref(authority, ref, params)
         if ref.session_id not in authority.sessions:
             from hermes_state_mutation_binding import authorize_history
             with authority.db._read_ctx() as conn:
@@ -58,10 +61,18 @@ def _authorize_control(authority, actor, ref, params):
 
 
 def _owner_ref(authority, ref, params):
-    """A delete names the listed row, which may be a later reset segment of a local conversation;
-    the conversation's creation id owns its policy, FIFO and live session, so control and the
-    session gate are checked on that owner (the store deletes the whole lineage either way)."""
-    if params.get('operation') != 'delete':
+    """A metadata control (rename, archive, pin) or a delete names the listed row, which may be a
+    later reset or compression segment of a local conversation; the conversation's creation id owns
+    its live session, so control and the session gate are checked on that owner. The write itself
+    still names the listed row (a title or archive flag belongs to it; delete takes the lineage).
+    Gating only ``delete`` answered rename/archive of a compressed conversation with
+    ``storage_unavailable`` (#134889 LC-22, as LC-12 on resume).
+
+    A transcript- or policy-changing operation (rewind, reset, compress, a policy pick) keeps the
+    listed id: its busy gate, generation fence and eviction are keyed by the session it writes, so
+    authorizing it on the owner while writing the segment would bypass the owner's FIFO. A segment
+    of a live owner therefore stays a named refusal for those, as on main."""
+    if params.get('operation') not in _OWNER_AUTHORIZED:
         return ref
     from gateway.session_contract import SessionRef
     from hermes_state_local import local_lineage_owner
@@ -83,9 +94,10 @@ async def _owned_mutation(authority, actor, ref, params):
     if (params.get('operation') in {*_POLICY, 'compress', 'reset', 'rewind'}
             and ref.session_id not in authority.sessions and 'request_id' in params):
         _authorize_control(authority, actor, ref, params)
-    live = authority.sessions.get(_owner_ref(authority, ref, params).session_id)
+    owner = _owner_ref(authority, ref, params)
+    live = authority.sessions.get(owner.session_id)
     if live is None:
-        return await _mutate_session(authority, actor, ref, params)
+        return await _mutate_session(authority, actor, ref, params, owner=owner)
     # Prepared policy/route publication is inseparable from its durable commit
     # for admission and claim: neither may observe a half-published policy.
     if params.get('operation') == 'compress':
@@ -93,11 +105,11 @@ async def _owned_mutation(authority, actor, ref, params):
         # edit is not parked behind it; the commit is revision/generation-fenced against anything
         # that lands meanwhile. Claims wait on ``claim_gate``, so no turn runs under it.
         async with live.claim_gate:
-            result = await _mutate_session(authority, actor, ref, params, commit_lock=live.mutation_lock)
+            result = await _mutate_session(authority, actor, ref, params, commit_lock=live.mutation_lock, owner=owner)
     else:
         async with live.mutation_lock:
             try:
-                result = await _mutate_session(authority, actor, ref, params)
+                result = await _mutate_session(authority, actor, ref, params, owner=owner)
             except (RuntimeStoreError, *MUTATION_GUARD_REFUSALS) as exc:
                 # A pick on a running session is for the next turn (the running turn keeps its route).
                 if params.get('operation') != 'model' or getattr(exc, 'reason', 'session_busy') != 'session_busy':
@@ -110,7 +122,7 @@ async def _owned_mutation(authority, actor, ref, params):
     return result
 
 
-async def _mutate_session(authority, actor, ref, params, *, commit_lock=None):
+async def _mutate_session(authority, actor, ref, params, *, commit_lock=None, owner=None):
     if (set(params) - {'expected_generation'} != _FIELDS
             or params['session_id'] != ref.session_id):
         raise RuntimeStoreError('invalid_params')
@@ -126,7 +138,7 @@ async def _mutate_session(authority, actor, ref, params, *, commit_lock=None):
     if operation == 'import':
         imported_ids = _authorize_import(authority, actor, ref, params)
     else:
-        cold_history = _authorize_control(authority, actor, ref, params)
+        cold_history = _authorize_control(authority, actor, ref, params, owner)
     if operation == 'branch' and 'session:create' not in actor.capabilities:
         raise RuntimeStoreError('permission_denied')
     authority._require_admission_open()
@@ -283,8 +295,10 @@ def _project_committed(authority, ref, operation, result):
         # the next submit or restart.
         authority._schedule(ref)
     if operation == 'reasoning' or (operation == 'model' and 'effort' in result):
-        # The picked level is the policy's now; a typed /reasoning override must not shadow it.
+        # The picked level is the policy's now; a typed /reasoning override must not shadow it, nor an older
+        # command still waiting for a turn boundary.
         authority.runner._set_session_reasoning_override(authority.sessions[ref.session_id].route, None)
+        authority.sessions[ref.session_id].pending_reasoning = None
     if operation in {'model', 'reasoning', 'workspace'}:
         # Every viewer repaints its model, reasoning pill or workspace from the published policy,
         # as main's _emit_session_info did after the live change.
@@ -360,8 +374,9 @@ def retire_live_sessions(authority, session_ids, *, require_fence=False):
                 strip(session_ids)
             except Exception:
                 logger.warning('could not strip retired routes from sessions.json', exc_info=True)
-    from gateway.session_policy import release_launch_secrets
+    from gateway.session_policy import release_launch_secrets, release_session_workspaces
     release_launch_secrets(authority, session_ids)
+    release_session_workspaces(authority, session_ids)
     from tools.async_delegation import allow_for_session
     for sid in session_ids:
         # A closed session's refusal of new delegations (session_viewer_close) goes with its live state.

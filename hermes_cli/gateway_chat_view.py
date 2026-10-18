@@ -26,6 +26,9 @@ def _pending_preview(text):
     return f": {line}" if line else ""
 
 
+_UNKNOWN_OUTCOME = ("Execution outcome is unknown. Resume this session to inspect the lost turn "
+                    "and /discard it; do not resend the input.")
+
 _BLOCKING_CONTROL_EVENTS = frozenset({
     "approval.request", "approval.settled", "clarify.request", "clarify.settled",
     "session.info",
@@ -53,6 +56,8 @@ class GatewayChatView:
         self._finite_events = []
         self.streams = {}
         self.completions = {}
+        # ``gateway_replay_gap``: admission -> the reply segment shown when a gap cut it; own unsettled turns.
+        self.cut, self.mine, self.gaps, self._attaching = {}, {}, 0, asyncio.Lock()
         self.changed = asyncio.Event()
         self.failure = None
         # Set once with ``failure``: the interactive composer races its line read against it so a
@@ -103,8 +108,10 @@ class GatewayChatView:
             kind, payload = params.get("type"), params.get("payload", {})
             self.generation = params.get("execution_generation", self.generation)
             if kind == "session.replay_gap":
-                self._fail(GatewayClientError("session_replay_gap"))
-                return
+                await self._reattach()
+                if self.failure:
+                    return
+                continue
             admission = params.get("admission_id") or payload.get("admission_id")
             if self.finite and kind in _BLOCKING_CONTROL_EVENTS:
                 # Gates and unknown executions block the session FIFO, not merely one
@@ -128,6 +135,55 @@ class GatewayChatView:
         self.failure = error
         self.failed.set()
         self.changed.set()
+
+    async def _reattach(self):
+        """The owner retired this view's subscription; its turns run on. Re-attach (a refusal fails the
+        view as before), show the controls the hole hid, and recover the turns in admission order."""
+        sid = self.session_id
+        async with self._attaching:  # a submit acked meanwhile recovers against this snapshot, which covers it
+            self.gaps += 1
+            try:
+                snapshot = await self.client.rpc("session.resume", session_id=sid)
+            except Exception:  # health: allow BLE001 -- any failed re-attach ends the wait, never hangs it
+                if self.session_id == sid:
+                    self._fail(GatewayClientError("session_replay_gap"))
+                return
+            if self.session_id != sid:
+                return  # /new or /branch moved this view meanwhile
+            self.generation = snapshot.get("execution_generation", self.generation)
+            self.pending, prompts = snapshot.get("pending", self.pending), {p["prompt_id"]: p for p in snapshot.get("prompts", [])}
+            for prompt_id in prompts.keys() - self.prompts.keys() if not self.finite else ():
+                self.show_prompt(prompts[prompt_id])
+            self.prompts = prompts
+            for admission in dict.fromkeys([*self.streams, *self.mine]):  # the running turn first: one FIFO
+                await self._recover(admission, sid)
+            self.changed.set()  # after its own turn settled: a control it lists may end a one-shot's wait
+
+    async def _recover(self, admission, sid):
+        """Queued: it lost nothing. Running: cut until its live completion. Unknown: its completion was the
+        one lost, so an own turn settles as unknown now. Unlisted: it ended in the hole."""
+        from hermes_cli.gateway_replay_gap import pending_status, settled
+        status = pending_status(self.pending, admission)
+        if status == "unknown" and admission in self.mine:
+            self._complete(admission, {"outcome": "unknown", "text": _UNKNOWN_OUTCOME})
+            self.changed.set()
+        if not admission or status in ("queued", "unknown") or admission in self.completions:
+            return
+        self.cut.setdefault(admission, self.streams.pop(admission, ""))
+        if status or any(kind == "message.complete" and own == admission for kind, own, _ in self._finite_events):
+            return  # (its completion already arrived, held for the submit ack)
+        try:
+            receipt = await self.client.rpc("prompt.receipt", session_id=sid, admission_id=admission, include_result=True)
+        except Exception:  # health: allow BLE001 -- unreadable, like a receipt without its reply
+            receipt = {"status": "terminal"}
+        verdict = settled(receipt) if self.session_id == sid and admission not in self.completions else False
+        if verdict:
+            outcome = {"interrupted": "cancelled"}.get(receipt.get("outcome"), receipt.get("outcome"))
+            self._complete(admission, {"outcome": outcome, "_receipt": receipt,
+                                       "text": (receipt.get("result") or {}).get("final_response") or ""})
+            self.changed.set()
+        elif verdict is None and self.finite:  # unreadable: fails as before (interactive: the next gap retries)
+            self._fail(GatewayClientError("session_replay_gap"))
 
     async def _read_line(self, prompt, symbol):
         """The next composer line, or ``""`` once the event stream failed first (``self.failure``
@@ -171,6 +227,8 @@ class GatewayChatView:
     def _tool_start(self, admission, payload):
         # Deltas before a tool call are interim commentary the final reply does not repeat;
         # close that segment so `_complete` measures only the final's own stream.
+        if admission in self.cut:
+            self.cut[admission] = ""
         if self.streams.pop(admission, None) and not self.quiet:
             print(flush=True)
         if self.emitter is not None:
@@ -191,8 +249,8 @@ class GatewayChatView:
 
     def _delta(self, admission, payload):
         text = payload.get("text") or payload.get("delta") or payload.get("content") or ""
-        if not isinstance(text, str):
-            return
+        if not isinstance(text, str) or admission in self.cut:
+            return  # cut: live text stopped at the replay gap; the settlement shows the reply once
         if self.emitter is not None:
             self.emitter.on_text_delta(text)
         elif not self.quiet:
@@ -204,8 +262,14 @@ class GatewayChatView:
 
     def _complete(self, admission, payload):
         text = payload.get("text") or payload.get("content") or ""
-        streamed = self.streams.pop(admission, "")
-        if not self.quiet:
+        streamed, cut = self.streams.pop(admission, ""), self.cut.pop(admission, None)
+        self.mine.pop(admission, None)
+        if cut is not None:
+            from hermes_cli.gateway_replay_gap import owed_reply
+            payload = {**payload, "replay_gap": True}
+            if not self.quiet and text:
+                print(owed_reply(cut, text), flush=True)
+        elif not self.quiet:
             # The final's deltas carry the agent's segment break (leading blank lines after a
             # tool call) that the settled text has trimmed; a match modulo that edge whitespace
             # is the same reply already on screen.
@@ -231,10 +295,19 @@ class GatewayChatView:
 
     async def submit(self, text):
         self.mutations.retire(self.session_id)
-        return await self.client.rpc("prompt.submit", session_id=self.session_id,
-                                     input_id=uuid.uuid4().hex, text=text,
-                                     **({"finite": True} if self.finite else {}),
-                                     **({"unattended": True} if self.finite and self.unattended else {}))
+        sid, gaps = self.session_id, self.gaps
+        receipt = await self.client.rpc("prompt.submit", session_id=self.session_id,
+                                        input_id=uuid.uuid4().hex, text=text,
+                                        **({"finite": True} if self.finite else {}),
+                                        **({"unattended": True} if self.finite and self.unattended else {}))
+        admission = (receipt or {}).get("admission_id")
+        if admission and admission not in self.completions and self.session_id == sid:
+            self.mine[admission] = None
+            if self.gaps != gaps:  # a re-attach left after this submit: its snapshot covers it
+                async with self._attaching:
+                    if admission not in self.cut and not self.failure:
+                        await self._recover(admission, sid)
+        return receipt
 
     async def command(self, text):
         command, _, rest = text.partition(" ")
@@ -353,14 +426,12 @@ class GatewayChatView:
         only a still-queued input behind someone else's unknown turn is retained and detached."""
         own = next((row["status"] for row in self.pending if row["admission_id"] == admission), None)
         if own == "unknown":
-            self.completions[admission] = {"outcome": "unknown", "text": (
-                "Execution outcome is unknown. Resume this session to inspect the lost turn "
-                "and /discard it; do not resend the input.")}
+            self.completions[admission] = {"outcome": "unknown", "text": _UNKNOWN_OUTCOME}
             return None
         if own == "queued" and self.unknown_admissions():
             return ("Unknown execution blocks this session; your accepted input is retained. "
                     "Resume interactively to resolve the lost turn; do not resend the input.")
-        if self.prompts:
+        if self.prompts and (own or not self.gaps):  # a control blocks only a turn still pending
             return "Input required; detached without cancelling. Resume this session interactively."
         return None
 
@@ -432,7 +503,7 @@ class GatewayChatView:
                 admission = receipt["admission_id"]
                 self.finite_admission = admission
                 for kind, event_admission, payload in self._finite_events:
-                    if event_admission == admission:
+                    if event_admission == admission and admission not in self.completions:
                         self._dispatch_event(kind, event_admission, payload)
                 self._finite_events.clear()
                 self.changed.set()
@@ -453,7 +524,8 @@ class GatewayChatView:
                 # in-process exit contracts: `-z` 0/2/130 (1 = no text), `chat -q`/`-Q` 0/1/130.
                 from hermes_cli.oneshot import _oneshot_exit_code
                 from hermes_cli.turn_exit import turn_exit_code
-                result = await self._settled_result(admission)
+                recovered = terminal.get("_receipt")
+                result = dict(recovered.get("result") or {}) if recovered else await self._settled_result(admission)
                 result.update(failed=bool(result.get("failed")) or outcome not in ("completed", "cancelled"),
                               interrupted=bool(result.get("interrupted")) or outcome == "cancelled")
                 exit_code = (_oneshot_exit_code(text, result) if self.unattended
@@ -461,7 +533,8 @@ class GatewayChatView:
                 if self.usage_file:
                     self._write_usage_file(result, outcome)
                 if self.emitter is not None:
-                    return self.emitter.emit_result({**result, "final_response": text},
+                    return self.emitter.emit_result({**result, "final_response": text,
+                                                     "replay_gap": bool(terminal.get("replay_gap"))},
                                                     session_id=self.session_id, exit_code=exit_code)
                 self._report_silent_interrupt(text, result)
                 print(text, flush=True)

@@ -349,7 +349,10 @@ class CLIChatTurnMixin:
                 "completed": False, "failed": True, "error": _summary,
             }
         finally:
-            if _one_turn_model_restore:
+            if _one_turn_model_restore and (turn.result or {}).get("failure_reason") == "session_busy":
+                # The owner admitted nothing: the resend is still the one turn the pick was for.
+                self._pending_one_turn_model_restore = _one_turn_model_restore
+            elif _one_turn_model_restore:
                 self._restore_model_runtime_snapshot(_one_turn_model_restore)
             # Credit notices paint cleanly above the prompt here, not behind streamed output.
             self._flush_credit_notices()

@@ -204,6 +204,20 @@ export function acceptsTriggerCompletion({
   return key === ' ' && kind === '/' && Boolean(query.trim()) && !freeTextArgStage
 }
 
+/**
+ * Whether an accepting keypress that resolved to no row is still consumed
+ * instead of falling through. Tab has no other meaning in the composer. A bare
+ * `/` is the trigger token, not a message: with no arrowed pick there is
+ * nothing to accept, and nothing to send either (#139774). Shift+Enter never
+ * sends, so it still falls through to insert a line break.
+ */
+export function consumesUnresolvedTriggerKey(
+  { key, shiftKey }: { key: string; shiftKey: boolean },
+  trigger: Pick<TriggerState, 'kind' | 'query'>
+): boolean {
+  return key === 'Tab' || (key === 'Enter' && !shiftKey && trigger.kind === '/' && !trigger.query.trim())
+}
+
 export interface QueueEditState {
   attachments: ComposerAttachment[]
   draft: string

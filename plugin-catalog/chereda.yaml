@@ -1,11 +1,11 @@
 name: chereda
 repo: https://github.com/kostyk348/chereda-hermes-plugin
-sha: 670103489c564ce47f11861477544a72c014b337
+sha: 7e14b097087661acd08b92597422f303ade09116
 description: >-
   Череда in the Hermes desktop app — obligation loops instead of status cards. Each
   loop shows whose move it is (customer or performer), the clock and deadline, the
   class, the evidence (command, output digest, expected exit code) and the whole
-  description. Moves are verbs — ask, promise, refuse with a reason, declare with
+  description, which a participant can refine from the card. Moves are verbs — ask, promise, refuse with a reason, declare with
   proof, accept, object — offered as buttons; the panel only calls the real
   `череда` CLI, so the rules (no talking out of turn, refusal only with a reason,
   three-promise cap) stay in one place. A loop also carries a feed for participant

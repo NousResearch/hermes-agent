@@ -525,6 +525,16 @@ class GatewayTopicThreadsMixin:
             except Exception:
                 logger.debug("Failed to verify Telegram topic binding before rename", exc_info=True)
                 return
+            # A topic is named once, by its first session. A later one (idle reset, /new, a Kanban
+            # wake opening the topic after a quiet day) inherits that name as its own title prefix
+            # (agent.title_generator.anchor_title); renaming the topic after it is what made long-lived
+            # topics show whatever the latest reply was about.
+            try:
+                if await session_db.get_thread_anchor_title(session_id):
+                    return
+            except Exception:
+                logger.debug("Failed to read Telegram topic anchor before rename", exc_info=True)
+                return
         if adapter is None:
             return
         topic_name = self._sanitize_telegram_topic_title(title)

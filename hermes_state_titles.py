@@ -219,6 +219,26 @@ class SessionTitlesMixin:
             (f"{_escape_like(title)} #%",))
         return numbered[0]["id"] if numbered else (exact["id"] if exact else None)
 
+    def get_thread_anchor_title(self, session_id: str) -> Optional[str]:
+        """The name an earlier session gave this session's messaging thread, or None.
+
+        A Telegram topic or Discord thread outlives its sessions (idle reset, /new), and the
+        platform shows ONE name for it. That name is the first titled session in the same
+        ``(source, chat_id, thread_id)``; later sessions anchor to it instead of renaming the
+        thread after their own opener. None outside a thread or when this session is the first."""
+        row = self._read_one(
+            "SELECT source, chat_id, thread_id, started_at FROM sessions WHERE id = ?", (session_id,))
+        if row is None or not row["thread_id"] or not row["chat_id"]:
+            return None
+        first = self._read_one(
+            "SELECT title FROM sessions WHERE source = ? AND chat_id = ? AND thread_id = ? AND id != ? "
+            "AND title IS NOT NULL AND title != '' AND started_at <= ? ORDER BY started_at ASC LIMIT 1",
+            (row["source"], row["chat_id"], row["thread_id"], session_id, row["started_at"]))
+        if first is None:
+            return None
+        match = _NUMBERED_TITLE_RE.match(first["title"])
+        return (match.group(1) if match else first["title"]).strip() or None
+
     def get_next_title_in_lineage(self, base_title: str) -> str:
         """Next title in a lineage ("my session" -> "my session #2")."""
         return self._read_retrying_ioerr(lambda conn: next_title_in_lineage(conn, base_title))

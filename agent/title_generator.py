@@ -141,7 +141,18 @@ _MACHINE_PREFIXES = (
     # message titled the session "[System: The active model for this chat has…" instead of the user's actual
     # question.
     "[System: The active model for this chat has changed to ",
+    # Notifier rows persisted as role="user" (exact openers from context_compressor's
+    # _SYNTHETIC_USER_ROW_PREFIXES; its broader "[System:"/"[CONTEXT" entries stay out, since a person may
+    # type those). A session opened by one is not about its text: a Kanban wake renamed a long-lived
+    # Telegram topic to "Triage blocked … task".
+    "[kanban] ", "[IMPORTANT: Background", "[ASYNC DELEGATION", "Cronjob Response:",
 )
+
+# A later session in an already-named messaging thread (Telegram topic, Discord thread) keeps the
+# thread's name: "<thread name> · <new subject>", or the name alone when the subject is the same.
+THREAD_ANCHOR_SEPARATOR = " · "
+_MIN_ANCHOR_SUBJECT_CHARS = 12
+_SUBJECT_WORD_RE = re.compile(r"[^\W_]{3,}", re.UNICODE)
 
 
 def _title_config() -> dict:
@@ -618,6 +629,45 @@ def apply_subagent_title(session_db, session_id: str, goal: str) -> Optional[str
         return None
 
 
+def thread_anchor_title(session_db, session_id: str) -> Optional[str]:
+    """Name an earlier session already gave this session's messaging thread (None: first or not a thread)."""
+    getter = getattr(session_db, "get_thread_anchor_title", None)
+    if not callable(getter):
+        return None
+    try:
+        anchor = getter(session_id)
+    except Exception:
+        logger.debug("Thread anchor lookup failed for %s", session_id, exc_info=True)
+        return None
+    return anchor.strip() if isinstance(anchor, str) and anchor.strip() else None
+
+
+def _subject_words(text: str) -> set[str]:
+    return {w.lower() for w in _SUBJECT_WORD_RE.findall(text or "")}
+
+
+def anchor_title(anchor: Optional[str], title: Optional[str]) -> Optional[str]:
+    """``title`` for a later session in a thread named ``anchor``: the thread name, plus a short
+    ``· subject`` only when the new subject is genuinely different from the name."""
+    if not anchor:
+        return title
+    subject = (title or "").strip()
+    if subject == anchor or subject.startswith(anchor + THREAD_ANCHOR_SEPARATOR):
+        return subject  # already anchored (re-titled turn, compression carry)
+    words, anchor_words = _subject_words(subject), _subject_words(anchor)
+    if not words or len(words - anchor_words) <= len(words) // 3:
+        return anchor
+    from hermes_state import SessionDB
+    room = SessionDB.MAX_TITLE_LENGTH - 4 - len(anchor) - len(THREAD_ANCHOR_SEPARATOR)
+    if room < _MIN_ANCHOR_SUBJECT_CHARS:
+        return anchor
+    if len(subject) > room:
+        cut = subject[:room - 1]
+        space = cut.rfind(" ")
+        subject = (cut[:space] if space > room // 2 else cut).rstrip(" ,.;:—-") + "…"
+    return f"{anchor}{THREAD_ANCHOR_SEPARATOR}{subject}"
+
+
 def apply_instant_title(
     session_db, session_id: str, user_message: str, title_callback: Optional[TitleCallback] = None,
     title_preview: str | None = None,
@@ -630,7 +680,12 @@ def apply_instant_title(
         return None
     try:
         title = derive_title(user_message, title_preview) if is_titleable_user_message(user_message) else None
-        persisted = _persist_session_title(session_db, session_id, title, source="derived", dedupe=False) if title else None
+        anchor = thread_anchor_title(session_db, session_id) if title else None
+        title = anchor_title(anchor, title)
+        # An anchored title starts with the thread's existing name, which the first session holds:
+        # it needs the ``#N`` lineage suffix the unanchored instant title deliberately skips.
+        persisted = _persist_session_title(
+            session_db, session_id, title, source="derived", dedupe=anchor is not None) if title else None
         if persisted:
             _notify_title(title_callback, persisted, "derived", "Instant-title")
         return persisted
@@ -677,6 +732,7 @@ def auto_title_session(
             title, source = derive_title(user_message, title_preview), "derived"
         if not title:
             return
+        title = anchor_title(thread_anchor_title(session_db, session_id), title)
         try:
             persisted = _persist_session_title(session_db, session_id, title, source=source)
         except Exception as e:

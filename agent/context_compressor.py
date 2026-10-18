@@ -936,6 +936,8 @@ _LEAN_RECOVERY_HEADING = "## Context Recovery"
 _SYNTHETIC_USER_ROW_PREFIXES = (
     "[System:", "[CONTEXT", "[PRIOR CONTEXT", "[IMPORTANT: Background", "[Your active task list",
     "[Planning state preserved", "[ASYNC DELEGATION", "[OUT-OF-BAND", "Cronjob Response:",
+    # gateway/kanban_watchers_notifier wake text (``gateway.kanban.wake.message``, every locale).
+    "[kanban] ",
 )
 
 

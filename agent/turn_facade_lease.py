@@ -13,7 +13,7 @@ import threading
 import time
 from contextlib import nullcontext
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from hermes_state_pidns import holder_namespace_token
 
@@ -486,7 +486,7 @@ def _lease_queue_dir(home) -> str:
     return os.path.join(str(home), "runtime", DELIVERY_DIR_NAME)
 
 
-def _lease_waiter_observation(db, session_id: str) -> Dict[str, Any]:
+def _lease_waiter_observation(db, session_id: str) -> dict[str, Any]:
     """Holder / queue depth for the admission receipt.
 
     Each accessor is probed with its own default, so a store that predates the waiter queue reports
@@ -571,7 +571,7 @@ def _drain_lease_queue(session_id: str, conversation_history):
     that does not fit stays queued, in order, for the next turn. Any unexpected failure leaves the
     transcript untouched — a turn admitted normally must not die because of what is in the spool.
     """
-    history = list(conversation_history or [])
+    history = conversation_history
     if not session_id:
         return history, []
     try:
@@ -580,8 +580,8 @@ def _drain_lease_queue(session_id: str, conversation_history):
             return history, []
         from tools.bot_live_delivery import claim_lease_delivery, complete_lease_delivery
 
-        bodies: List[str] = []
-        drained: List[str] = []
+        bodies: list[str] = []
+        drained: list[str] = []
         claims = 0
         spent = 0
         while claims < _LEASE_DRAIN_MAX_RECORDS:
@@ -614,6 +614,9 @@ def _drain_lease_queue(session_id: str, conversation_history):
         if not bodies:
             return history, drained
         text = "\n\n".join(bodies)
+        # Only now is the transcript actually touched: copy first, so a caller that handed us its
+        # history keeps the same object whenever nothing was drained into it.
+        history = list(history or [])
         if history and history[-1].get("role") == "user":
             merged = dict(history[-1])
             existing = merged.get("content")
@@ -626,7 +629,7 @@ def _drain_lease_queue(session_id: str, conversation_history):
         return history, drained
     except Exception:
         logger.warning("Could not drain queued deliveries for %s", session_id, exc_info=True)
-        return list(conversation_history or []), []
+        return history, []
 
 
 def _lease_not_acquired_result(agent, session_id: str, conversation_history, *, waited: bool) -> dict[str, Any]:

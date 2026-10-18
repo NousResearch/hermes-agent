@@ -48,9 +48,10 @@ def test_loop_liveness_watchdog_stop_during_dump_disarms_hard_exit():
 def test_loop_liveness_death_leaves_its_stacks_in_the_dump_file(tmp_path, monkeypatch):
     # A console-less launcher discards stderr; the file is the only copy that survives (#120356).
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    exit_codes, ref = [], {}
+    exit_codes, ref, handle_ready = [], {}, threading.Event()
 
     def exit_and_stop(code: int) -> None:  # a patched exit returns, so stop the loop like a real one
+        assert handle_ready.wait(timeout=2.0)
         exit_codes.append(code)
         ref["handle"].stop()
 
@@ -59,6 +60,7 @@ def test_loop_liveness_death_leaves_its_stacks_in_the_dump_file(tmp_path, monkey
         ref["handle"] = handle = start_loop_liveness_watchdog(
             MagicMock(spec=asyncio.AbstractEventLoop), probe_interval=0.01, probe_timeout=0.01,
             max_strikes=1)
+        handle_ready.set()
         handle.join(timeout=5.0)
     from gateway.shutdown_watchdog import get_shutdown_watchdog_dump_path
     dump = get_shutdown_watchdog_dump_path(tmp_path).read_text(encoding="utf-8-sig")

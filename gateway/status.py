@@ -881,8 +881,24 @@ def _pid_from_record(record: Optional[dict[str, Any]], key: str = "pid") -> Opti
 
 
 def _start_times_conflict(recorded_start: Any, current_start: Any) -> bool:
-    """PID-reuse guard: True only when BOTH start times are known and differ."""
+    """Strict PID-reuse guard used for scoped-lock ownership records."""
     return None not in (recorded_start, current_start) and current_start != recorded_start
+
+
+def _liveness_start_times_conflict(recorded_start: Any, current_start: Any) -> bool:
+    """Whether liveness readings identify different processes, allowing bounded drift.
+
+    The same process can drift by a small bounded amount between the claim-time and
+    liveness readings on macOS. Exact equality made a live launchd gateway disappear
+    from ``cron status`` while its scheduler continued firing jobs. Lock ownership
+    keeps the stricter comparison above.
+    """
+    if None in (recorded_start, current_start):
+        return False
+    try:
+        return not start_time_fingerprints_match(recorded_start, current_start)
+    except (TypeError, ValueError):
+        return True
 
 
 def _live_pid_from_record(record: Optional[dict[str, Any]]) -> Optional[int]:
@@ -890,7 +906,7 @@ def _live_pid_from_record(record: Optional[dict[str, Any]]) -> Optional[int]:
     pid = _pid_from_record(record)
     if pid is None or not _pid_exists(pid):
         return None
-    if _start_times_conflict(record.get("start_time"), _get_process_start_time(pid)):
+    if _liveness_start_times_conflict(record.get("start_time"), _get_process_start_time(pid)):
         return None
     return pid
 

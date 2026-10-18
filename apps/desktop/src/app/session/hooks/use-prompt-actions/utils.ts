@@ -5,6 +5,7 @@ import { translateNow, type Translations } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { isReadFileErrorResult } from '@/lib/desktop-fs'
 import { type CommandsCatalogLike, filterDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
+import type { ErrorSurface } from '@/lib/error-surface'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import type { ComposerAttachment } from '@/store/composer'
 
@@ -308,6 +309,52 @@ export function isSessionNotOwnedError(error: unknown): boolean {
   return reason === 'SESSION_NOT_OWNED' || /already has a live owner/i.test(error instanceof Error ? error.message : '')
 }
 
+// prompt.submit refused because the gateway that owns this chat is mid-turn and could not queue
+// the send (4090 / SESSION_OWNER_BUSY, #140385). Transient: the turn ends on its own.
+export function isSessionOwnerBusyError(error: unknown): boolean {
+  return gatewayReason(error) === 'SESSION_OWNER_BUSY'
+}
+
+// The refused send's staged images are gone server-side: SESSION_OWNER_BUSY unstages them (#140968),
+// and any refusal whose prose says the image was removed did the same.
+export function refusalDroppedImages(error: unknown): boolean {
+  return (
+    isSessionOwnerBusyError(error) || /\bimages?\b[^.]*\bremoved\b/i.test(error instanceof Error ? error.message : '')
+  )
+}
+
+function gatewayReason(error: unknown): unknown {
+  return error instanceof JsonRpcGatewayError ? (error.data as { reason?: unknown } | undefined)?.reason : undefined
+}
+
+// The error card's surface for an ownership refusal: another surface owns the session (#106217,
+// deterministic: drop Retry, offer a new session), or the gateway owner is mid-turn and could not
+// queue the send (#140385, transient: Retry once the turn ends). Empty for any other error.
+export function ownershipErrorSurface(error: unknown): { errorSurface?: ErrorSurface } {
+  if (isSessionNotOwnedError(error)) {
+    return { errorSurface: { layer: 'gateway', code: 'SESSION_NOT_OWNED', retryable: false } }
+  }
+
+  if (gatewayReason(error) === 'SESSION_OWNER_UNCONFIRMED') {
+    // The owner may already hold the send: a Retry would run a second copy.
+    return { errorSurface: { layer: 'gateway', code: 'SESSION_OWNER_UNCONFIRMED', retryable: false } }
+  }
+
+  return isSessionOwnerBusyError(error)
+    ? { errorSurface: { layer: 'gateway', code: 'SESSION_OWNER_BUSY', retryable: true } }
+    : {}
+}
+
+// RT-37: a legacy backend handed this prompt to the gateway that owns the chat, where it waits in
+// the owner's FIFO behind the gateway's turn. The queued-row card (the backend's
+// pending_submissions) stands for it until the owner starts it: no optimistic bubble or spinner.
+export function isForwardedReceipt(
+  legacyAccepted: boolean,
+  result: { forwarded?: boolean | null; status?: string } | undefined
+): boolean {
+  return legacyAccepted && result?.forwarded === true && result.status === 'queued'
+}
+
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 
 // Retry a gateway call across transient "session busy" so it never reaches the
@@ -537,7 +584,7 @@ export function slashStatusText(command: string, output: string): string {
  *   because it needs transcript replacement)
  * - `session.status`:   { output: "<multi-line plain text>" }
  * - `session.save`:     { file: "<absolute path>" }
- * - `session.usage`:    { calls, input, output, total, account_lines?, credits_lines? }
+ * - `session.usage`:    { calls, input, output, total, credits_lines? }
  * - `session.steer`:    { status: 'queued' | 'rejected', text }
  * - `process.stop`:     { killed: boolean }
  * - `agents.list`:      { processes: [{ session_id, command, status, uptime }] }
@@ -596,7 +643,7 @@ export function renderRpcResult(response: unknown, name: string): string {
     return r.output
   }
 
-  // session.usage — { calls, input, output, total, account_lines?, credits_lines? }
+  // session.usage — { calls, input, output, total, credits_lines? }
   if ('total' in r || 'input' in r || 'output' in r || 'calls' in r) {
     const calls = Number(r.calls ?? 0)
     const input = Number(r.input ?? 0)
@@ -607,13 +654,10 @@ export function renderRpcResult(response: unknown, name: string): string {
       `Usage: ${calls.toLocaleString()} calls · ${input.toLocaleString()} in / ${output.toLocaleString()} out · ${total.toLocaleString()} total`
     ]
 
-    // Provider account limits (e.g. Codex quota windows) first, then Nous credits — same order as CLI /usage.
-    for (const extra of [r.account_lines, r.credits_lines]) {
-      if (Array.isArray(extra)) {
-        for (const line of extra) {
-          if (typeof line === 'string' && line.trim()) {
-            lines.push(line.trim())
-          }
+    if (Array.isArray(r.credits_lines)) {
+      for (const line of r.credits_lines) {
+        if (typeof line === 'string' && line.trim()) {
+          lines.push(line.trim())
         }
       }
     }

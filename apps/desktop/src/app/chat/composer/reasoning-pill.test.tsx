@@ -96,6 +96,21 @@ describe('ReasoningPill', () => {
     expect(screen.getByTestId('reasoning-pill').textContent).toBe('High')
   })
 
+  it('labels the inherited state Auto instead of painting the library default as a wire level (#137378)', () => {
+    // Neither the session nor the profile config pins a level: nothing is on
+    // the wire and the provider decides — the pill must not read "Med".
+    render(
+      <SessionViewProvider value={tileView('')}>
+        <ReasoningPill disabled={false} model={modelState()} />
+      </SessionViewProvider>
+    )
+
+    const pill = screen.getByTestId('reasoning-pill')
+
+    expect(pill.textContent).toBe('Auto')
+    expect(pill.getAttribute('aria-label')).toBe('Effort: Auto')
+  })
+
   it("never paints the profile default while a resumed session's own effort is still loading (#79807)", () => {
     // Profile says ultra; the session being reopened is pinned to max.
     $defaultReasoningEffort.set('ultra')

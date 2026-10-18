@@ -3586,6 +3586,8 @@ export interface Translations extends NoticeTranslations {
       ultrafast: string
       useStandardSpeed: string
       effort: string
+      /** The inherit state: no level pinned, the provider decides (#137378). */
+      auto: string
       minimal: string
       low: string
       medium: string

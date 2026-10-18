@@ -12,7 +12,12 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Switch } from '@/components/ui/switch'
 import { useI18n } from '@/i18n'
-import { isThinkingEnabled, reasoningEffortClamp, resolveReasoningEffort } from '@/lib/reasoning-effort'
+import {
+  inheritsReasoningEffort,
+  isThinkingEnabled,
+  reasoningEffortClamp,
+  resolveReasoningEffort
+} from '@/lib/reasoning-effort'
 
 // Hermes' real reasoning levels live in lib/reasoning-effort; `none` is owned
 // by the Thinking toggle, not the radio.
@@ -129,6 +134,11 @@ export function ModelOptionsContent({
   const copy = t.shell.modelOptions
 
   const effortValue = resolveReasoningEffort(effort, defaultEffort)
+  // Radio rows are addressed by their own value, and Radix matches on string
+  // equality, so "inherit" gets a dedicated sentinel distinct from the "no
+  // row selected" ('' — thinking off) state.
+  const INHERIT = 'auto'
+  const inherit = inheritsReasoningEffort(effort, defaultEffort)
   const clamp = reasoningEffortClamp(effortValue, effortWire)
   const thinkingOn = isThinkingEnabled(effort, defaultEffort)
   const showThinkingToggle = reasoning && canDisableReasoning !== false
@@ -168,7 +178,13 @@ export function ModelOptionsContent({
           <Switch
             checked={thinkingOn}
             className="ml-auto"
-            onCheckedChange={checked => onSetOptions({ effort: checked ? effortValue || defaultEffort : 'none' })}
+            onCheckedChange={checked =>
+              // Re-enabling never materializes a level the row does not have:
+              // an inherited state stays inherited ('' unpins; the provider
+              // decides), "off" falls back to the profile default, and a pinned
+              // level stays pinned. The Effort rows are the only way to pin (#137378).
+              onSetOptions({ effort: checked ? (effort === 'none' ? defaultEffort : effort) : 'none' })
+            }
             size="xs"
           />
         </DropdownMenuItem>
@@ -205,7 +221,18 @@ export function ModelOptionsContent({
         <>
           <DropdownMenuSeparator className="mx-0" />
           <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copy.effort}</DropdownMenuLabel>
-          <DropdownMenuRadioGroup onValueChange={value => onSetOptions({ effort: value })} value={effortValue}>
+          <DropdownMenuRadioGroup
+            onValueChange={value => onSetOptions({ effort: value === INHERIT ? '' : value })}
+            value={inherit ? INHERIT : effortValue}
+          >
+            {/* The way back: '' unpins the level so the provider decides again. */}
+            <DropdownMenuRadioItem
+              className={dropdownMenuRow}
+              onSelect={event => event.preventDefault()}
+              value={INHERIT}
+            >
+              {copy.auto}
+            </DropdownMenuRadioItem>
             {REASONING_EFFORTS.map(value => (
               <DropdownMenuRadioItem
                 className={dropdownMenuRow}

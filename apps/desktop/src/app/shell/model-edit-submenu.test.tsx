@@ -94,6 +94,67 @@ describe('ModelEditSubmenu reports edits without performing them', () => {
     expect(onSetOptions).toHaveBeenCalledWith({ effort: 'high' })
   })
 
+  it('inherited state: the Auto row is selected, and thinking never materializes a level (#137378)', () => {
+    const onSetOptions = vi.fn()
+    renderSubmenu({
+      defaultEffort: '',
+      effort: '',
+      fastControl: { kind: 'none' },
+      onSetOptions,
+      reasoning: true
+    })
+
+    expect(screen.getByRole('menuitemradio', { name: 'Auto' }).getAttribute('aria-checked')).toBe('true')
+
+    // Off is still off; the old code wrote medium back on re-enable.
+    fireEvent.click(screen.getByRole('switch'))
+    expect(onSetOptions).toHaveBeenCalledWith({ effort: 'none' })
+  })
+
+  it('inherited state: re-enabling thinking from off returns to inherit, not the library default (#137378)', () => {
+    const onSetOptions = vi.fn()
+    renderSubmenu({
+      defaultEffort: '',
+      effort: 'none',
+      fastControl: { kind: 'none' },
+      onSetOptions,
+      reasoning: true
+    })
+
+    // Nothing is pinned anywhere: the toggle must not materialize medium.
+    fireEvent.click(screen.getByRole('switch'))
+
+    expect(onSetOptions).toHaveBeenCalledWith({ effort: '' })
+  })
+
+  it('inherited state: picking the Auto row unpins the level', () => {
+    const onSetOptions = vi.fn()
+    renderSubmenu({
+      defaultEffort: '',
+      effort: 'high',
+      fastControl: { kind: 'none' },
+      onSetOptions,
+      reasoning: true
+    })
+
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Auto' }))
+
+    expect(onSetOptions).toHaveBeenCalledWith({ effort: '' })
+  })
+
+  it('a profile default stays the selected row for an unset row — Auto is only for the true inherit state', () => {
+    renderSubmenu({
+      defaultEffort: 'high',
+      effort: '',
+      fastControl: { kind: 'none' },
+      onSetOptions: vi.fn(),
+      reasoning: true
+    })
+
+    expect(screen.getByRole('menuitemradio', { name: 'Auto' }).getAttribute('aria-checked')).toBe('false')
+    expect(screen.getByRole('menuitemradio', { name: 'High' }).getAttribute('aria-checked')).toBe('true')
+  })
+
   it('variant fast: swaps the model only when the row is active', () => {
     const onSelectModel = vi.fn()
     const onSetOptions = vi.fn()

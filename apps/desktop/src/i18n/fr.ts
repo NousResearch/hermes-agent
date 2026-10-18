@@ -4594,6 +4594,7 @@ export const frOverrides = {
       ultrafast: 'Ultrafast',
       useStandardSpeed: 'Utiliser la vitesse standard',
       effort: 'Effort',
+      auto: 'Auto',
       minimal: 'Minimal',
       low: 'Faible',
       medium: 'Moyen',

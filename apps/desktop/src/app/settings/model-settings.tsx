@@ -1,5 +1,5 @@
 import type { ModelOptionProvider } from '@hermes/shared'
-import { DEFAULT_REASONING_EFFORT, REASONING_EFFORT_VALUES } from '@hermes/shared'
+import { REASONING_EFFORT_VALUES } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
@@ -685,12 +685,14 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
   const ultrafastSupported = mainCaps?.ultrafast ?? false
 
   // Hand-written `reasoning_effort: false`/`off` reaches us as boolean false
-  // ("false" once stringified) — show it as Off, not an empty select.
+  // ("false" once stringified) — show it as Off, not an empty select. An empty
+  // value is the inherit state (provider decides), shown as its own choice
+  // rather than the library default (#137378); same sentinel the aux draft uses.
   const rawEffort = String(getNested(config ?? {}, 'agent.reasoning_effort') ?? '')
     .trim()
     .toLowerCase()
 
-  const effortValue = rawEffort === 'false' || rawEffort === 'disabled' ? 'none' : rawEffort || DEFAULT_REASONING_EFFORT
+  const effortValue = rawEffort === 'false' || rawEffort === 'disabled' ? 'none' : rawEffort || '__inherit__'
 
   // One profile-default speed: Standard, Fast (Priority) or Ultrafast. Ultrafast
   // only shows as a choice on models that offer it.
@@ -1075,13 +1077,16 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                 <div className="flex items-center gap-2 text-xs">
                   <span className="shrink-0 whitespace-nowrap">{m.reasoning}</span>
                   <Select
-                    onValueChange={value => void writeAgentDefault('agent.reasoning_effort', value)}
+                    onValueChange={value =>
+                      void writeAgentDefault('agent.reasoning_effort', value === '__inherit__' ? '' : value)
+                    }
                     value={effortValue}
                   >
                     <SelectTrigger className={cn('min-w-28', CONTROL_TEXT)}>
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
+                      <SelectItem value="__inherit__">{t.shell.modelOptions.auto}</SelectItem>
                       {REASONING_EFFORT_VALUES.map(value => (
                         <SelectItem key={value} value={value}>
                           {value === 'none' ? m.reasoningOff : t.shell.modelOptions[value]}

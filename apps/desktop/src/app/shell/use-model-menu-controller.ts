@@ -1,4 +1,4 @@
-import { DEFAULT_REASONING_EFFORT, type ModelOptionsResult } from '@hermes/shared'
+import { type ModelOptionsResult } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { atom } from 'nanostores'
@@ -76,7 +76,9 @@ export function useModelMenuController({
   const currentReasoningEffortWire = useStore(view.$reasoningEffortWire)
   const currentReasoningEffortPending = useStore(view.$reasoningEffortPending)
   const modelPresets = useStore($modelPresets)
-  const defaultEffort = useStore($defaultReasoningEffort) || DEFAULT_REASONING_EFFORT
+  // '' is a real state here (profile config has no level ⇒ inherit): padding
+  // it with the library default made the submenu materialize medium over it.
+  const defaultEffort = useStore($defaultReasoningEffort)
   const touchesPrimary = view.kind === 'primary'
 
   // Subscribe to the SAME query the menu runs (identical key ⇒ React Query

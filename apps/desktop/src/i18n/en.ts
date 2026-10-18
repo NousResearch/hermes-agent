@@ -4149,6 +4149,7 @@ export const en: Translations = {
       ultrafast: 'Ultrafast',
       useStandardSpeed: 'Use standard speed',
       effort: 'Effort',
+      auto: 'Auto',
       minimal: 'Minimal',
       low: 'Low',
       medium: 'Medium',

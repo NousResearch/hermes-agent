@@ -115,3 +115,64 @@ def test_stale_unit_dashboard_hint_names_its_unit_and_scope(monkeypatch, capsys)
     out = capsys.readouterr().out
     assert f"`sudo systemctl restart {UNIT}`" in out
     assert "Ask their owner" not in out and "hermes-serve.service" not in out
+
+
+def _verify(monkeypatch, restart, *, fleet_state="current", plan=None):
+    refreshed: list = []
+    monkeypatch.setattr(fleet_verify, "_print_legacy_units_warning", lambda: None)
+    monkeypatch.setattr(update_cmd, "_surviving_pre_update_serve_runtimes", lambda plan: [])
+    monkeypatch.setattr("hermes_cli.update_cmd_maint._refresh_dashboard_after_update",
+                        lambda **k: refreshed.append(k) or set())
+    monkeypatch.setattr(update_receipt, "_code_identity", lambda **k: {})
+    monkeypatch.setattr("hermes_cli.gateway_migrate.maybe_auto_migrate_after_update", lambda: None)
+    monkeypatch.setattr(fleet_verify, "_collect_fleet_snapshot",
+                        lambda outcome, expected: [{"profile": "default", "pid": 1563620, "state": fleet_state}])
+    update_cmd_fleet._write_fleet_restart_pending_marker()
+    with update_receipt.update_receipt_scope():
+        update_receipt.begin_update_receipt()
+        fleet_verify._verify_fleet_after_update(
+            restart, _pre_update_plan=plan, _windows_gateway_resume=None, update_complete=True)
+    return refreshed, update_receipt.read_latest_receipt()
+
+
+def _restart(**over):
+    fields = dict(incomplete=True, phase_errors=[], pre_restart_gateway_pids=[1234],
+                  restarted_services=["hermes-gateway"], failed_or_stale_units=["hermes-dashboard"],
+                  relaunched_profiles=[], externally_supervised_profiles=[], killed_pids=set())
+    fields.update(over)
+    return update_cmd_fleet._GatewayRestartOutcome(**fields)
+
+
+def test_field_case_forwards_the_declined_unit_and_blames_only_the_dashboard(monkeypatch, capsys):
+    """The reported run end to end through verification: gateway current, dashboard declined."""
+    refreshed, receipt = _verify(monkeypatch, _restart())
+    assert refreshed == [{"already_restarted_units": {"hermes-gateway", "hermes-dashboard"}}]
+    (followup,) = receipt["followups"]
+    assert followup["step"] == "gateway_restart"  # Desktop hand-offs parse the step id
+    assert "hermes-dashboard" in followup["reason"]
+    assert "hermes gateway restart" not in followup["reason"]
+    assert "gateways may still run" not in capsys.readouterr().out
+    # The obligation stays armed: a stale dashboard unit is still owed (contract unchanged).
+    assert update_cmd_fleet._fleet_restart_obligation_armed() is True
+
+
+@pytest.mark.parametrize("case", ["stale-gateway", "failed-gateway-unit", "phase-error"])
+def test_gateway_debt_still_names_gateway_restart(monkeypatch, case):
+    restart = _restart()
+    state = "current"
+    if case == "stale-gateway":
+        state = "stale"
+    elif case == "failed-gateway-unit":
+        restart.failed_or_stale_units.append("hermes-gateway-work")
+    else:
+        restart.phase_errors.append("boom")
+    _refreshed, receipt = _verify(monkeypatch, restart, fleet_state=state)
+    reason = receipt["followups"][0]["reason"]
+    assert "hermes gateway restart" in reason and "hermes-dashboard" in reason
+
+
+def test_is_serve_unit_is_exact():
+    assert fleet_verify._is_serve_unit("hermes-dashboard")
+    assert fleet_verify._is_serve_unit("hermes-serve-work.service")
+    for name in ("hermes-gateway", "hermes-dashboardd", "ai.hermes.gateway", "systemd-user (listing failed)"):
+        assert not fleet_verify._is_serve_unit(name)

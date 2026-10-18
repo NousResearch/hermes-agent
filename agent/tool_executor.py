@@ -1154,14 +1154,16 @@ def _commit_tool_result(
     # Multimodal dicts become an OpenAI-style content list; text-only servers get a
     # string-safe fallback so a rejected image result never poisons history.
     _tool_content = agent._tool_result_content_for_active_model(function_name, persisted_result)
-    source_provenance = source_provenance_tools.attach_trusted_source_provenance_metadata(
-        agent, function_name, content=_tool_content)
     tool_message = make_tool_result_message(function_name, _tool_content, tool_call_id,
-        effect_disposition=effect_disposition, source_provenance=source_provenance)
+        effect_disposition=effect_disposition)
     # A plugin that went live during this turn, and late LSP verdicts on this session's earlier edits,
     # are told on this new row (outside any untrusted-data wrapper).
     lsp_deferred.forward_to_agent(agent)
     plugin_live_notes.attach_to_tool_message(agent, tool_message)
+    source_provenance = source_provenance_tools.attach_trusted_source_provenance_metadata(
+        agent, function_name, content=tool_message['content'], presentation_content=_tool_content)
+    if source_provenance is not None:
+        tool_message['_source_provenance'] = source_provenance
     # Prepare presentation data before the append. The emitting completion callback
     # stays below the durability fence; raw tool/model content remains unchanged.
     prepare_metadata = getattr(agent, "tool_result_metadata_callback", None)

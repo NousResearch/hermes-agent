@@ -559,6 +559,29 @@ def _segment_read_file_presentation(
     return SourcePresentationSegment(digest, text, "read_file_json_v1")
 
 
+def _segment_read_file_with_notes(text, metadata, grant_texts, used_grants, *, sanitized_cap, **identity):
+    """Grant only the original JSON presentation; notices retain their independent policy scans."""
+    denied = UntrustedProvenanceSegment(sha256(text.encode('utf-8')).hexdigest())
+    if not isinstance(metadata, Mapping):
+        return denied
+    prefix_length = metadata.get('presentation_chars', len(text))
+    if (type(prefix_length) is not int or not 0 < prefix_length <= len(text)
+            or metadata.get('content_sha256') != sha256(text.encode('utf-8')).hexdigest()):
+        return denied
+    prefix, notes = text[:prefix_length], text[prefix_length:]
+    prefix_digest = sha256(prefix.encode('utf-8')).hexdigest()
+    if notes and (not notes.startswith('\n\n') or metadata.get('presentation_sha256') != prefix_digest):
+        return denied
+    presented = _segment_read_file_presentation(
+        prefix, {**metadata, 'content_sha256': prefix_digest}, grant_texts, used_grants, **identity)
+    if not notes or isinstance(presented, UntrustedProvenanceSegment):
+        return presented
+    # A notice cannot borrow a file grant, even if it repeats the file's bytes.
+    context = _segment_protected_context(notes, (), {}, sanitized_cap=sanitized_cap)
+    spans = context.segments if isinstance(context, OutboundText) else (context,)
+    return OutboundText((presented, *spans))
+
+
 def _typed_payload(
     value: Any,
     grant_texts: Sequence[tuple[str, SourceGrant]],
@@ -654,11 +677,12 @@ def _typed_payload(
                 typed[key] = UntrustedProvenanceSegment(sha256(str(item).encode("utf-8")).hexdigest())
                 continue
             if is_read_file_result and key == "content" and isinstance(item, str):
-                typed[key] = _segment_read_file_presentation(
+                typed[key] = _segment_read_file_with_notes(
                     item,
                     source_metadata,
                     grant_texts,
                     used_grants,
+                    sanitized_cap=sanitized_cap,
                     registry=registry,
                     session_id=request_identity[0],
                     turn_id=request_identity[1],
@@ -824,6 +848,8 @@ def _restore_source_provenance_sidecar(
                 "source_grant_digests",
                 "content_sha256",
                 "presentation_kind",
+                "presentation_chars",
+                "presentation_sha256",
             )
             if key in entry
         }

@@ -87,7 +87,7 @@ async def turn_references(runner, event, source, session_key, text):
     return text
 
 
-async def managed_turn_text(authority, row, policy):
+async def managed_turn_text(authority, row, policy, *, source_slices=None):
     """``(text, refusal)`` for a managed worker's admitted text, expanded against the session's
     workspace. Built-in kinds only for a bypass session, which loads no plugins; the context length
     is the frozen policy's, never the profile file a bypass session must not read. ``None`` text means
@@ -108,7 +108,7 @@ async def managed_turn_text(authority, row, policy):
         logger.warning("@ context reference expansion failed: %s", exc, exc_info=True)
         return text, None
     return await expand_references(text, cwd=policy.cwd, context_length=context_length,
-                                   plugins=not policy.ignore_user_config)
+                                   plugins=not policy.ignore_user_config, source_slices=source_slices)
 
 
 def refused_turn_result(row, refusal):

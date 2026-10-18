@@ -65,6 +65,7 @@ def attach_trusted_source_provenance_metadata(
     function_name: str,
     *,
     content: Any | None = None,
+    presentation_content: Any | None = None,
 ) -> dict[str, Any] | None:
     """Return an opaque, content-bound trusted-read envelope.
 
@@ -106,6 +107,11 @@ def attach_trusted_source_provenance_metadata(
         if isinstance(content, str):
             envelope["content_sha256"] = sha256(content.encode("utf-8")).hexdigest()
             envelope["presentation_kind"] = "read_file_json_v1"
+            if presentation_content is not None and presentation_content != content:
+                if not isinstance(presentation_content, str) or not content.startswith(presentation_content + '\n\n'):
+                    return None
+                envelope['presentation_chars'] = len(presentation_content)
+                envelope['presentation_sha256'] = sha256(presentation_content.encode('utf-8')).hexdigest()
         metadata[request_id] = envelope
         return envelope
     except Exception:

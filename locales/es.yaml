@@ -2753,6 +2753,13 @@ cli:
       last_activity: " · última actividad hace {seconds}s"
       agent_running: "Agente: en ejecución"
       agent_idle: "Agente: inactivo"
+      background_sessions: "Sesiones en segundo plano (/bg): {count}"
+      state_running: "en ejecución"
+      state_finishing: "finalizando"
+      state_starting: "iniciando"
+      api_calls: " · {count} llamadas API"
+      background_prompt: "\"{prompt}\""
+      background_hint: "los resultados se imprimen aquí al terminar · las solicitudes de aprobación aparecen en esta ventana · transcripción: hermes sessions list"
     journey:
       failed: "/journey falló: {error}"
     paste:

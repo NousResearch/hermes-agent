@@ -572,6 +572,8 @@ class CLIInitMixin:
         self._last_resize_width = None  # width change (reflow, needs viewport clear) vs rows-only
 
         self._background_tasks: dict[str, threading.Thread] = {}
+        # /agents reads this: number, prompt, start time and the live AIAgent of each /bg task.
+        self._background_task_meta: dict[str, dict[str, Any]] = {}
         self._background_task_counter = 0
 
         # Cache-hit baseline, reset on model switch / compression so the bar shows the current regime.

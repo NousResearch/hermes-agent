@@ -13,8 +13,10 @@ import argparse
 import importlib
 import io
 import shlex
+import time
 from contextlib import redirect_stdout
 from io import StringIO
+from typing import Optional
 
 from agent.i18n import t
 
@@ -141,6 +143,9 @@ class CLICommandsSessionToolsMixin:
             _cp(f"    {p.get('session_id', '?')} · {up} · {p.get('command', '')[:80]}")
         if finished:
             _cp(f"  {_t('agents.recently_finished', count=len(finished))}")
+        # /bg sessions run as threads of this process; they are in neither registry above.
+        for line in _background_session_lines(self):
+            _cp(line)
         if view is None:
             _print_local_delegations()
         elif n_async := view.active_delegations():
@@ -390,3 +395,46 @@ def _shlex_args(cmd: str) -> list:
         return shlex.split(cmd)[1:] if cmd else []
     except ValueError:
         return (cmd or "").split()[1:]
+
+
+def _background_session_lines(cli, now: Optional[float] = None) -> list[str]:
+    """Lines describing the live ``/bg`` tasks of this CLI process, oldest first: task number and
+    id, elapsed time, api calls, what the agent is doing right now and when it last did anything
+    (from the side agent's activity snapshot), then the prompt. Empty when none run. Every /bg
+    task used to be invisible in /agents (only the status-bar counter knew), so a user who started
+    one could not tell whether it was alive, stuck or finished. ``cli`` may be any object: a caller
+    without the /bg maps gets an empty list."""
+    from tools.process_registry import format_uptime_short
+    threads = getattr(cli, "_background_tasks", None) or {}
+    if not threads:
+        return []
+    now = time.time() if now is None else now
+    metas = getattr(cli, "_background_task_meta", None) or {}
+    lines = [f"  {_t('agents.background_sessions', count=len(threads))}"]
+    for task_id, thread in sorted(threads.items(), key=lambda kv: (metas.get(kv[0]) or {}).get("started_at", 0.0)):
+        meta = metas.get(task_id) or {}
+        state = _t("agents.state_running") if thread.is_alive() else _t("agents.state_finishing")
+        elapsed = format_uptime_short(max(0.0, now - meta.get("started_at", now)))
+        line = f"    #{meta.get('number', '?')} {task_id} · {state} {elapsed}"
+        snap = None
+        agent = meta.get("agent")
+        if agent is not None:
+            try:
+                snap = agent.get_activity_summary()
+            except Exception:  # health: allow BLE001 -- a side agent mid-construction or mid-close must not break /agents; the row says "starting"
+                snap = None
+        if snap:
+            line += _t("agents.api_calls", count=snap.get("api_call_count", 0))
+            tool = snap.get("current_tool")
+            line += " · " + (_t("agents.in_tool", tool=tool) if tool else _t("agents.between_turns"))
+            idle = snap.get("seconds_since_activity")
+            if idle is not None:
+                line += _t("agents.last_activity", seconds=f"{idle:.0f}")
+        else:
+            line += " · " + _t("agents.state_starting")
+        lines.append(line)
+        prompt = " ".join(str(meta.get("prompt") or "").split())
+        if prompt:
+            lines.append(f"      {_t('agents.background_prompt', prompt=prompt if len(prompt) <= 100 else prompt[:99] + '…')}")
+    lines.append(f"    {_t('agents.background_hint')}")
+    return lines

@@ -36,6 +36,7 @@ def _make_background_cli_stub():
     cli = _make_cli_stub()
     cli._background_task_counter = 0
     cli._background_tasks = {}
+    cli._background_task_meta = {}
     cli._ensure_runtime_credentials = MagicMock(return_value=True)
     cli._resolve_turn_agent_config = MagicMock(return_value={
         "model": "test-model",

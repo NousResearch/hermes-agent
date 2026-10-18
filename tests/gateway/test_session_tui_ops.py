@@ -1,6 +1,7 @@
 """Ink's /save, /reload, /agents pause and /rollback on the shared owner (main's sidecar parity)."""
 import asyncio
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -42,7 +43,13 @@ def test_reload_env_rereads_the_profile_dotenv_for_a_controlled_session(tmp_path
                 first = await rpc(ws, 'reload.env', session_id=sid)
                 assert first.get('result', {}).get('updated', 0) >= 1, first
                 assert (await rpc(ws, 'reload.env', session_id=sid))['result'] == {'updated': 0}
+                # Same size, same inode, pinned mtime: only the bytes distinguish the versions. On a
+                # kernel with coarse ctime a same-tick rewrite also kept ctime, and a stat-keyed .env
+                # memo served the old value (CI run 39146191939); the memo now keys on content.
+                pinned = env.stat()
                 await asyncio.to_thread(env.write_text, 'TUI_RELOAD_PROBE=two\n')
+                os.utime(env, ns=(pinned.st_atime_ns, pinned.st_mtime_ns))
+                assert env.stat().st_size == pinned.st_size
                 assert (await rpc(ws, 'reload.env', session_id=sid))['result'] == {'updated': 1}
                 # A bare frame never rewrites the shared owner's environment.
                 for params, reason in [({}, 'invalid_params'), ({'session_id': sid, 'profile': 'foreign'}, 'profile_mismatch'),

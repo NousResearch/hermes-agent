@@ -24,6 +24,8 @@ import { FolderOpen } from '@/lib/icons'
 import { type CodingWorkspaceOwner, listCodingWorkspaceProjects } from '@/store/coding-workspaces'
 import type { ProjectInfo } from '@/types/hermes'
 
+export const RECENT_PROJECT_LIMIT = 5
+
 interface CodingProjectPickerProps {
   owner: CodingWorkspaceOwner
   path?: string
@@ -47,8 +49,13 @@ export function CodingProjectPicker({ owner, path, disabled, onSelect, onBrowse 
 
   const projects = (data ?? []).filter(p => !p.archived && p.primary_path)
   const needle = search.trim().toLocaleLowerCase()
-  const matches = projects.filter(p => `${p.name} ${p.primary_path}`.toLocaleLowerCase().includes(needle))
   const selected = projects.find(p => p.primary_path === path)
+
+  // Unfiltered, the menu offers only the most recent few (plus the current choice);
+  // search reaches every project, and Browse anything else on disk.
+  const matches = needle
+    ? projects.filter(p => `${p.name} ${p.primary_path}`.toLocaleLowerCase().includes(needle))
+    : projects.filter((p, index) => index < RECENT_PROJECT_LIMIT || p === selected)
 
   const label =
     selected?.name ??

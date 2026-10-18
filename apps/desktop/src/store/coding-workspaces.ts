@@ -149,8 +149,9 @@ export async function captureCodingWorkspaceReferenceCwd(
   return true
 }
 
+/** Openable projects, most recently used first (missing folders and duplicate paths left out). */
 export async function listCodingWorkspaceProjects(owner: CodingWorkspaceOwner): Promise<ProjectInfo[]> {
-  const result = await request<{ projects: ProjectInfo[] }>(owner, 'projects.list', {})
+  const result = await request<{ projects: ProjectInfo[] }>(owner, 'projects.workspace.recent', {})
 
   return result.projects
 }

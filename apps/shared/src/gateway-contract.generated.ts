@@ -2537,6 +2537,9 @@ export interface WorkspaceTree {
   dirty?: boolean
   activeSessionCount?: number
 }
+export interface ProjectsList {
+  projects: ProjectInfo[]
+}
 /** The desktop's checkout intent plus its draft ``requestId`` (the durable identity of the prepared checkout; required for ``worktree``). */
 export interface ProjectsWorkspacePrepareParams {
   profile?: string | null
@@ -6437,6 +6440,8 @@ export interface RpcMethods {
   'projects.workspace.inspect': { params: WorkspacePathParams; result: WorkspaceInspection }
   /** Resolve (and for ``worktree`` create) the checkout a new coding session binds to; the receipt is sent back verbatim as ``session.create`` ``coding_workspace``. */
   'projects.workspace.prepare': { params: ProjectsWorkspacePrepareParams; result: CodingWorkspaceBinding }
+  /** Projects the checkout picker can open, most recently used first: unarchived, folder still on disk, one per primary path. Read-only; missing folders stay stored. */
+  'projects.workspace.recent': { params: ProfileParams; result: ProjectsList }
   /** The project owning a folder's repository root, created on first use. */
   'projects.workspace.register': { params: WorkspacePathParams; result: ProjectResult }
   /** Run a task on a fresh agent in the background; the answer arrives as background.complete. */
@@ -6797,6 +6802,7 @@ export const RPC_METHODS = [
   'projects.workspace.initialize',
   'projects.workspace.inspect',
   'projects.workspace.prepare',
+  'projects.workspace.recent',
   'projects.workspace.register',
   'prompt.background',
   'prompt.btw',

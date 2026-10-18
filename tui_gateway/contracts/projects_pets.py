@@ -202,6 +202,15 @@ method("projects.workspace.register", params=WorkspacePathParams, result=Project
        doc="The project owning a folder's repository root, created on first use.")
 
 
+class ProjectsList(Result):
+    projects: list[ProjectInfo]
+
+
+method("projects.workspace.recent", params=ProfileParams, result=ProjectsList,
+       doc="Projects the checkout picker can open, most recently used first: unarchived, folder still "
+           "on disk, one per primary path. Read-only; missing folders stay stored.")
+
+
 class ProjectsWorkspacePrepareParams(ProfileParams):
     """The desktop's checkout intent plus its draft ``requestId`` (the durable identity of the prepared
     checkout; required for ``worktree``)."""

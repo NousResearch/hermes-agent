@@ -101,7 +101,7 @@ it.each(['local', 'remote'] as const)(
     expect(activeGateway()).not.toBe(legacySocket)
     expect(result.current.owner).toEqual(owner)
     await listCodingWorkspaceProjects(owner)
-    expect(legacySocket.request).toHaveBeenCalledWith('projects.list', { profile: 'coder' })
+    expect(legacySocket.request).toHaveBeenCalledWith('projects.workspace.recent', { profile: 'coder' })
     expect(activeGateway()!.request).not.toHaveBeenCalled()
     release()
   }

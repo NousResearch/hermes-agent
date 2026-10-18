@@ -298,6 +298,31 @@ def register_folder(pdb, conn, path: str):
     return project
 
 
+def recent_projects(pdb, conn, db) -> list:
+    """Projects the checkout picker can open, most recently used first.
+
+    Read-only: a project whose folder is gone stays stored (an unmounted volume comes back) but
+    is not offered, since choosing it can only fail. Rows sharing one primary path collapse to
+    the oldest, the one ``project_for_path`` resolves. Projects with sessions (cwd in the folder,
+    worktrees under it included) come first, newest session first; the rest follow, newest first.
+    Registration time never outranks use: a folder is often registered after its first chats.
+    """
+    def key(project) -> str:
+        return os.path.normcase(os.path.normpath(project.primary_path or ""))
+
+    usable: dict = {}
+    for project in pdb.list_projects(conn):
+        if project.primary_path and key(project) not in usable and os.path.isdir(project.primary_path):
+            usable[key(project)] = project
+    last_session: dict[str, float] = {}
+    for row in db.distinct_session_cwds() if db is not None and usable else ():
+        owner = pdb.project_for_path(conn, str(row.get("cwd") or ""))
+        if owner is not None and key(owner) in usable:
+            last_session[key(owner)] = max(last_session.get(key(owner), 0.0), float(row.get("last_active") or 0))
+    return sorted(usable.values(), key=lambda project: (
+        key(project) not in last_session, -last_session.get(key(project), float(project.created_at or 0))))
+
+
 def _ensure_managed_worktrees_ignored(root: str) -> None:
     """Keep managed checkouts out of source status without editing .gitignore."""
     def ignored() -> bool:

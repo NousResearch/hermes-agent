@@ -2941,6 +2941,24 @@
       }
     },
     {
+      "name": "projects.workspace.recent",
+      "summary": "Projects the checkout picker can open, most recently used first: unarchived, folder still on disk, one per primary path. Read-only; missing folders stay stored.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ProjectsList"
+        }
+      }
+    },
+    {
       "name": "projects.workspace.register",
       "summary": "The project owning a folder's repository root, created on first use.",
       "params": [
@@ -31704,6 +31722,23 @@
           "cwd"
         ],
         "title": "ProjectsForCwdResult",
+        "type": "object"
+      },
+      "ProjectsList": {
+        "additionalProperties": false,
+        "properties": {
+          "projects": {
+            "items": {
+              "$ref": "#/components/schemas/ProjectInfo"
+            },
+            "title": "Projects",
+            "type": "array"
+          }
+        },
+        "required": [
+          "projects"
+        ],
+        "title": "ProjectsList",
         "type": "object"
       },
       "ProjectsPayload": {

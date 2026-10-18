@@ -6,6 +6,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { StatusRow } from '@/components/chat/status-row'
 import type { CodingWorkspaceDraft } from '@/store/coding-workspaces'
 
+import { RECENT_PROJECT_LIMIT } from './coding-project-picker'
 import { CodingWorkspaceControls } from './coding-workspace-controls'
 import { workspaceRowClassName } from './workspace-row'
 
@@ -31,7 +32,7 @@ vi.mock('@/store/coding-workspaces', async () => {
     registerCodingWorkspaceFolder: (...a: unknown[]) => mocks.register(...a),
     listCodingWorkspaceProjects: (owner: { connectionId: string; profile: string }) =>
       mocks
-        .request(owner.connectionId, owner.profile, 'projects.list', { profile: owner.profile })
+        .request(owner.connectionId, owner.profile, 'projects.workspace.recent', { profile: owner.profile })
         .then((r: { projects: unknown[] }) => r.projects)
   }
 })
@@ -445,6 +446,33 @@ describe('coding workspace controls', () => {
     await waitFor(() => expect(window.document.activeElement).toBe(trigger))
   })
 
+  it('offers only the most recent projects and the current choice until search reaches the rest', async () => {
+    const recent = Array.from({ length: RECENT_PROJECT_LIMIT + 3 }, (_, i) => ({
+      ...project,
+      id: `p${i}`,
+      name: `Project ${i}`,
+      primary_path: `/repos/p${i}`
+    }))
+
+    const current = recent.at(-1)!
+    mocks.request.mockResolvedValue({ projects: recent })
+    mount({ owner, intent: { projectId: current.id, path: current.primary_path, mode: 'current' }, status: 'ready' })
+    fireEvent.keyDown(screen.getByRole('button', { name: /Project/ }), { key: 'Enter' })
+    await screen.findByRole('menuitemradio', { name: /Project 0/ })
+
+    const offered = () =>
+      screen
+        .getAllByRole('menuitemradio')
+        .map(item => item.textContent)
+        .filter(text => text !== 'No project')
+
+    const head = recent.slice(0, RECENT_PROJECT_LIMIT)
+    expect(offered()).toEqual([...head, current].map(p => `${p.name}${p.primary_path}`))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search projects' }), { target: { value: 'Project 6' } })
+    expect(offered()).toEqual([`Project 6/repos/p6`])
+    expect(screen.getByRole('menuitem', { name: 'Browse…' })).toBeTruthy()
+  })
+
   it('keeps Browse separate from filtered radio choices and lets ArrowUp reach it', async () => {
     mocks.request.mockResolvedValue({ projects: [project] })
     const browse = vi.fn()
@@ -513,7 +541,7 @@ describe('coding workspace controls', () => {
       expect(mocks.set).toHaveBeenCalledWith(owner, { projectId: 'p_one', path: '/repo', mode: 'worktree' })
     )
     expect(mocks.inspect).toHaveBeenCalledWith(owner)
-    expect(mocks.request).toHaveBeenCalledWith('source-a', 'coder', 'projects.list', { profile: 'coder' })
+    expect(mocks.request).toHaveBeenCalledWith('source-a', 'coder', 'projects.workspace.recent', { profile: 'coder' })
   })
 
   it.each(['current', 'worktree', undefined])(

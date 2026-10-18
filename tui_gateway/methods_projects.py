@@ -113,6 +113,14 @@ def _(rid, params, pdb, conn) -> dict:
     return _ok(rid, {"project": register_folder(pdb, conn, str(params.get("path") or "")).to_dict()})
 
 
+@_projects_method("projects.workspace.recent")
+def _(rid, params, pdb, conn) -> dict:
+    from tui_gateway.coding_workspaces import recent_projects
+    with _profile_db(params) as db:
+        projects = recent_projects(pdb, conn, db)
+    return _ok(rid, {"projects": [p.to_dict() for p in projects]})
+
+
 @_projects_method("projects.workspace.initialize")
 def _(rid, params, pdb, conn) -> dict:
     from tui_gateway.coding_workspaces import initialize_workspace

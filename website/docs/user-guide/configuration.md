@@ -1375,7 +1375,7 @@ credential_pool_strategies:
   anthropic: least_used      # always pick the least-used key
 ```
 
-Options: `fill_first` (default), `round_robin`, `least_used`, `random`. See [Credential Pools](./features/credential-pools.md) for full documentation.
+Options: `fill_first` (default), `round_robin`, `least_used`, `random`, `balanced` (subscription logins: most quota headroom, keeps warm prompt caches in place). See [Credential Pools](./features/credential-pools.md) for full documentation.
 
 ## Prompt caching
 

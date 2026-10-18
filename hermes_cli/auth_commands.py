@@ -15,7 +15,7 @@ import uuid
 from agent.credential_pool import (
     AUTH_TYPE_API_KEY, AUTH_TYPE_OAUTH, CUSTOM_POOL_PREFIX, SOURCE_MANUAL,
     SOURCE_MANUAL_DEVICE_CODE, STATUS_EXHAUSTED, STRATEGY_FILL_FIRST, STRATEGY_ROUND_ROBIN,
-    STRATEGY_RANDOM, STRATEGY_LEAST_USED, PooledCredential, _codex_principal_identity,
+    STRATEGY_RANDOM, STRATEGY_LEAST_USED, STRATEGY_BALANCED, PooledCredential, _codex_principal_identity,
     _exhausted_until, _normalize_custom_pool_name, get_pool_strategy, label_from_token, list_custom_pool_providers,
     load_pool)
 from agent.credential_pool_admin import CredentialNotSavedError
@@ -860,7 +860,8 @@ _STRATEGY_DESCRIPTIONS = {
     STRATEGY_FILL_FIRST: "Use first key until exhausted, then next",
     STRATEGY_ROUND_ROBIN: "Cycle through keys evenly",
     STRATEGY_LEAST_USED: "Always pick the least-used key",
-    STRATEGY_RANDOM: "Random selection"}
+    STRATEGY_RANDOM: "Random selection",
+    STRATEGY_BALANCED: "Most quota headroom (subscriptions); warm sessions stay on their account"}
 
 
 def _interactive_strategy() -> None:
@@ -872,7 +873,7 @@ def _interactive_strategy() -> None:
     print()
     for i, s in enumerate(strategies, 1):
         print(f"  {i}. {s:15s} — {_STRATEGY_DESCRIPTIONS[s]}{' ←' if s == current else ''}")
-    raw = _ask("\nStrategy [1-4]: ")
+    raw = _ask(f"\nStrategy [1-{len(strategies)}]: ")
     if not raw:
         return
     try:

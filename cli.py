@@ -779,8 +779,8 @@ def save_config_value(key_path: str, value: any) -> bool:
     try:
         from hermes_constants import mkdir_under_hermes_home
         mkdir_under_hermes_home(config_path.parent)
-        from utils import atomic_roundtrip_yaml_update
-        atomic_roundtrip_yaml_update(config_path, key_path, value)
+        from hermes_cli.config import atomic_roundtrip_config_update
+        atomic_roundtrip_config_update(config_path, key_path, value)
         try:  # owner-only: config files contain API keys
             os.chmod(config_path, 0o600)
         except (OSError, NotImplementedError):

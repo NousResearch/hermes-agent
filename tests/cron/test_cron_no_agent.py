@@ -110,6 +110,60 @@ def test_run_job_no_agent_success_returns_script_stdout(hermes_env):
     assert "RAM 92% on host" in doc
 
 
+def test_no_agent_typed_busy_deferral_is_a_silent_deferred_outcome(hermes_env, monkeypatch):
+    """A bounded worker-deferred result is not an operational script failure.
+
+    The script contract deliberately requires exit 75 plus the exact sanitized JSON
+    envelope.  It must not invoke an agent, emit an inline failure delivery, or
+    increment the persisted failure streak.
+    """
+    from cron.jobs import create_job, get_job
+    from cron import scheduler
+    from tools import terminal_scope
+
+    # The scheduler boundary is under test, not the repository's terminal-policy
+    # manifest resolver; the fixture's isolated home has no project manifest.
+    monkeypatch.setattr(terminal_scope, "install_profile_terminal_scope", lambda _home: None)
+
+    script_path = hermes_env / "scripts" / "gmail-worker.sh"
+    script_path.write_text("#!/usr/bin/env bash\nexit 0\n")
+    monkeypatch.setattr(
+        scheduler,
+        "_run_job_script_with_claim_heartbeat",
+        lambda *_args, **_kwargs: (
+            False,
+            'Script exited with code 75\nstderr:\n'
+            '{"status":"deferred","reason":"busy","next_attempt_at":null,"operator_alert":false}',
+        ),
+    )
+    job = create_job(
+        prompt=None, schedule="every 5m", script="gmail-worker.sh", no_agent=True, deliver="local"
+    )
+    assert scheduler.run_one_job(job) is True
+
+    saved = get_job(job["id"])
+    assert saved["last_status"] == "deferred"
+    assert saved["failure_streak"] == 0
+    assert saved["last_error"] is None
+
+
+def test_no_agent_exit_75_without_strict_deferred_envelope_is_a_failure(hermes_env):
+    """Exit 75 alone is never upgraded to a deferred/nonfailure result."""
+    from cron.jobs import create_job, get_job
+    from cron import scheduler
+
+    script_path = hermes_env / "scripts" / "bad-worker.py"
+    script_path.write_text("import sys\nprint('busy', file=sys.stderr)\nraise SystemExit(75)\n")
+    job = create_job(
+        prompt=None, schedule="every 5m", script="bad-worker.py", no_agent=True, deliver="local"
+    )
+    assert scheduler.run_one_job(job) is True
+
+    saved = get_job(job["id"])
+    assert saved["last_status"] == "error"
+    assert saved["failure_streak"] == 1
+
+
 def test_run_job_no_agent_reloads_dotenv_before_script(hermes_env, monkeypatch):
     """Regression: a standalone cron tick process starts without home-channel
     vars in its environment, and the agent path's per-run dotenv reload never

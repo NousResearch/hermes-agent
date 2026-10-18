@@ -1554,6 +1554,29 @@ def _run_no_agent_job(
     header = _job_doc_header(job_name, job_id, now_iso, "no_agent (script)")
 
     if not ok:
+        # A no-agent worker may explicitly defer an attempted poll because its own
+        # coordination lock is busy.  This is deliberately narrower than "exit 75":
+        # accept only this application's sanitized, complete envelope.  All malformed
+        # payloads, retry exhaustion and alert-worthy deferrals stay real failures.
+        deferred_prefix = "Script exited with code 75\nstderr:\n"
+        if output.startswith(deferred_prefix) and "\nstdout:\n" not in output:
+            try:
+                deferred = json.loads(output[len(deferred_prefix):])
+            except (TypeError, ValueError):
+                deferred = None
+            if (
+                isinstance(deferred, dict)
+                and set(deferred) == {"status", "reason", "next_attempt_at", "operator_alert"}
+                and deferred.get("status") == "deferred"
+                and deferred.get("reason") in {"cooldown", "pacing", "busy"}
+                and (deferred.get("next_attempt_at") is None
+                     or isinstance(deferred.get("next_attempt_at"), (int, float)))
+                and not isinstance(deferred.get("next_attempt_at"), bool)
+                and deferred.get("operator_alert") is False
+            ):
+                job["_script_deferred"] = True
+                logger.info("Job '%s' (no_agent): typed worker deferral — silent run", job_id)
+                return True, f"{header}**Status:** deferred\n", SILENT_MARKER, None
         # Deliver the error: a silently broken watchdog is the worst-case outcome.
         alert = (
             f"⚠ Cron watchdog '{job_name}' script failed\n\n"
@@ -3060,6 +3083,7 @@ class _RunDelivery:
     incident_acked: bool = False
     failure_incident_id: Optional[str] = None
     side_effect_ownership_lost: bool = False
+    status: Optional[str] = None
 
 
 def _save_compose_deliver(
@@ -3370,7 +3394,10 @@ def _run_one_job_body(
 
         # Agent is still live through delivery; wrap ALL of save/compose/deliver in try/finally so a
         # raise anywhere still tears the deferred agent down.
-        d = _RunDelivery(job=job, success=success, error=error, agent_declared=agent_declared)
+        d = _RunDelivery(
+            job=job, success=success, error=error, agent_declared=agent_declared,
+            status="deferred" if job.pop("_script_deferred", False) else None,
+        )
         try:
             _save_compose_deliver(
                 d, fence, final_response, output, adapters=adapters, loop=loop, verbose=verbose,

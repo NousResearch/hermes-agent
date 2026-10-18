@@ -286,7 +286,15 @@ def _memory_tool(action, target, content, old_text, new_text, operations, store)
                or _apply_write_gate(store, action, target, content, old_text))
     if invalid is not None:
         return "rejected", invalid
-    return _applied(_STORE_ACTIONS[action][0](store, target, content, old_text))
+    result = _STORE_ACTIONS[action][0](store, target, content, old_text)
+    # Stage 7 — post-write read-back (T1-2): after an admitted replace/patch/remove,
+    # re-read the target and confirm old_text is gone. Bounded: one read per write.
+    if result.get("success"):
+        from tools.write_gate import verify_post_write
+        readback = verify_post_write(store, target, action, old_text, content=content)
+        if readback is not None:
+            return "failed", readback
+    return _applied(result)
 
 
 def get_builtin_memory_config(config: Optional[dict[str, Any]] = None) -> dict[str, Any]:

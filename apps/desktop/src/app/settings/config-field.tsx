@@ -115,17 +115,19 @@ export function ConfigField({
     return wideRow(<FallbackModelsField onChange={onChange} value={value} />)
   }
 
-  // `delegation.model` renders the paired provider + model picker.
-  // The sibling `delegation.provider` is handled atomically by this control.
+  // One route draft owns both rows and applies provider/model atomically.
   if (schemaKey === 'delegation.model') {
-    return wideRow(
-      <DelegationModelProviderField
-        baseUrl={delegationBaseUrl}
-        model={String(value ?? '')}
-        onChange={next => onDelegationChange?.(next)}
-        provider={delegationProvider ?? ''}
-        scope={scope}
-      />
+    return (
+      <div data-tour={dataTour}>
+        <DelegationModelProviderField
+          baseUrl={delegationBaseUrl}
+          model={String(value ?? '')}
+          modelDescription={descriptionNode}
+          onChange={next => onDelegationChange?.(next)}
+          provider={delegationProvider ?? ''}
+          scope={scope}
+        />
+      </div>
     )
   }
 

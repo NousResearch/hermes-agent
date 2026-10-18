@@ -79,8 +79,10 @@ describe('DelegationModelProviderField', () => {
 
     await waitFor(() => expect(getGlobalModelOptions).toHaveBeenCalled())
 
-    expect(screen.getByLabelText('Subagent Provider')).toBeTruthy()
-    expect(screen.getByLabelText('Subagent Model')).toBeTruthy()
+    expect(screen.getByText('Subagent Provider')).toBeTruthy()
+    expect(screen.getByText('Subagent Model')).toBeTruthy()
+    expect(screen.getByRole('combobox', { name: 'Subagent Provider' })).toBeTruthy()
+    expect(screen.getByRole('combobox', { name: 'Subagent Model' })).toBeTruthy()
     expect(screen.getByText('claude-sonnet-4-6')).toBeTruthy()
   })
 

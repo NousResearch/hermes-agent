@@ -495,13 +495,9 @@ def _get_process_start_time(pid: int) -> Optional[int]:
         pass
 
     # No /proc (macOS / Windows): psutil is a hard dependency and exposes a
-    # cross-platform creation time.  Quantize to centiseconds so repeated reads
-    # of the same process compare equal without float-precision fragility.
-    try:
-        import psutil  # type: ignore
-        return round(psutil.Process(pid).create_time() * 100)
-    except Exception:
-        return None
+    # cross-platform creation time, quantized to centiseconds for stable equality.
+    from gateway.status_start_time import psutil_start_time
+    return psutil_start_time(pid)
 
 
 def get_process_start_time(pid: int) -> Optional[int]:

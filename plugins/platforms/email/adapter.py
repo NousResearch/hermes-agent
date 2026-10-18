@@ -609,7 +609,14 @@ class EmailAdapter(BasePlatformAdapter):
             message = f"Not configured — missing {', '.join(missing)}. Set it via `hermes gateway setup` (env) or platforms.email in config.yaml."
             # Non-retryable: a blank-but-present env var used to drive an indefinite retry loop that leaked until OOM.
             return self._fail("[Email] %s", message, "email_missing_configuration", message, retryable=False)
-        if not self._probe_imap(is_reconnect) or not self._probe_smtp():
+        # Both probes are blocking stdlib I/O (imaplib/smtplib do DNS, TCP, TLS and the whole IMAP login
+        # handshake on the calling thread) and `connect()` runs as a task on the gateway event loop, so they
+        # must not run inline: a slow reachable-but-stalling mailbox froze the loop for the whole exchange,
+        # starving every other platform (Telegram's connect deadline expired) and tripping
+        # `gateway/shutdown_watchdog.py`. The poll path (`asyncio.to_thread(self._fetch_new_messages, ...)`)
+        # and the send paths (`run_in_executor`) already run off-loop; these probes were the only inline
+        # blocking calls left. Short-circuiting is unchanged: a failed IMAP probe still skips SMTP.
+        if not await asyncio.to_thread(self._probe_imap, is_reconnect) or not await asyncio.to_thread(self._probe_smtp):
             return False
         if self._require_authenticated_sender and not self._authserv_id and self._address not in EmailAdapter._missing_pin_warned:
             EmailAdapter._missing_pin_warned.add(self._address)

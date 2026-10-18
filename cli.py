@@ -1292,12 +1292,16 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         answered = gateway_plugin_commands.run(self, base_cmd.lstrip("/"), user_args)
         if answered:
             return answered  # ran beside the plugin's hooks, tools and MCP servers in the gateway, or GONE
+        from hermes_cli.plugin_command_dispatch import invoke_plugin_command
         from hermes_cli.plugins import get_plugin_command_handler, resolve_plugin_command_result
         plugin_handler = get_plugin_command_handler(base_cmd.lstrip("/"))
         if not plugin_handler:
             return
+        session_id = getattr(self, "session_id", None) or ""
         try:
-            result = resolve_plugin_command_result(plugin_handler(user_args))
+            result = resolve_plugin_command_result(invoke_plugin_command(
+                plugin_handler, user_args, source=None, session_id=session_id, session_key=session_id,
+                platform="cli"))
             if result:
                 _cprint(str(result))
         except Exception as e:

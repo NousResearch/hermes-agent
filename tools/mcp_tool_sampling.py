@@ -263,7 +263,8 @@ class ElicitationHandler:
     _ANSWER_RESULTS = {"accept": ("accept", "accepted"), "cancel": ("cancel", "errors")}
 
     def __init__(self, server_name: str, config: dict,
-                 call_context: Callable[[], Optional[Context]] = lambda: None):
+                 call_context: Callable[[], Optional[Context]] = lambda: None,
+                 call_callbacks: Callable[[], tuple] = lambda: ()):
         self.server_name = server_name
         # 5 min mirrors the gateway approval default so async surfaces (Telegram, Slack) can respond.
         self.timeout = _safe_numeric(config.get("timeout", 300), 300, float)
@@ -271,6 +272,9 @@ class ElicitationHandler:
         # between calls). A thunk, not the task: mcp_tool_server_run imports this module, so
         # MCPServerTask cannot be named here.
         self._call_context = call_context
+        # Same-call ``(setter, callback)`` pairs for the turn thread's prompt callbacks
+        # (approval/sudo/vault) — ``asyncio.to_thread`` does not carry ``threading.local``.
+        self._call_callbacks = call_callbacks
         self.metrics = {"requests": 0, "accepted": 0, "declined": 0, "errors": 0}
 
     def session_kwargs(self) -> dict:
@@ -284,14 +288,25 @@ class ElicitationHandler:
 
     def _consent_thunk(self, message: str, description: str) -> Callable[[], str]:
         """Sync consent call replaying the agent's contextvars snapshot when the owning task captured one
-        (the recv-loop task does NOT inherit them; gateway-platform detection needs them).
-        ``Context.run`` runs a context once, so it is copied per elicitation."""
+        (the recv-loop task does NOT inherit them; gateway-platform detection needs them) and installing
+        the captured per-thread prompt callbacks for the duration (the executor thread has none of its
+        own). ``Context.run`` runs a context once, so it is copied per elicitation."""
         from tools.approval_prompt import request_elicitation_consent
 
         consent = functools.partial(request_elicitation_consent, message, description,
                                     timeout_seconds=int(self.timeout), surface=f"mcp-elicitation/{self.server_name}")
-        captured = self._call_context()
-        return consent if captured is None else (lambda: captured.copy().run(consent))
+        captured, installs = self._call_context(), self._call_callbacks()
+
+        def _invoke() -> str:
+            for setter, cb in installs:
+                setter(cb)
+            try:  # executor threads are reused: never leak an install past this call
+                return consent() if captured is None else captured.copy().run(consent)
+            finally:
+                for setter, _cb in installs:
+                    setter(None)
+
+        return _invoke if (captured is not None or installs) else consent
 
     async def __call__(self, context, params):
         """SDK elicitation callback (``ElicitationFnT``). Returns ElicitResult or ErrorData."""

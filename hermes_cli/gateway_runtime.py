@@ -219,11 +219,15 @@ def _served_by_multiplexer(home: Path, *, timeout: float) -> GatewayDiscovery | 
         payload = query_identify(root, timeout=timeout)
     except PermissionError as exc:
         # The multiplexer's pipe proved the boundary: name it for the secondary too (#140706), unless
-        # the boot policy never serves this home (a standalone secondary starts its own gateway).
+        # the boot policy never serves this home (a standalone secondary starts its own gateway). Any
+        # other refusal is "not served" before a config is read, as on POSIX, where none is proven.
+        named = _refused_owner_verdict(exc)
+        if named is None:
+            return None
         from hermes_cli.gateway_multiplex_mode import host_serves_named_profile
         if host_serves_named_profile(root, home) is False:
             return None
-        return _refused_owner_verdict(exc)
+        return named
     except (FileNotFoundError, ConnectionRefusedError, TimeoutError, DiscoveryError,
             OSError, ValueError, TypeError):
         return None

@@ -195,6 +195,16 @@ def test_a_served_secondary_keeps_ignoring_any_other_multiplexer_refusal(served_
     assert runtime.discover_gateway_endpoint(home, timeout=1).state == "absent"
 
 
+def test_a_generic_multiplexer_refusal_never_reads_the_profile_configs(served_secondary):
+    """A plain PermissionError (POSIX too, where no pipe proves anything) is "not served" before any
+    config is read, so an unparseable default ``config.yaml`` still leaves the secondary ``absent``."""
+    from hermes_cli import gateway_runtime as runtime
+    home, _starts = served_secondary(lambda: (_ for _ in ()).throw(PermissionError("no token")))
+    (home.parent.parent / "config.yaml").write_text("gateway: [unclosed\n  multiplex_profiles: {\n",
+                                                     encoding="utf-8")
+    assert runtime.discover_gateway_endpoint(home, timeout=1).state == "absent"
+
+
 def test_a_standalone_secondary_is_not_refused_for_its_elevated_default_gateway(served_secondary):
     """``gateway.standalone: true`` opts the profile out of the multiplexer, so the default gateway's
     refusal is not its verdict: discovery stays its own ``absent`` and ensure starts its own gateway."""

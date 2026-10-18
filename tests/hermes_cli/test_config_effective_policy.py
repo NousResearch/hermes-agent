@@ -11,8 +11,7 @@ def policy_homes(tmp_path, monkeypatch):
         path.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
-    import hermes_cli.config as config
-    from hermes_cli import config_effective, managed_scope
+    from hermes_cli import config, config_effective, managed_scope
     for cache in (config._LOAD_CONFIG_CACHE, config._RAW_CONFIG_CACHE,
                   config_effective._EFFECTIVE_CACHE, config_effective._LAST_GOOD_USER_RAW):
         cache.clear()

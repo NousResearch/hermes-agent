@@ -881,7 +881,7 @@ class TestOptOutEssentialTopLevelLink:
         assert "hermes-agent" in result["updated"]
 
     def test_optout_existing_real_skill_is_never_overwritten(self, tmp_path):
-        bundled, skill = self._setup_bundled(tmp_path)
+        bundled, _skill = self._setup_bundled(tmp_path)
         skills_dir = tmp_path / "user_skills"
         manifest_file = skills_dir / ".bundled_manifest"
         home = self._opted_out_home(tmp_path)

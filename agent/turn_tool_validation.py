@@ -80,6 +80,21 @@ def validate_tool_calls(
     outright rather than retried."""
     from agent.conversation_loop import _invalid_tool_name_error_content
 
+    from agent.tool_call_identity import reject_conflicting_tool_call_ids
+
+    rejected, result = reject_conflicting_tool_call_ids(
+        agent, assistant_message, finish_reason, messages=messages,
+        conversation_history=conversation_history, api_call_count=api_call_count,
+        effective_task_id=effective_task_id,
+    )
+    if rejected:
+        if result is not None:
+            stamp_failure(result, "invalid_response", True)
+        return ToolValidationVerdict(
+            action="return" if result is not None else "continue",
+            result=result, mixed_invalid_batch=False,
+        )
+
     tool_calls = assistant_message.tool_calls
     valid_names = agent.valid_tool_names
 

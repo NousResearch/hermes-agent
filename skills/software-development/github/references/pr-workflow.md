@@ -138,6 +138,27 @@ To create as a draft, add `"draft": true` to the JSON body.
 
 ## 4. Monitoring CI Status
 
+### Default: get woken, don't watch
+
+On the homelab gateway, wake routes deliver CI and PR events to you — never babysit CI from a blocking shell:
+
+- `gh-ci-red` — a check on your branch fails
+- `gh-maintainer-feedback` — a maintainer comment/review arrives
+- `gh-pr-from-others` — a PR lands that needs shepherding
+
+On wake, run the one-shot check below, fix (Section 5), push. No session sleeps while waiting on CI.
+
+### No wake routes: bounded blocking wait
+
+`waitfor` (sysadmin repo `bin/waitfor`) is the paved-road replacement for hand-rolled poll loops — probe errors fail loudly on first occurrence, a terminal failure exits at once, output is one JSON line:
+
+```bash
+waitfor gh-run <run-id> --repo $OWNER/$REPO --timeout 600   # one Actions run to terminal
+waitfor nats <subject> --match <regex> --timeout 1800        # event-backed wait on the NATS bus
+```
+
+Exit codes: 0 green · 1 red · 2 probe error · 3 timeout.
+
 ### Check CI Status
 
 **With gh:**
@@ -145,9 +166,6 @@ To create as a draft, add `"draft": true` to the JSON body.
 ```bash
 # One-shot check
 gh pr checks
-
-# Watch until all checks finish (polls every 10s)
-gh pr checks --watch
 ```
 
 **With git + curl:**
@@ -178,10 +196,16 @@ for cr in data.get('check_runs', []):
     print(f\"  {cr['name']}: {cr['status']} / {cr['conclusion'] or 'pending'}\")"
 ```
 
-### Poll Until Complete (git + curl)
+### Last Resort: bounded `--watch` / poll loop
+
+Only when wake routes and `waitfor` are both unavailable. Always keep these bounded — an unbounded watch hangs forever on a run that never completes:
 
 ```bash
-# Simple polling loop — check every 30 seconds, up to 10 minutes
+timeout 600 gh pr checks --watch   # 10s polls, capped at 10 min
+```
+
+```bash
+# Poll every 30 seconds, up to 10 minutes — bounded last resort only
 SHA=$(git rev-parse HEAD)
 for i in $(seq 1 20); do
   STATUS=$(curl -s \
@@ -258,7 +282,7 @@ When asked to auto-fix CI, follow this loop:
 2. Read failure logs → understand the error
 3. Use `read_file` + `patch`/`write_file` → fix the code
 4. `git add . && git commit -m "fix: ..." && git push`
-5. Wait for CI → re-check status
+5. Wait for CI via wake route or bounded wait (Section 4) → re-check status
 6. Repeat if still failing (up to 3 attempts, then ask the user)
 
 ## 6. Merging

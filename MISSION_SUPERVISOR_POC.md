@@ -4,7 +4,8 @@
 
 - Branch: `codex/mission-ownership-phase1`.
 - Base candidate before this experiment: `e24614fb035c57958d8e859e98ccdf4d8132af54`.
-- Final PoC revision: filled in by the commit that adds this report and its implementation/tests.
+- PoC implementation and test commit: `d6dc199f2b4f32c3bf7e1a1aab694302bd83cef8` (`Add isolated mission execution supervisor proof of concept`).
+- The final report evidence is committed in a documentation-only follow-up on the same branch; the implementation revision above is the tested PoC.
 - This is a disposable Linux experiment, not Hermes runtime integration. No live Hermes installation, profile, gateway, board, production credential, or canonical X checkout was changed.
 - Runtime used: host systemd user manager (systemd 261, cgroup v2), Bubblewrap, isolated Python virtual environment, disposable profile/workspace/SQLite board below `/home/ftr3d/.hermes-phase1-isolated-20261018`.
 
@@ -72,11 +73,11 @@ Commands executed with the project's canonical runner and isolated virtualenv:
 ```text
 HERMES_PYTHON=/home/ftr3d/.hermes-phase1-isolated-20261018/venv/bin/python \
   scripts/run_tests.sh tests/scripts/test_mission_supervisor_poc.py -q -m integration
-4 passed, 0 failed (7.0s)
+4 passed, 0 failed (7.1s; runner 7.2s)
 
 HERMES_PYTHON=/home/ftr3d/.hermes-phase1-isolated-20261018/venv/bin/python \
   scripts/run_tests.sh mission_ownership_tests/test_mission_ownership.py -q
-31 passed, 0 failed (9.9s)
+31 passed, 0 failed (9.5s; runner 9.6s)
 
 ruff check scripts/mission_supervisor_poc.py tests/scripts/test_mission_supervisor_poc.py \
   mission_ownership_tests/test_mission_ownership.py

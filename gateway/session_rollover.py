@@ -371,6 +371,7 @@ class SessionRolloverMixin:
             "platform": receipt.get("source"),
             "chat_type": receipt.get("chat_type") or route["origin"].get("chat_type", "dm"),
             "transport_profile": receipt.get("transport_profile"),
+            "metadata": route["route_entry"].get("metadata"),
             "model_override": route.get("model_override"),
             "prompt_pin": route.get("prompt_pin"),
             "prev_session_id": old_id,

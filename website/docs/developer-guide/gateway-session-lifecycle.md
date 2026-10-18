@@ -699,7 +699,8 @@ still-authorized directive, including newer stops or cancellations.
 
 The commit ends the predecessor with `session_reset`, creates a fresh child with
 `parent_session_id`/`_reset_from`, and publishes native fresh-reset semantics. It
-does not copy the prior transcript. Recovery of a committed, not-yet-started
+does not copy the prior transcript. Adapter routing metadata, including delivery
+watermarks, survives the continuity boundary. Recovery of a committed, not-yet-started
 bootstrap uses the **same successor**. Interrupted authoring, bootstrap or
 continuation is visibly blocked for reconciliation, never blindly replayed.
 Missing or changed committed packets also block that successor before bootstrap;

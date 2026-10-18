@@ -588,3 +588,55 @@ def test_startup_recovery_does_not_mutate_unserved_profile_receipts(tmp_path, mo
         assert store.get_rollover(entries["unserved"].session_key)["phase"] == "prepared"
     finally:
         store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_slack_downtime_delta_survives_rollover_and_route_recovery(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from gateway.config import PlatformConfig
+    from plugins.platforms.slack.adapter import SlackAdapter
+
+    store, db = _store(tmp_path)
+    recovered_db = None
+    try:
+        adapter = SlackAdapter(PlatformConfig(enabled=True))
+        adapter.set_session_store(store)
+        source = adapter._thread_session_source("C123", "123.000", "U_USER", "T_TEAM", "group")
+        old = store.get_or_create_session(source)
+        store.set_session_metadata(old.session_key, "slack_thread_watermark:C123:123.000", "123.100")
+        receipt = _prepare(store, old, tmp_path)
+
+        def unavailable_index(*_args):
+            raise OSError("routing publication unavailable")
+
+        monkeypatch.setattr(store, "_persist_routing_data", unavailable_index)
+        successor = store.commit_rollover(
+            old.session_key, old.session_id, 7,
+            expected_new_session_id=receipt["new_session_id"],
+        )
+        restarted, recovered_db = _store(tmp_path, db_path=db.db_path)
+        assert restarted.get_or_create_session(source).session_id == successor.session_id
+        adapter = SlackAdapter(PlatformConfig(enabled=True))
+        adapter.set_session_store(restarted)
+        adapter._bot_user_id = "U_BOT"
+        adapter._team_bot_user_ids = {"T_TEAM": "U_BOT"}
+        adapter._user_name_cache = {("T_TEAM", "U_USER"): "User", ("T_TEAM", "U_OTHER"): "Other"}
+        adapter._app = SimpleNamespace(client=SimpleNamespace(conversations_replies=AsyncMock(
+            return_value={"messages": [
+                {"ts": "123.100", "user": "U_USER", "text": "Already observed"},
+                {"ts": "123.200", "user": "U_OTHER", "text": "Missed during downtime"},
+                {"ts": "123.300", "user": "U_USER", "text": "Current reply"},
+            ]},
+        )))
+        context, _, _ = await adapter._hydrate_thread_context(
+            channel_id="C123", event_thread_ts="123.000", ts="123.300",
+            user_id="U_USER", team_id="T_TEAM", is_thread_reply=True, is_mentioned=False, is_dm=False,
+        )
+        assert "Missed during downtime" in (context or "")
+        assert "Already observed" not in context
+        assert "Current reply" not in context
+    finally:
+        if recovered_db is not None:
+            recovered_db.close()
+        db.close()

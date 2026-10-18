@@ -6,6 +6,7 @@ whole chunk: a reopened fence, its closing fence and the ``(i/n)`` suffix includ
 
 from __future__ import annotations
 
+import re
 from typing import Callable, Optional
 
 from gateway.platforms.helpers import fence_state_after
@@ -15,16 +16,21 @@ FENCE_CLOSE = "\n```"
 INDICATOR_RESERVE = 10
 # Longest HTML entity body a hard split must not cut (``&amp;``, ``&#128512;``).
 _ENTITY_MAX = 9
+# A ``<`` that opens a span: a Slack link / mention (``<https:``, ``<@U1>``, ``<#C1>``,
+# ``<!here>``) or an HTML tag. A comparison such as ``x < 5`` opens nothing.
+_SPAN_OPEN = re.compile(r"<[@#!/A-Za-z]")
 
 
 def _indicator(index: int, count: int) -> str:
     return f" ({index}/{count})"
 
 
-def _unbroken_split(candidate: str, floor: int) -> int:
+def _unbroken_split(candidate: str, hard_cut: bool, floor: int) -> int:
     """``len(candidate)``, or an earlier offset (above ``floor``) so the chunk does not end inside
     an inline code span, an HTML entity (Slack mrkdwn and Telegram HTML escape ``& < >``) or an
-    open ``<...>`` span (a Slack link or mention, an HTML tag): its tail would render broken."""
+    open ``<...>`` span (a Slack link or mention, an HTML tag): its tail would render broken.
+    ``hard_cut`` is a cut between two non-space characters; an entity holds no whitespace, so a
+    natural break can never be inside one."""
     split_at = len(candidate)
     backtick_count = candidate.count("`") - candidate.count("\\`")
     if backtick_count % 2 == 1:
@@ -38,10 +44,12 @@ def _unbroken_split(candidate: str, floor: int) -> int:
     amp = candidate.rfind("&", 0, split_at)
     entity_head = candidate[amp + 1:split_at].lstrip("#")
     # An empty head is a cut right after the ``&``: the next chunk would open on ``amp;``.
-    if amp > floor and amp >= split_at - _ENTITY_MAX and (not entity_head or entity_head.isalnum()):
+    if (hard_cut and amp > floor and amp >= split_at - _ENTITY_MAX
+            and (not entity_head or entity_head.isalnum())):
         split_at = amp
     lt = candidate.rfind("<", 0, split_at)
-    if lt > floor and candidate.rfind(">", 0, split_at) < lt and "\n" not in candidate[lt:split_at]:
+    if (lt > floor and _SPAN_OPEN.match(candidate, lt) and candidate.rfind(">", 0, split_at) < lt
+            and "\n" not in candidate[lt:split_at]):
         split_at = lt
     return split_at
 
@@ -56,7 +64,8 @@ def _split_point(remaining: str, cp_limit: int) -> int:
         # Floor at one codepoint: a zero cp_limit (max_length 0/1, or a surrogate pair wider than
         # the utf16 budget) would never shrink ``remaining``; overshooting beats a hang.
         split_at = max(1, cp_limit)
-    return max(1, _unbroken_split(remaining[:split_at], cp_limit // 4))
+    hard_cut = split_at < len(remaining) and not remaining[split_at].isspace()
+    return max(1, _unbroken_split(remaining[:split_at], hard_cut, cp_limit // 4))
 
 
 def _split(content: str, max_length: int, _len: Callable[[str], int], reserve: int) -> list[str]:

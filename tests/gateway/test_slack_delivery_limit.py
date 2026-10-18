@@ -159,6 +159,17 @@ def test_standalone_media_text_is_split_under_the_limit(media_file, as_caption):
     assert client.files_upload_v2.await_args.kwargs["initial_comment"] == ""
 
 
+def test_a_failed_later_media_text_chunk_reports_what_was_delivered(media_file):
+    client = _sdk_client()
+    client.chat_postMessage = AsyncMock(side_effect=[
+        {"ok": True, "ts": "1.1"}, {"ok": False, "error": "ratelimited"}])
+    with _fake_slack_sdk(client):
+        result = _send("&" * (LIMIT * 2), media_files=[(media_file, False)])
+    assert "ratelimited" in result["error"]
+    assert result["delivered_chunks"] == 1 and result["total_chunks"] > 2
+    client.files_upload_v2.assert_not_awaited()
+
+
 def test_short_caption_still_rides_the_upload(media_file):
     client = _sdk_client()
     with _fake_slack_sdk(client):

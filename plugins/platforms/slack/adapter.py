@@ -54,10 +54,10 @@ from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
 try:  # sibling modules; support both package and flat plugin-dir import
     from .block_kit import render_blocks, sanitize_blocks
-    from .standalone_chunks import post_chunks, standalone_post_kwargs as _standalone_post_kwargs
+    from .standalone_chunks import chunk_progress, post_chunks, standalone_post_kwargs as _standalone_post_kwargs
 except ImportError:  # pragma: no cover - plugin loaded outside package context
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
-    from standalone_chunks import post_chunks, standalone_post_kwargs as _standalone_post_kwargs  # type: ignore
+    from standalone_chunks import chunk_progress, post_chunks, standalone_post_kwargs as _standalone_post_kwargs  # type: ignore
 
 
 logger = logging.getLogger(__name__)
@@ -6659,7 +6659,8 @@ async def _standalone_send_media(
             post_payload = await post_chunks(lambda chunk: _standalone_post_text(
                 client, chat_id, chunk, unfurl_kwargs, thread_id), text_to_send, SlackAdapter.MAX_MESSAGE_LENGTH)
             if not post_payload.get("ok", True):
-                return send_error(f"Slack API error: {post_payload.get('error', 'unknown')}")
+                return {**send_error(f"Slack API error: {post_payload.get('error', 'unknown')}"),
+                        **chunk_progress(post_payload)}
             last_message_id = post_payload.get("ts")
         except Exception as e:
             return send_error(f"Slack send failed: {e}")
@@ -6785,8 +6786,7 @@ async def _standalone_send(
             data = await post_chunks(post, formatted, SlackAdapter.MAX_MESSAGE_LENGTH)
         if data.get("ok"):
             return {"success": True, "platform": "slack", "chat_id": chat_id, "message_id": data.get("ts")}
-        partial = {key: data[key] for key in ("delivered_chunks", "total_chunks") if key in data}
-        return {**send_error(f"Slack API error: {data.get('error', 'unknown')}"), **partial}
+        return {**send_error(f"Slack API error: {data.get('error', 'unknown')}"), **chunk_progress(data)}
     except Exception as e:
         return send_error(f"Slack send failed: {e}")
 

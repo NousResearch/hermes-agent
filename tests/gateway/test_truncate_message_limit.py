@@ -64,3 +64,21 @@ def test_an_escaped_entity_is_never_cut_across_chunks(limit):
     bodies = [chunk.rsplit(" (", 1)[0] for chunk in chunks]
     assert all(body.startswith("&amp;") and body.endswith("&amp;") for body in bodies)
     assert sum(body.count("&amp;") for body in bodies) == 200
+
+
+@pytest.mark.parametrize("text, limit", [
+    ("x" * 60 + " R&D " + "y" * 60, 80),
+    ("x" * 60 + " AT&amp;T " + "y" * 60, 80),
+    (("word " * 300 + "if x < 5 then " + "word " * 700) * 3, 2000),
+], ids=["ampersand-word", "escaped-word", "comparison"])
+def test_plain_ampersands_and_comparisons_split_where_neutral_text_does(text, limit):
+    """Raw text for other platforms: ``R&amp;D`` or ``x < 5`` must not pull a natural split back."""
+    neutral = text.replace("&", "+").replace("<", "=")
+    assert [len(c) for c in truncate(text, limit)] == [len(c) for c in truncate(neutral, limit)]
+
+
+def test_a_slack_link_label_is_never_cut_across_chunks():
+    chunks = truncate(("word " * 9 + "<https://example.com/a|see the docs> ") * 60, 120)
+    bodies = [chunk.rsplit(" (", 1)[0] for chunk in chunks]
+    assert len(bodies) > 1
+    assert all(body.count("<") == body.count(">") for body in bodies)

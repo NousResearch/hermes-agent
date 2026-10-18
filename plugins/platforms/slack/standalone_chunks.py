@@ -25,6 +25,12 @@ def standalone_post_kwargs(
     return kwargs
 
 
+def chunk_progress(data: dict[str, Any]) -> dict[str, Any]:
+    """The ``delivered_chunks`` / ``total_chunks`` of a failed ``post_chunks`` result, for the
+    sender's error (cron must not replay a message whose head is already on screen)."""
+    return {key: data[key] for key in ("delivered_chunks", "total_chunks") if key in data}
+
+
 async def post_chunks(
     post: Callable[[str], Awaitable[dict[str, Any]]], formatted: str, limit: int,
 ) -> dict[str, Any]:

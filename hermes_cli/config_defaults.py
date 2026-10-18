@@ -2728,6 +2728,13 @@ DEFAULT_CONFIG = {
         "port": 0,  # Port for the managed server. 0 = pick a free port at spawn.
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
+        # Directory of externally authored llama.cpp profiles. Hermes reads
+        # top-level *.toml files whose model_id matches a staged model and
+        # merges their static flags into the generated preset. Context, model
+        # path, and mmproj stay Hermes-owned. Empty = no external profiles.
+        # Profiles for this machine are authored in
+        # The-Hobo-Shack/hobo-llama-ctl/profiles.
+        "profile_dir": "",
     },
     "_config_version": 51,  # Config schema version - bump this when adding new required fields
 }

@@ -32,6 +32,8 @@ class PresetEntry:
     spilled: bool
     refusal: str | None = None
     keys: dict[str, str] | None = None
+    # Absolute path of the hobo-llama-ctl profile merged into keys, if any.
+    profile_source: str | None = None
 
 
 def _args_to_keys(args: list[str]) -> dict[str, str]:
@@ -258,7 +260,8 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
             # Unsloth's measured cliff: acceptance 83% at 2-3 drafts, collapses at 4.
             keys["spec-draft-n-max"] = "3"
     return PresetEntry(model_id=model_id, window=decision.window,
-                       spilled=decision.spilled, keys=keys)
+                       spilled=decision.spilled, keys=keys,
+                       profile_source=_merge_external_profile(model_id, keys))
 
 
 def resident_footprint(gguf: Path, budget: HardwareBudget, window: int, *, drafting: bool = False) -> int | None:
@@ -392,10 +395,71 @@ def render_presets(entries: list[PresetEntry]) -> str:
         sections.append("# hermes-decision: " + json.dumps({
             "model_id": entry.model_id, "window": entry.window,
             "spilled": entry.spilled, "refusal": entry.refusal}) + "\n")
+        if entry.profile_source:
+            sections.append("# profile-source: " + entry.profile_source + "\n")
         if entry.keys is not None:
             body = "\n".join(f"{k} = {v}" for k, v in entry.keys.items())
             sections.append(f"[{entry.model_id}]\n{body}\n")
     return "\n".join(sections)
+
+
+# Launcher-owned keys. An external profile must not override fit, context, or paths.
+_LAUNCHER_OWNED = frozenset({
+    "ctx-size", "model", "mmproj", "host", "port", "api-key", "alias", "device",
+    "model-draft", "spec-type", "spec-draft-n-max", "override-tensor", "cache-ram",
+    "lazy-mode", "backend-sampling", "spec-draft-backend-sampling",
+})
+
+
+def _external_profile_dir() -> Path | None:
+    """Configured hobo-llama-ctl profiles directory, or None when unset or missing."""
+    try:
+        from hermes_cli.config import load_config
+        raw = ((load_config().get("local_runtime") or {}).get("profile_dir") or "")
+    except Exception:
+        return None
+    path = Path(str(raw)).expanduser()
+    return path if str(raw).strip() and path.is_dir() else None
+
+
+def _toml_flag(value) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float) and value.is_integer() and abs(value) >= 1:
+        return str(int(value))
+    return str(value)
+
+
+def _merge_external_profile(model_id: str, keys: dict[str, str]) -> str | None:
+    """Merge a matching top-level profile's static flags. Returns its path, or None.
+
+    Profiles are authored in The Hobo Shack (``local_runtime.profile_dir``). Only a
+    file whose ``model_id`` equals the staged model is applied. Context and file
+    paths stay with Hermes. A missing directory or a bad file does not fail the preset.
+    """
+    root = _external_profile_dir()
+    if root is None:
+        return None
+    import tomllib
+    for path in sorted(root.glob("*.toml")):
+        try:
+            data = tomllib.loads(path.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError):
+            logger.warning("external profile unreadable: %s", path)
+            continue
+        if str(data.get("model_id") or "") != model_id:
+            continue
+        settings = data.get("settings") or {}
+        if not isinstance(settings, dict):
+            logger.warning("external profile %s has no settings table", path)
+            return None
+        for key, value in settings.items():
+            flag = str(key)
+            if flag in _LAUNCHER_OWNED:
+                continue
+            keys[flag] = _toml_flag(value)
+        return str(path)
+    return None
 
 
 def read_preset_decisions(preset_path: Path | None = None) -> dict[str, PresetEntry]:

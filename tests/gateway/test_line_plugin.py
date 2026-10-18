@@ -677,3 +677,56 @@ class TestGroupKeywordGate:
         }
         await ad._handle_message_event(event)
         ad.handle_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_skipped_group_message_does_not_replace_pending_reply_token(self, monkeypatch):
+        """The gate runs before the reply token is stashed, so a skipped
+        (keyword-less) group event must not overwrite the pending token an
+        earlier gated-in message left for that chat — otherwise the eventual
+        response could consume the ignored message's reply token."""
+        ad = self._make_adapter(monkeypatch, group_keyword="hermes")
+        ad._client = None
+        ad.handle_message = AsyncMock()
+        gated_in = {
+            "message": {"type": "text", "id": "m8", "text": "hermes please help"},
+            "replyToken": "rt-wanted",
+            "source": {"type": "group", "groupId": "C1", "userId": "U1"},
+        }
+        skipped = {
+            "message": {"type": "text", "id": "m9", "text": "hello everyone"},
+            "replyToken": "rt-ignored",
+            "source": {"type": "group", "groupId": "C1", "userId": "U1"},
+        }
+        await ad._handle_message_event(gated_in)
+        await ad._handle_message_event(skipped)
+        assert ad._reply_tokens["C1"][0] == "rt-wanted"
+        ad.handle_message.assert_called_once()
+
+    def test_group_keyword_loads_from_the_yaml_platform_block(self, tmp_path, monkeypatch):
+        """config.yaml ``gateway.platforms.line`` carries ``group_keyword`` into
+        ``PlatformConfig.extra`` (the ``extra:`` mapping is the documented spelling),
+        so the yaml-documented config actually reaches the adapter."""
+        import os as _os
+
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / "config.yaml").write_text(json.dumps({
+            "platforms": {"line": {"enabled": True, "extra": {"group_keyword": "hermes"}}},
+        }), encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        for key in list(_os.environ):
+            if key.startswith("LINE_"):
+                monkeypatch.delenv(key)
+        from gateway.config_loader import load_yaml_layer
+        from gateway.config import GatewayConfig, Platform
+
+        data: dict = {}
+        load_yaml_layer(home, data)
+        config = GatewayConfig.from_dict(data)
+        # Plugin platforms are dynamic enum members (created on demand), so look them
+        # up by value rather than by a static attribute.
+        line_extra = config.platforms[Platform("line")].extra
+        assert line_extra["group_keyword"] == "hermes"
+
+        ad = self._make_adapter(monkeypatch, extra_keyword=line_extra["group_keyword"])
+        assert ad.group_keyword == "hermes"

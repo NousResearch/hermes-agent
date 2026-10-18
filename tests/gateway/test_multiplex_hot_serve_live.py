@@ -312,3 +312,77 @@ def test_invalid_hot_profile_config_is_parked_and_unserved(mux):
         wait_recorded(root, lambda r: 'boot' not in r, 'parked boot withdrawn from the recorded set')
     finally:
         stop(proc, expect=None)
+
+
+async def chat_for(root, home, desc, *, during_turn=None):
+    """Exercise the real session/agent path; only the model HTTP wire is a fixture."""
+    grant = control(root, 'session-ticket', {'profile_id': str(home.resolve()),
+                    'instance_id': desc['instance_id'], 'purpose': 'interactive'})
+    url = desc['api_origin'].replace('http:', 'ws:') + '/api/ws'
+    async with connect(url, subprotocols=['hermes-gateway-v1', 'hermes-gateway-ticket.' + grant['ticket']]) as ws:
+        async def until(predicate):
+            async with asyncio.timeout(40):
+                while True:
+                    reply = json.loads(await ws.recv())
+                    if predicate(reply):
+                        return reply
+
+        await ws.send(json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'session.create',
+            'params': {'request_id': 'profile-stop-chat', 'source': 'cli'}}))
+        created = await until(lambda r: r.get('id') == 1)
+        assert 'result' in created, created
+        sid = created['result']['session_id']
+        # Keep the same connection and conversation for a second turn after the stop.
+        for index in range(2):
+            text = 'WS_SHARED BLOCK_FIFO' if during_turn and index == 0 else 'WS_SHARED'
+            await ws.send(json.dumps({'jsonrpc': '2.0', 'id': index + 2, 'method': 'prompt.submit',
+                'params': {'session_id': sid, 'text': text, 'input_id': f'profile-stop-{index}'}}))
+            submitted = await until(lambda r: r.get('id') == index + 2)
+            assert 'result' in submitted, submitted
+            if during_turn and index == 0:
+                await during_turn()
+            terminal = await until(lambda r: r.get('params', {}).get('type') in {'message.complete', 'error'})
+            assert 'LOCAL_ACK_WS_SHARED' in json.dumps(terminal), terminal
+
+
+def test_stop_secondary_keeps_host_and_survives_host_restart(mux, peer):
+    """A satellite's runtime PID is its serving host, never its process to kill."""
+    import threading
+    peer.blocked, peer.release = threading.Event(), threading.Event()
+    root, boot = mux['root'], mux['boot']
+    proc, desc = start_daemon(mux)
+
+    async def stop_during_primary_turn():
+        assert await asyncio.to_thread(peer.blocked.wait, 10), 'primary turn never reached model'
+        try:
+            stopped = await asyncio.to_thread(subprocess.run,
+                [sys.executable, '-m', 'hermes_cli.main', '-p', 'boot', 'gateway', 'stop'],
+                cwd=ROOT, env=mux['env'], capture_output=True, text=True, timeout=45, check=False)
+            assert stopped.returncode == 0, (stopped.stdout, stopped.stderr)
+            assert (boot / 'gateway.parked').exists(), (stopped.stdout, stopped.stderr)
+            assert proc.poll() is None, tail(mux)
+            after = control(root, 'identify')
+            assert after['instance_id'] == desc['instance_id']
+            assert served_homes(after) == {root.resolve()}
+        finally:
+            peer.release.set()
+
+    try:
+        asyncio.run(chat_for(root, root, desc, during_turn=stop_during_primary_turn))
+        # An explicit host restart exercises persisted stop intent, not merely cached status.
+        stop(proc)
+        proc, desc = start_daemon(mux)
+        assert served_homes(desc) == {root.resolve()}
+        started = subprocess.run(
+            [sys.executable, '-m', 'hermes_cli.main', '-p', 'boot', 'gateway', 'start'],
+            cwd=ROOT, env=mux['env'], capture_output=True, text=True, timeout=45, check=False,
+        )
+        assert started.returncode == 0, (started.stdout, started.stderr)
+        assert not (boot / 'gateway.parked').exists()
+        after = control(root, 'identify')
+        assert after['instance_id'] == desc['instance_id']
+        assert served_homes(after) == {root.resolve(), boot.resolve()}
+        asyncio.run(chat_for(root, boot, after))
+    finally:
+        peer.release.set()
+        stop(proc, expect=None)

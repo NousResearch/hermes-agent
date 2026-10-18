@@ -412,6 +412,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin):
         params = self._message_row_params(
             session_id, role, msg, tool_calls, message_timestamp, keep_reasoning=True)
         def _do(conn):
+            self._check_rollover_retirement(conn, session_id)
             self._check_transcript_write_guards(conn, session_id, compression_lock_holder,
                 turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
             msg_id = conn.execute(_INSERT_MESSAGE_SQL, params).lastrowid
@@ -444,6 +445,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin):
 
     def _append_messages_in_transaction(self, conn, session_id, messages, *,
             compression_lock_holder=None, turn_lease_holder=None, turn_lease_ttl_seconds=300.0):
+        self._check_rollover_retirement(conn, session_id)
         self._check_transcript_write_guards(conn, session_id, compression_lock_holder,
             turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
         from agent.transcript_repair import resolve_and_repair_transcript_batch
@@ -729,6 +731,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin):
         Never touches sessions.* counters (callers reconcile differently); reasoning kept for assistant rows.
         A caller that re-archives some rows afterwards passes ``prune_checkpoints=False`` and prunes once they
         are archived again (:meth:`_prune_shadowed_checkpoints`)."""
+        self._check_rollover_retirement(conn, session_id)
         now_ts = time.time()
         inserted = tool_calls_total = 0
         batch_tool_index: dict[str, str] = {}

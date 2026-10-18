@@ -89,6 +89,8 @@ def test_precommit_failure_keeps_old_owner(tmp_path):
         assert db.get_session(old.session_id)["end_reason"] is None
         assert db.get_session(receipt["new_session_id"]) is None
         assert store.get_rollover(old.session_key)["phase"] == "prepared"
+        assert db.try_acquire_session_turn_lease(old.session_id, "still-owner")
+        db.release_session_turn_lease(old.session_id, "still-owner")
     finally:
         db.close()
 
@@ -290,6 +292,72 @@ def test_completed_external_turn_prevents_stale_handoff_cutover(tmp_path, write_
         assert db.get_messages(old.session_id)[-1]["content"] == "Task cancelled"
     finally:
         peer.close()
+        db.close()
+
+
+def test_rollover_retirement_survives_restart_and_receipt_replacement(tmp_path):
+    from hermes_state_runtime import begin_runtime_epoch, mutate_worker_execution, register_worker_execution
+
+    store, db = _store(tmp_path)
+    peer = None
+    try:
+        old = store.get_or_create_session(_source())
+        receipt = _prepare(store, old, tmp_path)
+        successor = store.commit_rollover(
+            old.session_key, old.session_id, 7,
+            expected_new_session_id=receipt["new_session_id"],
+        )
+        store.set_rollover_phase(old.session_key, successor.session_id, "committed", "bootstrapping")
+        store.set_rollover_phase(old.session_key, successor.session_id, "bootstrapping", "complete")
+        _prepare(store, successor, tmp_path)
+        peer = SessionDB(db_path=db.db_path)
+
+        with pytest.raises(SessionTurnLeaseLostError, match="retired by automatic rollover"):
+            peer.try_acquire_session_turn_lease(old.session_id, "late-owner")
+        scope = dict(
+            epoch=begin_runtime_epoch(peer, instance_id="rollover-test"), execution_id="late-worker",
+            session_id=old.session_id, generation=0,
+        )
+        register_worker_execution(peer, **scope, kind="compute", adoption_secret="synthetic")
+        with pytest.raises(SessionTurnLeaseLostError, match="retired by automatic rollover"):
+            mutate_worker_execution(
+                peer, **scope, sequence=1, operation="turn.acquire",
+                payload={"holder": "late-runtime-owner", "ttl_seconds": 300},
+            )
+        mutate_worker_execution(peer, **scope, sequence=1, operation="execution.finish", payload={})
+        with pytest.raises(SessionTurnLeaseLostError, match="retired by automatic rollover"):
+            peer.append_message(old.session_id, "assistant", "Late action")
+        with pytest.raises(SessionTurnLeaseLostError, match="retired by automatic rollover"):
+            peer.append_messages_batch(old.session_id, [{"role": "assistant", "content": "Late batch"}])
+        with pytest.raises(SessionTurnLeaseLostError, match="retired by automatic rollover"):
+            peer.replace_messages(old.session_id, [{"role": "assistant", "content": "Late rewrite"}])
+        assert peer.get_messages(old.session_id) == []
+
+        assert peer.try_acquire_session_turn_lease(successor.session_id, "successor-owner")
+        peer.append_message(
+            successor.session_id, "assistant", "Current action", turn_lease_holder="successor-owner",
+        )
+        peer.release_session_turn_lease(successor.session_id, "successor-owner")
+        assert peer.get_messages(successor.session_id)[-1]["content"] == "Current action"
+        assert peer.delete_session(old.session_id, exclude_active_write_guards=True)
+        with pytest.raises(SessionTurnLeaseLostError, match="retired by automatic rollover"):
+            peer.try_acquire_session_turn_lease(old.session_id, "recreate-old-id")
+    finally:
+        if peer is not None:
+            peer.close()
+        db.close()
+
+
+def test_manual_reset_does_not_retire_predecessor_admission(tmp_path):
+    store, db = _store(tmp_path)
+    try:
+        old = store.get_or_create_session(_source())
+        store.reset_session(old.session_key)
+        assert db.try_acquire_session_turn_lease(old.session_id, "manual-resume")
+        db.append_message(old.session_id, "user", "Resume manually", turn_lease_holder="manual-resume")
+        db.release_session_turn_lease(old.session_id, "manual-resume")
+        assert db.get_messages(old.session_id)[-1]["content"] == "Resume manually"
+    finally:
         db.close()
 
 

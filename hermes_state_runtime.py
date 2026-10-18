@@ -684,6 +684,7 @@ def _worker_turn(db, conn, session_id, payload, operation):
     key = db._session_turn_lease_key_on_conn(conn, session_id)
     now = time.time()
     if operation == 'turn.acquire':
+        db._check_rollover_retirement(conn, session_id)
         value = _claim_lease_row(conn, 'session_turn_leases', 'conversation_id', key,
             holder, now, now + ttl,
             lambda h, e: float(e) <= now or _compression_lock_holder_process_is_dead(h))[0]

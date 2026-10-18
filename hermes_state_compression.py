@@ -630,6 +630,7 @@ class SessionCompressionMixin:
         now = time.time()
         expires_at = now + max(0.1, float(ttl_seconds))
         def _do(conn):
+            self._check_rollover_retirement(conn, session_id)
             # Sweep rows that expired long ago: a holder that died without releasing leaves its row
             # behind, and nothing else revisits a conversation nobody resumes. The grace keeps the
             # recent expiries a still-live owner can renew from a starved refresher; it is also the

@@ -51,6 +51,7 @@ class SessionDetachedResultsMixin:
             existing = conn.execute(_LINEAGE_MATCH_SQL + match_sql + " LIMIT 1", (session_id, *params)).fetchone()
             if existing is not None:
                 return existing[0]
+            self._check_rollover_retirement(conn, session_id)
             self._check_transcript_write_guards(conn, session_id, None, reject_active_turn_lease=True)
             msg_id = conn.execute(_INSERT_MESSAGE_SQL, row).lastrowid
             self._bump_session_counters(conn, session_id, 1, 0, unit=True)

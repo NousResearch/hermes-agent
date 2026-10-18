@@ -10,6 +10,7 @@ from typing import Any, Optional
 
 
 _ROLLOVER_META_PREFIX = "gateway_rollover:"
+_ROLLOVER_RETIRED_PREFIX = "gateway_rollover_retired:"
 _ROLLOVER_PHASES = frozenset({
     "authoring", "prepared", "committed", "bootstrapping", "admitting", "complete", "blocked",
     "invalidated",
@@ -54,6 +55,18 @@ class SessionRolloverMixin:
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (_rollover_meta_key(receipt["session_key"]), json.dumps(receipt, ensure_ascii=False)),
         )
+
+    @staticmethod
+    def _check_rollover_retirement(conn, session_id: str) -> None:
+        row = conn.execute(
+            "SELECT value FROM state_meta WHERE key = ?", (_ROLLOVER_RETIRED_PREFIX + session_id,),
+        ).fetchone()
+        if row is not None:
+            from hermes_state_errors import SessionTurnLeaseLostError
+
+            raise SessionTurnLeaseLostError(
+                f"Session {session_id!r} retired by automatic rollover; successor is {row[0]!r}",
+            )
 
     @staticmethod
     def _rollover_route_row(conn, receipt: dict[str, Any]):
@@ -285,6 +298,11 @@ class SessionRolloverMixin:
                 profile_name=receipt.get("profile_name"),
                 transport_profile=receipt.get("transport_profile"),
                 origin_json=receipt.get("origin_json"), display_name=receipt.get("display_name"),
+            )
+            # Independent of the lane's replaceable receipt: an old ID must never regain write authority.
+            conn.execute(
+                "INSERT INTO state_meta (key, value) VALUES (?, ?)",
+                (_ROLLOVER_RETIRED_PREFIX + expected_session_id, successor_id),
             )
             committed = dict(receipt)
             committed.update({"phase": "committed", "owner_committed": True, "committed_at": time.time()})

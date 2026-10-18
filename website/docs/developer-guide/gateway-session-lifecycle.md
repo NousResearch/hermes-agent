@@ -712,6 +712,11 @@ continuation is visibly blocked for reconciliation, never blindly replayed.
 Missing or changed committed packets also block that successor before bootstrap;
 the triggering input is not repeatedly requeued against a failing packet check.
 A lane's recovery-dispatch failure is logged without skipping subsequent receipts.
+The same commit permanently retires the predecessor ID in native store metadata.
+New turn leases and transcript inserts against that ID fail, including from a
+different process after cutover. The marker survives later lane receipts and
+history deletion; it does not prevent reading or deleting old history. Ordinary
+manual resets do not create this rollover-only fence.
 
 After compulsory bootstrap, native busy-input policy still applies. With the
 default `interrupt` mode, an ordinary message can interrupt a retained-input or

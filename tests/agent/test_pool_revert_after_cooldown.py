@@ -11,7 +11,8 @@ import time
 
 import agent.credential_pool as cp
 from agent.agent_runtime_helpers import recover_with_credential_pool, restore_primary_runtime
-from agent.credential_pool import EXHAUSTED_TTL_429_SECONDS, CredentialPool, PooledCredential
+from agent.credential_pool import CredentialPool, PooledCredential
+from agent.credential_pool_cooldown import EXHAUSTED_TTL_429_SECONDS
 
 _BASE = "https://api.anthropic.com"
 

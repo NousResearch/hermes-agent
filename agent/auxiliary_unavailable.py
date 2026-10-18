@@ -129,12 +129,12 @@ def pool_billing_message(
     currently benched, or none carries a billing verdict.
     """
     from agent.credential_pool import (
-        FAILURE_REASON_BILLING,
         STATUS_DEAD,
         STATUS_EXHAUSTED,
         PooledCredential,
         _exhausted_until,
     )
+    from agent.credential_pool_cooldown import FAILURE_REASON_BILLING
 
     entries: list = []
     with contextlib.suppress(Exception):

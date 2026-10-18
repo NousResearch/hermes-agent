@@ -29,7 +29,7 @@ def pool_failure_reason(reason: Any, error_context: Optional[dict[str, Any]], bi
     if reason == FailoverReason.billing and (error_context or {}).get("usage_window"):
         return FAILURE_REASON_USAGE_WINDOW
     if reason == FailoverReason.billing and billing_unverified:
-        from agent.credential_pool import FAILURE_REASON_BILLING_UNVERIFIED
+        from agent.credential_pool_cooldown import FAILURE_REASON_BILLING_UNVERIFIED
         return FAILURE_REASON_BILLING_UNVERIFIED
     return reason.value
 
@@ -78,7 +78,7 @@ class CredentialPoolModelCooldownMixin:
     ) -> bool:
         """Anthropic per-model 429s, and a Codex ChatGPT-account model entitlement 400: the
         account cannot use *model*, but the credential stays valid for every other model (#71970)."""
-        from agent.credential_pool import FAILURE_REASON_BILLING, FAILURE_REASON_BILLING_UNVERIFIED
+        from agent.credential_pool_cooldown import FAILURE_REASON_BILLING, FAILURE_REASON_BILLING_UNVERIFIED
 
         if not model:
             return False
@@ -102,7 +102,8 @@ class CredentialPoolModelCooldownMixin:
         would otherwise be re-selected for the very model that just failed.
         Caller holds the lock.
         """
-        from agent.credential_pool import _exhausted_ttl, _normalize_error_context
+        from agent.credential_pool import _normalize_error_context
+        from agent.credential_pool_cooldown import _exhausted_ttl
 
         if failure_reason == "model_entitlement":
             until = time.time() + MODEL_ENTITLEMENT_BENCH_SECONDS

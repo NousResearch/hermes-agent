@@ -374,9 +374,19 @@ def _has_word_bounded_keyword(key: str, keyword_re: re.Pattern[str]) -> bool:
     return any(_is_word_start(key, m.start()) and _is_word_end(key, m.end()) for m in keyword_re.finditer(key))
 
 
+# Tool-defined env names that glue the keyword onto a prefix with no separator, so the
+# word-boundary test can never see it: libpq's ``PGPASSWORD``, MySQL's ``MYSQL_PWD`` (bare
+# ``PWD`` is the shell's working directory, so only this exact name), sshpass's ``SSHPASS``.
+_GLUED_CREDENTIAL_ENV_RE = re.compile(r"PGPASSWORD|MYSQL_PWD|SSHPASS", re.IGNORECASE)
+
+
+def _is_glued_credential_env(key: str) -> bool:
+    return _GLUED_CREDENTIAL_ENV_RE.fullmatch(key.strip("\"'")) is not None
+
+
 def _key_has_secret_keyword(key: str) -> bool:
     """Post-match key validator: ``API_KEY``/``DB_PW`` count, ``KEYBOARD``/``secretary`` do not."""
-    return _has_word_bounded_keyword(key, _KEY_KEYWORD_RE)
+    return _has_word_bounded_keyword(key, _KEY_KEYWORD_RE) or _is_glued_credential_env(key)
 
 
 def _looks_like_opaque_credential(value: str) -> bool:
@@ -422,11 +432,12 @@ def _should_redact_assignment(key: str, value: str, *, check_keyword: bool) -> b
         if value[0] == "$" or not any(_OPAQUE_PATH_SEGMENT_RE.fullmatch(seg) for seg in value.split("/")):
             return False
     return (_has_word_bounded_keyword(key, _STRONG_KEY_KEYWORD_RE)
+            or _is_glued_credential_env(key)
             or _looks_like_opaque_credential(value))
 
 
 # JSON field patterns: "apiKey": "value", "token": "value", etc.
-_JSON_KEY_NAMES = r"(?:api_?[Kk]ey|token|secret|password|access_token|refresh_token|auth_token|bearer|secret_value|raw_secret|secret_input|key_material)"
+_JSON_KEY_NAMES = r"(?:api_?[Kk]ey|token|secret|password|pgpassword|mysql_pwd|sshpass|access_token|refresh_token|auth_token|bearer|secret_value|raw_secret|secret_input|key_material)"
 _JSON_FIELD_RE = re.compile(rf'("{_JSON_KEY_NAMES}")\s*:\s*"([^"]+)"', re.IGNORECASE)
 # The same field inside a JSON-encoded string (``{"output": "{\\"api_key\\": \\"…\\"}"}``): every tool result
 # that wraps a config dump in JSON escapes the quotes, so the rule above never saw the value (#115104).
@@ -898,24 +909,30 @@ _KV_CONNSTR_PW_RE = re.compile(
 )
 _KV_CONNSTR_GATE_RE = re.compile(r"(?:password|pwd)\s*=", re.IGNORECASE)
 # A ``password=``/``pwd=`` key is only treated as a connection-string field when its line
-# also carries a ``;``-delimited companion key. Keeps prose (``the password= field``), form
-# bodies (handled by _redact_form_body) and lone CLI flags out of this pass.
+# also carries a companion connection key (``host=``, ``user=``, ``dbname=``...). Keeps prose
+# (``the password= field``), form bodies (handled by _redact_form_body) and lone CLI flags out.
 _KV_CONNSTR_COMPANION_RE = re.compile(
     r"(?:^|[;\"'\s])\s*(?:host|server|data\s+source|address|addr|network\s+address|"
-    r"user\s*id|uid|user(?:name)?|database|initial\s+catalog|port)\s*=",
+    r"user\s*id|uid|user(?:name)?|database|dbname|hostaddr|initial\s+catalog|port)\s*=",
     re.IGNORECASE,
 )
 
 
 def _redact_kv_connection_strings(text: str, code_file: bool) -> str:
-    """Mask ``Password=``/``Pwd=`` values inside keyword/value connection strings."""
+    """Mask ``Password=``/``Pwd=`` values inside keyword/value connection strings: the
+    ``;``-delimited ADO.NET/ODBC/JDBC form, and libpq's space-delimited conninfo
+    (``psql "host=db user=app password=s3cret dbname=x"``)."""
     def _sub(m):
         line_start = text.rfind("\n", 0, m.start()) + 1
         line_end = text.find("\n", m.end())
         line = text[line_start:len(text) if line_end == -1 else line_end]
-        if ";" not in line or not _KV_CONNSTR_COMPANION_RE.search(line):
+        if not _KV_CONNSTR_COMPANION_RE.search(line):
             return m.group(0)
         value = m.group(2)
+        if ";" not in line and value[:1] not in "\"'":
+            # libpq conninfo: an unquoted value ends at whitespace (quoted ones fall through).
+            head = value.split(None, 1)[0]
+            return f"{m.group(1)}***{value[len(head):]}"
         bare = value.strip().strip("\"'")
         # Templates, not credentials: ``Password={0}``, ``Password=${DB_PASS}``, ``{pw}``.
         if code_file and bare.startswith(("{", "${")) and bare.endswith("}"):
@@ -1021,9 +1038,10 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     if "://" in text:
         text = _redact_url_credentials(text, code_file)
 
-    # Keyword/value connection strings (``Host=…;Password=…``): the .NET/ODBC/JDBC form the
-    # URL pass above never sees. Gate: a ``;`` plus a ``password=``/``pwd=`` key in any casing.
-    if ";" in text and _KV_CONNSTR_GATE_RE.search(text):
+    # Keyword/value connection strings (``Host=…;Password=…``, libpq ``host=… password=…``):
+    # the forms the URL pass above never sees. Gate: a ``password=``/``pwd=`` key in any casing;
+    # the per-line companion-key check in _redact_kv_connection_strings keeps prose out.
+    if _KV_CONNSTR_GATE_RE.search(text):
         text = _redact_kv_connection_strings(text, code_file)
 
     if "eyJ" in text:

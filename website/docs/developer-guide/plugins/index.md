@@ -1352,6 +1352,7 @@ Each hook is documented in full on the **[Event Hooks reference](../../user-guid
 | [`on_session_end`](../../user-guide/features/hooks.md#on_session_end) | End of every `run_conversation` call + CLI exit | `session_id: str, completed: bool, interrupted: bool, model: str, platform: str` | ignored |
 | [`on_session_finalize`](../../user-guide/features/hooks.md#on_session_finalize) | CLI/gateway tears down an active session | `session_id: str \| None, platform: str` | ignored |
 | [`on_session_reset`](../../user-guide/features/hooks.md#on_session_reset) | Gateway swaps in a new session key (`/new`, `/reset`) | `session_id: str, platform: str` | ignored |
+| [`on_session_delete`](../../user-guide/features/hooks.md#on_session_delete) | A session delete or deliberate archive commits (every surface, sweeps, prune) | `session_id: str, reason: str, profile: str \| None`, optional `deleted_ids: list[str]`, `sessions_dir: str` | ignored |
 | [`gateway_platform_event`](../../user-guide/features/hooks.md#gateway_platform_event) | An authorized platform-native event is normalized at the gateway boundary (Telegram reactions currently) | `platform: str, event_type: str, payload: dict` | ignored |
 | `kanban_task_claimed` | A kanban task is claimed (dispatcher process, before the worker spawns) | `task_id: str, board: str \| None, assignee: str \| None, run_id: int \| None, profile_name: str` | ignored |
 | `kanban_task_completed` | A kanban task completes (worker process) | `task_id, board, assignee, run_id, profile_name, summary: str \| None` | ignored |
@@ -1578,7 +1579,7 @@ After registration, users can type `/mystatus` in any session. The command appea
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `name` | `str` | Command name without the leading slash (e.g. `"lcm"`, `"mystatus"`) |
-| `handler` | `Callable[[str], str \| None]` | Called with the raw argument string. May also be `async`. |
+| `handler` | `Callable[[str], str \| None]` | Called with the raw argument string, plus any calling-session keywords it declares (see below). May also be `async`. |
 | `description` | `str` | Shown in `/help`, autocomplete, and Telegram bot menu |
 
 **Key differences from `register_cli_command()`:**
@@ -1587,21 +1588,32 @@ After registration, users can type `/mystatus` in any session. The command appea
 |---|---|---|
 | Invoked as | `/name` in a session | `hermes name` in a terminal |
 | Where it works | CLI sessions, Telegram, Discord, etc. | Terminal only |
-| Handler receives | Raw args string | argparse `Namespace` |
+| Handler receives | Raw args string (+ opt-in session context) | argparse `Namespace` |
 | Use case | Diagnostics, status, quick actions | Complex subcommand trees, setup wizards |
 
 **Conflict protection:** If a plugin tries to register a name that conflicts with a built-in command (`help`, `model`, `new`, etc.), the registration is silently rejected with a log warning. Built-in commands always take precedence.
 
-**Async handlers:** The gateway dispatch automatically detects and awaits async handlers, so you can use either sync or async functions:
+**Calling-session context:** a handler can learn which chat and session invoked it by declaring any of these keyword parameters (or `**kwargs` for all of them). Handlers that declare none keep the one-argument `handler(raw_args)` call, so existing plugins are unaffected:
+
+| Keyword | Value |
+|---|---|
+| `session_id` | The calling session's id (the one `on_session_reset` later reports as `old_session_id`). Empty when the chat has no session yet. |
+| `session_key` | The routing key of the calling chat. |
+| `platform` | Where the command came from: `telegram`, `discord`, …, `local` (CLI/Desktop sessions owned by the gateway), `cli`, `tui`, `desktop`. |
+| `source` | The adapter-derived `gateway.session.SessionSource` (`user_id`, `chat_id`, `chat_type`, `thread_id`, …) when the gateway dispatched the command, else `None`. |
+
+Every surface passes them: messaging platforms, the classic CLI, the TUI and Desktop. Sync handlers run in the gateway executor and async handlers are awaited, as before.
 
 ```python
-async def _handle_check(raw_args: str) -> str:
-    result = await some_async_operation()
-    return f"Check result: {result}"
+def _handle_whoami(raw_args: str, *, session_id: str = "", platform: str = "", source=None) -> str:
+    user = source.user_id if source is not None else "local user"
+    return f"{user} on {platform}, session {session_id or '(none yet)'}"
 
 def register(ctx):
-    ctx.register_command("check", handler=_handle_check, description="Run async check")
+    ctx.register_command("whoami", handler=_handle_whoami, description="Show the calling session")
 ```
+
+`source` is transport identity, not an authorization grant: authorize from stable ids (`source.user_id`, `source.chat_id`), never from display names or the command text, and fail closed when a sensitive command gets `source=None`. Handler exceptions propagate; Hermes never retries the call with fewer arguments.
 
 **Where handlers run:** a slash command handler runs in the gateway process that owns the session, also when the user types the command in the classic `hermes chat` CLI. The handler is not running in the user's terminal or directory, so:
 

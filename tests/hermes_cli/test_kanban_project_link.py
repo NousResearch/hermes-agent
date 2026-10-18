@@ -259,3 +259,32 @@ def test_worker_filing_a_card_keeps_the_project_through_the_tool(
     assert dropped["project_link"]["requested"] == "p_nowhere"
 
 
+
+
+def test_project_from_board_matches_windows_backslash_worktree_path(kanban_conn):
+    """_project_from_board SQL filter matches both POSIX (/) and Windows (\\) .worktrees separators."""
+    from unittest.mock import patch
+    from pathlib import PureWindowsPath
+
+    tid = kb.create_task(kanban_conn, title="Windows worktree card")
+    kanban_conn.execute(
+        """
+        UPDATE tasks
+           SET project_id = ?,
+               workspace_kind = 'worktree',
+               workspace_path = ?,
+               branch_name = ?
+         WHERE id = ?
+        """,
+        ("proj_win", f"C:\\repo\\.worktrees\\{tid}", f"myproj/{tid}-win", tid),
+    )
+    kanban_conn.commit()
+    with patch.object(kb, "Path", PureWindowsPath):
+        proj_obj, proj_repo, recovered_from = kb._project_from_board(
+            kanban_conn, pdb, "proj_win", None
+        )
+    assert recovered_from == tid
+    assert proj_obj is not None
+    assert proj_obj.id == "proj_win"
+    assert proj_obj.slug == "myproj"
+    assert proj_repo == r"C:\repo"

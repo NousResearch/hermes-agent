@@ -1146,7 +1146,7 @@ def _project_from_board(
     candidates: list[str] = [source_task_id] if source_task_id else []
     rows = conn.execute(
         "SELECT id FROM tasks WHERE project_id = ? AND workspace_kind = 'worktree' "
-        "AND workspace_path LIKE '%/.worktrees/%' "
+        "AND (workspace_path LIKE '%/.worktrees/%' OR workspace_path LIKE '%\\.worktrees\\%') "
         "ORDER BY created_at DESC, id DESC LIMIT 25",
         (project_id,),
     ).fetchall()

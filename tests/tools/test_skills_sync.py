@@ -835,7 +835,7 @@ class TestOptOutEssentialTopLevelLink:
         assert result["total_bundled"] == 1
         assert link.is_symlink(), "essential must be a TOP-LEVEL symlink, not a copy"
         assert Path(os.path.realpath(link)) == Path(os.path.realpath(skill))
-        assert manifest["hermes-agent"] == _dir_hash(skill)
+        assert manifest["hermes-agent"] == dir_hash(skill)
         # No category dir and no nested copy.
         assert not (skills_dir / "autonomous-ai-agents").exists()
 
@@ -858,7 +858,7 @@ class TestOptOutEssentialTopLevelLink:
         assert link.is_symlink(), "a bundled change must never replace the link with a copy"
         assert Path(os.path.realpath(link)) == Path(os.path.realpath(skill))
         assert "hermes-agent" not in result["user_modified"]
-        assert manifest["hermes-agent"] == _dir_hash(skill)
+        assert manifest["hermes-agent"] == dir_hash(skill)
         assert not (skills_dir / "autonomous-ai-agents").exists()
 
     def test_optout_stale_link_target_is_renewed(self, tmp_path):
@@ -905,7 +905,7 @@ class TestOptOutEssentialTopLevelLink:
         pre-existing top-level link at ``<skills_dir>/hermes-agent -> bundled source`` (the shape a
         prior sync / the lane relink instruments leave). Deferring must UNLINK that stale link.
         Without the branch the code falls through to
-        ``dest.exists() and _dir_hash(dest) == bundled_hash``: ``_dir_hash`` follows the link, so the
+        ``dest.exists() and dir_hash(dest) == bundled_hash``: ``dir_hash`` follows the link, so the
         hash equals the bundled source's and ``_rmtree_writable`` is pointed at a path that resolves
         OUTSIDE the skills root, raising ``ValueError: refusing to rmtree ... (scope guard)``.
         """

@@ -115,6 +115,6 @@ The additive schema migration is validated on a read-only backup and separate di
 ## Git and worktree state
 
 - Implementation commit: `a52a6473b378b491121018c57121659d03f74d3c` (`Add isolated Phase 1 integration harness`).
-- This report records the implementation revision above; a separate documentation-only commit will update this file.
+- This report is committed after the implementation commit above; it contains evidence for that exact code revision. The final branch head is the following documentation-only commit.
 - Branch: `codex/mission-ownership-phase1`.
-- The starting candidate commits remain in history. Final Git status and report commit are recorded in the review response after the documentation commit.
+- The starting candidate commits remain in history. Git status is clean after the implementation and documentation commits.

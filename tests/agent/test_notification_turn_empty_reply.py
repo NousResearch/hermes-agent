@@ -1,9 +1,11 @@
-"""Regression tests for runtime-notification empty-reply quiet exit (#139299).
+"""Regression tests for the machinery-turn empty-reply quiet exit (#139299).
 
-Empty responses on runtime-notification turns (``process_complete``,
+Empty responses on machinery turns (``internal_notification``, ``process_complete``,
 ``async_delegation_complete`` display kind) end the turn quietly: no nudge, no
-paid retries, no provider switch, no ``(empty)`` sentinel. Ordinary turns and
-notification turns where the model already ran a tool keep the full ladder.
+paid retries, no provider switch, no ``(empty)`` sentinel; the turn is closed with
+the ``[SILENT]`` row so the next human prompt is not merged into the notice.
+Ordinary turns and machinery turns where the model already ran a tool keep the
+full ladder.
 """
 
 from types import SimpleNamespace
@@ -46,6 +48,12 @@ def _empty_response():
     choice.message.content = ""
     choice.message.tool_calls = None
     return SimpleNamespace(choices=[choice], model="test/model", usage=None)
+
+
+def _text_response(text):
+    response = _empty_response()
+    response.choices[0].message.content = text
+    return response
 
 
 @pytest.fixture
@@ -150,6 +158,32 @@ class TestNotificationTurnLoop:
 
         assert loop_agent.client.chat.completions.create.call_count > 1
 
+    def test_next_human_turn_is_not_merged_into_the_quiet_notice(self, loop_agent):
+        notice = "[process completed] Background task finished."
+        first = loop_agent.run_conversation(
+            notice,
+            conversation_history=_completed_tool_round(),
+            persist_user_display_kind="process_complete",
+        )
+        assert first["turn_exit_reason"] == "notification_no_reply"
+
+        # The quiet exit must leave the notice answered in the transcript; otherwise the
+        # pre-call repair merges the next human prompt into the notice row.
+        loop_agent.client.chat.completions.create.side_effect = lambda **_kwargs: _text_response("Sure.")
+        second = loop_agent.run_conversation("now do X", conversation_history=first["messages"])
+
+        wire = loop_agent.client.chat.completions.create.call_args.kwargs["messages"]
+        assert wire[-1]["role"] == "user"
+        assert wire[-1]["content"] == "now do X"
+        assert [m["role"] for m in wire[-3:]] == ["user", "assistant", "user"]
+        assert wire[-3]["content"] == notice
+
+        rows = [m for m in second["messages"] if m.get("role") == "user"]
+        assert rows[-1]["content"] == "now do X"
+        assert rows[-1].get("display_kind") is None
+        assert rows[-2]["content"] == notice
+        assert rows[-2].get("display_kind") == "process_complete"
+
 
 class TestNotificationTurnDetection:
     def test_user_row_with_process_complete_no_tool_is_notification_turn(self):
@@ -213,6 +247,22 @@ class TestNotificationTurnDetection:
 
 
 class TestNotificationQuietExit:
+    @pytest.mark.parametrize(
+        "display_kind", ["internal_notification", "process_complete", "async_delegation_complete"]
+    )
+    def test_quiet_exit_closes_the_turn_with_the_silence_row(self, display_kind):
+        agent = _agent()
+        messages = [{"role": "user", "content": "[notice]", "display_kind": display_kind}]
+        verdict = _recover(agent, messages)
+        assert verdict.action == "break"
+        assert verdict.turn_exit_reason == ter.NOTIFICATION_NO_REPLY_EXIT
+        # One closing assistant row, the same marker a deliberate no-reply leaves on a human
+        # turn; never the "(empty)" failure sentinel.
+        assert [m["role"] for m in messages] == ["user", "assistant"]
+        assert messages[-1]["content"] == ter.MACHINERY_NO_REPLY_ROW == "[SILENT]"
+        assert not messages[-1].get("_empty_terminal_sentinel")
+        assert not messages[-1].get("_empty_recovery_synthetic")
+
     def test_process_complete_empty_reply_exits_quietly(self):
         agent = _agent()
         messages = [

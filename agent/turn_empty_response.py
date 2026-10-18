@@ -33,6 +33,17 @@ _MACHINERY_DISPLAY_KINDS = frozenset({"internal_notification", "process_complete
 # Loop exit stamped when a machinery turn ends with the model adding nothing.
 NOTIFICATION_NO_REPLY_EXIT = "notification_no_reply"
 
+# Assistant row persisted for that exit: the same marker a deliberate no-reply on a human
+# turn already leaves in the transcript (gateway.response_filters.LIVE_GATEWAY_SILENT_MARKERS).
+MACHINERY_NO_REPLY_ROW = "[SILENT]"
+
+
+def _latest_user_display_kind(messages: list[dict[str, Any]]) -> str | None:
+    for msg in reversed(messages):
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            return msg.get("display_kind")
+    return None
+
 
 def _notification_turn_without_tool_round(messages: list[dict[str, Any]]) -> bool:
     """True when the latest user row is a machinery turn no tool has followed.
@@ -211,8 +222,17 @@ def recover_empty_response(
     if _notification_turn_without_tool_round(messages):
         _turn_exit_reason = NOTIFICATION_NO_REPLY_EXIT
         logger.info(
-            "Empty response on a machinery turn: ending the turn without a reply",
+            "Empty response on a machinery turn (%s): ending the turn without a reply",
+            _latest_user_display_kind(messages),
         )
+        # Close the turn in the transcript. The finalizer appends an assistant row only for a
+        # non-empty final, and a user row left unanswered makes the next pre-call repair merge
+        # the following human prompt into the notice (text and display_kind both lost). The
+        # row carries the marker a deliberate no-reply already persists on human turns, so the
+        # gateway keeps treating it as silence and the wire keeps alternating.
+        assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
+        assistant_msg["content"] = MACHINERY_NO_REPLY_ROW
+        append_message(messages, assistant_msg)
         final_response = ""
         return _verdict("break")
 

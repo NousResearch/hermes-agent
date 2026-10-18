@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from agent import turn_empty_response as ter
+from gateway import response_filters as gateway_filters
 from gateway.response_filters import MACHINERY_DISPLAY_KINDS as gateway_machinery_kinds
 
 
@@ -107,3 +108,9 @@ class TestMachineryKindsMirrorGateway:
         # keeps the new machinery turn on the paid human retry ladder.
         assert ter._MACHINERY_DISPLAY_KINDS == gateway_machinery_kinds
         assert "internal_notification" in gateway_machinery_kinds
+
+    def test_quiet_exit_reason_and_row_match_the_gateway(self):
+        # The gateway recognizes the exit by this string and the persisted row by this
+        # marker; both are mirrored on the agent side because agent/ cannot import gateway/.
+        assert ter.NOTIFICATION_NO_REPLY_EXIT == gateway_filters.NOTIFICATION_NO_REPLY_EXIT
+        assert ter.MACHINERY_NO_REPLY_ROW in gateway_filters.LIVE_GATEWAY_SILENT_MARKERS

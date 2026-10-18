@@ -8,6 +8,7 @@ import { enCatalogInstall } from './en_catalog_install'
 import { enClarify } from './en_clarify'
 import { enConnectorAccounts } from './en_connector_accounts'
 import { enConnectorCard } from './en_connector_card'
+import { enCustomEndpoints } from './en_custom_endpoints'
 import { enGatewayGroupOpen, enSkillDeepLink } from './en_deep_links'
 import { enFirstRun } from './en_first_run'
 import { enLocalModels } from './en_local_models'
@@ -19,6 +20,7 @@ import { enSharedMetrics } from './en_shared_metrics'
 import { enThemePicker } from './en_theme_picker'
 import { enUninstallSection } from './en_uninstall_section'
 import { enUpdateChannel } from './en_update_channel'
+import { foundryTranslations } from './foundry'
 import type { Translations } from './types'
 
 export const en: Translations = {
@@ -1142,47 +1144,8 @@ export const en: Translations = {
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
     uninstallSection: enUninstallSection,
-    customEndpoints: {
-      active: 'Active',
-      apiKeySet: 'API key set',
-      use: 'Use',
-      editTitle: 'Edit Endpoint',
-      addTitle: 'Add Endpoint',
-      fields: {
-        name: 'Name',
-        providerId: 'Provider ID',
-        endpointUrl: 'Endpoint URL',
-        defaultModel: 'Default Model',
-        context: 'Context',
-        apiKey: 'API Key',
-        apiKeyNewPlaceholder: 'Leave blank to keep current key',
-        apiKeyPlaceholder: 'Optional',
-        useNewChats: 'Use for new chats',
-        discoverModels: 'Discover models'
-      },
-      test: 'Test',
-      save: 'Save',
-      newEndpoint: 'New endpoint',
-      apiMode: 'API Mode',
-      autoDetect: 'Auto-detect',
-      couldNotLoad: 'Could not load custom endpoints',
-      endpointSaved: 'Custom endpoint saved.',
-      saveFailed: 'Save failed',
-      endpointReachable: 'Endpoint is reachable.',
-      endpointReachableTransport: transport => `Endpoint is reachable (${transport} route served).`,
-      endpointReachableModels: (reachable, count) => `${reachable} Found ${count} models.`,
-      endpointValidationFailed: 'Endpoint validation failed.',
-      validationFailed: 'Validation failed',
-      activationFailed: 'Activation failed',
-      deleteConfirm: name => `Delete ${name}?`,
-      deleteFailed: 'Delete failed',
-      title: 'Custom Endpoints',
-      deleteEndpoint: 'Delete endpoint',
-      emptyDescription: 'Add an OpenAI-compatible endpoint below.',
-      emptyTitle: 'No custom endpoints',
-      namePlaceholder: 'Axet Proxy',
-      contextPlaceholder: 'Auto'
-    },
+    foundry: foundryTranslations['en'],
+    customEndpoints: enCustomEndpoints,
     computerUse: {
       accessibility: 'Accessibility',
       screenRecording: 'Screen Recording',
@@ -3527,7 +3490,8 @@ export const en: Translations = {
     restoreImageDraft: 'Restore image draft',
     queueCancelFailed: "Couldn't remove the queued turn",
     queueLostDiscard: 'Discard',
-    queueLostDiscardTip: 'The gateway restarted mid-turn and cannot finish this one. Discard it so the queued turns behind it run.',
+    queueLostDiscardTip:
+      'The gateway restarted mid-turn and cannot finish this one. Discard it so the queued turns behind it run.',
     queueResume: 'Resume',
     queueResumeTip: 'Paused by Stop — resume sending the queued turns',
     queueStuckTitle: 'Queued message not sent',

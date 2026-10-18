@@ -27,6 +27,12 @@ import type {
 } from '@/types/hermes'
 
 import { ComboboxInput } from './combobox-input'
+import {
+  credentialFromEndpoint,
+  credentialPayload,
+  type EndpointCredential,
+  EndpointCredentials
+} from './custom-endpoint-credentials'
 import { EmptyState, Pill, SectionHeading, SettingsContent, SettingsSkeleton } from './primitives'
 import { SettingsProfileScope } from './profile-scope'
 
@@ -36,7 +42,7 @@ interface CustomEndpointsSettingsProps {
 }
 
 interface EndpointForm {
-  apiKey: string
+  credential: EndpointCredential
   apiMode: CustomEndpointApiMode
   baseUrl: string
   contextLength: string
@@ -56,7 +62,7 @@ const API_MODE_OPTIONS: readonly { id: CustomEndpointApiMode; label: string }[] 
 ]
 
 const EMPTY_FORM: EndpointForm = {
-  apiKey: '',
+  credential: { kind: 'api_key', apiKey: '' },
   apiMode: '',
   baseUrl: '',
   contextLength: '',
@@ -69,7 +75,7 @@ const EMPTY_FORM: EndpointForm = {
 
 function formFromEndpoint(endpoint: CustomEndpoint): EndpointForm {
   return {
-    apiKey: '',
+    credential: credentialFromEndpoint(endpoint),
     apiMode: endpoint.api_mode ?? '',
     baseUrl: endpoint.base_url,
     contextLength: endpoint.context_length ? String(endpoint.context_length) : '',
@@ -93,7 +99,7 @@ function toPayload(
     name: form.name.trim(),
     base_url: form.baseUrl.trim(),
     model: form.model.trim(),
-    api_key: form.apiKey.trim() || undefined,
+    ...credentialPayload(form.credential),
     api_mode: form.apiMode,
     context_length: Number.isFinite(contextLength) && contextLength > 0 ? contextLength : undefined,
     discover_models: form.discoverModels,
@@ -247,7 +253,9 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
         const reachable = transport ? ce.endpointReachableTransport(transport) : ce.endpointReachable
         notify({
           kind: 'success',
-          message: response.models.length ? ce.endpointReachableModels(reachable, response.models.length) : reachable
+          message:
+            response.message ||
+            (response.models.length ? ce.endpointReachableModels(reachable, response.models.length) : reachable)
         })
       } else {
         notify({
@@ -339,6 +347,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
   }
 
   const allModelOptions = Array.from(new Set([...discoveredModels, form.model].filter(Boolean)))
+  const isEditing = endpoints.some(endpoint => endpoint.id === form.id)
   const canSave = form.name.trim() && form.baseUrl.trim() && form.model.trim()
 
   return (
@@ -413,7 +422,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
         </section>
 
         <section>
-          <SectionHeading icon={Plus} title={form.id ? ce.editTitle : ce.addTitle} />
+          <SectionHeading icon={Plus} title={isEditing ? ce.editTitle : ce.addTitle} />
           <div className="grid gap-3 rounded-md border border-border/50 p-3">
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="grid gap-1.5 text-xs text-muted-foreground">
@@ -470,15 +479,16 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                 />
               </label>
             </div>
-            <label className="grid gap-1.5 text-xs text-muted-foreground">
-              {ce.fields.apiKey}
-              <Input
-                onChange={event => setForm(current => ({ ...current, apiKey: event.target.value }))}
-                placeholder={form.id ? ce.fields.apiKeyNewPlaceholder : ce.fields.apiKeyPlaceholder}
-                type="password"
-                value={form.apiKey}
-              />
-            </label>
+            <EndpointCredentials
+              credential={form.credential}
+              editing={isEditing}
+              onChange={credential =>
+                setForm(current => ({
+                  ...current,
+                  credential
+                }))
+              }
+            />
             <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
               <label className="flex items-center gap-2">
                 <Checkbox

@@ -1,12 +1,21 @@
 import { type ReactNode, useId, useRef, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
-import { Command, CommandItem, CommandItemCheck, CommandList } from '@/components/ui/command'
+import {
+  Command,
+  CommandEmpty,
+  CommandInput,
+  CommandItem,
+  CommandItemCheck,
+  CommandList
+} from '@/components/ui/command'
 import { Input } from '@/components/ui/input'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { useI18n } from '@/i18n'
 import { isSubmitEnter } from '@/lib/ime'
 import { cn } from '@/lib/utils'
+
+import { rankSearchOption } from './searchable-select'
 
 // cmdk highlights its first row whenever nothing is selected, which would make
 // Enter swap free text for that row. A value no row carries keeps the list
@@ -33,6 +42,7 @@ export function ComboboxInput({
   options,
   placeholder,
   renderOption,
+  search,
   value
 }: {
   'aria-label'?: string
@@ -44,6 +54,8 @@ export function ComboboxInput({
   placeholder?: string
   /** Custom row content, e.g. a font name set in its own face. */
   renderOption?: (option: string) => ReactNode
+  /** Optional menu search keeps filtering separate from the editable value. */
+  search?: { placeholder: string; emptyMessage: string }
   value: string
 }) {
   const { t } = useI18n()
@@ -57,7 +69,8 @@ export function ComboboxInput({
   const query = value.trim().toLowerCase()
   const isExact = options.some(option => option.toLowerCase() === query)
 
-  const visible = query && !isExact ? options.filter(option => option.toLowerCase().includes(query)) : options
+  const visible =
+    query && !search && !isExact ? options.filter(option => option.toLowerCase().includes(query)) : options
   // An empty menu is just a floating border; stay closed until something matches.
   const expanded = open && !disabled && visible.length > 0
 
@@ -84,9 +97,11 @@ export function ComboboxInput({
             disabled={disabled}
             onChange={e => {
               onChange(e.target.value)
-              openList(true)
+              if (!search) openList(true)
             }}
-            onFocus={() => openList(true)}
+            onFocus={() => {
+              if (!search) openList(true)
+            }}
             onKeyDown={e => {
               if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
                 e.preventDefault()
@@ -140,11 +155,22 @@ export function ComboboxInput({
             e.preventDefault()
           }
         }}
-        onOpenAutoFocus={e => e.preventDefault()}
+        onOpenAutoFocus={e => {
+          if (!search) e.preventDefault()
+        }}
         variant="menu"
       >
-        <Command onValueChange={setActive} ref={commandRef} shouldFilter={false} value={active} variant="menu">
+        <Command
+          filter={rankSearchOption}
+          onValueChange={setActive}
+          ref={commandRef}
+          shouldFilter={Boolean(search)}
+          value={active}
+          variant="menu"
+        >
+          {search && <CommandInput autoFocus placeholder={search.placeholder} />}
           <CommandList id={listId}>
+            {search && <CommandEmpty>{search.emptyMessage}</CommandEmpty>}
             {visible.map(option => (
               <CommandItem
                 key={option}

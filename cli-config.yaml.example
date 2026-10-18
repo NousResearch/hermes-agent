@@ -125,10 +125,15 @@ model:
   # Azure Foundry keyless auth example:
   # provider: "azure-foundry"
   # base_url: "https://<resource>.openai.azure.com/openai/v1"
-  # auth_mode: "entra_id"      # DefaultAzureCredential: az login, managed identity, workload identity, etc.
+  # auth_mode: "entra_id"      # Microsoft Entra ID; source selected below.
   # default: "gpt-4o"          # Deployment/model name
   # entra:
+  #   credential_source: "azure_cli"  # Explicit local az login; no fallback to other identities.
+  #   tenant_id: ""                  # Optional CLI tenant selector.
+  #   subscription: ""               # Alternative to tenant_id: CLI subscription name or ID.
   #   scope: "https://ai.azure.com/.default"  # Optional; this is the default.
+  # Use credential_source: "default" for the existing Azure credential chain.
+  # Multiplexed profiles need their own AZURE_* settings or an explicit CLI choice.
 
   # ── Token limits — two settings, easy to confuse ──────────────────────────
   #

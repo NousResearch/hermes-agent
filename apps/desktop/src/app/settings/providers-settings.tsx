@@ -29,6 +29,7 @@ import { $desktopOnboarding, startManualLocalEndpoint, startManualProviderOAuth 
 import { $settingsRequestProfile } from '@/store/settings-scope'
 import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
 
+import { AzureFoundrySettings } from './azure-foundry-settings'
 import { isKeyVar, ProviderKeyRows } from './credential-key-ui'
 import { CustomEndpointsSettings } from './custom-endpoints-settings'
 import { SettingsCategoryHeading, useEnvCredentials } from './env-credentials'
@@ -566,17 +567,35 @@ export function ProvidersSettings({
             />
             {visibleGroups.length > 0 ? (
               <div className="grid gap-2">
-                {visibleGroups.map(group => (
-                  <div className="scroll-mt-6 rounded-[6px]" id={providerKeyElementId(group.name)} key={group.name}>
+                {visibleGroups.map(group => {
+                  const expanded = openProvider === group.name
+                  const onToggle = () => setOpenProvider(prev => (prev === group.name ? null : group.name))
+                  const keyRows = (
                     <ProviderKeyRows
-                      expanded={openProvider === group.name}
+                      expanded={expanded}
                       group={group}
                       onExpand={() => setOpenProvider(group.name)}
-                      onToggle={() => setOpenProvider(prev => (prev === group.name ? null : group.name))}
+                      onToggle={onToggle}
                       rowProps={rowProps}
                     />
-                  </div>
-                ))}
+                  )
+
+                  return (
+                    <div className="scroll-mt-6 rounded-[6px]" id={providerKeyElementId(group.name)} key={group.name}>
+                      {group.primary[1].provider === 'azure-foundry' ? (
+                        <AzureFoundrySettings
+                          expanded={expanded}
+                          fallback={keyRows}
+                          onConfigSaved={onConfigSaved}
+                          onMainModelChanged={onMainModelChanged}
+                          onToggle={onToggle}
+                        />
+                      ) : (
+                        keyRows
+                      )}
+                    </div>
+                  )
+                })}
               </div>
             ) : (
               <div className="grid min-h-24 place-items-center px-4 py-6 text-center text-[length:var(--conversation-caption-font-size)] text-muted-foreground">

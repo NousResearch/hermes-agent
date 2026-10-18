@@ -262,4 +262,71 @@ describe('CustomEndpointsSettings', () => {
     // typed bare root would 404 every request even though the test looked green.
     expect(urlInput.value).toBe('http://h.test/v1')
   })
+  it('saves a generic credential command for the selected profile without changing API mode', async () => {
+    $settingsScopeOverride.set('command-bot')
+    getCustomEndpoints.mockResolvedValue(emptyResponse)
+    saveCustomEndpoint.mockResolvedValue(savedResponse)
+    render(<CustomEndpointsSettings />)
+    await screen.findByText('No custom endpoints')
+    fireEvent.click(screen.getByRole('button', { name: 'Credential command' }))
+    fireEvent.change(screen.getByLabelText('Token command'), { target: { value: 'my-cli token' } })
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'My service' } })
+    fireEvent.change(screen.getByLabelText('Endpoint URL'), { target: { value: 'https://service.example/v1' } })
+    fireEvent.change(screen.getByRole('combobox', { name: 'Default Model' }), { target: { value: 'deployment' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(saveCustomEndpoint).toHaveBeenCalledWith(
+      expect.objectContaining({
+        credential_source: 'command',
+        key_cmd: 'my-cli token',
+        api_mode: '',
+        name: 'My service'
+      }),
+      'command-bot'
+    )
+    expect(saveCustomEndpoint.mock.calls[0]?.[0].api_key).toBeUndefined()
+  })
+
+  it('preserves a saved command on edit and replaces it when API key authentication is selected', async () => {
+    getCustomEndpoints.mockResolvedValue({
+      ...savedResponse,
+      endpoints: [{ ...savedResponse.endpoints[0], credential_source: 'command' }]
+    })
+    saveCustomEndpoint.mockResolvedValue(savedResponse)
+    validateCustomEndpoint.mockResolvedValue({ ok: true, reachable: true, models: ['model-a'], message: '' })
+    render(<CustomEndpointsSettings />)
+    await screen.findByPlaceholderText('Leave blank to keep the saved command')
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Test' })))
+    expect(validateCustomEndpoint).toHaveBeenCalledWith(
+      expect.objectContaining({
+        credential_source: 'command',
+        key_cmd: undefined
+      }),
+      'default'
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'API Key' }))
+    fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'replacement-key' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(saveCustomEndpoint).toHaveBeenCalledWith(
+      expect.objectContaining({
+        credential_source: 'api_key',
+        api_key: 'replacement-key'
+      }),
+      'default'
+    )
+    expect(saveCustomEndpoint.mock.calls[0]?.[0].key_cmd).toBeUndefined()
+  })
+  it('reports successful inference without claiming model discovery succeeded', async () => {
+    const message = 'Deployment accepted; model discovery is unavailable.'
+    getCustomEndpoints.mockResolvedValue(emptyResponse)
+    validateCustomEndpoint.mockResolvedValue({ ok: true, reachable: true, models: ['deployment'], message })
+    render(<CustomEndpointsSettings />)
+    await screen.findByText('No custom endpoints')
+    fireEvent.click(screen.getByRole('button', { name: 'Credential command' }))
+    fireEvent.change(screen.getByLabelText('Token command'), { target: { value: 'service-cli token' } })
+    fireEvent.change(screen.getByRole('textbox', { name: 'Endpoint URL' }), {
+      target: { value: 'https://resource.openai.azure.com/openai/v1' }
+    })
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Test' })))
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'success', message }))
+  })
 })

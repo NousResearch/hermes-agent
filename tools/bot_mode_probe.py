@@ -459,6 +459,8 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
         # Roles are part of the messaging surface: renaming a bot or editing a
         # description must refresh the roster block teammates pick recipients from.
         surface["roster_roles"] = sorted(f"{n}:{_profile_role(d)}" for n, d in roster)
+        # The roster block lists the mesh, not the disk: a teammate going private must refresh it.
+        surface["visible_roster"] = sorted(n for n, _ in _visible_roster(root))
     except Exception:
         surface["roster"] = []
     # Protocol-text version salt: bumping it refreshes every eternal Bot Chat

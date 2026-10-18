@@ -443,3 +443,23 @@ def test_the_flag_reads_every_yaml_spelling_of_on_and_fails_open_on_the_rest(tmp
     _set_private(_make_bot_profile(home, "lucky"), value)
 
     assert ("@lucky" in bot_mode_probe.get_bot_mode_protocol_section(home)) is (not private)
+
+
+@pytest.mark.parametrize("change", ["lucky-goes-private", "force-private"])
+def test_a_mesh_change_that_rewrites_the_roster_also_moves_the_epoch(tmp_path, change):
+    """Bot Chat prompts are rebuilt only when the epoch moves. A teammate leaving the mesh rewrites
+    the roster block, so a fingerprint blind to the flag would keep advertising it to everyone."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher")
+    lucky = _make_bot_profile(home, "lucky")
+    section, epoch = bot_mode_probe.get_bot_mode_protocol_section(home), bot_mode_probe.capability_fingerprint(home)
+
+    if change == "lucky-goes-private":
+        _set_private(lucky)
+    else:
+        (home / "config.yaml").write_text("bots:\n  force_private: true\n", encoding="utf-8")
+    bot_mode_probe._reset_cache_for_tests()
+
+    assert bot_mode_probe.get_bot_mode_protocol_section(home) != section
+    assert bot_mode_probe.capability_fingerprint(home) != epoch

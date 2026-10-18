@@ -3956,7 +3956,7 @@ def _call_fallback_candidate_sync(
     fb_client: Any, fb_model: Optional[str], fb_label: str, *, task: Optional[str], messages: list,
     temperature: Optional[float], max_tokens: Optional[int], tools: Optional[list],
     effective_timeout: float, effective_extra_body: dict, reasoning_config: Optional[dict],
-    terminal_auth_exc: Optional[list] = None,
+    terminal_errors: Optional[list] = None,
 ) -> Optional[Any]:
     """Call one fallback candidate with stale-credential recovery: on an auth error refresh its
     credentials and retry once with a rebuilt client; if that also auth-fails, quarantine the
@@ -3964,8 +3964,8 @@ def _call_fallback_candidate_sync(
     connection, route-incompatible model, malformed response) also quarantines and returns None so
     the ordered chain advances to the next configured entry (#106367); other errors raise.
 
-    When ``terminal_auth_exc`` is a list and the candidate is quarantined,
-    the terminal auth exception of THIS physical attempt is appended to it,
+    When ``terminal_errors`` is a list and the candidate is quarantined,
+    the terminal exception of THIS physical attempt is appended to it,
     so a caller whose fallback chain exhausts can propagate the error that
     belongs to the last physical wire attempt instead of the primary's
     earlier ``first_err`` (#72636).
@@ -4007,8 +4007,8 @@ def _call_fallback_candidate_sync(
             _quarantine_fallback_candidate(
                 task, fb_label, destination.provider, fb_err, base_url=destination.base_url,
                 reason=capacity)
-            if terminal_auth_exc is not None:
-                terminal_auth_exc.append(fb_err)
+            if terminal_errors is not None:
+                terminal_errors.append(fb_err)
             return None
         terminal_exc = fb_err
         fb_provider, retry = _plan_fallback_auth_retry(
@@ -4025,8 +4025,8 @@ def _call_fallback_candidate_sync(
         _quarantine_fallback_candidate(
             task, fb_label, fb_provider, fb_err, base_url=failed_destination.base_url,
         )
-        if terminal_auth_exc is not None:
-            terminal_auth_exc.append(terminal_exc)
+        if terminal_errors is not None:
+            terminal_errors.append(terminal_exc)
         return None
 
 
@@ -7282,12 +7282,16 @@ def _prepare_aux_request(
     extra_headers: Optional[dict[str, str]], api_mode: Optional[str],
     route_info: Optional[dict[str, str]], async_mode: bool,
     route_callback: Optional[Callable[[str, Optional[str], str], None]] = None,
+    configured_route_callback: Optional[Callable[[str, Optional[str], str], None]] = None,
 ) -> _PreparedAuxRequest:
     """Shared head of call_llm/async_call_llm: resolve route + client, publish it, build request kwargs.
     Sync-only: compression fast lane, per-request ``extra_headers``, and ``base_info`` falling
     back to the resolved base_url when the client exposes none."""
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
+    from agent.auxiliary_relay import notify_configured_route
+
+    notify_configured_route(configured_route_callback, resolved_provider, resolved_model, resolved_base_url)
     if api_mode:
         resolved_api_mode = api_mode
     effective_extra_body = _get_task_extra_body(task)
@@ -7840,6 +7844,7 @@ def call_llm(
     stream_options: dict | None = None, route_info: Optional[dict[str, str]] = None,
     latency_info: Optional[dict[str, int]] = None,
     route_callback: Optional[Callable[[str, Optional[str], str], None]] = None,
+    configured_route_callback: Optional[Callable[[str, Optional[str], str], None]] = None,
 ) -> Any:
     """Run an auxiliary LLM request, applying the configured task limit."""
     queue_started_at = time.monotonic()
@@ -7869,7 +7874,7 @@ def call_llm(
                 max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
                 reasoning_config=reasoning_config, extra_headers=extra_headers, api_mode=api_mode,
                 stream=stream, stream_options=stream_options, route_info=route_info,
-                route_callback=route_callback,
+                route_callback=route_callback, configured_route_callback=configured_route_callback,
             )
         if stream and semaphore is not None:
             stream_semaphore = semaphore
@@ -7904,6 +7909,7 @@ def _plan_aux_call(
     extra_headers: Optional[dict[str, str]], api_mode: Optional[str],
     route_info: Optional[dict[str, str]],
     route_callback: Optional[Callable[[str, Optional[str], str], None]] = None,
+    configured_route_callback: Optional[Callable[[str, Optional[str], str], None]] = None,
 ) -> tuple[_PreparedAuxRequest, dict[str, Any], dict[str, Any]]:
     """Shared head of both call impls: prepare the request and bundle the kwargs the recovery
     drivers pass to ``_retry_same_provider_*`` / ``_call_fallback_candidate_*``. One immutable
@@ -7916,7 +7922,7 @@ def _plan_aux_call(
         max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
         reasoning_config=reasoning_config, extra_headers=extra_headers,
         api_mode=api_mode, route_info=route_info, async_mode=async_mode,
-        route_callback=route_callback,
+        route_callback=route_callback, configured_route_callback=configured_route_callback,
     )
     candidate_kwargs = dict(
         task=task, messages=messages, temperature=temperature, max_tokens=max_tokens,
@@ -7978,6 +7984,7 @@ def _call_llm_impl(
     extra_headers: Optional[dict[str, str]] = None, api_mode: str | None = None, stream: bool = False,
     stream_options: dict | None = None, route_info: Optional[dict[str, str]] = None,
     route_callback: Optional[Callable[[str, Optional[str], str], None]] = None,
+    configured_route_callback: Optional[Callable[[str, Optional[str], str], None]] = None,
 ) -> Any:
     """Centralized synchronous LLM call: resolve provider/model, auth, kwargs, fallbacks.
     task: aux task whose provider:model comes from config (ignored if provider set); api_mode
@@ -7993,7 +8000,7 @@ def _call_llm_impl(
         temperature=temperature, max_tokens=max_tokens, tools=tools, timeout=timeout,
         extra_body=extra_body, reasoning_config=reasoning_config,
         extra_headers=extra_headers, api_mode=api_mode, route_info=route_info,
-        route_callback=route_callback,
+        route_callback=route_callback, configured_route_callback=configured_route_callback,
     )
     client, kwargs, request_provider = req.client, req.kwargs, req.request_provider
     # Streaming path (MoA aggregator): return the raw SDK stream, skipping validation and
@@ -8056,52 +8063,12 @@ def _call_llm_impl(
                     _last_transient = retry_transient
             raise _last_transient
     except Exception as first_err:
-        # Terminal auth exception of the most recent quarantined fallback
-        # candidate, if any. When the fallback chain exhausts, the route
-        # snapshot on the caller's side already identifies the LAST physical
-        # fallback attempt; the error propagated must belong to that same
-        # attempt or downstream diagnostics pair one attempt's identity with
-        # a different attempt's failure class (#72636).
-        _swallowed_auth: list = []
-        # Exceptions raised (not swallowed) by a fallback candidate itself. Their
-        # propagation is not a chain exhaustion: the ladder re-raises them as-is,
-        # and they must never be replaced by an earlier candidate's swallowed
-        # terminal error (#72636).
-        _candidate_raise: list = []
+        from agent.auxiliary_failure_attribution import run_attributed_recovery
 
-        def _perform(step: _LadderStep) -> Any:
-            kind, args, kw = _ladder_step_call(step, req, retry_kwargs, candidate_kwargs)
-            if kind == "call":
-                return _validate_llm_response(_relay_sync_completion(*args, **kw), task)
-            if kind == "retry":
-                return _retry_same_provider_sync(**kw)
-            try:
-                return _call_fallback_candidate_sync(*args, terminal_auth_exc=_swallowed_auth, **kw)
-            except Exception as candidate_err:
-                _candidate_raise.append(candidate_err)
-                raise
-        try:
-            return _drive_ladder(
-                _start_recovery_ladder(first_err, req, retry_kwargs, task=task, async_mode=False, route_info=route_info),
-                _perform)
-        except Exception:
-            if not _candidate_raise and _swallowed_auth and (
-                    task == "compression" or route_callback is not None):
-                # The last physical wire attempt was a fallback candidate whose
-                # credential was dead. The route snapshot already identifies that
-                # fallback, so propagate ITS terminal auth error (chained to the
-                # primary origin for context) instead of re-raising the primary's
-                # earlier error — otherwise the compression diagnostic pairs the
-                # fallback's endpoint with the primary's failure class (#72636).
-                #
-                # Scoped to the attribution path only (compression, or any caller
-                # that registered a route_callback): every other auxiliary task —
-                # vision, web_extract, title generation, ... — keeps the
-                # pre-existing exception contract, where a swallowed fallback 401
-                # leaves the PRIMARY error (e.g. a 429 that upper layers key
-                # backoff decisions on) as the one callers observe.
-                raise _swallowed_auth[-1] from first_err
-            raise
+        return run_attributed_recovery(
+            first_err, req, retry_kwargs, candidate_kwargs, task=task, route_info=route_info,
+            attributed=task == "compression" or route_callback is not None,
+        )
 
 
 def _coerce_llm_message(response):

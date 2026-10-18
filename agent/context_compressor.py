@@ -3750,7 +3750,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         }
         # Pinned route (stall fallback) replaces task routing so the retry leaves the stalled backend.
         self._apply_summary_route(call_kwargs, _pinned_summary_call_kwargs())
-        self._prepare_aux_route_attribution(call_kwargs)
+        self._prepare_aux_route_attribution()
         # Compression is atomic: protect the in-flight summary call from a mid-turn gateway interrupt.
         # Without this, an incoming user message aborts the summary and compression falls back to a degraded
         # static marker, losing the real handoff (#23975). Re-entrant: a main-model retry (_generate_summary
@@ -3767,7 +3767,10 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         try:
             # Compression is atomic: shield the summary call from gateway interrupts. Re-entrant.
             with aux_interrupt_protection():
-                response = call_llm(route_callback=self._record_aux_route, **call_kwargs)
+                response = call_llm(
+                    route_callback=self._record_aux_route,
+                    configured_route_callback=self._record_configured_aux_route, **call_kwargs,
+                )
         finally:
             route_known = bool(_aux_route.get("provider") and _aux_route.get("model"))
             _aux_model = _aux_route.get("model") or self.summary_model or self.model or ""
@@ -3788,7 +3791,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             raise AuxiliaryExplicitCancellation()
         # Reasoning-field fallback (DeepSeek/Qwen/Kimi put the summary in reasoning_content); capped.
         content = extract_content_or_reasoning(response, max_reasoning_chars=8000)
-        where = self._aux_route_label(_aux_route)
+        where = self._aux_route_label()
         # Some OpenAI-compatible proxies (e.g. cmkey.cn, one-api channels) return a well-formed HTTP 200
         # with an empty or whitespace-only ``content`` instead of an error or empty ``choices``. That
         # payload passes ``_validate_llm_response`` (a ``message`` exists), so it reaches here and would
@@ -4050,12 +4053,8 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
             return None
         kind = _classify_summary_failure(e)
-        access_error = _is_summary_access_or_quota_error(e)
-        # Auth/permission/quota failures are not retryable: flag so compress() preserves the
-        # session. A distinct summary_model still gets the one-shot main-model fallback.
-        if access_error:
-            # Field name kept for caller compatibility; now covers the whole access/quota class.
-            self._record_summary_access_failure(e)
+        # Diagnostics describe the final attempt; exhausted access failures still preserve context.
+        access_error = self._record_summary_failure_policy(e)
         if kind.json_decode and not kind.model_not_found and not kind.timeout:
             _ident_provider, _ident_model, _ident_base_url = self._summary_failure_identity()
             logger.error(

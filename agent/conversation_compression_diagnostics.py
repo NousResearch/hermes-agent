@@ -22,49 +22,13 @@ def _emit_compaction_done(agent: Any) -> None:
 
 
 def _emit_compression_auth_hint(agent: Any) -> None:
-    """Surface the compression auxiliary's own provider/model/endpoint when
-    compression aborted on the auxiliary summary call (#72636).
+    """Render the final attempt's route/class after compression aborts.
 
-    The identity ACTUALLY used on the wire is recorded by
-    ``call_llm``'s ``route_callback`` — invoked before every physical wire
-    attempt after the real client is built (auto-detection, fallback chains,
-    and ``client.base_url`` applied), so the final snapshot reflects the route
-    the failed request really took, not the config-layer pre-resolution from
-    ``_resolve_task_provider_model`` (which ``call_llm`` may override).
-    The callback writes ``_last_aux_call_provider`` /
-    ``_last_aux_call_model`` / ``_last_aux_call_base_url`` on the
-    compressor, with the base_url query-stripped to avoid leaking
-    credentials that some proxies carry as ``?key=...``. This is *not*
-    the same as ``compressor.provider`` / ``compressor.summary_model`` /
-    ``compressor.base_url`` — those carry the *main* model's identity.
-
-    The surrounding "Compression aborted" warning says *that* something
-    failed; this companion block says *which* endpoint to fix.
-
-    Called only from the compression-abort branch of
-    :func:`_candidate_rejected`. The helper runs after the current
-    compression attempt has completed, avoiding the pre-request and
-    unrelated-main-error ordering problems that an earlier call site
-    in the main-model API-error path introduced.
-
-    The gate is the per-attempt ``_last_attempt_failure_class`` (reset at
-    the top of every ``_generate_summary`` attempt), NOT the sticky
-    ``_last_summary_auth_failure`` — that flag intentionally persists
-    across compress() calls to protect the cooldown guard, so a 401
-    followed by a forced retry that fails with a 500 would otherwise be
-    mis-attributed as an auth failure (#72636).
-
-    When the route_callback never fired (e.g. ``call_llm`` raised "no
-    provider configured" before a client existed), the identity fields
-    stay empty and the diagnostic falls back to the main-model identity
-    with an explicit note, rather than inventing a phantom endpoint.
-
-    Wording is chosen to pass the gateway noise filter
-    (``_TELEGRAM_NOISY_STATUS_RE``) — it must NOT match
-    ``auxiliary\\s+.+\\s+failed`` / ``compression\\s+summary\\s+failed``
-    patterns, otherwise messaging platforms (Telegram/Discord/Slack)
-    silently swallow the diagnostic and the user never sees it.
+    The current class is independent of sticky conversation-preservation flags.
+    Wording must pass the gateway noise filter so messaging users see it too.
     """
+    from agent.context_compressor_attribution import select_summary_route
+
     _ctx_comp = getattr(agent, "context_compressor", None)
     if _ctx_comp is None:
         return
@@ -72,40 +36,13 @@ def _emit_compression_auth_hint(agent: Any) -> None:
     if _cls not in ("auth", "quota", "network", "other"):
         return
 
-    _aux_provider = (getattr(_ctx_comp, "_last_aux_call_provider", "") or "").strip()
-    _aux_model = (getattr(_ctx_comp, "_last_aux_call_model", "") or "").strip()
-    _aux_base = (getattr(_ctx_comp, "_last_aux_call_base_url", "") or "").strip()
-
-    _cfg_provider = (getattr(_ctx_comp, "_last_aux_config_provider", "") or "").strip()
-    _cfg_model = (getattr(_ctx_comp, "_last_aux_config_model", "") or "").strip()
-    _cfg_base = (getattr(_ctx_comp, "_last_aux_config_base_url", "") or "").strip()
-
-    # _last_aux_call_* is written by call_llm's route_callback after the real
-    # client is built (auto-detection / fallback applied). When the callback
-    # never fired, no physical request was dispatched. Two distinct shapes
-    # must not be conflated (#72636):
-    #
-    # 1. auxiliary.compression IS configured with an explicit provider, but
-    #    the call died before dispatch — e.g. that provider's API key is
-    #    missing ("Provider 'X' is set in config.yaml but no API key was
-    #    found"). Report the CONFIGURED identity as a pre-dispatch failure;
-    #    never substitute the healthy main endpoint here.
-    # 2. auxiliary.compression is unset, so the summary call would have used
-    #    the main model. Fall back to the main-model identity and say so,
-    #    rather than inventing a phantom endpoint.
-    _pre_dispatch = False
-    if not _aux_provider and not _aux_model and not _aux_base:
-        if _cfg_provider or _cfg_model or _cfg_base:
-            _aux_provider = _cfg_provider or "unknown"
-            _aux_model = _cfg_model or "unknown"
-            _aux_base = _cfg_base or "unknown"
-            _pre_dispatch = True
-            _note = " (no request was dispatched)"
-        else:
-            _aux_provider = (getattr(_ctx_comp, "provider", "") or "auto").strip() or "auto"
-            _aux_model = (getattr(_ctx_comp, "model", "") or "unknown").strip() or "unknown"
-            _aux_base = (getattr(_ctx_comp, "base_url", "") or "unknown").strip() or "unknown"
-            _note = " (auxiliary.compression is not configured — using main model)"
+    route = select_summary_route(_ctx_comp)
+    _aux_provider, _aux_model, _aux_base = route.provider, route.model, route.base_url
+    _pre_dispatch = route.configured and not route.dispatched
+    if _pre_dispatch:
+        _note = " (no request was dispatched)"
+    elif not route.configured:
+        _note = " (auxiliary.compression is not configured — using main model)"
     else:
         _note = ""
 

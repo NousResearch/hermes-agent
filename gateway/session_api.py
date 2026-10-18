@@ -37,8 +37,15 @@ def implicit_api_session(db, session_id, request_id=None):
     from hermes_state_terminal import identity_key
     pinned = None if not request_id else lambda conn, sid: conn.execute(
         'SELECT 1 FROM state_meta WHERE key=?', (identity_key('api', sid, request_id),)).fetchone() is not None
-    derive = lambda n: session_id if n == 0 else 'api-' + hashlib.sha256(f'{session_id}\0{n}'.encode()).hexdigest()[:16]
-    return first_generation(db, derive, pinned=pinned)[1]
+    return first_generation(db, partial(api_generation_id, session_id), pinned=pinned)[1]
+
+
+def api_generation_id(session_id, generation):
+    """Generation *generation* of an API session id ``implicit_api_session`` walks: the id itself,
+    then ``api-<digest(id, n)>``."""
+    if not generation:
+        return session_id
+    return 'api-' + hashlib.sha256(f'{session_id}\0{generation}'.encode()).hexdigest()[:16]
 
 
 def continued_api_session(runner, session_id, request_id=None):
@@ -132,19 +139,25 @@ async def run_steps_off_loop(authority, steps, *, orphaned=None):
         raise
 
 
-def bind_api_session(authority, session_id, *, hosted_dispatch=None, declared_key=None, caller_key=None):
+def bind_api_session(authority, session_id, *, hosted_dispatch=None, declared_key=None, caller_key=None,
+                     walked_from=None):
     """Only the authenticated API edge may reserve an API source; never public RPC."""
     return run_steps(bind_api_steps(authority, session_id, hosted_dispatch=hosted_dispatch,
-                                    declared_key=declared_key, caller_key=caller_key))
+                                    declared_key=declared_key, caller_key=caller_key, walked_from=walked_from))
 
 
-def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=None, caller_key=None):
+def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=None, caller_key=None,
+                   walked_from=None):
     """``bind_api_session`` as write steps (``run_steps``): the binding transaction is yielded.
 
     ``caller_key`` is this request's validated ``X-Hermes-Session-Key`` even when an explicit
     session id selected the conversation (``declared_key`` is set only when the key selected it).
     It is used only to adopt a row an earlier release stamped with that same key, and is then
-    registered as that session's declared key (and stamped into its binding receipt)."""
+    registered as that session's declared key (and stamped into its binding receipt).
+
+    ``walked_from`` is the stored session a Responses/Runs chain continued from when the chain moved
+    past it to *session_id* (``continued_api_session``): the fences it passed stay for good. If one
+    aged out since that lookup, the bind refuses with the retryable ``chain_moved``."""
     authority._require_admission_open()
     if not isinstance(session_id, str) or not session_id or _is_path_unsafe(session_id):
         raise RuntimeStoreError('invalid_params')
@@ -186,9 +199,13 @@ def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=
     def write(conn):
         _epoch(conn, authority.epoch)
         authority._require_admission_open()  # a drain that began while this waited on the writer wins
-        from hermes_state_mutation_retirement import RETIRED_PREFIX
+        from hermes_state_mutation_retirement import RETIRED_PREFIX, keep_passed_fences
         if conn.execute('SELECT 1 FROM state_meta WHERE key=?', (RETIRED_PREFIX + session_id,)).fetchone():
             raise RuntimeStoreError('not_found')
+        # The walk ran before this write: a sweep marker it passed may have been reclaimed since,
+        # and binding the successor then would split the chain (the next walk stops at the root).
+        if walked_from and not keep_passed_fences(conn, partial(api_generation_id, walked_from), session_id):
+            raise RuntimeStoreError('chain_moved')
         saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
                              (_BINDING_PREFIX + session_id,)).fetchone()
         if saved is not None:

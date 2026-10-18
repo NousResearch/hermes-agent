@@ -27,6 +27,9 @@ Pinned surfaces:
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -319,7 +322,7 @@ class TestSignalBoundary:
         base = [
             patch("gateway.status.get_running_pid", return_value=424242),
             patch.object(gateway_run, "_replace_target_belongs_to_other_profile"),
-            patch.object(gateway_run, "_write_runtime_status_quiet", side_effect=_fake_status),
+            patch("gateway.status.write_runtime_status", side_effect=_fake_status),
             patch("gateway.status.terminate_pid", side_effect=_fake_terminate),
             patch("gateway.status.write_takeover_marker", side_effect=_fake_marker),
         ]
@@ -420,3 +423,74 @@ async def _swallow(coro):
         return await coro
     except Exception:
         return "raised"
+
+
+_CHILD_SCRIPT = '''
+import asyncio, sys, time
+sys.path.insert(0, r"@@REPO@@")
+
+import gateway.run as gateway_run
+import gateway.status as status
+
+# A stale record nothing can prove belongs to this home.
+status.get_running_pid = lambda *args, **kwargs: 424242
+gateway_run._replace_target_belongs_to_other_profile = lambda pid: True
+
+# A stalled disk: the background writer takes five seconds to persist, so an
+# unflushed stamp dies with the process (the CLI exits through os._exit).
+def _slow_write(path, payload):
+    time.sleep(5.0)
+    status._write_json_file(path, payload)
+
+status._get_runtime_status_writer = lambda: status._RuntimeStatusWriter(write_fn=_slow_write)
+
+result = None
+try:
+    result = asyncio.run(gateway_run.start_gateway(replace=True))
+except SystemExit as exc:
+    result = exc.code
+print(f"start_gateway -> {result!r}", file=sys.stderr)
+# The real CLI exit path (gateway/run.py main()): False -> exit 1 -> os._exit.
+gateway_run._exit_after_graceful_shutdown(0 if result is True else (1 if result is False else 2))
+'''
+
+
+class TestStampDurability:
+    """The refusal stamp must be durable BEFORE the CLI's os._exit hard-exit path.
+
+    _write_runtime_status_quiet only queues the snapshot to the background
+    writer; the caller then hard-exits without flushing it, so the next
+    supervised start could read the same stale record and refuse again — the
+    exact loop this branch exists to break. Regression crosses the process
+    boundary: a child enters the refusal branch and exits through the real
+    hard-exit path; the parent verifies what actually reached disk.
+    """
+
+    def test_refusal_stamp_reaches_disk_before_the_hard_exit(self, tmp_path):
+        home = tmp_path / "scratch-home"
+        home.mkdir()
+        (home / "gateway_state.json").write_text(
+            json.dumps({"gateway_state": "running", "pid": 424242}), encoding="utf-8")
+        repo_root = str(Path(__file__).resolve().parents[2])
+        child = tmp_path / "refusal_child.py"
+        child.write_text(_CHILD_SCRIPT.replace("@@REPO@@", repo_root), encoding="utf-8")
+        env = {**os.environ, "HERMES_HOME": str(home)}
+
+        proc = subprocess.run(
+            [sys.executable, str(child)],
+            env=env, capture_output=True, text=True, timeout=120, check=False,
+        )
+
+        assert proc.returncode == 1, f"child stderr: {proc.stderr[-2000:]}"
+        stamped = json.loads((home / "gateway_state.json").read_text(encoding="utf-8"))
+        assert stamped.get("gateway_state") == "startup_failed"
+        assert stamped.get("exit_reason") == "gateway_replace_ownership_unproven"
+
+        verify = subprocess.run(
+            [sys.executable, "-c",
+             "import gateway.status as s; print(s.get_runtime_status_running_pid())"],
+            env=env, capture_output=True, text=True, timeout=60, cwd=repo_root, check=False,
+        )
+        assert verify.stdout.strip() == "None", (
+            "a fresh process must no longer trust the stale PID after the refusal"
+        )

@@ -254,7 +254,7 @@ def _start_gateway_claim_pid_file(force: bool = False) -> bool:
 
 async def _start_gateway_start_control_socket(runner):
     """Start the gateway control socket (identify/status/pause-for-update); None when unavailable."""
-    from gateway.run import (asyncio, logger, os, threading)
+    from gateway.run import (_load_gateway_config, asyncio, logger, os, threading)
     import atexit
     import concurrent.futures
     _control_server = None
@@ -272,6 +272,7 @@ async def _start_gateway_start_control_socket(runner):
         from gateway.run_plugin_rewire import reload_plugins_verb
         from gateway.run_active_work_verb import active_work_verb
         from gateway.drain_control import RESTART_WAIT_REASON
+        import os
         descriptor = runner.session_runtime_descriptor
 
         def _identify_runtime():
@@ -335,18 +336,45 @@ async def _start_gateway_start_control_socket(runner):
                 result = {"pending": True, "served_profiles": runner.served_profile_names()}
             return {"multiplex": bool(getattr(runner.config, "multiplex_profiles", False)), **result}
 
-        _control_server = GatewayControlServer(
-            verb_handlers={"pause-for-update": _pause_for_update_handler, "identify": _identify_runtime,
-                           "rescan-profiles": _rescan_profiles_handler,
-                           "migrate-profile-identity": migrate_profile_identity_verb(runner),
-                           "unserve-profile": unserve_profile_verb(runner),
-                           "serve-profile": serve_profile_verb(runner),
-                           "purge-profile-identity": purge_profile_identity_verb(runner),
-                           # `hermes gateway stop/restart` refuse while this names live work.
-                           "active-work": active_work_verb(runner, _main_loop),
-                           # A plugin installed/enabled by another process loads now and re-wires the
-                           # live adapters' handlers (#87770); tools/prompt still wait for the next session.
-                           "reload-plugins": reload_plugins_verb(runner, _main_loop)})
+        verb_handlers = {
+            "pause-for-update": _pause_for_update_handler, "identify": _identify_runtime,
+            "rescan-profiles": _rescan_profiles_handler,
+            "migrate-profile-identity": migrate_profile_identity_verb(runner),
+            "unserve-profile": unserve_profile_verb(runner),
+            "serve-profile": serve_profile_verb(runner),
+            "purge-profile-identity": purge_profile_identity_verb(runner),
+            # `hermes gateway stop/restart` refuse while this names live work.
+            "active-work": active_work_verb(runner, _main_loop),
+            # A plugin installed/enabled by another process loads now and re-wires the
+            # live adapters' handlers (#87770); tools/prompt still wait for the next session.
+            "reload-plugins": reload_plugins_verb(runner, _main_loop),
+        }
+        gateway_config = _load_gateway_config()
+        issue22_config = gateway_config.get("issue22_ingress") or {}
+        if issue22_config.get("enabled") is True:
+            bridge_config = os.environ.get("GITHUB_BRIDGE_CONFIG")
+            if bridge_config:
+                from hermes_cli import kanban_db_connect
+                from hermes_cli.issue22_gateway_verb import (
+                    build_issue22_admit_handler, build_issue22_poll_handler,
+                )
+                issue22_config_path = Path(bridge_config).expanduser()
+                issue22_board = issue22_config.get("board", "missions")
+                issue22_connect = lambda: kanban_db_connect.connect(board=issue22_board)
+                issue22_admit = build_issue22_admit_handler(
+                    connect_owner_db=issue22_connect, config_path=issue22_config_path, enabled=True,
+                )
+                verb_handlers.update({
+                    "issue22-admit": issue22_admit,
+                    "issue22-poll": build_issue22_poll_handler(
+                        config_path=issue22_config_path, enabled=True, admit_handler=issue22_admit,
+                    ),
+                })
+            else:
+                logger.warning(
+                    "Issue 22 ingress is enabled but GITHUB_BRIDGE_CONFIG is unset; "
+                    "control verbs will not be registered.")
+        _control_server = GatewayControlServer(verb_handlers=verb_handlers)
         _control_server.ticket_store = runner.session_ticket_store
         if not await _control_server.start():
             _control_server = None

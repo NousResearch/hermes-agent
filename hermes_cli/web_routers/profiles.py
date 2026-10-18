@@ -264,6 +264,37 @@ def _pinned_window(rows: list[dict[str, Any]], offset: int, cap: int) -> list[di
     return window
 
 
+def _spawned_window(rows: list[dict[str, Any]], offset: int, cap: int) -> list[dict[str, Any]]:
+    """Page roots, then retain every spawned descendant attached to that window."""
+    roots = [row for row in rows if not row.get("spawned_by_session_id")]
+    window = _pinned_window(roots, offset, cap)
+    visible = {
+        (row.get("profile") or "default", session_id)
+        for row in window
+        for session_id in (row.get("_lineage_ids") or [row.get("id")])
+        if session_id
+    }
+    pending = [row for row in rows if row.get("spawned_by_session_id")]
+    descendants = []
+    while pending:
+        admitted = [
+            row for row in pending
+            if (row.get("profile") or "default", row["spawned_by_session_id"]) in visible
+        ]
+        if not admitted:
+            break
+        admitted_ids = {id(row) for row in admitted}
+        pending = [row for row in pending if id(row) not in admitted_ids]
+        for row in admitted:
+            descendants.append(row)
+            visible.update(
+                (row.get("profile") or "default", session_id)
+                for session_id in (row.get("_lineage_ids") or [row.get("id")])
+                if session_id
+            )
+    return window + descendants
+
+
 def _recency(s: dict[str, Any]) -> Any:
     return s.get("last_active") or s.get("started_at") or 0
 
@@ -457,7 +488,8 @@ def get_profiles_sessions(
     # over-fetches ``limit + offset``.
     limit: int = Query(20, ge=0, le=500), offset: int = Query(0, ge=0), min_messages: int = 0,
     archived: str = "exclude", order: str = "recent", profile: str = "all",
-    source: str | None = None, sources: str | None = None, exclude_sources: str | None = None, full: bool = False):
+    source: str | None = None, sources: str | None = None, exclude_sources: str | None = None, full: bool = False,
+    include_spawned: bool = False):
     """Unified, read-only session list aggregated across ALL profiles: opens each profile's
     ``state.db`` directly (no dashboard backend per profile) and tags rows with their owning
     ``profile``. Rows omit ``system_prompt`` / ``model_config`` unless ``full=1`` — same
@@ -497,13 +529,18 @@ def get_profiles_sessions(
                 limit=per_profile, offset=0, order_by_last_active=order == "recent",
                 # Same SQL-level blob skip as /api/sessions.
                 compact_rows=not full, include_pinned=True, **scoped)
+            if include_spawned:
+                rows = db.with_spawned_session_descendants(
+                    rows, compact_rows=not full,
+                    include_archived=archived == "include", archived_only=archived == "only")
             totals[name] = db.session_count(exclude_children=True, **scoped)
             merged.extend(_tag_rows(rows, name, now))
         _read_profile_db(name, home, errors, _read)
 
     sort_key = "last_active" if order == "recent" else "started_at"
     merged.sort(key=lambda s: s.get(sort_key) or s.get("started_at") or 0, reverse=True)
-    window = _pinned_window(merged, offset, limit)
+    window = (_spawned_window(merged, offset, limit) if include_spawned
+              else _pinned_window(merged, offset, limit))
     if not full:
         _strip_session_list_rows(window)
     return {"sessions": window, "total": sum(totals.values()), "profile_totals": totals,
@@ -515,7 +552,8 @@ def get_profiles_sessions(
 @_sidebar_singleflight_cache
 def get_profiles_sessions_sidebar(
     recents_profile: str = "all", recents_limit: int = 20, recents_exclude: str | None = None,
-    cron_limit: int = 50, messaging_limit: int = 100, messaging_exclude: str | None = None):
+    cron_limit: int = 50, messaging_limit: int = 100, messaging_exclude: str | None = None,
+    include_spawned: bool = False):
     """Batched sidebar session slices (recents / cron / messaging) — one profile-DB open per
     refresh instead of three ``/api/profiles/sessions`` calls. Same row projection and 300s
     active heuristic as the per-slice endpoint; all slices use ``min_messages=1`` /
@@ -549,11 +587,12 @@ def get_profiles_sessions_sidebar(
         include_subagents, exclude = recents_subagents if key == "recents" else (False, exclude)
         # include_pinned: a pinned conversation must reach the sidebar even when it has aged
         # past the window, or its Pinned row renders empty.
-        return db.list_sessions_rich(
+        roots = db.list_sessions_rich(
             source=source, exclude_sources=exclude or None, limit=cap[key], offset=0,
             min_message_count=1, include_archived=False, archived_only=False,
             order_by_last_active=True, compact_rows=True, include_pinned=True,
             include_subagents=include_subagents)
+        return db.with_spawned_session_descendants(roots, compact_rows=True) if include_spawned else roots
 
     def _build_slices(db, cache_key, recents_subagents):
         # ``usage`` is aggregated in SQL rather than over the recents window: the window is a
@@ -575,7 +614,7 @@ def get_profiles_sessions_sidebar(
         recents_subagents = subagent_listing_scope(home, exclude_sources=recents_exclude_list or None)
         profile_cache_key = (str(db_path), _sidebar_db_fingerprint(db_path), cap["recents"],
                              tuple(recents_exclude_list), cap["cron"], cap["messaging"],
-                             tuple(messaging_exclude_list), recents_subagents[0])
+                             tuple(messaging_exclude_list), recents_subagents[0], include_spawned)
         slices = _sidebar_profile_cache_get(profile_cache_key)
         if slices is None:
             slices = _read_profile_db(
@@ -588,15 +627,17 @@ def get_profiles_sessions_sidebar(
         # A full window means more rows remain on disk — all "load more" needs, at no cost
         # beyond the rows already read. Pinned rows count: they occupy LIMIT slots, and a
         # short list has nothing past the page for the pin back-fill to add, so pins cannot
-        # fake a full page (#81484).
-        recents_truncated[name] = len(slices["recents"]) >= cap["recents"]
+        # fake a full page (#81484). Spawned descendants ride past the LIMIT, so they don't.
+        recents_truncated[name] = sum(
+            1 for s in slices["recents"] if not s.get("spawned_by_session_id")) >= cap["recents"]
         profile_totals[name] = slices["usage"]
         for key in slice_scope:
             rows[key].extend(_tag_rows(slices[key], name, now))
 
     def _window(key: str) -> list[dict[str, Any]]:
         rows[key].sort(key=_recency, reverse=True)
-        win = _pinned_window(rows[key], 0, cap[key])
+        win = (_spawned_window(rows[key], 0, cap[key])
+               if include_spawned else _pinned_window(rows[key], 0, cap[key]))
         _strip_session_list_rows(win)
         return win
 

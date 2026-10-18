@@ -218,6 +218,17 @@ def _collect_delegate_child_ids(conn, parent_ids: list[str]) -> list[str]:
     return [sid for sid in found if sid not in seeds]
 
 
+def _delegated_ids(conn, ids: list[str]) -> set[str]:
+    """The members of *ids* that are themselves delegate-subagent runs."""
+    df = _delegate_from_json()
+    found: set[str] = set()
+    for chunk in _id_chunks(ids):
+        ph = _session_ids_placeholders(chunk)
+        found.update(row["id"] for row in conn.execute(
+            f"SELECT id FROM sessions WHERE id IN ({ph}) AND {df} IS NOT NULL", chunk).fetchall())
+    return found
+
+
 def _delete_delegate_children(conn, parent_ids: list[str]) -> list[str]:
     ids = _collect_delegate_child_ids(conn, parent_ids)
     from hermes_state_mutation_retirement import retire_sessions
@@ -1143,6 +1154,85 @@ class SessionSessionsMixin:
             merged["continuation_kind"] = "compression"
             projected.append(merged)
         return projected
+
+    def with_spawned_session_descendants(
+        self, parents: list[dict[str, Any]], *, compact_rows: bool = True,
+        include_archived: bool = False, archived_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        """*parents* followed by their visible delegated descendants, projected to compression tips.
+
+        ``_delegate_from`` is the durable producer marker today; callers receive the
+        provider-neutral ``spawned_by_session_id`` relationship. Branch, reset and
+        compression children therefore never enter the spawned-agent tree. A descendant
+        already listed flat (``sessions.show_subagents``) is dropped from *parents* so it
+        renders once, nested under its spawner.
+        """
+        parent_ids = {
+            session_id
+            for parent in parents
+            for session_id in (parent.get("_lineage_ids") or [parent.get("id")])
+            if session_id
+        }
+        if not parent_ids:
+            return parents
+
+        # The walk never returns its own seeds, so a subagent already listed flat
+        # (``sessions.show_subagents``) must not seed it or it could never nest. One whose
+        # spawner is off the page joins the seeds afterwards so its own subtree still loads.
+        with self._read_ctx() as conn:
+            delegated = _delegated_ids(conn, list(parent_ids))
+        search_ids = parent_ids - delegated
+        descendant_ids = set()
+        while True:
+            with self._read_ctx() as conn:
+                discovered = set(_collect_delegate_child_ids(conn, list(search_ids)))
+            discovered -= descendant_ids
+            if not discovered:
+                stray = delegated - descendant_ids - search_ids
+                if not stray:
+                    break
+                search_ids |= stray
+                continue
+            descendant_ids.update(discovered)
+            discovered_rows = self._get_session_rich_rows_batch(discovered, compact_rows=True)
+            for row in discovered_rows.values():
+                spawned_by = str(_parse_model_config(row.get("model_config")).get("_delegate_from") or "")
+                if spawned_by == str(row.get("parent_session_id") or ""):
+                    search_ids.update(self.get_compression_chain(row["id"]))
+
+        rows_by_id = self._get_session_rich_rows_batch(descendant_ids, compact_rows=compact_rows)
+        roots = []
+        for row in rows_by_id.values():
+            spawned_by = str(_parse_model_config(row.get("model_config")).get("_delegate_from") or "")
+            if spawned_by and spawned_by == str(row.get("parent_session_id") or ""):
+                row["spawned_by_session_id"] = spawned_by
+                roots.append(row)
+
+        projected = self._project_compression_tips(roots, compact_rows)
+        visible_ids = set(parent_ids)
+        pending = [
+            row for row in projected
+            if not row.get("hidden") and (
+                bool(row.get("archived")) if archived_only
+                else include_archived or not row.get("archived")
+            )
+        ]
+        result = []
+        while pending:
+            admitted = [row for row in pending if row["spawned_by_session_id"] in visible_ids]
+            if not admitted:
+                break
+            admitted_ids = {id(row) for row in admitted}
+            pending = [row for row in pending if id(row) not in admitted_ids]
+            for row in admitted:
+                result.append(row)
+                visible_ids.update(row.get("_lineage_ids") or [row["id"]])
+
+        result.sort(key=lambda row: row.get("last_active") or row.get("started_at") or 0, reverse=True)
+        for row in result:
+            row["unread"] = self.session_unread(row)
+        nested_ids = {row["id"] for row in result}
+        return [row for row in parents if row.get("id") not in nested_ids] + result
 
     def list_recent_sessions_bounded(
         self,

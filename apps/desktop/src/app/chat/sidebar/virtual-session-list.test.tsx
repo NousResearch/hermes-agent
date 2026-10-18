@@ -1,4 +1,4 @@
-import { cleanup, render } from '@testing-library/react'
+import { cleanup, fireEvent, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/hermes'
@@ -16,9 +16,11 @@ import { VirtualSessionList } from './virtual-session-list'
 const measureSpy = vi.fn()
 let estimateSize: (index: number) => number = () => 0
 
+let virtualItems: Array<{ index: number; start: number }> = []
+
 const stableVirtualizer = {
   measure: (...args: []) => measureSpy(...args),
-  getVirtualItems: () => [],
+  getVirtualItems: () => virtualItems,
   getTotalSize: () => 0,
   measureElement: vi.fn()
 }
@@ -32,7 +34,20 @@ vi.mock('@tanstack/react-virtual', () => ({
 }))
 
 vi.mock('./chrome', () => ({ SidebarDateDivider: () => null }))
-vi.mock('./session-row', () => ({ SidebarSessionRow: () => null }))
+
+const sessionRowPropsHistory = vi.hoisted(() => [] as Array<Record<string, unknown>>)
+
+vi.mock('./session-row', () => ({
+  SidebarSessionRow: (props: Record<string, unknown>) => {
+    sessionRowPropsHistory.push(props)
+
+    const session = props.session as { id: string }
+
+    return props.onToggleTree ? (
+      <button data-testid={`tree-toggle-${session.id}`} onClick={props.onToggleTree as () => void} type="button" />
+    ) : null
+  }
+}))
 
 vi.mock('@/i18n', () => ({
   useI18n: () => ({ t: { sidebar: { dateDivider: {} } } })
@@ -71,6 +86,8 @@ describe('VirtualSessionList row measurement', () => {
 
   afterEach(() => {
     cleanup()
+    virtualItems = []
+    sessionRowPropsHistory.length = 0
   })
 
   it('re-measures when the density changes', () => {
@@ -120,5 +137,26 @@ describe('VirtualSessionList row measurement', () => {
     expect(SESSION_CARD_ROW_ESTIMATE_PX).toBeGreaterThanOrEqual(
       sessionRowEstimate('detailed') + onePreviewLine + oneTitleLine
     )
+  })
+
+  it('renders the virtualized parent with its collapse state and toggle behavior', () => {
+    const onToggle = vi.fn()
+    const parent = { id: 'parent', profile: 'default', started_at: 1 } as never
+    const child = { id: 'child', profile: 'default', started_at: 1 } as never
+
+    const sessionRows: SidebarListRow[] = [
+      { entry: { hasChildren: true, session: parent }, kind: 'session' },
+      { entry: { branchDepth: 1, branchStem: '└─ ', session: child }, kind: 'session' }
+    ]
+
+    virtualItems = sessionRows.map((_, index) => ({ index, start: index * 28 }))
+
+    const { getByTestId } = renderList({ rows: sessionRows, treeToggle: { onToggle, open: () => false } })
+
+    expect(sessionRowPropsHistory[0]).toMatchObject({ treeOpen: false })
+    expect(sessionRowPropsHistory[1]?.onToggleTree).toBeUndefined()
+
+    fireEvent.click(getByTestId('tree-toggle-parent'))
+    expect(onToggle).toHaveBeenCalledWith(parent)
   })
 })

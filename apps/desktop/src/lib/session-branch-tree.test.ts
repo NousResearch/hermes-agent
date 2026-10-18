@@ -4,7 +4,7 @@ import type { SessionInfo } from '@/types/hermes'
 
 import { makeSessionInfo } from '../test/session-info'
 
-import { flattenSessionsWithBranches, forkParentId } from './session-branch-tree'
+import { flattenSessionsWithBranches, forkParentId, sessionTreeNodeId } from './session-branch-tree'
 
 const session = (id: string, overrides: Partial<SessionInfo> = {}): SessionInfo =>
   makeSessionInfo({ id, message_count: 1, source: 'cli', title: id, ...overrides })
@@ -36,9 +36,9 @@ describe('flattenSessionsWithBranches', () => {
     const branchB = fork('branch-b', 'parent', { last_active: 10 })
 
     expect(flattenSessionsWithBranches([parent, branchA, branchB])).toEqual([
-      { session: parent },
-      { branchStem: '├─ ', session: branchA },
-      { branchStem: '└─ ', session: branchB }
+      { hasChildren: true, session: parent },
+      { branchDepth: 1, branchStem: '├─ ', session: branchA },
+      { branchDepth: 1, branchStem: '└─ ', session: branchB }
     ])
   })
 
@@ -47,8 +47,39 @@ describe('flattenSessionsWithBranches', () => {
     const branch = fork('branch', 'root', { last_active: 10 })
 
     expect(flattenSessionsWithBranches([tip, branch])).toEqual([
-      { session: tip },
-      { branchStem: '└─ ', session: branch }
+      { hasChildren: true, session: tip },
+      { branchDepth: 1, branchStem: '└─ ', session: branch }
+    ])
+  })
+
+  it('nests provider-neutral spawned sessions to arbitrary depth within their profile', () => {
+    const parent = session('parent', { profile: 'work' })
+
+    const child = session('child-tip', {
+      _lineage_ids: ['child-root', 'child-tip'],
+      profile: 'work',
+      spawned_by_session_id: 'parent'
+    })
+
+    const grandchild = session('grandchild', { profile: 'work', spawned_by_session_id: 'child-root' })
+
+    const sameIdOtherProfile = session('child-tip', {
+      profile: 'personal',
+      spawned_by_session_id: 'parent'
+    })
+
+    const otherConnection = session('remote-child', {
+      connection_id: 'remote',
+      profile: 'work',
+      spawned_by_session_id: 'parent'
+    })
+
+    expect(flattenSessionsWithBranches([parent, child, grandchild, sameIdOtherProfile, otherConnection])).toEqual([
+      { hasChildren: true, session: parent },
+      { branchDepth: 1, branchStem: '└─ ', hasChildren: true, session: child },
+      { branchDepth: 2, branchStem: '└─ ', session: grandchild },
+      { session: sameIdOtherProfile },
+      { session: otherConnection }
     ])
   })
 
@@ -83,8 +114,8 @@ describe('flattenSessionsWithBranches', () => {
     const branch = session('branch', { last_active: 50, parent_session_id: 'root' })
 
     expect(flattenSessionsWithBranches([root, continuation, branch])).toEqual([
-      { session: continuation },
-      { branchStem: '└─ ', session: branch }
+      { hasChildren: true, session: continuation },
+      { branchDepth: 1, branchStem: '└─ ', session: branch }
     ])
   })
 
@@ -94,8 +125,8 @@ describe('flattenSessionsWithBranches', () => {
     const branch = session('branch', { last_active: 70, parent_session_id: 'old-tip' })
 
     expect(flattenSessionsWithBranches([oldTip, tip, branch])).toEqual([
-      { session: tip },
-      { branchStem: '└─ ', session: branch }
+      { hasChildren: true, session: tip },
+      { branchDepth: 1, branchStem: '└─ ', session: branch }
     ])
   })
 
@@ -112,8 +143,8 @@ describe('flattenSessionsWithBranches', () => {
     const branch = session('branch', { last_active: 70, parent_session_id: 'tip' })
 
     expect(flattenSessionsWithBranches([oldTip, tip, branch])).toEqual([
-      { session: tip },
-      { branchStem: '└─ ', session: branch }
+      { hasChildren: true, session: tip },
+      { branchDepth: 1, branchStem: '└─ ', session: branch }
     ])
   })
 
@@ -121,6 +152,18 @@ describe('flattenSessionsWithBranches', () => {
     const branch = fork('branch', 'missing')
 
     expect(flattenSessionsWithBranches([branch])).toEqual([{ session: branch }])
+  })
+
+  it('keeps a collapsed parent visible while hiding its complete descendant subtree', () => {
+    const parent = session('parent')
+    const child = session('child', { spawned_by_session_id: 'parent' })
+    const grandchild = session('grandchild', { spawned_by_session_id: 'child' })
+
+    expect(
+      flattenSessionsWithBranches([parent, child, grandchild], {
+        isOpen: candidate => candidate.id !== 'parent'
+      }).map(item => item.session.id)
+    ).toEqual(['parent'])
   })
 
   it('re-sorts roots by group recency by default (pinned-style jumps without preserveOrder)', () => {
@@ -186,8 +229,17 @@ describe('flattenSessionsWithBranches', () => {
     const branch = session('branch', { last_active: 10, parent_session_id: 'parent' })
 
     expect(flattenSessionsWithBranches([parent, branch])).toEqual([
-      { session: parent },
-      { branchStem: '└─ ', session: branch }
+      { hasChildren: true, session: parent },
+      { branchDepth: 1, branchStem: '└─ ', session: branch }
     ])
+  })
+})
+
+describe('sessionTreeNodeId', () => {
+  it('keeps collapse state keyed to the durable lineage root across compressed tips', () => {
+    const firstTip = session('tip-1', { _lineage_root_id: 'root' })
+    const nextTip = session('tip-2', { _lineage_root_id: 'root' })
+
+    expect(sessionTreeNodeId(nextTip)).toBe(sessionTreeNodeId(firstTip))
   })
 })

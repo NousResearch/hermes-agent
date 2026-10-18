@@ -77,8 +77,10 @@ def completion(tmp_path, monkeypatch):
     _put(site, "selected_dependency.py", "VALUE = 'selected generation'\n")
     _put(runtime_facts_path(source).parent, "facts.json", json.dumps({
         "packages": {"venv": {"environment": str(generation)}}}))
+    # Fixture trees are never published: keep the update's prebuilt-frontend lookup off the network.
     _put(home / ".hermes", "config.yaml",
-         f"_config_version: {DEFAULT_CONFIG['_config_version'] - 1}\nmodel:\n  default: retained-model\n")
+         f"_config_version: {DEFAULT_CONFIG['_config_version'] - 1}\nmodel:\n  default: retained-model\n"
+         "updates:\n  prebuilt_products: false\n")
     env = {key: value for key, value in os.environ.items()
            if not key.startswith(("HERMES_", "PYTHON", "PYTEST_", "VIRTUAL_ENV", "npm_", "NPM_"))}
     env.update(HOME=str(home), HERMES_HOME=str(home / ".hermes"),

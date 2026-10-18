@@ -230,7 +230,12 @@ export function rendererCurrent(out, inputs) {
 if (isMain(import.meta.url)) {
   const { values } = parseArgs({ options: {
     source: { type: 'string' }, product: { type: 'string' }, out: { type: 'string' },
+    // --key also prints the product's input key, the name its published build is looked up by
+    // (hermes_cli/source_products.py), so a reader pays one tree hash for both answers.
+    key: { type: 'boolean' },
   } })
-  if (!values.source || !values.product || !values.out) throw new Error('--source, --product and --out are required')
-  console.log(JSON.stringify(productCurrent(values)))
+  const { key, ...query } = values
+  if (!query.source || !query.product || !query.out) throw new Error('--source, --product and --out are required')
+  const current = productCurrent(query)
+  console.log(JSON.stringify(key ? { current, key: current ? null : sourceHash(query.source, query.product) } : current))
 }

@@ -7,23 +7,42 @@ import subprocess
 import sys
 
 
-def source_product_current(project_root: Path, product: str, out: Path) -> bool:
-    """Read the compiler's receipt without acquiring tools or dependencies."""
+def _freshness(project_root: Path, product: str, out: Path, *extra: str) -> str | None:
+    """Run the compiler's receipt reader under PM's Node; None when it cannot run."""
     from pm import env_for, installed_package
 
     installed = installed_package("node")
     if installed is None or installed.binary is None:
-        return False  # Only PM's Node may run the receipt reader; never the user's PATH copy.
-    node, env = str(installed.binary), env_for("node")
+        return None  # Only PM's Node may run the receipt reader; never the user's PATH copy.
     try:
         result = subprocess.run(
-            [node, str(project_root / "scripts/build/freshness.mjs"),
-             "--source", str(project_root), "--product", product, "--out", str(out)],
-            cwd=project_root, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
+            [str(installed.binary), str(project_root / "scripts/build/freshness.mjs"),
+             "--source", str(project_root), "--product", product, "--out", str(out), *extra],
+            cwd=project_root, env=env_for("node"), capture_output=True, text=True, encoding="utf-8",
+            errors="replace", check=True, timeout=300,  # a full input-tree hash; seconds on a slow disk
         )
-        return result.stdout.strip() == "true"
     except (OSError, subprocess.SubprocessError):
-        return False
+        return None
+    return result.stdout.strip()
+
+
+def source_product_current(project_root: Path, product: str, out: Path) -> bool:
+    """Read the compiler's receipt without acquiring tools or dependencies."""
+    return _freshness(project_root, product, out) == "true"
+
+
+def source_product_state(project_root: Path, product: str, out: Path) -> tuple[bool, str | None]:
+    """``(current, input key)`` in one receipt read; the key is None when current or unreadable."""
+    import json
+
+    try:
+        state = json.loads(_freshness(project_root, product, out, "--key") or "null")
+    except ValueError:
+        return False, None
+    if not isinstance(state, dict):
+        return False, None
+    key = state.get("key")
+    return state.get("current") is True, key if isinstance(key, str) else None
 
 
 def source_build_env(base_env: dict | None = None, *, explicit: bool = False, verify: bool = True) -> dict[str, str]:
@@ -185,22 +204,17 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
                   "and future updates stop building it.")
         if prepared:
             # An update that changed no TUI/web input reuses the receipted output, as the
-            # launch path already does; recompiling it produces the same bytes. Desktop
-            # additionally needs the packaged app to name HEAD (its baked stamp carries the
-            # commit), so it is reused only when HEAD did not move: "Already up to date",
-            # a retried tail, a takeover re-entry.
-            if "ui-tui" in frontends:
-                if source_product_current(project_root, "tui", project_root / "ui-tui/dist"):
-                    print("  ✓ TUI is up to date")
-                else:
-                    publish_stage("Building the TUI")
-                    attempt("TUI build", lambda: build_source_tui(project_root, env=env))
-            if "web" in frontends:
-                if source_product_current(project_root, "web", project_root / "hermes_cli/web_dist"):
-                    print("  ✓ Web UI is up to date")
-                else:
-                    publish_stage("Building the web UI")
-                    attempt("web UI build", lambda: build_source_web(project_root, env=env))
+            # launch path already does, and one whose exact inputs CI already compiled installs
+            # that build (hermes_cli/source_products.py). Desktop additionally needs the packaged
+            # app to name HEAD (its baked stamp carries the commit), so it is reused only when
+            # HEAD did not move: "Already up to date", a retried tail, a takeover re-entry.
+            prebuilt = _prebuilt_installer()
+            if "ui-tui" in frontends and not _frontend_ready(project_root, "tui", prebuilt):
+                publish_stage("Building the TUI")
+                attempt("TUI build", lambda: build_source_tui(project_root, env=env))
+            if "web" in frontends and not _frontend_ready(project_root, "web", prebuilt):
+                publish_stage("Building the web UI")
+                attempt("web UI build", lambda: build_source_web(project_root, env=env))
             if desktop and not desktop_skipped:
                 desktop_built = attempt("desktop app build", lambda: _build_desktop_product(project_root, env, publish_stage))
                 desktop_reason = failures[-1][0] if not desktop_built else ""
@@ -227,6 +241,41 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
         print(f"  ⚠ Plugin migration skipped: {exc}")
     if failures:
         raise ProductBuildError(failures)
+
+
+_FRONTEND_LABELS = {"tui": "TUI", "web": "Web UI"}
+_FRONTEND_OUTPUTS = {"tui": "ui-tui/dist", "web": "hermes_cli/web_dist"}
+
+
+def _prebuilt_installer():
+    """``source_products.install_prebuilt`` when ``updates.prebuilt_products`` allows it, else None."""
+    try:
+        from hermes_cli import source_products
+
+        return source_products.install_prebuilt if source_products.prebuilt_products_enabled() else None
+    except Exception as exc:  # health: allow BLE001 -- an unreadable config only means "compile locally"
+        print(f"  ⓘ Published builds skipped: {exc}")
+        return None
+
+
+def _frontend_ready(project_root: Path, product: str, install) -> bool:
+    """True when ``product`` needs no local compile: its receipt is current, or the published
+    build of these exact inputs was installed. Never raises: any miss compiles locally."""
+    label = _FRONTEND_LABELS[product]
+    current, key = source_product_state(project_root, product, project_root / _FRONTEND_OUTPUTS[product])
+    if current:
+        print(f"  ✓ {label} is up to date")
+        return True
+    if install is None or key is None:
+        return False
+    try:
+        installed = install(project_root, product, key)
+    except Exception as exc:  # health: allow BLE001 -- the contract is "a miss always builds locally"
+        print(f"  ⓘ Published {label} build skipped ({type(exc).__name__}: {exc}); building locally")
+        return False
+    if installed:
+        print(f"  ✓ {label} installed from the published build")
+    return installed
 
 
 def _build_desktop_product(project_root: Path, env: dict, publish_stage) -> None:

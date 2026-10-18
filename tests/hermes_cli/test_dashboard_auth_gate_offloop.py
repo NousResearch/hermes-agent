@@ -86,7 +86,8 @@ class TestGateVerifiesOffTheEventLoop:
 
     def test_cookie_verify_runs_off_loop(self, gate_client):
         client, provider = gate_client
-        r = client.get("/api/loop-thread", cookies={"hermes_session_at": "tok"})
+        client.cookies.set("hermes_session_at", "tok")
+        r = client.get("/api/loop-thread")
         assert r.status_code == 200
         assert provider.verify_threads, "the gate never reached verify_session"
         assert r.json()["loop_thread"] not in provider.verify_threads

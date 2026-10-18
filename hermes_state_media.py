@@ -1,8 +1,12 @@
 """Durable media retirement candidates survive transcript deletion and failed cleanup."""
 import hashlib
 import json
+import logging
+import sqlite3
 
 from hermes_state_keys import prefix_range
+
+logger = logging.getLogger(__name__)
 
 PREFIX = 'gateway.media.retired.v1.'
 SPILLOVER_PREFIX = 'gateway.spillover.retired.v1.'
@@ -54,7 +58,17 @@ def collect_retired_spillover(db):
 
 def collect_retired_media(db):
     """Release retired candidates no admission or retained transcript row owns; drop collected keys.
-    Synchronous SQLite plus one messages pass: async callers must run it off the event loop."""
+    Synchronous SQLite plus one messages pass: async callers must run it off the event loop.
+
+    Every caller runs it after its delete or prune committed, so a storage error is logged, never
+    raised: the finished delete stands and the uncollected candidates wait for the next pass."""
+    try:
+        _collect_retired_media(db)
+    except sqlite3.DatabaseError:  # also a corrupt store, not only OperationalError (locked, limits)
+        logger.exception('Retired media collection failed; candidates stay for the next pass')
+
+
+def _collect_retired_media(db):
     from gateway.session_ingress_media import release_unheld_media
     collect_retired_spillover(db)
     with db._read_ctx() as conn:

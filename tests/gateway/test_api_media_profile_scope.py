@@ -1,4 +1,5 @@
 """Startup collection of retained API images pairs each profile's media root with its own state.db."""
+import asyncio
 import base64
 from pathlib import Path
 from types import SimpleNamespace
@@ -73,22 +74,19 @@ async def test_restart_recovery_keeps_every_profiles_held_images_and_collects_ea
         return Path(row['payload']['api_turn_v1']['media'][0]['path'])
 
     try:
-        launch_held = completed_image_turn(authorities['default'], PNG + b'launch')
         launch_orphan = _orphan(PNG + b'launch-orphan')
         with _profile_runtime_scope(beta, hydrate_secrets=False):
             beta_orphan = _orphan(PNG + b'beta-orphan')
-        assert beta_orphan.is_relative_to(beta) and launch_held.is_relative_to(launch / 'cache')
-
-        recover_api_turns(adapter)  # the gateway's unscoped startup pass over every served profile
-
-        assert launch_held.read_bytes() == PNG + b'launch', 'a secondary profile collected the launch image'
-        assert not launch_orphan.exists()
-        assert not beta_orphan.exists(), "the secondary profile's own media root was never examined"
-        with _profile_runtime_scope(beta, hydrate_secrets=False):
-            beta_held = completed_image_turn(authorities['beta'], PNG + b'beta')
-        recover_api_turns(adapter)
-        assert beta_held.read_bytes() == PNG + b'beta'
-        assert launch_held.read_bytes() == PNG + b'launch'
+        assert beta_orphan.is_relative_to(beta) and launch_orphan.is_relative_to(launch / 'cache')
+        held = []
+        for name, home in (('default', launch), ('beta', beta)):
+            data = PNG + name.encode()
+            with _profile_runtime_scope(home, hydrate_secrets=False):
+                held.append((completed_image_turn(authorities[name], data), data))
+            # Unscoped startup must carry each profile into its collection thread.
+            await asyncio.gather(*recover_api_turns(adapter))
+            assert all(path.read_bytes() == expected for path, expected in held)
+            assert not launch_orphan.exists() and not beta_orphan.exists()
     finally:
         adapter._response_store.close()
         adapter._run_idempotency_store.close()

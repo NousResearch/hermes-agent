@@ -16,9 +16,13 @@
 // A zombie is only declared when the stream is silent past the threshold AND
 // a probe proves connectivity (the wire works but the stream is deaf). Silence
 // alone NEVER degrades the stream: shared lines can be legitimately quiet for
-// hours. Inconclusive probes NEVER degrade it either: the network may simply
-// be down, and in that case the iterator will eventually throw and the
-// existing re-subscribe loop recovers on its own.
+// hours. A single inconclusive probe never degrades it either: the network
+// may simply be down, and in that case the iterator will eventually throw and
+// the existing re-subscribe loop recovers on its own. But "eventually" is not
+// guaranteed, and a probe that is inconclusive by construction (e.g. the
+// server rejects its synthetic id) would otherwise suppress recovery forever,
+// so a run of inconclusive probes during silence is a hard backstop (see
+// shouldForceRestartOnInconclusive).
 //
 // These helpers are pure (no SDK, no timers) so tests can execute them under
 // node — see tests/plugins/platforms/photon/test_zombie_stream_watchdog.py.
@@ -83,4 +87,37 @@ export function isZombieSuspect(silentForMs, thresholdMs, probeOutcome) {
   if (!(thresholdMs > 0)) return false;
   if (silentForMs < thresholdMs) return false;
   return probeOutcome != null && probeOutcome.alive === true;
+}
+
+/**
+ * Hard backstop: should a run of inconclusive probes force a stream restart?
+ *
+ * Inconclusive alone proves nothing, but it must never suppress recovery
+ * forever: if the stream has been silent past the threshold AND every probe
+ * since has been inconclusive for `maxCount` consecutive attempts or for
+ * `maxMs`, restart the stream anyway. A restart is cheap (the adapter
+ * re-subscribes and dedupes any catch-up replay); an indefinitely deaf stream
+ * is not. A non-positive `maxCount` / `maxMs` disables that limb.
+ *
+ * @param {number} silentForMs        ms since the inbound iterator last yielded
+ * @param {number} thresholdMs        silence threshold (<= 0 disables the watchdog)
+ * @param {number} inconclusiveCount  consecutive inconclusive probes this silence
+ * @param {number} inconclusiveForMs  ms since the first of those probes
+ * @param {number} maxCount           consecutive-probe limit (<= 0 disables)
+ * @param {number} maxMs              duration limit (<= 0 disables)
+ * @returns {boolean}
+ */
+export function shouldForceRestartOnInconclusive(
+  silentForMs,
+  thresholdMs,
+  inconclusiveCount,
+  inconclusiveForMs,
+  maxCount,
+  maxMs
+) {
+  if (!(thresholdMs > 0)) return false;
+  if (silentForMs < thresholdMs) return false;
+  if (!(inconclusiveCount > 0)) return false;
+  if (maxCount > 0 && inconclusiveCount >= maxCount) return true;
+  return maxMs > 0 && inconclusiveForMs >= maxMs;
 }

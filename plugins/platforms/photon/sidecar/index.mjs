@@ -72,6 +72,7 @@ import {
   createProbeMessageId,
   shouldProbe,
   isZombieSuspect,
+  shouldForceRestartOnInconclusive,
 } from "./stream-staleness.mjs";
 
 const projectId = process.env.PHOTON_PROJECT_ID;
@@ -115,6 +116,17 @@ const STREAM_PROBE_COOLDOWN_MS =
 const STREAM_PROBE_TIMEOUT_MS =
   Number(process.env.PHOTON_STREAM_PROBE_TIMEOUT_MS) || 10 * 1000;
 const STREAM_WATCHDOG_TICK_MS = 30 * 1000;
+// Hard backstop: a silent stream whose probes stay inconclusive this many
+// times in a row (or for this long) is restarted anyway, so an inconclusive
+// probe can never suppress recovery forever. Non-positive disables a limb.
+const STREAM_INCONCLUSIVE_RESTART_COUNT = (() => {
+  const raw = Number(process.env.PHOTON_STREAM_INCONCLUSIVE_RESTART_COUNT);
+  return Number.isFinite(raw) ? raw : 5;
+})();
+const STREAM_INCONCLUSIVE_RESTART_MS = (() => {
+  const raw = Number(process.env.PHOTON_STREAM_INCONCLUSIVE_RESTART_MS);
+  return Number.isFinite(raw) ? raw : 30 * 60 * 1000;
+})();
 
 const streamHealth = {
   state: "starting",
@@ -132,11 +144,15 @@ const staleness = {
   lastProbeAt: 0,
   lastProbeOutcome: null, // "alive" | "inconclusive" | null
   zombieSuspected: false,
+  inconclusiveCount: 0, // consecutive inconclusive watchdog probes this silence
+  inconclusiveSince: 0,
 };
 
 function noteInboundYield() {
   staleness.lastInboundAt = Date.now();
   staleness.zombieSuspected = false;
+  staleness.inconclusiveCount = 0;
+  staleness.inconclusiveSince = 0;
 }
 
 function stalenessSnapshot(now) {
@@ -150,6 +166,7 @@ function stalenessSnapshot(now) {
         : null,
     lastProbeOutcome: staleness.lastProbeOutcome,
     zombieSuspected: staleness.zombieSuspected,
+    inconclusiveProbes: staleness.inconclusiveCount,
   };
 }
 
@@ -740,10 +757,15 @@ function inboundStreamErrorMessage(e) {
 // stream-staleness.mjs):
 //   probe proves connectivity while the stream is silent -> the stream itself
 //     is the dead part -> markStreamDegraded -> existing exit-75 restart path.
-//   probe inconclusive (rejected/hung) -> do NOTHING: the network may just be
-//     down, and in that case the iterator eventually throws and the
+//   probe inconclusive (rejected/hung) -> do nothing at first: the network may
+//     just be down, and in that case the iterator eventually throws and the
 //     re-subscribe loop recovers on its own. Never restart on silence alone —
 //     shared lines can be legitimately quiet for hours.
+//   probes inconclusive STREAM_INCONCLUSIVE_RESTART_COUNT times in a row (or
+//     for STREAM_INCONCLUSIVE_RESTART_MS) while silent -> hard backstop:
+//     markStreamDegraded anyway, so inconclusive never suppresses recovery
+//     forever (a probe the server always rejects would otherwise do exactly
+//     that).
 
 async function probeUpstream() {
   if (typeof app?.stop !== "function") {
@@ -803,8 +825,31 @@ async function zombieWatchdogTick() {
         "succeeded — half-open (zombie) gRPC stream suspected";
       console.error("photon-sidecar: " + reason);
       markStreamDegraded(reason);
+    } else if (outcome.alive) {
+      staleness.inconclusiveCount = 0;
+      staleness.inconclusiveSince = 0;
+    } else {
+      // Inconclusive: no action until the backstop (see block comment above).
+      if (staleness.inconclusiveCount === 0) staleness.inconclusiveSince = now;
+      staleness.inconclusiveCount += 1;
+      if (
+        shouldForceRestartOnInconclusive(
+          silentForMs,
+          STREAM_SILENCE_PROBE_MS,
+          staleness.inconclusiveCount,
+          Date.now() - staleness.inconclusiveSince,
+          STREAM_INCONCLUSIVE_RESTART_COUNT,
+          STREAM_INCONCLUSIVE_RESTART_MS
+        )
+      ) {
+        const reason =
+          `inbound stream silent for ${silentForMs}ms and ` +
+          `${staleness.inconclusiveCount} consecutive upstream probes ` +
+          `inconclusive (last: ${outcome.reason}) — forcing a stream restart`;
+        console.error("photon-sidecar: " + reason);
+        markStreamDegraded(reason);
+      }
     }
-    // Inconclusive: deliberately no action (see block comment above).
   } catch (e) {
     console.error(
       "photon-sidecar: zombie watchdog tick failed: " +

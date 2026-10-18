@@ -47,7 +47,7 @@ def _make_adapter(monkeypatch: pytest.MonkeyPatch) -> PhotonAdapter:
 def _run_staleness_harness(script: str) -> dict[str, Any]:
     harness = (
         "import { classifyProbeRejection, shouldProbe, isZombieSuspect, "
-        "createProbeMessageId } "
+        "createProbeMessageId, shouldForceRestartOnInconclusive } "
         f"from {json.dumps(_MODULE.as_uri())};\n"
         + script
     )
@@ -148,6 +148,45 @@ def test_zombie_requires_probe_proven_connectivity_never_silence_alone() -> None
     assert out["hoursOfSilenceInconclusive"] is False
     assert out["notSilentEnough"] is False
     assert out["disabled"] is False
+
+def test_inconclusive_probes_cannot_suppress_recovery_forever() -> None:
+    """Hard backstop: an inconclusive probe proves nothing, but a silent
+    stream whose probes stay inconclusive N times in a row (or for M ms) is
+    restarted anyway. A probe the server rejects by construction once kept a
+    deaf stream "healthy" for ~6 hours this way."""
+    out = _run_staleness_harness(
+        """
+        const MIN = 60 * 1000;
+        const T = 10 * MIN;
+        const f = shouldForceRestartOnInconclusive;
+        const results = {
+          firstInconclusive: f(T + 1, T, 1, 0, 5, 30 * MIN),
+          underCountAndTime: f(T * 2, T, 4, 8 * MIN, 5, 30 * MIN),
+          countReached: f(T * 2, T, 5, 8 * MIN, 5, 30 * MIN),
+          timeReached: f(T * 4, T, 2, 30 * MIN, 5, 30 * MIN),
+          sixHoursOfInconclusive: f(360 * MIN, T, 170, 350 * MIN, 5, 30 * MIN),
+          notSilentEnough: f(T - 1, T, 50, 60 * MIN, 5, 30 * MIN),
+          noInconclusiveProbes: f(T * 6, T, 0, 0, 5, 30 * MIN),
+          watchdogDisabled: f(T * 6, 0, 50, 60 * MIN, 5, 30 * MIN),
+          countLimbDisabled: f(T * 2, T, 50, 8 * MIN, 0, 30 * MIN),
+          bothLimbsDisabled: f(T * 6, T, 50, 60 * MIN, 0, 0),
+        };
+        process.stdout.write(JSON.stringify(results));
+        """
+    )
+    assert out["countReached"] is True
+    assert out["timeReached"] is True
+    assert out["sixHoursOfInconclusive"] is True
+    for name in (
+        "firstInconclusive",
+        "underCountAndTime",
+        "notSilentEnough",
+        "noInconclusiveProbes",
+        "watchdogDisabled",
+        "countLimbDisabled",
+        "bothLimbsDisabled",
+    ):
+        assert out[name] is False, name
 
 # -- Adapter surfacing of the new /healthz staleness fields ------------------
 

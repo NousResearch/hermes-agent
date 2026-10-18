@@ -96,10 +96,10 @@ jobs:
       - name: Update version in build.gradle
         run: |
           # Update versionCode and versionName in build.gradle
-          VERSION_CODE=${{ steps.version.outputs.version }}
-          VERSION_CODE=$(echo "$VERSION_CODE" | tr -d '.')
+          VERSION=${{ steps.version.outputs.version }}
+          VERSION_CODE=$(echo "$VERSION" | tr -d '.')
           sed -i "s/versionCode 1/versionCode $VERSION_CODE/" android/app/build.gradle
-          sed -i "s/versionName \"1.0.0\"/versionName \"${{ steps.version.outputs.version }}\"/" android/app/build.gradle
+          sed -i "s/versionName \"1.0.0\"/versionName \"$VERSION\"/" android/app/build.gradle
 
       - name: Build debug APK
         run: |
@@ -109,7 +109,8 @@ jobs:
 
       - name: Rename APK
         run: |
-          APK_NAME="Hermes-Agent-${{ steps.version.outputs.version }}-debug.apk"
+          VERSION=${{ steps.version.outputs.version }}
+          APK_NAME="Hermes-Agent-${VERSION}-debug.apk"
           cp android/app/build/outputs/apk/debug/app-debug.apk "$APK_NAME"
           echo "apk_name=$APK_NAME" >> $GITHUB_OUTPUT
 

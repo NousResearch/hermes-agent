@@ -409,8 +409,25 @@ class GatewayVoiceMixin:
         # connected) — unless streaming consumed the text (already_sent): then the runner must.
         return not (is_voice_input and not already_sent)
 
+    def _stt_config(self):
+        """The gateway config whose ``stt.*`` switches govern the voice note being handled.
+
+        ``self.config`` is the launch profile's. A routed profile's inbound media is enriched inside
+        that profile's runtime scope (the STT provider itself already resolves there), so its own
+        ``config.yaml`` must decide ``stt.enabled`` / ``stt.echo_transcripts`` too — otherwise a
+        served profile's switch is silently ignored in favour of the launch profile's.
+        """
+        from agent.secret_scope import serves_routed_profile
+
+        if not serves_routed_profile():
+            return self.config
+        from gateway.config import GatewayConfig
+        from gateway.run import _load_gateway_config
+
+        return GatewayConfig.from_dict(_load_gateway_config())
+
     def _should_echo_stt_transcripts(self) -> bool:
-        return bool(getattr(self.config, "stt_echo_transcripts", True))
+        return bool(getattr(self._stt_config(), "stt_echo_transcripts", True))
 
     async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
         """Generate TTS audio and send as a voice message before the text reply. The TTS tool

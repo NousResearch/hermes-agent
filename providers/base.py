@@ -66,6 +66,11 @@ class ProviderProfile:
     supports_health_check: bool = True  # False → doctor skips /models probe for this provider
     # False → fetch_models returns None without a network call (catalog comes from an SDK/subprocess).
     supports_model_listing: bool = True
+    # Only meaningful when auth_type == "external_process": most ACP-style agent CLIs answer
+    # request/response, so agent.turn_api_call._should_stream keeps them non-streaming; a subprocess
+    # client whose transport genuinely yields incremental content/reasoning_content chunks opts back
+    # in here. Every other transport streams unconditionally and ignores this flag.
+    supports_streaming: bool = False
 
     # ── Provider-owned auth (optional; non-api-key plugins) ──────────
     # ``auth_handler(action, args) -> bool``: ``hermes auth add|status|logout|refresh <name>`` calls it

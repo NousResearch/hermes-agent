@@ -274,6 +274,28 @@ def _is_external_process_provider(provider: str) -> bool:
     return profile is not None and getattr(profile, "auth_type", "") == "external_process"
 
 
+def _external_process_provider_streams(provider: str) -> bool:
+    """Whether an external-process provider opted back into streaming via its profile's
+    ``supports_streaming`` — most ACP-style agent CLIs answer request/response, so the default
+    stays off (same registry order as :func:`_is_external_process_provider`)."""
+    name = (provider or "").strip().lower()
+    if not name:
+        return False
+    try:
+        pconfig = _rp().PROVIDER_REGISTRY.get(name)
+        if pconfig is not None:
+            return bool(getattr(pconfig, "supports_streaming", False))
+    except Exception:
+        pass
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(name)
+    except Exception:
+        return False
+    return profile is not None and bool(getattr(profile, "supports_streaming", False))
+
+
 def _resolve_external_process_runtime(provider: str, requested_provider: str) -> dict[str, Any]:
     rp = _rp()
     creds = rp.resolve_external_process_provider_credentials(provider)

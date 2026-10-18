@@ -97,3 +97,23 @@ def test_should_stream_is_off_for_any_external_process_profile(monkeypatch):
 
     assert _should_stream(make("acme-acp")) is False
     assert _should_stream(make("acme-http")) is True
+
+
+def test_should_stream_honors_external_process_streaming_opt_in(monkeypatch):
+    """An external-process profile opts back into streaming via ``supports_streaming`` — the default
+    stays off (most ACP-style agent CLIs answer request/response), and the ``acp://`` scheme stays
+    off even for an opted-in profile (#140606)."""
+    from agent.turn_api_call import _should_stream
+    from providers.base import ProviderProfile
+
+    profiles = {
+        "acme-acp": ProviderProfile(name="acme-acp", auth_type="external_process"),
+        "acme-stream": ProviderProfile(name="acme-stream", auth_type="external_process", supports_streaming=True),
+    }
+    monkeypatch.setattr("providers.get_provider_profile", profiles.get)
+    make = lambda provider, base_url="https://proxy.example.invalid/v1": SimpleNamespace(
+        provider=provider, base_url=base_url, _has_stream_consumers=lambda: True)
+
+    assert _should_stream(make("acme-acp")) is False
+    assert _should_stream(make("acme-stream")) is True
+    assert _should_stream(make("acme-stream", "acp://acme")) is False

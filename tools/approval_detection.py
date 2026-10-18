@@ -41,6 +41,18 @@ _SECRET_VAR = r'\$\{?\w*(?:key|token|secret|passwd|password|credential)\w*\}?'
 _UPLOAD_FLAG = (r'(?<!\S)(?:(?-i:-[a-zA-Z]*[dFT])|--data(?:-binary|-raw|-urlencode|-ascii)?|--form(?:-string)?'
                 r'|--upload-file|--json|--post-(?:data|file)|--body-(?:data|file))')
 _EMOJI_RANGE = r'\U0001F000-\U0001FAFF\u2600-\u27BF'
+# Code points that take VS15/VS16 for text/emoji presentation: the two emoji blocks above plus the BMP
+# singletons with the Unicode Emoji property (© ™ ℹ, arrows, ⌚ ▶ ⬅ ⭐ 〰 ㊗ …), as in #114843. Digits,
+# ``#`` and ``*`` are deliberately absent: a selector after a letter or digit is the hiding signal.
+_EMOJI_PRESENTATION_BASES = (
+    r'\u00a9\u00ae\u203c\u2049\u2122\u2139\u2194-\u2199\u21a9\u21aa\u231a\u231b\u2328\u23cf'
+    r'\u23e9-\u23f3\u23f8-\u23fa\u24c2\u25aa\u25ab\u25b6\u25c0\u25fb-\u25fe\u2934\u2935'
+    r'\u2b05-\u2b07\u2b1b\u2b1c\u2b50\u2b55\u3030\u303d\u3297\u3299' + _EMOJI_RANGE
+)
+# Matched on the RAW command: detection variants are NFKC-folded, which turns ℹ + VS16 into ``i`` + VS16.
+_HIDDEN_VARIATION_SELECTOR_RE = re.compile(
+    rf'(?<![{_EMOJI_PRESENTATION_BASES}])[\ufe00-\ufe0f\U000e0100-\U000e01ef]')
+_INVISIBLE_UNICODE_DESCRIPTION = "invisible or bidirectional Unicode control character (possible obfuscation)"
 # Global flags before a subcommand, each with an optional value. Every flag has one parse ('-' plus
 # its possessive remainder, so '--x' and '--x=v' never split two ways) and a value cannot itself be a
 # flag, so a long run that never reaches the subcommand fails in linear time instead of holding the
@@ -345,10 +357,11 @@ DANGEROUS_PATTERNS = [
     (rf'{_SECRET_FILE}[^|;&\n]*\|[^;&|\n]*\b(?:curl|wget)\b[^;&|\n]*{_UPLOAD_FLAG}',
      "pipe a credential file into a curl/wget upload (possible exfiltration)"),
     # Invisible / bidirectional Unicode controls make the command the user approves differ from what runs.
-    # ZWJ between emoji (family/flag sequences) is ordinary text; variation selectors are left alone.
+    # ZWJ between emoji (family/flag sequences) is ordinary text; variation selectors are checked on the
+    # raw command in detect_dangerous_command.
     (rf'[\u200b\u200c\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\u180e\U000e0000-\U000e007f]'
      rf'|(?<![{_EMOJI_RANGE}\ufe0f])\u200d|\u200d(?![{_EMOJI_RANGE}])',
-     "invisible or bidirectional Unicode control character (possible obfuscation)"),
+     _INVISIBLE_UNICODE_DESCRIPTION),
     (rf'\btee\b.*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via tee"),
     (rf'>>?\s*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via redirection"),
     (rf'\btee\b.*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}', "overwrite project env/config via tee"),
@@ -1569,4 +1582,6 @@ def detect_dangerous_command(command: str) -> tuple:
         return (True, description, description)
     if _is_shell_token_spliced_gateway_lifecycle(command):
         return (True, _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION, _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION)
+    if _HIDDEN_VARIATION_SELECTOR_RE.search(command):
+        return (True, _INVISIBLE_UNICODE_DESCRIPTION, _INVISIBLE_UNICODE_DESCRIPTION)
     return (False, None, None)

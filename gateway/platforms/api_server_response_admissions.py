@@ -119,6 +119,18 @@ def _stored_owner(adapter, session_id):
     return authority.logical_owner(session_id) if authority is not None else session_id
 
 
+async def _bind_successor(adapter, session_id, run_kwargs):
+    """Bind the session a chain moved to before any response starts. A streaming request has
+    answered 200 by the time its turn admits, so the bind's retryable ``chain_moved`` refusal must
+    happen here to reach the caller as a 503. The admission's own bind then finds this binding."""
+    from gateway.session_api import bind_api_steps, run_steps_off_loop
+    from gateway.session_authorities import active_authority
+    authority = active_authority(adapter.gateway_runner)
+    if authority is not None:
+        await run_steps_off_loop(authority, bind_api_steps(authority, session_id, walked_from=run_kwargs['walked_from'],
+                                                           caller_key=run_kwargs['gateway_session_key']))
+
+
 async def prepare_context(adapter, request, body, gateway_session_key, durable_key, scope, key):
     """Validate first-time requests; exact retries use the accepted payload and result only."""
     import asyncio
@@ -180,5 +192,7 @@ async def prepare_context(adapter, request, body, gateway_session_key, durable_k
     if durable_key:
         return await _admit(adapter, durable_key, request_id, request_binding(adapter, request, durable_key),
                             run_kwargs, body.get('model', adapter._model_name)), None
+    if 'walked_from' in run_kwargs:
+        await _bind_successor(adapter, session_id, run_kwargs)
     return dict(session_id=session_id, user_message=user_message, conversation_history=history,
                 instructions=instructions, run_kwargs=run_kwargs, run_agent=adapter._run_agent), None

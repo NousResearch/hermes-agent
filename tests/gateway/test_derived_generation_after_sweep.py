@@ -186,6 +186,48 @@ async def test_a_fence_reclaimed_between_chain_lookup_and_bind_never_splits_the_
     assert owner.db.get_session(successor) is None, 'the chain split across the root and its successor'
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('idempotency_key', [None, 'streamed-race'], ids=['plain', 'idempotent'])
+async def test_a_streamed_continuation_that_races_a_reclaim_gets_a_retryable_503(
+        api, owner, served, idempotency_key, monkeypatch):
+    """The streaming Responses door answers the same race (the root's sweep marker reclaimed between
+    the chain lookup and the successor's bind) like the non-streaming one: 503 ``chain_moved`` with
+    ``Retry-After: 1`` before any SSE frame, not a 200 stream that ends in ``response.failed``."""
+    from gateway.platforms import api_server_authority_runs as runs
+    from gateway.session_api import api_generation_id
+    app = web.Application()
+    app.router.add_post('/v1/responses', api._handle_responses)
+    auth = {'Authorization': 'Bearer ' + chat._API_KEY}
+    keyed = {'Idempotency-Key': idempotency_key} if idempotency_key else {}
+    store = api._current_response_store()
+    async with TestClient(TestServer(app)) as client:
+        opened = await client.post('/v1/responses', json={'input': 'remember 42'}, headers=auth)
+        assert opened.status == 200, await opened.text()
+        first = (await opened.json())['id']
+        root = store.get(first)['session_id']
+        successor = api_generation_id(root, 1)
+        _sweep(owner, root)
+        lookup = runs.continued_session
+
+        async def reclaimed_after_lookup(*args, **kwargs):
+            found = await lookup(*args, **kwargs)
+            _past_the_horizon(owner)
+            return found
+        monkeypatch.setattr(runs, 'continued_session', reclaimed_after_lookup)
+        body = {'input': 'and then?', 'previous_response_id': first, 'stream': True}
+        raced = await client.post('/v1/responses', json=body, headers={**auth, **keyed})
+        assert raced.status == 503, await raced.text()
+        assert (await raced.json())['error']['code'] == 'chain_moved'
+        assert raced.headers.get('Retry-After') == '1'
+        assert owner.db.get_session(successor) is None, 'the successor was bound without pinning its walk'
+        monkeypatch.setattr(runs, 'continued_session', lookup)
+        again = await client.post('/v1/responses', json=body, headers={**auth, **keyed})
+        assert again.status == 200, await again.text()
+        assert 'response.completed' in await again.text()
+    assert owner.db.get_session(root) is not None, 'the retried continuation left the root'
+    assert owner.db.get_session(successor) is None, 'the chain split across the root and its successor'
+
+
 def test_keep_passed_fences_reports_a_walk_it_could_not_pin(owner):
     """``keep_passed_fences`` pins every fence a walk passed and says whether the walk still holds:
     a passed generation without a marker means the walk would now stop there."""

@@ -104,7 +104,7 @@ def encode_frame(frame):
 
 
 def validate_bootstrap(frame):
-    if set(frame) - {'attachments_v1'} != BOOTSTRAP_FIELDS or frame['version'] != 1:
+    if set(frame) - {'attachments_v1', 'approval_task_v1'} != BOOTSTRAP_FIELDS or frame['version'] != 1:
         raise ValueError('invalid_managed_worker_bootstrap')
     scope = frame['scope']
     fields = {'profile_id', 'session_id', 'execution_id', 'generation', 'pid', 'birth', 'secret', 'epoch'}
@@ -119,6 +119,13 @@ def validate_bootstrap(frame):
     from agent.turn_author import parse_turn_author
     if frame['turn_author'] is not None and (not isinstance(frame['turn_author'], dict)
                                             or parse_turn_author(frame['turn_author']) is None):
+        raise ValueError('invalid_managed_worker_bootstrap')
+    task = frame.get('approval_task_v1')
+    if task is not None and (not isinstance(task, dict)
+            or set(task) != {'text', 'identity', 'profile', 'session', 'admission', 'generation'}
+            or any(not isinstance(task[k], str) for k in ('text', 'identity', 'profile', 'session', 'admission'))
+            or not isinstance(task['generation'], int) or task['profile'] != frame['home']
+            or task['session'] != frame['route'] or task['generation'] != scope['generation']):
         raise ValueError('invalid_managed_worker_bootstrap')
     return frame
 
@@ -178,6 +185,7 @@ class WorkerControls:
         self.stopped = threading.Event()
         self.finish = threading.Event()
         self.clarifications = {}
+        self.task_checks = {}
         self.lock = threading.Lock()
         self.reader = threading.Thread(target=self.read, name='managed-controls', daemon=True)
         self.reader.start()
@@ -188,6 +196,8 @@ class WorkerControls:
             from agent.interrupt_compat import request_hard_interrupt
             request_hard_interrupt(self.agent)  # parity with the canonical Stop (SessionAuthority.interrupt)
         with self.lock:
+            for state in self.task_checks.values():
+                state['event'].set()
             for state in self.clarifications.values():
                 state['answer'] = _INTERRUPTED
                 state['event'].set()
@@ -203,6 +213,15 @@ class WorkerControls:
                 if frame == {'type': 'finish'}:
                     self.finish.set()
                     return
+                if (frame.get('type') == 'approval_task_check'
+                        and set(frame) == {'type', 'request_id', 'current'}
+                        and isinstance(frame['request_id'], str) and type(frame['current']) is bool):
+                    with self.lock:
+                        state = self.task_checks.get(frame['request_id'])
+                        if state is not None:
+                            state['current'] = frame['current']
+                            state['event'].set()
+                    continue
                 if (set(frame) != {'type', 'prompt_id', 'value'} or frame['type'] not in {'approval', 'clarify'}
                         or not isinstance(frame['prompt_id'], str) or not isinstance(frame['value'], str)
                         or len(frame['value']) > 16384):
@@ -228,6 +247,21 @@ class WorkerControls:
         fields = {'request_id', 'command', 'description', 'allow_session', 'allow_permanent', 'smart_denied', 'edit'}
         self.channel.send('approval', data={k: v for k, v in data.items() if k in fields})
         ack_gateway_approval(self.route, data['request_id'])
+
+    def task_current(self):
+        import uuid
+        request_id = uuid.uuid4().hex
+        state = {'event': threading.Event(), 'current': False}
+        with self.lock:
+            if self.stopped.is_set():
+                return False
+            self.task_checks[request_id] = state
+        try:
+            self.channel.send('approval_task_check', request_id=request_id)
+            return state['event'].wait(10) and state['current'] and not self.stopped.is_set()
+        finally:
+            with self.lock:
+                self.task_checks.pop(request_id, None)
 
     def clarify(self, questions):
         """clarify_tool's batch contract: ``callback(questions) -> {answers, outcome, notice?}``.
@@ -395,7 +429,15 @@ def execute(frame, channel):
                 frame = {**frame, 'text': content}
             before = (getattr(agent, 'session_prompt_tokens', 0) or 0,
                       getattr(agent, 'session_completion_tokens', 0) or 0)
-            result = run_worker_turns(agent, frame, history)
+            from contextlib import nullcontext
+            from tools.approval_context import approval_task_context
+            task = frame.get('approval_task_v1')
+            task_scope = (approval_task_context(
+                task['text'], identity=task['identity'], profile=task['profile'], session=task['session'],
+                task_id=task['admission'], run_id=str(task['generation']), is_current=controls.task_current)
+                if task is not None else nullcontext())
+            with task_scope:
+                result = run_worker_turns(agent, frame, history)
             result['_turn_input_tokens'] = max(0, (getattr(agent, 'session_prompt_tokens', 0) or 0) - before[0])
             result['_turn_output_tokens'] = max(0, (getattr(agent, 'session_completion_tokens', 0) or 0) - before[1])
             retire_agent(agent)

@@ -89,3 +89,20 @@ def test_pre_execution_guard_on_the_deadline_worker_sees_the_tool_threads_interr
 
     assert seen == [True], "guard on the deadline worker was blind to the tool thread's interrupt bit"
     assert is_interrupted() is False, "the tool thread's own interrupt view must not leak past the guard"
+
+
+@pytest.mark.parametrize("background", [False, True])
+def test_stop_after_reviewer_before_spawn_refuses_command(monkeypatch, stubbed_pipeline, background):
+    from tools.approval_context import approval_task_context
+
+    leases = []
+    monkeypatch.setattr(terminal_module, "_pre_exec_block", lambda *_a, **_k: None)
+    monkeypatch.setattr(terminal_module, "_run_approval_guards",
+                        lambda *_a, **_k: leases[0].revoke() or terminal_module._ApprovalVerdict())
+    monkeypatch.setattr(terminal_module, "spawn_background_process",
+                        lambda **_kwargs: stubbed_pipeline.append("background"))
+    with approval_task_context("Run command", identity="u", profile="p", session="s",
+                               is_current=lambda: True, owner=leases.append):
+        result = json.loads(terminal_module.terminal_tool("echo ok", background=background))
+    assert result["status"] == "error"
+    assert stubbed_pipeline == []

@@ -165,12 +165,17 @@ def spawn_background_process(
         mounted_host=mounted_host if mounted_host is not None else getattr(env, "host_cwd", None),
         env=env,
     )
+    from tools.approval_context import reserve_background_approval_task, release_background_approval_task
+    reservation = reserve_background_approval_task() if notify_on_complete else None
     try:
         proc_session = _spawn(
             process_registry, env=env, env_type=env_type, command=command, cwd=effective_cwd,
             effective_task_id=effective_task_id, task_id=task_id, session_key=session_key,
             effective_pty=effective_pty, persist_on_release=persist_on_release,
         )
+        # This is process-owned in-memory evidence. Checkpoint recovery deliberately
+        # omits it, so an owner restart cannot recreate a human grant from IDs.
+        proc_session.approval_task_reservation = reservation
         result_data = {"output": "Background process started", "session_id": proc_session.id,
                        "pid": proc_session.pid, "exit_code": 0, "error": None}
         if persist_on_release:
@@ -188,6 +193,9 @@ def spawn_background_process(
 
         notify_on_complete, watch_patterns = _apply_async_support(
             proc_session, result_data, notify_on_complete, watch_patterns)
+        if not notify_on_complete:
+            release_background_approval_task(reservation)
+            proc_session.approval_task_reservation = None
         watch_patterns, conflict_note = _resolve_notification_flag_conflict(
             notify_on_complete=bool(notify_on_complete), watch_patterns=watch_patterns, background=True,
         )
@@ -216,6 +224,7 @@ def spawn_background_process(
             result_data["watch_patterns"] = proc_session.watch_patterns
         return json.dumps(result_data, ensure_ascii=False)
     except Exception as e:
+        release_background_approval_task(reservation)
         return json.dumps({
             "output": "", "exit_code": -1,
             "error": _redact_terminal_error_text(f"Failed to start background process: {e}"),
@@ -251,11 +260,21 @@ def yield_to_background_handler(
 
     def _handler(proc, output_so_far: str) -> dict:
         from tools.process_registry import process_registry
-        session = process_registry.adopt_local(
-            proc, command=command, cwd=cwd, task_id=effective_task_id,
-            owner_task_id=task_id or effective_task_id, session_key=session_key,
-            output_so_far=output_so_far)
-        _stamp_routing_if_gateway(process_registry, session, session_key)
+        from tools.approval_context import reserve_background_approval_task, release_background_approval_task
+        reservation = reserve_background_approval_task()
+        try:
+            session = process_registry.adopt_local(
+                proc, command=command, cwd=cwd, task_id=effective_task_id,
+                owner_task_id=task_id or effective_task_id, session_key=session_key,
+                output_so_far=output_so_far)
+            session.approval_task_reservation = reservation
+            _stamp_routing_if_gateway(process_registry, session, session_key)
+            if not session.notify_on_complete:
+                release_background_approval_task(reservation)
+                session.approval_task_reservation = None
+        except BaseException:
+            release_background_approval_task(reservation)
+            raise
         logger.info("foreground command yielded to background as %s (pid %s)", session.id, session.pid)
         return {
             "output": output_so_far, "returncode": None, "yielded_session_id": session.id, "pid": session.pid,

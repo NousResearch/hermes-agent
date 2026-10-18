@@ -538,6 +538,13 @@ def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None
     from agent.notification_presentation import diagnostic_process_event
     if diagnostic_process_event(evt):
         kwargs.setdefault("display_metadata", {})["notification_category"] = "diagnostic"
+    if evt_type == 'async_delegation':
+        from gateway.session_approval_completion import completion_reservation_for_event
+        from hermes_constants import get_process_hermes_home
+        profile = str(session.get('profile_home') or get_process_hermes_home())
+        kwargs['approval_reservations'] = (
+            completion_reservation_for_event(evt, str(session.get('session_key') or ''), profile),)
+        kwargs['approval_completion_events'] = (evt,)
     try:
         if not _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, text,
                              "notification poller dispatch failed", **kwargs):
@@ -582,6 +589,8 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
             logger.debug("Dropping unowned %s notification during shutdown drain (origin=%r key=%r)", evt_type, origin, key)
         return True
     if evt_type == "completion" and registry.is_completion_consumed(evt.get("session_id", "")):
+        from gateway.session_approval_completion import release_completion_event_reservation
+        release_completion_event_reservation(evt)
         return True
     text = fmt(evt)
     if not text:
@@ -601,6 +610,9 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
     if evt_type != "async_delegation" and _background_notifications_off(session):
         # The user opted out of process-driven agent wakes: the status row above is the whole
         # delivery. Subagent results are not process notifications and still land.
+        if evt_type == 'completion':
+            from gateway.session_approval_completion import release_completion_event_reservation
+            release_completion_event_reservation(evt)
         return True
     if evt_type == "completion" and completions is not None:
         completions.append((evt, text))
@@ -644,9 +656,16 @@ def _notif_dispatch_completions(sid, session, notifications, registry, deferred)
         _notif_release_turn(session)
     try:
         if text is not None:
+            from gateway.session_approval_completion import completion_reservation_for_event
+            from hermes_constants import get_process_hermes_home
+            profile = str(session.get('profile_home') or get_process_hermes_home())
+            reservations = tuple(completion_reservation_for_event(event,
+                str(session.get('session_key') or ''), profile) for event, _event_text, _claim in claimed)
             if not _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, text,
                                  "completion batch dispatch failed", display_kind=PROCESS_COMPLETE_DISPLAY_KIND,
-                                 display_metadata={"display_text": batch.display_text(registry)}):
+                                 display_metadata={"display_text": batch.display_text(registry)},
+                                 approval_reservations=reservations,
+                                 approval_completion_events=tuple(event for event, _text, _claim in claimed)):
                 for event, _text, claim in claimed:
                     _notif_defer_event(event, claim,
                         deferred.append if deferred is not None else registry.completion_queue.put)

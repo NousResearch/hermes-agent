@@ -1095,6 +1095,10 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         verdict, claim.owner_session_id, claim.proven_session_id = await self._classify_completion_owner(
             parent_session_id, str(evt.get("session_key") or ""))
         if verdict == "terminal":
+            from gateway.session_approval_completion import release_completion_reservation
+            identity = self._completion_delivery_identity(evt)
+            if identity is not None:
+                release_completion_reservation(identity)
             if evt_type == "async_delegation":
                 logger.warning(
                     "Async delegation %s targets permanently-gone session %s; "

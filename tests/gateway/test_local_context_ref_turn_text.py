@@ -160,7 +160,8 @@ def _managed(tmp_path, monkeypatch, text):
                            controls=SimpleNamespace(snapshot=lambda *a: None))
     authority = SimpleNamespace(profile_id=str(tmp_path), sessions={'sid': live}, runner=None, pending_results={},
                                 waiters={}, adopt_agent=lambda *a: None, _publish_pending=lambda ref: None)
-    row = {'admission_id': 'adm', 'generation': 1, 'principal_id': 'u', 'payload': {'text': text}}
+    row = {'request_id': 'typed', 'admission_id': 'adm', 'generation': 1, 'principal_id': 'u',
+           'payload': {'text': text}}
     authority.executing = {'sid': 1}
     run = managed.execute_managed(authority, SimpleNamespace(session_id='sid'), row, policy)
     return run, authority, sent, spawned

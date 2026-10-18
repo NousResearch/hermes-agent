@@ -35,7 +35,7 @@ def test_bypass_policy_routes_to_managed_worker_and_bootstrap_carries_flags(tmp_
     # A bypass launch never depends on the profile's gateway.managed_workers opt-in.
     assert 'gateway' not in safe.config() or safe.config()['gateway'].get('managed_workers') is not True
     monkeypatch.setattr('gateway.session_policy.launch_key', lambda authority, policy: None)
-    row = {'payload': {'text': 'SAFE_PROBE'}}
+    row = {'request_id': 'local-automation', 'payload': {'text': 'SAFE_PROBE', 'local_automation_v1': {}}}
     scope = {'profile_id': str(tmp_path), 'session_id': 'sid', 'execution_id': 'x', 'generation': 1,
              'pid': os.getpid(), 'birth': 0, 'secret': 's', 'epoch': 1}
     frame = smw._bootstrap(authority, ref, row, safe, scope)

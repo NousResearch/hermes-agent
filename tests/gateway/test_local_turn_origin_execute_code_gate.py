@@ -65,11 +65,12 @@ async def test_only_the_viewers_own_turn_skips_the_whole_script_gate(tmp_path, m
                 A._gateway_queues.pop(live.route, None)
                 A._pending.pop(live.route, None)
 
-    async def answer(event):
-        gates[event.text] = await asyncio.to_thread(gate_in_turn_thread, authority.sessions[ref.session_id])
-        return "ok"
+    async def answer(*, message, **_kwargs):
+        gates[message] = await asyncio.to_thread(gate_in_turn_thread, authority.sessions[ref.session_id])
+        return {"final_response": "ok", "messages": []}
 
-    monkeypatch.setattr(runner, "_handle_message", answer)
+    # Keep the real handler, including its live run-generation fence.
+    monkeypatch.setattr(runner, "_run_agent", answer)
     try:
         viewer = Principal("test-owner", "default", frozenset(
             {"session:create", "session:submit", "session:read", "session:approve"}), "viewer")

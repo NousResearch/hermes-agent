@@ -680,6 +680,11 @@ class SessionAuthority:
         if handle.execution_generation != generation:
             raise RuntimeStoreError('stale_generation')
         live, agent = self.sessions[ref.session_id], None
+        # A later admission can finish while an earlier detached child is still
+        # running. Stop revokes every task owned by this live conversation.
+        with live.event_stream.lock:
+            for lease in list(getattr(live, 'approval_task_leases', ())):
+                lease.revoke()
         if handle.execution_state == 'running':
             # Latches are written under the lock adopt_agent takes on the executor thread, BEFORE the
             # agent is called: an adoption racing the call consumes them. The agent is called outside it.

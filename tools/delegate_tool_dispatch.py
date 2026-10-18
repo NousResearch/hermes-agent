@@ -388,18 +388,33 @@ def _units_of(batch: _Batch) -> list[_Batch]:
 def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str], routing: dict) -> dict:
     """Hand ONE unit to the async registry; the runner joins on that unit's children only."""
     from tools.async_delegation import dispatch_async_delegation_batch
+    from tools.approval_context import (background_approval_task, release_background_approval_task,
+                                        reserve_background_approval_task, revoke_background_approval_task,
+                                        approval_task_revoked)
+    if approval_task_revoked():
+        return {"status": "rejected", "error": "The originating approval task was stopped or superseded."}
     child_agents = [c for (_, _, c) in unit.children]
+    reservation = reserve_background_approval_task()
+    completion_reservation = reserve_background_approval_task()
 
     def _interrupt():
+        revoke_background_approval_task(reservation)
         for c in child_agents:
             _signal_child_stop(c, "Async delegation cancelled")
 
-    return dispatch_async_delegation_batch(
+    def run_unit():
+        with background_approval_task(reservation, unit_id or "background-unit"):
+            return _execute_and_aggregate(unit, honor_parent_interrupt=False)
+
+    try:
+        result = dispatch_async_delegation_batch(
         # Call-wide goals: completion formatting indexes them by task_index.
         goals=[t["goal"] for t in unit.task_list], context=unit.context,
         toolsets=None,  # metadata for the completion block only; subagents inherit the parent's toolsets
         role=unit.top_role, model=unit.creds["model"],
-        runner=lambda: _execute_and_aggregate(unit, honor_parent_interrupt=False),
+        runner=run_unit,
+        approval_reservation=completion_reservation,
+        on_unstarted=lambda: release_background_approval_task(reservation),
         interrupt_fn=_interrupt, delegation_id=unit_id, slot_key=slot_key,
         task_indexes=[i for (i, _, _) in unit.children] if len(unit.children) < len(unit.task_list) else None,
         # Persist locators before starting workers; live_paths omits failed writers and can be compressed.
@@ -408,6 +423,14 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
                           and unit.live_writers[i].path is not None},
         progress_fn=lambda: _batch_progress_token(child_agents), **routing,
     )
+    except BaseException:
+        release_background_approval_task(reservation)
+        release_background_approval_task(completion_reservation)
+        raise
+    if result.get("status") != "dispatched":
+        release_background_approval_task(reservation)
+        release_background_approval_task(completion_reservation)
+    return result
 
 def _restore_parent_cancellation(unit: _Batch) -> None:
     """Rejected children stay owned by the parent: re-attach them (``_attach_child`` replays a stop that

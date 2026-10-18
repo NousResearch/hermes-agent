@@ -23,12 +23,12 @@ def test_bootstrap_frame_carries_the_admitted_author(tmp_path, monkeypatch):
     scope = {'profile_id': str(tmp_path), 'session_id': 'sid', 'execution_id': 'x', 'generation': 1,
              'pid': os.getpid(), 'birth': 0, 'secret': 's', 'epoch': 1}
     author = {'id': 'bot-7', 'name': 'Seven', 'is_bot': True}
-    row = {'payload': {'text': 'hi', 'local_automation_v1': {'turn_author': author}}}
+    row = {'request_id': 'local-automation', 'payload': {'text': 'hi', 'local_automation_v1': {'turn_author': author}}}
     frame = smw._bootstrap(authority, ref, row, _policy(tmp_path), scope)
     assert frame['turn_author'] == author
     wire = json.loads(json.dumps(frame))
     assert validate_bootstrap(wire) is wire
-    plain = smw._bootstrap(authority, ref, {'payload': {'text': 'hi'}}, _policy(tmp_path), scope)
+    plain = smw._bootstrap(authority, ref, {'request_id': 'local-automation', 'payload': {'text': 'hi', 'local_automation_v1': {}}}, _policy(tmp_path), scope)
     assert plain['turn_author'] is None
     assert validate_bootstrap(json.loads(json.dumps(plain)))['turn_author'] is None
     for bad in ('bot-7', {}, {'is_bot': True}):

@@ -76,13 +76,26 @@ def _bootstrap(authority, ref, row, policy, scope, text=None):
     config = _worker_config(authority, policy)
     hydrated = replace(policy, config_json=json.dumps(config), request_json=json.dumps(request),
                        terminal_json=json.dumps(terminal), credential_ref=None, config_secret_ref=None)
+    approval_origin = _managed_approval_origin(authority, ref, row)
     return {'version': 1, 'home': authority.profile_id, 'scope': scope,
             'policy': asdict(hydrated), 'api_key': route_launch_key(authority, policy, config),
             'text': row['payload']['text'] if text is None else text, 'route': live.route,
             **({'attachments_v1': row['payload']['attachments_v1']} if 'attachments_v1' in row['payload'] else {}),
             'user_id': live.source.user_id, 'chat_id': live.source.chat_id,
             'turn_author': row_turn_author(policy, row),
-            'safe_mode': policy.safe_mode, 'ignore_user_config': policy.ignore_user_config}
+            'safe_mode': policy.safe_mode, 'ignore_user_config': policy.ignore_user_config,
+            **({'approval_task_v1': approval_origin} if approval_origin else {})}
+
+
+def _managed_approval_origin(authority, ref, row):
+    """Only the owner's admitted local viewer row can supply worker request evidence."""
+    from gateway.session_operator import check_local_input, is_viewer_input
+    if not is_viewer_input(row) or not isinstance(row['payload'].get('text'), str):
+        return None
+    check_local_input(authority, ref, row)
+    return {'text': row['payload']['text'], 'identity': row['principal_id'],
+            'profile': str(authority.profile_id), 'session': authority.sessions[ref.session_id].route,
+            'admission': row['admission_id'], 'generation': row['generation']}
 
 
 def _worker_config(authority, policy):
@@ -353,6 +366,26 @@ def _prompt_frame(authority, ref, row, worker, frame):
     live = authority.sessions[ref.session_id]
     controls = live.controls
     kind = frame.get('type')
+    if kind == 'approval_task_check' and set(frame) == {'type', 'request_id'}:
+        request_id = frame['request_id']
+        if not isinstance(request_id, str) or len(request_id) != 32:
+            raise RuntimeStoreError('invalid_worker_frame')
+        current = False
+        if not worker.stop.is_set() and _managed_approval_origin(authority, ref, row) is not None:
+            from hermes_state_runtime import get_session_admission
+            committed = get_session_admission(authority.db, admission_id=row['admission_id'])
+            try:
+                authority.check_approval_generation(ref.session_id, row['generation'])
+                current = (authority.executing.get(ref.session_id) == row['generation']
+                           and committed is not None and committed['status'] == 'started'
+                           and committed['owner_epoch'] == authority.epoch
+                           and committed['generation'] == row['generation']
+                           and committed['target_session_id'] == ref.session_id
+                           and committed['principal_id'] == row['principal_id'])
+            except RuntimeStoreError:
+                current = False
+        worker.control({'type': 'approval_task_check', 'request_id': request_id, 'current': current})
+        return True
     if kind == 'prompt_settled' and set(frame) == {'type', 'prompt_id'}:
         prompt_id = frame['prompt_id']
         controls.remote_responders.pop(prompt_id, None)

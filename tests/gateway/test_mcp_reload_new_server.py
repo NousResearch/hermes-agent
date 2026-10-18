@@ -50,7 +50,7 @@ def _worker_frame(authority, sid, monkeypatch):
     policy = policy_for_source(authority.runner, authority.sessions[sid].source)
     scope = {'profile_id': authority.profile_id, 'session_id': sid, 'execution_id': 'x', 'generation': 1,
              'pid': os.getpid(), 'birth': 0, 'secret': 's', 'epoch': 1}
-    return smw._bootstrap(authority, SessionRef(authority.profile_id, sid), {'payload': {'text': 'hi'}}, policy, scope)
+    return smw._bootstrap(authority, SessionRef(authority.profile_id, sid), {'request_id': 'local-automation', 'payload': {'text': 'hi', 'local_automation_v1': {}}}, policy, scope)
 
 
 def _worker_servers(frame, monkeypatch):

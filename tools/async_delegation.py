@@ -831,8 +831,27 @@ def _prune_completed_locked() -> None:
     ``_finalize``'s missing-record path and silently drop a real result."""
     completed = [(rid, r) for rid, r in _records.items() if r.get("status") not in _LIVE_STATES]
     completed.sort(key=lambda kv: kv[1].get("completed_at") or kv[1].get("dispatched_at") or 0)
-    for rid, _ in completed[: max(0, len(completed) - _MAX_RETAINED_COMPLETED)]:
+    for rid, record in completed[: max(0, len(completed) - _MAX_RETAINED_COMPLETED)]:
+        from tools.approval_context import release_background_approval_task
+        release_background_approval_task(record.get('_approval_reservation'))
         _records.pop(rid, None)
+
+
+def approval_reservation_for_completion(delegation_id: str):
+    """Only a live in-process producer record can lend its admitted task to delivery."""
+    with _records_lock:
+        record = _records.get(delegation_id)
+        return ((record.get('session_key'), record.get('_approval_reservation'))
+                if record is not None and record.get('completed_at') is not None
+                and record.get('status') not in _ACTIVE_STATES else None)
+
+
+def release_completion_approval_reservation(delegation_id: str) -> None:
+    from tools.approval_context import release_background_approval_task
+    with _records_lock:
+        record = _records.get(delegation_id)
+        reservation = record.pop('_approval_reservation', None) if record is not None else None
+    release_background_approval_task(reservation)
 
 
 def _current_origin_session_id() -> str:
@@ -881,7 +900,8 @@ def _dispatch_admitted(
     origin_session_id: str, interrupt_fn: Optional[Callable[[], None]], max_async_children: int,
     progress_fn: Optional[Callable[[], tuple]], capacity_error: str, slot_key: Optional[str] = None,
     task_indexes: Optional[list[int]] = None,
-    task_transcripts: Optional[dict[str, str]] = None,
+    task_transcripts: Optional[dict[str, str]] = None, approval_reservation=None,
+    on_unstarted: Optional[Callable[[], None]] = None,
 ) -> dict[str, Any]:
     """Shared dispatch core for single (``goals is None``) and batch units. Capacity check +
     record insert happen under ONE lock hold so concurrent dispatches can't both pass the check
@@ -911,6 +931,7 @@ def _dispatch_admitted(
         # The one stale-monitor thread serves every profile and starts with an empty Context;
         # a forced finalization runs under the dispatcher's so it settles the same state.db.
         "_context": contextvars.copy_context(),
+        "_approval_reservation": approval_reservation,
         # Stale-monitor bookkeeping (see _stale_monitor_loop).
         "_progress_token": None, "_progress_ts": dispatched_at, "_interrupted_at": None}
     with _records_lock:
@@ -958,6 +979,23 @@ def _dispatch_admitted(
         retirement.release()
         if future.cancelled():  # the worker never ran: its reservation must not stay startable
             discard_detached_resource(resource)
+            if on_unstarted is not None:
+                on_unstarted()
+            from tools.approval_context import release_background_approval_task
+            release_background_approval_task(approval_reservation)
+            with _records_lock:
+                record = _records.get(delegation_id)
+                unscheduled = record is not None and not record.get('_started') and record.get('status') in _ACTIVE_STATES
+                if unscheduled:
+                    _records.pop(delegation_id, None)
+            if unscheduled:
+                def remove_dispatch():
+                    if remote := worker_ledger():
+                        remote.unscheduled(delegation_id)
+                    else:
+                        with _DB_LOCK, _transaction() as conn:
+                            conn.execute('DELETE FROM async_delegations WHERE delegation_id=?', (delegation_id,))
+                record['_context'].copy().run(remove_dispatch)
 
     # The outer dispatch reservation prevents a freeze during this handoff. Retain a worker
     # reservation too: the stall monitor may finalize its registry record before it really exits.
@@ -968,6 +1006,10 @@ def _dispatch_admitted(
     except Exception as exc:  # pool submit failure is rare
         retirement.release()
         discard_detached_resource(resource)
+        if on_unstarted is not None:
+            on_unstarted()
+        from tools.approval_context import release_background_approval_task
+        release_background_approval_task(approval_reservation)
         with _records_lock:
             _records.pop(delegation_id, None)
         if remote := worker_ledger():
@@ -1030,7 +1072,8 @@ def dispatch_async_delegation_batch(
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN, delegation_id: Optional[str] = None,
     progress_fn: Optional[Callable[[], tuple]] = None, slot_key: Optional[str] = None,
     task_indexes: Optional[list[int]] = None,
-    task_transcripts: Optional[dict[str, str]] = None,
+    task_transcripts: Optional[dict[str, str]] = None, approval_reservation=None,
+    on_unstarted: Optional[Callable[[], None]] = None,
 ) -> dict[str, Any]:
     """Dispatch a fan-out unit (a whole batch, or one ``group`` of a delegate_task call) as ONE
     background unit: ``runner`` runs its tasks and returns the combined ``{"results": [...],
@@ -1049,6 +1092,8 @@ def dispatch_async_delegation_batch(
         origin_ui_session_id=origin_ui_session_id, origin_session_id=origin_session_id,
         interrupt_fn=interrupt_fn, max_async_children=max_async_children, progress_fn=progress_fn, slot_key=slot_key,
         task_indexes=task_indexes, task_transcripts=task_transcripts,
+        approval_reservation=approval_reservation,
+        on_unstarted=on_unstarted,
         capacity_error=(
             f"Async delegation capacity reached ({max_async_children} running). Wait for one to finish "
             "(its result will re-enter the chat), or raise delegation.max_concurrent_children in "

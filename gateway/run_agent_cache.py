@@ -508,6 +508,15 @@ class GatewayAgentCacheMixin:
 
         Settles a pending one-shot model override first: the displaced turn's finalizer is
         generation-guarded and would otherwise leave ``/moa`` / ``/model --once`` in force."""
+        # Stop and conversation boundaries invalidate detached approval ancestry
+        # even when the originating admission has already completed.
+        authority = getattr(self, 'session_authority', None)
+        if authority is not None:
+            for live in list(authority.sessions.values()):
+                if live.route == session_key:
+                    with live.event_stream.lock:
+                        for lease in list(getattr(live, 'approval_task_leases', ())):
+                            lease.revoke()
         self._restore_pending_one_turn_model_override(session_key)
         generation = self._begin_session_run_generation(session_key)
         if reason:

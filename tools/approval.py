@@ -773,7 +773,13 @@ def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: st
     counts toward the denial breaker even when an owner may override it. ESCALATE follows the
     normal, potentially persistent manual behavior.
     """
+    if approval_context.approval_task_revoked():
+        return _denied("The originating task was stopped or completed.", pattern_key=pattern_key,
+                       description=description, outcome="stale_task", noun=spec.noun), False
     verdict = _smart_verdict(command, description, pattern_key, pattern_keys, session_key)
+    if approval_context.approval_task_revoked():
+        return _denied("The originating task was stopped or completed.", pattern_key=pattern_key,
+                       description=description, outcome="stale_task", noun=spec.noun), False
     if verdict == "approve":
         _reset_denials(session_key)
         logger.debug(spec.smart_log.format(command=command[:60], description=description, session_key=session_key))
@@ -983,6 +989,9 @@ def _run_approval_gate(
     Unattended deny text is ``ctx.block_message(subject, noun, advice)`` unless the caller passes
     an explicit ``*_deny_message`` (the file-tool write gates word their own).
     """
+    if approval_context.approval_task_revoked():
+        return _denied("The originating task was stopped or completed.", pattern_key=pattern_key,
+                       description=description, outcome="stale_task", noun=noun)
     # Hardline blocks are the caller's job BEFORE this gate, so yolo here only skips the recoverable approval layer.
     # ``approvals.mode: off`` is the third bypass source (the Desktop "Approvals: off" toggle writes it); the shell
     # guards honour it, so every action routed through this gate (computer_use, plugin rules, SSH-config writes,
@@ -1098,6 +1107,9 @@ def check_dangerous_command(command: str, env_type: str,
     """Detect a dangerous command and handle approval (pattern layer only). ``has_host_access``:
     a Docker sandbox that bind-mounts host paths must not skip approval.
     Returns ``{"approved": True/False, "message": str or None, ...}``."""
+    if approval_context.approval_task_revoked():
+        return _denied("The originating task was stopped or completed.", pattern_key="stale_task",
+                       description="stale task", outcome="stale_task")
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
         return _user_deny_block(command) or _approved()
     blocked = _floor_block(command)
@@ -1154,6 +1166,9 @@ def check_all_command_guards(command: str, env_type: str,
     """Run all pre-exec security checks and return a single approval decision. Plugins that
     want to veto or escalate a command do it from ``pre_tool_call``.
     ``has_host_access``: a Docker sandbox with bind-mounted host paths takes the normal flow."""
+    if approval_context.approval_task_revoked():
+        return _denied("The originating task was stopped or completed.", pattern_key="stale_task",
+                       description="stale task", outcome="stale_task")
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
         return _user_deny_block(command) or _approved()
 
@@ -1230,6 +1245,9 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     """
     pattern_key = "execute_code"
     description = _EXECUTE_CODE_DESCRIPTION
+    if approval_context.approval_task_revoked():
+        return _denied("The originating task was stopped or completed.", pattern_key=pattern_key,
+                       description=description, outcome="stale_task", noun="code")
 
     # Isolated backends already sandbox the child. vercel_sandbox has no host-bind concept so it stays always-skipped.
     if env_type == "vercel_sandbox":

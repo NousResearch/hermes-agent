@@ -21,7 +21,8 @@ def assignment(tmp_path, monkeypatch, *, finite=True, unattended=False, yolo=Fal
     live = SimpleNamespace(source=SimpleNamespace(user_id='u', chat_id='c'), route='managed-contract')
     authority = SimpleNamespace(sessions={'sid': live}, runner=None, profile_id=str(tmp_path))
     ref = SimpleNamespace(session_id='sid')
-    row = {'payload': {'text': 'hello', 'finite': finite, 'unattended': unattended}}
+    row = {'request_id': 'hosted:fixture', 'admission_id': 'adm', 'generation': 1, 'principal_id': 'u',
+           'payload': {'text': 'hello', 'finite': finite, 'unattended': unattended}}
     scope = {'profile_id': str(tmp_path), 'session_id': 'sid', 'execution_id': 'x', 'generation': 1,
              'pid': os.getpid(), 'birth': 0, 'secret': 's', 'epoch': 1}
     return _bootstrap(authority, ref, row, policy, scope), (authority, ref, row, policy, scope)
@@ -116,7 +117,7 @@ def test_committed_surface_crosses_the_bootstrap_validated_and_one_turn_only(tmp
     surface = {'surface': 'voice-live', 'voice_context': 'User: UNIQUE_PRIOR_CONTEXT', 'voice_turn': True}
     from gateway.session_managed_worker import _bootstrap
     voiced = validate_bootstrap(json.loads(json.dumps(_bootstrap(
-        authority, ref, {'payload': {**row['payload'], 'surface_v1': surface}}, policy, scope))))
+        authority, ref, {**row, 'payload': {**row['payload'], 'surface_v1': surface}}, policy, scope))))
     seen = []
     agent = SimpleNamespace(valid_tool_names=set(), run_conversation=lambda text, **kw: seen.append(
         (agent._voice_turn_pending, agent._gateway_turn_context_notes)) or {'final_response': 'ok'})

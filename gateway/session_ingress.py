@@ -241,6 +241,7 @@ async def execute_admission(authority, ref, row):
     from gateway.session_api_turn import api_execution, prepare_api_execution
     from gateway.session_results import execution_result
     is_api = live.source.platform == Platform.API_SERVER
+    task_scope = _approval_task_scope(authority, ref, row, live, event, is_api=is_api)
     author = event.metadata.get('turn_author')
     author_token = admission_author.set(author if author is not None else row_turn_author(local_policy, row))
     from gateway.session_operator import is_viewer_input
@@ -253,7 +254,7 @@ async def execute_admission(authority, ref, row):
     event._turn_marker_handoff = True
     handed = False
     try:
-        with await _execution_scope(authority, home):
+        with await _execution_scope(authority, home), task_scope:
             if is_api:
                 # Committed media resolves under the owning profile's home, like admission did.
                 prepared = prepare_api_execution(authority, ref, row['payload'])
@@ -306,6 +307,75 @@ async def execute_admission(authority, ref, row):
         api_execution.reset(api_token)
         admission_author.reset(author_token)
         viewer_turn.reset(viewer_token)
+
+
+def _approval_task_scope(authority, ref, row, live, event, *, is_api):
+    """Bind consent evidence to this exact authenticated admission and live owner."""
+    from contextlib import nullcontext
+    if event.internal:
+        if is_api:
+            return nullcontext()
+        from gateway.session_approval_completion import completion_task_scope
+        return completion_task_scope(authority, row, live)
+    if (is_api or not isinstance(event.text, str)
+            or not event.text.strip() or not isinstance(row.get('generation'), int)):
+        return nullcontext()
+    payload = row.get('payload') or {}
+    from gateway.session_operator import is_viewer_input, check_local_input
+    native = isinstance(payload.get('native_text_v1'), dict)
+    local = not native and is_viewer_input(row)
+    if not (native or local) or not getattr(event.source, 'user_id', None):
+        return nullcontext()
+    if local:
+        # The server-stamped envelope and live source must name the committed principal.
+        check_local_input(authority, ref, row)
+    else:
+        import json
+        source = event.source
+        principal = json.dumps([source.profile, source.platform.value, source.chat_id,
+                                source.thread_id, source.user_id], separators=(',', ':'))
+        if row['principal_id'] != 'messaging:' + principal:
+            return nullcontext()
+    from tools.approval_context import approval_task_context
+    from hermes_state_runtime import get_session_admission
+
+    def is_current():
+        if authority.sessions.get(ref.session_id) is not live:
+            return False
+        committed = get_session_admission(authority.db, admission_id=row['admission_id'])
+        if (committed is None or committed['owner_epoch'] != authority.epoch
+                or committed['generation'] != row['generation']
+                or committed['target_session_id'] != ref.session_id):
+            return False
+        if committed['status'] == 'started':
+            if authority.executing.get(ref.session_id) != row['generation']:
+                return False
+            run_generation = getattr(event, '_approval_run_generation', None)
+            return (run_generation is not None
+                    and authority.runner._is_session_run_current(live.route, run_generation))
+        # Detached children may finish after the original turn has settled. Their
+        # reservation is held by the lease. Recheck the live route as well: a
+        # completed historical row alone cannot authorize a replacement session.
+        if committed['status'] != 'terminal' or committed['outcome'] != 'completed':
+            return False
+        entry = authority.runner.session_store.lookup_by_session_key(live.route)
+        return (entry is not None and not entry.suspended
+                and (entry.session_id == ref.session_id
+                     or authority.db.get_compression_tip(ref.session_id) == entry.session_id))
+
+    def own(lease):
+        from weakref import WeakSet
+        with live.event_stream.lock:
+            leases = getattr(live, 'approval_task_leases', None)
+            if leases is None:
+                leases = live.approval_task_leases = WeakSet()
+            leases.add(lease)
+
+    return approval_task_context(
+        event.text, identity=row['principal_id'],
+        profile=str(authority.profile_id), session=str(live.route),
+        task_id=row['admission_id'], run_id=str(row['generation']), is_current=is_current, owner=own,
+    )
 
 
 async def _execution_scope(authority, home):

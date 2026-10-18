@@ -657,8 +657,30 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
     return error
 
 
+def _approval_origin_for_direct_submit(session, text, raw_text, *, internal_hosted_submit, raw_author,
+                                       display_kind, turn_isolation, transport=None, queued=False):
+    """Return the server-stamped identity of this committed direct RPC, if proven."""
+    if (internal_hosted_submit or raw_author is not None or display_kind is not None
+            or session.get("source") not in {"tui", "desktop", "cli", "acp"}
+            or not isinstance(text, str) or not text.strip() or raw_text != text or turn_isolation):
+        return None
+    submitting_transport = current_transport() if transport is None else transport
+    transport_owner = _server_verified_transport_owner(submitting_transport)
+    if transport_owner is not None and transport_owner == session.get("transport_owner"):
+        requester = f"{transport_owner[0]}:{transport_owner[1]}"
+    elif submitting_transport is _stdio_transport:
+        requester = "local:stdio"
+    else:
+        return None
+    import uuid
+    return (requester, uuid.uuid4().hex,
+            None if queued else session.get("inflight_turn"), raw_text,
+            int(session.get("_queued_prompt_generation", 0)) if queued else None)
+
+
 def _run_after_agent_ready(
-    rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author=None
+    rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author=None,
+    approval_origin=None,
 ):
     """Turn thread body: patient wait for a deferred build (a slow build must not eat the
     accepted in-flight message), then run."""
@@ -689,7 +711,8 @@ def _run_after_agent_ready(
             return
     _run_prompt_submit(
         rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata,
-        terminal_callback=hosted_terminal_callback, turn_author=turn_author)
+        terminal_callback=hosted_terminal_callback, turn_author=turn_author,
+        approval_origin=approval_origin)
 
 
 _TRUNCATION_PARAMS = (
@@ -847,7 +870,10 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 4009, "session busy")
         busy_response = _handle_busy_submit(
             rid, sid, session, text, busy_transport, queued=bool(params.get("queued")), turn_author=turn_author,
-            display_kind=display_kind)
+            display_kind=display_kind, approval_origin=_approval_origin_for_direct_submit(
+                session, text, raw_text, internal_hosted_submit=internal_hosted_submit, raw_author=raw_author,
+                display_kind=display_kind, turn_isolation=turn_isolation, transport=t or busy_transport,
+                queued=True))
         if busy_response is not None:
             return busy_response
     requested_rebind_ids = _requested_rebind_ids(params.get("rebind_survivor_row_ids"))
@@ -855,6 +881,9 @@ def _(rid, params: dict) -> dict:
         rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind)
     if err is not None:
         return err
+    approval_origin = _approval_origin_for_direct_submit(
+        session, text, raw_text, internal_hosted_submit=internal_hosted_submit, raw_author=raw_author,
+        display_kind=display_kind, turn_isolation=turn_isolation)
     if turn_isolation:
         if turn_author:
             logger.debug("isolated compute turns carry no author yet; the turn from %s runs unattributed",
@@ -894,7 +923,8 @@ def _(rid, params: dict) -> dict:
         _start_agent_build(sid, session)
     run_thread = threading.Thread(
         target=lambda: _run_after_agent_ready(
-            rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author),
+            rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author,
+            approval_origin),
         daemon=True)
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     session["_run_thread"] = run_thread

@@ -58,4 +58,6 @@ async def note_if_unviewed(authority, ref, row):
     if refresh is not None:  # the owner's own row: a cached agent stays, as after a turn's writes
         await refresh(live.route, target)
     authority.pending_results[row['admission_id']] = {'result': {'final_response': '', 'messages': []}, 'usage': {}}
+    from gateway.session_approval_completion import release_admitted_completion
+    release_admitted_completion(row)
     return ''

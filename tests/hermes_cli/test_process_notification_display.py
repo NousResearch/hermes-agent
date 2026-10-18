@@ -14,7 +14,8 @@ from tui_gateway import server
 def _registry(events):
     return SimpleNamespace(
         drain_notifications=lambda **kw: [(e, format_process_notification(e)) for e in events],
-        completion_queue=queue.Queue(), is_completion_consumed=lambda sid: False)
+        completion_queue=queue.Queue(), is_completion_consumed=lambda sid: False,
+        get=lambda sid: None)  # presentation fixture has no live producer reservation
 
 def _event(sid, exit_code, command="cd /tmp && bash long-build.sh"):
     return {"type": "completion", "session_id": sid, "session_key": "display-session", "command": command,
@@ -128,3 +129,5 @@ def test_process_completion_display_keeps_payload_separate_across_surfaces(monke
     assert text == payload
     assert kwargs["display_kind"] == PROCESS_COMPLETE_DISPLAY_KIND
     assert kwargs["display_metadata"] == {"display_text": expected}
+    assert kwargs["approval_reservations"] == (None,)
+    assert kwargs["approval_completion_events"] == tuple(events)

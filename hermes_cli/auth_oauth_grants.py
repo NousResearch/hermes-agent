@@ -72,7 +72,7 @@ def merge_snapshot_auth_preserving_live_single_use_grants(
     lineage. Historical single-use refresh material with no live counterpart is dropped because
     there is no local evidence that it is still redeemable. Current live grants always survive.
     """
-    from hermes_cli.auth import _credential_token_pair, _merge_pool_row_generation
+    from hermes_cli.auth_pool_rows import _credential_token_pair, _merge_pool_row_generation
 
     restored = copy.deepcopy(snapshot_store)
     snapshot_pool = restored.get("credential_pool")
@@ -456,7 +456,7 @@ def _find_root_counterpart(
 
 def _adopt_oauth_material(target: dict[str, Any], winner: dict[str, Any]) -> dict[str, Any]:
     """Return *target* carrying *winner*'s token pair, status markers cleared."""
-    from hermes_cli.auth import _POOL_STATUS_FIELDS
+    from hermes_cli.auth_pool_rows import _POOL_STATUS_FIELDS
     merged = dict(target)
     for key in _OAUTH_TOKEN_FIELDS:
         if winner.get(key) is not None:

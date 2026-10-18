@@ -57,7 +57,7 @@ def _stripped(value: Any) -> str:
 
 def _clear_pool_entry_status(entry: dict[str, Any]) -> None:
     """Reset a pool entry's cooldown / last-error metadata to healthy."""
-    from hermes_cli.auth import _POOL_STATUS_FIELDS
+    from hermes_cli.auth_pool_rows import _POOL_STATUS_FIELDS
     for status_field in _POOL_STATUS_FIELDS:
         entry[status_field] = None
 

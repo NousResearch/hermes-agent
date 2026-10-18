@@ -189,10 +189,14 @@ def worker_history(db, conn, sid, payload):
     view.authorize(sid, target)
     ids = view._resume_lineage_ids(target) if payload['include_ancestors'] else [target]
     active = db._active_clause(payload['include_inactive'], payload['include_compacted'])
-    rows = conn.execute(f'SELECT {db._CONVERSATION_ROW_COLUMNS} FROM messages '
+    display = payload['include_compacted'] and not payload['include_inactive']
+    rows = conn.execute(f'SELECT {"compacted, " if display else ""}{db._CONVERSATION_ROW_COLUMNS} FROM messages '
                         f'WHERE session_id IN ({",".join("?" for _ in ids)}){active} ORDER BY id', ids).fetchall()
+    if display:  # the owner's display reads' rule: a message whose newest copy was removed stays hidden
+        from hermes_state_messages import SessionMessagesMixin
+        rows = SessionMessagesMixin._with_removed_identities(view, rows, ids)
     if payload['include_compacted']:
-        rows = db._dedupe_display_generations(rows)
+        rows = db._dedupe_display_generations(rows, drop_removed=display)
     return {'messages': db._rows_to_conversation(rows, session_id=target,
         include_ancestors=payload['include_ancestors'], repair_alternation=payload['repair_alternation'],
         include_row_ids=payload['include_row_ids'])}

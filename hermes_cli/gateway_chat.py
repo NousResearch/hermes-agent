@@ -280,8 +280,18 @@ def _launch_flags(args):
 
 def _requested_policy(args):
     policy = _launch_flags(args)
-    if isinstance(policy.get("toolsets"), str):
-        policy["toolsets"] = [name.strip() for name in policy["toolsets"].split(",") if name.strip()]
+    if "toolsets" in policy:
+        raw = policy["toolsets"]
+        values = raw if isinstance(raw, (list, tuple)) else [raw]
+        names = [name.strip() for value in values for name in str(value).split(",") if name.strip()]
+        if "none" in names:
+            if not isinstance(getattr(args, "oneshot", None), str):
+                raise GatewayClientError("--toolsets none is supported only with -z/--oneshot")
+            if names != ["none"]:
+                raise GatewayClientError("--toolsets none cannot be combined with other toolsets")
+            policy["toolsets"] = []
+        else:
+            policy["toolsets"] = names
     if "skills" in policy:
         # `-s a,b -s c` (argparse append) or cli.main's comma string: one deduplicated list.
         raw = policy["skills"] if isinstance(policy["skills"], (list, tuple)) else [policy["skills"]]

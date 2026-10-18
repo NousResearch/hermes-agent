@@ -19,7 +19,7 @@ import pytest
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter
 
-TARGET = "discord:1471029524551565456:1553817978175234149"
+TARGET = "discord:111111111111111111:222222222222222222"
 
 
 def _adapter(**extra) -> APIServerAdapter:

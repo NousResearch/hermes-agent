@@ -1250,12 +1250,20 @@ def _route_explicit_provider(st: _Switch) -> Optional[ModelSwitchResult]:
     except AmbiguousAliasError as err:
         return st.fail(_ambiguous_alias_message(err), target_provider=st.target_provider)
     if alias_result is not None:
-        alias_provider, st.new_model, alias_name = alias_result
-        # Adopt the alias (and with it its base_url and key) only when it belongs to the provider
-        # the user named: a reverse model-id match may land on another provider's alias, and
-        # honouring it would send the turn to that provider's endpoint under this one's identity.
-        if (_provider_identity(alias_provider, st.user_providers, st.custom_providers)
-                == _provider_identity(st.target_provider, st.user_providers, st.custom_providers)):
+        alias_provider, alias_model, alias_name = alias_result
+        same_provider = (
+            _provider_identity(alias_provider, st.user_providers, st.custom_providers)
+            == _provider_identity(st.target_provider, st.user_providers, st.custom_providers))
+        # A reverse model-id lookup can land on another provider's alias; adopting that alias's
+        # model id rewrites the typed name, including its case, which some relays treat as part of
+        # the id (a relay serving ``DeepSeek-V4.1-Flash`` 404s on ``deepseek-v4.1-flash``). The
+        # turn then fails against the named provider and silently falls back to another one.
+        # A typed alias NAME is different: the alias owns the wire model id, so keep it even when
+        # the alias lives on another provider (its endpoint and key are still not adopted — only
+        # ``resolved_alias`` below is gated on the identity match).
+        if same_provider or alias_name == (st.new_model or "").strip().lower():
+            st.new_model = alias_model
+        if same_provider:
             st.resolved_alias = alias_name
     return None
 

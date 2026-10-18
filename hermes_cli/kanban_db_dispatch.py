@@ -1922,11 +1922,11 @@ def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
 
     Caps bound the HOST, but each board's tick only sees its own DB; without
     this a derived cap of N gets multiplied by the number of active boards.
-    Boards are matched by resolved DB path, so ``HERMES_KANBAN_DB`` (pins every
-    board to one file) yields 0. Fails open per board.
+    Boards resolve via ``unpinned_db_path``: an env pin would collapse every
+    board to one file and yield 0 (#108401). Fails open per board.
     """
     try:
-        current_path = str(_kb.kanban_db_path(board=board).expanduser().resolve())
+        current_path = str(_kbc.unpinned_db_path(board).expanduser().resolve())
     except Exception:
         current_path = None
     try:
@@ -1937,13 +1937,13 @@ def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
     for meta in boards:
         slug = meta.get("slug") or _kb.DEFAULT_BOARD
         try:
-            path = _kb.kanban_db_path(board=slug).expanduser()
+            path = _kbc.unpinned_db_path(slug).expanduser()
             resolved = str(path.resolve())
             if current_path is not None and resolved == current_path:
                 continue
             if not path.exists():
                 continue
-            other = _kbc.connect(board=slug)
+            other = _kbc.connect(db_path=path, board=slug)
             try:
                 total += count_running_tasks(other)
             finally:

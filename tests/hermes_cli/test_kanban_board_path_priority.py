@@ -268,3 +268,75 @@ def test_notifier_seam_connect_lands_on_pinned_db(monkeypatch, tmp_path):
             assert any(r[0] == "pinned task" for r in rows), (
                 f"per-slug connect lost the pinned DB for board={slug!r}"
             )
+
+
+# ---------------------------------------------------------------------------
+# #108401: read-side enumeration keeps per-board numbers under a fence.
+#
+# The fence tests above pin the routing resolvers (kanban_db_path), and that
+# behaviour is unchanged: writes and single-board operations still resolve
+# through the dispatcher pin. But the read-side enumerators — boards-list
+# counts, dashboard board rows, count_running_tasks_other_boards — answer
+# "what does each board hold?", and resolving those through the pin printed
+# the active board's counts on every row and zeroed cross-board totals. They
+# now resolve each board's own file via unpinned_db_path.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def _two_seeded_boards(tmp_path, monkeypatch):
+    """``default`` (2 done tasks) + ``proj-b`` (1 running) under an isolated home."""
+    from hermes_cli import kanban_db_connect as kbc
+
+    home = tmp_path / "hermes_home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb._INITIALIZED_PATHS.clear()
+    with kbc.connect_closing() as conn:
+        for i in range(2):
+            kb.create_task(conn, title=f"done-{i}", assignee="dev", initial_status="done")
+    kb.create_board("proj-b")
+    with kbc.connect_closing(board="proj-b") as conn:
+        kb.create_task(conn, title="run-1", assignee="dev", initial_status="running")
+    return home
+
+
+def _worker_fence(monkeypatch, home):
+    """Simulate a dispatcher-spawned worker: its own board's DB pin + task marker."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(Path(home) / "kanban.db"))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fencedworker")
+
+
+def test_boards_list_counts_stay_per_board_for_fenced_worker(_two_seeded_boards, monkeypatch):
+    """`boards list` in a fenced worker session must show each board's own
+    counts — pre-fix every row carried the pinned board's count-set."""
+    from hermes_cli.kanban_boards import _board_task_counts
+
+    _worker_fence(monkeypatch, _two_seeded_boards)
+    assert _board_task_counts("default") == {"done": 2}
+    assert _board_task_counts("proj-b") == {"running": 1}
+
+
+def test_dashboard_board_counts_stay_per_board_for_fenced_worker(_two_seeded_boards, monkeypatch):
+    """The dashboard board list reads the same per-board numbers (#108401)."""
+    from plugins.kanban.dashboard.plugin_api import _board_counts
+
+    _worker_fence(monkeypatch, _two_seeded_boards)
+    assert _board_counts("default") == {"done": 2}
+    assert _board_counts("proj-b") == {"running": 1}
+
+
+def test_count_running_tasks_other_boards_under_fence(_two_seeded_boards, monkeypatch):
+    """Cross-board running totals are host-wide facts: the pin used to collapse
+    every board to the worker's own file and yield 0 (the docstring said so)."""
+    from hermes_cli.kanban_db_dispatch import count_running_tasks_other_boards
+
+    _worker_fence(monkeypatch, _two_seeded_boards)
+    assert count_running_tasks_other_boards("default") == 1
+
+
+def test_count_running_tasks_other_boards_unpinned(_two_seeded_boards):
+    """No pin set: the unpinned resolver changes nothing on a plain box."""
+    from hermes_cli.kanban_db_dispatch import count_running_tasks_other_boards
+
+    assert count_running_tasks_other_boards("default") == 1

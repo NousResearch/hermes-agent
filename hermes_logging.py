@@ -114,31 +114,49 @@ _line_buffered_stdout = None
 
 
 def _line_buffer_piped_stdout() -> None:
-    """Best-effort line buffering for a piped stdout (#92281).
-
-    Python block-buffers stdout when it isn't a TTY, so an agent loop
-    driving ``print()`` into a supervisor's pipe delivers its output in
-    large delayed bursts — a headless run looks stalled for minutes while
-    the work is actually progressing (only stderr, which we already give
-    ``line_buffering=True`` in ``_safe_stderr()``, shows up on time).
-    Reconfigure the interpreter's own stdout for line buffering when it is
-    piped; interactive TTY stdout is already line-buffered. ACP reaches this
-    too (its AIAgent calls ``setup_logging``) with stdout as its protocol
-    channel — harmless, since line buffering only adds flushes at newlines.
-    """
+    """Best-effort line buffering for a piped stdout (#92281, #139687)."""
     global _line_buffered_stdout
     stream = sys.stdout
+    _seen = set()
+    while stream is not None and id(stream) not in _seen:
+        _seen.add(id(stream))
+        unwrapped = None
+        if hasattr(stream, "_passthrough"):
+            cand = getattr(stream, "_passthrough", None)
+            if cand is not None and cand is not stream:
+                unwrapped = cand
+        if unwrapped is None and hasattr(stream, "_stream"):
+            cand = getattr(stream, "_stream", None)
+            if cand is not None and cand is not stream:
+                unwrapped = cand
+        if unwrapped is None:
+            target = getattr(stream, "_target", None)
+            if callable(target):
+                try:
+                    cand = target()
+                except Exception:
+                    cand = None
+                if cand is not None and cand is not stream:
+                    unwrapped = cand
+        if unwrapped is None:
+            break
+        stream = unwrapped
     if stream is None or stream is _line_buffered_stdout:
         return
-    if getattr(stream, "line_buffering", False) is True:
-        _line_buffered_stdout = stream
+    try:
+        if getattr(stream, "line_buffering", False) is True:
+            _line_buffered_stdout = stream
+            return
+    except (RecursionError, OSError, ValueError, AttributeError):
         return
-    reconfigure = getattr(stream, "reconfigure", None)
+    reconfigure = None
+    try:
+        reconfigure = getattr(stream, "reconfigure", None)
+    except (RecursionError, OSError, ValueError, AttributeError):
+        return
     if reconfigure is None:
         return
-    # A closed/detached stream raises ValueError / io.UnsupportedOperation (an OSError);
-    # buffering is observability, not correctness — never crash setup_logging over it.
-    with contextlib.suppress(OSError, ValueError):
+    with contextlib.suppress(OSError, ValueError, RecursionError, AttributeError):
         if not stream.isatty():
             reconfigure(line_buffering=True)
             _line_buffered_stdout = stream

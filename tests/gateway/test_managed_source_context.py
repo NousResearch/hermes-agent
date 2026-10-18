@@ -128,3 +128,63 @@ def test_worker_source_facts_cannot_select_another_consumer(tmp_path):
     with pytest.raises(ValueError, match='invalid_managed_source_identity'):
         bind_worker_source_slices(consumer, frame)
     assert not hasattr(consumer, '_source_provenance_registry')
+
+
+@pytest.mark.parametrize('source_facts', ['absent', 'empty', 'source'])
+@pytest.mark.parametrize('safe', [False, True])
+def test_bootstrap_binds_policy_before_runtime_imports(tmp_path, monkeypatch, source_facts, safe):
+    """Exercise real validation -> execute -> policy binding; stop before runtime loading.
+
+    The import guard observes cached imports too, so the populated pytest interpreter cannot hide
+    the worker's early import. No provider discovery or real one-shot policy state is invoked.
+    """
+    import builtins
+    import os
+    import sys
+    from agent import managed_worker as worker
+    from agent import safe_worker_policy
+
+    frame = dict(version=1, home=str(tmp_path), scope=dict(profile_id=str(tmp_path), session_id='sid',
+        execution_id='x', generation=1, pid=os.getpid(), birth=0, secret='fake-scope', epoch=1),
+        policy={'config_json': '{}'}, api_key='FAKE-key', text='Inspect source', route='source-order',
+        user_id='human', chat_id='c', turn_author=None, safe_mode=safe, ignore_user_config=safe)
+    if source_facts != 'absent':
+        frame['source_slices_v1'] = []
+    if source_facts == 'source':
+        frame['source_slices_v1'] = [dict(path=str(tmp_path / 'source.py'), line_start=1,
+                                         line_end=1, content='value = 1\n')]
+    events = []
+    bound = False
+    def bind(*, safe_mode, ignore_user_config, config):
+        nonlocal bound
+        assert (safe_mode, ignore_user_config, config) == (safe, safe, {})
+        events.append('policy')
+        bound = True
+    monkeypatch.setattr(safe_worker_policy, '_bind_safe_worker_policy', bind)
+    monkeypatch.setattr(safe_worker_policy, '_bind_worker_config',
+                        lambda config: bind(safe_mode=False, ignore_user_config=False, config=config))
+    # Reload only this helper under the spy so its own module-level imports are checked as well.
+    monkeypatch.delitem(sys.modules, 'gateway.source_context', raising=False)
+    real_import = builtins.__import__
+
+    class RuntimeBoundaryReached(BaseException):
+        pass
+
+    runtime = safe_worker_policy._RUNTIME_IMPORTS | {
+        'agent.context_references', 'agent.model_metadata', 'agent.source_provenance',
+    }
+    def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+        requested = {name, *(f'{name}.{item}' for item in fromlist or () if isinstance(item, str))}
+        if any(candidate == module or candidate.startswith(module + '.')
+               for candidate in requested for module in runtime):
+            assert bound, f'runtime import before policy binding: {name}'
+        if name == 'agent.runtime_session_store':
+            assert bound
+            events.append('runtime-boundary')
+            raise RuntimeBoundaryReached
+        return real_import(name, globals, locals, fromlist, level)
+    monkeypatch.setattr(builtins, '__import__', guarded_import)
+    validated = worker.validate_bootstrap(frame)
+    with pytest.raises(RuntimeBoundaryReached):
+        worker.execute(validated, SimpleNamespace(send=lambda *a, **k: None))
+    assert events == ['policy', 'runtime-boundary']

@@ -120,8 +120,8 @@ def validate_bootstrap(frame):
     if frame['turn_author'] is not None and (not isinstance(frame['turn_author'], dict)
                                             or parse_turn_author(frame['turn_author']) is None):
         raise ValueError('invalid_managed_worker_bootstrap')
-    from gateway.source_context import restore_worker_source_slices
-    restore_worker_source_slices(frame.get('source_slices_v1', []))
+    from gateway.source_context import validate_worker_source_slices
+    validate_worker_source_slices(frame.get('source_slices_v1', []))
     return frame
 
 

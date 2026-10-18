@@ -56,11 +56,14 @@ def test_clear_needs_confirmation():
     assert cs.get_store().list() == []
 
 
-def test_remove_and_alias():
+def test_delete_is_the_only_spelling_and_remove_is_gone():
     handle_creds_command("set alpha_token_one value1")
-    assert "Removed 'alpha_token_one'" in handle_creds_command("remove alpha_token_one")
+    assert "Removed 'alpha_token_one'" in handle_creds_command("delete alpha_token_one")
+    # `remove` was a duplicate alias of `delete`; it is gone — one spelling only,
+    # and the refusal must not have touched the stored credential.
     handle_creds_command("set beta_token_two value2")
-    assert "Removed 'beta_token_two'" in handle_creds_command("delete beta_token_two")
+    assert "Unknown subcommand: /creds remove" in handle_creds_command("remove beta_token_two")
+    assert cs.get_store().entry("beta_token_two") is not None
 
 
 def test_inject_sets_env_and_unset_removes_it(monkeypatch):
@@ -186,7 +189,7 @@ def test_set_prompts_for_the_target_when_two_platforms_are_available(monkeypatch
     assert "Fake One" in out or "two" in out.lower()
 
 
-def test_remove_deletes_the_platform_copy(monkeypatch):
+def test_delete_deletes_the_platform_copy(monkeypatch):
     import agent.credential_backends as cb
     from tests.agent.test_credential_backends import FakeBackend
 
@@ -194,7 +197,7 @@ def test_remove_deletes_the_platform_copy(monkeypatch):
     monkeypatch.setattr(cb, "all_backends", lambda: [fake])
     handle_creds_command("set alpha_token_one value1")
 
-    out = handle_creds_command("remove alpha_token_one")
+    out = handle_creds_command("delete alpha_token_one")
     assert "from Fake One" in out
     assert fake.deleted == ["fakeone:alpha_token_one"]
     assert cs.get_store().entry("alpha_token_one") is None

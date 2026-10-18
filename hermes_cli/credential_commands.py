@@ -57,7 +57,7 @@ _USAGE = """Usage:
                                --force replaces an existing one; --backend <name>
                                or --local chooses the target instead of the prompt)
   /creds show <name>           Print a credential's value (this terminal only)
-  /creds remove <name>         Delete a credential, including from its platform
+  /creds delete <name>         Delete a credential, including from its platform
   /creds inject <name> ...     Export credential(s) as env vars for this CLI session
   /creds unset <name> ...      Remove previously injected env vars
   /creds status                Show which secret platforms are available
@@ -78,8 +78,7 @@ def handle_creds_command(args: str) -> str:
         "ls": _handle_list,
         "show": lambda: _handle_show(rest),
         "set": lambda: _handle_set(rest),
-        "remove": lambda: _handle_remove(rest),
-        "delete": lambda: _handle_remove(rest),
+        "delete": lambda: _handle_delete(rest),
         "clear": lambda: _handle_clear(rest),
         "inject": lambda: _handle_inject(rest),
         "unset": lambda: _handle_unset(rest),
@@ -265,10 +264,10 @@ def _where_phrase(backend_name: str) -> str:
     return f"in {_backend_label(backend_name)}"
 
 
-def _handle_remove(arg: str) -> str:
+def _handle_delete(arg: str) -> str:
     name = arg.strip()
     if not name:
-        return "Usage: /creds remove <name>"
+        return "Usage: /creds delete <name>"
     result = remove_credential(name)
     if not result.get("success"):
         return str(result.get("error") or f"Failed to remove '{name}'.")

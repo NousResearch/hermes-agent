@@ -308,10 +308,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
     # cli_only: `show` prints a plaintext secret, which must never reach a chat
     # surface (and from there model context). Agent-side access is the
     # `credentials` tool + execute_code's `credentials=` parameter.
-    CommandDef("creds", "Manage task/project credentials: set, list, show, remove, status",
+    CommandDef("creds", "Manage task/project credentials: set, list, show, delete, status",
                "Tools & Skills", aliases=("credentials",), cli_only=True,
-               args_hint="[set|list|show|remove|clear|inject|unset|status] [name] [value]",
-               subcommands=("set", "list", "show", "remove", "delete", "clear", "inject",
+               args_hint="[set|list|show|delete|clear|inject|unset|status] [name] [value]",
+               subcommands=("set", "list", "show", "delete", "clear", "inject",
                             "unset", "status"),
                argument_mode="mixed", execute="creds"),
 

@@ -329,14 +329,15 @@ def route_retired_sql(entry, namespace, now):
     can only name another profile's session, so a secondary's fence covers it too
     (``fence_shared_routes``). A sweep's fence stops fencing at the horizon by itself: only the
     owner's own store sweeps the owner's marker, and nothing guarantees the launch profile ever
-    sweeps this one. An unscoped marker (no ``own``: an earlier release's, written for either)
+    sweeps this one. A delete's fence (no ``expires``) never does: the age test is NULL for it,
+    and NULL counts as not expired. An unscoped marker (no ``own``: an earlier release's, written for either)
     still fences every route."""
     sid = f"json_extract({entry}, '$.session_id')"
     return (f"(EXISTS (SELECT 1 FROM state_meta m WHERE m.key = '{RETIRED_PREFIX}' || {sid} AND "
             f"({namespace} = 'main' OR NOT (json_valid(m.value) AND json_extract(m.value, '$.own') IS NOT NULL))) "
             f"OR EXISTS (SELECT 1 FROM state_meta f WHERE f.key = '{ROUTE_FENCE_PREFIX}' || {namespace} || ':' || {sid} "
-            f"AND NOT (json_valid(f.value) AND json_extract(f.value, '$.expires') "
-            f"AND json_extract(f.value, '$.retired_at') < {now} - {RETRY_HORIZON_S}) "
+            f"AND NOT coalesce(json_valid(f.value) AND json_extract(f.value, '$.expires') "
+            f"AND json_extract(f.value, '$.retired_at') < {now} - {RETRY_HORIZON_S}, 0) "
             f"AND ({namespace} != 'main' OR NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = {sid}))))")
 
 

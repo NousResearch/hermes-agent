@@ -83,8 +83,21 @@ def _durable(store):
     return store._routing_db.load_gateway_routing_entries(scope=store._routing_scope())
 
 
+def _age_retirements(*dbs, days=8):
+    """Move every retirement marker and routing fence *days* into the past: the wall clock passing
+    the horizon, with no sweep run anywhere."""
+    from hermes_state_mutation_retirement import RETIRED_PREFIX, ROUTE_FENCE_PREFIX
+    for db in dbs:
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE state_meta SET value=json_set(value, '$.retired_at', json_extract(value, '$.retired_at') - ?) "
+            "WHERE (key GLOB ? OR key GLOB ?) AND json_valid(value)",
+            (days * 86400, RETIRED_PREFIX + '*', ROUTE_FENCE_PREFIX + '*')))
+
+
 def _past_the_horizon(*dbs):
+    """The wall clock passes the horizon (every fence aged), then each store sweeps its tombstones."""
     from hermes_state_mutation_retirement import prune_retired_tombstones
+    _age_retirements(*dbs)
     for db in dbs:
         db._execute_write(lambda conn: prune_retired_tombstones(conn, older_than=0))
 
@@ -246,17 +259,6 @@ async def test_a_delayed_snapshot_cannot_restore_a_pruned_route_once_its_fence_a
         assert store._entries[key].session_id == sid
 
 
-def _age_retirements(*dbs, days=8):
-    """Move every retirement marker and routing fence *days* into the past: the wall clock passing
-    the horizon, with no sweep run anywhere."""
-    from hermes_state_mutation_retirement import RETIRED_PREFIX, ROUTE_FENCE_PREFIX
-    for db in dbs:
-        db._execute_write(lambda conn: conn.execute(
-            "UPDATE state_meta SET value=json_set(value, '$.retired_at', json_extract(value, '$.retired_at') - ?) "
-            "WHERE (key GLOB ? OR key GLOB ?) AND json_valid(value)",
-            (days * 86400, RETIRED_PREFIX + '*', ROUTE_FENCE_PREFIX + '*')))
-
-
 @pytest.mark.asyncio
 async def test_a_pruned_id_routes_again_after_the_owner_alone_sweeps_past_the_horizon(tmp_path, monkeypatch):
     """Only the owner's own housekeeping runs (the launch profile's auto-prune is off by default):
@@ -302,6 +304,39 @@ async def test_the_owners_next_prune_reclaims_its_expired_shared_fences(tmp_path
         assert served.launch.db.get_meta(fence('main', sid)) is None
         assert served.launch.db.get_meta(fence('alpha', later.session_id)) is not None
         assert served.launch.db.get_meta(fence('alpha', kept.session_id)) is not None, "a delete's fence aged out"
+
+
+@pytest.mark.asyncio
+async def test_a_secondary_delete_fence_outlives_the_horizon_while_a_prune_fence_ages_out(tmp_path, monkeypatch):
+    """A delete's shared fence has no ``expires``: 8 days later, with no sweep run, it still refuses
+    alpha's route and the launch-keyed one, both to a per-entry save and to the sessions.json import
+    on the next start (#138826). A prune's fence aged the same way no longer fences."""
+    from gateway.run import _profile_runtime_scope
+    from gateway.session_local import create_local_session
+    async with _served(tmp_path, monkeypatch) as served:
+        store = served.store
+        pruned_key, pruned, _stale = await _pruned_alpha_route(served, tmp_path)
+        keys = ('agent:alpha:telegram:44', 'agent:main:telegram:44')
+        with _profile_runtime_scope(served.home, {}):
+            ref = create_local_session(served.alpha, served.actor, {
+                'request_id': 'd', 'source': 'gui', 'cwd': str(tmp_path), 'model': 'frozen', 'toolsets': []})
+            for key in keys:
+                store._entries[key] = _entry(key, ref.session_id)
+            with store._lock:
+                stale = store._snapshot_routing_locked()
+            await _delete(served, ref)
+        _age_retirements(served.alpha.db, served.launch.db)
+        for key in keys:
+            store._routing_db.save_gateway_routing_entry(key, json.dumps(stale[0][key]), scope=store._routing_scope())
+            assert key not in _durable(store), f'an aged delete fence let a per-entry save restore {key}'
+        store._save_sessions_json({key: stale[0][key] for key in keys})  # a mirror written before the delete
+        _restart(store)
+        for key in keys:
+            assert key not in store._entries, f'an aged delete fence let the sessions.json import restore {key}'
+
+        store._routing_db.save_gateway_routing_entry(
+            pruned_key, json.dumps(_entry(pruned_key, pruned).to_dict()), scope=store._routing_scope())
+        assert pruned_key in _durable(store), 'a prune fence aged the same way still fenced its route'
 
 
 @pytest.mark.asyncio

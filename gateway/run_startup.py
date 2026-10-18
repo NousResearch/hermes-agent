@@ -60,6 +60,21 @@ def recover_left_core_at_gateway_start() -> None:
         recover_left_core_in(root)
 
 
+
+def _own_policy_envs(platform) -> Optional[tuple]:
+    """``(dm_policy_env, group_policy_env, allow_all_env)`` for a platform that declares
+    ``own_policy_env``, else None. The live entry wins; a bundled platform whose entry is absent
+    (plugin disabled, safe mode) or lacks the field (a user plugin overriding it) falls back to the
+    names its ``gateway_env.AUTHZ`` declares, so the startup refusal never weakens."""
+    from gateway.platform_env import authz_field
+    from gateway.platform_registry import platform_registry
+    entry = platform_registry.get(platform.value)
+    own = authz_field(platform.value, "own_policy_env", entry)
+    if not own:
+        return None
+    return (*own, authz_field(platform.value, "allow_all_env", entry))
+
+
 class GatewayStartupMixin:
     """Startup sequence, resume/restore and handoff methods for GatewayRunner."""
 
@@ -598,11 +613,8 @@ class GatewayStartupMixin:
         for entry in candidates:
             # Canonical admissions own restart decisions, including unknown pauses.
             # Legacy synthetic resume must not race their restored FIFO.
-            from gateway.session_authorities import admission_owner, all_authorities
-            if any(authority.db._read_one(
-                    'SELECT 1 FROM session_admissions WHERE target_session_id IN (?,?) LIMIT 1',
-                    (entry.session_id, admission_owner(authority, entry.session_id)))
-                   for authority in all_authorities(self)):
+            from gateway.session_authorities import all_authorities, holds_admission
+            if any(holds_admission(authority, entry.session_id) for authority in all_authorities(self)):
                 continue
             # Epoch math: the marker was stamped naive-local by the previous process, possibly
             # on the other side of a DST change; wall-clock subtraction is off by the shift.
@@ -1014,7 +1026,7 @@ class GatewayStartupMixin:
     def _start_check_access_policy(self) -> bool:
         """Warn about missing allowlists; return True when startup must be refused."""
         from gateway.run import (
-            _OWN_POLICY_OPEN_ENV, _own_policy_open_startup_violation, _write_runtime_status_quiet
+            _own_policy_open_startup_violation, _write_runtime_status_quiet
         )
         # Plugin platforms declare their own allowed_users_env / allow_all_env.
         allowed_vars = list(self._BUILTIN_ALLOWED_USERS_VARS)
@@ -1046,9 +1058,7 @@ class GatewayStartupMixin:
         reason = _own_policy_open_startup_violation(self.config)
         if reason:
             platform_value = reason.split(":", 1)[0]
-            allow_all_env = next(
-                (env[2] for p, env in _OWN_POLICY_OPEN_ENV.items() if p.value == platform_value), None
-            )
+            allow_all_env = (_own_policy_envs(Platform(platform_value)) or (None, None, None))[2]
             logger.error(
                 "Refusing to start: %s has dm_policy/group_policy set to 'open' "
                 "but neither GATEWAY_ALLOW_ALL_USERS nor %s is enabled.", platform_value,

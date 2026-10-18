@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from agent.context_compressor import (
     _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY, MODEL_ONLY_DISPLAY_METADATA_KEY, _is_checkpoint_item,
     _newest_checkpoint_carrier, split_user_originated_turn)
-from agent.memory_manager import sanitize_context
+from agent.memory_context import sanitize_context
 from agent.message_metadata import (
     CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID, TOOL_CALL_UID, TOOL_CALL_UIDS,
     index_tool_call_uids, message_uid_or_none, resolve_tool_call_uid, mint_uid, stamp_message_uid)
@@ -804,30 +804,44 @@ class SessionMessagesMixin(SessionDetachedResultsMixin):
         the whole transcript on every rewind). The live view is identical either way; only the durability
         of the dropped turns differs.
         """
-        from hermes_state_errors import CompressionSessionClosedError
         def _do(conn):
-            if reject_active_turn_lease:
-                self._check_transcript_write_guards(
-                    conn, session_id, None, reject_active_turn_lease=True, reject_active_compression_lock=True)
-            elif _ended_by_compression(conn.execute(_ENDED_ROW_SQL, (session_id,)).fetchone()):
-                raise CompressionSessionClosedError(session_id)
-            kept = kept_tool_calls = 0
-            if archive_dropped:
-                # Only the first len(messages)+1 live rows matter: the prefix to match plus the row whose
-                # id anchors the archive UPDATE (which itself covers every later row via `id >= ?`).
-                live = conn.execute(_LIVE_IDENTITY_SQL, (session_id, len(messages) + 1)).fetchall()
-                kept = self._stamp_kept_live_prefix(live, messages)
-                kept_tool_calls = sum(_tool_calls_len(row[4], scalar=1) for row in live[:kept])
-                if kept < len(live):
-                    # FTS triggers don't fire on `active`: replaced turns stay searchable (include_inactive=True).
-                    conn.execute("UPDATE messages SET active = 0 WHERE session_id = ? AND active = 1 AND id >= ?",
-                                 (session_id, live[kept][0]))
-            else:
-                conn.execute(f"DELETE FROM messages WHERE session_id = ?{' AND active = 1' if active_only else ''}", (session_id,))
-            inserted, inserted_tool_calls = self._insert_message_rows(conn, session_id, messages[kept:])
-            conn.execute(f"{_SET_COUNTERS_SQL} WHERE id = ?",
-                         (kept + inserted, kept_tool_calls + inserted_tool_calls, session_id))
+            self.replace_messages_in_transaction(
+                conn, session_id, messages, active_only=active_only, archive_dropped=archive_dropped,
+                reject_active_turn_lease=reject_active_turn_lease)
         self._execute_transcript_write(_do, messages)
+
+    def replace_messages_in_transaction(self, conn, session_id: str, messages: list[dict[str, Any]], *,
+                                        active_only: bool = False, archive_dropped: bool = False,
+                                        reject_active_turn_lease: bool = False,
+                                        expected_active_ids: Optional[list[int]] = None) -> None:
+        """:meth:`replace_messages` inside the caller's write transaction (the gateway ``/retry``
+        rewrite commits in its re-send's own admission). ``expected_active_ids`` pins the active set
+        the replacement was computed from: a row committed since refuses (``RuntimeError``)."""
+        from hermes_state_errors import CompressionSessionClosedError
+        if reject_active_turn_lease:
+            self._check_transcript_write_guards(
+                conn, session_id, None, reject_active_turn_lease=True, reject_active_compression_lock=True)
+        elif _ended_by_compression(conn.execute(_ENDED_ROW_SQL, (session_id,)).fetchone()):
+            raise CompressionSessionClosedError(session_id)
+        if expected_active_ids is not None and [
+                int(row[0]) for row in conn.execute(_ACTIVE_IDS_SQL, (session_id,))] != expected_active_ids:
+            raise RuntimeError("active transcript changed before the rewrite could be persisted")
+        kept = kept_tool_calls = 0
+        if archive_dropped:
+            # Only the first len(messages)+1 live rows matter: the prefix to match plus the row whose
+            # id anchors the archive UPDATE (which itself covers every later row via `id >= ?`).
+            live = conn.execute(_LIVE_IDENTITY_SQL, (session_id, len(messages) + 1)).fetchall()
+            kept = self._stamp_kept_live_prefix(live, messages)
+            kept_tool_calls = sum(_tool_calls_len(row[4], scalar=1) for row in live[:kept])
+            if kept < len(live):
+                # FTS triggers don't fire on `active`: replaced turns stay searchable (include_inactive=True).
+                conn.execute("UPDATE messages SET active = 0 WHERE session_id = ? AND active = 1 AND id >= ?",
+                             (session_id, live[kept][0]))
+        else:
+            conn.execute(f"DELETE FROM messages WHERE session_id = ?{' AND active = 1' if active_only else ''}", (session_id,))
+        inserted, inserted_tool_calls = self._insert_message_rows(conn, session_id, messages[kept:])
+        conn.execute(f"{_SET_COUNTERS_SQL} WHERE id = ?",
+                     (kept + inserted, kept_tool_calls + inserted_tool_calls, session_id))
 
     @classmethod
     def _row_identity(cls, role: str, content: Any, tool_call_id: Any, tool_calls: Any) -> tuple:

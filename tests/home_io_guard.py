@@ -33,7 +33,8 @@ _INTERPRETER_PREFIX_STRS = tuple(_normcase(os.fspath(p)) for p in _INTERPRETER_P
 # Every subprocess env asks whether the checkout is a sealed payload's tree by reading
 # ``<checkout>/../manifest.json`` (pm.environments._payload_manifest). With the checkout inside
 # the home (default install, or a review worktree under <home>/cache/scratch) that probe lands
-# beside it: a read of the checkout's own layout, not Hermes state. Writing it stays refused.
+# beside it: a read of the checkout's own layout, not Hermes state. Only a plain read (``read``:
+# an open without write or create) is exempt; creating it by any call stays refused.
 _CHECKOUT_PAYLOAD_MANIFEST = _normcase(os.fspath(Path(__file__).resolve().parent.parent.parent
                                                  / "manifest.json"))
 
@@ -62,7 +63,7 @@ class HomeIOGuard:
         self.checking = threading.local()
         self.directories: dict[int, Path] = {}
 
-    def check(self, value, *, dir_fd=None, metadata=False, destructive=False):
+    def check(self, value, *, dir_fd=None, metadata=False, destructive=False, read=False):
         if value is None or isinstance(value, int) or getattr(self.checking, "active", False):
             return
         self.checking.active = True
@@ -106,7 +107,7 @@ class HomeIOGuard:
             for prefix in _INTERPRETER_PREFIX_STRS:
                 if _within(absolute, prefix) or (metadata and _contains(absolute, prefix)):
                     return
-            if not destructive and absolute == _CHECKOUT_PAYLOAD_MANIFEST:
+            if read and absolute == _CHECKOUT_PAYLOAD_MANIFEST:
                 return
             # Check the lexical path first: resolving must not probe a protected
             # tree merely to decide that the original path was forbidden.
@@ -165,15 +166,16 @@ class HomeIOGuard:
         )
 
     def install(self, monkeypatch):
-        def wrap(module, name, parameters, *, metadata=False, destructive=False):
+        def wrap(module, name, parameters, *, metadata=False, destructive=False, reads=False):
             original = getattr(module, name)
 
             @wraps(original)
             def guarded(*args, **kwargs):
+                writes = destructive(args, kwargs) if callable(destructive) else destructive
                 for index, (parameter, descriptor) in enumerate(parameters):
                     value = args[index] if index < len(args) else kwargs.get(parameter)
                     self.check(value, dir_fd=kwargs.get(descriptor) if descriptor else None, metadata=metadata,
-                               destructive=destructive(args, kwargs) if callable(destructive) else destructive)
+                               destructive=writes, read=reads and not writes)
                 return original(*args, **kwargs)
 
             monkeypatch.setattr(module, name, guarded)
@@ -183,7 +185,7 @@ class HomeIOGuard:
             return any(flag in mode for flag in "wax+")
 
         for module in (builtins, io):
-            wrap(module, "open", (("file", None),), destructive=open_writes)
+            wrap(module, "open", (("file", None),), destructive=open_writes, reads=True)
         for name in ("mkdir", "unlink", "remove", "rmdir", "chmod", "utime"):
             wrap(os, name, (("path", "dir_fd"),), destructive=name != "mkdir")
         for name in ("stat", "lstat", "readlink", "access"):
@@ -199,7 +201,8 @@ class HomeIOGuard:
 
         @wraps(original_open)
         def guarded_open(path, flags, *args, **kwargs):
-            self.check(path, dir_fd=kwargs.get("dir_fd"), destructive=bool(flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC)))
+            writes = bool(flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC))
+            self.check(path, dir_fd=kwargs.get("dir_fd"), destructive=writes, read=not writes)
             fd = original_open(path, flags, *args, **kwargs)
             candidate = Path(os.fsdecode(path))
             if kwargs.get("dir_fd") is not None and not candidate.is_absolute():

@@ -203,16 +203,18 @@ def test_checkout_inside_a_guarded_root_is_not_hermes_state():
 def test_a_checkout_inside_the_home_can_ask_whether_it_is_a_sealed_payload(monkeypatch):
     """A review worktree under <home>/cache/scratch (or a default install): every subprocess env
     reads ``<checkout>/../manifest.json`` to learn whether the checkout is a sealed payload. That
-    read must reach the probe, not fail the caller; writing it is still refused."""
+    read must reach the probe, not fail the caller; creating or writing it is still refused."""
     from pm.environments import payload_command_dir
     from tests import conftest
     from tests.home_io_guard import HomeIOGuard
 
     monkeypatch.setattr(conftest, "_REAL_HERMES_ROOT_CANDIDATES", [PROJECT_ROOT.parent])
     payload_command_dir(PROJECT_ROOT)
-    with pytest.raises(AssertionError, match="REAL hermes home"):
-        HomeIOGuard(lambda: [PROJECT_ROOT.parent]).check(
-            PROJECT_ROOT.parent / "manifest.json", destructive=True)
+    guard = HomeIOGuard(lambda: [PROJECT_ROOT.parent])
+    # A write, and the calls that create without writing (os.mkdir, os.makedirs, sqlite3.connect).
+    for kwargs in ({"destructive": True}, {}):
+        with pytest.raises(AssertionError, match="REAL hermes home"):
+            guard.check(PROJECT_ROOT.parent / "manifest.json", **kwargs)
 
 
 def test_hermes_exported_scratch_tmp_is_not_the_test_temp_root(tmp_path):

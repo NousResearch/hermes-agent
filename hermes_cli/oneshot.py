@@ -500,6 +500,29 @@ def _apply_stored_session_runtime(
     return choice
 
 
+def _resolve_max_iterations(cfg: Optional[dict]) -> int:
+    """Resolve the oneshot iteration cap (config + env), mirroring
+    ``cli_init_mixin._init_turn_limits``: ``agent.max_turns`` -> legacy root
+    ``max_turns`` -> ``HERMES_MAX_ITERATIONS`` env -> unlimited. ``resolve_turn_limit``
+    normalizes spellings (``"none"`` / ``0`` / ``-1`` -> ``sys.maxsize``) and rejects
+    bool so ``True``/``False`` don't become ``1``/``0``.
+
+    Closes #99957 / #105243: ``hermes -z`` previously built ``AIAgent`` with the
+    constructor default (``sys.maxsize``), so a configured ``agent.max_turns`` never
+    reached the iteration budget -- exactly the drop every other surface (cli.py,
+    cli_agent_setup_mixin.py, gateway/run, cron) forwards. Because ``max_iterations``
+    is a ``_PASSTHROUGH_PARAM`` recorded into ``_session_init_model_config`` by
+    agent_init, forwarding the cap here is also what makes ``-z`` record its
+    configured budget on the session row.
+    """
+    from hermes_cli.config import resolve_turn_limit, cfg_get
+    raw = next(
+        (v for v in (cfg_get(cfg, "agent", "max_turns"), cfg_get(cfg, "max_turns")) if v is not None),
+        os.getenv("HERMES_MAX_ITERATIONS"),
+    )
+    return resolve_turn_limit(raw)
+
+
 def _run_agent(
     prompt: str,
     model: Optional[str] = None,
@@ -570,6 +593,14 @@ def _run_agent(
 
     skills_prompt = _build_preloaded_skills_prompt(skills)
 
+    # The resolved iteration cap must reach AIAgent like every other surface (cli.py /
+    # cli_agent_setup_mixin.py pass ``max_iterations=self.max_turns``); oneshot previously
+    # omitted it and ran to ``sys.maxsize`` (#99957 / #105243). agent.max_turns is recorded
+    # into the session row's model_config via agent_init
+    # (`_session_init_model_config["max_iterations"]`), so forwarding the cap here is what
+    # makes ``-z`` record its configured budget on the session row.
+    max_iterations = _resolve_max_iterations(cfg)
+
     # The try spans agent construction (not just ``chat``) so the store is always closed, even when
     # ``AIAgent(...)`` raises — the one-shot exit path hard-exits via os._exit and skips finalizers.
     agent = relay_session_id = None
@@ -587,6 +618,7 @@ def _run_agent(
             session_db=session_db,
             session_id=resume_sid,
             credential_pool=runtime.get("credential_pool"),
+            max_iterations=max_iterations,
             fallback_model=get_fallback_chain(cfg) or None,
             # The resolved provider's request body (a custom entry's extra_body), as `hermes chat` passes it.
             request_overrides=runtime.get("request_overrides"),

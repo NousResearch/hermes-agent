@@ -41,6 +41,7 @@ from tools.file_tools_read_tracking import (
     _mark_full_write_baseline, _mark_verification_stale, _note_read_coverage, _patch_failure_lock,
     _patch_failure_tracker, _read_tracker, _read_tracker_lock, _record_not_found,
     _record_patch_failure, _reset_patch_failures, _task_data, _update_read_timestamp)
+from tools.file_tools_read_format import format_read_content, validate_line_numbers
 
 logger = logging.getLogger(__name__)
 
@@ -497,8 +498,7 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
         _mark_full_write_baseline(str(_resolved), task_id)
         _update_read_timestamp(str(_resolved), task_id)
         file_state.record_read(task_id, str(_resolved))
-    if not line_numbers:
-        result_dict["content"] = re.sub(r"(?m)^[0-9]+(?:\||$)", "", result_dict["content"])
+    result_dict["content"] = format_read_content(result_dict["content"], line_numbers)
     return json.dumps(result_dict, ensure_ascii=False)
 
 
@@ -616,8 +616,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT,
     → negative-result cache → dedup stub → real read.
     """
     try:
-        if not isinstance(line_numbers, bool):
-            return tool_error("line_numbers must be a boolean (true or false).")
+        validate_line_numbers(line_numbers)
         offset, limit = normalize_read_pagination(offset, limit)
 
         # On the RAW model-supplied string, before any expanduser()/resolve():
@@ -759,11 +758,9 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT,
                 f"You have read this exact file region {count} times consecutively. "
                 "The content has not changed since your last read. Use the information you already have. "
                 "If you are stuck in a loop, stop reading and proceed with writing or responding.")
-        if not line_numbers:
-            # Strip only our display prefix, after all truncation and safety
-            # checks, including a prefix clamped before its pipe. A literal
-            # leading '1|' in the file must survive.
-            result_dict["content"] = re.sub(r"(?m)^[0-9]+(?:\||$)", "", result_dict.get("content") or "")
+        # Format after truncation and safety checks, including a prefix
+        # clamped before its pipe. Literal file prefixes must survive.
+        result_dict["content"] = format_read_content(result_dict.get("content") or "", line_numbers)
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         return tool_error(str(e))

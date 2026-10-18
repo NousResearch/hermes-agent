@@ -79,3 +79,45 @@ async def test_model_picker_reads_routed_profile_config(tmp_path, monkeypatch):
     assert adapter.kwargs is not None
     assert adapter.kwargs["current_model"] == "secondary-model"
     assert adapter.kwargs["current_provider"] == "secondary-provider"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command", "expect_non_blocking"),
+    [("/model", True), ("/model --refresh", False)],
+)
+async def test_model_refresh_reads_catalogs_blocking(tmp_path, monkeypatch, command, expect_non_blocking):
+    """``/model --refresh`` wipes the provider cache; a non-blocking read of the now-cold cache
+    would show the short curated fallback lists, so --refresh must wait for live catalogs."""
+    import gateway.run as gateway_run
+
+    home = tmp_path / "default"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "model:\n  default: m\n  provider: p\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(gateway_run, "_hermes_home", home)
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
+    monkeypatch.setattr("hermes_cli.models.clear_provider_models_cache", lambda *a, **k: None)
+    seen = {}
+
+    def _providers(**kwargs):
+        seen.update(kwargs)
+        return [{"slug": "p", "name": "P", "is_current": True, "models": ["m"], "total_models": 1}]
+
+    monkeypatch.setattr("hermes_cli.model_switch_providers.list_picker_providers", _providers)
+
+    runner = object.__new__(GatewayRunner)
+    adapter = _CapturingPickerAdapter()
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.config = SimpleNamespace(multiplex_profiles=False)
+    runner._voice_mode = {}
+    runner._session_model_overrides = {}
+    runner._running_agents = {}
+    runner._thread_metadata_for_source = lambda *_args, **_kwargs: None
+    runner._reply_anchor_for_event = lambda *_args, **_kwargs: None
+
+    event = _make_event()
+    event.text = command
+    assert await runner._handle_model_command(event) is None
+    assert seen["non_blocking_catalogs"] is expect_non_blocking

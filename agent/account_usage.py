@@ -105,7 +105,14 @@ def render_account_usage_lines(snapshot: Optional[AccountUsageSnapshot], *, mark
         return []
     bold = "**" if markdown else ""
     plan = f" ({snapshot.plan})" if snapshot.plan else ""
-    lines = [f"📈 {bold}{snapshot.title}{bold}", f"Provider: {snapshot.provider}{plan}"]
+    return [f"📈 {bold}{snapshot.title}{bold}", f"Provider: {snapshot.provider}{plan}",
+            *render_account_usage_body(snapshot)]
+
+
+def render_account_usage_body(snapshot: AccountUsageSnapshot) -> list[str]:
+    """The window, detail and unavailable lines of :func:`render_account_usage_lines`, without its
+    title and provider header."""
+    lines: list[str] = []
     for window in snapshot.windows:
         if window.used_percent is None:
             base = f"{window.label}: unavailable"

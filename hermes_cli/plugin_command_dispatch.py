@@ -20,10 +20,12 @@ def invoke_plugin_command(handler: Callable, raw_args: str, **context: Any) -> A
         parameters = list(inspect.signature(handler).parameters.values())
     except (TypeError, ValueError):
         return handler(raw_args)
+    # The first positional parameter receives raw_args whatever its name (``def h(source, **kw)``
+    # must not get ``source`` twice).
+    if parameters and parameters[0].kind is not inspect.Parameter.KEYWORD_ONLY:
+        context = {k: v for k, v in context.items() if k != parameters[0].name}
+        parameters = parameters[1:]
     if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters):
         return handler(raw_args, **context)
-    # The first positional parameter receives raw_args whatever its name.
-    if parameters and parameters[0].kind is not inspect.Parameter.KEYWORD_ONLY:
-        parameters = parameters[1:]
     accepted = {p.name for p in parameters if p.kind in _KEYWORD_KINDS}
     return handler(raw_args, **{k: v for k, v in context.items() if k in accepted})

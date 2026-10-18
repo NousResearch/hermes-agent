@@ -1,0 +1,18 @@
+name: model-walker
+repo: https://github.com/christophkroeppl/hermes-plugin-model-walker
+sha: 30d07518335c2c9026e693facba6b9de0c1a3974
+description: Walk the fallback chain back UP when a higher model's rate limit resets. Tracks
+  reset times for models above the active one and switches up as soon as one reopens —
+  automatically or via a countdown popup the operator can override.
+maintainer: christophkroeppl
+tier: community
+category: agent
+docs_url: https://github.com/christophkroeppl/hermes-plugin-model-walker#readme
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_turn
+    - api_request_error
+    - agent_loop_stopped
+  provides_middleware: []
+  requires_env: []

@@ -52,6 +52,30 @@ def test_canonical_admission_and_creation_models_leave_legacy_wire_unchanged():
     assert CANONICAL_METHODS['session.create'].params.model_validate({'ignore_rules': True}).ignore_rules
 
 
+def test_canonical_session_create_accepts_the_kanban_dispatcher_source():
+    # Regression (v0.22.2, #134889 post-merge): the canonical session.create gate closed
+    # ``source`` to a 6-value Literal while the codebase treats it as an open vocabulary
+    # (legacy METHODS wire: ``str | None``; hermes_state, session_lifecycle, and
+    # session_context all carry open sets). The dispatcher's injected
+    # HERMES_SESSION_SOURCE=kanban (hermes_cli/kanban_db_dispatch.py), the Desktop app's
+    # ``source: 'desktop'`` (apps/desktop session-create-request.ts), and cron's ``cron``
+    # all died at dispatch with a bare invalid_params — the CLI's worker create sends
+    # session_source_for()'s value verbatim.
+    from tui_gateway.contracts.registry import canonical_param_problems
+    contract = CANONICAL_METHODS['session.create']
+    legacy = METHODS['session.create']
+    # The closed set must not be narrower than the legacy wire it re-declares.
+    assert legacy.params.model_fields['source'].annotation is str or 'str' in str(
+        legacy.params.model_fields['source'].annotation)
+    for source in ('cli', 'tui', 'gui', 'acp', 'tool', 'oneshot', 'kanban', 'desktop', 'cron'):
+        assert canonical_param_problems(contract, {'source': source}) == [], source
+    # The value stays free-form (the row store owns what a source label means); the closed-
+    # KEY part of the gate still refuses an unknown *key*, not an unknown source string.
+    assert contract.params.model_validate({'source': 'kanban'}).model_dump()['source'] == 'kanban'
+    assert canonical_param_problems(contract, {}) == []
+    assert canonical_param_problems(contract, {'source_typo': 'cli'}) == ['source_typo']
+
+
 @pytest.mark.asyncio
 async def test_canonical_result_validation_catches_a_handler_contract_violation(tmp_path, monkeypatch):
     from tui_gateway.contracts import registry

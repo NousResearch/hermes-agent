@@ -193,13 +193,13 @@ async def connect_gateway(endpoint=None, subject=None):
     rather than the socket identity; only a peer the owner already trusts may name one."""
     from websockets.asyncio.client import connect
     from hermes_constants import get_hermes_home
-    from hermes_cli.gateway_runtime import attachable, ensure_gateway_runtime
+    from hermes_cli.gateway_runtime import attachable, ensure_gateway_runtime, gateway_profile_home
     from urllib.parse import urlsplit
 
     remote = "" if endpoint is not None else os.environ.get("HERMES_TUI_GATEWAY_URL", "").strip()
     protocols = None
     if endpoint is not None:
-        ticket = await asyncio.to_thread(_session_ticket, get_hermes_home().resolve(), endpoint,
+        ticket = await asyncio.to_thread(_session_ticket, gateway_profile_home(get_hermes_home()), endpoint,
                                          subject=subject)
         url, protocols = gateway_ws_target(endpoint, ticket)
     elif remote:
@@ -208,7 +208,8 @@ async def connect_gateway(endpoint=None, subject=None):
             raise GatewayClientError("Invalid explicit gateway WebSocket URL; no local fallback")
         url = remote
     else:
-        home = get_hermes_home().resolve()
+        # A per-task overlay home is served by the profile its symlinked lock names (#138949).
+        home = gateway_profile_home(get_hermes_home())
         # A client's own start: the daemon it may launch ends itself once idle (no client, adapter,
         # cron/kanban work or admission), and the next client starts a fresh one.
         result = await asyncio.to_thread(ensure_gateway_runtime, home, idle_exit=True)

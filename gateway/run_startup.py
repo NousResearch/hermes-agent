@@ -614,11 +614,8 @@ class GatewayStartupMixin:
         for entry in candidates:
             # Canonical admissions own restart decisions, including unknown pauses.
             # Legacy synthetic resume must not race their restored FIFO.
-            from gateway.session_authorities import admission_owner, all_authorities
-            if any(authority.db._read_one(
-                    'SELECT 1 FROM session_admissions WHERE target_session_id IN (?,?) LIMIT 1',
-                    (entry.session_id, admission_owner(authority, entry.session_id)))
-                   for authority in all_authorities(self)):
+            from gateway.session_authorities import all_authorities, holds_admission
+            if any(holds_admission(authority, entry.session_id) for authority in all_authorities(self)):
                 continue
             # Epoch math: the marker was stamped naive-local by the previous process, possibly
             # on the other side of a DST change; wall-clock subtraction is off by the shift.
@@ -1122,8 +1119,10 @@ class GatewayStartupMixin:
     def _register_config_hooks(fail_fmt: str, *fail_args, level: int = logging.DEBUG) -> None:
         """Register declarative shell hooks + outbound webhooks from the CURRENT scope's config.
 
-        Gateway has no TTY, so consent must come from --accept-hooks, HERMES_ACCEPT_HOOKS, or
-        hooks_auto_accept: true; ``accept_hooks=False`` lets register_from_config resolve env + config.
+        The gateway never prompts (register_from_config defaults to ``interactive=False``), even
+        when a hidden console makes stdin look like a TTY, so consent must come from the allowlist,
+        --accept-hooks, HERMES_ACCEPT_HOOKS, or hooks_auto_accept: true; ``accept_hooks=False`` lets
+        register_from_config resolve env + config.
         Never raises (logged at ``level``).
         """
         try:

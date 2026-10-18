@@ -14,7 +14,6 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 from agent.session_activity import (
     ActivityProvenance, bound_activity_description, normalize_activity_provenance,
 )
-from hermes_startup_watchdog import report_startup_progress
 from hermes_state_errors import SessionActiveWriteGuardError
 from hermes_state_common import (
     _LISTABLE_CHILD_SQL, _RECOVERABLE_END_REASONS,
@@ -22,7 +21,7 @@ from hermes_state_common import (
     _shape_preview, _sql_preview_raw, QUEUED_PROMPT_METADATA_KEY,
     _sql_in_window, _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id,
     escape_like as _escape_like, _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
-    _source_match_clause,
+    _source_match_clause, emit_session_deleted,
 )
 from hermes_state_compression import _CHAIN_CAP
 
@@ -935,12 +934,21 @@ class SessionSessionsMixin:
             (session_id, session_id, value),
         ).fetchall()]
 
-    def set_session_archived(self, session_id: str, archived: bool) -> bool:
+    def set_session_archived(self, session_id: str, archived: bool, *, notify: bool = True) -> bool:
         """Soft-hide (or unhide) a session and its compression lineage; messages are kept.
         This is the DELIBERATE archive (user, CLI, API): it clears the ``auto_archived``
-        provenance, so re-activation never un-hides it on the user's behalf."""
-        return self._set_lineage_column(
-            "archived", session_id, int(archived), extra_set_sql=", auto_archived = 0")
+        provenance, so re-activation never un-hides it on the user's behalf. A real
+        unarchived -> archived flip fires ``on_session_delete`` (``reason="archive"``) after commit;
+        ``notify=False`` is for housekeeping that hides a row whose session lives on elsewhere."""
+        def _do(conn):
+            row = conn.execute("SELECT archived FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            ids = self._set_lineage_column_in_transaction(
+                conn, "archived", session_id, int(archived), extra_set_sql=", auto_archived = 0")
+            return ids, bool(archived and ids and row is not None and not row[0])
+        ids, newly_archived = self._execute_write(_do)
+        if newly_archived and notify:
+            emit_session_deleted(self, ids, reason="archive", primary=session_id)
+        return bool(ids)
 
     def _auto_archive_lineage(self, session_id: str) -> bool:
         """The idle sweep's archive: like :meth:`set_session_archived` but stamps
@@ -1758,6 +1766,8 @@ class SessionSessionsMixin:
             removed_ids.extend(scope)
             return True
         deleted = self._execute_write(_do)
+        if deleted:
+            emit_session_deleted(self, removed_ids, reason="delete", primary=session_id, sessions_dir=sessions_dir)
         from hermes_state_media import collect_retired_media
         collect_retired_media(self)
         for sid in removed_ids:
@@ -1810,13 +1820,16 @@ class SessionSessionsMixin:
             if eligible is None:
                 return False
             # Same BEGIN IMMEDIATE transaction as the check above: retire the ledger rows
-            # (ON DELETE RESTRICT) and delete without re-evaluating eligibility.
+            # (ON DELETE RESTRICT) and delete without re-evaluating eligibility. Housekeeping, not
+            # a user delete: its fence ages out at the horizon (an untitled row is never a Bot Chat).
             from hermes_state_mutation_retirement import retire_sessions
-            retire_sessions(conn, [session_id])
+            retire_sessions(conn, [session_id], expiring=[session_id])
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             self._delete_unreferenced_system_prompts(conn)
             return True
         deleted = self._execute_write(_do)
+        if deleted:
+            emit_session_deleted(self, [session_id], reason="empty_sweep", sessions_dir=sessions_dir)
         from hermes_state_media import collect_retired_media
         collect_retired_media(self)
         if deleted:
@@ -1911,6 +1924,9 @@ class SessionSessionsMixin:
             # 3 rows, however many physical links those rows had.
             return len(existing)
         count = self._execute_write(_do)
+        if count:
+            emit_session_deleted(self, removed_ids, reason="delete", primary=unique_ids[0] if len(unique_ids) == 1 else None,
+                                 sessions_dir=sessions_dir)
         from hermes_state_media import collect_retired_media
         collect_retired_media(self)
         for sid in removed_ids:
@@ -1953,8 +1969,24 @@ class SessionSessionsMixin:
             self._delete_unreferenced_system_prompts(conn)
             return len(session_ids)
         count = self._execute_write(_do)
+        if count:
+            emit_session_deleted(self, removed_ids, reason="empty_sweep", sessions_dir=sessions_dir)
         from hermes_state_media import collect_retired_media
         collect_retired_media(self)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
         return count
+
+    def archive_sessions(
+        self, older_than_days: Optional[float] = None, source: str | None = None, **filters,
+    ) -> int:
+        """Bulk soft-hide with prune_sessions' filter surface, via set_session_archived so each lineage
+        flips as a unit; idempotent. Returns matches. A lineage is matched through its TIP only: an
+        old compression ancestor never qualifies on its own age, or the fan-out would hide an open,
+        recently active continuation (#115489)."""
+        filters.setdefault("archived", False)
+        filters["lineage_tips_only"] = True
+        rows = self.list_prune_candidates(older_than_days=older_than_days, source=source, **filters)
+        for row in rows:
+            self.set_session_archived(row["id"], True)
+        return len(rows)

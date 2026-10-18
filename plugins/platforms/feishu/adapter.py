@@ -92,7 +92,8 @@ from gateway.platforms.base import (
     cache_audio_from_bytes_async, cache_image_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
-from gateway.status import acquire_scoped_lock, release_scoped_lock
+from gateway.status import acquire_scoped_lock
+from gateway.status_scoped_locks import release_scoped_lock
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write, env_float, env_int
 
@@ -2747,12 +2748,12 @@ class FeishuAdapter(BasePlatformAdapter):
         return await cache_image_from_url(image_url, ext=ext)
 
     async def _download_remote_document(self, file_url: str, *, default_ext: str, preferred_name: str) -> tuple[str, str]:
-        from gateway.platforms.base import _ssrf_redirect_guard
+        from gateway.platforms.base import ssrf_redirect_guard
         from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
         if not is_safe_url(file_url):
             raise ValueError(f"Blocked unsafe URL (SSRF protection): {file_url[:80]}")
         async with create_ssrf_safe_async_client(
-            timeout=30.0, follow_redirects=True, event_hooks={"response": [_ssrf_redirect_guard]},
+            timeout=30.0, follow_redirects=True, event_hooks={"response": [ssrf_redirect_guard]},
         ) as client:
             response = await client.get(
                 file_url, headers={"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)", "Accept": "*/*"},

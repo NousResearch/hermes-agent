@@ -168,10 +168,8 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
         try:
             # Tighter keepalive so idle CLOSE_WAIT drains promptly.
             # See #18451.
-            from gateway.platforms._http_client_limits import platform_httpx_limits
-            from gateway.platforms.base import _ssrf_redirect_guard
-            from tools.url_safety import create_ssrf_safe_async_client
-            self._http_client = create_ssrf_safe_async_client(timeout=30.0, follow_redirects=True, event_hooks={"response": [_ssrf_redirect_guard]}, limits=platform_httpx_limits())
+            from gateway.platforms.helpers import platform_http_client
+            self._http_client = platform_http_client()
             await self._open_connection()
             self._mark_connected()
             self._listen_task, self._heartbeat_task = asyncio.create_task(self._listen_loop()), asyncio.create_task(self._heartbeat_loop())
@@ -226,13 +224,12 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
 
     async def _open_connection(self) -> None:
         await self._cleanup_ws()
-        # certifi's CA bundle so aiohttp trusts the same roots as urllib/requests (macOS stale OpenSSL path).
+        # certifi's CA bundle so aiohttp trusts the same roots as urllib/requests (macOS stale OpenSSL path),
+        # re-derived when an install-environment rotation deleted the imported one (#137255).
         import ssl as _ssl
-        try:
-            import certifi
-            cafile = certifi.where()
-        except ImportError:
-            cafile = None
+
+        from agent.ssl_verify import certifi_bundle_path
+        cafile = certifi_bundle_path()
         _ssl_ctx = _ssl.create_default_context(cafile=cafile)
         self._session = aiohttp.ClientSession(trust_env=gateway_trust_env(), connector=aiohttp.TCPConnector(ssl=_ssl_ctx))
         self._ws = await self._session.ws_connect(self._ws_url, heartbeat=HEARTBEAT_INTERVAL_SECONDS * 2, timeout=CONNECT_TIMEOUT_SECONDS)

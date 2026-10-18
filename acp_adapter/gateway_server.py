@@ -27,8 +27,8 @@ def _slash_command(text):
 
     Only a registered command (or alias) is a command: ``/etc/hosts is wrong`` or ``/tmp/x``
     (a path, the same rule ``MessageEvent.get_command`` applies) and unknown ``/words`` are
-    prompt text for the model. A registered command this surface does not carry still raises
-    ``unsupported_command`` in ``slash_mutation`` rather than reaching the owner as text."""
+    prompt text for the model. A registered command is never sent as prompt text: it is answered
+    by a gateway verb or refused by name (``acp_adapter/gateway_commands.py``)."""
     stripped = text.lstrip()
     if not stripped.startswith('/'):
         return None
@@ -67,7 +67,9 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         self._gateway = None
         self._connection = None
         self._connect_lock = asyncio.Lock()
-        self._home = get_hermes_home().resolve()
+        # A per-task overlay HERMES_HOME attaches to the profile its symlinked lock names (#138949).
+        from hermes_cli.gateway_runtime import gateway_profile_home
+        self._home = gateway_profile_home(get_hermes_home())
         self._snapshots = {}
         self._event_task = None
         self._terminals = {}
@@ -440,7 +442,10 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         from acp.schema import SetSessionModelResponse
         session_id = self._aliases.get(session_id, session_id)
         client = await self._client()
-        payload = {'model': model_id}
+        from hermes_cli.models import parse_model_input
+        # Picker IDs include the provider, as on the in-process ACP switch path.
+        provider, model = await asyncio.to_thread(parse_model_input, model_id, '')
+        payload = {'model': model, **({'provider': provider} if provider else {})}
         self._unacked.pop(session_id, None)  # a control between a lost submit and its repeat retires it
         result = await self._mutations.apply(client, session_id, 'model', payload,
                                              confirm=self._model_confirmer(session_id))
@@ -449,7 +454,50 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             raise GatewayClientError('model_switch_cancelled')
         self._snapshots[session_id] = await client.rpc('session.resume', session_id=session_id)
         self._mutations.acknowledge(session_id, 'model', payload)
+        if result.get('status') == 'deferred' and self._conn:
+            # A pick during a running turn lands for the next one (#139604); say so, as Desktop does.
+            from acp_adapter.gateway_commands import deferred_pick_text
+            await self._conn.session_update(session_id=self._editor_id(session_id),
+                                            update=acp.update_agent_message_text(deferred_pick_text(result) + "\n"))
         return SetSessionModelResponse()
+
+    async def _confirm_deferred_pick(self, session_id, editor_id, ask):
+        """The owner's boundary ask for a guarded deferred pick (``confirmation_required``; nothing
+        written, the pick stays pending): the same permission request as an idle pick. Yes re-sends
+        the same selection once with the owner's token (as Ink/Desktop); no, or no editor, keeps the
+        committed model, and the editor is told which outcome it got, never left on the promise."""
+        from acp_adapter.gateway_commands import _model_text, deferred_pick_text, refused_pick_text
+        from hermes_cli.gateway_mutations import model_refusal_text
+
+        async def say(text):
+            if self._conn:
+                await self._conn.session_update(session_id=editor_id, update=acp.update_agent_message_text(text + "\n"))
+        target = ask.get("target_model") or (ask.get("payload") or {}).get("model")
+        committed = {"model": ask.get("committed_model"), "provider": ask.get("committed_provider"),
+                     "target_model": target}
+        confirm = self._model_confirmer(session_id)
+        try:
+            if confirm is None or not await confirm(ask):
+                await say(refused_pick_text({**committed, "reason": "not confirmed"}))
+                return
+            client = await self._client()
+            snapshot = await client.rpc("session.resume", session_id=session_id)
+            result = await client.rpc("session.mutate", session_id=session_id, operation="model",
+                                      request_id=uuid.uuid4().hex, expected_revision=snapshot["revision"],
+                                      expected_generation=snapshot["execution_generation"],
+                                      payload={**(ask.get("payload") or {}), "confirm": ask["confirm"]})
+            if result.get("status") == "confirmation_required":
+                # Another pick or a turn moved the session first: said once, never re-asked in a loop.
+                await say(model_refusal_text(result, confirmed=True))
+                return
+            if session_id in self._snapshots:
+                self._snapshots[session_id] = await client.rpc("session.resume", session_id=session_id)
+            # Confirmed while a turn runs: stored again for the next boundary, said as such.
+            await say(deferred_pick_text(result) if result.get("status") == "deferred"
+                      else _model_text("Model switched to", result))
+        except GatewayClientError as exc:
+            logger.info("Deferred model pick on %s not confirmed: %s", session_id, exc)
+            await say(refused_pick_text({**committed, "reason": str(exc)}))
 
     def _model_confirmer(self, session_id):
         """The owner's guarded-model confirmation as an ACP permission request (the mechanism
@@ -525,15 +573,9 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             return PromptResponse(stop_reason='cancelled')
         retry_key, input_id, staged = prepared
         text, attachments = staged
-        command = _slash_command(text) if not attachments else None
-        if command is not None:
-            from acp_adapter.gateway_commands import run_command
-            parts = text.strip().split(None, 1)
-            reply, text = await run_command(self, session_id, command, parts[1].strip() if len(parts) > 1 else '')
-            if reply is not None:
-                if self._conn:
-                    await self._conn.session_update(session_id=held_id, update=acp.update_agent_message_text(reply + '\n'))
-                return PromptResponse(stop_reason='end_turn')
+        answered, text = await self._run_slash(held_id, session_id, text) if not attachments else (False, text)
+        if answered:
+            return PromptResponse(stop_reason='end_turn')
         # ... and every prepared control's (a slash keeps its own key: apply retires the rest).
         self._mutations.retire(session_id)
         submit = {'text': text}
@@ -600,6 +642,24 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         return PromptResponse(stop_reason="cancelled" if outcome == "cancelled" else "end_turn",
                               usage=turn_usage(self._usage.get(session_id)))
 
+    async def _run_slash(self, held_id, session_id, text):
+        """Run a slash command's local half: ``(answered, text to submit)``; answered ends the prompt."""
+        command = _slash_command(text)
+        if command is None:
+            return False, text
+        from acp_adapter.gateway_commands import CommandRefused, run_command
+        parts = text.strip().split(None, 1)
+        try:
+            reply, text = await run_command(self, session_id, command, parts[1].strip() if len(parts) > 1 else '')
+        except CommandRefused as exc:
+            # A named refusal is the command's answer, shown to the user; never a failed prompt.
+            reply = str(exc)
+        if reply is None:
+            return False, text
+        if self._conn:
+            await self._conn.session_update(session_id=held_id, update=acp.update_agent_message_text(reply + '\n'))
+        return True, None
+
     async def _prepare_submit(self, session_id, prompt):
         """``(retry_key, input_id, (text, attachments))`` for one ACP prompt, or None when the editor's Stop
         arrived while it was staged."""
@@ -618,7 +678,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         # submit itself, and the prompt then ends without being sent.
         self._submitting.add(session_id)
         try:
-            staged = await stage_user_content(content)
+            staged = await stage_user_content(content, self._home)
         finally:
             self._submitting.discard(session_id)
         if session_id in self._pending_cancels:
@@ -763,6 +823,21 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             if self._conn:
                 await self._conn.session_update(session_id=editor_id, update=acp.update_agent_message_text(
                     _tools_changed_notice(payload)))
+            return
+        if kind == "session.updated" and payload.get("operation") == "model" and payload.get("status") == "refused":
+            # A deferred pick that no longer resolved at the turn boundary: dropped, named here.
+            if self._conn:
+                from acp_adapter.gateway_commands import refused_pick_text
+                await self._conn.session_update(session_id=editor_id, update=acp.update_agent_message_text(
+                    refused_pick_text(payload) + "\n"))
+            return
+        if (kind == "session.updated" and payload.get("operation") == "model"
+                and payload.get("status") == "confirmation_required" and isinstance(payload.get("confirm"), str)):
+            # A deferred pick whose target needs consent at the turn boundary: asked like an idle
+            # pick (off the event pump: the answer may take as long as the user does).
+            task = asyncio.create_task(self._confirm_deferred_pick(sid, editor_id, payload))
+            self._background.add(task)
+            task.add_done_callback(self._background.discard)
             return
         if kind == "session.info" and sid in self._snapshots and "pending" in payload:
             async with self._changed:

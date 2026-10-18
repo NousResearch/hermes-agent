@@ -9,7 +9,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from hermes_state_common import (
     AUTO_VACUUM_MIN_FREELIST_RATIO, _id_chunks, _non_continuation_child_sql, _placeholders, _sql_session_last_active,
-    escape_like as _escape_like
+    escape_like as _escape_like, emit_session_deleted,
 )
 from hermes_startup_watchdog import report_startup_progress
 
@@ -132,6 +132,7 @@ class SessionMaintenanceMixin:
                 self._delete_unreferenced_system_prompts(conn)
             return ids
         removed_ids = self._execute_write(_do) or []
+        emit_session_deleted(self, removed_ids, reason="ghost_prune", sessions_dir=sessions_dir)
         from hermes_state_media import collect_retired_media
         collect_retired_media(self)
         for sid in removed_ids if sessions_dir else ():
@@ -334,20 +335,6 @@ class SessionMaintenanceMixin:
             self._auto_archive_lineage(row[0])
         return len(rows)
 
-    def archive_sessions(
-        self, older_than_days: Optional[float] = None, source: str | None = None, **filters,
-    ) -> int:
-        """Bulk soft-hide with prune_sessions' filter surface, via set_session_archived so each lineage
-        flips as a unit; idempotent. Returns matches. A lineage is matched through its TIP only: an
-        old compression ancestor never qualifies on its own age, or the fan-out would hide an open,
-        recently active continuation (#115489)."""
-        filters.setdefault("archived", False)
-        filters["lineage_tips_only"] = True
-        rows = self.list_prune_candidates(older_than_days=older_than_days, source=source, **filters)
-        for row in rows:
-            self.set_session_archived(row["id"], True)
-        return len(rows)
-
     def maybe_auto_archive(
         self, idle_days: float = 3, min_interval_hours: int = 24, exclude_pinned: bool = True,
     ) -> dict[str, Any]:
@@ -417,6 +404,8 @@ class SessionMaintenanceMixin:
             self._delete_unreferenced_system_prompts(conn)
             return len(session_ids)
         count = self._execute_write(_do)
+        if count:
+            emit_session_deleted(self, removed_ids, reason="prune", sessions_dir=sessions_dir)
         from hermes_state_media import collect_retired_media
         collect_retired_media(self)
         for sid in removed_ids:

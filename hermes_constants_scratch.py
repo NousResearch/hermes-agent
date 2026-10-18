@@ -4,10 +4,15 @@ Deleting an idle ``cache/scratch/<entry>`` is not enough on its own: a lane's e2
 headless browsers whose cwd was inside the tree (they survived for days with a ``(deleted)``
 cwd), and a repo whose linked worktree lived in the tree keeps a dangling registration until
 someone runs ``git worktree prune``. Both are reaped here, right before ``rmtree``.
+
+A process Hermes itself started is never an orphan, though: an idle entry a registered live
+process still works inside is kept, not reaped (#132401). Ownership comes from the two
+registries Hermes writes, not from a marker file a lane must remember to drop.
 """
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
 import shutil
@@ -15,6 +20,8 @@ import subprocess
 import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+
+import hermes_constants_scratch_stuck as stuck
 
 logger = logging.getLogger(__name__)
 
@@ -101,29 +108,39 @@ def subtree_touch_state(path: Path, cutoff: float) -> str:
     """Tri-state form of :func:`subtree_touched_since`: ``touched`` (recent write seen),
     ``scan-failed`` (unreadable — idle cannot be established, so the entry is kept, but
     a failed scan is not activity and is never reported as such), or ``idle``.
-    Same walk, same stop-at-first-recent shortcut, same symlink rules."""
+    Same walk, same stop-at-first-recent shortcut, same symlink rules. A hardlinked file
+    (``st_nlink > 1``) does not count either: its mtime is the inode's, and
+    ``git clone --local`` hardlinks packs that git freshens from the source repo."""
+    return _scan_subtree(path, cutoff)[0]
+
+
+def _scan_subtree(path: Path, cutoff: float) -> tuple[str, str | None]:
+    """``(state, denied_dir)``: *denied_dir* is the directory below *path* that refused
+    listing with EACCES/EPERM when that is why the scan failed (else None)."""
     try:
         if os.lstat(path).st_mtime >= cutoff:
-            return _TOUCHED
+            return _TOUCHED, None
         if not path.is_dir() or path.is_symlink():
-            return _IDLE
+            return _IDLE, None
     except OSError:
-        return _SCAN_FAILED
+        return _SCAN_FAILED, None
     stack = [str(path)]
     while stack:
+        current = stack.pop()
         try:
-            with os.scandir(stack.pop()) as it:
+            with os.scandir(current) as it:
                 for child in it:
                     try:
-                        if child.stat(follow_symlinks=False).st_mtime >= cutoff:
-                            return _TOUCHED
-                    except OSError:
-                        return _SCAN_FAILED
+                        st = child.stat(follow_symlinks=False)
+                    except OSError as exc:
+                        return _SCAN_FAILED, current if stuck.is_permission_error(exc) else None
+                    if st.st_mtime >= cutoff and not (st.st_nlink > 1 and child.is_file(follow_symlinks=False)):
+                        return _TOUCHED, None
                     if child.is_dir(follow_symlinks=False):
                         stack.append(child.path)
-        except OSError:
-            return _SCAN_FAILED
-    return _IDLE
+        except OSError as exc:
+            return _SCAN_FAILED, current if stuck.is_permission_error(exc) else None
+    return _IDLE, None
 
 
 def subtree_touched_since(path: Path, cutoff: float) -> bool:
@@ -158,6 +175,63 @@ def _own_lineage() -> set[int]:
     return pids
 
 
+def _registered_live_pids(home: Path) -> set[int]:
+    """Live pids Hermes registered for *home*: the machine spawn ledger (every long-lived entry
+    point and MCP helper, ``hermes_cli.process_identity``) and the background-process checkpoint
+    (``tools.process_registry``, ``processes.json``). A recorded start time that no longer
+    matches is a reused pid, not ownership."""
+    import psutil
+
+    from hermes_cli.process_identity import spawner_is_dead
+    from hermes_constants import get_default_hermes_root
+
+    root = get_default_hermes_root(home=home)
+    sources = [(root / "spawn-ledger.json", "create_time")]
+    sources += [(base / "processes.json", "host_start_time") for base in {home, root}]
+    pids: set[int] = set()
+    for path, stamp_key in sources:
+        try:
+            entries = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+        for entry in entries if isinstance(entries, list) else []:
+            pid, stamp = (entry.get("pid"), entry.get(stamp_key)) if isinstance(entry, dict) else (None, None)
+            if not isinstance(pid, int) or pid <= 0 or entry.get("pid_scope", "host") != "host":
+                continue
+            # An MCP helper whose recorded spawner is provably gone is an orphan, not owned: the
+            # rule reap_orphaned_mcp_helpers applies. Long-lived entry points (gateway, serve) that
+            # outlive their launcher stay owned; an unprovable spawner keeps ownership.
+            if entry.get("purpose") == "mcp-helper" and spawner_is_dead(entry) is True:
+                continue
+            try:
+                if stamp is None:
+                    alive = psutil.pid_exists(pid)
+                elif stamp_key == "create_time":
+                    alive = abs(psutil.Process(pid).create_time() - float(stamp)) < 2.0
+                else:
+                    from gateway.status import get_process_start_time
+
+                    alive = get_process_start_time(pid) == stamp
+            except (psutil.Error, OSError, TypeError, ValueError):
+                continue
+            if alive:
+                pids.add(pid)
+    return pids
+
+
+def _owned_by_hermes(proc, registered: set[int]) -> bool:
+    """Registered itself, or a descendant of a live registered process (a background shell's
+    child). An orphan whose spawning shell is gone was reparented away from that lineage, so
+    it is not owned and is still reaped."""
+    import psutil
+
+    try:
+        # pid 1 is excluded as an ancestor: a Hermes running as a container init adopts every orphan.
+        return proc.pid in registered or any(p.pid in registered and p.pid != 1 for p in proc.parents())
+    except (psutil.Error, OSError):
+        return False
+
+
 def reap_processes_rooted_in(scratch_root: Path, doomed: list[Path], audit: logging.Logger = logger) -> int:
     """TERM (then KILL) same-user processes whose cwd is inside an entry about to be
     pruned, or is a path under *scratch_root* that no longer exists. Returns the count.
@@ -165,6 +239,9 @@ def reap_processes_rooted_in(scratch_root: Path, doomed: list[Path], audit: logg
     Only the cwd is consulted: a process merely holding a file open inside scratch (an
     editor, a log tail) is not ours to kill, but one *living* in a directory we are
     about to delete, or in one already gone, has nothing left to run for.
+
+    A process Hermes owns (:func:`_owned_by_hermes`) is never signalled; each doomed entry it
+    works inside is dropped from *doomed* in place and recorded as kept.
     """
     import psutil
 
@@ -173,9 +250,10 @@ def reap_processes_rooted_in(scratch_root: Path, doomed: list[Path], audit: logg
     skip = _own_lineage()
     uid = os.getuid() if hasattr(os, "getuid") else None
     victims: list[tuple[psutil.Process, str]] = []
+    # The pruner's own lineage is never signalled, but its cwd still keeps an entry: a live
+    # session that launched this Hermes command may be working inside it.
+    lineage: list[tuple[psutil.Process, str]] = []
     for proc in psutil.process_iter(["pid"]):
-        if proc.pid in skip:
-            continue
         try:
             if uid is not None and proc.uids().real != uid:
                 continue
@@ -189,7 +267,24 @@ def reap_processes_rooted_in(scratch_root: Path, doomed: list[Path], audit: logg
         if not _under(cwd_path, root):
             continue
         if deleted or not os.path.exists(cwd_path) or any(_under(cwd_path, t) for t in targets):
-            victims.append((proc, cwd_path))
+            (lineage if proc.pid in skip else victims).append((proc, cwd_path))
+    # The owning home comes from the scratch path as configured, not its resolved target:
+    # a cache/scratch symlinked onto another disk still belongs to <home>.
+    registered = _registered_live_pids(Path(scratch_root).absolute().parent.parent) if victims else set()
+    owned = lineage + [(proc, cwd_path) for proc, cwd_path in victims if _owned_by_hermes(proc, registered)]
+    for proc, cwd_path in owned:
+        for entry in [e for e in doomed if _under(cwd_path, os.path.realpath(str(e)))]:
+            doomed.remove(entry)
+            try:
+                name = proc.name()
+            except (psutil.Error, OSError):
+                name = "?"
+            audit.info("scratch prune: kept %r — live Hermes process pid=%d (%r) works inside",
+                       os.fspath(entry), proc.pid, name)
+    # Re-filter against the shrunk *doomed*: an orphan in a kept entry is spared with it (the
+    # reap only exists to clear the way for rmtree); one whose cwd is already gone still goes.
+    victims = [(proc, cwd_path) for proc, cwd_path in victims if (proc, cwd_path) not in owned
+               and (not os.path.exists(cwd_path) or any(_under(cwd_path, os.path.realpath(str(e))) for e in doomed))]
     if not victims:
         return 0
     for proc, cwd_path in victims:
@@ -224,7 +319,7 @@ def _linked_worktree_repos(entry: Path) -> set[str]:
                 for child in it:
                     if child.name == ".git" and child.is_file(follow_symlinks=False):
                         try:
-                            line = Path(child.path).read_text(encoding="utf-8", errors="replace").strip()
+                            line = Path(child.path).read_text(encoding="utf-8-sig", errors="replace").strip()
                         except OSError:
                             continue
                         if line.startswith("gitdir:"):
@@ -276,11 +371,22 @@ def _prune_idle_entries(
     root: Path, max_idle_hours: float, skip_names: frozenset[str], audit: logging.Logger,
 ) -> int:
     cutoff = time.time() - max_idle_hours * 3600
+    # Entries already known to hold files this user cannot read or delete are skipped before
+    # any walk, until that is fixed (hermes_constants_scratch_stuck).
+    skip_names = skip_names | stuck.load_skips(root) | {stuck.STUCK_STATE_NAME, stuck.STUCK_LOCK_NAME}
     try:
         entries = [e for e in root.iterdir() if e.name not in skip_names]
     except OSError:
         return 0
-    doomed = [e for e in entries if not subtree_touched_since(e, cutoff)]
+    doomed = []
+    for e in entries:
+        state, denied_dir = _scan_subtree(e, cutoff)
+        if state == _IDLE:
+            doomed.append(e)
+        elif denied_dir is not None and stuck.tracking_supported():
+            # A dir this user may not list (root-owned 0700) fails every idle scan: kept
+            # (fail-closed) as before, but reported once and no longer re-scanned hourly.
+            stuck.record(root, e, [denied_dir], audit)
     # Runs even with nothing to delete: orphans whose cwd was removed by an earlier pass
     # (or by hand) are found by the deleted-cwd rule, not by membership in ``doomed``.
     try:
@@ -335,9 +441,10 @@ def _prune_idle_entries(
                     os.fspath(entry),
                 )
             continue
+        denied: list[str] = []
         try:
             if entry.is_dir() and not entry.is_symlink():
-                shutil.rmtree(entry, ignore_errors=True)
+                denied = stuck.rmtree_collecting_permission_errors(entry)
             else:
                 entry.unlink()
         except OSError as exc:
@@ -350,7 +457,10 @@ def _prune_idle_entries(
         # above refuses to invent (P2 on #134173).
         try:
             os.lstat(entry)
-            audit.info("scratch prune: could not fully remove %r", os.fspath(entry))
+            if denied and stuck.tracking_supported():
+                stuck.record(root, entry, denied, audit)
+            else:
+                audit.info("scratch prune: could not fully remove %r", os.fspath(entry))
             continue
         except FileNotFoundError:
             pass

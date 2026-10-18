@@ -39,16 +39,26 @@ def _take(path):
             os.unlink(path)
 
 
-async def stage_user_content(content):
+async def stage_user_content(content, home=None):
     """Shared-converter output -> ``(text, attachments)`` for ``prompt.submit``.
 
     Text-only prompts stay a plain string. Media parts (image ``data:`` URLs from
     image blocks, image resource links and embedded blobs, and remote image URLs once
     fetched) are staged as bytes in the profile image cache; the authority commits them
     at admission. A remote image URL that cannot be fetched is kept as text so the model
-    still sees it. Only a remote image awaits (its download); every other part stages inline."""
+    still sees it. Only a remote image awaits (its download); every other part stages inline.
+
+    ``home`` is the owner's profile home: a per-task overlay ``HERMES_HOME`` does not share
+    ``cache/images``, and admission accepts only the owner's cache (never relaxed here)."""
     if isinstance(content, str):
         return content, []
+    if home is not None:
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        token = set_hermes_home_override(home)
+        try:
+            return await stage_user_content(content)
+        finally:
+            reset_hermes_home_override(token)
     import base64
     import binascii
     from gateway.platforms.base import cache_image_from_bytes

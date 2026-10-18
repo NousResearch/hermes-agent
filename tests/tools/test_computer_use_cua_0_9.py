@@ -212,8 +212,39 @@ def test_release_seam_evicts_state_even_when_backend_stop_fails():
     assert "failed-run" not in computer_use._backends
     assert "failed-run" not in computer_use._backend_call_locks
 
+def test_strict_release_retains_backend_after_stop_failure_for_retry():
+    from tools.computer_use import tool as computer_use
 
-def test_release_seam_waits_for_in_flight_action_before_stopping_backend():
+    backend = MagicMock()
+    backend.stop.side_effect = RuntimeError("driver teardown failed")
+    unrelated = MagicMock()
+    computer_use._backends.update({
+        "failed-run": backend,
+        "unrelated-run": unrelated,
+    })
+    computer_use._backend_call_locks.update({
+        "failed-run": computer_use.threading.RLock(),
+        "unrelated-run": computer_use.threading.RLock(),
+    })
+
+    with pytest.raises(RuntimeError, match="driver teardown failed"):
+        computer_use.release_computer_use_session("failed-run", strict=True)
+
+    assert computer_use._backends["failed-run"] is backend
+    assert "failed-run" in computer_use._backend_call_locks
+    assert computer_use._backends["unrelated-run"] is unrelated
+    unrelated.stop.assert_not_called()
+
+    backend.stop.side_effect = None
+    assert computer_use.release_computer_use_session("failed-run", strict=True) is True
+    assert "failed-run" not in computer_use._backends
+    assert "failed-run" not in computer_use._backend_call_locks
+    assert computer_use._backends["unrelated-run"] is unrelated
+
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_release_seam_waits_for_in_flight_action_before_stopping_backend(strict):
     from tools.computer_use import tool as computer_use
 
     backend = MagicMock()
@@ -228,6 +259,7 @@ def test_release_seam_waits_for_in_flight_action_before_stopping_backend():
             released = pool.submit(
                 computer_use.release_computer_use_session,
                 "cancelled-run",
+                strict=strict,
             )
             with pytest.raises(FutureTimeoutError):
                 released.result(timeout=0.05)

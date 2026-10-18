@@ -615,7 +615,7 @@ def _drop_last_active_binding(task_id: str) -> None:
         _bt._last_active_session_key.pop(bare_task_id, None)
 
 
-def cleanup_browser(task_id: Optional[str] = None) -> None:
+def cleanup_browser(task_id: Optional[str] = None, *, strict: bool = False) -> None:
     """Clean up browser session(s) for a task: a bare task id reaps BOTH the primary
     session and any hybrid local sidecar; a ``::local`` key reaps only that one."""
     if task_id is None:
@@ -627,7 +627,7 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
         if not _bt._is_local_sidecar_key(task_id) and sidecar_key in _bt._active_sessions:
             session_keys.append(sidecar_key)
     for session_key in session_keys:
-        _cleanup_single_browser_session(session_key)
+        _cleanup_single_browser_session(session_key, strict=strict)
     _drop_last_active_binding(task_id)
 
 
@@ -652,7 +652,7 @@ def _kill_verified_daemon(socket_dir: str, session_name: str) -> bool:
         return False
 
 
-def _release_session_resources(task_id: str, session_info: dict[str, Any]) -> None:
+def _release_session_resources(task_id: str, session_info: dict[str, Any], *, strict: bool = False) -> None:
     """Untrack ``task_id``, close its cloud provider session, kill its daemon — the
     unconditional tail of a teardown, and the whole of the janitor's force-reap path.
 
@@ -661,7 +661,8 @@ def _release_session_resources(task_id: str, session_info: dict[str, Any]) -> No
     must still release the cloud session and the local Chromium.
     """
     bb_session_id = session_info.get("bb_session_id", "unknown")
-    _forget_session_tracking(task_id, session=True)
+    if not strict:
+        _forget_session_tracking(task_id, session=True)
 
     if bb_session_id:  # cloud only — local sidecars have bb_session_id=None
         provider = _cloud._get_cloud_provider()
@@ -669,6 +670,8 @@ def _release_session_resources(task_id: str, session_info: dict[str, Any]) -> No
             try:
                 provider.close_session(bb_session_id)
             except Exception as e:
+                if strict:
+                    raise
                 _bt.logger.warning("Could not close cloud browser session: %s", e)
 
     session_name = session_info.get("session_name", "")
@@ -677,6 +680,8 @@ def _release_session_resources(task_id: str, session_info: dict[str, Any]) -> No
         if os.path.exists(socket_dir):
             _kill_verified_daemon(socket_dir, session_name)
             shutil.rmtree(socket_dir, ignore_errors=True)
+    if strict:
+        _forget_session_tracking(task_id, session=True)
 
 
 def _force_reap_browser_session(task_id: str) -> None:
@@ -694,7 +699,7 @@ def _force_reap_browser_session(task_id: str) -> None:
     _drop_last_active_binding(task_id)
 
 
-def _cleanup_single_browser_session(task_id: str) -> None:
+def _cleanup_single_browser_session(task_id: str, *, strict: bool = False) -> None:
     """Reap a single browser session by its exact session key."""
     _cdp._stop_cdp_supervisor(task_id)  # close our WebSocket BEFORE the backend tears down the endpoint
 
@@ -705,7 +710,10 @@ def _cleanup_single_browser_session(task_id: str) -> None:
             from tools.browser_camofox import camofox_close, camofox_soft_cleanup
             if not camofox_soft_cleanup(task_id):
                 camofox_close(task_id)
-        _best_effort(f"Camofox cleanup for task {task_id}", _camofox_cleanup)
+        if strict:
+            _camofox_cleanup()
+        else:
+            _best_effort(f"Camofox cleanup for task {task_id}", _camofox_cleanup)
 
     _bt.logger.debug("cleanup_browser called for task_id: %s", task_id)
     _bt.logger.debug("Active sessions: %s", list(_bt._active_sessions.keys()))
@@ -728,17 +736,23 @@ def _cleanup_single_browser_session(task_id: str) -> None:
             from tools.browser_lightpanda import stop_lightpanda
             stop_lightpanda(session_info.get("session_name", ""))
         except Exception as e:
+            if strict:
+                raise
             _bt.logger.warning("lightpanda stop failed for task %s: %s", task_id, e)
     elif _session_has_expired(session_info):
         _bt.logger.debug("Skipping agent-browser close for expired session %s", task_id)
     else:
         try:
-            _session._run_browser_command(task_id, "close", [], timeout=10)
+            result = _session._run_browser_command(task_id, "close", [], timeout=10)
+            if strict and not result.get("success"):
+                raise RuntimeError(result.get("error") or "Browser cleanup was not acknowledged")
             _bt.logger.debug("agent-browser close command completed for task %s", task_id)
         except Exception as e:
+            if strict:
+                raise
             _bt.logger.warning("agent-browser close failed for task %s: %s", task_id, e)
 
-    _release_session_resources(task_id, session_info)
+    _release_session_resources(task_id, session_info, strict=strict)
     _bt.logger.debug("Removed task %s from active sessions", task_id)
 
 

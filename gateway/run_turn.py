@@ -35,6 +35,8 @@ from gateway.session import (
     build_session_context,
 )
 from gateway.session_transcript import TranscriptReadError
+from gateway.run_rollover import GatewayRolloverMixin
+from gateway.run_turn_queue import GatewayTurnQueueMixin
 from gateway.turn_context import TurnContext
 from gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
 from hermes_constants import get_hermes_home_override
@@ -171,7 +173,8 @@ from gateway.run_turn_hygiene import GatewayTurnHygieneMixin
 from gateway.run_turn_persistence import GatewayTurnPersistenceMixin
 
 
-class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, GatewayTurnPersistenceMixin):
+class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, GatewayTurnPersistenceMixin,
+                       GatewayTurnQueueMixin, GatewayRolloverMixin):
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
 
@@ -228,6 +231,11 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         if resolved is None:
             return
         source, session_entry, session_key = resolved
+        recovered, recovery_response = await self._rollover_recover_before_turn(
+            event, source, session_entry, session_key, run_generation,
+        )
+        if recovered:
+            return recovery_response
         prepared, _session_env_tokens = await self._hmwa_prepare_turn(
             event, source, session_entry, session_key, _quick_key, run_generation,
         )
@@ -300,6 +308,9 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
 
             if not self._is_session_run_current(_quick_key, run_generation):
                 self._hmwa_discard_stale_result(source, _quick_key, run_generation)
+                await self._rollover_after_turn(
+                    event, source, session_entry, session_key, run_generation, {"interrupted": True},
+                )
                 return None
 
             response, _intentional_silence, agent_messages = await self._hmwa_shape_agent_response(
@@ -330,13 +341,27 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 hidden_reasoning_incomplete=hidden_reasoning_incomplete,
                 is_context_overflow_failure=is_context_overflow_failure,
             )
+            rollover_handled, rollover_response = await self._rollover_after_turn(
+                event, source, session_entry, session_key, run_generation, agent_result,
+            )
+            if rollover_handled:
+                return rollover_response
             return await self._hmwa_deliver_turn_response(
                 event, source, session_entry, session_key, run_generation,
                 agent_result, agent_messages, response, _footer_line, _intentional_silence,
             )
 
+        except asyncio.CancelledError:
+            await self._rollover_after_turn(
+                event, source, session_entry, session_key, run_generation, {"interrupted": True},
+            )
+            raise
         except Exception as e:
-            return await self._hmwa_agent_error_reply(e, event, source, session_entry, session_key, prepared)
+            reply = await self._hmwa_agent_error_reply(e, event, source, session_entry, session_key, prepared)
+            handled, rollover_reply = await self._rollover_after_turn(
+                event, source, session_entry, session_key, run_generation, {"failed": True},
+            )
+            return rollover_reply if handled else reply
         finally:
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
@@ -1691,73 +1716,6 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             if callable(_mark_turn):
                 _mark_turn(turn_ctx.session_key, turn_ctx.run_generation)
 
-    async def _run_agent_drain_pending(
-        self, result: Any, adapter: Any, source: SessionSource, session_key: Optional[str]
-    ) -> tuple[Any, Optional[str]]:
-        """Dequeue the adapter's pending / interrupt / leftover-steer follow-up as ``(pending_event, pending)``.
-
-        Keyed by session_key (not source.chat_id) to match the adapter's storage keys."""
-        from gateway.run import (
-            _build_media_placeholder, _dequeue_pending_event, _is_control_interrupt_message
-        )
-        pending_event = None
-        pending = None
-        if result and adapter and session_key:
-            pending_event = _dequeue_pending_event(adapter, session_key)
-            if result.get("compression_exhausted") and pending_event is not None:
-                self._defer_past_exhaustion_reset(result, adapter, source, session_key, pending_event)
-                return None, None
-            # /queue overflow: promote the next queued event into the consumed "next-up" slot so the
-            # recursive drain sees it (keeps FIFO order; a mid-chain /queue can't jump the queue).
-            pending_event = self._promote_queued_event(session_key, adapter, pending_event)
-            if result.get("interrupted") and not pending_event and result.get("interrupt_message"):
-                interrupt_message = result.get("interrupt_message")
-                if _is_control_interrupt_message(interrupt_message):
-                    logger.info(
-                        "Ignoring control interrupt message for session %s: %s",
-                        session_key or "?", interrupt_message,
-                    )
-                else:
-                    pending = interrupt_message
-            elif pending_event:
-                # Transcribe audio BEFORE it becomes the next user turn (real transcript, not a path).
-                _pending_text = pending_event.text or ""
-                if self._pending_event_audio_paths(pending_event):
-                    pending, _ = await self._transcribe_and_echo_pending_voice(
-                        pending_event, adapter, source, _pending_text, log_context="Voice-drain",
-                        metadata={"thread_id": source.thread_id} if source.thread_id else None,
-                    )
-                    pending = pending or _build_media_placeholder(pending_event)
-                else:
-                    pending = _pending_text or _build_media_placeholder(pending_event)
-                if pending:
-                    logger.debug("Processing queued message after agent completion: '%s...'", pending[:40])
-
-        # Leftover /steer (arrived after the last tool batch): deliver as the next user turn.
-        pending_event, pending = self._merge_leftover_steer(result, adapter, source, session_key, pending_event, pending)
-
-        # Safety net: a pending slash command is never passed to the agent as user input.
-        if pending and pending.strip().startswith("/"):
-            _pending_cmd_word = pending.strip().split(None, 1)[0][1:].lower()
-            if _pending_cmd_word:
-                with suppress(Exception):
-                    from hermes_cli.commands import resolve_command as _rc_pending
-                    if _rc_pending(_pending_cmd_word):
-                        logger.info(
-                            "Discarding command '/%s' from pending queue — "
-                            "commands must not be passed as agent input", _pending_cmd_word,
-                        )
-                        pending_event = None
-                        pending = None
-
-        if self._draining and (pending_event or pending):
-            logger.info(
-                "Discarding pending follow-up for session %s during gateway %s",
-                session_key or "?", self._status_action_label(),
-            )
-            pending_event = None
-            pending = None
-        return pending_event, pending
 
     async def _run_agent_deliver_first_response(
         self, turn_ctx: TurnContext, adapter: Any, response: Any, result: Any, stream_task: Any,

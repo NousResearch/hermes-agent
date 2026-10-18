@@ -1415,6 +1415,7 @@ class _LoopState:
     # a consecutive-ineffective-attempt backstop, rearmed only after a provider response
     # reports a prompt below threshold.
     max_compression_attempts: Any
+    _iteration_budget_consumed: bool = False
     api_call_count: int = 0
     final_response: Any = None
     interrupted: bool = False
@@ -1656,6 +1657,7 @@ def _run_conversation_turn(
     while _prelude_action != "break" and (
         (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call
     ):
+        s._iteration_budget_consumed = not bool(agent._budget_grace_call)
         if _run_phase(begin_iteration, agent, s).action == "break":
             break
         _run_phase(prepare_iteration, agent, s)
@@ -1767,6 +1769,13 @@ def run_conversation(
             )
         finally:
             end_voice_turn_route(agent)
+    guard = getattr(agent, "_session_rollover", None)
+    if isinstance(result, dict) and guard is not None:
+        rollover_requested, rollover_fallback = guard.take_result_flags()
+        result["rollover_requested"] = rollover_requested
+        result["rollover_fallback"] = rollover_fallback
+        if rollover_requested:
+            result["completed"] = False
     result = export_current_turn_boundary(agent, result, user_message)
     if isinstance(result, dict):
         result["user_intervened"] = bool(getattr(agent, "_turn_user_intervened", False))

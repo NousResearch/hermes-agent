@@ -530,6 +530,9 @@ def finalize_turn(
 ):
     """Run the post-loop finalization and return the turn ``result`` dict."""
     from agent.conversation_loop import logger
+    rollover_guard = getattr(agent, "_session_rollover", None)
+    rollover_phase = getattr(rollover_guard, "phase", None)
+    rollover_requested = rollover_phase == "requested"
 
     final_response, _turn_exit_reason, preserved_verification_fallback, interrupted = _resolve_budget_fallback(
         agent, final_response=final_response, api_call_count=api_call_count,
@@ -589,6 +592,7 @@ def finalize_turn(
         final_response is not None
         and not failed
         and not interrupted
+        and not rollover_requested
         and (api_call_count < agent.max_iterations or str(_turn_exit_reason).startswith("text_response("))
     )
 
@@ -630,7 +634,7 @@ def finalize_turn(
         if final_response and not interrupted:
             final_response, _, _ = apply_llm_output_transform(agent, final_response, turn_id=turn_id, logger=logger)
         _close_transcript_tail(agent, messages, final_response, interrupted, _recovered_from_stream)
-        if not interrupted and not failed:
+        if not interrupted and not failed and rollover_phase not in {"requested", "authoring"}:
             _micro_compact_after_turn(agent, messages, final_response, logger, effective_task_id)
         agent._persist_session(messages, conversation_history)
 
@@ -771,7 +775,7 @@ def finalize_turn(
     # External memory provider: sync the completed turn + queue next prefetch.
     agent._sync_external_memory_for_turn(
         original_user_message=original_user_message, final_response=final_response,
-        interrupted=interrupted, messages=messages,
+        interrupted=interrupted or rollover_phase in {"requested", "authoring"}, messages=messages,
     )
 
     # Background memory/skill review runs AFTER delivery so it never competes with the
@@ -782,6 +786,7 @@ def finalize_turn(
         final_response
         and not interrupted
         and not getattr(agent, "skip_background_review", False)
+        and rollover_phase not in {"requested", "authoring", "invalidated"}
         and (_should_review_memory or _should_review_skills)
     ):
         with suppress(Exception):

@@ -31,6 +31,7 @@ class CompactionOutcome:
     active_system_prompt: Optional[str]
     conversation_history: Optional[list[dict[str, Any]]]
     current_turn_user_idx: int
+    rollover_requested: bool = False
     # A preflight pass (threshold or engine-driven) actually rebuilt ``messages``.
     compressed: bool = False
     # Preflight proved an immediate retry ineffective (no progress / insufficient).
@@ -136,6 +137,14 @@ def run_turn_start_compaction(
         messages=messages, active_system_prompt=active_system_prompt,
         conversation_history=conversation_history, current_turn_user_idx=current_turn_user_idx,
     )
+    guard = getattr(agent, "_session_rollover", None)
+    if guard is not None:
+        snapshot = guard.inspect(agent, messages, system_prompt=active_system_prompt or "")
+        if snapshot.rollover_requested:
+            out.rollover_requested = True
+            return out
+        if snapshot.skip_proactive_compaction:
+            return out
     _idle_compaction(agent, out, system_message, user_message, effective_task_id)
     _preflight_compression(agent, out, system_message, user_message, effective_task_id)
     return out

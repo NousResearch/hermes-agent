@@ -111,6 +111,27 @@ def test_plaintext_yes_resolves_approval(reply):
     _clear_approval_state()
 
 
+@pytest.mark.parametrize("entrypoint", ["adapter_busy", "runner_busy"])
+def test_plaintext_approval_bypasses_rollover_queue(entrypoint):
+    from gateway.run_rollover import LaneRollover
+
+    _clear_approval_state()
+    runner, _adapter = _make_runner()
+    key, approval = _register_blocking_approval(runner)
+    runner._session_state(key).persistent.rollover = LaneRollover(None, "old", phase="authoring")
+    event = _make_event("yes")
+    try:
+        if entrypoint == "adapter_busy":
+            asyncio.run(runner._handle_active_session_busy_message(event, key))
+        else:
+            asyncio.run(runner._hm_handle_running_session_message(event, event.source, key))
+        assert approval.event.is_set()
+        assert approval.result == "once"
+        assert runner._session_state(key).conversation.queued_events == []
+    finally:
+        _clear_approval_state()
+
+
 def test_no_pending_approval_does_not_consume_conversational_yes():
     """A bare 'yes' with NO blocking approval must NOT be treated as an
     approval — it falls through to normal busy handling (design intent:

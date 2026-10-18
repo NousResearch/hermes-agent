@@ -965,6 +965,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             if ctx.inbound_message_id is not None:
                 kwargs["persist_user_platform_id"] = str(ctx.inbound_message_id)
             from agent.notification_presentation import notification_turn
+            from gateway.run_rollover import bind_rollover_guard
+            bind_rollover_guard(self._runner, ctx, agent)
             from gateway.session_results import execution_result
             captured = execution_result.get()
             before = (getattr(agent, 'session_prompt_tokens', 0) or 0,
@@ -1325,6 +1327,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             "error": result.get("error"),
             "compression_exhausted": result.get("compression_exhausted", False),
             "compression_deferred": result.get("compression_deferred", False),
+            "rollover_requested": result.get("rollover_requested", False),
+            "rollover_fallback": result.get("rollover_fallback", False),
+            "rollover_restart_message": result.get("final_response"),
             "tools": ctx.tools_holder[0] or [],
             "history_offset": history_offset, "compacted_in_place": compacted_in_place, "session_id": effective_session_id,
             # Same rule as the direct API path (``_finish_turn_result``): the returned `messages` replaced the

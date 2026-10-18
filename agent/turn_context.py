@@ -1175,6 +1175,17 @@ def build_turn_context(
     active_system_prompt = compaction.active_system_prompt
     conversation_history = compaction.conversation_history
     current_turn_user_idx = compaction.current_turn_user_idx
+    if compaction.rollover_requested:
+        _bind_interrupt_scope(agent, ra)
+        _persist_turn_start(agent, messages, conversation_history, pending_cli_message)
+        return TurnContext(
+            user_message=user_message, original_user_message=original_user_message,
+            messages=messages, conversation_history=conversation_history,
+            active_system_prompt=active_system_prompt, effective_task_id=effective_task_id,
+            turn_id=turn_id, current_turn_user_idx=current_turn_user_idx,
+            should_review_memory=should_review_memory,
+            preflight_compression_blocked=compaction.blocked,
+        )
 
     plugin_user_context = _collect_pre_llm_call_context(
         agent, effective_task_id=effective_task_id, turn_id=turn_id,

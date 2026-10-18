@@ -18,6 +18,7 @@ from gateway.session_identity import transport_profile_of
 from gateway.session_persistence import SessionPersistenceMixin, _DB_UNPINNED
 from gateway.session_prompt_pin import SessionPromptPinMixin, sanitize_prompt_pin
 from gateway.session_recovery import SessionRecoveryMixin
+from gateway.session_rollover import SessionRolloverMixin
 from gateway.session_lifecycle import SessionLifecycleMixin, _iso, _new_session_id, _now, _parse_iso
 from gateway.session_transcript import SessionTranscriptMixin
 # Inverse of _session_key_namespace, defined storage-side (hermes_state must not import gateway).
@@ -783,8 +784,8 @@ class AsyncSessionStore:
 
 
 class SessionStore(
-    SessionPersistenceMixin, SessionRecoveryMixin, SessionLifecycleMixin, SessionTranscriptMixin,
-    SessionPromptPinMixin,
+    SessionRolloverMixin, SessionPersistenceMixin, SessionRecoveryMixin,
+    SessionLifecycleMixin, SessionTranscriptMixin, SessionPromptPinMixin,
 ):
     """Session routing index + transcripts: SQLite (SessionDB), legacy JSONL fallback."""
 
@@ -945,6 +946,12 @@ class SessionStore(
         with self._lock:
             self._ensure_loaded_locked()
             observed = self._entries.get(session_key)
+        if not force_new:
+            rollover = self._recover_rollover_route(session_key, source)
+            if rollover is not None:
+                if observed is not rollover:
+                    self._save_entries()
+                return rollover
         # Phase 1b (no lock): compression tip + stale check + explicit suspension.
         checks = None
         if not force_new and observed is not None:

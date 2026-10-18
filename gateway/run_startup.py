@@ -606,6 +606,7 @@ class GatewayStartupMixin:
             _AGENT_PENDING_SENTINEL, _auto_continue_freshness_window, _is_fresh_gateway_interruption,
         )
         window = _auto_continue_freshness_window()
+        self._schedule_rollover_recoveries(platform)
         candidates = self._resume_pending_candidates(platform)
         if candidates is None:
             return 0

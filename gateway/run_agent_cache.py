@@ -386,7 +386,7 @@ class GatewayAgentCacheMixin:
             logger.debug("Failed to rebind turn lease", exc_info=True)
             return False
 
-    def _clear_conversation_scope(self, session_key: str, *, reason: str) -> None:
+    def _clear_conversation_scope(self, session_key: str, *, reason: str, persist_yolo: bool = True) -> None:
         """THE single conversation-boundary funnel (/new, /resume, suspension replacement,
         compression-exhausted reset). New conversation-scoped dicts go in _CONVERSATION_SCOPED_STATE
         so every boundary picks them up. Turn-scoped state (_running_agents/_ts, slot leases, turn-
@@ -412,10 +412,10 @@ class GatewayAgentCacheMixin:
             store = getattr(self, attr, None)
             if isinstance(store, dict):
                 store.pop(session_key, None)
-        self._clear_session_boundary_security_state(session_key)
+        self._clear_session_boundary_security_state(session_key, persist_yolo=persist_yolo)
         logger.debug("Cleared conversation scope for %s (%s)", session_key, reason)
 
-    def _clear_session_boundary_security_state(self, session_key: str) -> None:
+    def _clear_session_boundary_security_state(self, session_key: str, *, persist_yolo: bool = True) -> None:
         """Clear per-session control state that must not survive a boundary switch."""
         if not session_key:
             return
@@ -441,7 +441,7 @@ class GatewayAgentCacheMixin:
         # False: the next conversation follows its launch policy again (seeded once per boundary), and a
         # toggle-less chat stays off.
         store = getattr(self, "session_store", None)
-        if store is not None:
+        if store is not None and persist_yolo:
             try:
                 store.set_session_yolo(session_key, None)
             except Exception:

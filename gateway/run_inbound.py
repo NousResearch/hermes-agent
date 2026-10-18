@@ -740,6 +740,11 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         _handled, _result = await self._hm_busy_slash_or_photo(event, source, _quick_key)
         if _handled:
             return _result
+        if await self._route_plaintext_approval_while_busy(event, _quick_key):
+            return None
+        from gateway.run_rollover import queue_during_rollover
+        if queue_during_rollover(self, event, _quick_key):
+            return None
 
         effective_busy_input_mode = self._effective_busy_input_mode(source)
         if self._hm_busy_telegram_grace_queue(event, source, _quick_key, effective_busy_input_mode):
@@ -1153,6 +1158,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         never promoted, e.g. a compression-demoted follow-up) silently orphaned those events. The
         oldest orphan runs as THIS turn and the incoming event is parked behind the chain. Skipped
         for control commands and internal events."""
+        if getattr(event, "_rollover_fifo_input", False):
+            # This is the accepted FIFO head, not a new arrival that should yield
+            # to an older orphan. The rollover fence intentionally drains via the adapter.
+            return event, source, is_internal
         try:
             # ── FIFO orphan rescue (#99882) ──────────────────────────────── If this session went idle with
             # a populated overflow (queued during a busy window whose post-turn drain never promoted — e.g.

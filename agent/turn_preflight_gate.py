@@ -24,7 +24,7 @@ def run_preflight_gate(
     compression_attempts: Any, max_compression_attempts: Any, effective_task_id: Any,
     final_response: Any, failed: Any, _turn_exit_reason: Any, _compression_timeout_exhausted: Any,
     _preflight_compression_blocked: Any, _provider_overflow_recovery_pending: Any,
-    _last_preflight_pressure: Any,
+    _last_preflight_pressure: Any, _iteration_budget_consumed: Any = True,
 ) -> PreflightGateVerdict:
     """Run the pre-API guard chain in the original order. ``_last_preflight_pressure`` is
     consumed here (set to None) and re-armed only by a compression pass, so a blocked
@@ -42,6 +42,25 @@ def run_preflight_gate(
         _provider_overflow_recovery_pending=_provider_overflow_recovery_pending,
         _last_preflight_pressure=None,
     )
+    guard = getattr(agent, "_session_rollover", None)
+    rollover = None
+    if guard is not None:
+        rollover = guard.inspect(
+            agent, messages, system_prompt=active_system_prompt or "",
+            request_pressure_tokens=request_pressure_tokens,
+        )
+        if rollover.rollover_requested:
+            from agent.session_rollover import SESSION_ROLLOVER_REQUESTED_RESPONSE
+
+            if v.api_call_count > 0:
+                v.api_call_count -= 1
+                agent._api_call_count = v.api_call_count
+                if _iteration_budget_consumed:
+                    agent.iteration_budget.refund()
+            v.action = "break"
+            v.final_response = SESSION_ROLLOVER_REQUESTED_RESPONSE
+            v._turn_exit_reason = "session_rollover_requested"
+            return v
 
     _runtime_context_error = _ollama_context_limit_error(agent, request_pressure_tokens)
     if _runtime_context_error:
@@ -55,6 +74,8 @@ def run_preflight_gate(
         with suppress(Exception):
             agent.iteration_budget.refund()
         v.action = "break"
+        return v
+    if rollover is not None and rollover.skip_proactive_compaction:
         return v
 
     # Pre-API pressure check: tool results grow a turn and last_prompt_tokens lags

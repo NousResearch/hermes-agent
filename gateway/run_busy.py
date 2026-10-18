@@ -123,6 +123,11 @@ class GatewayBusySessionMixin:
         else:
             pending_slot[session_key] = queued_event
         queued_event._gateway_accepted = True
+        from gateway.run_rollover import lane_rollover
+        lane = lane_rollover(self, session_key)
+        if lane is not None and (lane.phase != "watching"
+                                 or getattr(lane.guard, "phase", None) == "requested"):
+            queued_event._rollover_fifo_input = True
 
     def _promote_queued_event(
         self, session_key: str, adapter: Any, pending_event: Optional[MessageEvent]
@@ -909,13 +914,16 @@ class GatewayBusySessionMixin:
         if not self._admit_bot_message_for_source(event.source):
             return True
         event._bot_loop_admitted = True
-
         effective_mode = self._effective_busy_input_mode(event.source)
         if self._draining:  # gateway restarting/stopping
             await self._send_busy_drain_notice(event, session_key, effective_mode)
             return True
         if await self._route_plaintext_approval_while_busy(event, session_key):
             return True
+        from gateway.run_rollover import queue_during_rollover
+        if queue_during_rollover(self, event, session_key):
+            return True
+
         adapter = self._delivery_adapter_for(event.source)
         if not adapter:
             return False  # let default path handle it

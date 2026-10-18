@@ -616,6 +616,7 @@ class GatewayTurnPrepareMixin:
         running (history unreadable, a local turn's refused ``@`` references); ``None`` drops the turn
         (inbound text rejected)."""
         from gateway.run import _load_gateway_config
+        from gateway.rollover_packet import RolloverBlocked
         from tools.approval_yolo import restore_gateway_yolo
         _was_auto_reset, _is_new_session = await self._hmwa_open_session(session_entry, session_key, source)
         restore_gateway_yolo(session_key, session_entry.yolo)  # None: TurnRunner seeds the launch policy
@@ -669,13 +670,18 @@ class GatewayTurnPrepareMixin:
         # from []. Restore task-local context here (before the broad cleanup finally).
         try:
             history = await self.async_session_store.load_transcript(session_entry.session_id)
-            history = await self._hmwa_run_session_hygiene(
-                event, source, session_entry, session_key, history, _quick_key, run_generation,
-            )
+            if not await self._rollover_before_hygiene(event, source, session_entry, session_key, history):
+                history = await self._hmwa_run_session_hygiene(
+                    event, source, session_entry, session_key, history, _quick_key, run_generation,
+                )
         except TranscriptReadError:
             self._clear_session_env(_session_env_tokens)
             from gateway.session_results import record_unexecuted_failure
             return record_unexecuted_failure(t("gateway.errors.history_unavailable")), _session_env_tokens
+        except RolloverBlocked as exc:
+            self._clear_session_env(_session_env_tokens)
+            from gateway.session_results import record_unexecuted_failure
+            return record_unexecuted_failure(f"Automatic continuity preflight blocked: {exc}."), _session_env_tokens
 
         await self._hmwa_first_contact_notes(source, history, turn_sidecar_notes, internal=event.internal)
 

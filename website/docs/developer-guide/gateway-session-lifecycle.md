@@ -630,6 +630,97 @@ conversation boundaries and shutdown.
 
 ---
 
+## Guarded automatic handoff rollover
+
+Gateway messaging lanes can opt into a context-pressure handoff instead of relying
+on a human to notice pressure, reset, and paste restart instructions. This is
+disabled by default; local-session admissions, proxy execution, mixture-of-agents
+turns and Codex app-server execution are not supported by this path.
+
+Configure `session_rollover` in the owning profile's `config.yaml`:
+
+| Field | Required value |
+|---|---|
+| `enabled` | `true` to arm new attempts; omitted or `false` leaves ordinary behavior unchanged |
+| `session_keys` | Exact native conversation keys; no patterns or cross-lane discovery |
+| `handoff_skill` | Discoverable installed skill that writes the complete handoff and final restart message |
+| `packet_dir` | Absolute, writable, durable handoff directory |
+| `bootstrap_prompt` | Fixed continuation wrapper containing exactly one `{packet}`; it grants no new authority |
+| `runway_tokens` | Positive measured token growth of the complete handoff procedure |
+| `safety_margin_tokens` | Positive measured request/tool-growth and completion allowance |
+
+Measure the installed skill with the actual model and tools in an isolated lane
+before arming it. The guard reads the active compressor window and earliest native
+compaction/hygiene threshold, caps it at the resolved input budget, and subtracts
+the measured reserve. Pressure uses provider usage plus appended-message growth,
+not cumulative billed tokens or an auxiliary model's window. Gateway hygiene is
+fenced before the agent's turn-start, pre-API and post-tool guards run. Unsupported
+or unavailable runtime accounting blocks the opt-in rather than guessing a budget.
+
+The old tool-capable agent writes the handoff. Its **actual final restart message**
+is retained unchanged and appended to the configured wrapper. The packet requires
+a `## Continuation Directive` with these completed bullet labels:
+`Standing mandate`, `Current objective`, `Current mode`, `Next action and authority`,
+`Pending obligations`, `Completed work`, `Superseded/stopped/cancelled instructions`,
+and `Do not repeat until reconciled`. Modes are `continue-authorized`, `await-user`,
+`monitor`, `reconcile`, and `idle`. The directive carries existing authority and
+uncertain outcomes; automatic delivery does not create approvals.
+
+`gateway/run_rollover.py` owns the transition; `gateway/session_rollover.py` and
+`hermes_state_rollover.py` persist its receipt in the owning `SessionDB`. The receipt
+binds the route/profile, old and sole successor IDs, generation, packet path/hash,
+exact restart message and bootstrap text.
+
+```mermaid
+stateDiagram-v2
+    authoring --> prepared: packet and exact message validated
+    prepared --> committed: atomic ownership transaction
+    committed --> bootstrapping: same successor, empty prior history
+    bootstrapping --> complete: await-user or idle
+    bootstrapping --> admitting: reconcile retained inputs first
+    admitting --> complete: authorized continuation settles
+    authoring --> invalidated: input changed or native backstop
+    prepared --> invalidated: freshness or enablement changed
+    bootstrapping --> blocked: failed or uncertain outcome
+    admitting --> blocked: failed or uncertain outcome
+```
+
+Pending approvals, callback-dependent workers/processes or failed resource cleanup
+prevent cutover. Independent infrastructure remains running. A final empty-input
+check and clearing the **old empty** conversation scope have no await between
+them. The native lane lease remains held through off-loop DB commit and compulsory
+bootstrap; later arrivals stay in the native FIFO and are never cleared again.
+After bootstrap, retained input is processed before automatic admission of the
+still-authorized directive, including newer stops or cancellations.
+
+The commit ends the predecessor with `session_reset`, creates a fresh child with
+`parent_session_id`/`_reset_from`, and publishes native fresh-reset semantics. It
+does not copy the prior transcript. Recovery of a committed, not-yet-started
+bootstrap uses the **same successor**. Interrupted authoring, bootstrap or
+continuation is visibly blocked for reconciliation, never blindly replayed.
+
+After compulsory bootstrap, native busy-input policy still applies. With the
+default `interrupt` mode, an ordinary message can interrupt a retained-input or
+continuation turn; `/stop` also remains effective. An incomplete tool-capable turn
+is treated as uncertain: the receipt blocks further operational turns rather than
+replaying it. Reconcile the outcome before choosing an explicit native `/new`;
+that reset supersedes the blocked receipt. `queue` and `steer` retain their native
+input handling rather than acquiring a new rollover-specific interrupt policy.
+
+Native busy-input queues remain process-local: clean shutdown can spool them, but
+a hard crash can lose accepted input. The receipt protects ownership, not general
+ingress durability. Ambiguous input/action outcomes are not certified lossless.
+If an oversized result exhausts the handoff runway, the attempt is invalidated
+before ordinary native compaction/overflow recovery runs; the fresh handoff records
+that exception instead of claiming a zero-compaction rollover.
+
+Disabling the opt-in stops new attempts and aborts an uncommitted live attempt at
+its final configuration check. It does **not** erase a committed or uncertain
+transition's safety gate: finish the same successor's bootstrap or reconcile the
+visible block first. Packets and history are retained. Explicit native control
+commands retain their normal behavior; an explicit reset supersedes the old
+receipt rather than allowing it to overwrite the new route.
+
 ## Appendix: Key Configuration
 
 | Config Key | Type | Default | Description |

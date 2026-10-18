@@ -474,6 +474,13 @@ def recover_from_overflow(
     errors (incl. relay-wrapped output-cap 429s) BEFORE non-retryable client errors.
     Compression progress is scored in payload BYTES for 413 (never the byte-blind token
     estimate) and in tokens/message count for context overflow."""
+    if (
+        classified.reason in {FailoverReason.payload_too_large, FailoverReason.context_overflow}
+        or wrapped_output_cap_budget is not None
+    ):
+        guard = getattr(agent, "_session_rollover", None)
+        if guard is not None:
+            guard.invalidate("native_overflow", agent=agent)
     st = _Recovery(
         agent=agent, api_messages=api_messages, system_message=system_message,
         effective_task_id=effective_task_id, api_call_count=api_call_count,

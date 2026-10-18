@@ -537,6 +537,14 @@ class GatewayTurnPersistenceMixin:
         # Retain Slack thread/workspace routing so a failed turn cannot leave its status visible.
         await self._hmwa_stop_typing_for_turn(event, source)
         logger.exception("Agent error in session %s", session_key)
+        from gateway.rollover_packet import RolloverPreflightBlocked
+        if isinstance(e, RolloverPreflightBlocked):
+            from gateway.session_results import record_unexecuted_failure
+            return record_unexecuted_failure(
+                "Automatic continuity is blocked: the active runtime cannot satisfy its configured "
+                "safe-point or context budget requirements. Review the session_rollover configuration "
+                "and gateway log before continuing; no identity cutover was attempted."
+            )
         status_code = getattr(e, "status_code", None)
         if status_code in {400, 500} and len(prepared.history) > 50:
             # Context overflow / payload too large: a deterministic rejection (#107567), and the same

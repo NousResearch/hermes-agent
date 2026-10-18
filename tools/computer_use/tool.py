@@ -182,8 +182,7 @@ def _detach_locked(sid: str) -> tuple[Optional[ComputerUseBackend], Optional[thr
     return backend, call_lock
 
 def _stop_backend(backend: ComputerUseBackend, call_lock: Optional[threading.RLock], on_error: Callable[[Exception], None]) -> None:
-    """Stop under the session call lock (if any) so an in-flight action finishes first. Never called under
-    ``_backend_lock`` (unrelated sessions stay free). ``on_error`` absorbs the failure (never raises)."""
+    """Stop under the session call lock, outside ``_backend_lock``; ``on_error`` handles failures and may re-raise."""
     try:
         with call_lock if call_lock is not None else contextlib.nullcontext():
             backend.stop()
@@ -251,18 +250,40 @@ def _backend_for_call(session_id: str = "") -> Iterator[ComputerUseBackend]:
             return
 
 
-def release_computer_use_session(session_id: str) -> bool:
-    """Release one session-owned backend (lifecycle seam for hosts/plugins); idempotent, True iff one was released.
-    Cache entries are removed BEFORE stopping so new lookups cannot retain the stale target/ref namespace. Approval
-    grants are not touched here: they live in the shared store and die with ``tools.approval.clear_session``."""
+def release_computer_use_session(session_id: str, *, strict: bool = False) -> bool:
+    """Release one session-owned backend; True iff one was released.
+
+    Strict cleanup retains the cache entry when stop fails, so the owner can
+    retry. Best-effort cleanup keeps the legacy detach-before-stop behavior.
+    Approval grants are not touched here: they live in the shared store and
+    die with ``tools.approval.clear_session``.
+    """
     sid = _scoped_sid(session_id)
     _reset_screenshot_dedup(sid)  # the next capture of a re-created session must deliver pixels
+    if strict:
+        with _backend_lock:
+            if sid == "" and _backend is not None and sid not in _backends:
+                _install_backend(sid, _backend, _backend_permission_modes.get(sid, "standard"))
+            backend = _backends.get(sid)
+            call_lock = _backend_call_locks.get(sid)
+        if backend is None:
+            return False
+        with call_lock if call_lock is not None else contextlib.nullcontext():
+            backend.stop()
+            with _backend_lock:
+                if (_backends.get(sid) is backend
+                        and _backend_call_locks.get(sid) is call_lock):
+                    _detach_locked(sid)
+        return True
+
     with _backend_lock:
         backend, call_lock = _detach_locked(sid)
     if backend is None:
         return False
-    _stop_backend(backend, call_lock,
-                  lambda e: logger.debug("computer_use backend release failed for session %s", sid, exc_info=True))
+
+    def failed(_error):
+        logger.debug("computer_use backend release failed for session %s", sid, exc_info=True)
+    _stop_backend(backend, call_lock, failed)
     return True
 
 @atexit.register

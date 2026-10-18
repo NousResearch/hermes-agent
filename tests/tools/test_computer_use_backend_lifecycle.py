@@ -194,6 +194,41 @@ def test_release_waits_without_blocking_another_profile_or_replaying(runtime, mo
                 assert not thread.is_alive()
 
 
+
+def test_strict_release_leaves_other_profile_usable_while_stop_is_blocked(runtime):
+    homes, _created = runtime
+    stop_entered, finish_stop = threading.Event(), threading.Event()
+
+    with _profile(homes[0]):
+        old = cu._get_backend("shared")
+
+        def blocked_stop():
+            stop_entered.set()
+            assert finish_stop.wait(10)
+            old.stopped = True
+
+        old.stop = blocked_stop
+        thread, released = _spawn(
+            lambda: cu.release_computer_use_session("shared", strict=True),
+            "strict-release",
+        )
+        try:
+            assert stop_entered.wait(10)
+            assert cu._backends[cu._scoped_sid("shared")] is old
+            with _profile(homes[1]):
+                result = _call()
+                assert "error" not in result, result
+                assert cu._get_backend("shared") is not old
+            assert not released.done()
+        finally:
+            finish_stop.set()
+            thread.join(timeout=10)
+            assert not thread.is_alive()
+
+        assert released.result(timeout=1) is True
+        assert cu._scoped_sid("shared") not in cu._backends
+
+
 @pytest.mark.parametrize("hand_back", [False, True])
 def test_backend_retry_preserves_the_original_human_lease_epoch(runtime, monkeypatch, hand_back):
     _, created = runtime

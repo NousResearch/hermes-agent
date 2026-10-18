@@ -102,13 +102,15 @@ def _cleanup_env(env: Any, *, force_remove: Optional[bool] = None) -> None:
         env.terminate()
 
 
-def _teardown_env(env: Any, task_id: str, *, force_remove: Optional[bool] = None, done_msg: str = "Cleaned up inactive environment for task: %s") -> None:
+def _teardown_env(env: Any, task_id: str, *, force_remove: Optional[bool] = None, done_msg: str = "Cleaned up inactive environment for task: %s", strict: bool = False) -> None:
     """``_cleanup_env`` plus outcome logging. A 404/"not found" error means the
     sandbox is already gone — logged at info."""
     try:
         _cleanup_env(env, force_remove=force_remove)
         logger.info(done_msg, task_id)
     except Exception as e:
+        if strict:
+            raise
         error_str = str(e)
         if "404" in error_str or "not found" in error_str.lower():
             logger.info("Environment for task %s already cleaned up", task_id)
@@ -289,7 +291,7 @@ def cleanup_all_environments():
     return cleaned
 
 
-def cleanup_vm(task_id: str, *, force_remove: bool = False):
+def cleanup_vm(task_id: str, *, force_remove: bool = False, strict: bool = False):
     """Manually clean up a specific environment by task_id.
 
     *force_remove* is forwarded to backends that accept it (currently only
@@ -300,15 +302,41 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
     container shared across sessions" contract. Pass ``force_remove=True``
     only for user-initiated teardown. The idle reaper calls ``env.cleanup()``
     directly, so persist-mode idle envs are likewise no-op'd; only the orphan
-    reaper at next startup reclaims them.
+    reaper at next startup reclaims them. Strict callers retain the cached
+    environment if teardown fails; best-effort cleanup keeps detach-before-stop.
     """
+    if strict:
+        from tools.terminal_tool import (
+            _active_environments, _creation_locks, _creation_locks_lock, _env_lock,
+            _last_activity,
+        )
+        with _env_lock:
+            env = _active_environments.get(task_id)
+        if env is None:
+            _clear_file_ops_cache(task_id)
+            return
+        _teardown_env(
+            env, task_id, force_remove=force_remove,
+            done_msg="Manually cleaned up environment for task: %s", strict=True,
+        )
+        with _env_lock:
+            removed = _active_environments.get(task_id) is env
+            if removed:
+                _active_environments.pop(task_id)
+                _last_activity.pop(task_id, None)
+        if removed:
+            with _creation_locks_lock:
+                _creation_locks.pop(task_id, None)
+            _clear_file_ops_cache(task_id)
+        return
+
     env = _unregister_env(task_id)
     _clear_file_ops_cache(task_id)
     if env is None:
         return
     _teardown_env(
         env, task_id, force_remove=force_remove,
-        done_msg="Manually cleaned up environment for task: %s",
+        done_msg="Manually cleaned up environment for task: %s", strict=False,
     )
 
 

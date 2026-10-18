@@ -85,6 +85,7 @@ class PersistentState:
     # not). gateway.run mirrors this value to the DB keyed by session_key so the same semantics also survive
     # gateway restarts.
     hygiene_failure_streak: int = 0
+    rollover: Any = None  # guarded transition; not cleared with the old conversation queue
 
 
 @dataclass

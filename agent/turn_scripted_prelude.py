@@ -57,6 +57,11 @@ def run_scripted_prelude(agent: Any, s: Any, prelude: Prelude) -> Any:
 def play_prelude(agent: Any, s: Any, prelude: Optional[Prelude]) -> tuple[str, Any]:
     """``("return", result)`` ends the turn now, ``("break", None)`` skips the model call, ``("run", None)`` runs
     the loop as usual (also when there is no prelude)."""
+    if getattr(getattr(agent, "_session_rollover", None), "phase", None) == "requested":
+        from agent.session_rollover import SESSION_ROLLOVER_REQUESTED_RESPONSE
+        s.final_response = SESSION_ROLLOVER_REQUESTED_RESPONSE
+        s._turn_exit_reason = "session_rollover_requested"
+        return "break", None
     verdict = run_scripted_prelude(agent, s, prelude) if prelude is not None else None
     if verdict is not None and verdict.action in ("return", "break"):
         return verdict.action, verdict.result

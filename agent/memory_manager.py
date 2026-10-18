@@ -420,7 +420,8 @@ class MemoryManager:
         }
 
     def _each_provider(self, label: str, call: Callable[[MemoryProvider], Any], *, level: int = logging.DEBUG,
-                       providers: Optional[list[MemoryProvider]] = None, exc_info: bool = False) -> list[Any]:
+                       providers: Optional[list[MemoryProvider]] = None, exc_info: bool = False,
+                       strict: bool = False) -> list[Any]:
         """Call ``call(provider)`` per provider, logging+swallowing failures; returns successes in order.
         ``label`` completes the log line ``Memory provider '<name>' <label>: <exc>``."""
         results: list[Any] = []
@@ -428,6 +429,8 @@ class MemoryManager:
             try:
                 results.append(call(provider))
             except Exception as e:
+                if strict:
+                    raise
                 logger.log(level, "Memory provider '%s' %s: %s", provider.name, label, e, exc_info=exc_info)
         return results
 
@@ -739,10 +742,10 @@ class MemoryManager:
 
         self._each_provider("on_turn_start failed", _tick)
 
-    def on_session_end(self, messages: list[dict[str, Any]]) -> None:
+    def on_session_end(self, messages: list[dict[str, Any]], *, strict: bool = False) -> None:
         messages = _redact_messages_for_egress(messages or [])
         self._each_provider("on_session_end failed", lambda p: p.on_session_end(messages), level=logging.WARNING,
-                            exc_info=True)
+                            exc_info=True, strict=strict)
 
     def commit_session_boundary_async(self, messages: list[dict[str, Any]], *, new_session_id: str,
                                       parent_session_id: str = "", reason: str = "new_session") -> None:
@@ -941,11 +944,11 @@ class MemoryManager:
             lambda p: p.on_delegation(task, result, child_session_id=child_session_id, **kwargs),
         )
 
-    def shutdown_all(self) -> None:
+    def shutdown_all(self, *, strict: bool = False) -> None:
         """Drain the background executor (bounded), then shut providers down in reverse order."""
         self._drain_sync_executor()
         self._each_provider("shutdown failed", lambda p: p.shutdown(), level=logging.WARNING,
-                            providers=self._providers[::-1])
+                            providers=self._providers[::-1], strict=strict)
 
     @property
     def shutdown_drain_state(self) -> dict[str, Any]:

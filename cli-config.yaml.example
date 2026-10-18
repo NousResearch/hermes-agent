@@ -1046,6 +1046,21 @@ max_concurrent_sessions: null
 # explicitly want one shared "room brain" per group/channel.
 group_sessions_per_user: true
 
+# Guarded context-pressure handoff for explicitly selected messaging lanes.
+# Disabled unless armed with a complete installed handoff skill, durable packet
+# directory, authority-preserving wrapper and measured token reserve.
+# See website/docs/developer-guide/gateway-session-lifecycle.md
+# ("Guarded automatic handoff rollover") for the packet contract and recovery limits.
+# session_rollover:
+#   enabled: false
+#   session_keys: []             # exact native keys, never a profile-wide wildcard
+#   handoff_skill: handoff       # installed skill's actual discovery name
+#   packet_dir: /absolute/project/docs/todo/handoffs
+#   bootstrap_prompt: "First read {packet} and its cited authorities. Reconcile pending and uncertain work, apply newer stops, and follow only its already-authorized Continuation Directive."
+#   runway_tokens: null         # REQUIRED positive measured full-handoff growth
+#   safety_margin_tokens: null  # REQUIRED positive measured request/tool allowance
+# Disabling stops new attempts, not committed/uncertain recovery safety gates.
+
 # =============================================================================
 # Session Storage Retention (state.db)
 # =============================================================================

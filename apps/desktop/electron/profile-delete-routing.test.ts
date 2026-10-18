@@ -6,7 +6,9 @@ import {
   assertLocalProfileCanStart,
   decideProfileDeleteAction,
   dispatchConnectionScopedProfileDelete,
+  type LocalProfileDeleteDeps,
   localProfilePoolKeys,
+  prepareLocalProfileDelete,
   ProfileDeletionGate,
   profileNameFromDeleteRequest,
   resolveRouteProfile
@@ -317,5 +319,51 @@ test('connection-scoped invalid-name DELETE rejects before gate, preparation, te
     /invalid profile name/i
   )
 
+  assert.deepEqual(events, [])
+})
+
+// ---------------------------------------------------------------------------
+// prepareLocalProfileDelete
+// ---------------------------------------------------------------------------
+
+function localDeleteDeps(events: string[]): LocalProfileDeleteDeps {
+  return {
+    ...deps,
+    teardownPoolBackendAndWait: async profile => {
+      events.push(`teardown-pool:${profile}`)
+    },
+    teardownPrimaryBackendAndWait: async () => {
+      events.push('teardown-primary')
+    },
+    writeActiveDesktopProfile: profile => {
+      events.push(`write-active:${profile}`)
+    }
+  }
+}
+
+test('prepareLocalProfileDelete re-homes to default and stops every backend of the primary profile', async () => {
+  const events: string[] = []
+  const request = { method: 'DELETE', path: '/api/profiles/primary-profile' }
+
+  assert.equal(await prepareLocalProfileDelete(request, localDeleteDeps(events)), 'primary-profile')
+  assert.deepEqual(events, ['write-active:default', 'teardown-primary', 'teardown-pool:primary-profile'])
+})
+
+test('prepareLocalProfileDelete stops only the pool backends of a non-primary profile', async () => {
+  const events: string[] = []
+  const request = { method: 'DELETE', path: '/api/profiles/worker' }
+
+  assert.equal(await prepareLocalProfileDelete(request, localDeleteDeps(events)), 'worker')
+  assert.deepEqual(events, ['teardown-pool:worker'])
+})
+
+test.each([
+  { method: 'GET', path: '/api/profiles/worker' },
+  { method: 'DELETE', path: '/api/profiles/default' },
+  { method: 'DELETE', path: '/api/profiles/bad%20name' }
+])('prepareLocalProfileDelete leaves backends alone for a non-deletable request', async request => {
+  const events: string[] = []
+
+  assert.equal(await prepareLocalProfileDelete(request, localDeleteDeps(events)), null)
   assert.deepEqual(events, [])
 })

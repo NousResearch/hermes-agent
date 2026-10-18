@@ -17,11 +17,11 @@ Pinned surfaces:
 * signal boundary — ``start_gateway(replace=True)`` on unprovable ownership
   refuses without calling ``terminate_pid`` or writing a takeover marker; the
   legitimate bound same-home target still reaches the replace flow;
-* fatal refusal (#135392) — the unprovable-ownership refusal is decided by the
-  persisted identity record alone, so it stamps ``gateway_state: startup_failed``
-  (with an ``exit_reason`` code) and exits ``GATEWAY_FATAL_CONFIG_EXIT_CODE``
-  (78) instead of a bare exit 1, so a Restart=always unit parks rather than
-  restart-looping on the same record.
+* retained stamp (#135392) — the unprovable-ownership refusal stamps
+  ``gateway_state: startup_failed`` (with an ``exit_reason`` code) so the
+  stale PID record stops being trusted (``get_runtime_status_running_pid()``
+  returns None for startup_failed) and /api/status shows reality, while the
+  exit stays 1 so a supervisor's next attempt can win.
 """
 
 from __future__ import annotations
@@ -332,16 +332,13 @@ class TestSignalBoundary:
             agent_patches(stack)
             try:
                 result = asyncio_run(gateway_run.start_gateway(replace=True))
-            except SystemExit as exc:
-                result = exc.code
             except Exception:
                 result = "raised"
         return result, calls
 
     def test_unprovable_ownership_never_signals(self, profile_env):
-        """Unprovable ownership → start_gateway exits fatally (EX_CONFIG) WITHOUT
-        calling terminate_pid or writing a takeover marker."""
-        from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
+        """Unprovable ownership → start_gateway returns False WITHOUT calling
+        terminate_pid or writing a takeover marker."""
 
         def configure(stack):
             guard = stack.enter_context(
@@ -354,9 +351,9 @@ class TestSignalBoundary:
 
         result, calls = self._run_replace(lambda s: configure(s))
 
-        assert result == GATEWAY_FATAL_CONFIG_EXIT_CODE, (
-            "an unprovable-ownership refusal is permanent: exit 78 to park the unit, "
-            "never a bare exit 1 that restarts into the same refusal"
+        assert result is False, (
+            "the refusal must stay exit-1-shaped so a supervisor's next attempt "
+            "can succeed once the stale record stops being trusted"
         )
         assert calls["terminate"] == 0, (
             "--replace must not signal a target whose ownership is unproven"
@@ -366,8 +363,9 @@ class TestSignalBoundary:
         )
 
     def test_unprovable_ownership_stamps_startup_failed(self, profile_env):
-        """The fatal refusal publishes the retained fatal state + an exit reason,
-        so /api/status reports startup_failed instead of a stale heartbeat."""
+        """The refusal publishes the retained fatal state + an exit reason, so
+        /api/status reports startup_failed instead of a stale heartbeat and the
+        next start no longer trusts the stale PID record."""
         def configure(stack):
             stack.enter_context(
                 patch(

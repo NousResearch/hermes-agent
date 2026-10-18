@@ -29,9 +29,7 @@ logger = logging.getLogger("gateway.run")
 
 async def _start_gateway_replace_existing_instance(existing_pid: int, replace: bool) -> bool:
     """Handle a live gateway PID under this HERMES_HOME: replace it (``--replace``) or refuse.
-    Returns False when startup must abort (refused, permission denied, target still alive).
-    Raises ``SystemExit(GATEWAY_FATAL_CONFIG_EXIT_CODE)`` when ownership is unprovable: that verdict
-    is decided by the persisted identity record alone, so a retry can never change it."""
+    Returns False when startup must abort (refused, permission denied, target still alive)."""
     from gateway.run import (_clear_takeover_marker_quiet, _replace_target_belongs_to_other_profile, _wait_for_pid_exit, get_hermes_home, suppress)
     from gateway.status import get_process_start_time, remove_pid_file, terminate_pid
     if not replace:
@@ -51,7 +49,6 @@ async def _start_gateway_replace_existing_instance(existing_pid: int, replace: b
 
     # Never signal a process not provably ours (a poisoned PID record → cross-profile restart loop).
     if _replace_target_belongs_to_other_profile(existing_pid):
-        from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
         from gateway.run import _write_runtime_status_quiet
         from gateway.status import _get_process_hermes_home
         logger.error(
@@ -59,14 +56,14 @@ async def _start_gateway_replace_existing_instance(existing_pid: int, replace: b
             "to this profile's gateway (HERMES_HOME %s). Remove the "
             "stale PID record or stop the owning profile explicitly.",
             existing_pid, _get_process_hermes_home())
-        # The verdict is decided by the persisted identity record alone, so no supervisor retry can
-        # change it: a bare exit 1 left a Restart=always unit looping on a PID record that will never
-        # prove ours (#135392). Stamp the fatal state and exit EX_CONFIG so systemd's
-        # RestartPreventExitStatus=78 parks the unit and s6 maps 78 → 125 (permanent failure), and
-        # /api/status reports startup_failed instead of a stale heartbeat.
+        # Stamp the retained state so the stale PID record stops being trusted BEFORE the
+        # next attempt: get_runtime_status_running_pid() returns None for startup_failed,
+        # so the retry either finds the target gone or a fresh PID instead of looping on
+        # the same record (#135392). Keep exit 1 so a supervisor's restart can win; a
+        # parked unit would hold WhatsApp and cron down on an unattended host.
         _write_runtime_status_quiet(
             gateway_state="startup_failed", exit_reason="gateway_replace_ownership_unproven")
-        raise SystemExit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
+        return False
     existing_start_time = get_process_start_time(existing_pid)
     logger.info("Replacing existing gateway instance (PID %d) with --replace.", existing_pid)
     # Takeover marker: target exits 0 on our SIGTERM (exit 1 → systemd Restart=on-failure flap loop).

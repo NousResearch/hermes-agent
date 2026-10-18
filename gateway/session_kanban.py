@@ -245,6 +245,14 @@ def _run_worker_turns(agent, frame, history):
         raise
     finally:
         _record_worker_result(context, code, last_output)
+        # Run-side exit handler (campaign memory-architecture): a clean rc=0 exit
+        # that never made a terminal kanban call still books one here (complete
+        # if the run left artifacts/steps, else blocked) instead of leaving the
+        # dispatcher to burn retries classifying it as a protocol violation.
+        # Idempotent: complete_task/block_task fence on current_run_id.
+        if code == 0:
+            from hermes_cli.kanban_db_worker_exit import synthesize_missing_terminal_call
+            synthesize_missing_terminal_call(context, code)
 
 
 def record_start_failure(frame, exc):

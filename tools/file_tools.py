@@ -762,7 +762,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT,
         # clamped before its pipe. Literal file prefixes must survive.
         result_dict["content"] = format_read_content(
             result_dict.get("content") or "", line_numbers,
-            trailing_newline=result._trailing_newline,
+            trailing_newline=getattr(result, "_trailing_newline", False),
             truncated_by=result_dict.get("truncated_by"))
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:

@@ -58,6 +58,19 @@ def test_plain_output_preserves_terminal_newlines(tmp_path):
             file_tools.clear_file_ops_cache(task)
 
 
+def test_plain_utf16_pages_preserve_separators(tmp_path):
+    path = tmp_path / "utf16.txt"
+    path.write_text("alpha\nbeta", encoding="utf-16")
+    task = "utf16-plain-pages"
+    try:
+        first = _call(path, task, offset=1, limit=1, line_numbers=False)
+        second = _call(path, task, offset=2, limit=1, line_numbers=False)
+        assert first["content"] == "alpha\n"
+        assert second["content"] == "beta"
+    finally:
+        file_tools.clear_file_ops_cache(task)
+
+
 def test_output_format_keeps_dedup_write_and_denial_boundaries(tmp_path):
     path = tmp_path / "guarded.txt"
     path.write_text("1|keep", encoding="utf-8")

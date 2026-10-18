@@ -351,8 +351,12 @@ def _restart_launchd_job(domain: str, label: str, old_pid: int | None, *, timeou
 
 
 def _dashboard_cmdline_for_pid(pid: int) -> list[str] | None:
-    """Exact argv of a running process: ``/proc/<pid>/cmdline`` (Linux), ``ps -o command=`` + shlex
-    (macOS), None on Windows (no graceful taskkill window; Desktop manages its backend)."""
+    """Capture argv element boundaries from /proc or psutil before considering ps display text.
+
+    macOS ps space-joins arguments and octal-escapes embedded newlines. It cannot serialize
+    Python -c source faithfully, so refuse that lossy fallback rather than replaying broken code.
+    Windows has no graceful capture window; Desktop manages its backend there.
+    """
     if sys.platform == "win32":
         return None
     try:
@@ -362,6 +366,13 @@ def _dashboard_cmdline_for_pid(pid: int) -> list[str] | None:
                 raw = f.read()
             argv = [part.decode("utf-8", errors="replace") for part in raw.split(b"\x00") if part]
             return argv or None
+        import psutil
+        try:
+            argv = psutil.Process(pid).cmdline()
+            if argv:
+                return argv
+        except psutil.Error:
+            pass  # Process gone or inaccessible; ps remains a last resort.
         result = _run_probe(["ps", "-p", str(pid), "-o", "command="], timeout=10)
         if result.returncode != 0:
             return None
@@ -372,6 +383,8 @@ def _dashboard_cmdline_for_pid(pid: int) -> list[str] | None:
             argv = shlex.split(command)
         except ValueError:
             argv = command.split()
+        if argv and os.path.basename(argv[0]).startswith("python") and "-c" in argv:
+            return None
         return argv or None
     except (OSError, ValueError, subprocess.TimeoutExpired):
         return None

@@ -1278,7 +1278,10 @@ if [ "$CODE" -eq 0 ]; then FINAL_CODE=0 FINAL_MSG="Update complete." UPDATE_COMM
   # end as a plain "Update complete." (review regression 1).
   OWED_STEPS="$(owed_followup_steps)"
   if [ -n "$OWED_STEPS" ]; then
-    case " $OWED_STEPS " in *" gateway_restart "*) OWED_HINT=" Run hermes gateway restart to move the messaging gateway onto the new code now." ;; *) OWED_HINT="" ;; esac
+    OWED_HINT=""
+    case " $OWED_STEPS " in *" gateway_restart "*) OWED_HINT=" Run hermes gateway restart to move the messaging gateway onto the new code now." ;; esac
+    # Each component needs its own remedy when both restarts are owed.
+    case " $OWED_STEPS " in *" dashboard_restart "*) OWED_HINT="$OWED_HINT Run hermes dashboard --port <port> to bring the dashboard/serve backend onto the new code now." ;; esac
     if [ -n "$DONE_NOTE" ]; then DONE_NOTE="$DONE_NOTE Follow-up steps still owed: $OWED_STEPS.$OWED_HINT"
     else DONE_NOTE="Hermes was updated, but some follow-up steps did not finish ($OWED_STEPS). The next launch or hermes update retries them; the update log has the details.$OWED_HINT"; fi
     add_warning "followup" "owed by the committed update: $OWED_STEPS"

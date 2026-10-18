@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
+import psutil
 import pytest
 
 from hermes_cli.main_dashboard import _find_stale_dashboard_pids
@@ -824,6 +825,7 @@ class TestCmdlineCapture:
             return MagicMock(returncode=0, stdout="hermes serve --port 8300\n", stderr="")
 
         with patch.object(live.os.path, "exists", return_value=False), \
+             patch("psutil.Process", side_effect=psutil.NoSuchProcess(888)), \
              patch("subprocess.run", side_effect=fake_run):
             argv = main_dashboard._dashboard_cmdline_for_pid(888)
 

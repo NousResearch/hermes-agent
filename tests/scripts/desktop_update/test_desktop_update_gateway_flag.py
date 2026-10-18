@@ -111,11 +111,21 @@ def test_owed_desktop_build_is_a_manual_outcome_even_when_the_followup_is_trunca
 
 
 @requires_posix_handoff
-@pytest.mark.parametrize("step", ["gateway_restart", "windows_resume", "channel_adoption", "completion"])
-def test_every_owed_followup_reaches_the_desktop_result(tmp_path, step):
+@pytest.mark.parametrize("step,remedy", [
+    ("gateway_restart", "hermes gateway restart"),
+    ("dashboard_restart", "hermes dashboard"),
+    ("windows_resume", ""),
+    ("channel_adoption", ""),
+    ("completion", ""),
+])
+def test_every_owed_followup_reaches_the_desktop_result(tmp_path, step, remedy):
     """Contract C3 (review regression 1): a committed update exits 0, but a follow-up it still owes
     (a gateway proven to run old code, a refused resume, a lost completion) must never end as a
-    plain "Update complete." -- the result names the owed step."""
+    plain "Update complete." -- the result names the owed step.
+
+    The remedy the Desktop shows is keyed on the step: a stopped dashboard/serve backend must not
+    send the reader after ``hermes gateway restart``, which never touches a backend.
+    """
     line = f"  ⚠ Update follow-up '{step}' did not finish: old code still serving (the next launch retries it)"
     _run_handoff(tmp_path, [], f"{line}\n✓ Update complete!")
 
@@ -123,6 +133,8 @@ def test_every_owed_followup_reaches_the_desktop_result(tmp_path, step):
     assert result["exit_code"] == 0 and result["ok"] is True
     assert result["manual"] is True
     assert step in result["message"]
+    if remedy:
+        assert remedy in result["message"]
     assert ("hermes gateway restart" in result["message"]) is (step == "gateway_restart")
 
 
@@ -133,3 +145,14 @@ def test_a_clean_update_stays_plain_success(tmp_path):
     result = json.loads((tmp_path / ".hermes-update-result.json").read_text(encoding="utf-8-sig"))
     assert result["exit_code"] == 0 and result["manual"] is False
     assert result["message"] == "Update complete."
+
+
+@requires_posix_handoff
+def test_simultaneous_debts_keep_both_remedies(tmp_path):
+    output = "\n".join(f"  ⚠ Update follow-up '{step}' did not finish: restart owed"
+                       for step in ["dashboard_restart", "gateway_restart"])
+    _run_handoff(tmp_path, [], output)
+    result = json.loads((tmp_path / ".hermes-update-result.json").read_text(encoding="utf-8-sig"))
+    assert result["manual"] is True
+    assert "hermes gateway restart" in result["message"]
+    assert "hermes dashboard --port <port>" in result["message"]

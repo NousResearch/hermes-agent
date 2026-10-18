@@ -436,13 +436,14 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
         _register_session_cwd(_sessions[sid])
         if idem_key is not None:
             _idempotency_keys[idem_key] = (sid, now)
-    _publish_session_identity(sid, _sessions[sid], session_origin="resume" if history else "fresh")
     if session_model_override:
         # A composer pick rides in as this override and beats model.default for the whole session;
         # name both so agent.log alone explains which model a new chat runs, and why (#107410).
         logger.info("session.create %s: model=%s provider=%s source=client override (profile default: %s)",
                     key, session_model_override["model"], session_model_override.get("provider") or "-",
                     _session_default_route(_sessions[sid])[0])
+    # Publish only once the session is fully set up and kept.
+    _publish_session_identity(sid, _sessions[sid], session_origin="resume" if history else "fresh")
     # No DB row here (drafts left "Untitled" litter): created on the first prompt — except seeded sessions.
     # NOTE: we intentionally do NOT persist a DB row here. Every TUI/desktop launch (and every "New agent" /
     # draft) opens a session here just to paint the composer, so eagerly creating a row left an "Untitled"

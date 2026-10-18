@@ -16,7 +16,7 @@ from agent.session_activity import (
 )
 from hermes_state_errors import SessionActiveWriteGuardError
 from hermes_state_common import (
-    _LISTABLE_CHILD_SQL, _RECOVERABLE_END_REASONS,
+    _LISTABLE_CHILD_SQL, _MODEL_CONFIG_ROW_MISSING, _RECOVERABLE_END_REASONS,
     _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _non_continuation_child_sql,
     _shape_preview, _sql_preview_raw, QUEUED_PROMPT_METADATA_KEY,
     _sql_in_window, _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id,
@@ -38,10 +38,6 @@ def workspace_key(row: dict[str, Any]) -> Optional[str]:
 def _delegate_from_json(col: str = "model_config") -> str:
     return _sql_json_extract(col, "$._delegate_from")
 
-
-# _merge_model_config_json's "no such row" result — distinct from the legal None
-# ("merged config is empty → store NULL").
-_MODEL_CONFIG_ROW_MISSING = object()
 
 # ``lineage(id)``: the compression lineage of the session bound twice as ``(?, ?)`` —
 # ancestors through compression-ended parents plus compression continuations after it.

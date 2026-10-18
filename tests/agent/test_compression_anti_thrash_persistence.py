@@ -176,7 +176,7 @@ class TestStrikesPersistFromEveryVerdictSite:
 
         with patch.object(
             db,
-            "set_compression_ineffective_count",
+            "set_compression_breaker_state",
             side_effect=Exception("disk full"),
         ):
             cc._verify_compaction_cleared_threshold = True

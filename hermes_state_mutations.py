@@ -9,9 +9,12 @@ def validate_action(operation, payload):
     if not isinstance(payload, dict) or not isinstance(operation, str):
         raise RuntimeStoreError('invalid_params')
     # ``confirm``: the owner's selection-guard token for this exact resolved target (session_mutation_model).
-    if (operation == 'model' and 'model' in payload and not set(payload) - {'model', 'provider', 'confirm'}
+    # ``reasoning``: a level picked with the model, committed in the same selection.
+    if (operation == 'model' and 'model' in payload and not set(payload) - {'model', 'provider', 'confirm', 'reasoning'}
             and all(isinstance(v, str) and v.strip() for v in payload.values())):
-        return
+        from hermes_constants import parse_reasoning_effort
+        if 'reasoning' not in payload or parse_reasoning_effort(payload['reasoning']) is not None:
+            return
     if operation == 'branch' and _valid_branch_payload(payload):
         return
     # Session-scope ``/reasoning <level>`` and Desktop's Move to project: revision-fenced edits of
@@ -156,7 +159,9 @@ def _import(db, conn, session_id, payload):
         sid = raw['id']
         from hermes_state_mutation_retirement import RETIRED_PREFIX
         if conn.execute('SELECT 1 FROM state_meta WHERE key=?', (RETIRED_PREFIX + sid,)).fetchone():
-            raise RuntimeStoreError('admission_conflict')
+            # Refused by name at import time: a row restored beside the fence would refuse every turn.
+            raise RuntimeStoreError('admission_conflict', field='sessions',
+                                    detail=f'session {sid} was deleted here; a deleted session is not restored')
         if conn.execute('SELECT 1 FROM sessions WHERE id=?', (sid,)).fetchone():
             skipped.append(sid)
             continue

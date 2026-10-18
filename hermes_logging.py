@@ -306,8 +306,9 @@ class _ComponentFilter(logging.Filter):
 COMPONENT_PREFIXES = {
     # ``plugins.platforms``: messaging adapters that migrated out of
     # ``gateway/platforms/`` into bundled plugins (#41112) are still gateway
-    # components and belong in gateway.log.
-    "gateway": ("gateway", "hermes_plugins", "plugins.platforms"),
+    # components and belong in gateway.log. ``agent.memory_caller_scope``: a multiplexed gateway's
+    # memory-provider profile refusals (#140058), which the operator reads in gateway.log.
+    "gateway": ("gateway", "hermes_plugins", "plugins.platforms", "agent.memory_caller_scope"),
     "agent": ("agent", "run_agent", "model_tools", "batch_runner"),
     "tools": ("tools",),
     "cli": ("hermes_cli", "cli"),

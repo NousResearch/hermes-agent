@@ -212,7 +212,19 @@ def test_no_agent_noncanonical_typed_deferral_envelope_is_a_failure(hermes_env, 
     assert alert.startswith("⚠ Cron watchdog")
     assert output in alert
 
+    delivered = []
+    monkeypatch.setattr(
+        scheduler,
+        "_deliver_result",
+        lambda _job, content, **kwargs: delivered.append((content, kwargs)) or None,
+    )
     assert scheduler.run_one_job(job) is True
+    assert len(delivered) == 1
+    delivered_content, delivered_kwargs = delivered[0]
+    assert delivered_kwargs["for_failure"] is True
+    assert delivered_content.startswith("⚠️ Cron")
+    assert "Script exited with code 75" in delivered_content
+
     saved = get_job(job["id"])
     assert saved["last_status"] == "error"
     assert saved["failure_streak"] == 1

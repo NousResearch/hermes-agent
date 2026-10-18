@@ -12,7 +12,6 @@ def test_missing_bundle_tool_is_installed_in_writable_store(pm_env, tmp_path, mo
     from pm.install import ensure, env_for, is_installed
     import importlib
 
-    fixture = pm_env
     shipped = tmp_path / "payload" / "tools"
     shipped.mkdir(parents=True)
     (shipped.parent / "manifest.json").write_text('{"repo":"core","store":"tools","venv":"venv"}')

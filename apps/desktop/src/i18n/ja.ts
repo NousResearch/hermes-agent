@@ -3,6 +3,10 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introJa } from './intro-ja'
 import { jaAuxTasks } from './ja_aux_tasks'
+import { jaBoot } from './ja_boot'
+import { jaClarify } from './ja_clarify'
+import { jaConnectors } from './ja_connectors'
+import { jaFirstRun } from './ja_first_run'
 import { jaLocalModels } from './ja_local_models'
 import { jaModelMenu } from './ja_model_menu'
 import { jaNotices } from './ja_notices'
@@ -10,8 +14,11 @@ import { jaOnboarding } from './ja_onboarding'
 import { jaPluginSettings } from './ja_plugins'
 import { jaProjects } from './ja_projects'
 import { jaSharedMetrics } from './ja_shared_metrics'
+import { jaThemePicker } from './ja_theme_picker'
+import { jaUpdateChannel } from './ja_update_channel'
 
 export const jaOverrides = {
+  connectors: jaConnectors.connectors,
   externalOpenFailed: {
     title: 'このリンクを開けませんでした',
     message: 'このアドレスを開くブラウザが登録されていません。リンクをコピーして手動で開いてください。',
@@ -19,40 +26,9 @@ export const jaOverrides = {
     close: '閉じる'
   },
   sharedMetrics: jaSharedMetrics,
+  firstRun: jaFirstRun,
   intro: introJa,
-  sessionImport: {
-    title: '別のアプリから続ける',
-    subtitle: '会話をHermesに取り込み、続きを始めましょう。',
-    action: 'セッションを取り込む',
-    readingFrom: '読み込み元',
-    connectedComputer: '接続先のコンピューター',
-    destination: '取り込み先',
-    all: 'すべて',
-    search: '読み込み済みのセッションを検索',
-    scanning: '会話を検索中',
-    scanError: 'セッションを取得できません',
-    scanHelp: 'バックエンドの接続を確認して再試行してください。古いバックエンドは更新が必要な場合があります。',
-    empty: '会話が見つかりません',
-    emptyHelp: 'このバックエンドのClaude CodeとCodexのセッションがここに表示されます。',
-    noMatches: '一致する会話がありません',
-    searchHelp: '別のタイトルやフォルダーを検索するか、セッションを追加で読み込んでください。',
-    skipped: '空、読み込み不可、または大きすぎるログをスキップしました。',
-    more: 'さらに読み込む',
-    messages: 'メッセージ',
-    choose: '会話の続きを始めましょう',
-    chooseHelp: 'セッションを選び、取り込む前に履歴を確認できます。',
-    previewLoading: 'プレビューを開いています',
-    previewError: 'プレビューできません',
-    previewHelp: '元のファイルが移動または変更された可能性があります。一覧を更新してください。',
-    previewLimit: '読みやすいようにプレビューを省略しています。取り込み時は会話全体をコピーします。',
-    you: 'あなた',
-    snapshot: 'この会話は取り込み済みです。既存のコピーを開いて続けられます。',
-    copyNotice: '会話のテキストをコピーします。元のファイルは変更されません。ツール出力と推論は含まれません。',
-    importing: '取り込み中…',
-    open: 'Hermesで開く',
-    continue: 'Hermesで続ける',
-    importError: '会話を取り込めませんでした。'
-  },
+  sessionImport: jaConnectors.sessionImport,
   common: {
     apply: '適用',
     back: '戻る',
@@ -116,66 +92,7 @@ export const jaOverrides = {
     revealMissing: 'そのフォルダーはこのコンピューターにありません'
   },
 
-  boot: {
-    ready: 'Hermes Desktop の準備ができました',
-    desktopBootFailedWithMessage: message => `デスクトップの起動に失敗しました: ${message}`,
-    steps: {
-      connectingGateway: 'ライブデスクトップゲートウェイに接続中',
-      loadingSettings: 'Hermes の設定を読み込み中',
-      loadingSessions: '最近のセッションを読み込み中',
-      retryingRemoteBackend: 'リモート Hermes バックエンドに再接続中…',
-      startingDesktopConnection: 'デスクトップ接続を開始中',
-      startingHermesDesktop: 'Hermes Desktop を起動中…'
-    },
-    errors: {
-      backgroundExited: 'Hermes バックグラウンドプロセスが終了しました。',
-      backgroundExitedDuringStartup: '起動中に Hermes バックグラウンドプロセスが終了しました。',
-      backendStopped: 'バックエンドが停止しました',
-      desktopBootFailed: 'デスクトップの起動に失敗しました',
-      gatewayConnectionLost: 'ゲートウェイへの接続が切断されました',
-      gatewayConnectionLostDetail:
-        'Still retrying in the background. You can keep reading and drafting — open Gateway settings if this persists.',
-      gatewaySignInRequired: 'ゲートウェイへのサインインが必要です',
-      ipcBridgeUnavailable: 'デスクトップ IPC ブリッジが利用できません。'
-    },
-    failure: {
-      title: 'Hermes を起動できませんでした',
-      description:
-        'バックグラウンドゲートウェイが起動しませんでした。以下の回復手順をお試しください。チャットや設定は削除されません。',
-      remoteTitle: 'リモートゲートウェイへのサインインが必要です',
-      remoteDescription:
-        'リモートゲートウェイのセッションが期限切れです。再接続するにはもう一度サインインしてください。チャットや設定は削除されません。',
-      retry: '再試行',
-      repairInstall: 'インストールを修復',
-      useLocalGateway: 'ローカルゲートウェイを使用',
-      gatewaySettings: 'ゲートウェイ設定',
-      back: '戻る',
-      openLogs: 'ログを開く',
-      repairHint: '修復はインストーラーを再実行します。新しいマシンでは数分かかる場合があります。',
-      remoteSignInHint: signInLabel =>
-        `保存済みのリモートブラウザセッションからサインアウトし、${signInLabel}を開きます。代わりにバンドルされたバックエンドに切り替えるには「ローカルゲートウェイを使用」を選択してください。`,
-      signOutAndSignIn: 'サインアウトして再サインイン',
-      remoteFailureHint:
-        '「ゲートウェイ設定」でゲートウェイの URL とサインインを確認するか、ローカルゲートウェイに切り替えてください。',
-      cloudDownTitle: 'Nous Cloud エージェントが停止しています',
-      cloudDownDescription:
-        'このゲートウェイが接続している Nous 管理のクラウドエージェントがサーバーエラーを返しています。ここから再起動することはできません。ステータスを確認するか、ローカルゲートウェイに切り替えるか、サポートに連絡してください。',
-      cloudDownHint:
-        '下のボタンから Nous Portal（インスタンスの状態と操作）を開くか、Discord でサポートを受けられます。',
-      cloudDownCheckPortal: 'Portal のステータスを確認',
-      cloudDownDiscord: 'Discord でサポートを受ける',
-      hideRecentLogs: '最近のログを非表示',
-      showRecentLogs: '最近のログを表示',
-      signedInTitle: 'サインインしました',
-      signedInMessage: 'リモートゲートウェイに再接続中…',
-      signInIncompleteTitle: 'サインインが完了していません',
-      signInIncompleteMessage: '認証が完了する前にログインウィンドウが閉じられました。',
-      signInFailed: 'サインインに失敗しました',
-      signInToRemoteGateway: 'リモートゲートウェイにサインイン',
-      signInWithProvider: provider => `${provider} でサインイン`,
-      identityProvider: 'ID プロバイダー'
-    }
-  },
+  boot: jaBoot.boot,
 
   notifications: {
     sharedProfileWarning:
@@ -983,9 +900,7 @@ export const jaOverrides = {
           'アプリから Hermes 自身を更新するとき、ローカルのソース変更を保持するか破棄するかを選びます。ターミナル更新では常に確認されます。'
       }
     }),
-    about: {
-      updates: '更新'
-    },
+    about: { updates: '更新', channel: jaUpdateChannel },
     config: {
       minimizeToTrayTitle: 'トレイに最小化',
       minimizeToTrayDesc:
@@ -1007,12 +922,6 @@ export const jaOverrides = {
       autosaveFailed: '自動保存に失敗しました',
       imported: '設定をインポートしました',
       invalidJson: '設定 JSON が無効です',
-      developerTitle: '開発者',
-      resetOnboardingTitle: 'オンボーディングをリセット',
-      resetOnboardingDesc:
-        'セットアップ用のチャットを削除し、セットアッププロファイルを作り直して、初回セットアップをもう一度実行します。自分で作成したプロファイル、チャット、プラグインはそのまま残ります。',
-      resetOnboardingAction: 'リセット',
-      resetOnboardingFailed: 'オンボーディングをリセットできませんでした',
       keepAwakeTitle: 'コンピューターをスリープさせない',
       keepAwakeDesc:
         '本体のスリープを防ぎます。「実行中のみ」はターンの実行中だけ有効になるため、夜通しの実行を継続しつつ、ノートPCを一週間つけたままにはしません。画面は暗転できます。',
@@ -2417,26 +2326,6 @@ export const jaOverrides = {
     }
   },
 
-  handoffTour: {
-    profileTitle: '最初のタスクはデフォルトのプロファイルで実行されます',
-
-    profileText:
-      'このレールでプロファイルを切り替えます。いま点灯しているのが default で、タスクのセッションはここにあります。もう一方はセットアップ用のプロファイルで、ウェルカムチャットはそちらにあります。',
-
-    sessionsTitle: 'プロファイルごとにセッションが分かれています',
-
-    sessionsText:
-      'この一覧は default プロファイルのものです。「新しいセッション」は選択中のプロファイルで始まります。レールでプロファイルを切り替えると一覧も変わります。',
-
-    stayTitle: 'Hermes はワンクリックで呼べます',
-
-    stayText:
-      '手を借りたいときは、セットアッププロファイルに切り替えて「Hermes へようこそ」を開いてください。いつでもそこにあります。',
-    localTitle: 'このマシンはローカルでモデルを実行できます',
-    localText: (model: string) =>
-      `${model} はお使いのハードウェアで動きます。無料で、チャットはこのコンピューターから出ません。いつでもここ、モデルメニューから選べます。`
-  },
-
   composer: {
     message: 'メッセージ',
     wakingProfile: profile => `${profile} を起動中…`,
@@ -2464,6 +2353,7 @@ export const jaOverrides = {
     startVoice: '音声会話を開始',
     openDirective: '開く',
     queueMessage: 'メッセージをキューに入れる',
+    redirect: '現在の実行をリダイレクト',
     stop: '停止',
     send: '送信',
     speaking: '話しています',
@@ -2598,6 +2488,12 @@ export const jaOverrides = {
     queueSteer: 'ステア — 現在のターンを今すぐ修正',
     queueSend: '送信',
     queueDelete: '削除',
+    queueLostNote: '再起動中にターンが失われました',
+    restoreImageDraft: '画像の下書きを復元',
+    queueCancelFailed: 'キュー内のターンを削除できませんでした',
+    queueLostDiscard: '破棄',
+    queueLostDiscardTip:
+      'ターン中にゲートウェイが再起動したため完了できません。破棄すると後続のキュー済みターンが実行されます。',
     queueResume: '再開',
     queueResumeTip: '停止により一時停止中 — キュー済みターンの送信を再開します',
     queueStuckTitle: 'キュー内のメッセージを送信できません',
@@ -2742,7 +2638,7 @@ export const jaOverrides = {
       heartbeatEveryHours: hours => `${hours}時間ごと`,
       heartbeatEverySeconds: seconds => `${seconds}秒ごと`,
       heartbeatNext: time => `次回 ${time}`,
-      heartbeatDueWaitingForIdle: '期限到来 — アイドル待ち',
+      dueWaitingForIdle: '期限到来 — アイドル待ち',
       heartbeatActions: 'ハートビートのアクション',
       pauseHeartbeat: 'ハートビートを一時停止',
       resumeHeartbeat: 'ハートビートを再開',
@@ -3447,7 +3343,7 @@ export const jaOverrides = {
       hideNames: '名前を隠す',
       skill: name => `スキル ${name}`,
       kind: { plugin: 'プラグイン', skill: 'スキル' },
-      tier: { official: '公式', community: 'コミュニティ' },
+      tier: { official: '公式', verified: '認証済み', community: 'コミュニティ' },
       targetProfile: profile => `${profile} プロファイルにインストールします`,
       sendFailed: '回答を送信できませんでした。もう一度お試しください。',
       commitLabel: 'コミット',
@@ -3602,49 +3498,8 @@ export const jaOverrides = {
         `これにより "${pattern}" パターンが永続的な許可リスト (~/.hermes/config.yaml) に追加されます。Hermes はこのセッションや将来のセッションで、このようなコマンドについて再度尋ねません。`,
       alwaysAllow: '常に許可'
     },
-    clarify: {
-      notReady: '明確化リクエストはまだ準備できていません',
-      gatewayDisconnected: 'Hermes ゲートウェイが接続されていません',
-      sendFailed: '明確化応答を送信できませんでした',
-      loadingQuestion: '質問を読み込み中…',
-      other: 'その他（回答を入力）',
-      placeholder: '回答を入力…',
-      skip: 'スキップ',
-      skipped: 'スキップ済み',
-      noAnswer: '回答なし',
-      confirmAndContinueLabel: '確定して続行',
-      singleSelectHint: '1つ選ぶ',
-      multiSelectHint: '該当するものをすべて選択',
-      oneQuestion: '1問',
-      questionProgress: (answered, total) => `${total}問中${answered}問回答済み`,
-      notDelivered:
-        'この質問はアプリに届かなかったため、ここでは回答できません。停止を押してターンを終了し、チャットで返信してください。'
-    },
-    setupChoose: {
-      kinds: {
-        accent: 'アクセントカラー',
-        connectors: 'アプリ',
-        layout: 'レイアウト',
-        plugins: 'プラグイン',
-        theme: '外観'
-      },
-      loading: 'オプションを読み込み中…',
-      unavailable: 'このリストは現在利用できません。代わりにチャットで返信してください。',
-      findApp: 'アプリを検索',
-      customColor: 'カスタムカラー',
-      plugin: 'プラグイン',
-      startsLater: '始めるときに設定します。'
-    },
-    startChat: {
-      starting: title => `「${title}」を開始中…`,
-      startingUntitled: 'チャットを開始中…',
-      untitled: '新しいチャット',
-      notStarted: 'チャットを開始できませんでした',
-      inProfile: profile => `${profile} 内`,
-      open: '開く',
-      openFailed: 'チャットを開けませんでした',
-      retry: '再試行'
-    },
+    clarify: jaClarify,
+    themePicker: jaThemePicker,
     tool: {
       copyCode: 'コードをコピー',
       renderingImage: '画像をレンダリング中',
@@ -3754,8 +3609,6 @@ export const jaOverrides = {
           pending: 'セッション履歴を検索中',
           pendingAction: '検索中'
         },
-        setup_choose: { done: '設定の質問をしました', pending: '設定の質問をしています', pendingAction: '質問中' },
-        start_chat: { done: 'チャットを開始しました', pending: 'チャットを開始中', pendingAction: '開始中' },
         terminal: { done: 'コマンドを実行しました', pending: 'コマンドを実行中', pendingAction: '実行中' },
         todo: { done: 'Todo を更新しました', pending: 'Todo を更新中', pendingAction: '更新中' },
         vision_analyze: { done: '画像を分析しました', pending: '画像を分析中', pendingAction: '分析中' },

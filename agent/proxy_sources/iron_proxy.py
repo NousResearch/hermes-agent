@@ -218,7 +218,7 @@ def allowlisted_env() -> dict[str, str]:
 def _run(argv: list[str], *, timeout: int, text: bool = False, **kwargs) -> subprocess.CompletedProcess:
     if text:
         kwargs.update(text=True, encoding="utf-8", errors="replace")
-    return subprocess.run(argv, capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL, **kwargs)
+    return subprocess.run(argv, capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL, **kwargs)  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
 
 
 def iron_proxy_version(binary: Path) -> str:

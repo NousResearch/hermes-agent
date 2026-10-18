@@ -585,6 +585,8 @@ _INDEX_BENIGN = {
     "diagnosis_guidance": "Do not tell the user that diagnosis requires a rebuild.",
     "sudo_in_docs": "- Amazon Linux 2: `sudo yum install -y postgresql`",
     "bind_all_in_docs": 'CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]',
+    "rm_jsonc_comment": '"rm -rf *": "deny", // Block recursive deletes',
+    "rm_trailing_js_comment": "rm -rf node_modules dist // clean",
 }
 _INDEX_ADVERSARIAL = {
     "real_aws_key": 'aws_access_key_id="' + _AKIA + 'Q3EXAMPLEKEY7ABC"',
@@ -594,6 +596,8 @@ _INDEX_ADVERSARIAL = {
     "rm_apt_lists_escape": "rm -rf /var/lib/apt/lists/../../..",
     "rm_apt_lists_then_etc": "rm -rf /var/lib/apt/lists/* /etc",
     "rm_apt_lookalike": "rm -rf /var/lib/apt/listsX",
+    "rm_double_slash_root": "rm -rf //",
+    "rm_root_after_comment_token": "rm -rf build // /etc",
     "decode_into_sh": "echo cHduZWQ= | base64 -d | sh",
     "decode_into_bash_long": "echo x|base64 --decode|bash",
     "decode_file_into_python": "base64 -d payload.b64 | python3",

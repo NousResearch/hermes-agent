@@ -147,6 +147,7 @@ def test_bootstrap_repairs_before_dependency_activation(tmp_path, monkeypatch, m
     control = subprocess.run(
         [sys.executable, "-S", "-c", f"import site; site.addsitedir({str(old_site)!r}); import startup_dep"],
         cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30,
+        check=False,
     )
     assert control.returncode != 0 and "No module named 'startup_dep'" in control.stderr
     if old_site.is_dir():
@@ -159,6 +160,7 @@ def test_bootstrap_repairs_before_dependency_activation(tmp_path, monkeypatch, m
         refused = subprocess.run(
             [sys.executable, "-S", str(launcher)], cwd=tmp_path,
             env=env, capture_output=True, text=True, timeout=90,
+            check=False,
         )
         assert refused.returncode != 0
         assert "retry limit reached" in refused.stderr
@@ -166,13 +168,14 @@ def test_bootstrap_repairs_before_dependency_activation(tmp_path, monkeypatch, m
         assert marker.exists()
         assert set(receipts.glob("pm_*.json")) == before_receipts
         repaired = subprocess.run([sys.executable, "-S", "-m", "pm.cli", "repair"], cwd=tmp_path,
-                                  env=env, capture_output=True, text=True, timeout=90)
+                                  env=env, capture_output=True, text=True, timeout=90, check=False)
         assert repaired.returncode == 0, repaired.stdout + repaired.stderr
         assert not marker.exists()
     result = subprocess.run(
         [sys.executable, "-S", str(launcher)], cwd=tmp_path,
         env=env, capture_output=True, text=True,
         encoding="utf-8", timeout=90,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     output = json.loads(result.stdout)
@@ -205,6 +208,7 @@ def test_bootstrap_repairs_before_dependency_activation(tmp_path, monkeypatch, m
     again = subprocess.run(
         [sys.executable, "-S", str(launcher)], cwd=tmp_path,
         env=env, capture_output=True, text=True, encoding="utf-8", timeout=90,
+        check=False,
     )
     assert again.returncode == 0, again.stdout + again.stderr
     assert json.loads(again.stdout) == output

@@ -425,7 +425,7 @@ def _run_python(argv: list[str], *, stdin: str = "", timeout: float = 60) -> str
 
     try:
         done = subprocess.run(argv, input=stdin, capture_output=True, text=True, encoding="utf-8",
-                              errors="replace", timeout=timeout, creationflags=windows_hide_flags())
+                              errors="replace", timeout=timeout, creationflags=windows_hide_flags(), check=False)
     except (OSError, subprocess.SubprocessError):
         return None
     return done.stdout if done.returncode == 0 else None

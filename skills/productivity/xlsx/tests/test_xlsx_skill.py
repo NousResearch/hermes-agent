@@ -25,7 +25,7 @@ def run(script, *args, expect_ok=True):
     env.pop("PYTHONIOENCODING", None)
     proc = subprocess.run(
         [sys.executable, str(SCRIPTS / script), *map(str, args)],
-        capture_output=True, text=True, env=env, encoding="utf-8")
+        capture_output=True, text=True, env=env, encoding="utf-8", check=False)
     if expect_ok:
         assert proc.returncode == 0, f"{script} failed: {proc.stderr}"
     return proc
@@ -521,7 +521,7 @@ def test_recalc_reports_json_both_ways(tmp_path):
     env = dict(os.environ, LC_ALL="C", LANG="C", PATH=str(tmp_path))
     proc = subprocess.run(
         [sys.executable, str(SCRIPTS / "xlsx_recalc.py"), str(book)],
-        capture_output=True, text=True, env=env, encoding="utf-8")
+        capture_output=True, text=True, env=env, encoding="utf-8", check=False)
     assert proc.returncode == 0
     absent = json.loads(proc.stdout)
     assert absent["recalculated"] is False and "soffice" in absent["reason"]

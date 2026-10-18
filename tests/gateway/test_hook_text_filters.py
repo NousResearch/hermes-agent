@@ -606,7 +606,6 @@ class _BusyLaneStub(_ScopeTrackingStub):
 
     def _fold_into_running_turn(self, agent, key, event):
         self.folded.append(key)
-        return None
 
     def _agent_has_active_subagents(self, agent):
         return False

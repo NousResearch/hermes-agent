@@ -192,7 +192,7 @@ def _run_quiet(argv: list[str], *, timeout: float, swallow: Any = (), **kw: Any)
     kw.setdefault("errors", "replace")
     "stdout" in kw or kw.setdefault("capture_output", True)
     try:
-        return subprocess.run(argv, text=True, timeout=timeout, stdin=kw.pop("stdin"), encoding=kw.pop("encoding"),
+        return subprocess.run(argv, text=True, timeout=timeout, stdin=kw.pop("stdin"), encoding=kw.pop("encoding"),  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
                               errors=kw.pop("errors"), **kw)
     except swallow:
         return None

@@ -33,7 +33,7 @@ def request_for(base):
     return {"schema": 1, "buildId": "a" * 32, "channel": "unknown-at-build-time", "sequence": 7,
             "repository": "fixture/repo", "commit": "b" * 40, "sourceVersion": "1.2.3",
             "version": "0.0.7", "windowsVersion": "0.0.7.0", "identity": preview_identity("unknown-at-build-time", "c" * 16),
-            "bundleEnv": {"HERMES_GUEST_ONBOARDING": "different from the prior request"}, "publicBase": base}
+            "bundleEnv": {"HERMES_DATA_DIR_SUFFIX": "different from the prior request"}, "publicBase": base}
 
 
 @pytest.fixture
@@ -115,7 +115,7 @@ def test_channel_handoff_binds_full_request_and_feed_bytes(tmp_path, r2_server, 
         filename = file["url"].rsplit("/", 1)[-1]
         assert file["size"] == (build / filename).stat().st_size
     changed = copy.deepcopy(request)
-    changed["bundleEnv"]["HERMES_GUEST_ONBOARDING"] = "other packaging input"
+    changed["bundleEnv"]["HERMES_DATA_DIR_SUFFIX"] = "other packaging input"
     with pytest.raises(ValueError, match="identity"):
         handoff.fetch_channel_build(changed, ["win32-x64"], tmp_path / "wrong", public_base=request["publicBase"])
     assert not (tmp_path / "wrong").exists()
@@ -199,7 +199,7 @@ def run_shell(tmp_path, r2_server, script, env, *, cwd=None):
     gh.chmod(0o755)
     return subprocess.run(["bash", "-e", "-o", "pipefail", "-c", script], cwd=cwd or tmp_path,
                           env={**os.environ, **env, "PATH": str(tools) + os.pathsep + os.environ["PATH"]},
-                          capture_output=True, text=True, encoding="utf-8", timeout=60)
+                          capture_output=True, text=True, encoding="utf-8", timeout=60, check=False)
 
 
 @pytest.mark.platforms("posix")

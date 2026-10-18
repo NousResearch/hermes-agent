@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { assistantTextPart, type ChatMessage, chatMessageText } from '@/lib/chat-messages'
 import { clearSpokenRepliesForTests, markAssistantIdSpoken, resolveSpokenReply } from '@/lib/spoken-reply'
 import { playSpeechText } from '@/lib/voice-playback'
+import type * as NotificationsStore from '@/store/notifications'
+import { notifyError } from '@/store/notifications'
 import { $voicePlayback, setVoicePlaybackState } from '@/store/voice-playback'
 import { $autoSpeakReplies } from '@/store/voice-prefs'
 
@@ -16,11 +18,20 @@ vi.mock('@/lib/voice-playback', () => ({
   playSpeechText: vi.fn()
 }))
 
+vi.mock('@/store/notifications', async importOriginal => ({
+  ...(await importOriginal<typeof NotificationsStore>()),
+  notifyError: vi.fn()
+}))
+
 const SESSION_ID = 'session-under-test'
 const IDLE_STATE = { audioElement: null, messageId: null, sequence: 0, source: null, status: 'idle' as const }
 
 function assistantMessage(id: string, text: string): ChatMessage {
   return { id, parts: [assistantTextPart(text)], role: 'assistant' }
+}
+
+function userMessage(id: string, text: string): ChatMessage {
+  return { id, parts: [assistantTextPart(text)], role: 'user' }
 }
 
 // #93515 — Edge TTS has no chunked-PCM API, so the WS attempt in
@@ -269,6 +280,86 @@ describe('useAutoSpeakReplies — Edge TTS fallback chain (#93515)', () => {
 
     await waitFor(() => expect(playSpeechText).toHaveBeenCalledTimes(1))
     await waitFor(() => expect(resolveSpokenReply(SESSION_ID, $messages.get())).toBeNull())
+  })
+
+  it('does not retry a reply whose synthesis failed when the transcript updates again', async () => {
+    $autoSpeakReplies.set(true)
+
+    const $messages = atom<ChatMessage[]>([])
+
+    const pendingReply = () => {
+      const messages = $messages.get()
+      const last = messages.findLast(m => m.role === 'assistant' && !m.hidden)
+      const spoken = resolveSpokenReply(SESSION_ID, messages)
+
+      if (!last || last.id === spoken?.id) {
+        return null
+      }
+
+      return { id: last.id, pending: false, text: chatMessageText(last) }
+    }
+
+    const markSpoken = () => {
+      const messages = $messages.get()
+      const last = messages.findLast(m => m.role === 'assistant' && !m.hidden)
+
+      if (last) {
+        markAssistantIdSpoken(SESSION_ID, messages, last.id)
+      }
+    }
+
+    // A provider that rejects every synthesis (e.g. Edge TTS answering 403):
+    // playSpeechText goes preparing -> idle and throws, as voice-playback does.
+    vi.mocked(playSpeechText).mockImplementation(async () => {
+      setVoicePlaybackState({ ...IDLE_STATE, source: 'read-aloud', status: 'preparing' })
+      await Promise.resolve()
+      setVoicePlaybackState({ ...IDLE_STATE })
+
+      throw new Error('TTS generation failed (edge): 403')
+    })
+
+    renderHook(
+      () =>
+        useAutoSpeakReplies({
+          conversationActive: false,
+          failureLabel: 'read-aloud failed',
+          markSpoken,
+          pendingReply,
+          sessionId: SESSION_ID
+        }),
+      {
+        wrapper: ({ children }) => (
+          <ComposerScopeProvider value={{ ...MAIN_COMPOSER_SCOPE, $messages }}>{children}</ComposerScopeProvider>
+        )
+      }
+    )
+
+    const transcript: ChatMessage[] = [userMessage('user-1', 'hi'), assistantMessage('assistant-1', 'hello there')]
+
+    act(() => {
+      $messages.set(transcript)
+    })
+
+    await waitFor(() => expect(notifyError).toHaveBeenCalledTimes(1))
+
+    // Later emissions of the same transcript: hydrate, refresh, another window's ping.
+    for (let i = 0; i < 3; i += 1) {
+      await act(async () => {
+        $messages.set([...transcript])
+        await new Promise(resolve => setTimeout(resolve, 0))
+      })
+    }
+
+    expect(playSpeechText).toHaveBeenCalledTimes(1)
+    expect(notifyError).toHaveBeenCalledTimes(1)
+
+    // The next turn is still read aloud.
+    await act(async () => {
+      $messages.set([...transcript, userMessage('user-2', 'again'), assistantMessage('assistant-2', 'second reply')])
+      await new Promise(resolve => setTimeout(resolve, 0))
+    })
+
+    await waitFor(() => expect(playSpeechText).toHaveBeenCalledTimes(2))
   })
 
   it('speaks a later turn that says the same thing', async () => {

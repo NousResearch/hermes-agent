@@ -99,8 +99,12 @@ export function useAutoSpeakReplies({
             }
           },
           error => {
+            // A failed synthesis keeps the reply consumed. Releasing it would
+            // retry the same reply on every later $messages emission (hydrate,
+            // refresh, another window's ping): a fresh "Preparing audio" and
+            // another failure toast with no user action. The toast says it
+            // failed; Read aloud on the message retries on demand.
             if (attempt === attemptSeq) {
-              releaseUnplayedSpokenReply(sessionId, marked)
               notifyError(error, failureLabel)
             }
           }

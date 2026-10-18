@@ -12,12 +12,18 @@ verb (``hermes_cli/profiles.py`` create/delete fire it through the control socke
 ``_profile_reconcile_watcher`` every ``_PROFILE_RESCAN_INTERVAL_SECS`` as the safety net. A served profile whose ``config.yaml``/``.env``
 changed since its adapters were last built is re-scanned too: creators make the profile first and add the
 bot token afterwards, and without this an adapter-less profile would stay adapter-less forever.
+
+The same watcher tick (on every gateway, multiplexed or not) re-syncs a home's shell hooks when its
+``shell-hooks-allowlist.json`` changed: a non-TTY gateway skips unconsented hooks, so consent recorded
+afterwards must register them without a restart (#132993). That re-runs hook registration only, never
+an adapter rebuild.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
+from functools import partial
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -54,6 +60,7 @@ class GatewayProfileReconcileMixin:
     _profile_reconcile_lock: Optional[asyncio.Lock] = None
     _profile_own_gateway_warned: Optional[set[str]] = None
     _profile_probe_timeout_warned: Optional[set[str]] = None
+    _hook_consent_signatures: Optional[dict[str, Optional[tuple]]] = None
 
     # ── state helpers ─────────────────────────────────────────────────────────────────────────────
 
@@ -79,20 +86,52 @@ class GatewayProfileReconcileMixin:
     # ── watcher ───────────────────────────────────────────────────────────────────────────────────
 
     async def _profile_reconcile_watcher(self, interval: float = _PROFILE_RESCAN_INTERVAL_SECS) -> None:
-        """Supervised safety net: rescan ``profiles/`` every ``interval`` seconds (creators signal the
-        control socket for an immediate rescan). Returns at once, never respawned, when multiplexing is off."""
-        if not self._multiplex_on():
-            return
+        """Supervised safety net, every ``interval`` seconds: re-sync shell hooks whose consent changed
+        (every gateway), then rescan ``profiles/`` when multiplexing (creators signal the control
+        socket for an immediate rescan)."""
         while self._running:
             await asyncio.sleep(interval)
             if not self._running:
                 return
             try:
-                await self.reconcile_served_profiles(reason="watcher")
+                await self._sync_hooks_on_consent_change()
+                if self._multiplex_on():
+                    await self.reconcile_served_profiles(reason="watcher")
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.warning("Served-profile reconcile failed; retrying next cycle", exc_info=True)
+
+    async def _sync_hooks_on_consent_change(self) -> None:
+        """Re-sync the shell hooks of each home (launch + served) whose consent allowlist changed since
+        the last tick, under that home's scope: hooks consented since start register, revoked ones stop
+        firing. A home seen for the first time syncs once (consent may have landed after startup
+        registered). Hook registration only: adapters and sessions are never touched."""
+        from hermes_constants import get_process_hermes_home
+        homes = {Path(h) for h in (get_process_hermes_home(), *(self._served_profile_homes or {}).values())}
+        self._hook_consent_signatures = await asyncio.to_thread(
+            self._resync_changed_hook_consent, homes, self._hook_consent_signatures or {})
+
+    def _resync_changed_hook_consent(self, homes, seen: dict) -> dict:
+        """Blocking half of ``_sync_hooks_on_consent_change``; returns the signatures it observed."""
+        from agent.shell_hooks import ALLOWLIST_FILENAME, sync_from_config
+        from gateway.run import _load_gateway_config, _profile_runtime_scope
+        current = {}
+        for home in (h.resolve() for h in homes):
+            try:
+                current[str(home)] = sig = file_signature(os.stat(home / ALLOWLIST_FILENAME))
+            except OSError:
+                current[str(home)] = sig = None
+            if str(home) in seen and seen[str(home)] == sig:
+                continue
+            load = partial(_load_gateway_config, home / "config.yaml")
+            with _log_suppressed(logging.WARNING, "shell-hook re-sync failed for %s", home, exc_info=True):
+                if not self._multiplex_on():
+                    sync_from_config(load)
+                    continue
+                with _profile_runtime_scope(home):
+                    sync_from_config(load)
+        return current
 
     # ── reconcile ─────────────────────────────────────────────────────────────────────────────────
 

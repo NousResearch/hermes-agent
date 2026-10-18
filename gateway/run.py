@@ -4339,7 +4339,7 @@ def _housekeeping_chore(label: str, fn, *args, **kwargs) -> None:
         logger.debug("%s error: %s", label, exc)
 
 
-async def _refresh_served_profile_channel_directories(runner, launch_adapters=None) -> int:
+async def _refresh_served_profile_channel_directories(runner) -> int:
     """Rebuild ``channel_directory.json`` for every profile this gateway serves, in ITS OWN runtime scope.
 
     ``build_channel_directory`` persists to ``_directory_path()`` -> ``get_hermes_home()``, which on the
@@ -4371,7 +4371,12 @@ async def _refresh_served_profile_channel_directories(runner, launch_adapters=No
         # directory was built unscoped by the caller: anything else here is a served secondary.
         if not profile_home or str(profile_name) not in served:
             continue
-        adapters = served.get(str(profile_name)) or launch_adapters or {}
+        # Fail closed, exactly as gateway/authz_mixin.py:_adapters_for_profile does: a secondary is
+        # short-circuited by its own ``_profile_adapters`` entry and must never be handed the launch
+        # profile's map, or its directory would advertise channels it cannot deliver through (#141023
+        # follow-up). An empty map simply builds an empty directory, and the next tick rebuilds it
+        # once that profile's adapters connect.
+        adapters = served.get(str(profile_name)) or {}
         try:
             async with _async_profile_runtime_scope(Path(profile_home)):
                 await build_channel_directory(adapters)
@@ -4386,7 +4391,7 @@ async def _refresh_channel_directories(adapters, runner=None) -> None:
     from gateway.channel_directory import build_channel_directory
     await build_channel_directory(adapters)
     if runner is not None:
-        await _refresh_served_profile_channel_directories(runner, adapters)
+        await _refresh_served_profile_channel_directories(runner)
 
 
 def _housekeeping_channel_directory(adapters, loop, runner=None) -> None:

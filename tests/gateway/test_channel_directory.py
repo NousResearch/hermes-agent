@@ -432,7 +432,7 @@ class TestMultiplexServedProfileRefresh:
         calls = self._record_builds(monkeypatch)
         runner = self._runner(False, [("default", tmp_path)], {"seo": {Platform.TELEGRAM: object()}})
 
-        assert asyncio.run(_refresh_served_profile_channel_directories(runner, {})) == 0
+        assert asyncio.run(_refresh_served_profile_channel_directories(runner)) == 0
         assert calls == []
 
     def test_each_served_profile_is_built_in_its_own_scope(self, tmp_path, monkeypatch):
@@ -450,17 +450,19 @@ class TestMultiplexServedProfileRefresh:
             {"seo": {Platform.TELEGRAM: seo_adapter}, "mubeen": {Platform.TELEGRAM: mubeen_adapter}},
         )
 
-        rebuilt = asyncio.run(_refresh_served_profile_channel_directories(
-            runner, {Platform.TELEGRAM: object()}))
+        rebuilt = asyncio.run(_refresh_served_profile_channel_directories(runner))
 
         assert rebuilt == 2
         assert [home for home, _adapters in calls] == ["seo", "mubeen"]
         assert [adapters for _home, adapters in calls] == [
             {Platform.TELEGRAM: seo_adapter}, {Platform.TELEGRAM: mubeen_adapter}]
 
-    def test_profile_without_its_own_adapters_reuses_the_launch_map(self, tmp_path, monkeypatch):
-        """A served profile whose adapter map is still the empty startup placeholder falls back to
-        the launch map (the issue's proposed ``... or self.adapters``), inside its own scope."""
+    def test_profile_without_its_own_adapters_fails_closed(self, tmp_path, monkeypatch):
+        """A served profile whose adapter map is still the empty startup placeholder gets an EMPTY
+        map, never the launch profile's. ``authz_mixin._adapters_for_profile`` gives a named profile
+        ``{}`` precisely so it cannot deliver through the default bot; a directory advertising the
+        launch profile's channels would resolve name-based targets (``slack:#ops``, cron
+        ``deliver: slack:<name>``) to channels that profile cannot reach."""
         from gateway.run import _refresh_served_profile_channel_directories
 
         (tmp_path / "launch").mkdir()
@@ -470,8 +472,9 @@ class TestMultiplexServedProfileRefresh:
         runner = self._runner(True, [("default", tmp_path / "launch"), ("seo", tmp_path / "seo")],
                               {"seo": {}})
 
-        assert asyncio.run(_refresh_served_profile_channel_directories(runner, launch_adapters)) == 1
-        assert calls == [("seo", launch_adapters)]
+        assert asyncio.run(_refresh_served_profile_channel_directories(runner)) == 1
+        assert calls == [("seo", {})]
+        assert launch_adapters not in [adapters for _home, adapters in calls]
 
     def test_real_build_writes_into_the_profile_home(self, tmp_path, monkeypatch):
         """End to end through the real builder: the scope is what puts the file in the profile's
@@ -488,7 +491,7 @@ class TestMultiplexServedProfileRefresh:
 
         runner = self._runner(True, [("seo", profile_home)], {"seo": {Platform.SLACK: _Adapter()}})
 
-        assert asyncio.run(_refresh_served_profile_channel_directories(runner, {})) == 1
+        assert asyncio.run(_refresh_served_profile_channel_directories(runner)) == 1
 
         written = json.loads((profile_home / "channel_directory.json").read_text())
         assert [entry["name"] for entry in written["platforms"]["slack"]] == ["just-joined"]

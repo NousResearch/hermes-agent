@@ -175,7 +175,7 @@ async def test_start_gateway_replace_aborts_when_force_killed_pid_still_alive(
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: 42)
     monkeypatch.setattr("gateway.status.remove_pid_file", _mock_remove_pid_file)
     monkeypatch.setattr(
-        "gateway.status.release_all_scoped_locks",
+        "gateway.status_scoped_locks.release_all_scoped_locks",
         _mock_release_all_scoped_locks,
     )
     monkeypatch.setattr(
@@ -300,7 +300,7 @@ async def test_start_gateway_replace_writes_takeover_marker_before_sigterm(
         "gateway.status._get_process_start_time", lambda pid: 0 if pid == 42 else None
     )
     monkeypatch.setattr(
-        "gateway.status.release_all_scoped_locks",
+        "gateway.status_scoped_locks.release_all_scoped_locks",
         lambda **kwargs: 0,
     )
     monkeypatch.setattr("gateway.status.write_takeover_marker", record_write_marker)

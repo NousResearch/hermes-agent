@@ -3705,7 +3705,7 @@ export const ruOverrides = {
       hideNames: 'скрыть имена',
       skill: name => `навык ${name}`,
       kind: { plugin: 'плагин', skill: 'навык' },
-      tier: { official: 'официальный', community: 'сообщество' },
+      tier: { official: 'официальный', verified: 'проверенный', community: 'сообщество' },
       targetProfile: profile => `Установка в ваш профиль ${profile}`,
       sendFailed: 'Не удалось отправить ответ. Попробуйте ещё раз.',
       commitLabel: 'Коммит',

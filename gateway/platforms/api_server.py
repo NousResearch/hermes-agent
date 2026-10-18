@@ -158,8 +158,8 @@ from gateway.browser_control_broker import (
     ControllerScope, ControllerTicketInvalid, browser_control_developer_mode,
     browser_control_protocol_supported, filter_browser_control_capabilities, get_browser_control_broker)
 
-from gateway.platforms._shared import coerce_port as _coerce_port
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from gateway.parked_route_refusal import ParkedRouteRefused
+from gateway.platforms._shared import coerce_port as _coerce_port, get_scoped_secret as _get_scoped_secret
 from gateway.platforms.tcp_site import start_tcp_site
 from hermes_state_errors import SessionActiveWriteGuardError
 
@@ -1562,11 +1562,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return _error_response("Platform event must be a JSON object", 400, code="invalid_request")
         try:
             result = await dispatcher(payload)
+        except ParkedRouteRefused as exc:  # nothing admitted, nothing acknowledged: the platform retries it
+            return _error_response(str(exc), exc.status, err_type="server_error", code=exc.code, headers=exc.headers)
         except Exception:
             logger.exception("Platform HTTP event dispatch failed for %s", platform_name)
-            return _error_response(
-                "Platform event dispatch failed", 500, err_type="server_error",
-                code="platform_event_dispatch_failed")
+            return _error_response("Platform event dispatch failed", 500, err_type="server_error", code="platform_event_dispatch_failed")
         return web.json_response(result if isinstance(result, dict) else {})
 
     # -- Multi-profile multiplexing (/p/<profile>/...) --------------------------------
@@ -2875,9 +2875,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         """GET /v1/skills — deterministic JSON listing of installed skills (name, description,
         category), the same set ``/skills list`` shows."""
         try:
-            from tools.skills_tool import _find_all_skills, _sort_skills
-            skills = _sort_skills(
-                _find_all_skills(
+            from tools.skills_tool import find_all_skills, sort_skills
+            skills = sort_skills(
+                find_all_skills(
                     skip_disabled=False, include_editorial=True
                 )
             )
@@ -3107,9 +3107,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         title = body.get("title")
 
         def _atomic(conn):
-            # One BEGIN IMMEDIATE write: a concurrent same-id create blocks and sees the row.
-            if conn.execute("SELECT id FROM sessions WHERE id = ?", (session_id,)).fetchone():
-                return None, "exists"
+            from hermes_state_mutation_retirement import create_conflict
+            if conflict := create_conflict(conn, session_id):  # one BEGIN IMMEDIATE write: a racing create sees the row
+                return None, conflict
             conn.execute(
                 """INSERT INTO sessions (
                    id, source, model, model_config, system_prompt, started_at
@@ -3129,8 +3129,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return (dict(session_row) if session_row else {
                 "id": session_id, "source": source, "model": model_name, "title": title}), None
         session, err = await asyncio.to_thread(db._execute_write, _atomic)
-        if err == "exists":
-            return _error_response(f"Session already exists: {session_id}", 409, code="session_exists")
+        if isinstance(err, tuple):  # a live row, or a deleted id's fence: refused now, not on every turn
+            return _error_response(f"{err[1]}: {session_id}", 409, code=err[0])
         if err and err.startswith("title:"):
             return _error_response(err[len("title:"):], 400, code="invalid_title")
         return web.json_response({"object": "hermes.session", "session": self._session_response(session)}, status=201)
@@ -4165,7 +4165,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         session_history_delivery: str = "", turn_author: Optional[dict[str, Any]] = None,
         relay_metadata: Optional[dict[str, Any]] = None, notification_category: str = "result",
         resume_unanswered_turn: bool = False, approval_notify_callback=None,
-        approval_session_key: Optional[str] = None) -> tuple:
+        approval_session_key: Optional[str] = None, walked_from: Optional[str] = None) -> tuple:
         """Create an agent and run one turn in a thread executor -> ``(result, usage)``.
         ``approval_notify_callback`` (with ``approval_session_key``) routes dangerous-command
         approval requests to the caller's stream, keyed like ``/v1/runs`` approvals (#51871).
@@ -4187,7 +4187,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 stream_delta_callback=stream_delta_callback, tool_progress_callback=tool_progress_callback,
                 tool_start_callback=tool_start_callback, tool_complete_callback=tool_complete_callback,
                 interim_assistant_callback=interim_assistant_callback, reasoning_callback=reasoning_callback,
-                status_callback=status_callback,
+                status_callback=status_callback, walked_from=walked_from,
                 agent_ref=agent_ref, active_run_id=active_run_id, gateway_session_key=gateway_session_key,
                 requested_model=requested_model, requested_provider=requested_provider, model_options=model_options,
                 route=route, session_model=session_model, requested_runtime=requested_runtime,

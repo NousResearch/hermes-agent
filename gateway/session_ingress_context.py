@@ -24,6 +24,18 @@ def relay_callback(transport, event):
         _relay_callback.reset(token)
 
 
+@contextmanager
+def relay_passthrough_event(transport, forward, event):
+    # A passthrough frame is decoded after the reader bound its proof to the raw forward; move
+    # that proof onto the decoded event. Without the reader's binding nothing is minted.
+    bound = _relay_callback.get()
+    if bound is None or bound[0] is not transport or bound[1] is not forward:
+        yield
+        return
+    with relay_callback(transport, event):
+        yield
+
+
 def _relay_connector(adapter, source):
     from gateway.relay.ws_transport import WebSocketRelayTransport
     transport = getattr(adapter, '_transport', None)
@@ -116,11 +128,13 @@ def _binding(runner, source, profile):
         owner_name = profile or primary
         if homes.get(owner_name) != home:
             raise RuntimeStoreError('profile_mismatch')
-        # Same matcher as ingress stamping: a route applies only to its ``bot_profile``'s bot
-        # (#104933), so the receiving adapter's owner is part of the match.
+        # Same matcher as ingress stamping, ``user_id`` included: a ``user_id`` route stamps the
+        # source upstream, so it must resolve here too. A route applies only to its bot_profile's
+        # bot (#104933), so the receiving adapter's owner is part of the match.
         matches = [route for route in runner.config.profile_routes if route.matches(
             source.platform.value, guild_id=source.scope_id, chat_id=source.chat_id,
-            thread_id=source.thread_id, parent_chat_id=source.parent_chat_id, adapter_profile=profile)]
+            thread_id=source.thread_id, parent_chat_id=source.parent_chat_id,
+            adapter_profile=profile, user_id=source.user_id)]
         if matches:
             rank = max(route.specificity for route in matches)
             best = [route for route in matches if route.specificity == rank]

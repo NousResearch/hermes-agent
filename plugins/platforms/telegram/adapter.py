@@ -6439,7 +6439,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
 
     def _effective_update_message(self, update: Update) -> Optional[Message]:
         """Message-like payload for normal messages and channel posts (``update.channel_post``)."""
-        return getattr(update, "effective_message", None) or getattr(update, "message", None)
+        if getattr(update, "edited_message", None) is not None or getattr(update, "edited_channel_post", None) is not None:
+            return None
+        return getattr(update, "message", None) or getattr(update, "channel_post", None) or getattr(update, "effective_message", None)
 
     def _log_blocked_user(self, msg, *, level=logging.WARNING, what: str = "unauthorized user") -> None:
         logger.log(

@@ -27,7 +27,7 @@ def _split_document(content: str) -> tuple[dict[str, Any], str]:
     body = content[marker + len("\n---\n"):]
     try:
         data = hermes_yaml.safe_load(raw)  # safe_load raises on duplicate keys — fail-closed
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise EvidenceMergeError(f"malformed YAML: {exc}") from exc
     if not isinstance(data, dict):
         raise EvidenceMergeError("frontmatter must be a mapping")
@@ -159,7 +159,7 @@ def merge_evidence(content: str, delta: dict[str, Any]) -> str:
     frontmatter["evidence"] = _validate_evidence(current)
     try:
         rendered = hermes_yaml.safe_dump(frontmatter, sort_keys=False, allow_unicode=True).rstrip("\n")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise EvidenceMergeError(f"could not render frontmatter: {exc}") from exc
     return f"---\n{rendered}\n---\n{body}"
 

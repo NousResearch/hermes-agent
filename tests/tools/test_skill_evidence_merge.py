@@ -372,7 +372,7 @@ def test_concurrent_evidence_updates_do_not_lose_a_count(tmp_path):
                 "file_path": None, "replace_all": False,
                 "evidence_merge": {"success_count": 1},
             })
-        except Exception as exc:  # noqa: BLE001 — surfaced via `errors`
+        except Exception as exc:  # surfaced via `errors`
             errors.append(repr(exc))
 
     with patch.object(smt, "SKILLS_DIR", tmp_path), \

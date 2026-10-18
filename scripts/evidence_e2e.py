@@ -35,8 +35,8 @@ if (_writes_skills == _real_skills and os.environ.get("SEL_E2E_ALLOW") != "1"):
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tools import skill_manager_tool as smt  # noqa: E402
-from tools import write_approval  # noqa: E402
+from tools import skill_manager_tool as smt
+from tools import write_approval
 
 PASSED: list[str] = []
 
@@ -131,7 +131,7 @@ def main() -> int:
 
     # 4. The approval gate is not bypassed: a staged candidate must be the merged bytes.
     captured: dict = {}
-    orig_gate = smt._run_write_gate  # noqa: SLF001 — restored before each real replay
+    orig_gate = smt._run_write_gate  # restored before each real replay
 
     class _WA:
         @staticmethod
@@ -146,7 +146,7 @@ def main() -> int:
         captured["payload"], _ = build(_WA)
         return "staged"
 
-    smt._run_write_gate = _fake_gate  # noqa: SLF001 — capture what the reviewer would see
+    smt._run_write_gate = _fake_gate  # capture what the reviewer would see
     staged = call(action="patch", name="e2e-skill", evidence_merge={"success_count": 1})
     check("evidence_merge stages for approval (gate not bypassed)", staged == "staged",
           repr(staged)[:200])
@@ -156,7 +156,7 @@ def main() -> int:
 
     # 5. The REAL replay path (what /skills approve calls) must apply the frozen candidate.
     smt._run_write_gate = orig_gate  # restore: the replay bypasses the gate, not replaces it
-    ok = smt.apply_skill_pending(captured["payload"])  # noqa: SLF001 — the approve entry point
+    ok = smt.apply_skill_pending(captured["payload"])  # the approve entry point
     check("approved replay writes the frozen candidate", '"success": true' in ok, ok[:160])
     check("replay landed the accumulated count", "success_count: 14" in
           skill_md.read_text(encoding="utf-8"))
@@ -178,7 +178,7 @@ def main() -> int:
     # Now the source moves AFTER approval — this is the lost-update we must refuse.
     approved = skill_md.read_text(encoding="utf-8")
     skill_md.write_text(approved.replace("success_count: 14", "success_count: 99"), encoding="utf-8")
-    stale_replay = smt.apply_skill_pending(fresh["payload"])  # noqa: SLF001
+    stale_replay = smt.apply_skill_pending(fresh["payload"])
     check("stale replay is refused", '"success": false' in stale_replay, stale_replay[:200])
     check("refusal names staleness", "stale" in stale_replay.lower())
     check("the newer on-disk count was NOT clobbered",
@@ -196,7 +196,7 @@ def main() -> int:
     def bump():
         try:
             smt.skill_manage(action="patch", name="e2e-skill", evidence_merge={"success_count": 1})
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             errs.append(repr(exc))
 
     ts = [threading.Thread(target=bump) for _ in range(2)]

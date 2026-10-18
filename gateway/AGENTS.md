@@ -102,6 +102,8 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   with one WARNING at the first seam it reaches, never keyed into `agent:main`
   (`parked_route_refusal.drop_rejected_route`; a route to a *parked* profile also tells the sender
   in-channel to resend, since a direct bot's update is already confirmed and never redelivered; a
+  relay frame is ACKed and refused alike (`ParkedProfileRefusal`: a withheld one stalls the
+  ack-gated drain); a
   dispatch its transport has not acknowledged yet, e.g. Google Chat HTTP events, runs in
   `retryable_ingress()` and answers `ParkedRouteRefused` (503) instead, releasing its dedup claim).
   `_transport_owner`, `_authorization_home_for_source`, `_resolve_profile_home_for_source`, `_session_key_profile` and

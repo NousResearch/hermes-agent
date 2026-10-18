@@ -24,7 +24,8 @@ def owner_reclaim_paused(conn, task_id):
             return row[1] == 'interrupted'
         if row is None or row[0] in {'queued', 'unknown'}:
             return True
-        return psutil.Process(binding['pid']).create_time() != binding['birth']
+        from hermes_cli.process_identity import process_birth
+        return process_birth(psutil.Process(binding['pid'])) != binding['birth']
     except (OSError, ValueError, KeyError, sqlite3.Error):
         return True
     except psutil.Error:

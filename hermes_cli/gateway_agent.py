@@ -101,7 +101,8 @@ class GatewayAgent:
                  tool_start_callback=None, tool_complete_callback=None, stream_delta_callback=None,
                  tool_gen_callback=None, notice_callback=None, notice_clear_callback=None,
                  reaction_callback=None, interim_assistant_callback=None, connection=None,
-                 push_reasoning=False, model_confirm_callback=None, modal_withdraw_callback=None, **_ignored):
+                 push_reasoning=False, model_confirm_callback=None, modal_withdraw_callback=None,
+                 one_turn=False, one_turn_reasoning=None, one_turn_alias="", **_ignored):
         conn = connection or getattr(session_db, "connection", None)
         if conn is None:
             raise GatewayClientError("Gateway session unavailable; no local fallback")
@@ -188,14 +189,27 @@ class GatewayAgent:
         self._reasoning_config = None
         # Only a user-picked effort (/reasoning, a model pick's --reasoning) is committed at build; the
         # config-resolved level must never override the session's frozen launch policy on resume.
+        # ``reasoning_pushed``: the commit landed, so the CLI stops re-sending it on every later rebuild.
+        self.reasoning_pushed = False
         if push_reasoning:
-            self.reasoning_config = reasoning_config
+            self.reasoning_pushed = self.pin_reasoning(reasoning_config)
         else:
             self._reasoning_config = reasoning_config
         # Main's /moa rebuilds its agent on the MoA virtual provider for one turn (the session's info
         # below then overwrites ``model``): that preset rides the turn's submit as its model_override.
         self._moa_preset = model if provider == "moa" else None
+        # ``/model --once``: chat retires the agent that switch_model touched and builds this one.
+        # Capture the pick, and the alias it resolved through, before ``_apply_info`` copies the session
+        # model over it.
+        self._turn_route = self._route_off_session(model, provider, one_turn_alias) if one_turn else None
+        self._taken_turn_route = None  # the pick the admission being sent took (``_take_turn_route``)
+        # ``/model B --once --reasoning X``: X rides that admission's ``model_override``, never a session pin.
+        self._turn_reasoning = one_turn_reasoning if one_turn else None
         self._apply_info(self._state().info)
+        if self._turn_route:
+            self.model = model  # the resolved model, never the alias the admission sends
+            if self._turn_route.get("provider"):
+                self.provider = self._turn_route["provider"]
         self.reasoning_callback = reasoning_callback
         self.service_tier = service_tier
         state = self._state()
@@ -228,15 +242,35 @@ class GatewayAgent:
 
     @reasoning_config.setter
     def reasoning_config(self, config):
-        """``/reasoning <level>`` (session scope; main rebuilds its agent with the new config) and /new's
-        re-derived effort: ``session.mutate reasoning`` when it differs from the session's effort."""
+        """/new's re-derived effort and a one-turn restore: ``session.mutate reasoning`` when it differs from
+        the session's effort (an inherited level stays inherited)."""
+        self._set_reasoning(config, explicit=False)
+
+    def pin_reasoning(self, config):
+        """``/reasoning <level>`` (session scope; main rebuilds its agent with the new config) and a model
+        pick's ``--reasoning``: always ``session.mutate reasoning``, even when the session already runs that
+        level by inheritance, so it becomes the session's own choice. True when the owner committed it."""
+        return self._set_reasoning(config, explicit=True)
+
+    def stage_turn_reasoning(self, config):
+        """``/model B --once --reasoning X``: X for the one-turn admission only (its ``model_override``).
+        Nothing is sent to the session."""
+        self._reasoning_config = config
+        self._turn_reasoning = _effort_word(config)
+
+    def restore_reasoning(self, config):
+        """A one-turn restore: the level goes back on this object only. The session was never written."""
+        self._reasoning_config = config
+        self._turn_reasoning = None
+
+    def _set_reasoning(self, config, *, explicit):
         self._reasoning_config = config
         effort = _effort_word(config)
         if effort is None:
-            return
+            return False
         info = self._state().info or {}
-        if info.get("reasoning_effort") == effort:
-            return
+        if not explicit and info.get("reasoning_effort") == effort:
+            return True
         try:
             snapshot = self.connection.call("session.resume", session_id=self.session_id)
             # A policy mutation is generation-fenced: the owner refuses it without the generation.
@@ -245,20 +279,53 @@ class GatewayAgent:
                                  expected_generation=snapshot["execution_generation"], operation="reasoning",
                                  payload={"effort": effort})
             info["reasoning_effort"] = effort
+            return True
         except (GatewayClientError, KeyError, TypeError) as exc:
             logger.debug("session.mutate reasoning failed: %s", exc)
+            return False
 
-    def switch_model(self, new_model, new_provider="", api_key="", base_url="", api_mode="", capabilities=None):
-        """Main's in-place swap (``/model``, ``/model --once`` and its restore, /resume) as
-        ``session.mutate model``: the gateway resolves the target with the same
-        switch pipeline and commits it to the session's policy, so the next turn runs on it; keys and
-        endpoints stay gateway-side. A guarded target (cost, data policy, large context) the owner refuses
-        with ``confirmation_required`` is re-sent with its token only on the user's yes to
-        ``model_confirm_callback`` (the owner's warning, as Ink/Desktop/ACP show it): a no returns False with
-        nothing written; with no prompt the refusal raises. Any refusal raises: main's callers roll their own
-        fields back."""
-        if new_model == self.model and (not new_provider or new_provider == self.provider):
+    def _route_off_session(self, model, provider="", alias=""):
+        """``{model, provider}`` the turn sends when the session runs another route, else None.
+
+        ``alias``, the ``model_aliases`` entry the pick resolved through, is sent instead of the bare
+        model: two aliases may name one model at different endpoints, so the owner must not re-resolve
+        it. An alias makes even the session's own model a one-turn override."""
+        state = self._state()
+        if not model or not (state.info or {}).get("model") or (state.runs_route(model, provider) and not alias):
+            return None
+        return {"model": alias or model, **({"provider": provider} if provider else {})}
+
+    def switch_model(self, new_model, new_provider="", api_key="", base_url="", api_mode="", capabilities=None, *,
+                     once=False, restore=False, alias=""):
+        """Session-scoped ``/model`` and /resume commit ``session.mutate model``.
+
+        ``once=True`` does not write the session. The next ``chat`` builds a new agent; that
+        constructor carries the pick, because this agent is retired when the route signature
+        changes. ``restore=True`` only puts the previous model back on this object and clears the
+        one-turn route. The admission already has its ``model_override``.
+
+        "Already on this route" is the session row, not ``self.model`` (a one-turn pick sets
+        ``self.model`` without committing). A session switch of that same target still mutates
+        on the generation fence.
+
+        A guarded target the owner refuses with ``confirmation_required`` is re-sent with its token
+        only on the user's yes to ``model_confirm_callback``: a no returns False with nothing
+        written; with no prompt the refusal raises. Any refusal raises: main's callers roll their
+        own fields back."""
+        if once or restore:
+            # ``alias``: the ``model_aliases`` entry a ``--once`` pick resolved through (``_route_off_session``).
+            self._turn_route = None if restore else self._route_off_session(new_model, new_provider, alias)
+            if restore:
+                self._turn_reasoning = None
+            if new_model:
+                self.model = new_model
+            if new_provider:
+                self.provider = new_provider
             return True
+        if new_model == self.model and (not new_provider or new_provider == self.provider):
+            if self._route_off_session(new_model, new_provider) is None:
+                self._turn_route = None
+                return True
         from hermes_cli.gateway_mutations import model_refusal_text
         payload = {"model": new_model, **({"provider": new_provider} if new_provider else {})}
         snapshot = self.connection.call("session.resume", session_id=self.session_id)
@@ -285,6 +352,8 @@ class GatewayAgent:
         provider = result.get("provider") or new_provider
         state.info = {**(state.info or {}), "model": result.get("model") or new_model,
                       **({"provider": provider} if provider else {})}
+        # The session now runs this route, so a leftover one-turn override must not ride the next submit.
+        self._turn_route = None
         self._apply_info(state.info)
         return True
 
@@ -567,11 +636,31 @@ class GatewayAgent:
             # Main's batch panel answers the clarify tool's whole question set (one ``clarify`` request).
             params["clarify_batch"] = True
         info = self._state().info or {}
-        if self._moa_preset and (info.get("provider"), info.get("model")) != ("moa", self._moa_preset):
+        pending = self._take_turn_route()
+        if pending:
+            # /model --once: this admission alone runs the pick. The session row stays put.
+            params["model_override"] = pending
+        elif self._moa_preset and (info.get("provider"), info.get("model")) != ("moa", self._moa_preset):
             # /moa one-shot: this admission alone runs the preset (unless it is the session's own
             # route); the session's route is untouched.
             params["model_override"] = {"model": self._moa_preset, "provider": "moa"}
         return params
+
+    def _take_turn_route(self):
+        """The ``/model --once`` pick for the admission being built, consumed here: one admission carries
+        it, even when a later ``run_conversation`` submits while this one's ``prompt.submit`` still blocks.
+        A refusal that admitted nothing (``session_busy``) puts it back with ``_give_back_turn_route``."""
+        pending, reasoning = self._turn_route, self._turn_reasoning
+        self._turn_route = self._turn_reasoning = self._taken_turn_route = None
+        if not pending or not self._route_off_session(**pending):
+            return None
+        self._taken_turn_route = (pending, reasoning)
+        return {**pending, **({"reasoning": reasoning} if reasoning else {})}
+
+    def _give_back_turn_route(self):
+        taken, self._taken_turn_route = getattr(self, "_taken_turn_route", None), None
+        if taken and self._turn_route is None:
+            self._turn_route, self._turn_reasoning = taken
 
     def _stage_content_parts(self, parts):
         """``[{type: text}, {type: image_url, image_url: {url: data:...}}]`` -> (text, attachments): each
@@ -610,7 +699,10 @@ class GatewayAgent:
             receipt = adopted
         else:
             self._drain_stale()
+            self._taken_turn_route = None
             try:
+                # Inside the try: staging an image is a gateway call, and its failure is a failed turn.
+                # Building the params consumes a ``/model --once`` pick (``_take_turn_route``).
                 state = self._state()
                 if state.gaps != state.attached_gaps:  # a replay gap between turns retired the subscription
                     self.connection.reattach(turn.session_id, abandon=self._stop(turn))
@@ -619,11 +711,15 @@ class GatewayAgent:
                     raise CallStopped("prompt.submit")
                 receipt = self.connection.call("prompt.submit", **{**params, "session_id": turn.session_id})
             except CallStopped:  # main moved on (a later turn, /new, Ctrl-C's bound) before the submit
+                self._give_back_turn_route()  # nothing was sent: the pick is still owed
                 return self._failed(history, user_message, "Stopped before the prompt was sent; nothing was sent.")
             except GatewayRPCError as exc:
                 # The owner answered and refused: not a lost connection. Only its own site code
                 # (session_busy: send again) is a verdict; any other refusal stays unclassified.
                 busy = str(exc) == "session_busy"
+                if busy:
+                    # Nothing was admitted: the resend carries the pick (the CLI keeps its restore).
+                    self._give_back_turn_route()
                 return self._failed(history, user_message, str(exc),
                                     failure_reason="session_busy" if busy else None, retryable=busy)
             except GatewayClientError as exc:

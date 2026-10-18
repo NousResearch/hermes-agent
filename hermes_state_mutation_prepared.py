@@ -95,14 +95,17 @@ _RECEIPTS = "FROM state_meta WHERE key GLOB 'gateway.mutation.v1.*' AND json_val
 
 
 def picks_on(conn, session_id, before=None):
-    """The policy edits (``reasoning``, ``workspace``) a ``session.mutate`` committed for *session_id* (below
+    """The policy edits (``model``, ``reasoning``, ``workspace``) a ``session.mutate`` committed for *session_id* (below
     revision *before*): their receipts (kept for exact retries, also past deletion) are the durable record of
-    the user's pick. A branch copied its parent's policy, picks included, under its own id: its local
-    receipt's ``picks``; a branch stored before that field has its parent's as they stood at its branch."""
+    the user's pick. A deferred ``/model`` (``status: deferred``) is only a request until a turn boundary
+    applies it under a receipt of its own, so it is no pick. A branch copied its parent's policy, picks
+    included, under its own id: its local receipt's ``picks``; a branch stored before that field has its
+    parent's as they stood at its branch."""
     bound = '' if before is None else " AND json_extract(value, '$.result.revision')<?"
     picked = {row[0] for row in conn.execute(
         "SELECT DISTINCT json_extract(value, '$.result.operation') " + _RECEIPTS +
-        "AND json_extract(value, '$.result.operation') IN ('reasoning', 'workspace') "
+        "AND json_extract(value, '$.result.operation') IN ('model', 'reasoning', 'workspace') "
+        "AND COALESCE(json_extract(value, '$.result.status'), '') != 'deferred' "
         "AND json_extract(value, '$.result.session_id')=?" + bound, (session_id, *(() if before is None else (before,))))}
     saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (POLICY_PREFIX + session_id,)).fetchone()
     if saved is None:

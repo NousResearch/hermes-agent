@@ -667,6 +667,10 @@ class CLIAgentSetupMixin:
         try:
             runtime = runtime_override or _current_runtime(self)
             effective_model = model_override or self.model
+            # ``/model --once`` has already staged the pick on the CLI and saved the restore
+            # snapshot. chat retires the previous agent, so the pick has to be on this one.
+            pending_one_turn = getattr(self, "_pending_one_turn_model_restore", None)
+            one_turn = pending_one_turn is not None
             # -q never builds the prompt_toolkit app, so the clarify modal can't be
             # answered — answer headless instead of polling until clarify_timeout.
             single_query_mode = getattr(self, "_single_query_mode", False)
@@ -690,7 +694,8 @@ class CLIAgentSetupMixin:
                 ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
                 prefill_messages=self.prefill_messages or None,
                 reasoning_config=self.reasoning_config, service_tier=self.service_tier,
-                push_reasoning=getattr(self, "_reasoning_user_set", False),
+                # A --once level rides the admission; a session /reasoning is committed by the next rebuild.
+                push_reasoning=getattr(self, "_reasoning_user_set", False) and not one_turn,
                 request_overrides=request_overrides, providers_allowed=self._providers_only,
                 providers_ignored=self._providers_ignore, providers_order=self._providers_order,
                 provider_sort=self._provider_sort,
@@ -703,6 +708,9 @@ class CLIAgentSetupMixin:
                 model_confirm_callback=None if single_query_mode else self._confirm_owner_model_switch,
                 # Another viewer answering the gateway's clarify/sudo/secret request closes this modal.
                 modal_withdraw_callback=None if single_query_mode else self._withdraw_gateway_modal,
+                one_turn=one_turn,
+                one_turn_reasoning=(pending_one_turn or {}).get("one_turn_reasoning") if one_turn else None,
+                one_turn_alias=(pending_one_turn or {}).get("one_turn_alias", "") if one_turn else "",
                 reasoning_callback=self._current_reasoning_callback(),
                 fallback_model=self._fallback_model, thinking_callback=self._on_thinking,
                 checkpoints_enabled=self.checkpoints_enabled,
@@ -746,6 +754,10 @@ class CLIAgentSetupMixin:
             except Exception:
                 pass
             self._active_agent_route_signature = _route_signature(effective_model, runtime)
+            if getattr(self.agent, "reasoning_pushed", False):
+                # The session holds the pick now; later rebuilds (/fast, /personality, a route change)
+                # must not re-commit it (a resume, a prepare+commit, a receipt, an agent eviction each).
+                self._reasoning_user_set = False
 
             # Force-create DB row on /title intent, then apply title.
             if self._pending_title and self._session_db:

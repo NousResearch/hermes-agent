@@ -5121,6 +5121,7 @@ export interface CanonicalTurnAuthor {
 export interface CanonicalModelOverride {
   model: string
   provider?: string | null
+  reasoning?: string | null
 }
 export interface CanonicalApprovalParams {
   profile?: string | null

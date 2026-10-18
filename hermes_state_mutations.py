@@ -19,6 +19,8 @@ def validate_action(operation, payload):
         return
     # Session-scope ``/reasoning <level>`` and Desktop's Move to project: revision-fenced edits of
     # the frozen policy (gateway/session_mutation_policy.py).
+    if operation == 'reasoning' and set(payload) == {'effort'} and payload['effort'] is None:
+        return  # ``/reasoning reset``: the session's level goes back to the profile
     if operation == 'reasoning' and set(payload) == {'effort'} and isinstance(payload['effort'], str):
         from hermes_constants import parse_reasoning_effort
         if parse_reasoning_effort(payload['effort']) is not None:

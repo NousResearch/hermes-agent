@@ -110,7 +110,7 @@ def _walk(docker_exe: str, target: list[str], mounts: list[tuple[str, str]], inf
           deadline: float) -> Optional[list[bytes]]:
     """Entries owned by *owner*, or ``None`` when the walk failed (its output may be partial)."""
     points = [m["Destination"] for m in info.get("Mounts") or []]
-    result = _docker(docker_exe, target, walk_argv(mounts, points, owner), deadline, stdin=subprocess.DEVNULL)
+    result = _docker(docker_exe, target, walk_argv(mounts, points, owner), deadline)
     if result.returncode != 0:
         logger.debug("ownership walk exited %d: %s", result.returncode,
                      result.stderr.decode("utf-8", "replace").strip()[:500])
@@ -122,7 +122,8 @@ def _docker(docker_exe: str, target: list[str], argv: list[str], deadline: float
     """Run *argv* in *target*. A timeout only kills the CLI, so a named throwaway is removed then
     instead of running on with the sandbox volumes."""
     try:
-        return subprocess.run([docker_exe, *target, *argv], capture_output=True,
+        stdin = kwargs.pop("stdin", None if "input" in kwargs else subprocess.DEVNULL)
+        return subprocess.run([docker_exe, *target, *argv], capture_output=True, stdin=stdin,
                               timeout=max(1.0, deadline - time.monotonic()), check=False, **kwargs)
     except subprocess.TimeoutExpired:
         if "--name" in target:

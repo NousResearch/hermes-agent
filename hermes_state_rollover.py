@@ -106,6 +106,10 @@ class SessionRolloverMixin:
             raise ValueError("Rollover predecessor route identity changed")
         return stored_origin
 
+    def get_gateway_rollover_successor(self, session_id: str) -> Optional[str]:
+        """Return the successor of an automatically retired ID, not an ordinary reset."""
+        return self.get_meta(_ROLLOVER_RETIRED_PREFIX + session_id)
+
     def get_gateway_rollover(self, session_key: str) -> Optional[dict[str, Any]]:
         if not session_key:
             return None

@@ -657,6 +657,11 @@ not cumulative billed tokens or an auxiliary model's window. Gateway hygiene is
 fenced before the agent's turn-start, pre-API and post-tool guards run. Unsupported
 or unavailable runtime accounting blocks the opt-in rather than guessing a budget.
 
+This slice is verified on Linux with native filesystem Markdown paths. Windows
+drive-letter links and local `file:` URIs are not validated as local references.
+Do not enable rollover on Windows or use those URI forms for load-bearing
+authorities until that separate portability work is completed.
+
 The old tool-capable agent writes the handoff. Its **actual final restart message**
 is retained unchanged and appended to the configured wrapper. The packet requires
 a `## Continuation Directive` with these completed bullet labels:
@@ -692,7 +697,8 @@ stateDiagram-v2
 ```
 
 Pending approvals, callback-dependent workers/processes or failed resource cleanup
-prevent cutover. Independent infrastructure remains running. A final empty-input
+prevent cutover. A cloud provider's `False` close result is a failure: strict cleanup
+keeps its session handle for retry. Independent infrastructure remains running. A final empty-input
 check and clearing the **old empty** conversation scope have no await between
 them. The native lane lease remains held through off-loop DB commit and compulsory
 bootstrap; later arrivals stay in the native FIFO and are never cleared again.
@@ -717,6 +723,8 @@ New turn leases and transcript inserts against that ID fail, including from a
 different process after cutover. The marker survives later lane receipts and
 history deletion; it does not prevent reading or deleting old history. Ordinary
 manual resets do not create this rollover-only fence.
+`/resume` rejects a retired predecessor before changing the current lane and names
+its successor so the user can explicitly choose that session instead.
 
 After compulsory bootstrap, native busy-input policy still applies. With the
 default `interrupt` mode, an ordinary message can interrupt a retained-input or

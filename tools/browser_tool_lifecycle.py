@@ -663,7 +663,7 @@ def _release_session_resources(task_id: str, session_info: dict[str, Any], *, st
     The unconditional tail of ``_cleanup_single_browser_session``; also the whole of the janitor's
     force-reap path (#100738), which skips the polite agent-browser/Camofox ``close`` that kept failing but
     must still release the cloud session and the local Chromium.
-    Strict teardown retains ownership until daemon and socket-directory cleanup both succeed.
+    Strict teardown retains ownership until cloud, daemon and socket-directory cleanup all succeed.
     """
     bb_session_id = session_info.get("bb_session_id", "unknown")
     if not strict:
@@ -673,7 +673,9 @@ def _release_session_resources(task_id: str, session_info: dict[str, Any], *, st
         provider = _cloud._get_cloud_provider()
         if provider is not None:
             try:
-                provider.close_session(bb_session_id)
+                closed = provider.close_session(bb_session_id)
+                if strict and not closed:
+                    raise RuntimeError(f"Could not close cloud browser session {bb_session_id!r}")
             except Exception as e:
                 if strict:
                     raise

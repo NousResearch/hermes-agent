@@ -131,6 +131,26 @@ async def _rotate(data):
 
 
 @pytest.mark.asyncio
+async def test_resume_retired_predecessor_keeps_current_successor(lane):
+    await _claim(lane)
+    lane.runner.adapters = {}
+    lane.runner._is_user_authorized = lambda _source: True
+    try:
+        await _rotate(lane)
+        successor = lane.store.get_or_create_session(lane.source)
+        reply = await lane.runner._handle_resume_command(
+            MessageEvent(text=f"/resume {lane.entry.session_id}", source=lane.source),
+        )
+        assert lane.store.peek_session_id(lane.key) == successor.session_id
+        assert lane.db.get_session(successor.session_id)["end_reason"] is None
+        assert lane.db.get_session(lane.entry.session_id)["end_reason"] == "session_reset"
+        assert successor.session_id in reply
+        assert "retired" in reply.lower()
+    finally:
+        lane.runner._release_turn_lease(lane.key, lane.generation)
+
+
+@pytest.mark.asyncio
 async def test_arrivals_during_offloop_commit_survive_and_wait_for_bootstrap(lane, monkeypatch):
     await _claim(lane)
     entered, release = threading.Event(), threading.Event()

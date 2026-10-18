@@ -86,6 +86,25 @@ class TestBrowserCleanup:
         assert browser_tool._recording_sessions == set()
         assert browser_tool._cleanup_done is True
 
+    def test_strict_cleanup_retains_cloud_session_when_provider_returns_false(self):
+        from unittest.mock import Mock
+
+        task_id = "strict-cloud-task"
+        self.browser_tool._active_sessions[task_id] = {
+            "session_name": "", "bb_session_id": "owned-cloud-session",
+        }
+        provider = Mock()
+        provider.close_session.side_effect = [False, True]
+        with (
+            patch("tools.browser_tool_session._run_browser_command", return_value={"success": True}),
+            patch("tools.browser_tool_cloud._get_cloud_provider", return_value=provider),
+        ):
+            with pytest.raises(RuntimeError, match="cloud browser session"):
+                bt_lifecycle.cleanup_browser(task_id, strict=True)
+            assert self.browser_tool._active_sessions[task_id]["bb_session_id"] == "owned-cloud-session"
+            bt_lifecycle.cleanup_browser(task_id, strict=True)
+        assert task_id not in self.browser_tool._active_sessions
+
     def test_strict_cleanup_retains_live_daemon_after_failed_termination(self, tmp_path, monkeypatch):
         import subprocess
         import sys

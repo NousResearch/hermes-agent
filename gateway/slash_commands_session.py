@@ -1038,6 +1038,12 @@ class GatewaySessionCommandsMixin:
         denied = await self._resume_access_denied_reply(source, target_id, name, allow_all, allow_cross_room)
         if denied is not None:
             return denied
+        successor_id = await self._session_db.get_gateway_rollover_successor(target_id)
+        if successor_id is not None:
+            return (
+                f"Session {target_id} was retired by automatic rollover. "
+                f"Current session unchanged; use /resume {successor_id} for its successor."
+            )
         current_entry = await self.async_session_store.get_or_create_session(source)
         if current_entry.session_id == target_id:
             return t("gateway.resume.already_on", name=name)

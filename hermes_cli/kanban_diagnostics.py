@@ -679,6 +679,75 @@ def _rule_block_unblock_cycling(task, events, runs, now, cfg) -> list[Diagnostic
     )]
 
 
+def _unclaimed_ready_assignee(task) -> Optional[str]:
+    if _task_field(task, "status") != "ready" or _task_field(task, "claim_lock"):
+        return None
+    assignee = (_task_field(task, "assignee") or "").strip()
+    return assignee or None
+
+
+def _ready_since(task, events) -> int:
+    ts = _latest_event_ts(events, {"created", "promoted", "reclaimed", "unblocked"})
+    return ts or int(_task_field(task, "created_at", default=0) or 0)
+
+
+def _age_label(age_seconds: float) -> str:
+    return f"{age_seconds / 3600:.1f}h" if age_seconds >= 3600 else f"{int(age_seconds / 60)}m"
+
+
+def _per_profile_cap(cfg: dict) -> Optional[int]:
+    kanban_cfg = cfg.get("kanban")
+    if not isinstance(kanban_cfg, dict):
+        return None
+    cap = _positive_int(kanban_cfg.get("max_in_progress_per_profile"), 0)
+    return cap or None
+
+
+def _rule_lane_priority_inversion(task, events, runs, now, cfg) -> list[Diagnostic]:
+    lanes = cfg.get("_lanes")
+    cap = _per_profile_cap(cfg)
+    assignee = _unclaimed_ready_assignee(task)
+    if lanes is None or cap is None or assignee is None:
+        return []
+    holders = lanes.get("holders", {}).get(assignee, [])
+    if len(holders) < cap:
+        return []
+    priority = int(_task_field(task, "priority", default=0) or 0)
+    outranked = [h for h in holders if int(h.get("priority") or 0) < priority]
+    if not outranked:
+        return []
+    ready_since = _ready_since(task, events)
+    threshold_seconds = float(cfg.get("lane_inversion_threshold_seconds", 5 * 60))
+    age_seconds = now - ready_since
+    if ready_since == 0 or age_seconds < threshold_seconds:
+        return []
+
+    idle = [p for p in lanes.get("idle_profiles", []) if p != assignee]
+    holder_list = ", ".join(f"{h['id']} (priority {h['priority']})" for h in outranked)
+    reroute = (f" Idle lanes that could take it now: {', '.join(idle)}." if idle
+               else " No other lane is fully idle.")
+    task_id = _task_field(task, "id", default="<task>")
+    actions = [DiagnosticAction(kind="reassign", label="Reassign to an idle lane",
+                                payload={"current_assignee": assignee, "idle_profiles": idle},
+                                suggested=bool(idle))]
+    if idle:
+        actions.append(_cli_hint(f"Reassign to {idle[0]}", f"hermes kanban reassign {task_id} {idle[0]}"))
+    return [Diagnostic(
+        kind="lane_priority_inversion", severity="error",
+        title=f"Starved {_age_label(age_seconds)} behind lower-priority work on {assignee!r}",
+        detail=f"Priority {priority} card is ready but lane {assignee!r} is full "
+               f"({len(holders)}/{cap} at kanban.max_in_progress_per_profile) and it outranks "
+               f"running {holder_list}. Running cards are never preempted, so it waits until one "
+               f"of them finishes.{reroute}",
+        actions=actions,
+        first_seen_at=ready_since, last_seen_at=ready_since, count=1,
+        data={"ready_since": ready_since, "age_seconds": int(age_seconds), "assignee": assignee,
+              "priority": priority, "cap": cap, "running": len(holders),
+              "outranked_holders": [h["id"] for h in outranked], "idle_profiles": idle,
+              "runs": len(runs or [])},
+    )]
+
+
 def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     """Assigned, unclaimed, ``ready`` for >= cfg["stranded_threshold_seconds"]
     (default 30 min). Deliberately age-based and identity-agnostic so it
@@ -686,21 +755,10 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     pools alike without a registry to curate. Unassigned tasks are excluded —
     the dispatcher's ``skipped_unassigned`` already covers them."""
     threshold_seconds = float(cfg.get("stranded_threshold_seconds", 30 * 60))
-    if _task_field(task, "status") != "ready":
+    assignee = _unclaimed_ready_assignee(task)
+    if assignee is None:
         return []
-    # A live claim means it's being worked on even without progress yet.
-    if _task_field(task, "claim_lock"):
-        return []
-    assignee = _task_field(task, "assignee") or ""
-    if not assignee.strip():
-        return []
-
-    # Most recent event that put the task into ready; with none (old task /
-    # truncated events) fall back to created_at — over-flagging an ancient
-    # task beats missing a stranded one.
-    last_ready_ts = _latest_event_ts(events, {"created", "promoted", "reclaimed", "unblocked"})
-    if last_ready_ts == 0:
-        last_ready_ts = int(_task_field(task, "created_at", default=0) or 0)
+    last_ready_ts = _ready_since(task, events)
     if last_ready_ts == 0:
         return []
 
@@ -708,7 +766,7 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     if age_seconds < threshold_seconds:
         return []
 
-    age_str = f"{age_seconds / 3600:.1f}h" if age_seconds >= 3600 else f"{int(age_seconds / 60)}m"
+    age_str = _age_label(age_seconds)
     # Escalate with age: <2x threshold warning, 2x-6x error, >6x critical.
     if age_seconds >= threshold_seconds * 6:
         severity = "critical"
@@ -747,6 +805,7 @@ _RULES: list[RuleFn] = [
     _rule_running_with_open_parents,
     _rule_stuck_in_blocked,
     _rule_block_unblock_cycling,
+    _rule_lane_priority_inversion,
     _rule_stranded_in_ready,
 ]
 
@@ -762,6 +821,7 @@ DEFAULT_CONFIG = {
     # Below 30 min the signal is dominated by tasks about to be claimed on
     # the next dispatcher tick.
     "stranded_threshold_seconds": 30 * 60,
+    "lane_inversion_threshold_seconds": 5 * 60,
 }
 
 
@@ -810,6 +870,7 @@ def compute_task_diagnostics(
     now: Optional[int] = None,
     config: Optional[dict] = None,
     graph: Optional[dict] = None,
+    lanes: Optional[dict] = None,
 ) -> list[Diagnostic]:
     """Run every rule for one task; critical first, then error, warning; ties
     broken by most-recent ``last_seen_at``."""
@@ -818,6 +879,8 @@ def compute_task_diagnostics(
     cfg = {**DEFAULT_CONFIG, **config}
     if graph is not None:
         cfg["_graph"] = graph
+    if lanes is not None:
+        cfg["_lanes"] = lanes
     if not _has_explicit_threshold(config) and "failure_limit" in config:
         cfg["failure_threshold"] = _positive_int(
             config.get("failure_limit"), DEFAULT_CONFIG["failure_threshold"],

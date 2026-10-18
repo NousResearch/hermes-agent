@@ -133,6 +133,12 @@ class _KanbanDispatcher:
         self.kb = kb
         self.settings = settings
         self.disabled_corrupt_boards: dict[str, tuple[tuple[str, int | None, int | None], float]] = {}
+        # Per-board failure counters for non-corrupt errors (prevents log spam,
+        # escalates to ERROR after N consecutive failures).
+        self._non_corrupt_errors: dict[str, int] = {}
+        self._non_corrupt_error_times: dict[str, float] = {}
+        self._NON_CORRUPT_ERROR_WARN_THRESHOLD = 10  # warn after this many
+        self._NON_CORRUPT_ERROR_ERROR_THRESHOLD = 50  # escalate to ERROR
 
     def _board_slugs(self) -> list:
         return _board_slugs(self.kb)
@@ -206,7 +212,34 @@ class _KanbanDispatcher:
                     slug, fingerprint[0],
                 )
                 return None
-            logger.exception("kanban dispatcher: tick failed on board %s", slug)
+            # Non-corrupt errors: downgrade from logger.exception() (full traceback)
+            # to logger.warning() to avoid log spam; escalate after N consecutive
+            # failures per board.  Corrupt errors are handled above at ERROR level.
+            error_count = self._non_corrupt_errors.get(slug, 0) + 1
+            self._non_corrupt_errors[slug] = error_count
+            self._non_corrupt_error_times[slug] = time.monotonic()
+            if error_count >= self._NON_CORRUPT_ERROR_ERROR_THRESHOLD:
+                logger.error(
+                    "kanban dispatcher: board %s has failed %d consecutive ticks — "
+                    "further dispatch attempts suppressed until the board recovers",
+                    slug, error_count,
+                )
+            elif error_count >= self._NON_CORRUPT_ERROR_WARN_THRESHOLD:
+                logger.warning(
+                    "kanban dispatcher: board %s has failed %d consecutive ticks "
+                    "(non-corrupt); consider checking the board status",
+                    slug, error_count,
+                )
+            elif error_count <= 3:
+                logger.warning(
+                    "kanban dispatcher: tick failed on board %s: %s",
+                    slug, exc,
+                )
+            else:
+                logger.debug(
+                    "kanban dispatcher: tick failed on board %s (attempt %d)",
+                    slug, error_count,
+                )
             return None
         finally:
             if conn is not None:

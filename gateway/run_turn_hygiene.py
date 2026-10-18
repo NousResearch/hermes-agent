@@ -568,11 +568,38 @@ class GatewayTurnHygieneMixin:
             # No rewrite happened — post-compression counts equal the pre-compression ones.
             _new_count = plan.msg_count
             _new_tokens = plan.approx_tokens
-            logger.warning(
-                "Gateway hygiene compression for session %s did not rotate or compact in place (%s) — "
-                "preserving the original transcript instead of overwriting it with the summary (#21301).",
-                session_entry.session_id, hygiene_no_commit_reason(_hyg_agent),
-            )
+            # Track per-session compression failure counts; escalate to ERROR
+            # after N consecutive failures so operators notice persistent bloat.
+            if not hasattr(self, "_hygiene_compression_failures"):
+                self._hygiene_compression_failures: dict[str, int] = {}
+            failures = self._hygiene_compression_failures.get(session_entry.session_id, 0) + 1
+            self._hygiene_compression_failures[session_entry.session_id] = failures
+            if failures >= 100:
+                logger.error(
+                    "Session %s: hygiene compression failed %d consecutive times "
+                    "(transcript may be significantly oversized). "
+                    "Consider a manual /reset or investigate the compression error.",
+                    session_entry.session_id, failures,
+                )
+            elif failures >= 20:
+                logger.warning(
+                    "Session %s: compression failed %d consecutive times "
+                    "(%s). Transcript may be oversized.",
+                    session_entry.session_id, failures,
+                    hygiene_no_commit_reason(_hyg_agent),
+                )
+            elif failures <= 2:
+                logger.warning(
+                    "Gateway hygiene compression for session %s did not rotate or compact in place (%s) — "
+                    "preserving the original transcript instead of overwriting it with the summary (#21301).",
+                    session_entry.session_id, hygiene_no_commit_reason(_hyg_agent),
+                )
+            else:
+                logger.debug(
+                    "Session %s: compression failed %d consecutive times (%s)",
+                    session_entry.session_id, failures,
+                    hygiene_no_commit_reason(_hyg_agent),
+                )
 
         logger.info(
             "Session hygiene: compressed %s → %s msgs, ~%s → ~%s tokens",

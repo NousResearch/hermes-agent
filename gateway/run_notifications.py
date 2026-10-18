@@ -907,8 +907,10 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 await admit_internal_event(adapter, synth_event)
             return True
         except WakeNotAccepted as exc:
-            logger.warning("Watch notification not admitted for %s chat=%s: %s",
-                           platform_name, source.chat_id, exc)
+            # Transient store errors are expected during restarts / requeues;
+            # downgrading from WARNING avoids flooding errors.log (#21301 fix).
+            logger.debug("Watch notification not admitted for %s chat=%s: %s",
+                         platform_name, source.chat_id, exc)
             # Durable callers refund the claim; ordinary watch callers just requeue.
             if raise_not_accepted:
                 raise

@@ -4482,9 +4482,11 @@ def register(ctx) -> None:
     from .send_targets import SEND_ENTRY_KWARGS
     from .dashboard_card import DASHBOARD_CARD
     from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
+    from .native_cards.integration import register_card_factory
+    card_factory = register_card_factory(ctx, FeishuAdapter)
     ctx.register_platform(
         **SEND_ENTRY_KWARGS,  # send_message target syntax + routing
-        name="feishu", label="Feishu / Lark", adapter_factory=FeishuAdapter,
+        name="feishu", label="Feishu / Lark", adapter_factory=card_factory,
         **DASHBOARD_CARD,
         check_fn=feishu_deps_present, ensure_deps_fn=check_feishu_requirements,
         is_connected=_is_connected, validate_config=_is_connected,

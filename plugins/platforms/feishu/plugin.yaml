@@ -42,3 +42,10 @@ optional_env:
     description: "Display name for the Feishu home channel"
     prompt: "Home channel display name"
     password: false
+provides_hooks:
+  - pre_tool_call
+  - post_tool_call
+  - pre_approval_request
+  - pre_api_request
+  - pre_auxiliary_call
+  - post_auxiliary_call

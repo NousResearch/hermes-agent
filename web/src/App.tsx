@@ -438,14 +438,9 @@ export default function App() {
   // extension point, so preserve the pre-persistence contract: when a
   // plugin owns /chat, the built-in chat UI is entirely absent.
   //
-  // Waiting on `pluginsLoading` is load-bearing: manifests arrive
-  // asynchronously from /api/dashboard/plugins, so on initial render
-  // `chatOverriddenByPlugin` is always false.  Without the loading
-  // gate, the persistent host would mount, spawn a PTY, and THEN get
-  // yanked out from under the user when the plugin's manifest resolves
-  // — killing the session mid-paint.  Delaying host mount by the
-  // plugin-load window (typically <50ms, worst case 2s safety timeout)
-  // is the cheaper trade-off.
+  // Wait for manifests before mounting a PTY: a /chat override owns the
+  // route and must never be displaced by the built-in host. Once manifests
+  // rule out an override, unrelated plugin bundles can load alongside chat.
   const chatOverriddenByPlugin = useMemo(
     () => manifests.some((m) => m.tab.override === "/chat"),
     [manifests],

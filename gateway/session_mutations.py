@@ -224,7 +224,14 @@ async def write_mutation(authority, ref, params, editor_servers, *, principal_id
             # state.db or a contended writer lock never stalls other clients (main 1769024ca3b).
             result = await asyncio.to_thread(mutate_runtime_session, authority.db, **fields,
                                              _prepared=prepared, _authorize_write=authorize_write)
-        await _project_result(authority, ref, live, params, result, editor_servers, applied=applied)
+        try:
+            await _project_result(authority, ref, live, params, result, editor_servers, applied=applied)
+        finally:
+            # The receipt is committed: a failed projection must not swallow the hook, and an exact
+            # retry (applied=False) never refires it.
+            if operation == 'compress' and applied and (prepared or {}).get('post_compaction'):
+                from gateway.session_mutation_compress import fire_post_compaction_hook
+                await fire_post_compaction_hook(authority, prepared, result)
     if operation == 'delete':
         # After the synchronous projections (no yield before retirement), off the loop: the
         # retired-media owner check is a messages-table pass (exact retries repeat it too).
@@ -325,17 +332,34 @@ def retire_live_sessions(authority, session_ids, *, require_fence=False):
         store.retire_runtime_sessions(session_ids)
         # The delete transaction fenced and dropped routes in the owning store; a multiplexed
         # secondary's routes live in the launch home's shared index, so the store fences them
-        # there too (markers + drop in one transaction). Without the marker in THAT database a
+        # there too (fences + drop in one transaction). Without the fence in THAT database a
         # whole-index snapshot taken before this delete and saved after it restored the route
-        # (#138826). A failure surfaces after the rest of the cleanup: an exact retry replays the
+        # (#138826). The fence is keyed by this profile's routing namespace, so the launch
+        # profile never takes it for its own deletion, and it ages out with a sweep's marker.
+        # A failure surfaces after the rest of the cleanup: an exact retry replays the
         # committed receipt and repeats this fence.
         routing = getattr(store, '_routing_db', None)
         if session_ids and routing is not None and routing.db_path != authority.db.db_path:
             try:
-                store.fence_retired_routes(session_ids)
+                from gateway.session import _session_key_namespace
+                from hermes_state_mutation_retirement import expiring_retirements
+                registry = getattr(authority.runner, 'session_authorities', None)
+                profile = registry.profile_name(authority) if registry is not None else None
+                store.fence_retired_routes(
+                    session_ids, namespace=_session_key_namespace(profile).split(':', 1)[1],
+                    expiring=expiring_retirements(authority.db, session_ids))
             except Exception as exc:
                 logger.warning('could not fence shared routing rows for deleted sessions', exc_info=True)
                 fence_error = exc
+        # The dropped routes stay in sessions.json until the next full save, which an idle gateway
+        # may not make before a prune's fence ages out; the next start would then import them back.
+        # Strip them now, after the fences, whatever write_sessions_json says.
+        strip = getattr(store, 'strip_retired_mirror_routes', None)
+        if session_ids and callable(strip):
+            try:
+                strip(session_ids)
+            except Exception:
+                logger.warning('could not strip retired routes from sessions.json', exc_info=True)
     from gateway.session_policy import release_launch_secrets
     release_launch_secrets(authority, session_ids)
     from tools.async_delegation import allow_for_session

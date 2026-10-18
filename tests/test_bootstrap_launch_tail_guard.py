@@ -47,7 +47,20 @@ def install_state_dir(project_root):
 
     return Path(project_root) / ".hermes-install-state"
 """
-EARLY_RECOVERY = "def recover_if_needed(project_root):\n    return None\n"
+# ``_settle_interrupted_update`` drives the journal restore through these two;
+# the stub answers "no torn update" so nothing here depends on recovery behaviour.
+EARLY_RECOVERY = (
+    "def recover_if_needed(project_root):\n"
+    "    return None\n"
+    "\n"
+    "\n"
+    "def restore_interrupted_pull(project_root):\n"
+    "    return False\n"
+    "\n"
+    "\n"
+    "def relaunch_after_restore():\n"
+    "    return None\n"
+)
 PARSER = "def command_argv(argv):\n    return list(argv)\n"
 MAIN = "import hermes_bootstrap  # noqa: F401\n"
 # The incident's shape: a module inside a longer-running program imports the CLI.
@@ -133,7 +146,7 @@ def _run_child(tree: Path, args: list[str], home: Path,
         env.update(extra_env)
     return subprocess.run(
         [sys.executable, "-S", *args],
-        cwd=str(tree), env=env, capture_output=True, text=True, timeout=60,
+        cwd=str(tree), env=env, capture_output=True, text=True, timeout=60, check=False,
     )
 
 

@@ -117,6 +117,21 @@ def _walk(scan: _Scan, wt: Path, rel_dir: str, main: Optional[Path], *, files: b
                 scan.ignored.append(child)
 
 
+def _ignored_entries(wt: Path, env) -> list[str]:
+    """Ignored paths, whole ignored directories collapsed to ``dir/``. ``ls-files --directory``
+    hits an internal error on some trees (git 2.53: "directory entry not superset of prefix");
+    ``status --ignored`` reports the same set."""
+    from hermes_cli.worktree_archive import ArchiveError
+    try:
+        out = _git(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory",
+                    "--no-empty-directory", "-z"], wt, env)
+        return [p for p in out.split("\0") if p]
+    except ArchiveError:
+        out = _git(["status", "--porcelain", "-z", "--ignored=traditional", "--untracked-files=normal",
+                    "--no-renames"], wt, env)
+        return [e[3:] for e in out.split("\0") if e.startswith("!! ")]
+
+
 def scan_tree(wt_path) -> _Scan:
     """Embedded repositories and non-reproducible ignored files of *wt_path*. Read-only.
 
@@ -130,10 +145,8 @@ def scan_tree(wt_path) -> _Scan:
     # Without --directory git descends untracked dirs and lists each embedded repository as "dir/".
     untracked = _git(["ls-files", "--others", "--exclude-standard", "-z"], wt, env)
     scan.embedded += [p.rstrip("/") for p in untracked.split("\0") if p.endswith("/")]
-    out = _git(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory",
-                "--no-empty-directory", "-z"], wt, env)
     main = main_checkout(wt, env)
-    for rel in (p for p in out.split("\0") if p):
+    for rel in _ignored_entries(wt, env):
         rel_clean = rel.rstrip("/")
         path = wt / rel_clean
         if rel.endswith("/") and not path.is_symlink():

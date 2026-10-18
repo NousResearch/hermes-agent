@@ -558,6 +558,9 @@ def _cleanup_worktree(info: dict[str, str] | None = None) -> None:
     if not Path(wt_path).exists():
         return
     _active_worktree = None
+    from hermes_cli.worktree_exit import apply_exit_choice
+    if apply_exit_choice(info, _cprint):  # an exit-question answer not applied yet (normally none)
+        return
 
     if _worktree_is_dirty(wt_path, repo_root, timeout=10):
         # Uncommitted work: say so, and don't hint at `remove --force`, which would destroy it.
@@ -572,6 +575,12 @@ def _cleanup_worktree(info: dict[str, str] | None = None) -> None:
         else:
             _cprint(f"\n\033[33m{_t('cli.worktree.unpushed_keeping', path=wt_path)}\033[0m")
             print(f"  {_t('cli.worktree.clean_up_manually', path=wt_path)}")
+        return
+
+    from hermes_cli.worktree_ops import removal_blocked
+    blocked = removal_blocked(wt_path)  # an embedded repo or private ref dies with it
+    if blocked:
+        _cprint(f"\n\033[33m{_t('cli.worktree.kept_reason', path=wt_path, reason=blocked[1])}\033[0m")
         return
 
     # Release the tree's language servers while the path still exists, then unlock so `remove`

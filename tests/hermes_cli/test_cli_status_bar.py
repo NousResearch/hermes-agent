@@ -450,7 +450,20 @@ class TestRollingLatencyVelocity:
         text = cli_obj._build_status_bar_text(width=140)
 
         assert "\u25f7 3.0s" in text           # mean latency (2+4)/2
-        assert "\u2191 50 t/s" in text          # true throughput 300/6.0
+        assert "\u2193 50 t/s" in text          # true throughput 300/6.0 (output flows down to the client)
+
+    def test_session_tokens_shown_as_input_up_output_down(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000, completion_tokens=2_000, total_tokens=12_000,
+            api_calls=5, context_tokens=12_000, context_length=200_000,
+        )
+        cli_obj.agent.session_input_tokens = 12_300
+        cli_obj.agent.session_output_tokens = 4_500
+
+        text = cli_obj._build_status_bar_text(width=140)
+
+        assert "\u219112.3K \u21934.5K" in text
 
     def test_latency_hidden_without_history(self):
         cli_obj = _attach_agent(

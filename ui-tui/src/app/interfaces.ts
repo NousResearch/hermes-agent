@@ -348,6 +348,10 @@ export interface UiState {
   focusView: boolean
   info: null | SessionInfo
   liveSessionCount: number
+  // Instantaneous streaming throughput, measured client-side while tokens
+  // arrive (null when idle). The status bar prefers it over usage.avg_tps,
+  // which only moves when an API call completes.
+  liveTps: null | number
   inlineDiffs: boolean
   mouseTracking: MouseTrackingMode
   notice: Notice | null

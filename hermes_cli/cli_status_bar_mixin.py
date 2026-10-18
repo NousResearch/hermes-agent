@@ -1069,10 +1069,17 @@ class CLIStatusBarMixin:
                 add("cache_hit", self._cache_hit_rate_style(cache[0]), cache[1])
             if wide:
                 for name, key, glyph in (
-                    ("latency", "avg_latency_label", "◷"), ("tps", "avg_velocity_label", "↑")):
+                    ("latency", "avg_latency_label", "◷"), ("tps", "avg_velocity_label", "↓")):
                     label = snapshot.get(key) or ""
                     if label:
                         add(name, _DIM, f"{glyph} {label}")
+                # Session token totals: ↑ input sent to the model, ↓ output it
+                # produced — the same convention as the live spinner's "↓ 1.2k tok".
+                tok_in = snapshot.get("session_input_tokens", 0) or 0
+                tok_out = snapshot.get("session_output_tokens", 0) or 0
+                if (tok_in or tok_out) and _ok("tokens"):
+                    add("tokens", _DIM,
+                        f"↑{format_token_count_compact(tok_in)} ↓{format_token_count_compact(tok_out)}")
             add_count("compressions", "compressions", "🗜️", self._compression_count_style)
             add_count("bg_tasks", "active_background_tasks", "▶")
             add_count("bg_processes", "active_background_processes", "⚙")

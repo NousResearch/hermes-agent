@@ -29,6 +29,7 @@ import type { Notice } from './interfaces.js'
 import { resetFlowOverlays } from './overlayStore.js'
 import { pushSnapshot } from './spawnHistoryStore.js'
 import { captureDestination, isCurrentDestination } from './submissionDestination.js'
+import { createStreamTpsCounter, WINDOW_MS } from './streamTps.js'
 import { archiveDoneTodos, getTurnState, patchTurnState, resetTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
@@ -193,7 +194,11 @@ class TurnController {
   private reasoningStreamingTimer: Timer = null
   private reasoningTimer: Timer = null
   private streamTimer: Timer = null
+  private liveTpsDecayTimer: Timer = null
   private streamDelay = STREAM_IDLE_BATCH_MS
+  // Live t/s over streamed deltas; the server's usage.avg_tps only updates when
+  // an API call completes, so this fills the gap while tokens are arriving.
+  private streamTps = createStreamTpsCounter()
 
   // ── Credits notice machinery (Strategy B) ───────────────────────────
   //
@@ -342,6 +347,7 @@ class TurnController {
     this.endReasoningPhase()
     this.activeTools = []
     this.streamTimer = clear(this.streamTimer)
+    this.streamTps.reset()
     this.bufRef = ''
     // `keepTurnArchive`: the turn-over signal arrived before the final; the sealed segments
     // and finished tool rows wait for `recordMessageComplete` to archive them.
@@ -358,7 +364,8 @@ class TurnController {
       tools: [],
       turnTrail: []
     })
-    patchUiState({ busy: false, compacting: false })
+    this.liveTpsDecayTimer = clear(this.liveTpsDecayTimer)
+    patchUiState({ busy: false, compacting: false, liveTps: null })
     resetFlowOverlays()
   }
 
@@ -806,8 +813,40 @@ class TurnController {
     // `display.final_response_markdown: render`.
     this.bufRef += text
 
+    // Live throughput: timestamps the delta so the status bar can show a rate
+    // while the response is still streaming, not only once the call completes.
+    this.sampleLiveTps()
+
     if (getUiState().streaming) {
       this.scheduleStreaming()
+    }
+  }
+
+  /**
+   * Feed the live throughput counter from a streamed delta.
+   *
+   * Reasoning and content are separate event streams (`reasoning.delta` /
+   * `message.delta`) that run back to back inside one turn, and both are billed
+   * output tokens. Sampling only the content stream leaves the status-bar rate
+   * frozen at the previous call's average for the whole thinking phase, which is
+   * where most of the wall-clock time goes on a reasoning model. One shared
+   * counter (reset at turn start) covers both phases as a single continuous rate.
+   */
+  private sampleLiveTps(now: number = Date.now()) {
+    const liveTps = this.streamTps.accumulate(now)
+
+    // A turn goes quiet for seconds at a time (tool call, end of the reasoning
+    // phase). Without a decay the bar keeps the last instantaneous rate on
+    // screen, which reads as a frozen counter, so fall back to the server
+    // average once a full window has passed without a delta.
+    this.liveTpsDecayTimer = clear(this.liveTpsDecayTimer)
+    this.liveTpsDecayTimer = setTimeout(() => {
+      this.liveTpsDecayTimer = null
+      patchUiState({ liveTps: null })
+    }, WINDOW_MS + 200)
+
+    if (liveTps !== undefined) {
+      patchUiState({ liveTps })
     }
   }
 
@@ -889,7 +928,15 @@ class TurnController {
   }
 
   recordReasoningDelta(text: string, force = false) {
-    if (this.interrupted || (!force && !getUiState().showReasoning)) {
+    if (this.interrupted) {
+      return
+    }
+
+    // Sample before the visibility gate: reasoning tokens are billed output
+    // whether or not `display.show_reasoning` renders them.
+    this.sampleLiveTps()
+
+    if (!force && !getUiState().showReasoning) {
       return
     }
 
@@ -1069,6 +1116,9 @@ class TurnController {
   }
 
   startMessage() {
+    this.streamTps.reset()
+    this.liveTpsDecayTimer = clear(this.liveTpsDecayTimer)
+    patchUiState({ liveTps: null })
     this.endReasoningPhase()
     this.clearReasoning()
     this.activeTools = []

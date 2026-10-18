@@ -4339,13 +4339,62 @@ def _housekeeping_chore(label: str, fn, *args, **kwargs) -> None:
         logger.debug("%s error: %s", label, exc)
 
 
-def _housekeeping_channel_directory(adapters, loop) -> None:
+async def _refresh_served_profile_channel_directories(runner, launch_adapters=None) -> int:
+    """Rebuild ``channel_directory.json`` for every profile this gateway serves, in ITS OWN runtime scope.
+
+    ``build_channel_directory`` persists to ``_directory_path()`` -> ``get_hermes_home()``, which on the
+    launch loop thread and on the housekeeping thread is the LAUNCH home. Under
+    ``gateway.multiplex_profiles`` the served profiles' adapters live in ``runner._profile_adapters`` and
+    were never handed to a builder, so a served profile's own directory was only ever written by the
+    single-profile gateway it no longer runs: name-based targets (``slack:#channel``, cron
+    ``deliver: slack:<name>``) created or joined after that move never resolved, while raw IDs kept
+    working (#141023). One profile at a time, in its scope, so each file lands in ITS home. A
+    single-profile gateway keeps today's behaviour exactly: the launch build already IS the profile's
+    own build, so this is a no-op there. Never raises.
+    """
     from gateway.channel_directory import build_channel_directory
+    config = getattr(runner, "config", None)
+    if not getattr(config, "multiplex_profiles", False):
+        return 0
+    served = getattr(runner, "_profile_adapters", None) or {}
+    if not served:
+        return 0
+    try:
+        # Multiplex resolution walks the filesystem (``profiles_to_serve``); keep the loop free.
+        homes = await asyncio.to_thread(_multiplex_profile_homes, config)
+    except Exception:
+        logger.debug("Channel directory: served profile homes unavailable", exc_info=True)
+        return 0
+    rebuilt = 0
+    for profile_name, profile_home in homes:
+        # The launch profile is absent from ``_profile_adapters`` (the primary loop owns it) and its
+        # directory was built unscoped by the caller: anything else here is a served secondary.
+        if not profile_home or str(profile_name) not in served:
+            continue
+        adapters = served.get(str(profile_name)) or launch_adapters or {}
+        try:
+            async with _async_profile_runtime_scope(Path(profile_home)):
+                await build_channel_directory(adapters)
+            rebuilt += 1
+        except Exception as exc:
+            logger.warning("Channel directory: profile %s build failed: %s", profile_name, exc)
+    return rebuilt
+
+
+async def _refresh_channel_directories(adapters, runner=None) -> None:
+    """The full refresh: the launch home's directory, then one per served profile (#141023)."""
+    from gateway.channel_directory import build_channel_directory
+    await build_channel_directory(adapters)
+    if runner is not None:
+        await _refresh_served_profile_channel_directories(runner, adapters)
+
+
+def _housekeeping_channel_directory(adapters, loop, runner=None) -> None:
     if loop is not None:
         # build_channel_directory is async (Slack web calls) and this is a background thread:
         # schedule onto the gateway loop and wait briefly so refresh failures still log.
         fut = safe_schedule_threadsafe(
-            build_channel_directory(adapters), loop, logger=logger,
+            _refresh_channel_directories(adapters, runner), loop, logger=logger,
             log_message="Channel directory refresh scheduling error")
         if fut is not None:
             fut.result(timeout=30)
@@ -4518,7 +4567,7 @@ def _start_gateway_housekeeping(
         # whichever gateway is live; drained here (not the scheduler tick) so external providers get it too.
         chores.append((1, DRAIN_LABEL, lambda: _drain_restart_safe_cron_deliveries(adapters, loop, runner)))
     chores += [
-        (5, "Channel directory refresh", lambda: adapters and _housekeeping_channel_directory(adapters, loop)),
+        (5, "Channel directory refresh", lambda: adapters and _housekeeping_channel_directory(adapters, loop, runner)),
         (60, "Media cache cleanup", housekeeping_media_caches),
         (60, "Paste sweep", _housekeeping_paste_sweep)]
     # Low disk + auto-prune undecided: ask on the home channel (two syscalls; snoozed per post).

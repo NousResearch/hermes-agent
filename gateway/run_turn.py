@@ -1694,10 +1694,10 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
     async def _run_agent_drain_pending(
         self, result: Any, adapter: Any, source: SessionSource, session_key: Optional[str]
     ) -> tuple[Any, Optional[str]]:
-        """Dequeue the adapter's pending / interrupt / leftover-steer follow-up as ``(pending_event, pending)``."""
-        from gateway.run import (
-            _build_media_placeholder, _dequeue_pending_event, _is_control_interrupt_message
-        )
+        """Dequeue the adapter's pending / interrupt / leftover-steer follow-up as ``(pending_event, pending)``.
+
+        Keyed by session_key (not source.chat_id) to match the adapter's storage keys."""
+        from gateway.run import _build_media_placeholder, _dequeue_pending_event, _is_control_interrupt_message
         from gateway.session_ingress import executing_admission
         pending_event = None
         pending = None
@@ -1717,7 +1717,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                         session_key or "?", interrupt_message,
                     )
                 else:
-                    # Admitted turns already have this send on the FIFO. Promoting it runs it twice.
+                    # FIFO already has this send.
                     pending = None if executing_admission.get() else interrupt_message
             elif pending_event:
                 # Transcribe audio BEFORE it becomes the next user turn (real transcript, not a path).

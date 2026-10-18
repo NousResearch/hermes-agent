@@ -147,7 +147,7 @@ it('reads back retry on the same authority and sends only through the group driv
     return {}
   })
   const group = registerCanonicalGroup({ connectionId: 'local', profile: 'default' }, { room_id: 'r', name: 'Room', members: [] })
-  render(<GroupChatWorkspace group={group} members={[]} />)
+  render(<GroupChatWorkspace group={group} members={[]} origin="key" />)
   fireEvent.click(await screen.findByRole('button', { name: 'Retry' }))
   await waitFor(() => expect(request.mock.calls.filter(c => c[1] === 'groups.state').length).toBeGreaterThan(1))
   fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Hello' } })

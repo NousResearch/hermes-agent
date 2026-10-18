@@ -96,9 +96,11 @@ def _pipe_security(handle) -> tuple[str, tuple[tuple[int, str], ...]]:
     owner, dacl, descriptor = ctypes.c_void_p(), ctypes.c_void_p(), ctypes.c_void_p()
     # SE_KERNEL_OBJECT; OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION
     if get_info(handle, 6, 0x1 | 0x4, ctypes.byref(owner), None, ctypes.byref(dacl), None,
-                ctypes.byref(descriptor)) or not owner:
+                ctypes.byref(descriptor)):
         raise PermissionError('cannot read named-pipe owner')
     try:
+        if not owner:  # inside the try: the descriptor is freed on this refusal too
+            raise PermissionError('cannot read named-pipe owner')
         aces = []
         # A NULL DACL (no entries to read) grants everyone: it is reported as no ACEs at all.
         for index in range(_AclHeader.from_address(dacl.value).count if dacl else 0):
@@ -485,6 +487,9 @@ def judge_pipe_server(*, own_sid: str, process_sid: str | None, pipe: tuple[str,
     else:
         if pipe is None:
             raise PermissionError('cannot verify bootstrap peer process')
+        # The owner check carries the trust (no other non-administrator account can set either
+        # owner). The ACE shape ignores AceFlags and the access mask: it only filters out pipes
+        # that are not the gateway's private shape, it proves nothing on its own.
         if owner not in (own_sid, _ADMINISTRATORS_SID) or tuple(aces) != ((_ACCESS_ALLOWED_ACE, own_sid),):
             raise PermissionError('named-pipe peer belongs to another user')
         owner_elevated = True if owner == _ADMINISTRATORS_SID else None

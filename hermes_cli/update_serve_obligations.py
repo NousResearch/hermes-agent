@@ -1,4 +1,5 @@
-"""Durable manual-serve handoffs, independent of gateway restart receipts."""
+"""Durable serve/dashboard restart reminders (manual serves, and unit-owned ones the update could not
+restart), independent of gateway restart receipts."""
 
 import json
 import logging
@@ -37,25 +38,54 @@ def defer_manual_serve(runtime: dict, *, require_alive: bool = False) -> bool:
             return False
         if alive is False:
             return True
-        directory = get_hermes_home() / "serve_restart_pending"
-        directory.mkdir(parents=True, exist_ok=True)
-        row = {"kind": runtime["kind"], "profile": runtime.get("profile", "unknown"), "pid": pid, "create_time": created}
-        target = directory / f"{pid}-{float(created).hex()}.json"
-        # One immutable file per incarnation avoids read/merge/write races between CLI startups.
-        temporary = None
-        try:
-            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory, delete=False) as handle:
-                temporary = Path(handle.name)
-                json.dump(row, handle)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, target)
-        finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
+        _write_reminder({"kind": runtime["kind"], "profile": runtime.get("profile", "unknown"), "pid": pid, "create_time": created})
         return True
     except (OSError, ValueError, TypeError) as exc:
         logger.debug("Could not preserve manual serve obligation: %s", exc)
+        return False
+
+
+def _write_reminder(row: dict) -> None:
+    """Persist one reminder row, one immutable file per incarnation (no read/merge/write races
+    between CLI startups). Raises OSError/ValueError/TypeError to the caller."""
+    directory = get_hermes_home() / "serve_restart_pending"
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / f"{row['pid']}-{float(row['create_time']).hex()}.json"
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory, delete=False) as handle:
+            temporary = Path(handle.name)
+            json.dump(row, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def remind_unit_serve(runtime: dict) -> bool:
+    """File the same durable reminder for a stale serve/dashboard whose systemd unit this update could
+    not restart (no root, #141021). The fleet obligation only names gateways, so without this the
+    stale unit is never mentioned again after the update run. Carries the unit's restart command;
+    cleared like a manual reminder once that incarnation exits. False when nothing was filed."""
+    from hermes_cli.main_dashboard import _systemd_restart_commands
+    from hermes_cli.process_identity import _pid_alive_matches
+
+    detail = runtime.get("detail") if isinstance(runtime.get("detail"), dict) else {}
+    pid, created, unit = runtime.get("pid"), detail.get("create_time"), detail.get("systemd_unit")
+    if (runtime.get("kind") not in ("serve", "dashboard") or runtime.get("supervisor") != "systemd" or not unit
+            or type(pid) is not int or pid <= 0 or type(created) not in (int, float) or not math.isfinite(created)):
+        return False
+    try:
+        if _pid_alive_matches(pid, created) is not True:
+            return False
+        _write_reminder({"kind": runtime["kind"], "profile": runtime.get("profile", "unknown"), "pid": pid,
+                         "create_time": created,
+                         "restart": _systemd_restart_commands(str(unit), detail.get("systemd_scope"))})
+        return True
+    except (OSError, ValueError, TypeError) as exc:
+        logger.debug("Could not preserve unit serve obligation: %s", exc)
         return False
 
 
@@ -100,6 +130,11 @@ def warn_pending_manual_serves(*, startup: bool = False, pending_manual: list[di
             row = json.loads(path.read_text(encoding="utf-8-sig"))
             if _pid_alive_matches(row["pid"], row["create_time"]) is False:
                 path.unlink(missing_ok=True)
+                continue
+            restart = row.get("restart")
+            if isinstance(restart, list) and restart:
+                print(f"  ⚠ {row['kind']} [{row['profile']}] pid {row['pid']}: unit restart still pending; this process may still serve pre-update code.", file=stream)
+                print(f"    Restart its unit: {' or '.join(f'`{c}`' for c in restart)}", file=stream)
                 continue
             print(f"  ⚠ {row['kind']} [{row['profile']}] pid {row['pid']}: manual restart still pending; this process may still serve pre-update code.", file=stream)
             print("    Ask its owner to relaunch `hermes serve` / `hermes dashboard` (reconnect Desktop for an SSH backend).", file=stream)

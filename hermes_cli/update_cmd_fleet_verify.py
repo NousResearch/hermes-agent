@@ -183,29 +183,34 @@ def _named_gateways_still_owed() -> bool:
 
 
 def _is_serve_unit(name: object) -> bool:
-    """A ``hermes-serve*``/``hermes-dashboard*`` unit name (bare or ``.service``) — the restart phase's
-    serve family. Anything else it lists (gateway units, launchd labels, listing-failure markers) is
-    gateway evidence."""
-    from hermes_cli.update_restart_recovery import _UNIT_RE
+    """A serve/dashboard unit by the fleet loop's OWN name gate (``hermes-serve*``/``hermes-dashboard*``,
+    bare or ``.service``). Anything else it records as failed (gateway units, launchd labels,
+    listing-failure markers) is gateway evidence."""
+    from hermes_cli.update_cmd_fleet import _is_hermes_gateway_unit, _service_unit_supports_graceful_sigusr1_restart
 
-    return bool(_UNIT_RE.fullmatch(f"{str(name).removesuffix('.service')}.service"))
+    base = str(name).removesuffix(".service")
+    return _is_hermes_gateway_unit(f"{base}.service") and not _service_unit_supports_graceful_sigusr1_restart(base)
 
 
 def _restart_phase_owes_gateway(restart) -> bool:
     """Did the restart phase itself leave a gateway owed? Its incompleteness counts against the
     gateways unless every failure it recorded is a serve/dashboard unit (#141021)."""
+    if not restart.incomplete:
+        return False
     failed = list(restart.failed_or_stale_units)
-    return bool(restart.incomplete) and (bool(restart.phase_errors) or not failed or not all(map(_is_serve_unit, failed)))
+    return bool(restart.phase_errors) or not failed or not all(map(_is_serve_unit, failed))
 
 
-def _note_unaccounted(outcomes, stale_serves: set) -> bool:
-    """Record unaccounted serve PIDs into *stale_serves*; True when an unaccounted gateway remains."""
+def _split_unaccounted(outcomes) -> tuple[bool, set]:
+    """``(gateway missed, serve/dashboard PIDs missed)`` among the unaccounted runtime outcomes."""
+    from hermes_cli.update_inventory import _SERVE_KINDS
+
     missed = [o for o in outcomes if o.get("outcome") == "unaccounted"]
-    stale_serves.update(o["pid"] for o in missed if o.get("kind") != "gateway" and isinstance(o.get("pid"), int))
-    return any(o.get("kind") == "gateway" for o in missed)
+    serve_pids = {o["pid"] for o in missed if o.get("kind") in _SERVE_KINDS and isinstance(o.get("pid"), int)}
+    return any(o.get("kind") not in _SERVE_KINDS for o in missed), serve_pids
 
 
-def _owed_restart_reason(restart, stopped, *, gateway_owed: bool, stale_serves: set) -> str:
+def _owed_restart_reason(restart, stopped, *, gateway_owed: bool, stale_serves: set, down_serves: set) -> str:
     """The ``gateway_restart`` follow-up's reason, naming what is actually owed (#141021).
 
     The step id stays ``gateway_restart`` (Desktop hand-offs parse it); only the text changes. A run
@@ -220,12 +225,16 @@ def _owed_restart_reason(restart, stopped, *, gateway_owed: bool, stale_serves: 
     units = sorted({str(u).removesuffix(".service") for u in restart.failed_or_stale_units if _is_serve_unit(u)})
     if units:
         parts.append(
-            f"serve/dashboard unit(s) {', '.join(units)} still run pre-update code; restart them with the"
-            " systemctl command printed above (`sudo systemctl restart <unit>` for a system unit)")
-    if stale_serves:
+            f"serve/dashboard unit(s) {', '.join(units)} were not restarted onto the new code;"
+            " see the systemctl advice above")
+    if down_serves:
         parts.append(
-            f"serve/dashboard process(es) {', '.join(map(str, sorted(stale_serves)))} still run pre-update"
-            " code; relaunch `hermes serve` / `hermes dashboard`")
+            f"serve/dashboard process(es) {', '.join(map(str, sorted(down_serves)))} were stopped during the"
+            " update and not brought back; relaunch `hermes serve` / `hermes dashboard`")
+    if stale_serves - down_serves:
+        parts.append(
+            f"serve/dashboard process(es) {', '.join(map(str, sorted(stale_serves - down_serves)))} still run"
+            " pre-update code; restart them as advised above")
     # Nothing classified (an unknown incompleteness): keep the historical, conservative wording.
     return "; ".join(parts) or (
         "gateways may still run pre-update code or were stopped without a successor; recover with `hermes gateway restart`")
@@ -252,15 +261,15 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
     # Which family is owed decides what the follow-up tells the user to run (#141021). Read before the
     # dashboard pass can flip ``incomplete``.
     _gateway_owed = _restart_phase_owes_gateway(restart)
-    # Units the fleet loop already handled aren't redone — restarted ones, and failed ones too: those
-    # already printed their manual restart command, and a retry here (no root either) only adds a
-    # polkit error under the same advice (#141021).
+    # Units the fleet loop already attempted aren't redone — restarted ones, and failed ones too: the
+    # loop already reported each failure (with its systemctl advice), and a second attempt only
+    # duplicates it or, for a system unit without root, adds a polkit/tty error (#141021).
     # A dashboard it stopped and could not bring back is a promised restart that did not happen.
     _dashboards_down = _refresh_dashboard_after_update(
         already_restarted_units=set(restart.restarted_services) | set(restart.failed_or_stale_units))
     if _dashboards_down:
         restart.incomplete = True
-    _stale_serves_owed: set = set(_dashboards_down or ())
+    _stale_serves_owed: set = set()
 
     # Success-path twin of the abort-recovery probe: the restart phase only touches
     # units, so a unit-less `hermes serve` keeps stale sys.modules. Runs AFTER
@@ -356,25 +365,34 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
                 live_gateway_pids=_live_gateway_pids,
             )
             from dataclasses import asdict
-            from hermes_cli.update_serve_obligations import defer_manual_serve
+            from hermes_cli.update_serve_obligations import defer_manual_serve, remind_unit_serve
 
+            _stale_pids = {row.get("pid") for row in _stale_serve_rows or ()}
             for runtime, outcome in zip(_pre_update_plan.runtimes, _runtime_outcomes):
                 if outcome["outcome"] == "unaccounted" and defer_manual_serve(asdict(runtime), require_alive=True):
                     outcome["outcome"] = "deferred"
+                elif runtime.pid in _stale_pids and runtime.supervisor == "systemd":
+                    # A unit the update could not restart keeps a startup reminder with its exact
+                    # command; the gateway obligation never names it (#141021).
+                    remind_unit_serve(asdict(runtime))
             if report_unaccounted_runtimes(_runtime_outcomes):
                 restart.incomplete = True
-                _gateway_owed = _note_unaccounted(_runtime_outcomes, _stale_serves_owed) or _gateway_owed
+                _missed_gateway, _missed_serves = _split_unaccounted(_runtime_outcomes)
+                _gateway_owed |= _missed_gateway
+                _stale_serves_owed |= _missed_serves
             with suppress(Exception):
                 import hermes_cli.update_receipt as _ur
                 _active = _ur._current.get()
                 if _active is not None:
                     _active.data["runtime_outcomes"] = _runtime_outcomes
 
-    if not restart.incomplete:
+    if not _gateway_owed:
         with _best_effort('Owed-gateway check failed: %s'):
             if _named_gateways_still_owed():
                 # A gateway a previous run could not restart is still not serving HEAD (nothing
                 # live to restart this time): keep owing it rather than clearing the obligation.
+                # Checked even when a serve unit already made the run incomplete, so the follow-up
+                # still names the gateway (#141021).
                 print("  ⚠ A gateway owed a restart by a previous update is still not serving this checkout.")
                 restart.incomplete = _gateway_owed = True
     if getattr(restart, "stopped_unmapped_pids", None):
@@ -388,7 +406,8 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
         from hermes_cli.update_receipt import record_followup
         stopped = sorted(getattr(restart, "stopped_unmapped_pids", None) or ())
         record_followup("gateway_restart", _owed_restart_reason(
-            restart, stopped, gateway_owed=_gateway_owed, stale_serves=_stale_serves_owed))
+            restart, stopped, gateway_owed=_gateway_owed, stale_serves=_stale_serves_owed,
+            down_serves=set(_dashboards_down or ())))
         with _best_effort('Fleet restart inventory not recorded: %s'):
             _record_owed_gateway_inventory(_pre_update_plan, stopped)
     with _best_effort('Update receipt finalize failed: %s'):

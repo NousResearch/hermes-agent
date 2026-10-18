@@ -244,11 +244,11 @@ def _warn_stale_serve_runtimes(rows) -> None:
         print("    Ask their owner to relaunch `hermes serve` / `hermes dashboard`, or reconnect Desktop for an SSH backend.")
     # A unit-managed backend restarts through its own unit and scope — never "ask the owner to
     # relaunch", and never a hardcoded user-scope hermes-serve (#141021).
+    from hermes_cli.main_dashboard import _systemd_restart_commands
+
     for row in unit_rows:
-        unit = row.get("systemd_unit") or "<unit>"
-        command = {"user": "systemctl --user", "system": "sudo systemctl"}.get(
-            row.get("systemd_scope"), "systemctl [--user]")
-        print(f"    pid {row.get('pid')} is managed by systemd: `{command} restart {unit}`")
+        commands = _systemd_restart_commands(row.get("systemd_unit") or "<unit>", row.get("systemd_scope"))
+        print(f"    pid {row.get('pid')} is managed by systemd: {' or '.join(f'`{c}`' for c in commands)}")
     if sys.platform == "darwin" and any(row.get("supervisor") == "launchd" for row in rows):
         print("    For launchd-managed backends: `launchctl kickstart -k gui/$UID/<label>`.")
 

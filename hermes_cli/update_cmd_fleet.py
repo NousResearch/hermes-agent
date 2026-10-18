@@ -1012,9 +1012,10 @@ _DESKTOP_SERVE_SKIP_REASON = (
     "desktop app owns and respawns this serve backend;"
     " the recovery pass must not restart it out from under its supervisor"
 )
-# NOT a claim that no supervisor exists: a systemd-launched serve sets neither HERMES_SPAWN
-# nor HERMES_PARENT_PID ("manual-serve"). Unit-backed serves are recovered by the fresh
-# child's systemd pass; survivors reported by _surviving_pre_update_serve_runtimes.
+# NOT a claim that no supervisor exists: a unit's MainPID row is classified "systemd" (#141021),
+# and "manual-serve" still covers a process inside some unit's cgroup it is not MainPID of, or
+# unreadable ownership. Unit-backed serves are recovered by the fresh child's systemd pass;
+# survivors reported by _surviving_pre_update_serve_runtimes.
 _SERVE_SKIP_REASON = (
     "no per-profile relaunch command reaches a serve/dashboard runtime; recovered by the fresh"
     " systemd unit pass when it owns a hermes-serve* unit, else left running for explicit"

@@ -231,6 +231,22 @@ def _get_pid_cgroup_path(pid: int) -> str | None:
     return next(_pid_unified_cgroup_entries(pid), None)
 
 
+def _systemd_owner_for_pid(pid: int) -> tuple[str, str | None] | None:
+    """``(unit, scope)`` of the systemd unit whose live ``MainPID`` is *pid*; ``None`` when no unit
+    provably owns it (see :func:`_get_systemd_service_for_pid`). Scope is ``user``/``system`` or
+    ``None`` when the cgroup path does not say."""
+    unit = _get_systemd_service_for_pid(pid)
+    if unit is None:
+        return None
+    return unit, _extract_scope_from_cgroup(_get_pid_cgroup_path(pid) or "")
+
+
+def _systemd_restart_commands(unit: str, scope: str | None) -> list[str]:
+    """The command(s) that restart *unit* in its scope; both forms when the scope is unknown."""
+    user_cmd, system_cmd = f"systemctl --user restart {unit}", f"sudo systemctl restart {unit}"
+    return {"user": [user_cmd], "system": [system_cmd]}.get(scope or "", [user_cmd, system_cmd])
+
+
 def _try_restart_systemd_service(svc_name: str, cgroup_path: str | None = None) -> bool:
     """Restart *svc_name* via systemctl (``--user`` for user-scope units). True on success.
 

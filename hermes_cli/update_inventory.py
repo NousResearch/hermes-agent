@@ -270,10 +270,7 @@ def _systemd_owner_for_ledger_pid(pid: int) -> tuple[str, str | None] | None:
     with suppress(Exception):
         from hermes_cli import main_dashboard as _dash
 
-        unit = _dash._get_systemd_service_for_pid(pid)
-        if unit:
-            cgroup = _dash._get_pid_cgroup_path(pid)
-            return unit, _dash._extract_scope_from_cgroup(cgroup) if cgroup else None
+        return _dash._systemd_owner_for_pid(pid)
     return None
 
 
@@ -557,7 +554,8 @@ def match_runtime_outcomes(
         for r in plan.runtimes:
             if isinstance(r, RuntimeRecord):
                 outcomes.append(
-                    {"kind": r.kind, "profile": r.profile, "pid": r.pid, "mechanism": r.restart_via, "outcome": _outcome(r)}
+                    {"kind": r.kind, "profile": r.profile, "pid": r.pid, "mechanism": r.restart_via, "outcome": _outcome(r),
+                     **{k: r.detail[k] for k in ("systemd_unit", "systemd_scope") if k in (r.detail or {})}}
                 )
     except Exception as exc:
         logger.debug("Runtime-outcome reconciliation failed: %s", exc)
@@ -608,9 +606,17 @@ def report_unaccounted_runtimes(outcomes: list[dict[str, Any]]) -> bool:
     if any(o.get("kind") in _SERVE_KINDS for o in missed):
         # A serve/dashboard is not reachable by any `gateway restart` command: name the process, not the wrong verb.
         # See #100479.
-        if sys.platform == "linux":
-            print("      systemctl --user restart hermes-serve.service   # unit-managed serve")
-        print("      relaunch `hermes serve` / `hermes dashboard`")
+        from hermes_cli.main_dashboard import _systemd_restart_commands
+
+        for o in missed:
+            if o.get("kind") in _SERVE_KINDS and o.get("systemd_unit"):
+                # The owning unit and scope are known: name its exact command (#141021).
+                for command in _systemd_restart_commands(o["systemd_unit"], o.get("systemd_scope")):
+                    print(f"      {command}   # pid {o['pid']}")
+        if any(o.get("kind") in _SERVE_KINDS and not o.get("systemd_unit") for o in missed):
+            if sys.platform == "linux":
+                print("      systemctl --user restart hermes-serve.service   # unit-managed serve")
+            print("      relaunch `hermes serve` / `hermes dashboard`")
     return True
 
 

@@ -105,6 +105,11 @@ async def _control(authority, ws, reader, sid, marker, receipt):
     updates = []
     authority.sessions[sid].event_stream.observers.add(
         lambda frame: frame['params']['type'] == 'session.control.update' and updates.append(frame['params']))
+    # RT-8: with no goal yet the criterion buttons refuse instead of reporting success.
+    for action, args in [('subgoal.add', {'text': 'clear the cache first'}),
+                         ('subgoal.remove', {'index': 1})]:
+        denied = await control(action, **args)
+        assert _error(denied) == 'no_active_goal', (action, denied)
     for command, kind in (('goal ship the owned fixture', 'goal'), ('loop every 10m CHECK_LOOP', 'loop'),
                           ('heartbeat every 10m PING_HEARTBEAT', 'heartbeat')):
         typed = await rpc(ws, 'slash.exec', session_id=sid, command=command)
@@ -135,6 +140,9 @@ async def _control(authority, ws, reader, sid, marker, receipt):
     assert added['result']['control']['goal']['subgoals'] == ['clear the cache first'], added
     removed = await control('subgoal.remove', index=1)
     assert removed['result']['control']['goal']['subgoals'] == [], removed
+    # RT-8: removing a criterion that isn't there is a named refusal, not success output.
+    missing = await control('subgoal.remove', index=2)
+    assert _error(missing) == 'subgoal_not_found', missing
     for action, args in [('goal.gate.add', {}), ('nonsense', {}), ('subgoal.remove', {'index': 0}),
                          ('subgoal.add', {'text': '  '})]:
         rejected = await control(action, **args)

@@ -1,114 +1,120 @@
-# Hermes Mission Ownership — Phase 1 hardening review
+# Hermes Mission Ownership — Phase 1 Integration and Recovery Review
 
-## Candidate identity and repository state
+## Candidate identity and scope
 
-- Repository: isolated `hermes-mission-ownership` worktree; canonical X checkout was not edited.
 - Branch: `codex/mission-ownership-phase1`.
-- Starting candidate: `672658051d8e694804417c700c232ac27e81e61d` exists on this branch and was the clean `HEAD` at the start of this hardening pass.
-- This report is written before the final hardening commit. The final revision and clean/dirty Git status must be recorded here immediately after that commit; see the final state section below.
-- No live gateway was restarted, no profile configuration or plug-in was modified, and no live migration was run.
+- The starting implementation commit `672658051d8e694804417c700c232ac27e81e61d` exists on this branch.
+- Prior candidate head at the start of this review: `8fba08637115a4d585cc975d71d5222b2c14f37c`.
+- Validated harness and probe implementation: `a52a6473b378b491121018c57121659d03f74d3c`.
+- This review commit documents that evidence. The branch also retains the earlier Phase 1 candidate commits. No Phase 2 routing or budget features were added.
+- The canonical `/home/ftr3d/X` checkout, live Hermes profiles, original Kanban database, running Fred/H.A.M. gateways, and their configuration were not modified or restarted. No production credential values were read or passed to the isolated processes.
 
-## Architecture and relationship to native Kanban
+## Original board: verified state and limits
 
-A mission is not always a Kanban task. A foreground request starts in a user session and must be protected before a dispatcher task exists. Therefore the mission record stores the root request, owner kind/id/generation, contract and revision, progress, recorded child task IDs, recovery data, validation receipts, and history. The native Kanban row is created only when root execution is handed to the background dispatcher. Its body carries the current mission packet; the mission row remains the authority for root ownership.
+The live `/home/ftr3d/.hermes/kanban.db` was opened only as a one-time read-only SQLite backup input. The isolated online backup contained seven user tables, seven tasks, eleven task runs, 63 task events, two task comments, and no mission tables. All existing table definitions and row fingerprints matched between the source snapshot, the preserved baseline copy, and the working copy. SQLite's `schema_version` counter differed after backup; it is a per-database cache counter, not a table or row difference.
 
-The candidate now makes creation of a new root Kanban card, ownership transfer, and triage-to-ready promotion one SQLite transaction. The task idempotency key is derived from mission ID and owner generation. Task-owner completion updates the mission and root task in the same transaction; ordinary summary-only Kanban completion is refused for an active mission root. Recorded child IDs must resolve to native Kanban tasks, recorded running children block transfer, and recorded child tasks must be `done` or `archived` before completion.
+The live database, WAL, and SHM SHA-256 values were the same before and after the backup and subsequent testing:
 
-These checks prevent contradictory states along the recorded root/child links when writes pass through the candidate APIs. The child list is still a mission-side snapshot supplied by the owner, not a complete normalized Kanban relationship. Unrecorded child work and direct SQL/API paths that bypass these functions can still diverge. Full graph completeness is not proven.
+```text
+kanban.db      81cfd6261a25c422004947eff5957434d084b582ca244ec3645d355f67aff930
+kanban.db-wal  c0cf7050726ff68ac3fb4dd79e0d0ed8ee1f7312643cebd7374f23163f3a2154
+kanban.db-shm  0397911fe68821a262d5495a50bd3ba3ba008a713b6174c1afad8a933f406bdb
+```
 
-## What is enforced
+The final baseline backup file SHA-256 was `7192c46e7cafbc6bf65f09695f92b240fb862a5a0ccaf4354a4f2d8b80c19c4d`. The live board still has no mission tables, as supported by the unchanged source hashes and the read-only backup fingerprint.
 
-### Application-level controls
+The earlier five empty mission tables reported as accidentally created and then removed are not reconstructible from available evidence. The October 15 snapshot predates that event, has schema version 1 and zero task rows, and cannot establish the exact board state immediately before the incident. It is therefore not evidence that no other transient state existed. A prior read-only inspection of that old snapshot created empty `-wal` and `-shm` sidecars; those exact inspection-created files were removed, and the snapshot's main-file bytes were unchanged. No such sidecar was created on the current board by this review.
 
-- Fred turn admission and the Telegram fast admission hook use a delivery identity when available. The persisted Telegram platform message ID is forwarded to shared admission. Duplicate delivery of the same identity returns the same mission; reuse of that identity with different request text is refused.
-- Fallback identity uses a transport/session turn ID where available, namespaced by session and platform. It does not hash objective text. With no stable delivery/turn ID, reliable deduplication is unavailable; admission does not merge unrelated sessions by prompt similarity. A new session must name a mission ID through the explicit resume operation to request transfer.
-- An existing session's materially different follow-up is refused for explicit steering; a correction updates the existing contract revision. After a mission is completed, a later delivery, even with identical words, can open a new mission.
-- Every tool dispatch routed through the shared Fred executor acquires a durable SQLite execution lease before calling downstream execution middleware and releases it in `finally`. Handoff, recovery, and completion refuse while another lease or a recorded running child exists. This covers calls that enter that shared wrapper, including time spent in its middleware and downstream handler.
-- The lease is a drain mechanism, not cancellation. An interrupted Python operation releases it only if `finally` executes. A hard worker exit leaves a durable lease and blocks handoff/recovery: fail closed, requiring explicit operator repair. No lease-expiry guessing is used.
-- Completion requires a trusted stored validation receipt bound to mission ID, owner generation, contract revision/hash, reviewer identity, validator module identity, checkout revision, artifact paths and hashes, and check results. It re-hashes artifacts and rejects stale or mismatched receipts. The model cannot submit a command or exit code as evidence.
-- The narrow validator runs fixed Python syntax parsing and Ruff checks; it does not accept shell commands. It is not a general semantic reviewer or proof that functional criteria pass.
-- New root task creation/transfer and task-owner mission completion/native task completion are transactionally coupled through the candidate database APIs.
+## Test isolation
 
-### Not a security boundary
+The reusable harness is `scripts/mission_phase1_isolation.py`. It refuses an unsandboxed run and checks the full set of runtime state-path variables, the profile config, root overlap, symlink escapes, and command arguments. `self-test` deliberately supplies live Hermes, board, and X paths to every declared runtime path variable and to command arguments; each is refused. It also refuses an external config and an isolation root overlapping the source or protected paths.
 
-All of the above are Hermes application-level controls. They do not constrain arbitrary in-process code, direct SQL writers, a second Hermes build without these checks, or tools dispatched outside the shared executor. A subprocess, browser action, remote API operation, or delegated worker that outlives the dispatch handler may continue after the lease is released. Without OS-level process groups/cgroups or equivalent cancellation and join semantics for every execution backend, the candidate cannot guarantee that no external mutation remains in flight. Unsafe detected transfers fail closed, but undetected/out-of-boundary work is a deployment blocker for a strict exclusivity claim.
+Runtime commands use bubblewrap with the host root mounted read-only and only the dedicated isolation root writable. `/tmp`, `/var/tmp`, and `/dev/shm` map into that root. The live Hermes, Codex, SSH, cloud, XDG credential/config directories, and canonical X checkout are covered by empty read-only overlays. The only host-data exception is the exact original Kanban database plus existing WAL/SHM files, mounted read-only into an internal path for the explicit backup command. Normal runtime commands cannot see those host contents. Runtime networking is isolated; only the PM dependency build opts into host networking.
 
-## Verification results
+The isolation proof passed after these protections were enabled. It confirmed the host Hermes and X directories were hidden, read-only, and unwritable; `/tmp` and `/var/tmp` writes resolved to the isolation root; and the runtime network namespace differed from the host. The initial PM build used the project's `pm.build_env` lock/setup with `dev` and `test` groups inside the sandbox and installed `python-dotenv` into the isolated virtualenv. No package was installed into the live Hermes environment.
+
+The test runner itself writes a duration cache to the source checkout, so its full canonical wrapper cannot complete with the source checkout mounted read-only. A first canonical run also revealed that its workers use hard-coded `/var/tmp`; the harness now maps that path into the test root. Direct pytest runs below disable pytest's cache and pin `--basetemp` inside the isolation root. The source checkout is never writable to a test process.
+
+## Mission and Kanban relationship
+
+A mission is the coordination record for a root request and must exist before a dispatcher task is runnable. Native Kanban tasks remain the work queue and represent the root worker only after handoff; child tasks remain ordinary Kanban tasks. Keeping the root mission separate avoids making an admitted interactive request dispatchable before ownership transfer. The migration check added the five mission tables to a copy while preserving all seven pre-existing Kanban tables and rows.
+
+The candidate couples root task creation/promotion and owner changes in transactions, but this proves consistency only through the candidate APIs. The child list remains an owner-supplied snapshot, direct SQL writers can bypass it, and unrecorded child work is not ruled out. This is application-level consistency, not a database-level complete ownership graph.
+
+## Evidence
 
 ### Unit-tested
 
-Command:
+Under the isolated PM-built virtualenv:
 
-```sh
-PYTHONPATH=. .venv/bin/python -m pytest -q --confcutdir=mission_ownership_tests mission_ownership_tests/test_mission_ownership.py
+```text
+pytest mission_ownership_tests/test_mission_ownership.py -q -p no:cacheprovider \
+  -k 'not test_valid_receipt_completes_and_requires_existing_code_artifact and not test_stale_artifact_hash_and_fake_empty_check_are_refused and not test_mission_completion_waits_for_recorded_native_child_tasks and not test_foreground_background_handoff_and_completion_guard_use_native_kanban'
+26 passed, 4 deselected in 3.08s
 ```
 
-Result: `30 passed in 2.00s`.
+The four excluded cases were run by the full file and failed. They pass an unchanged, already-committed test file as a validation artifact. `mission_validation.validate` rejects it because its bytes equal `HEAD`, so the cases cannot test completion from a clean committed checkout. This is a candidate limitation, not a passing completion test. The other unit cases cover delivery identity, owner fencing, lease blocking and cleanup, abrupt worker exit, recovery generation, completion evidence rejection, and Kanban coupling.
 
-Coverage includes SQLite ownership transitions, stale-owner and inline dispatch rejection, repeated delivery and mismatched reuse, identical wording across sessions, post-completion new mission, named resume, child task checks, task/mission atomic completion, trusted receipt acceptance/rejection, handoff rollback (including task-card creation rollback), expired owner lease with an outstanding execution lease, interrupted scopes, and a subprocess hard exit that leaves a fail-closed lease. The suite also invokes the shared executor middleware path with a long-running mocked terminal-named dispatch and a Telegram gateway post-admission consumer wrapper with the lifecycle plug-in call mocked.
+The canonical `scripts/run_tests.sh` ran 30 tests: 26 passed and those same 4 failed. A focused canonical-runner selection reported four tests passed, then the runner exited nonzero while trying to write `test_durations.json` into the read-only source checkout. The direct pytest command above is the successful hermetic result; it is not represented as a successful canonical-runner exit.
 
-Additional checks:
+Ruff passed for all six new harness/probe scripts. `git diff --check` passed before the harness commit.
 
-```sh
-.venv/bin/python -m ruff check agent/tool_executor.py agent/turn_context.py hermes_cli/kanban_db.py hermes_cli/mission_ownership.py hermes_cli/mission_validation.py mission_ownership_tests/test_mission_ownership.py plugins/mission_admission/__init__.py tools/mission_tools.py toolsets.py
-# All checks passed!
-git diff --check
-# passed (no output)
-```
+### Integration-tested in an isolated profile and gateway
 
-A fallback warning was emitted by one subprocess test because `HERMES_HOME` was unset in that subprocess. Its `HERMES_KANBAN_DB` points to the test temporary directory; the warning is recorded as a test-harness cleanup item, not evidence of a live profile write.
+- A real Hermes gateway started with an isolated Fred profile, no messaging tokens or provider credentials, `gateway.standalone: true`, and the isolated dispatcher configured on. It logged `No messaging platforms enabled`, did not connect to a platform or model provider, and was stopped by a bounded timeout.
+- In an earlier run with an isolated ready task, the embedded dispatcher claimed the task and launched a worker. On gateway shutdown the worker PID disappeared while the task/run remained `running`; the isolated database accurately exposed that stale state. The same exact gateway command did not use the original board or original profile.
+- The recovery probe verified the PID was no longer alive, then explicitly recovered after the owner lease time. It moved the mission to generation 3, changed the task to `blocked`, marked the task run `crashed`, and transferred ownership to the recovery session. There is no automatic takeover based only on elapsed time.
+- The admission probe invoked the real gateway `run_post_admission_hook` and discovered plugin hook registry with synthetic Telegram-shaped events. A repeated delivery ID produced one mission for that session. Identical wording under a separate delivery and session produced a second mission. This exercised the gateway consumer and plugin hook, but not Telegram polling or a live Telegram account.
+- The old installed plugin files were copied read-only into the isolated profile using the normalized `mission_admission` directory. Plugin discovery selected legacy user version 0.1.0; replacing that isolated user plugin with candidate version 0.2.0 selected the candidate. The real admission probe then passed. The installed legacy directory is named `mission-admission` with a hyphen; plugin discovery warns and ignores that directory because the package key expects `mission_admission`. Staging migration must explicitly remove or rename that legacy directory and verify the selected version. No live profile was changed.
+- The copied-board migration probe added mission schema to the disposable working copy, verified every original user-table schema and row fingerprint stayed the same, and confirmed the seven legacy tasks remained queryable. It added no mission rows. Rollback evidence is limited to additive compatibility: legacy Kanban tables remain readable and mission tables are retained. No full old-binary rollback, restore, or newer-state rollback drill was performed.
 
-### Integration-tested in-process, isolated profile/database
+### Controlled subprocess and recovery-tested
 
-- Shared admission and executor middleware functions were exercised in-process with temporary `HERMES_HOME` and `HERMES_KANBAN_DB` paths.
-- Telegram gateway post-admission flow was invoked through the gateway consumer wrapper; lifecycle hook discovery/invocation was stubbed and the candidate admission plug-in ran against an isolated database.
-- Native Kanban task creation, status, and completion APIs used Hermes' Kanban schema in temporary databases. Failure injection verifies a rolled-back ownership transfer.
-- A long-running executor-path operation blocks handoff while active and allows it after normal drain. An abrupt child-process exit demonstrates the persistent-lease fail-closed behavior.
+`scripts/mission_phase1_detached_probe.py` launched a real isolated detached child from inside an execution scope. After the wrapped handler returned, the lease count was zero, the child was still alive, and handoff committed. The child wrote its marker after the ownership generation changed. This is a reproduced unsafe handoff, not a theoretical risk.
 
-This is not a separately launched isolated Hermes gateway. An attempted CLI help invocation could not import the complete CLI because this worktree's `.venv` lacks `python-dotenv`; no gateway process was started. No external service, platform transport, or live model request was used.
-
-### Live-verified read-only observations
-
-- The starting candidate commit exists on `codex/mission-ownership-phase1`; current commit and final worktree status are recorded below after commit.
-- Read-only inspection of the installed Fred profile found the legacy `mission-admission` plug-in enabled and `kanban.dispatch_in_gateway: false` in its profile-local config. Historical gateway logs show the embedded dispatcher running and spawning tasks despite that local value. Therefore profile-local configuration is not sufficient evidence of the effective host-level dispatcher policy. The candidate's old-plug-in migration has not been exercised.
-- A read-only query of `/home/ftr3d/.hermes/kanban.db` at the end of verification found no `mission%` tables.
-- During an early test-isolation mistake in this pass, the default board briefly received five empty mission schema tables; read-only inspection confirmed they had no rows, and only those five newly created empty tables were removed. A subsequent read-only check found no mission tables. This transient schema write is disclosed; no mission data was present or changed. Tests were then pinned to temporary profile/database paths. Running Fred and H.A.M. processes were not restarted or modified.
+Focused unit recovery cases passed for normal drain, interruption, hard worker exit, live worker refusal, and dead worker recovery. The isolated gateway shutdown also left a dead worker PID and running task state; explicit recovery fenced and parked it. Gateway restart during the middle of the SQLite transfer transaction, arbitrary plugin subprocesses, and external remote operations were not exhaustively tested.
 
 ### Not verified
 
-- No actual isolated gateway process or live Telegram transport was started. The gateway hook wrapper was exercised with mocked lifecycle dispatch only.
-- CLI interactive admission, desktop UI, and web/dashboard interfaces were not end-to-end tested. Shared turn-context admission is covered by direct tests, not by each interface.
-- No real terminal subprocess, code sandbox, browser tool, inline tool registry, delegated specialist worker, nested/proxied connector, or remote side-effecting API was run. Registry middleware and inline stale-owner fencing were exercised, but backend lifecycle/cancellation semantics were not.
-- No full Hermes repository test suite was run. The isolated gateway CLI could not start because the candidate environment lacks `python-dotenv`.
-- Effective host-level dispatcher configuration has not been verified in an isolated running gateway. The legacy profile plug-in migration is not validated.
-- No multi-process contention stress test, OS-level worker kill/restart recovery test, or real database copy migration/rollback drill was performed.
+- Real Telegram, CLI interactive, desktop, and dashboard/web admission routes were not run end to end. Telegram-shaped events were simulated through the actual gateway consumer. No production credentials or accounts were available or used.
+- Actual model/API tool calls, terminal/code execution backends, inline registry tools, delegated workers, nested/proxied tools, browser automation, and plugin failures that create work outside the shared executor were not exercised end to end.
+- Other live profiles were not started or altered. The isolated gateway reported itself standalone and stated that `default` was not served; this is not a coexistence test with Fred and H.A.M. profiles.
+- Effective host-level dispatch was observed in the earlier isolated gateway run that claimed the ready task. The configured false case was observed in a prior isolated run. No host service manager or live dispatcher was queried or changed.
+- No full Hermes suite, real transport, real API completion, full rollback, or production overhead benchmark was run.
 
-## Remaining races, bypasses, and blockers
+## Enforcement, advisory behavior, and remaining blockers
 
-1. **External work can outlive the lease.** The lease ends when the wrapped handler returns or unwinds. A detached subprocess, remote action, delegated worker, or interrupted underlying tool may continue independently. Strict global mutual exclusion requires backend-specific join/cancel guarantees or an OS process boundary; Phase 1 does not provide these.
-2. **Hard crashes require operator repair.** A process killed without Python cleanup leaves an active lease forever. This safely blocks transfer but also blocks recovery; there is no safe automatic stale-lease reaper or operator repair tool yet.
-3. **Unwrapped dispatch is outside the fence.** Any tool path that bypasses `_run_agent_tool_execution_middleware`, another profile/build, plugin code doing direct work, or direct DB writes can violate ownership.
-4. **Child graph is incomplete by construction.** Only recorded child IDs are checked. The mission record does not yet enforce a complete foreign-key relationship with every Kanban descendant.
-5. **Reviewer identity is application-provided.** The receipt records the trusted tool's caller identity as reviewer identity; no separate human authentication or approval is established. The fixed syntax/Ruff checks are technical evidence only.
-6. **Identity fallback depends on transport metadata.** Where neither a stable delivery identifier nor stable turn ID exists, exact replay detection cannot be guaranteed. Similar prompts are intentionally never used to auto-attach sessions.
-7. **Schema deployment lacks a migration drill.** Tables are added through schema initialization; there is no separately versioned migration/backup tool tested on a copy of an existing board. Do not apply this against the live board.
-8. **Installed plugin and dispatcher policy remain unresolved.** The legacy admission plug-in and profile-local `dispatch_in_gateway: false` need an isolated migration and host-level effective-setting verification before rollout.
+### Genuinely enforced within candidate application paths
+
+- Message delivery identifiers deduplicate identical deliveries; prompt similarity does not attach a new session to an existing mission. With no transport ID, the fallback is scoped to the specific session/turn and cannot reliably identify a replay.
+- Handoff fences later dispatches routed through the shared executor. An active execution lease or recorded running child blocks transfer. Hard process exit leaves a durable lease that fails closed rather than expiring automatically.
+- Task-owner completion requires a trusted stored receipt bound to mission generation, contract, validator, checkout revision, artifact hashes, and check results. Model-provided command status is not accepted. This check remains application-level, and current clean-commit artifact behavior failed four tests as described above.
+- Candidate APIs transactionally couple root handoff and task state changes. Additive schema migration preserved the tested copy's existing rows.
+
+### Application-level only or unsafe
+
+- **Detached/outliving work bypasses the lease.** A subprocess or remote operation can survive handler return, release the lease, and continue after successful handoff. This was reproduced. No reliable universal cancellation/join boundary currently wraps terminal, browser, connector, delegated, and plugin effects. Strong exclusivity needs backend-specific process ownership and wait/cancel semantics, likely a stronger OS process boundary. Do not claim exclusive ownership or stage this candidate as a safety fence.
+- **Crash leases fail closed but cannot self-heal.** A hard worker crash leaves a lease that blocks transfer/recovery until an operator resolves it. Automatically deleting it based on age is unsafe. Current recovery also waits for owner lease expiry and verifies the recorded worker is not alive before moving a task owner.
+- **Unwrapped work remains outside the fence.** Direct SQL, other Hermes builds, nested workers, and paths that bypass the shared executor can mutate without a mission lease.
+- **Completion verifier has an artifact policy gap.** Clean committed artifacts are rejected by the existing changed-from-`HEAD` rule in four tests; reviewer identity is recorded by the application and is not independently authenticated.
+- **Old plugin path needs a migration action.** The hyphenated installed directory is ignored by plugin discovery; staging must explicitly remove/rename it and verify the normalized candidate user/bundled version wins.
+- **Native child graph is incomplete.** Only recorded child IDs are checked; direct DB/API bypasses or unrecorded descendants can diverge.
 
 ## Runtime overhead
 
-Each covered tool call adds a small SQLite lease acquisition and release transaction, plus the existing ownership fence. Admission and lifecycle changes add a small number of indexed reads/writes. The test suite's runtime is not a production latency measurement; no production overhead benchmark was run. The trusted validator adds a Python parse pass and a Ruff subprocess (45-second timeout); it runs only when explicitly requested for completion evidence. There is no added model call.
+No production benchmark was run. The ownership path adds SQLite lease acquire/release transactions around covered tool dispatches and indexed owner/child reads. The trusted validator adds Python parse and Ruff subprocess work only when completion validation is requested. Isolation/test harness overhead is test-only. Claims of specific latency percentages are unsupported.
 
 ## Migration and rollback readiness
 
-Not ready for staging migration. Schema creation is additive, but an existing-board backup/copy migration and rollback drill has not been validated. The new profile plug-in installation/migration is also untested. A future isolated staging procedure should copy the board, migrate that copy, verify host-level dispatcher behavior, verify legacy plug-in removal/replacement, and restore the copy as a rollback exercise. No live database migration was made here.
+The additive schema migration is validated on a read-only backup and separate disposable working copy. Existing table definitions/rows matched before and after migration. Legacy Kanban reads remained available while new mission tables were retained. The original database was not migrated. A deployable backup/restore procedure, full old-code rollback, recovery from newer writes during rollback, and multiple-profile migration are still unverified. Do not use this result as migration approval.
 
 ## Deployment recommendation
 
-**Do not deploy this candidate to supervised staging yet.** The implementation now rejects detected in-flight work and fails closed after worker crashes, and it no longer accepts model-supplied command status as independent validation. However, it cannot promise exclusivity for detached/outliving tools or unwrapped paths; crash recovery is operator-blocked; reviewer identity is not independently authenticated; the full gateway/profile migration has not been tested; and no copied-board migration/rollback drill exists. Resolve or explicitly accept those blockers in a reviewed staging plan before deployment.
+**Blocked; continue hardening. Do not proceed to supervised staging yet.** The candidate cannot guarantee single active mutation when a real detached operation survives handler return, crash leases have no automated safe recovery, and completion validation has four clean-checkout test failures. Real Telegram/CLI/desktop/dashboard routes, backend subprocess trees, and complete rollback remain unverified. Address the bounded process ownership/cancellation contract and completion artifact policy, then rerun the same isolated harness before asking for a staging review.
 
-## Final candidate state
+## Git and worktree state
 
+- Implementation commit: `a52a6473b378b491121018c57121659d03f74d3c` (`Add isolated Phase 1 integration harness`).
+- This report records the implementation revision above; a separate documentation-only commit will update this file.
 - Branch: `codex/mission-ownership-phase1`.
-- Implementation revision: `84ef37eb2895edb311ce3d711d84c15c0a154eb0` (hardening commit; parent is the verified starting candidate below).
-- Parent: `672658051d8e694804417c700c232ac27e81e61d`.
-- Git status: clean after the report-only follow-up commit; that commit updates this report only and does not change implementation code.
+- The starting candidate commits remain in history. Final Git status and report commit are recorded in the review response after the documentation commit.

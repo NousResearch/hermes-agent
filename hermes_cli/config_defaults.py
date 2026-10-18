@@ -1437,6 +1437,12 @@ DEFAULT_CONFIG = {
                     {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
                 ],
                 "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+                # Char budget for EACH tool result in the advisor (reference-model) view. Tool CALLS
+                # are always kept in full; results are head+tail previewed and the aggregator always
+                # gets the full transcript. Advisor input scales linearly with this, so tool-heavy
+                # sessions (MCP servers, web extraction, large docs) should raise it; lower it to cut
+                # advisor spend. Clamped to [200, 50000].
+                "reference_tool_result_budget": 4000,
 
                 "enabled": True,
             }

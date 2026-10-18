@@ -176,7 +176,27 @@ class _RefAccounting:
 
 # Per-tool-result char budget for the advisory view: tool CALLS are kept in full,
 # tool RESULTS are head+tail previewed. The aggregator always gets the full transcript.
+# Overridable per preset via ``moa.presets.<name>.reference_tool_result_budget`` — advisor input
+# scales linearly with it, and tool-heavy sessions (MCP servers, web extraction) are exactly where
+# the default 4000-char preview cuts the substance an advisor would need to review.
 _REFERENCE_TOOL_RESULT_BUDGET = 4000
+_MIN_REFERENCE_TOOL_RESULT_BUDGET = 200
+
+
+def _preset_tool_result_budget(preset: dict[str, Any] | None) -> int:
+    """Advisor tool-result char budget from the preset, clamped to sane bounds.
+
+    Unset/invalid/non-positive values fall back to the module default so a hand-edited config
+    cannot starve the advisory view.
+    """
+    raw = (preset or {}).get("reference_tool_result_budget")
+    if raw is None or raw == "":
+        return _REFERENCE_TOOL_RESULT_BUDGET
+    try:
+        budget = int(float(raw))
+    except (TypeError, ValueError, OverflowError):
+        return _REFERENCE_TOOL_RESULT_BUDGET
+    return max(_MIN_REFERENCE_TOOL_RESULT_BUDGET, budget)
 
 # Reference system prompt: without this framing a reference assumes it is the acting
 # agent and refuses ("I can't access repositories") or tries to call tools.
@@ -754,7 +774,10 @@ def _tool_activity_since_last_user(messages: list[dict[str, Any]]) -> bool:
     return False
 
 
-def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _reference_messages(
+    messages: list[dict[str, Any]], *,
+    tool_result_budget: int = _REFERENCE_TOOL_RESULT_BUDGET,
+) -> list[dict[str, Any]]:
     """Build the advisory (reference-model) view of the conversation.
 
     Plain user/assistant TEXT turns only: system prompt dropped, tool_calls rendered
@@ -762,6 +785,10 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     tool-role messages / tool_calls arrays, so strict providers do not 400). Always
     ends on a ``user`` turn (Anthropic treats a trailing assistant turn as prefill)
     by APPENDING a synthetic request. The aggregator always gets the full transcript.
+
+    ``tool_result_budget`` caps each tool result head+tail (see
+    ``_REFERENCE_TOOL_RESULT_BUDGET``); callers pass the preset's
+    ``reference_tool_result_budget`` so tool-heavy sessions can widen what advisors see.
     """
     rendered: list[dict[str, Any]] = []
     last_user_content: str | None = None
@@ -790,7 +817,7 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         elif role == "tool":
             # Fold the tool result into the preceding assistant turn as text (a leading
             # tool result with no assistant turn opens one).
-            block = f"[tool result: {_truncate_tool_result(text)}]"
+            block = f"[tool result: {_truncate_tool_result(text, budget=tool_result_budget)}]"
             if rendered and rendered[-1].get("role") == "assistant":
                 rendered[-1]["content"] = rendered[-1]["content"] + "\n" + block
             else:
@@ -897,6 +924,7 @@ def aggregate_moa_context(
     *, user_prompt: str, api_messages: list[dict[str, Any]], reference_models: list[dict[str, Any]],
     aggregator: dict[str, Any], temperature: float | None = None, aggregator_temperature: float | None = None,
     reference_max_tokens: int | None = None, reference_timeout: float | None = None,
+    reference_tool_result_budget: int | None = None,
     degraded_reference_policy: str = "loud", agent: Any = None,
 ) -> str:
     """Run configured reference models and synthesize their advice (one-shot /moa).
@@ -913,7 +941,11 @@ def aggregate_moa_context(
     """
     reference_models = [slot for slot in reference_models if slot.get("enabled", True)]
     reference_outputs = _run_references_parallel(
-        reference_models, _reference_messages(api_messages), temperature=temperature,
+        reference_models,
+        _reference_messages(
+            api_messages,
+            tool_result_budget=reference_tool_result_budget or _REFERENCE_TOOL_RESULT_BUDGET),
+        temperature=temperature,
         max_tokens=reference_max_tokens, reference_timeout=reference_timeout, agent=agent,
     )
     privacy_full = False
@@ -1437,7 +1469,8 @@ class MoAChatCompletions:
         if aggregator_temperature is None and api_kwargs.get("temperature") is not None:
             aggregator_temperature = api_kwargs.get("temperature")
 
-        ref_messages = _reference_messages(messages)
+        ref_messages = _reference_messages(
+            messages, tool_result_budget=_preset_tool_result_budget(preset))
         cache_key = self._fanout_cache_key(preset, ref_messages, reference_models)
         cache_hit = bool(cache_key == self._ref_cache_key and self._ref_cache_outputs)
         if cache_hit:

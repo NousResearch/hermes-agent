@@ -55,6 +55,8 @@ def _append_moa_context(agent: Any, api_messages: Any, moa_config: Any, original
             api_messages=api_messages,
             reference_models=moa_config.get("reference_models") or [],
             aggregator=moa_config.get("aggregator") or {},
+            # Advisory view fidelity: per-preset tool-result budget (None = module default).
+            reference_tool_result_budget=moa_config.get("reference_tool_result_budget"),
             temperature=_preset_temperature(moa_config, "reference_temperature"),
             aggregator_temperature=_preset_temperature(moa_config, "aggregator_temperature"),
 

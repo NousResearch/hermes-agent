@@ -82,6 +82,27 @@ def _coerce_fanout(value: Any) -> str:
     return "user_turn"
 
 
+# Char budget for each tool RESULT in the advisory (reference-model) view. Tool CALLS are always kept
+# in full; RESULTS are head+tail previewed. Advisor input scales linearly with this, so for tool-heavy
+# sessions (MCP servers, web extraction) it is THE fidelity/cost trade-off: too small and the advisor
+# reviews a case file with the substance cut out, too large and every advisor call pays for payload.
+DEFAULT_REFERENCE_TOOL_RESULT_BUDGET = 4000
+_MIN_REFERENCE_TOOL_RESULT_BUDGET = 200
+_MAX_REFERENCE_TOOL_RESULT_BUDGET = 50_000
+
+
+def _coerce_tool_result_budget(value: Any) -> int:
+    """Clamp ``reference_tool_result_budget`` to [200, 50000]; missing/non-numeric → 4000.
+
+    The floor keeps an accidental ``1`` from reducing the advisory view to nothing, and the ceiling
+    keeps a typo (``400000``) from turning every advisor call into a context-window problem.
+    """
+    budget = _coerce_number(value, int, DEFAULT_REFERENCE_TOOL_RESULT_BUDGET)
+    if not isinstance(budget, int) or isinstance(budget, bool):
+        budget = DEFAULT_REFERENCE_TOOL_RESULT_BUDGET
+    return max(_MIN_REFERENCE_TOOL_RESULT_BUDGET, min(_MAX_REFERENCE_TOOL_RESULT_BUDGET, budget))
+
+
 def coerce_privacy_filter(value: Any) -> str:
     """Normalize ``moa.privacy_filter`` to '' (off, the default), 'display', or 'full'.
 
@@ -224,6 +245,9 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
         "reference_temperature": _coerce_number(raw.get("reference_temperature"), float),
         "aggregator_temperature": _coerce_number(raw.get("aggregator_temperature"), float),
         "reference_timeout": _coerce_reference_timeout(raw.get("reference_timeout")),
+        # Char budget per tool RESULT in the advisory view; tool CALLS are always kept in full.
+        "reference_tool_result_budget": _coerce_tool_result_budget(
+            raw.get("reference_tool_result_budget")),
         # Failed-advisor disclosure policy; unknown values fail loud.
         "degraded_reference_policy": policy if policy in {"loud", "silent"} else "loud",
 
@@ -234,7 +258,7 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
 
 _FLAT_PRESET_KEYS = (
     "reference_models", "aggregator", "reference_temperature", "aggregator_temperature",
-    "reference_timeout", "degraded_reference_policy",
+    "reference_timeout", "reference_tool_result_budget", "degraded_reference_policy",
     "fanout", "enabled")
 
 

@@ -2,7 +2,7 @@ name: tsubasa
 repo: https://github.com/PalmAndWand/tsubasa-integrations
 sha: ce52a9cdfae352a339ddf3ff219c6ec06f552bc3
 subdir: providers/hermes
-description: Tsubasa OpenAI-compatible provider; Canada only; tool calling is not supported yet. Sends prompts and TSUBASA_API_KEY to api.tsubasa.sh.
+description: Tsubasa OpenAI-compatible model provider (tool calling not supported yet). Disclosure — sends prompts and your TSUBASA_API_KEY to api.tsubasa.sh, operated by PalmAndWand; the API currently serves Canada only and answers HTTP 451 to requests from elsewhere.
 maintainer: PalmAndWand
 tier: community
 category: models

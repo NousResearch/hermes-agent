@@ -96,6 +96,20 @@ def _persisted_turn(agent, agent_history, result, compressions) -> dict | None:
         prefix_row_matches=lambda before, after: before is after)
 
 
+def _agent_persisted_flag(result, agent) -> bool:
+    """Whether the runtime that ran this turn already wrote its rows to SQLite. An explicit
+    ``agent_persisted`` in *result* (codex app-server) wins; otherwise the agent must actually
+    hold the session DB handle the gateway injected at turn START. Defaulting to the runner's
+    CURRENT ``_session_db`` instead let a handle that recovered mid-turn (retry-backoff window
+    closing, a pinned handle re-resolved) claim a turn that was built with none: the agent's
+    flush no-ops without a handle, the gateway then skips its own transcript write, and the
+    turn never reaches state.db while sessions.json keeps touching (#140823)."""
+    explicit = result.get("agent_persisted")
+    if explicit is not None:
+        return bool(explicit)
+    return agent is not None and getattr(agent, "_session_db", None) is not None
+
+
 class _NoStreamConsumer(RuntimeError):
     """Raised by the delta callback when nothing consumed the text; ``_call_quietly`` turns it into
     'not delivered' so the agent's partial-delivery accounting matches what the user saw."""
@@ -1351,16 +1365,20 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             final_response = _sanitize_gateway_final_response(ctx.source.platform, final_response)
             if not final_response:
                 final_response = t("gateway.shared.warn_passthrough", error=result["error"]) if result.get("error") else ""
-            # NOTE: deliberately omits agent_persisted/response_reused (and last_reasoning outside a local
-            # viewer's turn); the caller defaults agent_persisted differently when the key is absent.
+            # NOTE: deliberately omits response_reused (and last_reasoning outside a local
+            # viewer's turn). agent_persisted rides along explicitly: the caller's absent-key
+            # default reads the runner's CURRENT handle, which can disagree with the one this
+            # turn's agent was built with (#140823).
             if local_sinks is not None:
                 return {
                     "final_response": final_response, **common, **viewer_meta,
                     "last_reasoning": result.get("last_reasoning"),
                     "response_previewed": previewed,
                     "response_transformed": bool(result.get("response_transformed")),
+                    "agent_persisted": _agent_persisted_flag(result, agent),
                 }
-            return {"final_response": final_response, **common}
+            return {"final_response": final_response, **common,
+                    "agent_persisted": _agent_persisted_flag(result, agent)}
         final_response = self._append_auto_media_tags(final_response, result, agent_history, history_media_paths)
         # Auto-titling runs at TURN START (agent/turn_context.py) from the user's message alone, so a
         # failed/interrupted turn is still titled.
@@ -1370,6 +1388,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             "response_transformed": result.get("response_transformed", False),
             "response_reused": result.get("response_reused", False),
             # Lets the persistence block tell whether the codex app-server path self-persisted (it
-            # didn't — see codex_runtime.py); default True keeps skip-db for the standard runtime.
-            "agent_persisted": result.get("agent_persisted", True),
+            # didn't — see codex_runtime.py); default keeps skip-db for a standard runtime that
+            # actually holds a session DB handle.
+            "agent_persisted": _agent_persisted_flag(result, agent),
         }

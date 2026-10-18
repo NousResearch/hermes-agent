@@ -419,9 +419,10 @@ class GatewayTurnPersistenceMixin:
         # the DB write here to prevent the duplicate-write bug (#860 / #42039). This holds for the codex
         # app-server runtime too: although it early-returns and bypasses conversation_loop's per-step
         # flushes, it flushes its own projected assistant/tool messages before returning and reports
-        # agent_persisted=True (see agent/codex_runtime.py). Reading the flag (default = self._session_db is
-        # not None) keeps the persistence contract explicit and lets any future non-persisting runtime opt
-        # into a gateway-side write by returning False.
+        # agent_persisted=True (see agent/codex_runtime.py). The turn runner now always sets the flag from
+        # the handle the turn's agent actually holds; the fallback below (runner's CURRENT handle) only
+        # serves direct callers — reading it here let a mid-turn recovery mask a no-handle turn whose
+        # agent flush silently no-ops, dropping the turn from state.db entirely (#140823).
         agent_persisted = agent_result.get("agent_persisted", self._session_db is not None)
         _user_row = self._hmwa_user_transcript_entry(event, prepared, ts)
 

@@ -286,6 +286,17 @@ async def _project_result(authority, ref, live, params, result, editor_servers, 
             from gateway.session_local_mcp import retire_editor_mcp
             await asyncio.to_thread(retire_editor_mcp, authority, ref.session_id)
     if operation not in {*_POLICY, 'reset', 'compress', 'rewind'} or owns_projection:
+        if operation == 'workspace':
+            # Main's move drops the terminal environment so the next command starts in the new folder: the
+            # route-keyed one a turn built and the cwd its commands recorded, which would win over the move.
+            # Off-loop (a remote teardown takes seconds) and before the policy publishes and the queue runs,
+            # so no turn starts on the old environment.
+            from gateway.session_policy_refresh import drop_session_terminal
+            try:
+                await asyncio.to_thread(drop_session_terminal, authority, ref)
+            except Exception:  # health: allow BLE001 -- the move is committed: it must still publish
+                logger.warning('Session %s moved without dropping its terminal environment', ref.session_id,
+                               exc_info=True)
         _project_committed(authority, ref, operation, result)
     if live is not None:
         if operation == 'rewind' and owns_projection:
@@ -317,12 +328,6 @@ def _project_committed(authority, ref, operation, result):
         from gateway.session_local import local_session_info
         authority.sessions[ref.session_id].event_stream.publish(
             ref.session_id, local_session_info(authority, ref), event_type='session.info')
-    if operation == 'workspace':
-        # Main's move drops the terminal environment so the next command starts in the new folder.
-        from hermes_state_local import local_receipt
-        from tools.terminal_tool_lifecycle import cleanup_vm
-        for sid in {ref.session_id, local_receipt(authority.db, ref.session_id)['entry']['session_id']}:
-            cleanup_vm(sid)
     if operation == 'branch':
         from gateway.session_local_recovery import restore_local_session
         restore_local_session(authority, result['branched_session_id'])

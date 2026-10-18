@@ -108,6 +108,28 @@ class GatewayConfigLoadersMixin:
             return None
         return _get_channel_override(config, platform, chat_id, thread_id=thread_id, parent_id=parent_id)
 
+    def _silence_allowed_for_source(self, source, display_kind, reply_expected, agent_result) -> bool:
+        """Evaluate existing exemptions before consulting the optional room permission."""
+        from gateway.response_filters import silence_allowed
+        return silence_allowed(display_kind, reply_expected) or silence_allowed(
+            display_kind, reply_expected, allow_silence=self._room_allow_silence(source),
+            agent_result=agent_result)
+
+    def _room_allow_silence(self, source: SessionSource) -> Optional[bool]:
+        """Resolve the room policy in the serving profile, never the launch snapshot for a route."""
+        from gateway.config import GatewayConfig
+        from gateway.run import _get_channel_override, _load_gateway_config
+        from gateway.session_identity import identity_of
+        config = getattr(self, "config", None)
+        if (identity_of(source) is not None or source.profile
+                or getattr(config, "multiplex_profiles", False) or config is None):
+            home = self._resolve_profile_home_for_source(source)
+            config = GatewayConfig.from_dict(_load_gateway_config(home / "config.yaml"))
+        override = _get_channel_override(
+            config, source.platform, source.chat_id,
+            thread_id=source.thread_id, parent_id=source.parent_chat_id)
+        return override.allow_silence if override is not None else None
+
     def _resolve_model_for_channel(
         self, platform: Platform, chat_id: str, *, user_config: Optional[dict] = None,
         thread_id: Optional[str] = None, parent_id: Optional[str] = None,

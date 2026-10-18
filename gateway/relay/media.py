@@ -44,8 +44,7 @@ def media_base_url(relay_dial_url: str) -> str:
         raw = "http://" + raw[len("ws://") :]
     elif raw.startswith("wss://"):
         raw = "https://" + raw[len("wss://") :]
-    if raw.endswith("/relay"):
-        raw = raw[: -len("/relay")]
+    raw = raw.removesuffix("/relay")
     return raw
 
 
@@ -156,4 +155,4 @@ class RelayMediaClient:
         return await asyncio.get_running_loop().run_in_executor(None, _get)
 
 
-__all__ = ["RelayMediaClient", "media_base_url", "MEDIA_MAX_BYTES"]
+__all__ = ["MEDIA_MAX_BYTES", "RelayMediaClient", "media_base_url"]

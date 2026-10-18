@@ -33,7 +33,7 @@ from hermes_cli.proxy.adapters.xai import XAIGrokAdapter
 # ---------------------------------------------------------------------------
 
 
-def _write_auth_store(hermes_home: Path, nous_state: Dict[str, Any]) -> Path:
+def _write_auth_store(hermes_home: Path, nous_state: dict[str, Any]) -> Path:
     """Write an auth.json with the given nous state into a hermetic HERMES_HOME."""
     auth_path = hermes_home / "auth.json"
     auth_path.write_text(json.dumps({
@@ -43,6 +43,22 @@ def _write_auth_store(hermes_home: Path, nous_state: Dict[str, Any]) -> Path:
     return auth_path
 
 
+def test_nous_adapter_never_waits_on_a_free_tier_challenge_under_its_lock(tmp_path, monkeypatch):
+    """Every proxied request queues on the adapter lock, so the credential read inside it is a
+    background caller: a browser challenge is announced and raised, never waited on."""
+    from hermes_cli import anon_challenge
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_auth_store(tmp_path, {"access_token": "a", "refresh_token": "r"})
+    seen = []
+
+    def resolve(**_kwargs):
+        seen.append(anon_challenge._background.get())
+        return {"api_key": "k", "expires_at": "2099-01-01T00:00:00Z",
+                "base_url": "https://inference-api.nousresearch.com/v1"}
+
+    with patch("hermes_cli.proxy.adapters.nous_portal.resolve_nous_runtime_credentials", side_effect=resolve):
+        NousPortalAdapter().get_credential()
+    assert seen == [True]
 
 
 def test_nous_adapter_concurrent_refresh_serialized(tmp_path, monkeypatch):
@@ -228,9 +244,9 @@ def test_xai_adapter_retry_rotates_pool_entry_on_429(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 aiohttp = pytest.importorskip("aiohttp")
-from aiohttp import web  # noqa: E402
+from aiohttp import web
 
-from hermes_cli.proxy.server import create_app  # noqa: E402
+from hermes_cli.proxy.server import create_app
 
 
 class FakeAdapter(UpstreamAdapter):
@@ -279,7 +295,7 @@ class FakeAdapter(UpstreamAdapter):
         )
 
 
-async def _start_runner(app: "web.Application"):
+async def _start_runner(app: web.Application):
     """Spin up an aiohttp app on an ephemeral localhost port. Returns (runner, base_url)."""
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
@@ -290,7 +306,7 @@ async def _start_runner(app: "web.Application"):
     return runner, f"http://127.0.0.1:{port}"
 
 
-def _build_fake_upstream(captured: Dict[str, Any]) -> "web.Application":
+def _build_fake_upstream(captured: dict[str, Any]) -> web.Application:
     async def echo(request):
         body = await request.read()
         captured["requests"].append({
@@ -318,7 +334,7 @@ def _build_fake_upstream(captured: Dict[str, Any]) -> "web.Application":
     return app
 
 
-def _build_retrying_fake_upstream(captured: Dict[str, Any]) -> "web.Application":
+def _build_retrying_fake_upstream(captured: dict[str, Any]) -> web.Application:
     async def maybe_unauthorized(request):
         body = await request.read()
         auth = request.headers.get("Authorization")
@@ -344,7 +360,7 @@ def _build_retrying_fake_upstream(captured: Dict[str, Any]) -> "web.Application"
 def test_server_strips_client_auth_header():
     """The client's Authorization header MUST NOT reach the upstream."""
     async def run():
-        captured: Dict[str, Any] = {"requests": []}
+        captured: dict[str, Any] = {"requests": []}
         upstream_runner, upstream_base = await _start_runner(_build_fake_upstream(captured))
         adapter = FakeAdapter(f"{upstream_base}/v1", bearer="ours")
         proxy_runner, proxy_base = await _start_runner(create_app(adapter))
@@ -365,11 +381,59 @@ def test_server_strips_client_auth_header():
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("bound,headers,allowed", [
+    ("127.0.0.1", {}, True),                                              # plain local client
+    ("127.0.0.1", {"Origin": "http://{authority}"}, True),                # the proxy's own origin
+    ("127.0.0.1", {"Host": "localhost:{port}"}, True),                    # loopback alias
+    ("127.0.0.1", {"Host": "localhost.:{port}"}, True),                   # same alias, absolute form
+    ("127.0.0.1", {"Host": "rebound.example:{port}"}, False),             # foreign Host
+    ("127.0.0.1", {"Origin": "https://site.example"}, False),             # cross-site browser request
+    ("127.0.0.1", {"Origin": "null"}, False),                             # opaque browser origin
+    ("127.0.0.1", {"Host": "localhost:80", "Origin": "http://localhost"}, True),  # Origin omits :80
+    ("127.0.0.1", {"Sec-Fetch-Site": "cross-site"}, False),               # cross-site GET, no Origin
+    ("127.0.0.1", {"Host": "user@localhost:{port}"}, False),              # userinfo smuggled into Host
+    ("127.0.0.1", {"Origin": "http://{authority}/path"}, False),          # an Origin never has a path
+    ("192.0.2.10", {"Host": "192.0.2.10:{port}",                          # specific-IP bind: its own
+                    "Origin": "http://192.0.2.10:{port}"}, True),           # address and origin...
+    ("192.0.2.10", {"Host": "192.0.2.11:{port}"}, False),                 # ...but not a neighbour's
+    ("0.0.0.0", {"Host": "lan-name.example:{port}"}, True),               # LAN API client, no Origin
+    ("0.0.0.0", {"Host": "rebound.example:{port}",                        # DNS-rebound page: its
+                 "Origin": "http://rebound.example:{port}"}, False),      # Origin equals its Host
+    ("0.0.0.0", {"Host": "rebound.example:{port}",                        # ...and its same-origin
+                 "Sec-Fetch-Site": "same-origin"}, False),                # GET carries no Origin
+    ("::", {"Host": "rebound.example:{port}",
+            "Origin": "http://rebound.example:{port}"}, False),
+])
+def test_loopback_proxy_serves_only_local_non_browser_requests(bound, headers, allowed):
+    """The proxy forwards with the operator's credential only for requests whose Host names its
+    listener (any name on a wildcard LAN bind) and that carry no browser Origin it cannot vouch for;
+    refused ones never go upstream. A wildcard bind has no single origin of its own, and a
+    DNS-rebound page's Origin always equals its Host, so no Origin is trusted there."""
+    async def run():
+        captured: dict[str, Any] = {"requests": []}
+        upstream_runner, upstream_base = await _start_runner(_build_fake_upstream(captured))
+        proxy_runner, proxy_base = await _start_runner(create_app(FakeAdapter(f"{upstream_base}/v1"), bound_host=bound))
+        authority = proxy_base.removeprefix("http://")
+        sent = {k: v.format(authority=authority, port=authority.rsplit(":", 1)[1]) for k, v in headers.items()}
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(f"{proxy_base}/v1/chat/completions", json={}, headers=sent) as resp:
+                    await resp.read()
+                    status = resp.status
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+        assert status == (200 if allowed else 403)
+        assert len(captured["requests"]) == int(allowed)
+
+    asyncio.run(run())
+
+
 def _build_sse_upstream(
     frames: list[bytes],
     *,
     path: str = "/v1/chat/completions",
-) -> "web.Application":
+) -> web.Application:
     async def sse(request):
         _ = await request.read()
         resp = web.StreamResponse(

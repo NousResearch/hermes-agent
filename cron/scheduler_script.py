@@ -624,4 +624,4 @@ def _run_job_script_with_claim_heartbeat(
 
 # Late-bound origin namespace (see module docstring). Imported LAST so this module is fully
 # populated before ``scheduler`` re-exports from it.
-from cron import scheduler as _sched  # noqa: E402
+from cron import scheduler as _sched

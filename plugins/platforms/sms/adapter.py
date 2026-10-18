@@ -27,6 +27,7 @@ from gateway.platforms.helpers import redact_phone, send_chunks, strip_markdown
 from gateway.platforms._shared import (
     env_is_connected as _env_is_connected, get_scoped_secret as _get_scoped_secret, send_error
 )
+from gateway.platforms.send_targets import StandaloneSendPolicy
 
 try:
     import aiohttp
@@ -79,7 +80,7 @@ def _new_session(**kwargs):
 def check_sms_requirements() -> bool:
     """Check if SMS adapter dependencies are available."""
     return AIOHTTP_AVAILABLE and bool(
-        _get_scoped_secret("TWILIO_ACCOUNT_SID") and _get_scoped_secret("TWILIO_AUTH_TOKEN"))
+        _get_scoped_secret("TWILIO_ACCOUNT_SID") and _get_scoped_secret("TWILIO_AUTH_TOKEN", "").strip())
 
 
 class SmsAdapter(BasePlatformAdapter):
@@ -94,7 +95,8 @@ class SmsAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SMS)
         self._account_sid: str = _get_scoped_secret("TWILIO_ACCOUNT_SID", "")
-        self._auth_token: str = _get_scoped_secret("TWILIO_AUTH_TOKEN", "")
+        # Stripped: a whitespace-only token must read as unset, not key the signature HMAC with blanks.
+        self._auth_token: str = _get_scoped_secret("TWILIO_AUTH_TOKEN", "").strip()
         # Scoped like the sibling reads above: a secondary profile must not send from the default
         # profile's TWILIO_PHONE_NUMBER (#98738 class).
         self._from_number: str = _get_scoped_secret("TWILIO_PHONE_NUMBER", "")
@@ -159,7 +161,7 @@ class SmsAdapter(BasePlatformAdapter):
     # -- Outbound ------------------------------------------------------------
 
     async def send(
-        self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
+        self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         url, headers = _messages_endpoint(self._account_sid, self._auth_token)
         session = self._http_session or _new_session(trust_env=gateway_trust_env())
@@ -183,7 +185,7 @@ class SmsAdapter(BasePlatformAdapter):
             if not self._http_session and session:  # close only a fallback session we created
                 await session.close()
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         return {"name": chat_id, "type": "dm"}
 
     def format_message(self, content: str) -> str:
@@ -204,6 +206,8 @@ class SmsAdapter(BasePlatformAdapter):
         return bool(variant and self._check_signature(variant, post_params, signature))
 
     def _check_signature(self, url: str, post_params: dict, signature: str) -> bool:
+        if not self._auth_token:  # an empty HMAC key is public: fail closed rather than verify against it
+            return False
         data_to_sign = url + "".join(key + post_params[key] for key in sorted(post_params.keys()))
         mac = hmac.new(self._auth_token.encode("utf-8"), data_to_sign.encode("utf-8"), hashlib.sha1)
         computed = base64.b64encode(mac.digest()).decode("utf-8")
@@ -288,7 +292,7 @@ _SMS_MARKDOWN_SUBS = (
 # register() exposes the platform via the registry, replacing the Platform.SMS elif in gateway/run.py, the
 # _PLATFORM_CONNECTED_CHECKERS entry in gateway/config.py, the _PLATFORMS["sms"] static dict in
 # hermes_cli/gateway.py, and the _send_sms dispatch in tools/send_message_tool.py. TWILIO_*
-# env→PlatformConfig seeding stays in core.
+# env→PlatformConfig seeding lives in this plugin's gateway_env.py.
 # ──────────────────────────────────────────────────────────────────────────
 def _strip_markdown_for_sms(message: str) -> str:
     """Strip markdown — SMS renders it as literal characters."""
@@ -299,7 +303,7 @@ def _strip_markdown_for_sms(message: str) -> str:
 
 async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
     """Out-of-process SMS delivery via the Twilio REST API (standalone_sender_fn contract)."""
-    auth_token = getattr(pconfig, "api_key", None) or _get_scoped_secret("TWILIO_AUTH_TOKEN", "")
+    auth_token = str(getattr(pconfig, "api_key", None) or _get_scoped_secret("TWILIO_AUTH_TOKEN", "") or "").strip()
     if not AIOHTTP_AVAILABLE:
         return send_error("aiohttp not installed. Run: pip install aiohttp")
     account_sid = _get_scoped_secret("TWILIO_ACCOUNT_SID", "")
@@ -326,14 +330,30 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
 _is_connected = _env_is_connected("TWILIO_ACCOUNT_SID")
 
 
+# System-prompt platform hint (PlatformEntry.platform_hint); cached-prompt bytes, keep stable.
+_PLATFORM_HINT = (
+    "You are communicating via SMS. Keep responses concise and use plain text only — no markdown, no "
+    "formatting. SMS messages are limited to ~1600 characters, so be brief and direct."
+)
+
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
+    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
     ctx.register_platform(
+        standalone_send=StandaloneSendPolicy(text_direct=True),
         name="sms", label="SMS (Twilio)", adapter_factory=SmsAdapter,
+        dashboard_description="Send and receive text messages via Twilio.",
+        docs_url="https://www.twilio.com/console",
+        dashboard_env_vars=("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"),
+        dashboard_required_env=("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"),
         check_fn=check_sms_requirements, is_connected=_is_connected,
         required_env=["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER"],
-        install_hint="pip install aiohttp", allowed_users_env="SMS_ALLOWED_USERS",
-        allow_all_env="SMS_ALLOW_ALL_USERS", cron_deliver_env_var="SMS_HOME_CHANNEL",
+        install_hint="pip install aiohttp", cron_deliver_env_var="SMS_HOME_CHANNEL",
         standalone_sender_fn=_standalone_send, max_message_length=MAX_SMS_LENGTH, pii_safe=True,
-        emoji="📱", allow_update_command=True)
+        emoji="📱", allow_update_command=True,
+        platform_hint=_PLATFORM_HINT,
+        display_tier="minimal",
+        env_overrides=gateway_env.ENV_OVERRIDES,
+        env_enable_credentials=gateway_env.ENV_ENABLE_CREDENTIALS, **gateway_env.AUTHZ,
+    )

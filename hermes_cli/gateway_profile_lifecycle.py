@@ -141,3 +141,21 @@ def print_parked_status() -> bool:
             for profile in parked:
                 print(f"Profile '{profile}': parked (hermes -p {profile} gateway start)")
     return False
+
+
+def owned_gateway_pid() -> int | None:
+    """A gateway this profile may stop, excluding its shared host's liveness PID.
+
+    Runtime status for a satellite reports the host PID, including briefly after
+    unserve while status catches up. Check host ownership regardless of its roster.
+    A separate forced/standalone gateway still owns its normal process lifecycle.
+    """
+    from gateway.status import get_running_pid
+    from hermes_cli import gateway as gw
+
+    pid = get_running_pid()
+    if pid is not None:
+        owner = gw._host_multiplexer_for_all_verb()
+        if owner is not None and owner.pid == pid and not gw._host_multiplexer_is_ours(owner):
+            return None
+    return pid

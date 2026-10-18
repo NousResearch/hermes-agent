@@ -324,3 +324,25 @@ def test_status_flags_a_gateway_this_hermes_cannot_attach(homes, monkeypatch, ca
     assert ('✓ Gateway is running (PID: 4242)' in output) is healthy
     assert ('incompatible: runtime_protocol' in output) is not healthy
     assert ('hermes gateway restart' in output) is not healthy
+
+
+@pytest.mark.parametrize('served', [True, False])
+def test_process_discovery_excludes_host_even_after_unserve(homes, monkeypatch, served):
+    from gateway import status
+    from hermes_cli import gateway as gw
+    root, secondary = homes
+    owner = SimpleNamespace(pid=4242, home=root, profiles=('default', 'worker') if served else ('default',))
+    monkeypatch.setenv('HERMES_HOME', str(secondary))
+    monkeypatch.setattr(gw, '_host_multiplexer_for_all_verb', lambda: owner)
+    monkeypatch.setattr(gw, '_get_service_pids', lambda **kw: [])
+    monkeypatch.setattr(gw, '_scan_gateway_pids', lambda *a, **kw: [])
+    monkeypatch.setattr(status, 'get_running_pid', lambda **kw: owner.pid)
+    assert gw.find_gateway_pids() == []
+    assert gw.stop_profile_gateway() is False
+    # A distinct --force gateway must retain its own lifecycle even while the host serves us.
+    monkeypatch.setattr(status, 'get_running_pid', lambda **kw: 4343)
+    assert gw.find_gateway_pids() == [4343]
+    # The launching profile still owns the shared process.
+    monkeypatch.setenv('HERMES_HOME', str(root))
+    monkeypatch.setattr(status, 'get_running_pid', lambda **kw: owner.pid)
+    assert gw.find_gateway_pids() == [owner.pid]

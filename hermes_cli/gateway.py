@@ -68,6 +68,7 @@ from hermes_cli.setup import (
     prompt_yes_no,
 )
 from hermes_cli.colors import Colors, color
+from hermes_cli.gateway_profile_lifecycle import owned_gateway_pid as _owned_gateway_pid
 logger = logging.getLogger(__name__)
 
 # Shared ``subprocess.run`` kwargs for text-mode probes (stdout/stderr captured, decode-tolerant).
@@ -756,8 +757,7 @@ def find_gateway_pids(exclude_pids: set | None = None, all_profiles: bool = Fals
     pids: list[int] = []
     if not all_profiles:
         try:
-            from gateway.status import get_running_pid
-            _append_unique_pid(pids, get_running_pid(), _exclude)
+            _append_unique_pid(pids, _owned_gateway_pid(), _exclude)
         except Exception:
             pass
     for pid in _get_service_pids(all_profiles=all_profiles):
@@ -1982,7 +1982,7 @@ def stop_profile_gateway() -> bool:
     except ImportError:
         return False
 
-    pid = get_running_pid()
+    pid = _owned_gateway_pid()
     if pid is None:
         return _reap_unsupervised_gateway_orphans()
     host = _host_multiplexer_for_all_verb()

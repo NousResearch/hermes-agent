@@ -688,14 +688,18 @@ def _run_quick_snapshots() -> Optional[str]:
     return snapshot_id
 
 
-def _run_full_backup() -> None:
-    """Zip HERMES_HOME under ``backups/`` (restorable via ``hermes import``). Never raises."""
+def _run_full_backup() -> Optional[Path]:
+    """Zip HERMES_HOME under ``backups/`` (restorable via ``hermes import``). Never raises.
+
+    Returns the archive path on success, or ``None`` when the backup failed or produced
+    nothing (``update_cmd_maint``'s contract used to lose that signal; the caller needs it
+    for ``updates.pre_update_backup_fail_fast``)."""
     try:
         from hermes_cli.backup import create_pre_update_backup
     except Exception as exc:
         print(f"⚠ Pre-update backup: could not load backup module ({exc}); continuing update.")
         print()
-        return
+        return None
 
     try:
         _keep = _load_updates_cfg().get("backup_keep", 5)
@@ -710,13 +714,16 @@ def _run_full_backup() -> None:
         print(f"  ⚠ Backup failed: {exc}")
         print("  Continuing with update.")
         print()
-        return
+        return None
     elapsed = _time.monotonic() - t0
 
     if out_path is None:
-        print("  ⚠ Backup skipped (no files found or write failed); continuing update.")
+        # A requested backup that produced nothing is a real failure, not a user opt-out:
+        # the update is about to move code with NO rollback point. Name the consequence.
+        print("  ⚠ Backup FAILED (no files found or write failed) — no rollback point was saved.")
+        print("  Continuing with update (set updates.pre_update_backup_fail_fast: true to abort instead).")
         print()
-        return
+        return None
 
     try:
         size_bytes = out_path.stat().st_size
@@ -735,6 +742,31 @@ def _run_full_backup() -> None:
     print(f"  Restore:  hermes import {out_path}")
     print("  Disable:  set updates.pre_update_backup: quick (or off) in config.yaml")
     print()
+    return out_path
+
+
+def _pre_update_backup_fail_fast() -> bool:
+    """True when ``updates.pre_update_backup_fail_fast`` is enabled: a failed pre-update
+    backup aborts the update before any code moves, instead of continuing unprotected."""
+    try:
+        return bool(_load_updates_cfg().get("pre_update_backup_fail_fast", False))
+    except Exception:
+        return False
+
+
+def _abort_fail_fast(what: str) -> None:
+    """Fatal fail-fast banner for a failed pre-update backup: record the failed receipt step,
+    print the fix, and exit 1 BEFORE any code moves (mirrors the git-in-progress abort)."""
+    print(f"✗ Pre-update backup FAILED ({what}) and updates.pre_update_backup_fail_fast is enabled.")
+    print("  No rollback point was saved; aborting the update before any code changes.")
+    print("  Proceed without a backup: set updates.pre_update_backup_fail_fast: false (or run --no-backup).")
+    print()
+    try:  # best-effort receipt: the abort itself must still happen
+        from hermes_cli.update_cmd import _record_update_step
+        _record_update_step("pre_update_backup", False, f"fail_fast abort ({what})")
+    except Exception:
+        pass
+    sys.exit(1)
 
 
 def _run_pre_update_backup(args) -> Optional[str]:
@@ -769,6 +801,8 @@ def _run_pre_update_backup(args) -> Optional[str]:
         # ``ok: false`` and nothing was there to restore (#114592). Say it on stdout, once,
         # before any code moves.
         print(f"  ⚠ Pre-update snapshot FAILED — no recovery point was saved{snapshot_detail}.")
+        if _pre_update_backup_fail_fast():
+            _abort_fail_fast("quick snapshot")
         print("  Continuing with update (set updates.pre_update_backup: off to silence this).")
         print()
 
@@ -777,7 +811,8 @@ def _run_pre_update_backup(args) -> Optional[str]:
             print()
         return snapshot_id
 
-    _run_full_backup()
+    if _run_full_backup() is None and _pre_update_backup_fail_fast():
+        _abort_fail_fast("full zip backup")
     return snapshot_id
 
 

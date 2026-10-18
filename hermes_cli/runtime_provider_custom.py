@@ -576,7 +576,14 @@ def expand_direct_api_alias(provider: Optional[str], existing_base: Optional[str
     return "custom", (existing_base or "").strip() or get_secret_str("OPENAI_BASE_URL", "").strip().rstrip("/") or target_base
 
 
-def _resolve_direct_alias_runtime(requested_provider: str, explicit_api_key: Optional[str],
+def _explicit_key(value: str | Callable[[], str] | None) -> str | Callable[[], str]:
+    """Keep per-request token providers lazy; normalize only literal keys."""
+    if callable(value):
+        return value
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _resolve_direct_alias_runtime(requested_provider: str, explicit_api_key: str | Callable[[], str] | None,
                                   explicit_base_url: str) -> dict[str, Any]:
     """Bare ``custom`` + explicit base_url (e.g. a ``model_aliases:`` direct alias)."""
     rp = _rp()
@@ -584,8 +591,9 @@ def _resolve_direct_alias_runtime(requested_provider: str, explicit_api_key: Opt
     # Pool first — mirrors the named-custom path so bare `provider: custom` with a configured
     # custom_providers entry gets its api_key from the pool instead of env fallbacks. An explicit
     # launch key still wins over the pool (R2-M1).
-    explicit_key = (explicit_api_key or "").strip()
-    pool_result = None if rp.has_usable_secret(explicit_key) else rp._try_resolve_from_custom_pool(base_url, "custom", None)
+    explicit_key = _explicit_key(explicit_api_key)
+    has_explicit_key = callable(explicit_key) or rp.has_usable_secret(explicit_key)
+    pool_result = None if has_explicit_key else rp._try_resolve_from_custom_pool(base_url, "custom", None)
     if pool_result:
         pool_result["source"] = "direct-alias"
         return pool_result
@@ -595,9 +603,9 @@ def _resolve_direct_alias_runtime(requested_provider: str, explicit_api_key: Opt
     # A ``providers:`` entry that owns the URL and declares a credential supplies it instead of
     # the host-gated env keys (on the entry's built-in's host those are another account's).
     declared, entry_key = _owning_entry_credential(rp, base_url)
-    candidates = [(explicit_api_key or "").strip(), _model_cfg_key_env_for(rp._get_model_config(), base_url),
+    candidates = [explicit_key, _model_cfg_key_env_for(rp._get_model_config(), base_url),
                   *([] if declared else rp._host_gated_env_key_candidates(base_url, ollama=True))]
-    api_key = next((c for c in candidates if rp.has_usable_secret(c)), "") or entry_key
+    api_key = next((c for c in candidates if callable(c) or rp.has_usable_secret(c)), "") or entry_key
     return _custom_runtime(rp, base_url, api_key, None, source="direct-alias", requested_provider=requested_provider)
 
 
@@ -619,7 +627,7 @@ def _opencode_family_for_custom(requested_provider: str, base_url: str) -> Optio
     return None
 
 
-def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: Optional[str] = None,
+def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: Any = None,
                                   explicit_base_url: Optional[str] = None,
                                   target_model: Optional[str] = None, config=None) -> Optional[dict[str, Any]]:
     """Runtime for a llamacpp alias, a bare-custom direct alias, or a configured custom entry.
@@ -650,13 +658,14 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     base_url = ((explicit_base_url or "").strip() or custom_provider.get("base_url", "")).rstrip("/")
     if not base_url:
         return None
-    explicit_key = (explicit_api_key or "").strip()
+    explicit_key = _explicit_key(explicit_api_key)
+    has_explicit_key = callable(explicit_key) or rp.has_usable_secret(explicit_key)
     # The credential pool is the profile's auth store (``hermes auth add``), not config: a frozen
     # config snapshot still owes a pooled ``providers:`` entry its keys, or the turn ships the
     # ``no-key-required`` placeholder to a host that wants one (C11 pool rows). An explicit launch
     # key is the operator's credential for this route and wins over the pool (R2-M1). An entry
     # that names its own credential never borrows a same-named built-in's env-seeded pool rows.
-    pool_result = None if rp.has_usable_secret(explicit_key) else rp._try_resolve_from_custom_pool(
+    pool_result = None if has_explicit_key else rp._try_resolve_from_custom_pool(
         base_url, "custom", custom_provider.get("api_mode"),
         provider_name=custom_provider.get("provider_key") or custom_provider.get("name"),
     )
@@ -668,7 +677,7 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     # minted per request (short-lived bearers would go stale mid-session); both wire clients accept a
     # callable api_key (the Entra ID contract). A declared credential that resolves to nothing gets no
     # implicit host-gated env key: on the entry's built-in's host that is another account's key.
-    api_key: Any = explicit_key if rp.has_usable_secret(explicit_key) else (
+    api_key: Any = explicit_key if has_explicit_key else (
         _entry_credential(rp, custom_provider, str(custom_provider.get("name", requested_provider) or "custom"))
         or next((c for c in ([] if entry_declares_credential(custom_provider)
                              else rp._host_gated_env_key_candidates(base_url, ollama=False)) if rp.has_usable_secret(c)), ""))

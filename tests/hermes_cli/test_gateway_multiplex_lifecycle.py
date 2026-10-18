@@ -334,7 +334,7 @@ def test_process_discovery_excludes_host_even_after_unserve(homes, monkeypatch, 
     owner = SimpleNamespace(pid=4242, home=root, profiles=('default', 'worker') if served else ('default',))
     monkeypatch.setenv('HERMES_HOME', str(secondary))
     monkeypatch.setattr(host_attach, '_probe_host_gateway', lambda wait: owner)
-    monkeypatch.setattr(dashboard_procs, '_hermes_home_for_pid', lambda pid: str(root if pid == 4242 else secondary))
+    monkeypatch.setattr(dashboard_procs, '_hermes_home_for_pid', lambda pid, **kw: str(root if pid == 4242 else secondary))
     monkeypatch.setattr(gw, '_get_service_pids', lambda **kw: [])
     monkeypatch.setattr(gw, '_scan_gateway_pids', lambda *a, **kw: [])
     monkeypatch.setattr(status, 'get_running_pid', lambda **kw: owner.pid)
@@ -359,7 +359,7 @@ def test_stop_never_owns_shared_pid_from_an_absent_or_old_probe(homes, monkeypat
     monkeypatch.setattr(status, 'get_running_pid', lambda **kw: 4242)
     monkeypatch.setattr(gw, '_get_service_pids', lambda **kw: [])
     monkeypatch.setattr(gw, '_scan_gateway_pids', lambda *a, **kw: [])
-    monkeypatch.setattr(dashboard_procs, '_hermes_home_for_pid', lambda pid: str(root))
+    monkeypatch.setattr(dashboard_procs, '_hermes_home_for_pid', lambda pid, **kw: str(root))
     old = host_attach.HostGateway(4141, root, ('default', 'worker'))
     current = host_attach.HostGateway(4242, root, ('default', 'worker'))
     monkeypatch.setattr(host_attach, '_cached_probe', (time.monotonic(), old if probe == 'switched' else None))
@@ -384,7 +384,7 @@ def test_absent_host_requires_positive_process_ownership(homes, monkeypatch, pro
     monkeypatch.setattr(status, 'get_running_pid', lambda **kw: 4242)
     monkeypatch.setattr(host_attach, '_probe_host_gateway', lambda wait: None)
 
-    def home(pid):
+    def home(pid, **kw):
         if process_home == 'error':
             raise PermissionError('process inaccessible')
         return str(root) if process_home == 'foreign' else None
@@ -403,5 +403,53 @@ def test_owner_switch_during_probe_is_rejected(homes, monkeypatch):
     pids = iter([4343, 4242])
     monkeypatch.setattr(status, 'get_running_pid', lambda **kw: next(pids))
     monkeypatch.setattr(host_attach, '_probe_host_gateway', lambda wait: None)
-    monkeypatch.setattr(dashboard_procs, '_hermes_home_for_pid', lambda pid: str(secondary))
+    monkeypatch.setattr(dashboard_procs, '_hermes_home_for_pid', lambda pid, **kw: str(secondary))
     assert gw._owned_gateway_pid() is None
+
+
+@pytest.mark.parametrize('rendezvous', ['absent', 'unreadable'])
+def test_sticky_profile_cannot_reassign_running_host(homes, monkeypatch, rendezvous):
+    from gateway import host_attach, status
+    from hermes_cli import dashboard_procs, gateway as gw, main_dashboard
+    root, secondary = homes
+    monkeypatch.setenv('HERMES_HOME', str(secondary))
+    # The process started at the root, before the user's later sticky switch.
+    monkeypatch.setattr(dashboard_procs, '_pid_environ', lambda pid: {'HERMES_HOME': str(root)})
+    monkeypatch.setattr(main_dashboard, '_dashboard_cmdline_for_pid', lambda pid: ['hermes', 'gateway', 'run'])
+    (root / 'active_profile').write_text('worker\n')
+    assert dashboard_procs._hermes_home_for_pid(4242) == str(secondary)
+
+    def probe(wait):
+        if rendezvous == 'unreadable':
+            raise PermissionError('rendezvous unreadable')
+
+    monkeypatch.setattr(host_attach, '_probe_host_gateway', probe)
+    monkeypatch.setattr(status, 'get_running_pid', lambda **kw: 4242)
+    monkeypatch.setattr(gw, '_reap_unsupervised_gateway_orphans', lambda: pytest.fail('unproven PID reached reaper'))
+    monkeypatch.setattr(gw.os, 'kill', lambda *a: pytest.fail('shared host was signalled'))
+    assert gw._owned_gateway_pid() is None
+    assert gw.stop_profile_gateway() is False
+
+
+@pytest.mark.parametrize('identity', ['explicit', 'profile_home', 'supervised', 'ambiguous'])
+def test_launch_identity_does_not_follow_sticky_selection(homes, monkeypatch, identity):
+    from gateway import host_attach, status
+    from hermes_cli import dashboard_procs, gateway as gw, main_dashboard
+    root, secondary = homes
+    (root / 'active_profile').write_text('other\n')
+    env = {'HERMES_HOME': str(root)}
+    argv = ['hermes', 'gateway', 'run']
+    target = secondary
+    if identity == 'explicit':
+        argv[1:1] = ['-p', 'worker']
+    elif identity == 'profile_home':
+        env['HERMES_HOME'] = str(secondary)
+    elif identity == 'supervised':
+        env['HERMES_GATEWAY_EXTERNAL_SUPERVISOR'] = '1'
+        target = root
+    monkeypatch.setenv('HERMES_HOME', str(target))
+    monkeypatch.setattr(dashboard_procs, '_pid_environ', lambda pid: env)
+    monkeypatch.setattr(main_dashboard, '_dashboard_cmdline_for_pid', lambda pid: argv)
+    monkeypatch.setattr(host_attach, '_probe_host_gateway', lambda wait: None)
+    monkeypatch.setattr(status, 'get_running_pid', lambda **kw: 4242)
+    assert gw._owned_gateway_pid() == (None if identity == 'ambiguous' else 4242)

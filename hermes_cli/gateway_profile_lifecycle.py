@@ -168,7 +168,7 @@ def owned_gateway_pid() -> int | None:
         home = _get_process_hermes_home()
         if owner is not None and owner.pid == pid and not _same_hermes_home(owner.home, home):
             return None
-        process_home = _hermes_home_for_pid(pid)
+        process_home = _hermes_home_for_pid(pid, require_launch_identity=True)
         if process_home is None or not _same_hermes_home(process_home, home):
             return None
         # The runtime may have switched owners while the OS/control probes ran.

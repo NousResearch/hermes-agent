@@ -165,15 +165,34 @@ def test_no_agent_exit_75_without_strict_deferred_envelope_is_a_failure(hermes_e
 
 
 @pytest.mark.parametrize(
-    "payload",
+    "output",
     [
+        'Script exited with code 75\nstderr:\n{',
+        'Script exited with code 75\nstderr:\n'
+        '{"status":"deferred","reason":"busy","next_attempt_at":null,"operator_alert":false}\nstdout:\nleak',
+        'Script exited with code 75\nstderr:\n'
+        '{"status":"deferred","reason":"busy","next_attempt_at":null}',
+        'Script exited with code 75\nstderr:\n'
+        '{"status":"deferred","reason":"busy","next_attempt_at":null,"operator_alert":false,"extra":true}',
+        'Script exited with code 75\nstderr:\n'
+        '{"status":"deferred","reason":"exhausted","next_attempt_at":null,"operator_alert":false}',
+        'Script exited with code 75\nstderr:\n'
+        '{"status":"deferred","reason":"busy","next_attempt_at":null,"operator_alert":true}',
+        'Script exited with code 75\nstderr:\n'
         '{"status":"deferred","reason":"busy","next_attempt_at":NaN,"operator_alert":false}',
+        'Script exited with code 75\nstderr:\n'
+        '{"status":"deferred","reason":"busy","next_attempt_at":Infinity,"operator_alert":false}',
+        'Script exited with code 75\nstderr:\n'
+        '{"status":"deferred","reason":"busy","next_attempt_at":-Infinity,"operator_alert":false}',
+        'Script exited with code 75\nstderr:\n'
+        '{"status":"deferred","reason":"busy","next_attempt_at":true,"operator_alert":false}',
+        'Script exited with code 75\nstderr:\n'
         '{"status":"error","status":"deferred","reason":"busy",'
         '"next_attempt_at":null,"operator_alert":false}',
     ],
 )
-def test_no_agent_noncanonical_typed_deferral_envelope_is_a_failure(hermes_env, monkeypatch, payload):
-    """Non-finite JSON numbers and duplicate keys must not suppress a watchdog error."""
+def test_no_agent_noncanonical_typed_deferral_envelope_is_a_failure(hermes_env, monkeypatch, output):
+    """Every rejected envelope remains an error and emits the watchdog alert."""
     from cron.jobs import create_job, get_job
     from cron import scheduler
 
@@ -182,13 +201,18 @@ def test_no_agent_noncanonical_typed_deferral_envelope_is_a_failure(hermes_env, 
     monkeypatch.setattr(
         scheduler,
         "_run_job_script_with_claim_heartbeat",
-        lambda *_args, **_kwargs: (False, f"Script exited with code 75\nstderr:\n{payload}"),
+        lambda *_args, **_kwargs: (False, output),
     )
     job = create_job(
         prompt=None, schedule="every 5m", script="gmail-worker.sh", no_agent=True, deliver="local"
     )
-    assert scheduler.run_one_job(job) is True
+    success, _doc, alert, error = scheduler.run_job(job)
+    assert success is False
+    assert error == output
+    assert alert.startswith("⚠ Cron watchdog")
+    assert output in alert
 
+    assert scheduler.run_one_job(job) is True
     saved = get_job(job["id"])
     assert saved["last_status"] == "error"
     assert saved["failure_streak"] == 1

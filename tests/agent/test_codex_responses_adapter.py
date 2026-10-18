@@ -180,6 +180,7 @@ def test_preflight_rewrites_raw_assistant_images_to_text_markers():
     }]
 
     assert _preflight_codex_input_items(raw) == [{
+        "type": "message",
         "role": "assistant",
         "content": [{
             "type": "output_text",
@@ -994,3 +995,55 @@ def test_codex_preflight_passes_text_verbosity_through():
     assert _preflight_codex_api_kwargs(dict(kwargs))["text"] == {"verbosity": "low"}
     # An empty block is dropped, like the other optional fields, instead of rejected.
     assert "text" not in _preflight_codex_api_kwargs({**kwargs, "text": {}})
+
+
+@pytest.mark.parametrize("issuer", [None, "codex_backend"])
+def test_converter_role_items_are_typed_and_survive_preflight(issuer):
+    """llama.cpp's /v1/responses rejects typeless message items; preflight must accept every
+    item the converter emits, including user image parts."""
+    items = _chat_messages_to_responses_input([
+        {"role": "user", "content": [
+            {"type": "text", "text": "what is this"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        ]},
+        {"role": "assistant", "content": "a cat"},
+        {"role": "assistant", "content": "", "codex_reasoning_items": [
+            {"type": "reasoning", "encrypted_content": "opaque", "summary": []},
+        ]},
+        {"role": "user", "content": "thanks"},
+    ], current_issuer_kind=issuer)
+
+    normalized = _preflight_codex_input_items(items)
+
+    role_items = [i for i in normalized if i.get("role")]
+    assert role_items and all(i["type"] == "message" for i in role_items)
+    assert {"type": "input_image", "image_url": "data:image/png;base64,AAAA"} in role_items[0]["content"]
+    assert normalized == items
+
+
+@pytest.mark.parametrize("issuer", [None, "codex_backend"])
+@pytest.mark.parametrize("structured", [False, True])
+def test_role_message_phase_survives_conversion_and_preflight(issuer, structured):
+    """Assistant phase is resent through conversion and preflight, per OpenAI's replay guidance."""
+    content = [{"type": "text", "text": "Checking."}] if structured else "Checking."
+    history = [
+        {"role": "user", "content": "audit"},
+        {"role": "assistant", "content": content, "phase": " Commentary "},
+    ]
+    converted = _chat_messages_to_responses_input(history, current_issuer_kind=issuer)
+
+    normalized = _preflight_codex_api_kwargs({"model": "m", "instructions": "i", "input": converted, "store": False})
+
+    assert converted[-1]["phase"] == "commentary"
+    assert normalized["input"] == converted
+
+
+def test_role_message_phase_is_kept_only_for_assistant_values_the_api_accepts():
+    wire = _preflight_codex_input_items([
+        {"role": "assistant", "content": "a", "phase": "final_answer"},
+        {"role": "assistant", "content": "b", "phase": "analysis"},
+        {"role": "assistant", "content": "c", "phase": 42},
+        {"role": "user", "content": "d", "phase": "commentary"},
+    ])
+
+    assert [item.get("phase") for item in wire] == ["final_answer", None, None, None]

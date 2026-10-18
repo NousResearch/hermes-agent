@@ -16,10 +16,17 @@ import {
 import { translateNow } from '@/i18n'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
-import { ackFreeTierNotice, freeTierReadyPending, refreshFreeTierStatus, setFreeTierRoute } from '@/store/free-tier'
+import {
+  $freeTierStatus,
+  ackFreeTierNotice,
+  freeTierReadyPending,
+  refreshFreeTierStatus,
+  setFreeTierRoute
+} from '@/store/free-tier'
+import { $gatewayBootGeneration } from '@/store/live-sync'
 import { setMainModelAssignment } from '@/store/model-assignment'
 import { dismissNotification, notify, notifyError } from '@/store/notifications'
-import { guidedOnboardingActive } from '@/store/onboarding-gate'
+import { afterOnboardingSurfaceClear, onboardingSurfaceOpen } from '@/store/onboarding-presence'
 import { captureOnboardingScope, type OnboardingScope } from '@/store/onboarding-scope'
 import type { OAuthProvider, OAuthStartResponse } from '@/types/hermes'
 
@@ -239,9 +246,63 @@ async function checkRuntime(ctx: OnboardingContext, requestedProvider?: string):
 }
 
 function shouldPreserveConfiguredOnFallback(runtime: RuntimeReadinessResult, state: DesktopOnboardingState): boolean {
-  // Non-authoritative transport fallback only — keep a previously verified
-  // configured state instead of forcing the blocking onboarding overlay.
-  return runtime.source === 'fallback' && state.configured === true && !state.requested
+  // Non-authoritative transport fallback only: NEITHER probe answered, so the
+  // round carries no evidence either way and must never be written down as
+  // "unconfigured". This used to require an in-memory `configured === true`,
+  // which on a cold launch can only come from the onboarded cache — the very
+  // cache an earlier fallback had already deleted. One readiness round that
+  // lost the race to a cold/queued backend therefore re-armed the blocking
+  // first-run picker on EVERY launch afterwards, on installs with a perfectly
+  // good provider. `configured === null` (still unknown) now also holds: the
+  // overlay keeps its "starting" header until a probe actually answers.
+  return runtime.source === 'fallback' && state.configured !== false && !state.requested
+}
+
+// How long after the last boot-generation bump a runtime_check ok:false is
+// treated as a boot race rather than a verdict. The backend announces
+// `setup.ready` when its boot bootstrap finishes resolving the inference
+// route; external secret sources (BWS-backed .env) hydrate a few seconds
+// AFTER the port opens, so an answered ok:false inside this window names a
+// hydration gap, not a missing credential (#124939). Sized to comfortably
+// cover the observed ~2-5 s hydration while staying short enough that a real
+// misconfiguration surfaces on the next ambient refresh.
+const BOOT_RACE_GRACE_MS = 15_000
+
+// Timestamp of the last `$gatewayBootGeneration` bump (setup.ready from the
+// active source, or a gateway switch/wipe). Null until the first bump, so a
+// steady-state session long after boot never treats an ok:false as a race.
+let lastBootGenerationAt: number | null = null
+
+$gatewayBootGeneration.listen(() => {
+  lastBootGenerationAt = Date.now()
+})
+
+/** Test/dev seam: forget any witnessed boot, so the next round is judged as
+ *  steady-state. Mirrors how a real session far from boot behaves. */
+export function resetBootRaceWindowForTests(): void {
+  lastBootGenerationAt = null
+}
+
+function isInsideBootRaceWindow(): boolean {
+  return lastBootGenerationAt !== null && Date.now() - lastBootGenerationAt < BOOT_RACE_GRACE_MS
+}
+
+function shouldPreserveConfiguredOnBootRace(runtime: RuntimeReadinessResult, state: DesktopOnboardingState): boolean {
+  // The probes ANSWERED this time, but the round ran inside the backend's boot
+  // window: the runtime_check resolved a route whose external secret source
+  // (BWS) had not hydrated yet and reported ok:false for it. That is a
+  // retryable not-ready, not an auth verdict — downgrading configured:false
+  // here was the flash of "No usable credentials found for openrouter" on
+  // every update restart of a fully configured install (#124939). The state
+  // must already be configured (verified earlier or the durable cache) so a
+  // genuinely unconfigured install still enters onboarding on boot.
+  return (
+    runtime.source === 'runtime_check' &&
+    !runtime.ready &&
+    state.configured === true &&
+    !state.requested &&
+    isInsideBootRaceWindow()
+  )
 }
 
 function notifyReady(provider: string) {
@@ -394,10 +455,19 @@ async function completeWithModelConfirm(
     return
   }
 
-  if (defaults) {
-    // Persist the chosen provider/model before the runtime gate so a stale
-    // config provider (e.g. anthropic from a prior failed setup) cannot make
-    // setup.runtime_check validate the wrong backend after a fresh OAuth login.
+  // Manual connect (Settings / model picker "Add provider" on an already-
+  // configured install): the global default must NOT change until the user
+  // explicitly confirms a model on the confirm card. checkRuntime below
+  // already passes preferredSlugs[0] as requestedProvider, so the runtime
+  // gate can validate the just-connected provider without persisting first.
+  // confirmOnboardingModel persists on Begin instead.
+  const manual = $desktopOnboarding.get().manual
+
+  if (defaults && !manual) {
+    // First-run only: persist the chosen provider/model before the runtime
+    // gate so a stale config provider (e.g. anthropic from a prior failed
+    // setup) cannot make setup.runtime_check validate the wrong backend
+    // after a fresh OAuth login. There's no prior default to protect here.
     try {
       const res = await setMainModelAssignment(
         {
@@ -441,7 +511,7 @@ async function completeWithModelConfirm(
   if (!defaults) {
     // Couldn't get a sensible default — proceed without confirm step.
     notifyReady(providerLabel)
-    completeDesktopOnboarding()
+    completeDesktopOnboarding(true)
     ctx.onCompleted?.()
 
     return
@@ -506,16 +576,11 @@ async function refreshProviders() {
 }
 
 export function requestDesktopOnboarding(reason = DEFAULT_ONBOARDING_REASON) {
-  // Not during the guided first launch. The free tier carries inference
-  // there, and a credential probe that fires anyway (a free-tier token mid
-  // refresh, a setup-profile session before its runtime settles) would drop
-  // the provider picker over the guide the user is in the middle of. Sign-in
-  // is offered where the guide chooses to, on its own ready screen.
-  if (guidedOnboardingActive()) {
-    return
-  }
-
-  patch({ reason: reason.trim() || DEFAULT_ONBOARDING_REASON, requested: true })
+  // Not over first-run onboarding. The free account may still be in
+  // the making, and a credential probe that fires meanwhile would drop the
+  // provider picker over it; onboarding hands over to the picker
+  // itself when the account fails.
+  afterOnboardingSurfaceClear(() => patch({ reason: reason.trim() || DEFAULT_ONBOARDING_REASON, requested: true }))
 }
 
 /** Credential warning delivered passively (session create/activate/resume
@@ -532,7 +597,8 @@ let pendingCredentialWarning: null | string = null
 export function requestDesktopOnboardingForCredentialWarning(reason: null | string | undefined) {
   const warning = reason?.trim()
 
-  if (!warning || !isProviderSetupErrorMessage(warning) || guidedOnboardingActive()) {
+  // Stash while the due check is still undecided: submit consumes it later. Drop only under an open onboarding.
+  if (!warning || !isProviderSetupErrorMessage(warning) || onboardingSurfaceOpen()) {
     pendingCredentialWarning = null
 
     return
@@ -643,13 +709,21 @@ export function closeManualOnboarding() {
   })
 }
 
-export function completeDesktopOnboarding() {
+/** `connected` marks the completion paths where a provider sign-in / key save
+ *  in THIS flow is what finished onboarding. Only those make an earlier
+ *  "choose later" moot. A passive readiness round must leave the skip alone:
+ *  clearing it there erased the user's explicit decision, so the next round
+ *  that came back not-ready was free to raise the blocking picker again — the
+ *  set/clear flip-flop behind "the setup screen returns on every launch". */
+export function completeDesktopOnboarding(connected = false) {
   clearPoll()
   dismissNotification('runtime-not-ready')
   writeCachedConfigured(true)
-  // A real provider is now connected, so any earlier "choose later" skip is
-  // moot — clear it so the flag never lingers in a configured install.
-  writeCachedSkipped(false)
+
+  if (connected) {
+    writeCachedSkipped(false)
+  }
+
   $desktopOnboarding.set({
     configured: true,
     flow: { status: 'idle' },
@@ -657,7 +731,7 @@ export function completeDesktopOnboarding() {
     providers: null,
     reason: null,
     requested: false,
-    firstRunSkipped: false,
+    firstRunSkipped: connected ? false : readCachedSkipped(),
     manual: false,
     localEndpoint: false,
     freeTierReady: false
@@ -704,6 +778,9 @@ export async function refreshOnboarding(ctx: OnboardingContext, stillWanted?: ()
     return false
   }
 
+  // A boot-race round (see shouldPreserveConfiguredOnBootRace) is recognized
+  // from the module-level boot-generation clock, so there is nothing to
+  // seed here — the round below just reads it.
   const runtime = await checkRuntime(ctx)
 
   if (stillWanted && !stillWanted()) {
@@ -721,21 +798,35 @@ export async function refreshOnboarding(ctx: OnboardingContext, stillWanted?: ()
   const state = $desktopOnboarding.get()
 
   if (shouldPreserveConfiguredOnFallback(runtime, state)) {
-    // Gateway probes timed out but the user was already configured — don't
-    // downgrade to the blocking onboarding overlay or claim an error verdict.
-    // Use the temporary informational notice; recovery clears it early.
-    notify({
-      id: 'runtime-not-ready',
-      kind: 'info',
-      title: 'Runtime not ready',
-      message:
-        'Hermes Desktop could not verify the running backend on startup. Some features may be unavailable until the gateway is reachable.'
-    })
+    // Gateway probes timed out — don't downgrade to the blocking onboarding
+    // overlay or claim an error verdict. Only a previously VERIFIED install
+    // losing its backend is worth telling the user about; an unknown state is
+    // just a round that landed before the backend could answer, and a notice
+    // on every cold launch would be noise. Use the temporary informational
+    // notice with a stable id, so repeated calls during an outage dedup and
+    // recovery clears it early.
+    if (state.configured === true) {
+      notify({
+        id: 'runtime-not-ready',
+        kind: 'info',
+        title: 'Runtime not ready',
+        message:
+          'Hermes Desktop could not verify the running backend on startup. Some features may be unavailable until the gateway is reachable.'
+      })
+    }
 
     return false
   }
 
   const reason = runtime.reason || state.reason || DEFAULT_ONBOARDING_REASON
+
+  if (shouldPreserveConfiguredOnBootRace(runtime, state)) {
+    // The backend answered inside its boot window with a not-ready that is
+    // explained by external secrets still hydrating (#124939). Do not write
+    // the downgrade: the durable cache stays configured and the setup.ready
+    // tick (or the next ambient refresh) re-checks once the route is real.
+    return false
+  }
 
   writeCachedConfigured(false)
   patch({ configured: false, reason })
@@ -763,20 +854,16 @@ export async function refreshOnboarding(ctx: OnboardingContext, stillWanted?: ()
  */
 async function applyFreeTierIntro(ctx: OnboardingContext, runtime: RuntimeReadinessResult) {
   setFreeTierRoute(runtime.freeTier)
-  const status = await refreshFreeTierStatus(ctx.requestGateway)
+  await refreshFreeTierStatus(ctx.requestGateway)
 
-  // The guided first launch IS the introduction. Raising the ready screen on
-  // top of it (a readiness round fires when the layout pick assembles the
-  // window) covered the guide mid-conversation, and dismissing it remounted
-  // the card the user had just answered. The guide acks the notice itself
-  // when it hands off.
-  if (guidedOnboardingActive()) {
-    return
-  }
-
-  if (freeTierReadyPending(status, runtime.freeTier ?? null)) {
-    patch({ freeTierReady: true })
-  }
+  // The onboarding intro is the introduction: opening it acks the notice
+  // (store/onboarding-run.ts). Read the status when the overlay is free, not
+  // now, so that ack is honoured.
+  afterOnboardingSurfaceClear(() => {
+    if (freeTierReadyPending($freeTierStatus.get(), runtime.freeTier ?? null)) {
+      patch({ freeTierReady: true })
+    }
+  })
 }
 
 /** "Begin" / "Sign in instead" / "Other providers" all consume the notice — the
@@ -1069,7 +1156,7 @@ export async function saveOnboardingApiKey(
   // provider probes, self-hosted endpoints). We now save the value as-is and
   // let the user proceed; an actually-bad key surfaces later at chat time.
   try {
-    await setEnvVar(envKey, trimmed, ctx.scope)
+    await setEnvVar(envKey, trimmed, ctx.scope, { providerSetup: true })
 
     if (generation !== flowGeneration) {
       return { ok: false }
@@ -1214,7 +1301,7 @@ export async function saveOnboardingLocalEndpoint(
     }
 
     notifyReady('Local / custom endpoint')
-    completeDesktopOnboarding()
+    completeDesktopOnboarding(true)
     ctx.onCompleted?.()
 
     return { ok: true }
@@ -1283,20 +1370,39 @@ export async function setOnboardingModel(model: string, providerSlug: string, la
   }
 }
 
-// User clicked "Start chatting" on the confirm card. Finalizes onboarding
-// — the model was already persisted by completeWithModelConfirm (or by
-// setOnboardingModel if they changed it), so all that's left is to mark
-// onboarding done and unblock the rest of the app.
-export function confirmOnboardingModel(ctx: OnboardingContext) {
-  const { flow } = $desktopOnboarding.get()
+// User clicked "Start chatting" on the confirm card. First-run: the model
+// was already persisted by completeWithModelConfirm (or by setOnboardingModel
+// if they changed it), so this only marks onboarding done. Manual connect
+// (Settings / "Add provider"): completeWithModelConfirm deliberately skipped
+// the persist so the previous default survives a dismiss, so this is where
+// the picked model finally gets written — the user just confirmed it.
+export async function confirmOnboardingModel(ctx: OnboardingContext) {
+  const { flow, manual } = $desktopOnboarding.get()
 
   if (flow.status !== 'confirming_model') {
     return
   }
 
+  if (manual) {
+    // Best-effort: the overlay is already on its way out (cinematic exit
+    // choreography in the caller isn't gated on this), so a failure here is
+    // reported and swallowed rather than left blocking — same as the rest of
+    // this file's non-blocking gateway calls. The alternative (silently
+    // keeping the previous default) is still safer than the bug this fixes.
+    try {
+      const res = await setMainModelAssignment({ provider: flow.providerSlug, model: flow.currentModel }, undefined, {
+        skipConfirmPrompt: true
+      })
+
+      notifyGatewayTools(res.gateway_tools)
+    } catch (error) {
+      notifyError(error, 'Could not save the selected model.')
+    }
+  }
+
   // No success toast here: the confirm-model screen already showed "<provider>
   // connected." notifyReady is reserved for completion paths that SKIP this
   // screen (no-default fallthrough, local endpoint) so feedback isn't lost.
-  completeDesktopOnboarding()
+  completeDesktopOnboarding(true)
   ctx.onCompleted?.()
 }

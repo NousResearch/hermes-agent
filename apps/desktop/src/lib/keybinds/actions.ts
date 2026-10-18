@@ -7,8 +7,7 @@
 
 import { registry } from '@/contrib/registry'
 import type { Contribution } from '@/contrib/types'
-
-import { IS_MAC } from './combo'
+import { isMacPlatform } from '@/lib/platform'
 
 export type KeybindCategory = 'composer' | 'profiles' | 'session' | 'navigation' | 'view'
 
@@ -91,7 +90,7 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // the ⌘B sidebar toggle. Off macOS `ctrl` folds to `mod`, so ⌃B IS the
   // sidebar chord. Ship ⌃⌥V there ("v" for voice) instead of stealing mod+b
   // or leaving the action unbound.
-  { id: 'composer.voice', category: 'composer', defaults: IS_MAC ? ['ctrl+b'] : ['mod+alt+v'] },
+  { id: 'composer.voice', category: 'composer', defaults: isMacPlatform() ? ['ctrl+b'] : ['mod+alt+v'] },
   // Dictation is intentionally unbound: it is available for users who prefer
   // a keyboard trigger without claiming a chord from text entry by default.
   { id: 'composer.dictate', category: 'composer', defaults: [] },
@@ -228,6 +227,39 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
 
 export const KEYBIND_ACTION_IDS: readonly string[] = KEYBIND_ACTIONS.map(action => action.id)
 
+// The built-in actions a plugin may run by id (`ctx.runAction`, see
+// plugin-actions.ts): view / navigation only. Nothing destructive, nothing
+// that switches profile / model, spawns a shell, or opens native dialogs.
+export const PLUGIN_APP_ACTIONS = [
+  // Panels and layout
+  'view.showBrowser',
+  'view.showFiles',
+  'view.toggleSidebar',
+  'view.toggleRightSidebar',
+  'view.toggleReview',
+  'view.toggleStatusbar',
+  'view.findInPage',
+  // Composer and chat
+  'composer.focus',
+  'session.new',
+  'session.focusSearch',
+  'conversation.scrollPageUp',
+  'conversation.scrollPageDown',
+  // Navigation
+  'nav.commandPalette',
+  'nav.settings',
+  'nav.profiles',
+  'nav.capabilities',
+  'nav.messaging',
+  'nav.artifacts',
+  'nav.cron',
+  'nav.agents',
+  'keybinds.openPanel'
+] as const
+
+/** An app action id a plugin may run with `ctx.runAction`. */
+export type PluginAppActionId = (typeof PLUGIN_APP_ACTIONS)[number]
+
 const ACTION_BY_ID = new Map(KEYBIND_ACTIONS.map(action => [action.id, action]))
 
 // ── Contributed actions — the `keybinds` registry area ──────────────────────
@@ -339,8 +371,8 @@ export const KEYBIND_READONLY: readonly KeybindReadonly[] = [
   // Terminal clipboard. ⌘C/⌘V on macOS, Ctrl+Shift+C/V elsewhere — matching VS
   // Code. Plain Ctrl+C also copies when text is selected (Windows Terminal /
   // Tabby behavior); with no selection it stays SIGINT, so it isn't listed.
-  { id: 'view.terminalCopy', category: 'view', keys: IS_MAC ? ['mod+c'] : ['mod+shift+c'] },
-  { id: 'view.terminalPaste', category: 'view', keys: IS_MAC ? ['mod+v'] : ['mod+shift+v'] },
+  { id: 'view.terminalCopy', category: 'view', keys: isMacPlatform() ? ['mod+c'] : ['mod+shift+c'] },
+  { id: 'view.terminalPaste', category: 'view', keys: isMacPlatform() ? ['mod+v'] : ['mod+shift+v'] },
   // Global OS chord registered in main while HUD mode is up.
   { id: 'hud.snapToPointer', category: 'view', keys: ['mod+shift+g'] }
 ]

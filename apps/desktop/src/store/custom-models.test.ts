@@ -74,9 +74,9 @@ describe('resetModelVisibilityKeepingCustoms', () => {
     // (a featured default) but left hidden, so the snapshot counts it as judged
     // and the default rule never re-admits it.
     setVisibleModels(new Set([modelVisibilityKey('openrouter', 'acme/model-x')]), catalog)
-    expect(effectiveVisibleKeys($visibleModels.get(), catalog).has(modelVisibilityKey('openrouter', 'openai/gpt-6'))).toBe(
-      false
-    )
+    expect(
+      effectiveVisibleKeys($visibleModels.get(), catalog).has(modelVisibilityKey('openrouter', 'openai/gpt-6'))
+    ).toBe(false)
 
     resetModelVisibilityKeepingCustoms(catalog)
 

@@ -21,7 +21,7 @@ def _fake_anthropic_call(**kwargs):
     if bad:
         raise TypeError(
             "Messages.stream() got an unexpected keyword argument "
-            f"{sorted(bad)[0]!r}"
+            f"{min(bad)!r}"
         )
     return "OK"
 

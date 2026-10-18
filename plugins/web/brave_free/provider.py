@@ -24,7 +24,7 @@ class BraveFreeWebSearchProvider(BaseWebSearchProvider):
     DISPLAY_NAME = "Brave Search (Free)"
     KEY_ENV = "BRAVE_SEARCH_API_KEY"
 
-    def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
+    def search(self, query: str, limit: int = 5) -> dict[str, Any]:
         api_key = provider_env("BRAVE_SEARCH_API_KEY")
         if not api_key:
             return search_fail("BRAVE_SEARCH_API_KEY is not set")
@@ -41,31 +41,8 @@ class BraveFreeWebSearchProvider(BaseWebSearchProvider):
         logger.info("Brave Search '%s': %d results (from %d raw, limit %d)", query, len(web_results), len(raw_results), limit)
         return search_ok(web_results)
 
-    def get_setup_schema(self) -> Dict[str, Any]:
+    def get_setup_schema(self) -> dict[str, Any]:
         return setup_schema(
             "Brave Search (Free)", "free", "Free-tier API key — 2k queries/mo, search only.",
             "BRAVE_SEARCH_API_KEY", "Brave Search API key (free tier)", "https://brave.com/search/api/",
         )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import os  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'WebSearchProvider': ('agent.web_search_provider', 'WebSearchProvider'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

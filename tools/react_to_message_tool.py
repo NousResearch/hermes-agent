@@ -24,7 +24,8 @@ def _open_session_db():
 def react_to_message_tool(emoji: str, message_row_id=None, messages_back=None) -> str:
     """Attach (or with an empty ``emoji`` retract) the agent's reaction."""
     emoji = (emoji or "").strip()
-    session_key = get_session_env("HERMES_SESSION_KEY", "") or get_session_env("HERMES_SESSION_ID", "")
+    # Routing keys identify a channel; message rows belong to the live durable session.
+    session_key = get_session_env("HERMES_SESSION_ID", "") or get_session_env("HERMES_SESSION_KEY", "")
     if not session_key:
         return tool_error("No active session — reactions need a persisted conversation.")
     db = _open_session_db()
@@ -116,25 +117,3 @@ registry.register(
         messages_back=args.get("messages_back")),
     check_fn=check_react_requirements, emoji="💛",
 )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'env_var_enabled': ('utils', 'env_var_enabled'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

@@ -40,6 +40,56 @@ function Harness({
   return null
 }
 
+describe('useCwdActions session target', () => {
+  afterEach(() => {
+    cleanup()
+    setCurrentCwd('')
+    setCurrentBranch('')
+  })
+
+  it('re-homes the named tile, not the primary, and leaves the primary readout alone', async () => {
+    const requestGateway = vi.fn(async () => ({ branch: 'dev', cwd: '/opt/data/profiles/austin' }) as never)
+    const onSessionRuntimeInfo = vi.fn()
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: 'primary-rt' }
+    let handle: CwdActionsHandle | null = null
+    setCurrentCwd('/primary-workspace')
+
+    function TargetHarness() {
+      const actions = useCwdActions({ activeSessionIdRef, onSessionRuntimeInfo, requestGateway })
+
+      useEffect(() => {
+        handle = actions
+      }, [actions])
+
+      return null
+    }
+
+    render(<TargetHarness />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await act(async () => {
+      await handle!.changeSessionCwd('/opt/data/profiles/austin', 'tile-rt')
+    })
+
+    expect(requestGateway).toHaveBeenCalledWith('session.cwd.set', {
+      cwd: '/opt/data/profiles/austin',
+      session_id: 'tile-rt'
+    })
+    expect(onSessionRuntimeInfo).toHaveBeenCalledWith('tile-rt', { branch: 'dev', cwd: '/opt/data/profiles/austin' })
+    expect($currentCwd.get()).toBe('/primary-workspace')
+
+    await act(async () => {
+      await handle!.changeSessionCwd('/opt/data/profiles/austin')
+    })
+
+    expect(requestGateway).toHaveBeenLastCalledWith('session.cwd.set', {
+      cwd: '/opt/data/profiles/austin',
+      session_id: 'primary-rt'
+    })
+    expect($currentCwd.get()).toBe('/opt/data/profiles/austin')
+  })
+})
+
 describe('useCwdActions draft workspace target', () => {
   beforeEach(() => {
     setCurrentCwd('')

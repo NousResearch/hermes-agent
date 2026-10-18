@@ -712,12 +712,8 @@ def test_default_spawn_does_not_auto_load_any_skill(kanban_home, monkeypatch):
     assert "--skills" not in cmd, (
         f"spawn argv should not auto-load any skill: {cmd}"
     )
-    assert "--accept-hooks" in cmd, f"spawn argv missing --accept-hooks: {cmd}"
-    assert cmd.index("--accept-hooks") < cmd.index("chat"), (
-        f"--accept-hooks must come before 'chat' in argv: {cmd}"
-    )
-    # Assignee + task env are still present
-    assert "some-profile" in cmd
+    assert cmd[-2:] == ["-m", "hermes_cli.kanban_worker_client"]
+    # Assignee + task identity reaches the owner client; policy is read from the board.
     env = captured["env"]
     assert env.get("HERMES_KANBAN_TASK") == tid
     assert env.get("HERMES_PROFILE") == "some-profile"
@@ -1374,6 +1370,7 @@ def test_dead_worker_reap_reads_the_log_of_the_dispatching_board(kanban_home):
     from hermes_cli import kanban_db_dispatch as kbd
     assert kb.get_current_board() == "default"
     board = "other-board"
+    kb.create_board(board)  # explicit creation; connect() must not create boards (#43243)
     conn = kbc.connect(board=board)
     try:
         tid = kb.create_task(conn, title="handoff", assignee="worker")

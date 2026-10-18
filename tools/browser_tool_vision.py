@@ -21,7 +21,7 @@ def _vision_mode_label() -> str:
 
 def _lightpanda_vision_preroute(
     effective_task_id: str, annotate: bool, screenshot_path: Path,
-) -> Tuple[bool, Optional[str], Path]:
+) -> tuple[bool, Optional[str], Path]:
     """Capture the vision screenshot via the Chrome fallback when Lightpanda is the engine
     (it has no graphical renderer). Returns ``(prerouted, fallback_warning, path)``;
     on fallback failure ``prerouted`` is False and the caller takes the normal
@@ -51,8 +51,8 @@ def _lightpanda_vision_preroute(
 
 def _native_vision_result(
     screenshot_path: Path, question: str, annotate: bool,
-    result: Dict[str, Any], lp_fallback_warning: Optional[str],
-) -> Dict[str, Any]:
+    result: dict[str, Any], lp_fallback_warning: Optional[str],
+) -> dict[str, Any]:
     """Multimodal tool-result envelope: the main model inspects the pixels itself.
 
     The embed is baked into history and re-sent every later turn, so apply the same

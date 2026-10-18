@@ -404,16 +404,19 @@ export function PanelAction({
   disabled,
   icon,
   onClick,
-  primary
+  primary,
+  spinning
 }: {
   children: ReactNode
   disabled?: boolean
   icon: string
   onClick: () => void
   primary?: boolean
+  spinning?: boolean
 }) {
   return (
     <Button
+      aria-busy={spinning || undefined}
       className={cn(
         'gap-1.5',
         !primary && 'text-muted-foreground hover:bg-(--ui-row-hover-background) hover:text-foreground'
@@ -423,7 +426,7 @@ export function PanelAction({
       size="sm"
       variant={primary ? 'default' : 'ghost'}
     >
-      <Codicon name={icon} size="0.875rem" />
+      <Codicon name={icon} size="0.875rem" spinning={spinning} />
       {children}
     </Button>
   )

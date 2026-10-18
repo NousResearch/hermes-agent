@@ -14,12 +14,6 @@ _BUILTIN_AT_PREFIXES = frozenset({"file", "folder", "url", "git", "diff", "stage
 _AT_DIRECTIVE_HINTS = [
     ("@diff", "git diff"), ("@staged", "staged diff"), ("@file:", "attach file"),
     ("@folder:", "attach folder"), ("@url:", "fetch url"), ("@git:", "git log")]
-_SLASH_EXTRAS = [
-    ("/density", "Toggle compact display mode"), ("/details", "Control agent detail visibility"),
-    ("/logs", "Show recent gateway log lines"),
-    ("/mouse", "Set mouse tracking preset [on|off|toggle|wheel|buttons|all]")]
-
-
 def _item(text: str, meta: str, display: str | None = None) -> dict:
     return {"text": text, "display": display if display is not None else text, "meta": meta}
 
@@ -46,7 +40,9 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4004, "empty paste")
     _paste_counter += 1
     line_count = text.count("\n") + 1
-    paste_dir = _hermes_home / "pastes"
+    # The shared owner's legacy fallback serves secondary profiles too: write under the ticket's home.
+    from tui_gateway.ws_legacy_fallback import connection_profile_home
+    paste_dir = Path(connection_profile_home() or _hermes_home) / "pastes"
     paste_dir.mkdir(parents=True, exist_ok=True)
     from datetime import datetime
     paste_file = paste_dir / f"paste_{_paste_counter}_{datetime.now().strftime('%H%M%S')}.txt"
@@ -165,6 +161,7 @@ def _backend_dir_entries(search_dir: str, session_key: str | None) -> list[tuple
         'if [ -d "$p" ]; then printf "%s/\\n" "${p##*/}"; else printf "%s\\n" "${p##*/}"; fi; done'
     )
     try:
+        from hermes_cli.observability.shared_metrics_loop import unmetered_backend_calls
         from tools.terminal_tool import terminal_tool
         # Pre-confirm this internal read-only listing: its fixed `sh -c` script shape is
         # guard-flagged as "shell command via -c/-lc flag", so under smart approvals every
@@ -172,9 +169,10 @@ def _backend_dir_entries(search_dir: str, session_key: str | None) -> list[tuple
         # configured), and Desktop's ws reconnect loop turns that into model traffic from an
         # idle machine (#115478). The script is a constant and the search dir is quoted, so
         # nothing here needs an approval verdict.
-        result = json.loads(terminal_tool(
-            f"sh -c {shlex.quote(script)} sh {shlex.quote(search_dir)}", task_id=session_key, timeout=3,
-            force=True))
+        with unmetered_backend_calls():  # Hermes' own listing, not the user's backend work
+            result = json.loads(terminal_tool(
+                f"sh -c {shlex.quote(script)} sh {shlex.quote(search_dir)}", task_id=session_key, timeout=3,
+                force=True))
     except Exception:
         return []
     if result.get("error") or result.get("exit_code") not in (0, None):
@@ -184,10 +182,10 @@ def _backend_dir_entries(search_dir: str, session_key: str | None) -> list[tuple
 
 
 def _dir_listing_items(root: str, word: str, path_part: str, prefix_tag: str, is_context: bool,
-                       session_key: str | None = None) -> list[dict]:
+                       session_key: str | None = None, local: bool | None = None) -> list[dict]:
     """Prefix-match entries of the directory ``path_part`` points at (max 30)."""
     import posixpath
-    local = _effective_terminal_backend() == "local"
+    local = _effective_terminal_backend() == "local" if local is None else local
     # A non-local backend expands ``~`` itself (the gateway host's home is the wrong one) and its listing
     # script speaks POSIX: from a Windows gateway host, os.path would hand it ``~\\src`` and list nothing.
     pth = os.path if local else posixpath
@@ -240,15 +238,21 @@ def _(rid, params: dict) -> dict:
     # session cwd (Desktop sends it) or the session's terminal cwd as-is.
     root = _completion_cwd(params) if local else (params.get("cwd") or _terminal_task_cwd(session))
     session_key = session.get("session_key") if session else None
+    return _ok(rid, {"items": _path_completion_items(word, root, session_key, local)})
+
+
+def _path_completion_items(word: str, root: str, session_key: str | None, local: bool) -> list[dict]:
+    """``complete.path``'s items for ``word`` resolved against ``root``; the shared gateway serves the
+    same listing against a local session's own folder (``gateway/session_complete_path.py``)."""
     is_context = word.startswith("@")
     query = word[1:] if is_context else word
     if is_context and not query:
-        return _ok(rid, {"items": _at_root_items()})
+        return _at_root_items()
     # Plugin `@<prefix>:<query>` runs before the built-in file/folder branching.
     if is_context and ":" in query:
         pfx, _, qval = query.partition(":")
         if pfx not in _BUILTIN_AT_PREFIXES and (plugin_items := _plugin_reference_items(pfx, qval)) is not None:
-            return _ok(rid, {"items": plugin_items})
+            return plugin_items
     # Bare `@folder` lists as soon as the keyword is typed (the static `@folder:` hint is not accepted).
     if is_context and (query in {"file", "folder"} or query.startswith(("file:", "folder:"))):
         prefix_tag, _, path_part = query.partition(":")
@@ -265,68 +269,24 @@ def _(rid, params: dict) -> dict:
     if local and bare_word and len(path_part.strip()) >= 2 and prefix_tag != "folder":
         items = _fuzzy_basename_items(root, path_part, prefix_tag)
     else:
-        items = _dir_listing_items(root, word, path_part, prefix_tag, is_context, session_key)
+        items = _dir_listing_items(root, word, path_part, prefix_tag, is_context, session_key, local)
     # Bare-word `@name` may be an agent mention: profiles rank ABOVE file hits.
     if bare_word and not prefix_tag:
         with contextlib.suppress(Exception):
             items = _profile_mention_items(path_part) + items
-    return _ok(rid, {"items": items})
+    return items
 
 
 @method("complete.slash")
 @_catch(5020)
 def _(rid, params: dict) -> dict:
-    text = params.get("text", "")
-    if not text.startswith("/"):
-        return _ok(rid, {"items": []})
-    from hermes_cli.commands_completion import SlashCommandCompleter
-    from prompt_toolkit.document import Document
-    from prompt_toolkit.formatted_text import to_plain_text
-    from agent.skill_commands import get_skill_commands
-    from agent.skill_bundles import get_skill_bundles
+    from tui_gateway.command_discovery import slash_completions
     # Skill/bundle lookups are home- and cwd-keyed: bind the calling session's profile and workspace so
     # the popup offers the project-local skills ``command.dispatch`` accepts for that session (#114359).
     # A new-chat draft has no session yet: it names its rail-selected ``profile`` instead (#124651).
-    with _session_home_scope(_sessions.get(params.get("session_id", "")), cwd=_completion_cwd(params),
-                             profile=params.get("profile")):
-        skill_commands, skill_bundles = dict(get_skill_commands()), dict(get_skill_bundles())
-    completer = SlashCommandCompleter(
-        skill_commands_provider=lambda: skill_commands, skill_bundles_provider=lambda: skill_bundles)
-    # `kind` reaches the TUI as data (from the providers, not sniffed from ⚡/▣ glyphs):
-    # skills/bundles are the only completions for an inline `/skill` typed mid-message.
-    skill_names = {key.lstrip("/").lower() for key in (*skill_commands, *skill_bundles)}
-
-    def to_items(doc: Document) -> list[dict]:
-        # display/display_meta are FormattedText; the TUI contract is a plain string
-        # (the raw list trips Ink's row layout into 1-char truncation).
-        return [
-            {
-                "text": c.text, "display": to_plain_text(c.display) if c.display else c.text,
-                "meta": to_plain_text(c.display_meta) if c.display_meta else "",
-                "kind": "skill" if c.text.strip().lstrip("/").lower() in skill_names else "command"}
-            for c in completer.get_completions(doc, None)]
-    items = to_items(Document(text, len(text)))
-    # Rank + bound while a `/token` is under the cursor (the one stage skills are
-    # offered at); an argument stage (`/personality `) keeps its command's order.
-    if text.rsplit(" ", 1)[-1].startswith("/"):
-        score_of = None
-        # Command-token stage: the completer only emits name-prefix matches, so merge in
-        # catalog entries whose name SUBSTRING or DESCRIPTION words match (name outranks description).
-        if " " not in text and len(text) > 1:
-            from tui_gateway.slash_fuzzy import fuzzy_rank_slash_items, normalize_slash_search_query
-            items, score_of = fuzzy_rank_slash_items(
-                items, to_items(Document("/", 1)), normalize_slash_search_query(text))
-        usage, origin_of = _skill_usage_lookup()
-        items = _rank_slash_completions(items, usage, origin_of, browsing=text == "/", score_of=score_of)
-    else:
-        items = items[:_SLASH_COMPLETION_LIMIT]
-    text_lower = text.lower()
-    for extra_text, extra_meta in _SLASH_EXTRAS:
-        if extra_text.startswith(text_lower) and not any(item["text"] == extra_text for item in items):
-            items.append({**_item(extra_text, extra_meta), "kind": "command"})
-    if (details_items := _details_completions(text)) is not None:
-        return _ok(rid, {"items": details_items, "replace_from": text.rfind(" ") + 1 if " " in text else len(text)})
-    return _ok(rid, {"items": items, "replace_from": text.rfind(" ") + 1 if " " in text else 1})
+    scope = _session_home_scope(_sessions.get(params.get("session_id", "")), cwd=_completion_cwd(params),
+                                profile=params.get("profile"))
+    return _ok(rid, slash_completions(params.get("text", ""), scope=scope))
 
 
 def _session_agent(params: dict):
@@ -334,10 +294,31 @@ def _session_agent(params: dict):
     return session.get("agent") if session else None
 
 
+def _model_skew_err(rid) -> dict | None:
+    """#99859 (R2): refuse model-serving/holding RPCs when this process runs stale
+    code — the TUI/desktop would otherwise resolve a post-update model string against
+    stale cached modules (the reporter's agent_init_failed). Mirrors the dashboard's
+    ``_dashboard_code_skew_guard`` and the gateway's ``_model_switch_skew_guard``;
+    never a false positive (non-git installs detect nothing)."""
+    from gateway.code_skew import detect_code_skew
+
+    skew = detect_code_skew()
+    if not skew:
+        return None
+    boot_rev, disk_rev = skew
+    from agent.i18n import t
+
+    return _err(rid, 5098, t("gateway.model.error_prefix", error=t(
+        "gateway.model.err_skew", boot_rev=boot_rev, disk_rev=disk_rev)))
+
+
 @method("model.options")
 @_profile_scoped
 @_catch(5033)
 def _(rid, params: dict) -> dict:
+    skew = _model_skew_err(rid)
+    if skew is not None:
+        return skew
     from hermes_cli.inventory import build_model_options_payload
     # A spawned agent owns the live provider/model/base_url; empty attributes must
     # NOT clobber disk config (with_overrides is truthy-only).
@@ -351,6 +332,9 @@ def _(rid, params: dict) -> dict:
 @_catch(5034)
 def _(rid, params: dict) -> dict:
     """Save an API key for ``slug``; return its refreshed provider row (model.options shape + ``authenticated``)."""
+    skew = _model_skew_err(rid)
+    if skew is not None:
+        return skew
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.config import is_managed
     slug, api_key = (params.get("slug") or "").strip(), (params.get("api_key") or "").strip()
@@ -367,10 +351,15 @@ def _(rid, params: dict) -> dict:
     # Save the key to ~/.hermes/.env via the unified credential lifecycle so any stale config.yaml mirror of
     # the previous key (model.api_key, custom_providers[*].api_key) is rotated in the same action (#62269).
     env_var = pconfig.api_key_env_vars[0]
+    from hermes_cli.config import load_env
     from hermes_cli.credential_lifecycle import save_provider_env_credential  # also rotates stale config.yaml mirrors
+    previous = load_env().get(env_var)
     # Under the profile scope the save publishes into the addressed profile's secret scope (and the
     # shared os.environ only for the launch profile), so the refreshed inventory below sees it.
     save_provider_env_credential(env_var, api_key)
+    if api_key != previous:  # a same-key re-save connects nothing new
+        from hermes_cli.observability.shared_metrics_setup import record_provider_setup_done
+        record_provider_setup_done(_resolve_session_platform(), slug, background=True)
     # The launch profile's boot record may still say "nothing configured"; the gated picker's own chat
     # waits on setup.status, so the fresh key must move the record (+ setup.ready). reconcile_record
     # leaves it alone when the bound home is another profile's.

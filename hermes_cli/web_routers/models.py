@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_config import (
     _AUX_TASK_SLOTS, _UNSET, _apply_model_assignment_sync, _dashboard_code_skew_guard,
-    _prepare_main_assignment,
+    _plugin_aux_tasks, _prepare_main_assignment,
 )
 from agent.model_metadata import is_local_endpoint
 from starlette.concurrency import run_in_threadpool
@@ -29,6 +29,7 @@ _config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_pro
 _profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
 load_config = late("load_config", "hermes_cli.config")
 save_config = late("save_config", "hermes_cli.config")
+require_readable_config_before_write = late("require_readable_config_before_write", "hermes_cli.config")
 
 
 _EMPTY_MODEL_INFO: dict = {
@@ -186,7 +187,11 @@ def get_recommended_default_model(provider: str = "", profile: Optional[str] = N
 
     if slug == "nous":
         try:
-            return _nous_recommended_default()
+            # The tier, Portal URL and recommendation caches are all per profile home.
+            with _config_profile_scope(profile):
+                return _nous_recommended_default()
+        except HTTPException:
+            raise  # an unknown ?profile= is the scope's 404, not an empty recommendation
         except Exception:
             _log.exception("GET /api/model/recommended-default (nous) failed")
             return {"provider": "nous", "model": "", "free_tier": None}
@@ -204,6 +209,8 @@ def get_recommended_default_model(provider: str = "", profile: Optional[str] = N
                 models = [str(m) for m in (row.get("models") or [])]
                 return {"provider": slug, "model": pick_silent_default_model(models, provider=slug), "free_tier": None}
         return {"provider": slug, "model": "", "free_tier": None}
+    except HTTPException:
+        raise  # an unknown ?profile= is the scope's 404, not an empty recommendation
     except Exception:
         _log.exception("GET /api/model/recommended-default failed")
         return {"provider": slug, "model": "", "free_tier": None}
@@ -214,24 +221,49 @@ def get_auxiliary_models(profile: Optional[str] = None):
     """Current auxiliary task assignments: ``{"tasks": [{task, provider, model,
     base_url}, ...], "main": {provider, model}}``. ``profile`` scopes the read —
     without it the Models page would show the dashboard profile's pins while
-    /api/model/set wrote the selected profile's."""
+    /api/model/set wrote the selected profile's.
+
+    Built-in slots come first; plugin-registered tasks follow, each carrying the
+    ``label``/``hint``/``plugin`` the plugin declared (built-ins are labelled client-side) and
+    ``inherit_from`` (base slot key or null). An inheriting row also carries ``effective``: the
+    route it resolves to right now, which is the base's while the row itself is unpinned.
+    ``provider``/``model``/``base_url`` stay the slot's own stored values on every row."""
+    from agent.auxiliary_client import _get_auxiliary_task_config
+
     with http_failure("GET /api/model/auxiliary failed", 500, detail="Failed to read auxiliary config"):
-        cfg = _load_config_scoped(profile)
+        with _profile_scope(profile):
+            cfg = load_config()
+            # Inside the scope on purpose: plugin discovery and the resolver key on the same
+            # context-local home, so profile B's rows come from B's plugins and B's config.
+            plugin_tasks = _plugin_aux_tasks()
+            effective = {entry["key"]: _get_auxiliary_task_config(entry["key"])
+                         for entry in plugin_tasks if entry.get("inherit_from")}
         aux_cfg = cfg.get("auxiliary", {})
         if not isinstance(aux_cfg, dict):
             aux_cfg = {}
 
-        tasks = []
-        for slot in _AUX_TASK_SLOTS:
+        def _row(slot: str) -> dict:
             slot_cfg = aux_cfg.get(slot, {}) if isinstance(aux_cfg.get(slot), dict) else {}
             base_url = str(slot_cfg.get("base_url", "") or "")
-            tasks.append({
+            return {
                 "task": slot, "provider": str(slot_cfg.get("provider", "auto") or "auto"),
                 "model": str(slot_cfg.get("model", "") or ""), "base_url": base_url,
                 "reasoning_effort": str(slot_cfg.get("reasoning_effort") or "") or None,
                 # Lets the UI tell a free local/LAN pin from a forgotten paid-provider pin.
                 "local_endpoint": is_local_endpoint(base_url),
-            })
+            }
+
+        tasks = [_row(slot) for slot in _AUX_TASK_SLOTS]
+        tasks.extend({
+            **_row(entry["key"]),
+            "label": str(entry.get("display_name") or entry["key"]),
+            "hint": str(entry.get("description") or ""),
+            "plugin": str(entry.get("plugin") or ""),
+            "inherit_from": entry.get("inherit_from") or None,
+            **({"effective": {field: str(effective[entry["key"]].get(field) or "")
+                              for field in ("provider", "model", "base_url")}}
+               if entry["key"] in effective else {}),
+        } for entry in plugin_tasks)
 
         model, provider = _main_model_fields(cfg.get("model", {}))
         return {"tasks": tasks, "main": {"provider": str(provider or ""), "model": str(model or "")}}
@@ -272,14 +304,14 @@ def _preset_dict(preset) -> dict:
 def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
     """Persist the Mixture-of-Agents provider/model slots."""
     with http_failure("PUT /api/model/moa failed", 500, detail="Failed to save MoA config"):
+        from hermes_cli import config as config_mod
         from hermes_cli.moa_config import normalize_moa_config, validate_moa_payload
 
-        # load→mutate→save runs on a worker thread (sync-def endpoint); the
-        # desktop's debounced PUT /api/config autosave races it, so the whole
-        # span holds _CONFIG_MUTATION_LOCK or one of the two saves is dropped.
-        with config_write_scope(body.profile or profile):
-            cfg = load_config()
-            if body.presets:
+        # Serialize the full RMW with dashboard autosaves and with non-HTTP
+        # save_config callers, which only hold the config module's reentrant lock.
+        with config_write_scope(body.profile or profile), config_mod._CONFIG_LOCK:
+            legacy_flat_update = not body.presets
+            if not legacy_flat_update:
                 raw = {
                     "default_preset": body.default_preset,
                     "active_preset": body.active_preset,
@@ -296,15 +328,48 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
             problems = validate_moa_payload(raw)
             if problems:
                 raise HTTPException(status_code=422, detail="Invalid MoA config: " + "; ".join(problems))
+
+            # Read the raw profile file because the effective config contains defaults and
+            # ``merge_existing=True`` deep-merges dicts, which resurrects omitted preset names.
+            # Keep unknown MoA keys and sibling sections by rebuilding only the MoA section on
+            # the raw document, while treating the submitted named map as authoritative.
+            # Strict read: the merge below builds a new dict and would discard the
+            # failed-read marker, allowing a transient fallback to replace the file.
+            raw_cfg = require_readable_config_before_write()
+            existing_moa = raw_cfg.get("moa")
+            if isinstance(existing_moa, dict) and "privacy_filter" in existing_moa:
+                # ``privacy_filter`` is emitted by the normalizer but is not declared by
+                # MoaConfigPayload; an editor round-trip must not reset it.
+                raw["privacy_filter"] = existing_moa["privacy_filter"]
             normalized = normalize_moa_config(raw)
-            # Merge, don't overwrite: hand-edited keys not in MoaConfigPayload (save_traces, trace_dir) survive.
-            # See issue #58819. Write ONLY the moa section (merge_existing deep-merges it over the
-            # on-disk raw file): saving the whole default-expanded ``cfg`` snapshot re-persisted
-            # every other section too, so a Desktop MoA autosave could wipe a chain another
-            # surface wrote meanwhile (#89184, ``fallback_providers: []``).
-            moa_section = dict(cfg.get("moa") or {})
-            moa_section.update(normalized)
-            save_config({"moa": moa_section}, merge_existing=True)
+            if legacy_flat_update and isinstance(existing_moa, dict):
+                existing_presets = existing_moa.get("presets")
+                existing_default = existing_moa.get("default_preset")
+                if isinstance(existing_presets, dict):
+                    if isinstance(existing_default, str) and existing_default in existing_presets:
+                        # Older clients update the flat default preset; keep the existing
+                        # default name and any valid active selection from the stored map.
+                        synthesized_default = normalized.get("default_preset")
+                        if (
+                            isinstance(synthesized_default, str)
+                            and synthesized_default in normalized["presets"]
+                        ):
+                            normalized["presets"][existing_default] = normalized["presets"].pop(
+                                synthesized_default
+                            )
+                            normalized["default_preset"] = existing_default
+                    existing_active = existing_moa.get("active_preset")
+                    if isinstance(existing_active, str) and existing_active in existing_presets:
+                        normalized["active_preset"] = existing_active
+            updated = config_mod._merge_partial_save(raw_cfg, {"moa": normalized})
+            if not legacy_flat_update:
+                # ``_merge_partial_save`` retains undeclared metadata on surviving presets;
+                # filter after that merge so omitted names are authoritative deletions.
+                merged_presets = updated["moa"]["presets"]
+                updated["moa"]["presets"] = {
+                    name: merged_presets[name] for name in normalized["presets"]
+                }
+            save_config(updated)
             return {"ok": True, **normalized}
 
 
@@ -321,6 +386,14 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
         raise HTTPException(status_code=400, detail="scope must be 'main' or 'auxiliary'")
 
     with http_failure("POST /api/model/set failed", 500, detail="Failed to save model assignment"):
+        # #99859 (R2): the options picker already refuses on code skew; the WRITE path
+        # must too — a stale process persisting a post-update model string is the
+        # invalid-model-serving failure the reporter hit.
+        skew_msg = _dashboard_code_skew_guard()
+        if skew_msg:
+            _log.warning("POST /api/model/set refused: %s", skew_msg)
+            raise HTTPException(status_code=503, detail=f"Restart required: {skew_msg}")
+
         # Expensive-model warning runs BEFORE the profile scope is entered: _profile_scope
         # must never be held across an await (the RLock is reentrant per-thread, so a second
         # coroutine interleaving on the event-loop thread could cross-restore module globals).

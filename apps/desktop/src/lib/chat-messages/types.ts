@@ -49,6 +49,8 @@ export type ChatMessage = {
    *  action footer so only the turn's final reply carries copy/refresh, and
    *  the live view matches rehydration (which merges the turn into one bubble). */
   interim?: boolean
+  /** The user stopped this reply before it finished; its text is partial. */
+  interrupted?: boolean
   /** Locally recovered output not yet represented by a durable completed reply. */
   recovered?: boolean
   /** Whether hydration reached a final assistant source row, rather than a tool round. */
@@ -71,13 +73,6 @@ export type ChatMessage = {
   serverRowSpan?: number
   /** Emoji reactions on this message — one per author (see MessageReaction). */
   reactions?: MessageReaction[]
-  /** Backend-authored transcript notice rather than a message any view sent: a
-   *  model switch, an auto-continue, a background-process completion. It renders
-   *  on the timeline like any other system row but belongs to no view, so the
-   *  stale-transcript compare must not count it (see
-   *  `messagesIfTranscriptBehind`) — counting it made one model switch report a
-   *  second window ahead and refuse every send. */
-  systemNotice?: boolean
 }
 
 export type GatewayEventPayload = {
@@ -101,6 +96,10 @@ export type GatewayEventPayload = {
   result?: unknown
   summary?: string
   error?: string | boolean
+  // error — the gateway's machine-readable cause, when it has one (currently
+  // "provider_not_configured" from a failed agent init). Absent on older
+  // gateways; consumers must fall back to string heuristics.
+  code?: string
   // message.complete with status "error" — structured {layer, code, retryable}
   // descriptor naming which stack layer failed (agent/error_surface.py).
   // Absent on older gateways; consumers must fall back to string heuristics.
@@ -126,6 +125,19 @@ export type GatewayEventPayload = {
   install_warning?: string
   personality?: string
   usage?: Partial<UsageStats>
+  // Canonical session.usage ticks carry cumulative counters at the payload top level; older ticker frames nest the desktop Usage shape above.
+  api_calls?: number | null
+  cache_read_tokens?: number | null
+  completion_tokens?: number | null
+  compression_count?: number | null
+  context_length?: number | null
+  context_source?: string | null
+  input_tokens?: number | null
+  last_prompt_tokens?: number | null
+  output_tokens?: number | null
+  prompt_tokens?: number | null
+  tokens_per_s?: number | null
+  total_tokens?: number | null
   // agent.terminal.output — live chunk for a read-only agent terminal tab
   process_id?: string
   chunk?: string
@@ -134,10 +146,6 @@ export type GatewayEventPayload = {
   question?: string
   // btw.complete / background.complete — id of the side/background task
   task_id?: string
-  choices?: string[] | null
-  multi_select?: boolean
-  // clarify.request batch form: questions replaces question/choices, and
-  // answers (qid → locked answer) rides along on reconnect replay only.
   questions?: unknown
   answers?: Record<string, unknown>
   // connection request (manage_connections MCP targets — inline approval card)
@@ -149,7 +157,7 @@ export type GatewayEventPayload = {
   // approval server request (dangerous command / execute_code) — session-keyed
   command?: string
   description?: string
-  // False when a tirith content-security warning forbids a permanent allow.
+  // False when the backend forbids a permanent allow.
   allow_permanent?: boolean
   smart_denied?: boolean
   // secret.request (skill credential capture)
@@ -170,8 +178,6 @@ export type GatewayEventPayload = {
   kind?: string
   // pane.reveal (agent focusing a desktop pane via the focus_pane tool)
   pane?: string
-  // layout.apply (agent applying a layout preset via the apply_layout tool)
-  preset?: string
   // tour.request (tour tool — agent-guided driver.js walkthrough). `action`
   // and `steps` name the tour verb and step list; `surface` picks the app's
   // own DOM vs the preview pane's guest page. tip.show (tip tool — one accent
@@ -219,6 +225,8 @@ export type GatewayEventPayload = {
   // message.complete — a transform_llm_output hook rewrote the final text after streaming;
   // it authoritatively replaces the current turn's streamed text even without a prefix match.
   response_transformed?: MessageCompletePayload['response_transformed']
+  // message.complete — `text` is a response this turn already delivered: it adds no text.
+  response_reused?: MessageCompletePayload['response_reused']
   persisted_turn?: PersistedTurn | null
   // message.complete — history-commit note the gateway surfaced instead of dropping.
   warning?: string

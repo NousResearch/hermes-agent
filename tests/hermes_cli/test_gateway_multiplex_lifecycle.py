@@ -283,7 +283,7 @@ def test_process_discovery_excludes_host_even_after_unserve(homes, monkeypatch, 
     from gateway import status, host_attach
     from hermes_cli import gateway as gw, dashboard_procs
     root, secondary = homes
-    owner = SimpleNamespace(pid=4242, home=root, profiles=('default', 'worker') if served else ('default',))
+    owner = SimpleNamespace(pid=4242, home=root, served_known=True, profiles=('default', 'worker') if served else ('default',))
     monkeypatch.setenv('HERMES_HOME', str(secondary))
     monkeypatch.setattr(host_attach, '_probe_host_gateway', lambda wait: owner)
     monkeypatch.setattr(dashboard_procs, '_hermes_home_for_pid', lambda pid, **kw: str(root if pid == 4242 else secondary))
@@ -405,3 +405,48 @@ def test_launch_identity_does_not_follow_sticky_selection(homes, monkeypatch, id
     monkeypatch.setattr(host_attach, '_probe_host_gateway', lambda wait: None)
     monkeypatch.setattr(status, 'get_running_pid', lambda **kw: 4242)
     assert gw._owned_gateway_pid() == (None if identity == 'ambiguous' else 4242)
+
+
+@pytest.mark.parametrize('runtime', ['present', 'absent', 'unknown'])
+def test_cli_stop_reports_unconfirmed_separately_from_absent(homes, monkeypatch, capsys, runtime):
+    from gateway import status
+    from hermes_cli import gateway as gw, gateway_profile_lifecycle as lifecycle
+    monkeypatch.setattr(lifecycle, 'profile_lifecycle', lambda *a: False)
+    monkeypatch.setattr(gw, '_refuse_from_inside_gateway', lambda *a: None)
+    monkeypatch.setattr(gw, 'find_gateway_pids', lambda **kw: [])
+    monkeypatch.setattr(gw, '_served_by_another_host_gateway', lambda: None)
+    monkeypatch.setattr(gw, 'named_profile_served_by_running_multiplexer', lambda: False)
+    monkeypatch.setattr(gw, '_dispatch_via_service_manager_if_s6', lambda *a: False)
+    monkeypatch.setattr(gw, '_stop_installed_service', lambda *a: False)
+    monkeypatch.setattr(gw, 'stop_profile_gateway', lambda: False)
+
+    def pid():
+        if runtime == 'unknown':
+            raise OSError('cannot inspect gateway')
+        return 4242 if runtime == 'present' else None
+
+    monkeypatch.setattr(status, 'get_running_pid', pid)
+    if runtime == 'absent':
+        gw._cmd_stop(SimpleNamespace())
+        assert 'No gateway running' in capsys.readouterr().out
+    else:
+        with pytest.raises(SystemExit) as result:
+            gw._cmd_stop(SimpleNamespace())
+        assert result.value.code != 0
+        output = capsys.readouterr().out
+        assert 'No gateway running' not in output
+        assert 'not confirmed' in output
+
+
+@pytest.mark.parametrize('verified,changed', [(True, False), (True, True), (False, False)])
+def test_same_home_record_requires_identity_and_stable_pid(homes, monkeypatch, verified, changed):
+    from gateway import host_attach, status
+    from hermes_cli import gateway as gw, dashboard_procs
+    root, _ = homes
+    monkeypatch.setenv('HERMES_HOME', str(root))
+    owner = host_attach.HostGateway(4242, root, ('default',), served_known=verified)
+    monkeypatch.setattr(host_attach, '_probe_host_gateway', lambda wait: owner)
+    monkeypatch.setattr(dashboard_procs, '_hermes_home_for_pid', lambda pid, **kw: None)
+    pids = iter([4242, 4343 if changed else 4242])
+    monkeypatch.setattr(status, 'get_running_pid', lambda: next(pids))
+    assert gw._owned_gateway_pid() == (4242 if verified and not changed else None)

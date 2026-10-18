@@ -45,6 +45,11 @@ def merge_model_cooldowns(*maps: Any) -> dict[str, float]:
 
 
 class CredentialPoolModelCooldownMixin:
+    if TYPE_CHECKING:
+        provider: str
+        _lock: Any
+        _entries: list[PooledCredential]
+
     def token_is_blocked(self, token: str, *, model: Optional[str] = None) -> bool:
         """Whether a pool cooldown blocks *token* for *model*.
 
@@ -102,6 +107,37 @@ class CredentialPoolModelCooldownMixin:
             cooldowns = merge_model_cooldowns(scoped.model_cooldowns, {model: until})
             self._adopt(scoped, persist=False, model_cooldowns=cooldowns)
         self._persist()
+
+    def entitlement_benched(self, model: str) -> bool:
+        """Whether every live credential remembers *model* as an entitlement failure.
+
+        The year-long entitlement bench is distinct from a short model rate-limit window.
+        Read-only: this check never clears, refreshes, rotates or persists pool state.
+        """
+        from agent.credential_pool import STATUS_DEAD
+        from agent.model_metadata import strip_codex_context_variant_suffix
+
+        now = time.time()
+        target = strip_codex_context_variant_suffix(model) if self.provider == "openai-codex" else model
+
+        def entitlement_until(entry: PooledCredential) -> Optional[float]:
+            values = []
+            for key, until in (entry.model_cooldowns or {}).items():
+                candidate = strip_codex_context_variant_suffix(key) if self.provider == "openai-codex" else key
+                if candidate == target and isinstance(until, (int, float)) and until > now:
+                    values.append(float(until))
+            return max(values) if values else None
+
+        with self._lock:
+            live = [
+                entry for entry in self._entries
+                if entry.last_status != STATUS_DEAD and bool(entry.runtime_api_key)
+            ]
+            return bool(live) and all(
+                (until := entitlement_until(entry)) is not None
+                and until - now >= MODEL_ENTITLEMENT_BENCH_SECONDS / 2
+                for entry in live
+            )
 
     def limit_state(self, models: Iterable[str]) -> Optional[dict[str, Any]]:
         """What a picker should say about this pool's rate limits, or ``None`` when nothing is limited.

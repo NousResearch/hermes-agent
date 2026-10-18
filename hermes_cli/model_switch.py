@@ -1599,6 +1599,25 @@ def _resolve_switch_credentials(st: _Switch) -> Optional[ModelSwitchResult]:
     return None
 
 
+def _entitlement_bench_refusal(st: _Switch) -> Optional[ModelSwitchResult]:
+    """Refuse a model every saved live credential has already rejected as unsupported."""
+    try:
+        from agent.credential_pool import load_pool
+        from hermes_cli.auth import read_credential_pool
+
+        if not read_credential_pool(st.target_provider):
+            return None
+        if not load_pool(st.target_provider).entitlement_benched(st.new_model):
+            return None
+    except Exception:
+        logger.debug("model switch entitlement-bench check failed open", exc_info=True)
+        return None
+    return st.fail_on_target(
+        f"Hermes remembers `{st.new_model}` as unsupported by every saved {st.provider_label} "
+        f"login. Run `hermes auth reset {st.target_provider}` to clear that result, then try again."
+    )
+
+
 def _validate_switch(st: _Switch) -> Optional[ModelSwitchResult]:
     """COMMON PATH part 2: normalize the model name for the target provider, validate it, and
     accept config-declared models the remote catalog lacks."""
@@ -1615,6 +1634,9 @@ def _validate_switch(st: _Switch) -> Optional[ModelSwitchResult]:
             new_model=st.new_model, target_provider=st.target_provider,
             provider_label=st.provider_label,
         )
+
+    if refusal := _entitlement_bench_refusal(st):
+        return refusal
 
     if st.target_provider.strip().lower() == "ollama":
         headers = {} if st.suppress_ollama_headers else (st.validation_headers or _get_ollama_request_headers())

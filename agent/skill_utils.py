@@ -668,12 +668,16 @@ def normalize_skill_lookup_name(identifier: str) -> str:
         primary_root = _skills_tool._skills_dir()
     except Exception:
         primary_root = get_skills_dir()
-    trusted_roots = [primary_root]
-    for getter in (get_project_skills_dirs, get_external_skills_dirs):
-        try:
-            trusted_roots.extend(getter())
-        except Exception:
-            pass
+    # Relativize against the same canonical roots skill_view() searches:
+    # project > local > skills.create_dir > external. This list was hand-kept
+    # and fell behind get_skill_search_roots() when TIER_CREATE_DIR was added,
+    # so create_dir skills registered but could never be invoked (#141159).
+    try:
+        trusted_roots = [d for _t, d in get_skill_search_roots(local=primary_root)]
+    except Exception:
+        logger.debug("Skill search roots unavailable; trusting only the primary skills dir",
+                     exc_info=True)
+        trusted_roots = [primary_root]
     # Prefer the lexical path under a trusted root before resolving symlinks:
     # ~/.hermes/skills/<name> may be a symlink to a checkout elsewhere, and
     # resolving first would turn that trusted path into one skill_view rejects.

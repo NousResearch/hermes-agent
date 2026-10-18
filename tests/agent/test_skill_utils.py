@@ -252,6 +252,31 @@ class TestNormalizeSkillLookupName:
         assert normalize_skill_lookup_name(str(link)) == "my-skill"
 
 
+    def test_absolute_under_create_dir_relativizes(self, tmp_path, monkeypatch):
+        """An absolute identifier beneath ``skills.create_dir`` must relativize
+        like one beneath the local dir. Every caller that persists skill paths —
+        the slash-command map's ``skill_dir``, ``-s`` preload, cron jobs and the
+        curator's ``_canonical_skill_ref`` — feeds them through this function
+        before ``skill_view``, and without ``create_dir`` among the trusted
+        roots each rejected a registered skill (#141159). Covers the documented
+        home-relative ``create_dir`` form; the absolute form is exercised
+        end-to-end in ``test_skill_commands.py``.
+        """
+        from agent import skill_utils
+        from agent.skill_utils import normalize_skill_lookup_name
+
+        home = tmp_path / "home"
+        (home / "skills").mkdir(parents=True)
+        (home / "config.yaml").write_text("skills:\n  create_dir: brain\n", encoding="utf-8")
+        skill_dir = home / "brain" / "workflow" / "x"
+        skill_dir.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", home / "skills")
+        skill_utils._external_dirs_cache_clear()
+
+        assert normalize_skill_lookup_name(str(skill_dir)) == "workflow/x"
+
+
 
 # ── parse_frontmatter: UTF-8 BOM tolerance ─────────────────────────────────
 

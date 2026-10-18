@@ -59,6 +59,7 @@
   "/memory-graph": null,
   "/moa": null,
   "/model": "hidden",
+  "/mouse": "terminal",
   "/new": null,
   "/palette": null,
   "/paste": "terminal",

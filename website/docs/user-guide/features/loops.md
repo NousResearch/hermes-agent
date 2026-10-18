@@ -35,7 +35,7 @@ While a loop stands, every surface keeps it in view with a live countdown to the
 
 | Surface | Where |
 |---|---|
-| Classic CLI | A row in the live-work dock above the prompt: `↻ loop · every 5m · 2 runs · next in 4m · <prompt>` (minute steps, seconds in the last minute; `running now` during a wakeup; the pause reason when paused). Collapsed with Ctrl+R it shrinks to `↻ loop next in 4m`. |
+| Classic CLI | A row in the live-work footer under the prompt: `↻ loop · every 5m · 2 runs · next in 4m · <prompt>` (minute steps, seconds in the last minute; `running now` during a wakeup; the pause reason when paused). Collapsed with Ctrl+R it shrinks to `↻ loop next in 4m`. |
 | TUI | The same row under the goal bar. |
 | Desktop | The loop card above the composer: `Loop active · 2 runs · next 00:04:12`, counting every second. |
 

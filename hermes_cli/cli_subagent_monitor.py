@@ -4,6 +4,7 @@ prompts) and scoped controls; no agent-loop state is changed. Process rows come 
 from __future__ import annotations
 
 import json
+import logging
 import time
 
 from prompt_toolkit.utils import get_cwidth
@@ -11,6 +12,8 @@ from prompt_toolkit.utils import get_cwidth
 from agent.i18n import t
 from hermes_cli import cli_process_dock as procs
 from hermes_cli import cli_session_dock as session_rows
+
+logger = logging.getLogger(__name__)
 
 
 def _clip(value, width):
@@ -24,6 +27,9 @@ def _clip(value, width):
             break
         result += char
     return result + ('…' if width else '')
+
+
+_SELECTED = object()  # ``control``'s default target: the selected row
 
 
 class SubagentMonitor:
@@ -42,6 +48,15 @@ class SubagentMonitor:
         self.app = None
         self.opening = False
         self.collapsed = False
+        # Footer selection (``cli_dock_footer``): Down on an empty composer, Esc/Up leaves.
+        self.footer_active = False
+        self.confirm_key = None
+        self.notice = ''
+        # The footer's one-line steer input (``s``): target row key and the typed draft.
+        self.steer_target = None
+        self.steer_draft = ''
+        # ``cli_footer_tips.FooterTips`` while display.cli_footer_tips is on (install_dock).
+        self.tips = None
 
     @property
     def has_rows(self):
@@ -65,9 +80,8 @@ class SubagentMonitor:
         row = self.selected
         return row if row and row.get('kind') == 'process' else None
 
-    def refresh(self, now=None):
+    def _local_entries(self, now):
         from tools.delegate_tool_registry import _list_payload, list_active_subagents
-        now = time.time() if now is None else now
         parent = getattr(self.cli, 'agent', None)
         entries = _list_payload(parent)['subagents'] if parent is not None else []
         # The scoped control-plane snapshot supplies authority and transcript paths;
@@ -79,6 +93,15 @@ class SubagentMonitor:
             row['last_tool'] = live.get('last_tool') or ''
             row['key'] = row['subagent_id']
             row.pop('running_seconds', None)
+        return entries
+
+    def refresh(self, now=None):
+        from hermes_cli.gateway_tools import process_view
+        now = time.time() if now is None else now
+        # A gateway-backed CLI runs its children in the gateway process, so the in-process
+        # registry is empty there: read the session's ``subagent.list`` snapshot instead.
+        view = process_view()
+        entries = view.subagent_rows(now) if view is not None else self._local_entries(now)
         processes = procs.process_rows(now)
         goal = session_rows.goal_line(self.cli)
         loop_badge, loop, loop_prompt = session_rows.loop_row(self.cli, now)
@@ -96,6 +119,11 @@ class SubagentMonitor:
         if self.selected is None:
             roster = self.roster
             self.selected_id = self._key(roster[0]) if roster else None
+            self.confirm_key = None
+        if not self.roster:
+            self.footer_active = False
+        if self.steer_target is not None and not any(self._key(r) == self.steer_target for r in self.entries):
+            self.steer_target, self.steer_draft = None, ''  # the child finished while composing
         return changed
 
     def invalidate(self):
@@ -112,11 +140,19 @@ class SubagentMonitor:
         if now - self._last_poll < 1:
             return
         self._last_poll = now
-        if self.refresh():
-            if self.app is not None:
-                self.invalidate()
-            else:
-                self.cli._invalidate()
+        changed = self.refresh()
+        if self.tips is not None and not self.has_rows and self.tips.due():
+            changed = self.tips.rotate() or changed  # repaint only when the tip text changed
+        if changed:
+            self.repaint()
+
+    def repaint(self, *, now=False):
+        """Repaint the full-screen monitor while it is open, else the CLI's footer (any thread);
+        ``now`` skips the CLI's repaint throttle."""
+        if self.app is not None:
+            self.invalidate()
+        elif callable(getattr(self.cli, '_invalidate', None)):
+            self.cli._invalidate(min_interval=0) if now else self.cli._invalidate()
 
     def select(self, delta):
         roster = self.roster
@@ -124,14 +160,37 @@ class SubagentMonitor:
             index = next((i for i, r in enumerate(roster) if self._key(r) == self.selected_id), 0)
             self.selected_id = self._key(roster[(index + delta) % len(roster)])
 
-    def control(self, action, message=None, *, target=None):
-        target = target or self.selected_id
+    def control(self, action, message=None, *, target=_SELECTED):
+        """Steer / stop ``target`` (default: the selected row). An explicit target that is no longer
+        listed is reported gone; it never falls back to whatever row is selected now."""
+        target = self.selected_id if target is _SELECTED else target
+        if target is None or not any(self._key(r) == target for r in self.roster):
+            return {'error': t('cli.subagents.entry_gone')}
         if any(r['key'] == target for r in self.processes):
             if action != 'stop':
                 return {'error': t('cli.subagents.cannot_steer_process')}
             return procs.kill(target)
+        from hermes_cli.gateway_tools import process_view
+        view = process_view()
+        if view is not None:
+            return view.control_subagent(action, target, message)
         from tools.delegate_tool_registry import _handle_control_action
         return json.loads(_handle_control_action(action, target, message, getattr(self.cli, 'agent', None)))
+
+    def run_control(self, action, *, target, message=None, done):
+        """``control`` on a worker thread: a gateway RPC (or a shell's shutdown grace) must never
+        block the UI loop. ``done(result)`` runs on that worker, then the UI repaints."""
+        from agent.memory_provider import spawn_context_thread
+
+        def run():
+            try:
+                result = self.control(action, message, target=target)
+            except Exception as exc:  # the worker's boundary: show it in the notice, keep the trace
+                logger.warning('footer %s of %s failed', action, target, exc_info=True)
+                result = {'error': str(exc)}
+            done(result)
+            self.repaint(now=True)  # a throttled repaint would hide the outcome until the next one
+        spawn_context_thread(run, name=f'subagent-{action}').start()
 
     def _counts(self, *, session=True):
         """Count fragment: ``2 live``, ``1 proc``, ``2 live · 3 procs``; the collapsed heading
@@ -171,85 +230,10 @@ class SubagentMonitor:
         hidden = len(self.queued) - shown
         return heading, items, t('cli.subagents.more_queued', count=hidden) if hidden > 0 else ''
 
-    @staticmethod
-    def _agent_activity(row):
-        """``last: <tool>`` while a tool runs, else the raw status id, else ``starting``."""
-        if row.get('last_tool'):
-            return t('cli.subagents.last_tool', tool=row['last_tool'])
-        return row.get('status') or t('cli.subagents.starting')
-
-    def _collapsed_activity(self):
-        if self.entries:
-            return self._agent_activity(self.entries[0])
-        if self.processes:
-            return procs.process_activity(self.processes[0])
-        # The loop's state is already the heading's badge; its prompt is the activity.
-        return self.goal or self.loop_prompt or t('cli.subagents.next_queued', text=self.queued[0])
-
-    def dock_text(self, *, columns, rows):
-        if not self.has_rows:
-            return ''
-        if self.collapsed:
-            count = self._counts()
-            # Keep both controls before spending scarce cells on activity. Ctrl+T opens the
-            # subagent/process monitor, so a goal/queue-only dock offers just the
-            # collapse/restore shortcut.
-            if self.entries or self.processes:
-                headings = (
-                    t('cli.subagents.heading_full', title=self._title(), count=count),
-                    t('cli.subagents.heading_medium', count=count),
-                    t('cli.subagents.heading_compact', count=count),
-                    count,
-                )
-            else:
-                headings = (t('cli.subagents.heading_session_restore', count=count),
-                            t('cli.subagents.heading_session_compact', count=count), count)
-            width = max(0, columns - 1)
-            heading = next((text for text in headings if get_cwidth(text) <= width), count)
-            activity = self._collapsed_activity()
-            # A goal/queue preview is long prose: clip it into the room left instead of dropping it.
-            room = width - get_cwidth(heading + ' · ')
-            if get_cwidth(activity) <= room or (room >= 12 and not (self.entries or self.processes)):
-                heading += ' · ' + _clip(activity, room)
-            return _clip(' ' + heading, max(0, columns))
-        columns = max(0, columns - 2)
-        lines = [_clip(f' {row}', columns) for row in (self.goal, self.loop) if row]
-        budget = max(1, min(4, (rows - 10) // 3))
-        # Both blocks present: split the row budget so neither hides the other entirely.
-        agent_budget = budget if not self.processes else max(1, budget - max(1, budget // 2))
-        agent_count = min(len(self.entries), agent_budget)
-        if self.entries:
-            hidden = len(self.entries) - agent_count
-            lines.append(_clip(' ' + t('cli.subagents.subagents_heading', count=len(self.entries)), columns))
-            for row in self.entries[:agent_count]:
-                activity = f"{row['elapsed']}s · " + self._agent_activity(row)
-                # Reserve activity even on narrow terminals; task names use the remainder.
-                goal_width = max(3, columns - get_cwidth(activity) - 5)
-                lines.append(_clip(f" ● {_clip(row.get('goal'), goal_width)} · {activity}", columns))
-            if hidden:
-                lines.append(_clip(' ' + t('cli.subagents.more_subagents', count=hidden), columns))
-        if self.processes:
-            proc_count = min(len(self.processes), max(1, budget - agent_count))
-            running = sum(r['status'] == 'running' for r in self.processes)
-            done = len(self.processes) - running
-            summary = ' · '.join(p for p in (
-                t('cli.subagents.count_running', count=running) if running else '',
-                t('cli.subagents.count_done', count=done) if done else '') if p)
-            controls = t('cli.subagents.controls_expand_collapse') if not self.entries else ''
-            lines.append(_clip(' ' + t('cli.subagents.processes_heading', summary=summary, controls=controls), columns))
-            for row in self.processes[:proc_count]:
-                activity = procs.process_activity(row)
-                command_width = max(3, columns - get_cwidth(activity) - 5)
-                lines.append(_clip(f" {procs.process_glyph(row)} {_clip(row['command'], command_width)} · {activity}", columns))
-            if len(self.processes) > proc_count:
-                lines.append(_clip(
-                    ' ' + t('cli.subagents.more_processes', count=len(self.processes) - proc_count), columns))
-        if self.queued:
-            # Last, so the next prompt to run sits right above the input it came from.
-            heading, items, more = self.queue_lines(rows)
-            lines.append(_clip(' ' + heading, columns))
-            lines += [_clip(f'  {text}', columns) for text in items + [more] if text]
-        return '\n'.join(' ' + line for line in lines)
+    def dock_text(self, *, columns, rows, selecting=False):
+        """The live-work footer as plain text (``cli_dock_footer.dock_lines`` without styles)."""
+        from hermes_cli import cli_dock_footer as footer
+        return footer.plain_text(footer.dock_lines(self, columns=columns, rows=rows, selecting=selecting))
 
 
 def read_tail(path):
@@ -271,20 +255,40 @@ def modal_prompt_active(cli):
         '_secret_state', '_model_picker_state', '_command_palette_state'))
 
 
-def bind_keys(cli, kb) -> None:
-    """Ctrl+T/F6 open the live work monitor; Ctrl+R/F7 collapse or expand the dock."""
-    from prompt_toolkit.filters import Condition
-    free = Condition(lambda: not modal_prompt_active(cli))
-    for key in ('c-t', 'f6'):
-        kb.add(key, filter=free)(lambda event: open_monitor(cli))
-    # F7 is retained for terminals that forward the function-key sequence;
-    # Ctrl+R is the portable fallback because macOS often reserves F7 for
-    # a hardware control unless Fn/globe is held.
-    for key in ('c-r', 'f7'):
-        kb.add(key, filter=free)(lambda event: toggle_dock(cli))
+def subagent_tail(row, cache, on_update=None):
+    """A child's transcript tail: its file in-process, ``subagent.tail`` when it runs in the gateway.
+    The RPC runs on a worker (at most one in flight, at most one a second) and this returns what the
+    last one fetched, so a slow gateway never stalls painting or Esc; ``on_update()`` fires when a
+    fetch lands."""
+    from agent.memory_provider import spawn_context_thread
+    from hermes_cli.gateway_tools import process_view
+    view = process_view()
+    if view is None or row.get('live_transcript'):
+        return read_tail(row.get('live_transcript'))
+    key, now = row['subagent_id'], time.monotonic()
+    if cache.get('key') != key:
+        cache.clear()
+        cache.update(key=key, at=0.0, text='', busy=False)
+    if not cache['busy'] and now - cache['at'] >= 1:
+        cache.update(busy=True, at=now)
+
+        def fetch():
+            text = None
+            try:
+                text = view.subagent_tail(key)  # answers None for a failed RPC
+            finally:
+                if cache.get('key') == key:
+                    cache.update(busy=False, text=''.join(c for c in text if c.isprintable() or c in '\n\t')
+                                 if text else t('cli.subagents.transcript_unavailable'))
+            if on_update is not None:
+                on_update()
+        spawn_context_thread(fetch, name='subagent-tail').start()
+    return cache['text']
 
 
-def build_monitor_application(monitor, **kwargs):
+def build_monitor_application(monitor, *, detail_key=None, **kwargs):
+    """Full-screen roster + tail. ``detail_key`` opens straight on that row's tail (the footer's
+    Enter); Esc then returns to the composer instead of the roster."""
     from prompt_toolkit.application import Application
     from prompt_toolkit.data_structures import Point
     from prompt_toolkit.filters import Condition
@@ -293,7 +297,8 @@ def build_monitor_application(monitor, **kwargs):
     from prompt_toolkit.layout.controls import FormattedTextControl
     from prompt_toolkit.widgets import TextArea
 
-    state = {'detail': False, 'steering': False, 'confirm': False, 'notice': ''}
+    state = {'detail': False, 'steering': False, 'confirm': False, 'notice': '', 'direct': False}
+    tail_cache = {}
     steer = TextArea(height=1, prompt=t('cli.subagents.steer_prompt'), multiline=False)
     tail = TextArea(read_only=True, scrollbar=True, wrap_lines=True)
 
@@ -330,7 +335,7 @@ def build_monitor_application(monitor, **kwargs):
         elif row.get('kind') == 'process':
             text = procs.process_tail(row['id'])
         else:
-            text = read_tail(row.get('live_transcript'))
+            text = subagent_tail(row, tail_cache, on_update=lambda: app.invalidate())
         if text != tail.text:
             following = tail.buffer.cursor_position == len(tail.text)
             position = tail.buffer.cursor_position
@@ -358,7 +363,14 @@ def build_monitor_application(monitor, **kwargs):
             return (t('cli.subagents.footer_detail_compact', steer=steer) if state['detail']
                     else t('cli.subagents.footer_roster_compact'))
         steer = '' if process else t('cli.subagents.footer_steer_key_long')
-        return t('cli.subagents.footer_detail' if state['detail'] else 'cli.subagents.footer_roster', steer=steer)
+        if state['detail']:
+            # Opened from the footer row: Esc goes back to the prompt, not to the roster.
+            return t('cli.subagents.footer_detail_direct' if state['direct'] else 'cli.subagents.footer_detail',
+                     steer=steer)
+        return t('cli.subagents.footer_roster', steer=steer)
+
+    def show_result(result):
+        state['notice'] = result.get('error') or result.get('note') or str(result)
 
     kb = KeyBindings()
     normal = Condition(lambda: not state['steering'] and not state['confirm'])
@@ -390,8 +402,7 @@ def build_monitor_application(monitor, **kwargs):
     def send_steer(event):
         if not steer.text.strip():
             return
-        result = monitor.control('steer', steer.text, target=state['target'])
-        state['notice'] = result.get('error') or result.get('note') or str(result)
+        monitor.run_control('steer', target=state['target'], message=steer.text, done=show_result)
         steer.text = ''
         state['steering'] = False
         app.layout.focus(tail if state['detail'] else roster)
@@ -404,8 +415,7 @@ def build_monitor_application(monitor, **kwargs):
 
     @kb.add('y', filter=Condition(lambda: state['confirm']))
     def confirm(event):
-        result = monitor.control('stop', target=state['target'])
-        state['notice'] = result.get('error') or result.get('note') or str(result)
+        monitor.run_control('stop', target=state['target'], done=show_result)
         state['confirm'] = False
 
     @kb.add('escape', eager=True)
@@ -413,7 +423,7 @@ def build_monitor_application(monitor, **kwargs):
         if state['steering'] or state['confirm']:
             state['steering'] = state['confirm'] = False
             app.layout.focus(tail if state['detail'] else roster)
-        elif state['detail']:
+        elif state['detail'] and not state['direct']:
             state['detail'] = False
             app.layout.focus(roster)
         else:
@@ -445,12 +455,19 @@ def build_monitor_application(monitor, **kwargs):
     from prompt_toolkit.styles import Style
     from hermes_cli.skin_engine import get_prompt_toolkit_style_overrides
     kwargs.setdefault('style', Style.from_dict(get_prompt_toolkit_style_overrides()))
+    if detail_key is not None and any(monitor._key(r) == detail_key for r in monitor.roster):
+        monitor.selected_id = detail_key
+        state['detail'] = state['direct'] = True
+        update_tail()
     app = Application(layout=layout, key_bindings=kb, full_screen=True, mouse_support=False,
                       before_render=before_render, **kwargs)
+    if state['detail']:
+        app.layout.focus(tail)
     return app
 
 
-def open_monitor(cli):
+def open_monitor(cli, key=None):
+    """Ctrl+T: the full-screen roster. ``key`` (the footer's Enter / click) opens that row's tail."""
     import asyncio
     from prompt_toolkit.application import in_terminal
     monitor = getattr(cli, '_subagent_monitor', None)
@@ -462,7 +479,7 @@ def open_monitor(cli):
         try:
             async with in_terminal():
                 monitor.refresh()
-                monitor.app = build_monitor_application(monitor)
+                monitor.app = build_monitor_application(monitor, detail_key=key)
                 await monitor.app.run_async()
         finally:
             monitor.app = None
@@ -480,23 +497,35 @@ def toggle_dock(cli):
 
 
 def install_dock(cli):
+    """The live-work footer under the composer (``cli_dock_footer``): a summary pill and one row
+    per subagent / background process, selectable with Down and clickable with ``display.cli_mouse``.
+    With nothing to list it shows a rotating tip instead (``display.cli_footer_tips``)."""
     from prompt_toolkit.application import get_app
     from prompt_toolkit.layout import ConditionalContainer, Window
     from prompt_toolkit.layout.controls import FormattedTextControl
     from prompt_toolkit.filters import Condition
+    from hermes_cli import cli_dock_footer as footer
+    from hermes_cli import cli_footer_tips
     monitor = SubagentMonitor(cli)
     cli._subagent_monitor = monitor
+    if getattr(cli, '_footer_tips_enabled', False):
+        monitor.tips = cli_footer_tips.FooterTips()
     monitor.refresh()
+    actions = footer.click_actions(cli)
 
     def text():
         size = get_app().output.get_size()
-        lines = monitor.dock_text(columns=size.columns, rows=size.rows).splitlines()
-        return [('class:subagent-dock.heading' if i == 0 else '',
-                 line + ('\n' if i < len(lines) - 1 else ''))
-                for i, line in enumerate(lines)]
+        lines = footer.dock_lines(monitor, columns=size.columns, rows=size.rows,
+                                  selecting=footer.selecting(cli), actions=actions)
+        fragments = []
+        for index, line in enumerate(lines):
+            if index:
+                fragments.append(('', '\n'))
+            fragments.extend(line)
+        return fragments
 
     cli._subagent_dock_widget = ConditionalContainer(
-        Window(FormattedTextControl(text), wrap_lines=False, dont_extend_height=True,
-               style='class:subagent-dock'),
-        filter=Condition(lambda: monitor.has_rows and not modal_prompt_active(cli)),
+        Window(FormattedTextControl(text), wrap_lines=False, dont_extend_height=True),
+        filter=Condition(lambda: (monitor.has_rows and not modal_prompt_active(cli))
+                         or cli_footer_tips.showing(cli, get_app().output.get_size().rows)),
     )

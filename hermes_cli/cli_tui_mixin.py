@@ -430,12 +430,13 @@ class CLITuiMixin:
             *self._get_extra_tui_widgets(),
             getattr(self, "_pet_widget", None),
             getattr(self, "_stash_panel_widget", None),
-            getattr(self, "_subagent_dock_widget", None),
             status_bar,
             input_rule_top,
             image_bar,
             input_area,
             input_rule_bot,
+            # Live work sits under the composer, where Down reaches it (cli_dock_footer).
+            getattr(self, "_subagent_dock_widget", None),
             voice_status_bar,
             completions_menu]
         return [item for item in ordered if item is not None]
@@ -1962,9 +1963,10 @@ class CLITuiMixin:
         kb.add(Keys.BracketedPaste, eager=True)(self._tui_handle_paste)
         kb.add('c-v')(self._tui_handle_ctrl_v)
         kb.add('escape', 'v')(self._tui_handle_alt_v)
-        # Ctrl+T/F6 + Ctrl+R/F7 dock, Alt+Up queue recall, Ctrl+O transcript viewer.
-        from hermes_cli import cli_subagent_monitor, cli_transcript, cli_transcript_viewer
-        for bind in (cli_subagent_monitor.bind_keys, cli_transcript.bind_queue_recall, cli_transcript_viewer.bind_keys):
+        # Live-work footer (Ctrl+T/F6, Ctrl+R/F7, footer selection), Alt+Up queue recall,
+        # Ctrl+O transcript viewer.
+        from hermes_cli import cli_dock_footer, cli_transcript, cli_transcript_viewer
+        for bind in (cli_dock_footer.bind_keys, cli_transcript.bind_queue_recall, cli_transcript_viewer.bind_keys):
             bind(self, kb)
         return kb
 

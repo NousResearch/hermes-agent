@@ -17,6 +17,7 @@ from hermes_cli.cli_render import (
     _hold_paints,
     _output_history_rows,
     _release_paints,
+    _pin_chrome,
     _set_chrome_floor,
     _set_paint_gate,
     _take_suspect_rows,
@@ -240,6 +241,7 @@ class CLITerminalMixin:
             size = out.get_size()
             fit = None
             out.reset_attributes()
+            _pin_chrome(False)  # the replay decides where the chrome lands now
             if rebuild_scrollback:
                 out.erase_screen()
                 out.write_raw("\x1b[3J")

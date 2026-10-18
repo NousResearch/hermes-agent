@@ -725,6 +725,8 @@ gateway:
     interrupting_tail: ". Freagróidh mé do theachtaireacht go luath."
     slash_rejected: "⏳ Tá an gníomhaire ag rith — ní féidir `/{command}` a rith i lár seala. Fan leis an bhfreagra reatha nó `/stop` ar dtús."
     plugin_command_rejected: "⏳ Tá an gníomhaire ag rith — is ordú breiseán é `/{command}` agus ní féidir é a rith i lár seala. Níor seoladh do théacs chuig an tsamhail. Fan leis an bhfreagra reatha nó `/stop` ar dtús."
+    quick_command_rejected: "⏳ Tá an gníomhaire ag rith — is ordú tapa é `/{command}` agus ní féidir é a rith i lár seala. Níor seoladh do théacs chuig an tsamhail. Fan leis an bhfreagra reatha nó `/stop` ar dtús."
+    quick_command_alias_unresolved: "⏳ Tá an gníomhaire ag rith — is ailias é `/{command}` ar `/{target}`, nach ordú aitheanta é, mar sin níor ritheadh aon rud agus níor seoladh do théacs chuig an tsamhail. Fan leis an bhfreagra reatha nó `/stop` ar dtús."
     reject_goal: "Tá an gníomhaire ag rith — úsáid /goal status / pause / clear / wait i lár an reatha, nó /stop roimh sprioc nua a shocrú."
     reject_loop: "Tá an gníomhaire ag rith — úsáid /loop status / pause / stop i lár an reatha, nó /stop roimh lúb nua a shocrú."
     draining_maintenance: "⏳ Tá an gníomhaire seo ag draenáil le haghaidh gníomh cothabhála agus ní ghlacann sé le sealanna nua faoi láthair. Beidh sé ar ais i gceann nóiméid — seol arís go luath le do thoil."

@@ -725,6 +725,8 @@ gateway:
     interrupting_tail: "。我很快就会回复你的消息。"
     slash_rejected: "⏳ 代理正在运行——`/{command}` 无法在回合中途执行。请等待当前回复完成，或先执行 `/stop`。"
     plugin_command_rejected: "⏳ 代理正在运行——`/{command}` 是插件命令，无法在回合中途执行。你的文本没有发送给模型。请等待当前回复完成，或先执行 `/stop`。"
+    quick_command_rejected: "⏳ 代理正在运行——`/{command}` 是快速命令，无法在回合中途执行。你的文本没有发送给模型。请等待当前回复完成，或先执行 `/stop`。"
+    quick_command_alias_unresolved: "⏳ 代理正在运行——`/{command}` 是 `/{target}` 的别名，但该命令未知，因此没有执行任何内容，你的文本也没有发送给模型。请等待当前回复完成，或先执行 `/stop`。"
     reject_goal: "代理正在运行——运行中可使用 /goal status / pause / clear / wait，或先 /stop 再设置新目标。"
     reject_loop: "代理正在运行——运行中可使用 /loop status / pause / stop，或先 /stop 再设置新循环。"
     draining_maintenance: "⏳ 此代理正在为维护操作排空任务，目前不接受新的回合。稍后即会恢复——请稍等片刻后重新发送。"

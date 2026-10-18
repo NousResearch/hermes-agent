@@ -9,6 +9,7 @@ OpenAI-compatible frontend connects at http://localhost:8642/v1 with API_SERVER_
 import asyncio
 import concurrent.futures
 import errno
+import gzip
 import hashlib
 import hmac
 import itertools
@@ -268,6 +269,22 @@ def _sse_frame(
 
 _TRUE_REQUEST_BOOL_STRINGS = frozenset({"1", "true", "yes", "on"})
 _FALSE_REQUEST_BOOL_STRINGS = frozenset({"0", "false", "no", "off"})
+
+
+def _cap_message_fields(message: dict[str, Any], limit: int) -> dict[str, Any]:
+    """Cap the long text fields of a list row and name what was cut, so a caller never has to
+    guess whether it is holding the whole value. The cap is a guardrail against one pathological
+    message, not the page-size lever (a page is many messages, not one giant)."""
+    truncated: List[str] = []
+    for key in ("content", "tool_calls", "reasoning", "reasoning_content"):
+        value = message.get(key)
+        if isinstance(value, str) and len(value) > limit:
+            omitted = len(value) - limit
+            message[key] = f"{value[:limit]}\n[truncated: {omitted} characters omitted]"
+            truncated.append(key)
+    if truncated:
+        message["truncated_fields"] = truncated
+    return message
 
 
 def _coerce_request_bool(value: Any, default: bool = False) -> bool:
@@ -751,8 +768,74 @@ if AIOHTTP_AVAILABLE:
         for k, v in _SECURITY_HEADERS.items():
             response.headers.setdefault(k, v)
         return response
+    def _gzip_accepts(header_value: Optional[str]) -> bool:
+        """True when the client advertises gzip (or ``*``) with a non-zero quality."""
+        if not header_value:
+            return False
+        for part in header_value.split(","):
+            name, _, params = part.partition(";")
+            if name.strip().lower() not in ("gzip", "*"):
+                continue
+            quality = 1.0
+            for param in params.split(";"):
+                key, _, value = param.partition("=")
+                if key.strip().lower() == "q":
+                    try:
+                        quality = float(value.strip())
+                    except ValueError:
+                        quality = 0.0
+            if quality > 0:
+                return True
+        return False
+
+    def _gzip_allows_type(content_type: str) -> bool:
+        """Compress text/JSON only: media, archives and opaque bytes pass through."""
+        value = (content_type or "").split(";", 1)[0].strip().lower()
+        if not value:
+            return False
+        if value.startswith(("image/", "audio/", "video/", "font/")):
+            return False
+        # A server-sent stream must never be buffered through a compressor, even if a future
+        # streaming path hands this middleware a body.
+        if value == "text/event-stream":
+            return False
+        return value not in ("application/zip", "application/gzip", "application/octet-stream")
+
+    _GZIP_MIN_BYTES = 1024
+
+    @web.middleware
+    async def gzip_middleware(request, handler):
+        """gzip a fully-buffered text/JSON body when the caller asked for it.
+
+        A transcript page is multi-megabyte JSON; uncompressed it is the whole cost of a phone
+        paging a long conversation, and the slow link starves the same client's chat socket.
+        Streaming (SSE) responses have no body here and pass through untouched, as do media,
+        already-encoded bodies and anything under ``_GZIP_MIN_BYTES``. Any failure to compress
+        returns the original response.
+        """
+        response = await handler(request)
+        body = getattr(response, "body", None)
+        if not body or len(body) < _GZIP_MIN_BYTES:
+            return response
+        if response.headers.get("Content-Encoding"):
+            return response
+        if not _gzip_allows_type(response.content_type or ""):
+            return response
+        if not _gzip_accepts(request.headers.get("Accept-Encoding", "")):
+            return response
+        if response.headers.get("Cache-Control") == "no-transform":
+            return response
+        compressed = gzip.compress(body, compresslevel=6)
+        if len(compressed) >= len(body):
+            return response
+        response.body = compressed
+        response.headers["Content-Encoding"] = "gzip"
+        response.headers["Vary"] = ", ".join(
+            v for v in (response.headers.get("Vary"), "Accept-Encoding") if v)
+        return response
 else:
-    cors_middleware = body_limit_middleware = security_headers_middleware = None  # type: ignore
+    cors_middleware = body_limit_middleware = gzip_middleware = None  # type: ignore
+    security_headers_middleware = None  # type: ignore
 
 _MEDIA_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
                ".webp": "image/webp", ".bmp": "image/bmp"}
@@ -2966,13 +3049,24 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return payload
 
     @staticmethod
-    def _message_response(message: dict[str, Any]) -> dict[str, Any]:
+    def _message_response(
+            message: dict[str, Any], *, include_reasoning: bool = True,
+            max_content_chars: int = 0) -> dict[str, Any]:
+        """One list row. ``include_reasoning=False`` drops the model's private reasoning, which
+        is the bulk of a page and is not renderable in a transcript; ``max_content_chars`` caps
+        the long text fields and names them in ``truncated_fields``."""
         message = _project_client_message(message)
         safe_keys = (
             "id", "session_id", "role", "content", "tool_call_id", "tool_calls", "tool_name",
             "timestamp", "token_count", "finish_reason", "reasoning", "reasoning_content",
             "display_kind")
-        return {key: message.get(key) for key in safe_keys if key in message}
+        projected = {key: message.get(key) for key in safe_keys if key in message}
+        if not include_reasoning:
+            projected.pop("reasoning", None)
+            projected.pop("reasoning_content", None)
+        if max_content_chars > 0:
+            projected = _cap_message_fields(projected, max_content_chars)
+        return projected
 
     async def _read_json_body(self, request: web.Request) -> tuple[dict[str, Any], Optional[web.Response]]:
         try:
@@ -3244,13 +3338,29 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         latest_page = order == "latest" or (order is None and default_page)
         limit = 500 if default_page else min(requested_limit, 500)
         include_compacted = _coerce_request_bool(request.query.get("include_compacted"), default=False)
+        # A list row is a preview, not the message: callers that render a transcript can drop the
+        # model's reasoning (the bulk of the bytes) and/or cap the long text fields. Defaults keep
+        # every existing caller on the exact shape they get today.
+        include_reasoning = _coerce_request_bool(request.query.get("include_reasoning"), default=True)
+        raw_max_content_chars = request.query.get("max_content_chars")
+        try:
+            max_content_chars = 0 if raw_max_content_chars in (None, "") else int(raw_max_content_chars)
+        except (TypeError, ValueError):
+            return _error_response(
+                "max_content_chars must be a non-negative integer", 400, code="invalid_projection")
+        if max_content_chars < 0:
+            return _error_response(
+                "max_content_chars must be a non-negative integer", 400, code="invalid_projection")
         # Compression lineage: return root→tip messages, matching the REST router (#51058).
         messages = await asyncio.to_thread(
             db.get_messages, resolved_id, limit=limit, offset=offset, latest=latest_page,
             include_compacted=include_compacted, include_ancestors=True)
         return web.json_response({
             "object": "list", "session_id": resolved_id,
-            "data": [self._message_response(m) for m in messages],
+            "data": [
+                self._message_response(
+                    m, include_reasoning=include_reasoning, max_content_chars=max_content_chars)
+                for m in messages],
             "pagination": {
                 "limit": limit, "offset": offset,
                 "order": order or ("latest" if default_page else "oldest"),
@@ -4465,7 +4575,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         try:
             mws = [mw for mw in (
                 self._make_profile_prefix_middleware(), cors_middleware, body_limit_middleware,
-                security_headers_middleware) if mw is not None]
+                security_headers_middleware, gzip_middleware) if mw is not None]
             self._app = web.Application(middlewares=mws, client_max_size=MAX_REQUEST_BYTES)
             assert self._app is not None
             # Native routes + multiplex /p/<profile>/ mirrors (the prefix middleware validates and

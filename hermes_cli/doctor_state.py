@@ -673,3 +673,32 @@ def _check_profiles(should_fix: bool, f: Finding) -> None:
     for line in duplicate_credential_findings():
         check_warn("Duplicate platform credential across profiles", f"({line})")
         f.manual_issues.append(line)
+
+
+def _update_obligation_sha() -> str:
+    """Short HEAD of this checkout — the code a runtime owed a restart should end up serving."""
+    from hermes_cli.update_cmd_fleet import _current_checkout_sha
+
+    return (_current_checkout_sha() or "")[:8]
+
+
+@doctor_check("Pending-restart probe failed", "({e})")
+def _check_update_obligations(should_fix: bool, f: Finding) -> None:
+    """Name any runtime still owed a manual restart — otherwise nothing but update output lists one.
+
+    A manual ``hermes serve``/``hermes dashboard`` the updater may not kill is discharged only by its
+    owner relaunching it, so its reminder can sit for days with no command that answers "is a restart
+    still owed on this host" (#107402). Read-only: ``--fix`` cannot settle it, and the row is
+    deliberately NOT added to ``manual_issues`` — the update flow owns that escalation, and a debt
+    that clears itself on the next relaunch should not turn doctor's exit status non-zero.
+    """
+    from hermes_cli.update_serve_obligations import describe_manual_serve_reminder, live_manual_serve_reminders
+
+    rows, unreadable = live_manual_serve_reminders()
+    for name in unreadable:
+        check_warn("A manual-restart reminder could not be read", f"({name})")
+    for row in rows:
+        check_warn(f"{describe_manual_serve_reminder(row)}: manual restart still pending")
+        check_info(f"relaunch `hermes serve` / `hermes dashboard` to clear it; this checkout is at {_update_obligation_sha() or 'unknown'}")
+    if not rows and not unreadable:
+        check_ok("No runtime is owed a manual restart")

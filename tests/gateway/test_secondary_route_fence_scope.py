@@ -354,3 +354,54 @@ async def test_a_start_within_the_horizon_strips_a_pruned_route_from_an_older_mi
         _past_the_horizon(served.alpha.db, served.launch.db)
         _restart(store)
         assert key not in store._entries, 'a pruned route came back on startup after its fence aged out'
+
+
+@pytest.mark.asyncio
+async def test_deleting_the_launch_session_keeps_an_earlier_releases_shared_fence_on_every_route(tmp_path, monkeypatch):
+    """Before the upgrade, alpha deleted its ``user-42`` while the launch profile had a live
+    ``user-42``: the shared index got the launch store's unscoped marker, and no (profile, id)
+    fence. Deleting the launch session after the upgrade rewrites that marker. It must stay
+    unscoped, or alpha's deleted route comes back through a late per-entry save or the
+    sessions.json import on the next start."""
+    from hermes_state_mutation_retirement import RETIRED_PREFIX
+    async with _served(tmp_path, monkeypatch) as served:
+        store, key = served.store, 'agent:alpha:telegram:42'
+        served.launch.db.create_session('user-42', source='cli')
+        old = json.dumps({'retired_at': time.time() - 86400})  # an earlier release's marker
+        served.launch.db.set_meta(RETIRED_PREFIX + 'user-42', old)
+        served.alpha.db.set_meta(RETIRED_PREFIX + 'user-42', old)
+        stale = _entry(key, 'user-42').to_dict()  # alpha's route, from a snapshot taken before its delete
+
+        served.launch.db.delete_session('user-42')
+        assert served.launch.db.get_session('user-42') is None
+        store._routing_db.save_gateway_routing_entry(key, json.dumps(stale), scope=store._routing_scope())
+        assert key not in _durable(store), "a per-entry save restored alpha's deleted route"
+        store._save_sessions_json({key: stale})
+        _restart(store)
+        assert key not in store._entries, "the sessions.json import restored alpha's deleted route"
+        _past_the_horizon(served.launch.db)
+        assert served.launch.db.get_meta(RETIRED_PREFIX + 'user-42') is not None, 'the delete shortened the marker'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('earlier', [None, {'expires': True}], ids=['fresh', 'earlier-sweep'])
+async def test_deleting_the_launch_session_writes_a_launch_only_marker(tmp_path, monkeypatch, earlier):
+    """A launch delete with no earlier marker, or over an earlier release's sweep marker (only the
+    launch profile's own sweep wrote one: an earlier release fenced a secondary's id permanently),
+    writes the launch profile's own marker. Alpha's route to its own ``user-42`` still saves."""
+    from hermes_state_mutation_retirement import RETIRED_PREFIX
+    async with _served(tmp_path, monkeypatch) as served:
+        store, key = served.store, 'agent:alpha:telegram:42'
+        for db in (served.launch.db, served.alpha.db):
+            db.create_session('user-42', source='cli')
+        if earlier is not None:
+            served.launch.db.set_meta(RETIRED_PREFIX + 'user-42', json.dumps({'retired_at': time.time(), **earlier}))
+        served.launch.db.delete_session('user-42')
+        marker = json.loads(served.launch.db.get_meta(RETIRED_PREFIX + 'user-42'))
+        assert marker.get('own') is True and 'expires' not in marker, marker
+        entry = _entry(key, 'user-42').to_dict()
+        store._routing_db.save_gateway_routing_entry(key, json.dumps(entry), scope=store._routing_scope())
+        assert key in _durable(store), "the launch delete fenced alpha's route"
+        store._save_sessions_json({key: entry})
+        _restart(store)
+        assert store._entries[key].session_id == 'user-42'

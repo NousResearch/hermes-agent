@@ -284,9 +284,12 @@ def entry_session_id(raw):
 
 
 def _mark_retired(conn, key, *, expires, **fields):
-    # OR REPLACE: the marker is a fact, not a receipt; re-retiring an id that was recreated
+    # Replace: the marker is a fact, not a receipt; re-retiring an id that was recreated
     # beside its tombstone must not abort the delete that removes it again (and restarts its horizon).
     # An ``expires`` (sweep) marker ages out at the horizon and never shortens a permanent one.
+    # A permanent marker without ``own`` (an earlier release's, maybe another profile's shared
+    # fence) stays unscoped: it is the only fence of that profile's route. An earlier release's
+    # sweep marker came only from this store's own sweep, so it is replaced as written.
     value = {'retired_at': time.time(), **fields}
     if expires:
         conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE '
@@ -294,7 +297,10 @@ def _mark_retired(conn, key, *, expires, **fields):
                      "AND json_extract(state_meta.value, '$.expires')",
                      (key, json.dumps({**value, 'expires': True})))
     else:
-        conn.execute('INSERT OR REPLACE INTO state_meta(key,value) VALUES(?,?)', (key, json.dumps(value)))
+        conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=CASE '
+                     "WHEN json_valid(state_meta.value) AND (json_extract(state_meta.value, '$.own') IS NOT NULL "
+                     "OR json_extract(state_meta.value, '$.expires')) THEN excluded.value "
+                     "ELSE json_remove(excluded.value, '$.own') END", (key, json.dumps(value)))
 
 
 def retire_routes(conn, session_ids, *, expiring=()):

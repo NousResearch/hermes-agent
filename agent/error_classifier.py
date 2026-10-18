@@ -526,19 +526,61 @@ _REASONING_REQUIRED_MARKERS = (
     "always enabled", "cannot be turned off",
 )
 
+# A thinking-trained model behind an OpenAI-compatible gateway can build a grammar-constrained
+# decode (``response_format: json_schema``) or a thinking-off decode (``reasoning_effort: "none"``),
+# but not both at once: the combination is rejected with a bare, featureless 422 — no ``param``,
+# no field name — as an "unprocessable" request (Shanghai AI Lab's discovery gateway on
+# Atria-Dawn/Intern-S2: ``upstream_request_rejected / Unprocessable Entity``). Field-keyed
+# classifiers cannot match a message that names nothing, so this marker list is what lets the
+# silent 422 reach the reasoning floor rung at all. Inserted ABOVE the structured-output markers
+# so the load-bearing distinction — "this 422 arrived while grammar-constrained" — is read from
+# the *request* by the rung, not guessed from the message.
+_SILENT_REJECTION_MARKERS = (
+    "unprocessable entity",
+    "upstream_request_rejected",
+)
+
 
 def is_reasoning_required_rejection(error_msg: str) -> bool:
-    """Provider 400 saying the model's reasoning cannot be switched OFF ("Reasoning is mandatory for
-    this endpoint and cannot be disabled", the Nous Portal on gpt-6-astra). The opposite of
-    ``is_reasoning_field_rejection``: the field is understood, the *disable* is refused, so the right
-    reaction is to step the effort up to the lowest level rather than drop the field (a dropped field
-    also works, but tells the caller nothing about the next call)."""
+    """Provider 400 saying the model's reasoning cannot be switched OFF (e.g. "Reasoning is mandatory
+    for this endpoint and cannot be disabled", the Nous Portal on gpt-6-astra). The opposite of
+    ``is_reasoning_field_rejection``: the field is understood, only the disable is refused, so the
+    right reaction is to step the effort up to the lowest level rather than drop the field. A dropped
+    field also works, but tells the caller nothing about the next call — the step-up carries no
+    thinking tokens either, and a second call on the route starts at the floor."""
     msg = (error_msg or "").lower()
     token = _REASONING_FIELD_TOKEN.search(msg)
     if token is None:
         return False
     near = msg[max(0, token.start() - 48):token.end() + 96]
     return any(m in near for m in _REASONING_REQUIRED_MARKERS)
+
+
+def is_reasoning_disable_with_structured_output_rejection(error_msg: str) -> bool:
+    """Provider 400/422 that rejects a *thinking-off* request only while it also carries a
+    structured-output constraint — the two together, with the error naming neither field.
+
+    A thinking-trained model behind an OpenAI-compatible gateway answers
+    ``reasoning_effort: "none"`` happily and ``response_format: json_schema`` happily, but the
+    *combination* (a grammar-constrained decode with reasoning disabled) with a bare
+    ``422 Unprocessable Entity / upstream_request_rejected`` — no ``param``, no field name, no
+    wording the field-keyed classifiers can match, so no parameter rung fires and the whole task
+    (typically the title lane; #114020's class) dies on the first exchange.
+
+    The distinguishes-this-class test is the structured-output constraint: it lives in the *request*,
+    which the ladder rung inspects directly (it only matches when the kwargs actually carry a
+    ``response_format``), so here the classifier only has to answer "is this a featureless 400/422
+    that could be that rejection" and the rung provides the conjunction. That keeps the classifier
+    safe to call from the main loop, where the request shape is not available: a bare 422 returns
+    False unless a structured-output field is named in the message. ``_REASONING_FIELD_TOKEN`` absent
+    is what makes this the silent class — a rejected field would have matched an earlier rung."""
+    msg = (error_msg or "").lower()
+    if _REASONING_PARAM_REJECTION.search(msg):
+        return False
+    if _REASONING_FIELD_TOKEN.search(msg) is not None:
+        # Names a reasoning field → an earlier, more specific rung owns it (strip or floor-step).
+        return False
+    return any(m in msg for m in _SILENT_REJECTION_MARKERS)
 
 
 def is_reasoning_field_rejection(error_msg: str) -> bool:

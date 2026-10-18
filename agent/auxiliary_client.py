@@ -28,10 +28,15 @@ from agent.error_classifier import (
     _BILLING_PATTERNS,
     _OVERLOADED_PATTERNS,
     UNSUPPORTED_PARAM_MARKERS,
+    is_reasoning_disable_with_structured_output_rejection,
     is_reasoning_field_rejection,
     is_reasoning_required_rejection,
 )
-from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
+from agent.auxiliary_reasoning_floor import (
+    remember_reasoning_floor,
+    with_reasoning_floor,
+    with_reasoning_floor_for_structured_output,
+)
 from agent.auxiliary_structured_output import remember_structured_output_rejection
 from agent.codex_headers import (
     CODEX_AUX_BASE_URL as _CODEX_AUX_BASE_URL,
@@ -3427,6 +3432,18 @@ def _is_reasoning_required_rejection(exc: Exception) -> bool:
     if status is not None and status not in {400, 422}:
         return False
     return is_reasoning_required_rejection(str(exc))
+
+
+def _is_reasoning_disable_with_structured_output_rejection(exc: Exception) -> bool:
+    """Provider 400/422 rejecting the *thinking-off + grammar-constrained* combination while naming
+    neither field (bare ``Unprocessable Entity``). Only consults the error text; the load-bearing
+    half of the conjunction — the request carries a structured-output constraint — is read from the
+    kwargs by the rung's strip (``with_reasoning_floor_for_structured_output``), not here. See
+    ``agent.error_classifier.is_reasoning_disable_with_structured_output_rejection``."""
+    status = getattr(exc, "status_code", None)
+    if status is not None and status not in {400, 422}:
+        return False
+    return is_reasoning_disable_with_structured_output_rejection(str(exc))
 
 
 def _without_reasoning_fields(kwargs: dict) -> Optional[dict]:
@@ -7449,6 +7466,7 @@ def _param_rung_accepts(exc: Exception) -> bool:
             # reaches the provider-fallback rung.
             or _is_unsupported_parameter_error(exc, "temperature")
             or _is_reasoning_field_rejection(exc) or _is_reasoning_required_rejection(exc)
+            or _is_reasoning_disable_with_structured_output_rejection(exc)
             or _is_structured_output_rejection(exc)
             or _is_model_incompatible_error(exc))
 
@@ -7509,6 +7527,19 @@ def _parameter_rungs(client: Any, max_tokens: Optional[int]) -> tuple:
         # 400s falls through to it.
         (_is_reasoning_required_rejection, with_reasoning_floor,
          "provider requires reasoning; retrying at the floor effort", remember_reasoning_floor),
+        # The silent sibling of the two above: a thinking-trained model behind an OpenAI-compatible
+        # gateway answers ``reasoning_effort: "none"`` and ``response_format: json_schema`` happily
+        # alone, but the *combination* — a grammar-constrained decode with reasoning disabled — is
+        # rejected with a bare, field-less 422 ("upstream_request_rejected / Unprocessable Entity",
+        # Shanghai AI Lab's discovery gateway on Atria-Dawn / Intern-S2). Neither field is refused,
+        # so the field-keyed rungs above cannot match; the strip (``with_reasoning_floor_for_structured_output``)
+        # supplies the conjunction by checking the request carries a structured-output constraint, so
+        # only thinking-off *and* grammar-constrained requests are lifted — every other route keeps
+        # its thinking-off encoding as sent (#112781's guarantee). Ordered last of the three so an
+        # error that does name a field still takes its precise rung.
+        (_is_reasoning_disable_with_structured_output_rejection, with_reasoning_floor_for_structured_output,
+         "provider cannot combine thinking-off with the structured-output constraint; "
+         "retrying at the floor effort", remember_reasoning_floor),
         (_is_reasoning_field_rejection, _without_reasoning_fields,
          "provider rejected the reasoning field; retrying without it (route default applies)", None),
         (lambda exc: max_tokens is not None and _is_max_tokens_rejection(exc, client), _without_max_tokens,

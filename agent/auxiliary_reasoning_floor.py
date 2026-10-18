@@ -79,6 +79,37 @@ def remember_reasoning_floor(
     _FLOORED_ROUTES.add((_route_key(provider, base_url), str(rejected_kwargs.get("model") or "")))
 
 
+def with_reasoning_floor_for_structured_output(kwargs: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """``with_reasoning_floor`` scoped to the silent 400/422 class of
+    ``is_reasoning_disable_with_structured_output_rejection``: a *thinking-off* request is lifted to
+    the floor effort only when the same request carries a structured-output constraint.
+
+    The scope is the whole fix. A thinking-trained model behind an OpenAI-compatible gateway answers
+    ``reasoning_effort: "none"`` happily and ``response_format: json_schema`` happily, but not both
+    at once — the grammar-constrained decode cannot be built with reasoning disabled, and the
+    rejection is a bare 422 that names neither field (Shanghai AI Lab's discovery gateway on
+    Atria-Dawn / Intern-S2: ``upstream_request_rejected / Unprocessable Entity``). Lifting only the
+    thinking-off *and grammar-constrained* requests keeps the thinking-off encoding intact for every
+    other route (Ollama / vLLM / GLM / DeepSeek take ``none`` as intended, #112781's guarantee),
+    while the combination — which cannot succeed as sent — retries at the floor and remembers the
+    route so the next call starts there.
+
+    Returns ``None`` when the request carries no thinking-off encoding or no structured-output
+    constraint, so the ladder never re-sends an unchanged request.
+    """
+    if not _carries_structured_output(kwargs):
+        return None
+    return with_reasoning_floor(kwargs)
+
+
+def _carries_structured_output(kwargs: Dict[str, Any]) -> bool:
+    """True when the request carries a structured-output field on either wire."""
+    if isinstance(kwargs.get("response_format"), dict):
+        return True
+    extra_body = kwargs.get("extra_body")
+    return isinstance(extra_body, dict) and isinstance(extra_body.get("response_format"), dict)
+
+
 _NOUS_PROVIDERS = {"nous", "nous-portal", "nousresearch"}
 
 

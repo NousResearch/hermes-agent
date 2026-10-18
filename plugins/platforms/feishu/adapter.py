@@ -1915,7 +1915,7 @@ class FeishuAdapter(BasePlatformAdapter):
         """Send a local image file to Feishu."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
-        if not os.path.exists(image_path):
+        if not await asyncio.to_thread(os.path.exists, image_path):
             return SendResult(success=False, error=f"Image file not found: {image_path}")
         try:
             import io as _io
@@ -3080,12 +3080,12 @@ class FeishuAdapter(BasePlatformAdapter):
         if not cached_path or not media_type.startswith("text/"):
             return ""
         try:
-            if os.path.getsize(cached_path) > _MAX_TEXT_INJECT_BYTES:
+            if await asyncio.to_thread(os.path.getsize, cached_path) > _MAX_TEXT_INJECT_BYTES:
                 return ""
             ext = Path(cached_path).suffix.lower()
             if ext not in {".txt", ".md"} and media_type not in {"text/plain", "text/markdown"}:
                 return ""
-            content = Path(cached_path).read_text(encoding="utf-8-sig")
+            content = await asyncio.to_thread(Path(cached_path).read_text, encoding="utf-8-sig")
             display_name = self._display_name_from_cached_path(cached_path)
             return f"[Content of {display_name}]:\n{content}"
         except (OSError, UnicodeDecodeError):
@@ -3658,7 +3658,7 @@ class FeishuAdapter(BasePlatformAdapter):
     ) -> SendResult:
         if not self._client:
             return SendResult(success=False, error="Not connected")
-        if not os.path.exists(file_path):
+        if not await asyncio.to_thread(os.path.exists, file_path):
             return SendResult(success=False, error=f"File not found: {file_path}")
 
         display_name = file_name or os.path.basename(file_path)
@@ -3666,8 +3666,8 @@ class FeishuAdapter(BasePlatformAdapter):
             file_path=display_name, requested_message_type=outbound_message_type,
         )
         try:
-            duration_ms = self._get_audio_duration_ms(file_path) if upload_file_type == "opus" else 0
-            with open(file_path, "rb") as file_obj:  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
+            duration_ms = await asyncio.to_thread(self._get_audio_duration_ms, file_path) if upload_file_type == "opus" else 0
+            with await asyncio.to_thread(open, file_path, "rb") as file_obj:  # streamed to the upload
                 body = self._build_file_upload_body(
                     file_type=upload_file_type, file_name=display_name, file=file_obj, duration=duration_ms,
                 )
@@ -4323,7 +4323,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
             if not last_result.success:
                 return send_error(f"Feishu send failed: {last_result.error}")
         for media_path, _is_voice in media_files or []:
-            if not os.path.exists(media_path):
+            if not await asyncio.to_thread(os.path.exists, media_path):
                 return send_error(f"Media file not found: {media_path}")
             ext = os.path.splitext(media_path)[1].lower()
             if ext in _MIGRATION_IMAGE_EXTS:

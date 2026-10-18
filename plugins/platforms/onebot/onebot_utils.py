@@ -490,11 +490,13 @@ def render_model_picker_text(
     """渲染 ``/model`` 文字选择器："序号. provider/模型" 列表，当前项标"← 当前"。
 
     QQ 没有 inline callback 按钮，文字列表 + 序号回复就是正确的 picker 形态：
-    用户回复 ``/model <序号>``，由网关按最近一次 picker 快照解释（快照记录在
-    网关 runner 侧，见 gateway/slash_commands_model.py）。
+    用户回复 ``/model <序号>``，由插件侧快照改写为 ``/model <名> --provider
+    <slug>`` 后走网关原生切换链路（T7：快照落账在插件 adapter 侧，
+    send_model_picker 发送成功后记录，免疫网关 update 冲补丁）。
 
-    编号约定与网关 ``_flatten_picker_items`` 严格一致：providers 顺序 × 每个
-    provider 的 models 顺序，跳过无模型行——两侧编号一致性由跨层测试锁定。
+    编号约定（providers 顺序 × 每个 provider 的 models 顺序，跳过无模型行）
+    与网关 ``_flatten_picker_items`` 一致；插件侧展开共用
+    :func:`expand_model_picker_entries`，快照与渲染逐行一致由跨层测试锁定。
 
     返回空串表示无可列项（调用方回退 SendResult 失败，网关走文字列表回退）。
     """
@@ -522,3 +524,21 @@ def render_model_picker_text(
     if not listed:
         return ""
     return "\n".join(lines)
+
+
+def expand_model_picker_entries(providers: Any) -> List[Tuple[str, str]]:
+    """按 ``render_model_picker_text`` 的行序展开 ``[(model, provider_slug), ...]``。
+
+    T7 序号快照的展开侧：编号约定与渲染器严格一致——providers 顺序 × 每个
+    provider 的 models 顺序，跳过无模型的 provider 行；返回列表第 N 项
+    （1-based）即渲染文本中序号 N 那一行。一致性由跨层测试锁定。
+    """
+    entries: List[Tuple[str, str]] = []
+    for p in providers or []:
+        models = p.get("models") or []
+        if not models:
+            continue  # 无模型行不占序号（与渲染器约定一致）
+        slug = str(p.get("slug", "") or "")
+        for model in models:
+            entries.append((str(model), slug))
+    return entries

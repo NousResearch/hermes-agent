@@ -86,6 +86,10 @@ MAX_RECONNECT_ATTEMPTS = 100
 # 淘汰最旧的 processed 记录只保留最近这么多条（pending 永不淘汰）。
 REQUEST_LEDGER_MAX = 200
 
+# T7：/model 纯序号命令（锚定全串——--provider/--global 等 flags 与
+# 非纯数字参数一律不拦，保持网关原生解析语义）。
+_MODEL_PICKER_NUMBER_RE = re.compile(r"^/model\s+(\d+)\s*$")
+
 # Image extensions for the standalone HTTP sender (base.py keeps its own
 # _IMAGE_EXTS as a function-local set, so we declare the plugin copy).
 _IMAGE_EXTS = frozenset({".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"})
@@ -236,6 +240,11 @@ class OneBotAdapter(BasePlatformAdapter):
     # attribute to split long responses into multiple messages.
     MAX_MESSAGE_LENGTH: int = MAX_MESSAGE_LENGTH
 
+    # T7：/model <序号> 快照有效期（秒）与快照表 chat 容量上限。
+    # 落账时惰性清理过期项，超容量淘汰最旧（时间戳最小者）。
+    _MODEL_PICKER_SNAPSHOT_TTL_SECONDS: float = 300.0
+    _MODEL_PICKER_SNAPSHOT_MAX_CHATS: int = 256
+
     @property
     def enforces_own_access_policy(self) -> bool:
         """本 adapter 在入站自行执行访问策略（dm/group allowlist + 角色分级）。
@@ -340,6 +349,10 @@ class OneBotAdapter(BasePlatformAdapter):
         self._requests: Dict[str, Dict[str, Any]] = {}
         self._request_seq = 0
         self._load_requests()
+        # T7：/model <序号> 快照（chat_id -> (落账时间戳, [(model, provider_slug), ...])）。
+        # send_model_picker 发送成功后落账；序号改写在插件层完成，网关保持
+        # 原生 ``/model <名> --provider <slug>`` 链路（免疫网关 update 冲补丁）。
+        self._model_picker_snapshots: Dict[str, Tuple[float, List[Tuple[str, str]]]] = {}
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -1283,6 +1296,21 @@ class OneBotAdapter(BasePlatformAdapter):
                     self._last_image_path[chat_id] = media_urls[i]
             if not text and not media_urls:
                 return
+            # T7：/model <序号> 快照改写（仅管理员可达——member 斜杠已在
+            # 上方入站门全部拦截，插件错误提示不会发给普通用户）。命中改写
+            # 为 ``/model <名> --provider <slug>`` 走网关原生链路；越界/过期
+            # 直接答复不转发；无快照原样放行（网关 absent→literal 语义）。
+            if role == "admin" and text:
+                try:
+                    rewritten = await self._maybe_rewrite_model_picker_number(
+                        chat_id, text
+                    )
+                except Exception as e:
+                    logger.warning("[onebot] /model 序号改写失败，原样放行: %s", e)
+                    rewritten = text
+                if rewritten is None:
+                    return
+                text = rewritten
             event = MessageEvent(
                 text=text,
                 message_type=(
@@ -2376,9 +2404,10 @@ class OneBotAdapter(BasePlatformAdapter):
         on_model_selected,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """文字版 /model 选择器：QQ 无 callback 按钮，渲染“序号. provider/模型”
-        列表，用户回复 /model <序号> 由网关按最近一次 picker 快照解释并走现有
-        切换链路（快照记录在网关 _send_model_picker 成功发送后统一落账）。
+        """文字版 /model 选择器：QQ 无 callback 按钮，渲染"序号. provider/模型"
+        列表，用户回复 /model <序号> 由插件侧快照改写为
+        ``/model <名> --provider <slug>`` 后走网关原生切换链路（T7：快照在
+        本方法发送成功后落账，序号解析下沉插件层，免疫网关 update 冲补丁）。
 
         ``on_model_selected`` 仅为与 telegram/discord 等按钮型 picker 的签名对齐，
         文字流程没有回调——序号选择经 /model 斜杠命令回到网关。
@@ -2391,7 +2420,88 @@ class OneBotAdapter(BasePlatformAdapter):
         )
         if not text:
             return SendResult(success=False, error="no models to list")
-        return await self.send(chat_id, text, metadata=metadata)
+        result = await self.send(chat_id, text, metadata=metadata)
+        if result.success:
+            # record-on-success（镜像网关原语义）：发送失败不落账，序号
+            # 不会指向一条用户根本没收到的列表。
+            self._record_model_picker_snapshot(chat_id, providers)
+        return result
+
+    # ------------------------------------------------------------------
+    # T7：/model <序号> 快照落账与改写（序号选择下沉插件层，免疫网关 update）
+    # ------------------------------------------------------------------
+
+    def _record_model_picker_snapshot(self, chat_id: str, providers: list) -> None:
+        """把本次 picker 列表按渲染行序落账为该 chat 的序号快照。
+
+        展开顺序与 ``render_model_picker_text`` 逐行一致（providers × models、
+        跳过无模型行，编号 1-based）；落账时惰性清理过期项，超容量淘汰最旧。
+        """
+        entries = _load_onebot_utils().expand_model_picker_entries(providers)
+        if not entries:
+            return
+        now = time.time()
+        ttl = self._MODEL_PICKER_SNAPSHOT_TTL_SECONDS
+        for stale in [
+            cid
+            for cid, (ts, _) in self._model_picker_snapshots.items()
+            if now - ts > ttl
+        ]:
+            self._model_picker_snapshots.pop(stale, None)
+        while len(self._model_picker_snapshots) >= self._MODEL_PICKER_SNAPSHOT_MAX_CHATS:
+            oldest = min(
+                self._model_picker_snapshots,
+                key=lambda cid: self._model_picker_snapshots[cid][0],
+            )
+            self._model_picker_snapshots.pop(oldest, None)
+        self._model_picker_snapshots[chat_id] = (now, entries)
+
+    async def _maybe_rewrite_model_picker_number(
+        self, chat_id: str, text: str
+    ) -> Optional[str]:
+        """把 ``/model <序号>`` 改写为 ``/model <名> --provider <slug>``。
+
+        返回转发文本；``None`` 表示已拦截（错误提示已发出，调用方不再转发）。
+        判定顺序：
+        - 非纯序号（flags / 非数字）：不拦，原样放行；
+        - 无快照：原样放行（与网关 absent→literal 语义一致，零行为变化）；
+        - 快照过期：提示重发 /model 并清理过期快照，不转发；
+        - 序号恰为列表中某模型名（精确名优先）：原样放行；
+        - 越界：提示有效范围，不转发；
+        - 命中：改写后转发（网关原生 ``/model <名> --provider <slug>`` 语法）。
+        """
+        # @提及会拼在文本前（如 "@123456789/model 2"），与既有权限门同款剥除
+        probe = re.sub(r"^@\d+\s*", "", text.lstrip())
+        match = _MODEL_PICKER_NUMBER_RE.match(probe)
+        if match is None:
+            return text
+        snapshot = self._model_picker_snapshots.get(chat_id)
+        if snapshot is None:
+            return text
+        recorded_at, entries = snapshot
+        if time.time() - recorded_at > self._MODEL_PICKER_SNAPSHOT_TTL_SECONDS:
+            self._model_picker_snapshots.pop(chat_id, None)
+            await self.send(
+                chat_id,
+                "⚠️ 模型列表已过期（超过 5 分钟），请重新发送 /model 后再回复序号",
+            )
+            return None
+        number = match.group(1)
+        if number in [model for model, _ in entries]:
+            return text  # 精确模型名优先：原样放行，交给网关按名字解析
+        index = int(number)
+        if index < 1 or index > len(entries):
+            await self.send(
+                chat_id,
+                f"⚠️ 序号 {number} 超出范围（1-{len(entries)}），请重新发送 /model 查看列表",
+            )
+            return None
+        model, provider_slug = entries[index - 1]
+        logger.info(
+            "[onebot] /model 序号改写: chat=%s 序号 %s -> /model %s --provider %s",
+            chat_id, number, model, provider_slug,
+        )
+        return f"/model {model} --provider {provider_slug}"
 
     async def stop_typing(self, chat_id: str) -> None:
         """Clear the QQ input-status bubble (private chats only)."""

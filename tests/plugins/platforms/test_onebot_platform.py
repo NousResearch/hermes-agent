@@ -9,8 +9,10 @@ import asyncio
 import base64
 import json
 import logging
+import re
 import sys
 import tempfile
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -3209,3 +3211,292 @@ def test_render_model_picker_skips_empty_provider_rows() -> None:
     assert "【A】" not in text
     assert "1. m1" in text
     assert "2. m2 ← 当前" in text
+
+
+# ---------------------------------------------------------------------------
+# T7：/model <序号> 快照落账与改写（序号选择下沉插件层，免疫网关 update）
+# ---------------------------------------------------------------------------
+
+_PICKER_PROVIDERS = [
+    {"slug": "openai", "name": "OpenAI", "models": ["gpt-4o", "2"], "total_models": 2},
+    {"slug": "anthropic", "name": "Anthropic", "models": ["claude-sonnet-4-5"], "total_models": 1},
+]
+# 预期展开（= 渲染行序）：1. gpt-4o@openai  2. 2@openai  3. claude-sonnet-4-5@anthropic
+_PICKER_ENTRIES = [
+    ("gpt-4o", "openai"),
+    ("2", "openai"),
+    ("claude-sonnet-4-5", "anthropic"),
+]
+
+
+def _picker_harness() -> tuple:
+    """admin 身份适配器 + handle_message/send 捕获（send_success 可切换）。"""
+    adapter = _make_adapter(admin_users=[123456789])
+    events: list = []
+    sent: list = []
+    flags = {"send_success": True}
+
+    async def fake_handle_message(ev):
+        events.append(ev)
+
+    async def fake_send(chat_id, content, reply_to=None, metadata=None):
+        sent.append((chat_id, content))
+        return SendResult(success=flags["send_success"], message_id="1")
+
+    adapter.handle_message = fake_handle_message  # type: ignore[method-assign]
+    adapter.send = fake_send  # type: ignore[method-assign]
+    return adapter, events, sent, flags
+
+
+def _record_picker(adapter, chat_id: str) -> None:
+    """以 send_model_picker 真实路径落账一次快照（success=True）。"""
+    asyncio.run(adapter.send_model_picker(
+        chat_id=chat_id, providers=_PICKER_PROVIDERS, current_model="",
+        current_provider="", session_key="s", on_model_selected=None))
+
+
+def _drive_admin_text(adapter, text: str, chat: str = "dm") -> None:
+    """以管理员身份把一条文本送入 _process_message（dm 直发 / group 带 @）。"""
+    if chat == "dm":
+        frame = {
+            "message_type": "private",
+            "user_id": 123456789,
+            "message": [{"type": "text", "data": {"text": text}}],
+            "self_id": 123456789,
+        }
+    else:
+        frame = {
+            "message_type": "group",
+            "group_id": 777,
+            "user_id": 123456789,
+            "message": [
+                {"type": "at", "data": {"qq": "123456789"}},
+                {"type": "text", "data": {"text": text}},
+            ],
+            "self_id": 123456789,
+        }
+    asyncio.run(adapter._process_message(frame))
+
+
+def test_model_picker_snapshot_recorded_only_on_send_success() -> None:
+    """record-on-success：发送失败不落账，序号不指向用户没收到的列表。"""
+    adapter, _, _, flags = _picker_harness()
+    chat = "private:123456789"
+
+    flags["send_success"] = False
+    _record_picker(adapter, chat)
+    assert chat not in adapter._model_picker_snapshots
+
+    flags["send_success"] = True
+    _record_picker(adapter, chat)
+    recorded_at, entries = adapter._model_picker_snapshots[chat]
+    assert entries == _PICKER_ENTRIES
+    assert recorded_at > 0
+
+
+def test_model_picker_snapshot_numbering_matches_renderer() -> None:
+    """快照展开与渲染文本逐行同序同号（含跳过空 provider 行）。"""
+    from plugins.platforms.onebot.onebot_utils import (
+        expand_model_picker_entries,
+        render_model_picker_text,
+    )
+
+    providers = [
+        {"slug": "a", "name": "A", "models": [], "total_models": 0},
+        {"slug": "b", "name": "B", "models": ["m1", "2"], "total_models": 2},
+        {"slug": "c", "name": "C", "models": ["m3"], "total_models": 1},
+    ]
+    text = render_model_picker_text(providers, "", "")
+    numbered = [
+        (int(m.group(1)), m.group(2))
+        for m in (re.match(r"^(\d+)\. (\S+)$", line) for line in text.splitlines())
+        if m
+    ]
+    entries = expand_model_picker_entries(providers)
+    assert [name for _, name in numbered] == [model for model, _ in entries]
+    assert [n for n, _ in numbered] == list(range(1, len(entries) + 1))
+
+
+def test_model_number_hit_rewrites_with_provider() -> None:
+    """命中序号：改写为 /model <名> --provider <slug> 转发，无错误回复。"""
+    adapter, events, sent, _ = _picker_harness()
+    chat = "private:123456789"
+    _record_picker(adapter, chat)
+    sent.clear()
+
+    _drive_admin_text(adapter, "/model 3")
+
+    assert len(events) == 1
+    assert events[0].text == "/model claude-sonnet-4-5 --provider anthropic"
+    assert sent == []
+
+
+def test_model_number_exact_model_name_passes_through() -> None:
+    """序号恰为某模型名（精确名优先）：原样放行，交网关按名字解析。"""
+    adapter, events, sent, _ = _picker_harness()
+    chat = "private:123456789"
+    _record_picker(adapter, chat)
+    sent.clear()
+
+    _drive_admin_text(adapter, "/model 2")  # "2" 是 openai 下的模型名
+
+    assert len(events) == 1
+    assert events[0].text == "/model 2"
+    assert sent == []
+
+
+def test_model_number_out_of_range_replies_without_forward() -> None:
+    """越界序号：插件答复范围提示，事件不转发。"""
+    adapter, events, sent, _ = _picker_harness()
+    chat = "private:123456789"
+    _record_picker(adapter, chat)
+    sent.clear()
+
+    _drive_admin_text(adapter, "/model 9")
+
+    assert events == []
+    assert sent == [
+        (chat, "⚠️ 序号 9 超出范围（1-3），请重新发送 /model 查看列表"),
+    ]
+
+
+def test_model_number_expired_snapshot_replies_without_forward() -> None:
+    """快照过期：答复重发提示、不转发，且过期快照被清理。"""
+    adapter, events, sent, _ = _picker_harness()
+    chat = "private:123456789"
+    _record_picker(adapter, chat)
+    recorded_at, entries = adapter._model_picker_snapshots[chat]
+    adapter._model_picker_snapshots[chat] = (
+        recorded_at - adapter._MODEL_PICKER_SNAPSHOT_TTL_SECONDS - 1.0,
+        entries,
+    )
+    sent.clear()
+
+    _drive_admin_text(adapter, "/model 1")
+
+    assert events == []
+    assert sent == [
+        (chat, "⚠️ 模型列表已过期（超过 5 分钟），请重新发送 /model 后再回复序号"),
+    ]
+    assert chat not in adapter._model_picker_snapshots
+
+
+def test_model_number_without_snapshot_passes_through() -> None:
+    """无快照：原样放行（网关 absent→literal 语义，零行为变化）。"""
+    adapter, events, sent, _ = _picker_harness()
+
+    _drive_admin_text(adapter, "/model 3")
+
+    assert len(events) == 1
+    assert events[0].text == "/model 3"
+    assert sent == []
+
+
+def test_model_flags_and_non_number_not_intercepted() -> None:
+    """flags / 非纯数字 / 相邻命令名：一律不拦（正则锚定全串）。"""
+    adapter, events, sent, _ = _picker_harness()
+    chat = "private:123456789"
+    _record_picker(adapter, chat)
+    sent.clear()
+
+    passthrough = [
+        "/model claude-sonnet-4-5 --provider anthropic",
+        "/model --global",
+        "/model 2x",
+        "/modelx 2",
+        "/model",
+    ]
+    for text in passthrough:
+        before = len(events)
+        _drive_admin_text(adapter, text)
+        assert len(events) == before + 1, text
+        assert events[-1].text == text, text
+    assert sent == []
+
+
+def test_model_number_at_mention_prefix_still_rewrites() -> None:
+    """群聊 @提及前缀（"@123456789/model 1"）剥除后命中，改写文本不带 @。"""
+    adapter, events, sent, _ = _picker_harness()
+    chat = "group:777"
+    _record_picker(adapter, chat)
+    sent.clear()
+
+    _drive_admin_text(adapter, "/model 1", chat="group")
+
+    assert len(events) == 1
+    assert events[0].text == "/model gpt-4o --provider openai"
+    assert sent == []
+
+
+def test_model_snapshot_capacity_evicts_oldest() -> None:
+    """超容量：淘汰时间戳最旧的 chat 快照。"""
+    adapter, _, _, _ = _picker_harness()
+    adapter._MODEL_PICKER_SNAPSHOT_MAX_CHATS = 2
+    providers = [{"slug": "p", "name": "P", "models": ["m1"], "total_models": 1}]
+
+    def record(chat_id: str) -> None:
+        asyncio.run(adapter.send_model_picker(
+            chat_id=chat_id, providers=providers, current_model="",
+            current_provider="", session_key="s", on_model_selected=None))
+
+    record("private:1")
+    ts1, entries1 = adapter._model_picker_snapshots["private:1"]
+    adapter._model_picker_snapshots["private:1"] = (ts1 - 100.0, entries1)
+    record("private:2")
+    ts2, entries2 = adapter._model_picker_snapshots["private:2"]
+    adapter._model_picker_snapshots["private:2"] = (ts2 - 10.0, entries2)
+    record("private:3")
+
+    assert set(adapter._model_picker_snapshots) == {"private:2", "private:3"}
+
+
+def test_model_snapshot_lazy_cleanup_drops_expired_on_record() -> None:
+    """落账时惰性清理：过期项即使未触发容量淘汰也被移除。"""
+    adapter, _, _, _ = _picker_harness()
+    providers = [{"slug": "p", "name": "P", "models": ["m1"], "total_models": 1}]
+
+    def record(chat_id: str) -> None:
+        asyncio.run(adapter.send_model_picker(
+            chat_id=chat_id, providers=providers, current_model="",
+            current_provider="", session_key="s", on_model_selected=None))
+
+    record("private:1")
+    adapter._model_picker_snapshots["private:9"] = (
+        time.time() - 10_000.0, [("stale", "p")]
+    )
+    record("private:2")
+
+    assert "private:9" not in adapter._model_picker_snapshots
+    assert set(adapter._model_picker_snapshots) == {"private:1", "private:2"}
+
+
+def test_member_model_number_gets_no_reply_and_no_forward() -> None:
+    """普通成员 /model 序号在入站门被拦：无转发、也无插件错误提示（同门）。"""
+    adapter = _make_adapter(admin_users=[123456789])
+    events: list = []
+    sent: list = []
+
+    async def fake_handle_message(ev):
+        events.append(ev)
+
+    async def fake_send(chat_id, content, reply_to=None, metadata=None):
+        sent.append((chat_id, content))
+        return SendResult(success=True)
+
+    adapter.handle_message = fake_handle_message  # type: ignore[method-assign]
+    adapter.send = fake_send  # type: ignore[method-assign]
+
+    chat = "group:777"
+    _record_picker(adapter, chat)
+    sent.clear()
+
+    asyncio.run(adapter._process_message({
+        "message_type": "group",
+        "group_id": 777,
+        "user_id": 99999999,  # 普通成员
+        "message": [{"type": "text", "data": {"text": "/model 2"}}],
+        "self_id": 123456789,
+    }))
+
+    assert events == []
+    assert sent == []

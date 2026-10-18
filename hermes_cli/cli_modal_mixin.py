@@ -554,31 +554,6 @@ class CLIModalMixin:
             always_msg=t("cli.modal.destructive_always_msg"),
             persist_failed_msg=t("cli.modal.persist_failed_proceeding"))
 
-    def _report_program_status(self, state: str, *, kind: str = "", message: str = "") -> None:
-        """Report CLI lifecycle state only through an interactive terminal transport."""
-        if not getattr(self, "program_status_enabled", True) or getattr(self, "_terminal_io_broken", False):
-            return
-        if not sys.stdout.isatty():
-            return
-        from hermes_cli.terminal_notify import program_status_sequence, write_tty
-        try:
-            seq = program_status_sequence(state, kind=kind, message=message)
-        except (TypeError, ValueError, UnicodeError):
-            return
-        app = getattr(self, "_app", None)
-        if app is None or not getattr(app, "_is_running", False):
-            write_tty(seq)
-            return
-        from hermes_cli.cli_terminal_mixin import _run_on_app_loop, _write_terminal_sequence
-
-        def _emit() -> None:
-            try:
-                _write_terminal_sequence(app, seq)
-            except (OSError, ValueError):
-                pass
-
-        _run_on_app_loop(app, _emit)
-
     def _ring_bell(self, prompt: bool = False, context: str = "", detail: str = "", status_kind: str = "") -> None:
         """Terminal bell (\\a) gated by ``display.bell_on_prompt`` (``prompt=True``, blocking modals)
         or ``display.bell_on_complete`` (end of turn); works over SSH. The same flag also emits the

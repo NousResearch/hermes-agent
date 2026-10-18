@@ -75,10 +75,15 @@ async def _mutate(view, operation, payload):
 async def _rewind(view, turns_back, *, retry=False):
     """The rewound user turn's text (``/retry``: its lossless resend text), or None when there was
     nothing to rewind."""
-    result = await _mutate(view, "rewind", _rewind_to(turns_back, retry=retry))
+    payload = _rewind_to(turns_back, retry=retry)
+    result = await view.mutations.apply(view.client, view.session_id, "rewind", payload)
     if result.get("status") == "nothing" or not result.get("rewound_count"):
+        view.mutations.acknowledge(view.session_id, "rewind", payload)
         return None
+    # Retained until the refresh lands: a repeat after a lost refresh replays this rewind instead of
+    # deriving a new target from the already-shortened transcript (which would drop the turn before).
     snapshot = await view.client.rpc("session.resume", session_id=view.session_id)
+    view.mutations.acknowledge(view.session_id, "rewind", payload)
     view.generation = snapshot["execution_generation"]
     content = (result.get("target_message") or {}).get("content")
     if retry:
@@ -133,6 +138,8 @@ async def _new(view, rest):
     # The frozen request never holds the launch key; the one this terminal supplied rides along.
     if getattr(view, "launch_api_key", None) and "api_key" in accepted:
         request["api_key"] = view.launch_api_key
+    from hermes_cli.gateway_chat import client_env_policy
+    request.update(client_env_policy(accepted))  # never in launch_request: this shell's, sent afresh
     snapshot = await view.client.rpc("session.create", request_id=uuid.uuid4().hex, **request)
     await view.adopt(snapshot)
     print(t("cli.session.new_session"))

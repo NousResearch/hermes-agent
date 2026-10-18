@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 #: registrable by plugins. Includes internal-mode aliases (managed_modal).
 BUILTIN_BACKEND_NAMES = frozenset({
     "local", "docker", "singularity", "modal", "managed_modal",
-    "daytona", "vercel_sandbox", "ssh",
+    "daytona", "vercel_sandbox", "kubernetes", "ssh",
 })
 
 

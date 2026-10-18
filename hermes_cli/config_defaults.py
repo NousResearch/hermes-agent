@@ -531,10 +531,10 @@ DEFAULT_CONFIG = {
         "retention_days": 7,
         "min_interval_hours": 24,
     },
-    # Hard cap (chars) for one auto-loaded context file (SOUL.md, AGENTS.md, CLAUDE.md, .hermes.md,
-    # .cursorrules) before head/tail truncation. null = scale with the model's context window (floor
-    # 20K, ceiling 500K); a positive int pins a fixed cap. Separate from read_file limits.
+    # Per-file instruction cap before head/tail truncation: null scales with context (20K–500K).
+    # A positive int pins the cap; separate from read_file limits.
     "context_file_max_chars": None,
+    "instruction_refresh": {"enabled": False, "paths": []},  # Opt-in; changed files refresh next turn.
     # Seconds to wait for a single context file read before skipping it with a warning. Guards startup
     # against network-backed filesystems (iCloud Drive, OneDrive, NFS) that can block a cold read.
     "context_file_read_timeout": 5.0,

@@ -54,6 +54,7 @@ from agent.reasoning_summaries import (
 from agent.local_prompt_progress import prompt_progress, with_prompt_progress
 from agent.repetition_guard import RunawayStreamWatch, is_repetition_dominated
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
+from agent.chat_completion_helpers_relay import _relay_stream_identity, _relay_stream_metadata
 from tools.terminal_tool_lifecycle import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
 
@@ -2458,20 +2459,6 @@ def _is_sse_connection_error(exc: BaseException) -> bool:
         return False
     err_lower = str(exc).lower()
     return any(phrase in err_lower for phrase in _SSE_CONN_PHRASES)
-
-
-def _relay_stream_identity(agent, name_default: str) -> dict:
-    """``session_id``/``name``/``model_name`` kwargs for ``relay_llm.stream``."""
-    return {"session_id": str(getattr(agent, "session_id", "") or ""),
-        "name": str(getattr(agent, "provider", "") or name_default),
-        "model_name": str(getattr(agent, "model", "") or "")}
-
-
-def _relay_stream_metadata(agent, api_mode: str) -> dict:
-    call_role = ("delegated" if getattr(agent, "is_subagent", False)
-                 else "fallback" if int(getattr(agent, "_fallback_index", 0) or 0) > 0 else "primary")
-    return {"api_mode": api_mode, "api_request_id": getattr(agent, "_current_api_request_id", None),
-        "call_role": call_role}
 
 
 def _stream_final_text(response) -> str:

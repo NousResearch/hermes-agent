@@ -194,7 +194,7 @@ def finalize_subagent_worktree(info: dict[str, str], *, prune: bool = True) -> d
         cwd = info.get("repo_root", "") or path
         try:
             from hermes_cli.worktree_ops import release_lsp_clients, removal_blocked
-            blocked = removal_blocked(path)  # an embedded repo / ignored file / ref dies with the tree
+            blocked = removal_blocked(path)  # an embedded repo / private ref dies with the tree
             if blocked:
                 payload["note"] = f"Worktree kept at {path}: {blocked[1]}."
                 return payload

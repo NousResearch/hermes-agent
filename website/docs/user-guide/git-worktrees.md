@@ -217,23 +217,10 @@ repositories' `.worktrees/`:
 | An embedded repository anywhere inside, gitignored or not (e.g. `build/tool/.git`) | kept (`keep-unarchivable`) |
 | A commit held only by a per-worktree ref (`refs/worktree/*`, `refs/bisect/*`, `refs/rewritten/*`) | kept (`keep-worktree-refs`: those refs are deleted with the tree) |
 | An untracked file larger than `worktrees.archive_max_file_mb` | kept (`keep-large-untracked`) |
-| An ignored file that is not reproducible (see below) | kept (`keep-ignored-work`; `--dry-run` names the files) |
 
-**Ignored files.** An archive does not capture files your ignore rules
-(`.gitignore`, `.git/info/exclude`, `core.excludesFile`) exclude, so a tree is
-removed only when every ignored file in it can be regenerated:
-
-- it lies under a build or dependency directory: `node_modules`, `.venv`,
-  `venv`, `__pycache__`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.tox`,
-  `dist`, `build`, `target`, `.next`, `.turbo`, `.cache`, `coverage`, `.gradle`,
-  `*.egg-info`; or
-- it is a byte-identical copy of the same path in the main checkout (what
-  `.worktreeinclude` copies, such as `.env`).
-
-Any other ignored file (a local `.env` edit, `*.secret`, notes excluded in
-`info/exclude`, test output) keeps the tree, on every path: the sweep, exit
-**Archive** and subagent cleanup. Commit, move or delete the file and the next
-sweep reclaims the tree.
+**Ignored files.** Ignored files (`.env` copies, caches, build and test output)
+are not archived and are deleted with the tree. A nested git repository inside
+an ignored folder is the one exception: it keeps the tree.
 
 The same checks run on clean merged trees, and every dirty check counts files
 that `status.showUntrackedFiles=no` would hide and skip-worktree /

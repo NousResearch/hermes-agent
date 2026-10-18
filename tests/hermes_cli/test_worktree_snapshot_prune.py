@@ -293,13 +293,6 @@ def _case_ignored_repo(repo, wt):
     return {}, (wt / "build" / "tool", _private_commit(_mkdirs(wt / "build" / "tool")))
 
 
-def _case_ignored_files(repo, wt):
-    (wt / "notes.md").write_text("dirty\n", encoding="utf-8")
-    (wt / "prod.secret").write_text("API KEY WORK\n", encoding="utf-8")
-    (wt / ".env").write_text("LOCAL ONLY=1\n", encoding="utf-8")       # differs from the main checkout
-    return {"prod.secret": b"API KEY WORK\n", ".env": b"LOCAL ONLY=1\n"}, None
-
-
 def _case_untracked_hidden(repo, wt):
     _git(["config", "status.showUntrackedFiles", "no"], repo)
     (wt / "new_work.py").write_text("UNTRACKED WORK\n", encoding="utf-8")
@@ -329,27 +322,30 @@ def _mkdirs(path):
 
 
 @pytest.mark.parametrize("mode", ["archive", "classic"])
-@pytest.mark.parametrize("setup", [_case_large, _case_ignored_repo, _case_ignored_files, _case_untracked_hidden,
+@pytest.mark.parametrize("setup", [_case_large, _case_ignored_repo, _case_untracked_hidden,
                                    _case_skip_worktree, _case_worktree_ref], ids=lambda f: f.__name__[6:])
 def test_the_pruner_removes_a_tree_only_when_everything_irreproducible_is_archived(repo, mode, setup):
     """R2: through the real pruner, every byte and commit that git cannot regenerate survives,
     in the tree or in its archive: an untracked file over the size cap, a gitignored embedded
-    repository, ignored files that are not reproducible, untracked files hidden by
-    ``status.showUntrackedFiles=no``, skip-worktree / assume-unchanged edits, and commits held
-    only by per-worktree refs. Regenerable ignored content (``node_modules``, ``__pycache__``) and
-    ``.worktreeinclude`` copies identical to the main checkout never hold a tree back."""
+    repository, untracked files hidden by ``status.showUntrackedFiles=no``, skip-worktree /
+    assume-unchanged edits, and commits held only by per-worktree refs. Ignored files are
+    disposable: a dirty tree holding only those is archived and removed."""
     if mode == "classic":
         _set_worktrees_config("worktrees:\n  archive_dirty: false\n")
     else:
         _set_worktrees_config("worktrees:\n  archive_max_file_mb: 1\n")
     (repo / ".git" / "info").mkdir(exist_ok=True)
-    (repo / ".git" / "info" / "exclude").write_text("build/\n*.secret\n.env\n__pycache__/\n", encoding="utf-8")
+    (repo / ".git" / "info" / "exclude").write_text("build/\n*.secret\n.env\n__pycache__/\ntest_durations.json\n",
+                                                   encoding="utf-8")
     (repo / ".env").write_text("SHARED=1\n", encoding="utf-8")
     wt, regen = _tree(repo, "lane-case"), _tree(repo, "lane-regen", dirty=True)
     for tree in (wt, regen):
         shutil.copy2(repo / ".env", tree / ".env")                    # what .worktreeinclude copies
         (_mkdirs(tree / "node_modules" / "dep") / "index.js").write_text("x\n", encoding="utf-8")
         (_mkdirs(tree / "pkg" / "__pycache__") / "m.pyc").write_bytes(b"\0")
+    (regen / ".env").write_text("LOCAL EDIT=1\n", encoding="utf-8")  # ignored, differs from main
+    (regen / "test_durations.json").write_text("{}\n", encoding="utf-8")
+    (regen / "notes.secret").write_text("scratch\n", encoding="utf-8")
     precious, commit = setup(repo, wt)
     sizes = {rel: (wt / rel).read_bytes() for rel, data in precious.items() if data is None}
     precious = {**precious, **sizes}
@@ -371,7 +367,8 @@ def test_the_pruner_removes_a_tree_only_when_everything_irreproducible_is_archiv
         if where == repo:
             assert wt.exists()
     if mode == "archive":
-        assert not regen.exists(), "regenerable / main-identical ignored files must not hold a tree back"
+        assert not regen.exists(), "ignored files are disposable and must not hold a tree back"
+        assert any(ref.endswith("/lane-regen") for ref in archives), "the dirty tree is archived first"
 
 
 def test_prune_older_than_bounds_what_the_sweep_removes(repo, capsys):

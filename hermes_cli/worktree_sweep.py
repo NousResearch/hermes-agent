@@ -8,7 +8,7 @@ the tree. Never touched, at any age or budget: Kanban ``t_<hex>`` trees, trees w
 lock owner still runs, trees any live process sits in (cwd or open file), and trees with file or
 ref activity younger than their tier, and trees holding anything an archive cannot carry
 (``worktree_retention.removal_blocker``: a submodule, an embedded repository, a per-worktree ref,
-an untracked file over the size cap, an ignored file that is not reproducible). With
+an untracked file over the size cap). With
 ``archive_dirty: false`` and no size budget the classic pruner runs unchanged.
 
 ``plan_sweep`` is read-only (``hermes worktree prune --dry-run`` prints it); ``execute_plan``
@@ -357,8 +357,7 @@ def archive_then_remove(repo_root: str, path: str, *, reason: str, max_untracked
     tree is checked again: a process (other than *exclude_pids*) now working in it, any edit
     made while the snapshot ran, staged entries that differ from the captured index, or anything
     the archive does not hold (``worktree_retention.removal_blocker``: a file the snapshot skipped
-    for size, an embedded repository, a per-worktree ref, a non-reproducible ignored file, a
-    submodule) keep the tree (``removed`` False, *why_kept* says why; the archive stays). The branch
+    for size, an embedded repository, a per-worktree ref, a submodule) keep the tree (``removed`` False, *why_kept* says why; the archive stays). The branch
     survives when it is protected or published on a remote (an open PR may still need it);
     otherwise the archive ref anchors its commits and the local branch is deleted.
     """

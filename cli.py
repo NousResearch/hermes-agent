@@ -578,7 +578,7 @@ def _cleanup_worktree(info: dict[str, str] | None = None) -> None:
         return
 
     from hermes_cli.worktree_ops import removal_blocked
-    blocked = removal_blocked(wt_path)  # an embedded repo, private ref or ignored file dies with it
+    blocked = removal_blocked(wt_path)  # an embedded repo or private ref dies with it
     if blocked:
         _cprint(f"\n\033[33m{_t('cli.worktree.kept_reason', path=wt_path, reason=blocked[1])}\033[0m")
         return

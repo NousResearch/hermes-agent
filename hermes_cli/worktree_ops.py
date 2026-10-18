@@ -1019,8 +1019,7 @@ _PRESERVE_REASONS = {"dirty": "uncommitted changes", "unpushed": "unpushed commi
 def removal_blocked(path: str) -> Optional[tuple[str, str]]:
     """``(keep-action, reason)`` when deleting the clean tree at *path* would lose something no
     branch holds (``worktree_retention.removal_blocker``: a checked-out submodule, an embedded
-    repository, a per-worktree ref, an ignored file that is not reproducible); unverifiable
-    counts as blocked."""
+    repository, a per-worktree ref); unverifiable counts as blocked."""
     from hermes_cli.worktree_retention import removal_blocker
     return removal_blocker(path)
 

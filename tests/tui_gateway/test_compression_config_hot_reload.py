@@ -295,6 +295,16 @@ def test_removing_context_length_reinfers_from_model_metadata(monkeypatch):
     assert compressor.threshold_tokens == _with_default_cap(int(1_000_000 * 0.50))
 
 
+def test_live_checkpoint_required_reaches_the_prune_gate(monkeypatch):
+    """The proactive prune bypasses the checkpoint hook, so its call-site gate must see a live flip."""
+    session, _ = _neutral_session()
+    session["agent"].compression_checkpoint_required = False
+    _sync_with_cfg(monkeypatch, session, {"compression": {"checkpoint_required": True}})
+    assert session["agent"].compression_checkpoint_required is True
+    _sync_with_cfg(monkeypatch, session, {"compression": {}})
+    assert session["agent"].compression_checkpoint_required is False
+
+
 def test_removing_idle_compact_after_seconds_restores_zero(monkeypatch):
     session, _ = _neutral_session()
     session["agent"].compression_idle_compact_after_seconds = 1800

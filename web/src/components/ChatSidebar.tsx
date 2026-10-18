@@ -109,6 +109,8 @@ function sessionInfoModel(payload: unknown): string | undefined {
 
 interface ChatSidebarProps {
   channel: string
+  /** PTY opens or exhausts retries before RPC starts; later RPC retries stay independent. */
+  rpcReady: boolean
   /** Chat profile from the dashboard switcher / URL scope. */
   profile?: string
   className?: string
@@ -133,6 +135,7 @@ export function sidecarSessionCreateParams(profile?: string): Record<string, unk
 
 export function ChatSidebar({
   channel,
+  rpcReady,
   profile,
   className,
   onDashboardNewSessionRequest,
@@ -218,6 +221,8 @@ export function ChatSidebar({
     }
     if (prevScopeKey.current === scopeKey) return
     prevScopeKey.current = scopeKey
+    setState('idle')
+    setInfo({})
     setError(null)
     // Fresh PTY child on the new scope: its runtime identity is unknown until
     // its first `session.info` broadcast, so drop the previous chat's model.
@@ -229,6 +234,7 @@ export function ChatSidebar({
   }, [scopeKey])
 
   useEffect(() => {
+    if (!rpcReady) return
     let cancelled = false
     queueMicrotask(() => {
       if (cancelled) return
@@ -373,7 +379,7 @@ export function ChatSidebar({
       gw.close()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gw, version])
+  }, [gw, rpcReady, version])
 
   // Event subscriber WebSocket — receives the rebroadcast of every
   // dispatcher emit from the PTY child's gateway.  See /api/pub +

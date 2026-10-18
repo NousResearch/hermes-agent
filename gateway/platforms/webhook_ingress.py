@@ -31,10 +31,12 @@ async def producer_scope(adapter, event):
             source.profile_route_rejected = True
             runtime_home = home
     source._authorization_profile_home = home
-    # The routed profile's own ledger admits the delivery; an unserved route is refused.
+    # The routed profile's own ledger admits the delivery; an unserved route is refused. A park
+    # can keep the profile's retiring authority (a turn outlived its Stop), which admits nothing.
     authority = authority_for_home(runner, runtime_home)
-    if authority is None:
+    if authority is None or getattr(authority, 'retiring', False):
         _refuse_parked(runner, getattr(source, 'profile', None) or profile)
+    if authority is None:
         raise RuntimeStoreError('profile_mismatch')
     with native_callback(runner, event, home, profile):
         async with _async_profile_runtime_scope(runtime_home):
@@ -42,25 +44,79 @@ async def producer_scope(adapter, event):
 
 
 def _refuse_parked(runner, profile):
-    """A delivery routed to a parked profile is retried, never refused for good: a rescan serves the
-    profile again, so it is ``runtime_draining`` (no relay ACK; the connector redelivers), not the
-    permanent ``profile_mismatch`` of a route to a profile this gateway does not serve."""
+    """A delivery routed to a parked profile is retryable, never refused for good: a rescan serves the
+    profile again, so it is ``runtime_draining`` (a webhook answers 503; relay acknowledges and tells
+    the sender, ``parked_route_refusal``), not the permanent ``profile_mismatch`` of a route to a
+    profile this gateway does not serve."""
     from gateway.run_runtime import profile_parked
     if profile_parked(runner, profile):
-        raise RuntimeStoreError('runtime_draining')
+        from gateway.parked_route_refusal import ParkedProfileRefusal
+        raise ParkedProfileRefusal(profile)
 
 
-def parked_profile_refusal(runner, profile):
-    """A retryable 503 for a webhook to a parked ``/p/<profile>/``, else None. Answered before the
-    delivery id is recorded: coalesced, ``deliver_only`` and ``cron_job`` routes act before (or
-    without) an admission, so the in-memory id is their only replay guard, and a recorded id would
+def parked_profile_refusal(runner, profile, route_config, admission_source):
+    """A 503 for a webhook whose profile is not served right now, else None: a ``/p/<profile>/``
+    prefix that is parked or has no serving authority here, or a coalesced route that
+    ``profile_routes`` sends to a profile admission would refuse (a coalesced delivery is acknowledged
+    before admission applies that route). A parked target is retryable (``Retry-After``); any other
+    rejected target gets the answer the immediate route gives when admission refuses it.
+    ``admission_source`` returns the ``SessionSource`` admission builds for this delivery
+    (``WebhookAdapter._admission_source``), so ``profile_routes`` match here exactly as there. Answered
+    before the delivery id is recorded: coalesced, ``deliver_only`` and ``cron_job`` routes act before
+    (or without) an admission, so the in-memory id is their only replay guard, and a recorded id would
     answer the provider's retry as a duplicate once the profile is served again."""
-    from gateway.run_runtime import profile_parked
-    if not profile_parked(runner, profile):
-        return None
     from aiohttp import web
-    return web.json_response({'error': f'Profile {profile} is not being served; retry this delivery'},
-                             status=503, headers={'Retry-After': '30'})
+    if _prefix_not_served(runner, profile):
+        error = f'Profile {profile} is not being served; retry this delivery'
+    else:
+        refusal = _coalesced_route_refusal(runner, profile, route_config, admission_source)
+        if refusal is None:
+            return None
+        if refusal == 'refused':
+            # ``WebhookAdapter._dispatch_agent_run``'s answer when admission refuses the delivery.
+            return web.json_response({'error': 'Admission unavailable; retry this delivery'}, status=503)
+        error = 'The routed profile is not being served right now; retry this delivery'
+    from gateway.parked_route_refusal import ParkedRouteRefused
+    return web.json_response({'error': error}, status=ParkedRouteRefused.status, headers=ParkedRouteRefused.headers)
+
+
+def _prefix_not_served(runner, profile):
+    """Parked, or on disk with no serving authority here (its own gateway still runs, or it is not
+    picked up yet): the URL prefix resolves against the profiles on disk, the registry says what is
+    served."""
+    from gateway.run_runtime import profile_parked
+    if profile_parked(runner, profile):
+        return True
+    if not profile or getattr(runner, 'session_authorities', None) is None:
+        return False
+    from gateway.session_authorities import authority_for_home
+    from hermes_cli.profiles import get_profile_dir
+    authority = authority_for_home(runner, get_profile_dir(profile))
+    return authority is None or getattr(authority, 'retiring', False) is True
+
+
+def _coalesced_route_refusal(runner, profile, route_config, admission_source):
+    """How admission would refuse a coalesced bare-route delivery that ``profile_routes`` sends away:
+    ``'parked'`` (retryable), ``'refused'`` (a profile neither served here nor parked: standalone,
+    unknown, or without a live authority), else None. Reads the profile the admission's own source
+    resolved (``build_source`` asks ``GatewayRunner._profile_name_for_source`` on the same chat_id,
+    user_id and names), so this edge and admission give one answer: an explicit ``/p/<profile>/``
+    wins over ``profile_routes`` there, and routes apply only under multiplexing."""
+    if profile or not isinstance(route_config.get('coalesce'), dict):
+        return None
+    from gateway.run_runtime import profile_parked
+    source = admission_source()
+    if getattr(source, 'profile_route_rejected', False):
+        # A parked target leaves the served set, so the resolver rejects it; admission retries
+        # that one (``_rejected_route_profile``) and refuses any other rejection for good.
+        rejected = getattr(source, '_rejected_route_profile', None)
+        return 'parked' if rejected and profile_parked(runner, rejected) else 'refused'
+    routed = source.profile
+    if not routed:
+        return None
+    if profile_parked(runner, routed):
+        return 'parked'
+    return 'refused' if _prefix_not_served(runner, routed) else None
 
 
 async def admit_producer(adapter, event):

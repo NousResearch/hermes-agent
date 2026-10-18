@@ -18,7 +18,8 @@ from gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _extra_or_secret, get_scoped_secret, send_error
 )
 from gateway.platforms.send_targets import StandaloneSendPolicy, regex_stripped_parser
-from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
+from hermes_cli._subprocess_compat import (windows_detach_flags_without_breakaway,
+                                            windows_detach_popen_kwargs)
 from hermes_constants import (find_node_executable, get_hermes_dir, with_hermes_node_path)
 
 _IS_WINDOWS = platform.system() == "Windows"
@@ -29,6 +30,34 @@ def _wenv(name: str, default: str = "") -> str:
     return get_scoped_secret(name, default)
 
 logger = logging.getLogger(__name__)
+
+
+def _spawn_detached(argv: list, **popen_kwargs) -> subprocess.Popen:
+    """Spawn the bridge with the shared detach bundle, retrying without CREATE_BREAKAWAY_FROM_JOB.
+
+    ``windows_detach_popen_kwargs`` bundles CREATE_BREAKAWAY_FROM_JOB so a long-lived child outlives a
+    job-wrapped launcher (Electron Desktop, the Tauri bootstrap installer). A parent Job Object that
+    allows neither JOB_OBJECT_LIMIT_BREAKAWAY_OK nor BREAKAWAY_FLAG_SILENT_BREAKAWAY_OK rejects that
+    bit, and CreateProcess fails with ERROR_ACCESS_DENIED (WinError 5) before node ever runs — which
+    left the bridge unable to start at all: every reconnect retry failed identically for as long as the
+    launcher stayed up (observed: 1810 consecutive attempts over ~33h, then an instant success on the
+    next gateway restart, whose parent had no such job). Drop the bit and keep the rest of the bundle
+    (CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW); the bridge then shares the gateway's job lifetime,
+    which is the lifetime the gateway already assumes anyway — it owns the child, reaps it by pidfile,
+    and respawns it on the next connect. Mirrors the gateway respawn/watcher fallbacks in
+    hermes_cli.gateway and hermes_cli.gateway_windows.
+    """
+    try:
+        return subprocess.Popen(argv, **popen_kwargs, **windows_detach_popen_kwargs())
+    except OSError as exc:
+        error_code = getattr(exc, "winerror", None) or exc.errno
+        logger.warning("[Whatsapp] Bridge breakaway spawn failed (error=%s); retrying without "
+                       "CREATE_BREAKAWAY_FROM_JOB", error_code)
+        fallback = ({"creationflags": windows_detach_flags_without_breakaway()} if _IS_WINDOWS
+                    else {"start_new_session": True})
+        # A second failure is NOT swallowed: it propagates to connect()'s handler, which reports the
+        # bridge as unstartable rather than looping on a non-breakaway OSError.
+        return subprocess.Popen(argv, **popen_kwargs, **fallback)
 
 # Owner-typed inbound text is prefixed at MessageEvent construction so transcripts stay disambiguated before silent_ingest.
 _OWNER_REPLY_PREFIX = "[owner reply] "
@@ -686,9 +715,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             node = find_node_executable("node")
             if node is None:
                 raise RuntimeError("Node.js is no longer available; run `hermes pm install`")
-            self._bridge_process = subprocess.Popen(  # noqa: ASYNC220 -- persistent bridge; callers use the Popen object (pid, poll)
+            # Persistent bridge; callers use the Popen object (pid, poll). The blocking spawn lives in
+            # _spawn_detached so a parent job that forbids breakaway can retry without that one bit.
+            self._bridge_process = _spawn_detached(
                 [node, str(bridge_path), "--port", str(self._bridge_port), "--session", str(self._session_path),
-                 "--mode", _wenv("WHATSAPP_MODE", "self-chat")], stdin=subprocess.DEVNULL, stdout=bridge_log_fh, stderr=bridge_log_fh, env=self._bridge_env(), **windows_detach_popen_kwargs())
+                 "--mode", _wenv("WHATSAPP_MODE", "self-chat")], stdin=subprocess.DEVNULL, stdout=bridge_log_fh, stderr=bridge_log_fh, env=self._bridge_env())
             _write_bridge_pidfile(self._session_path, self._bridge_process.pid, self._bridge_port)
             if not await self._wait_for_bridge():
                 return False

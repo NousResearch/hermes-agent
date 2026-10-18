@@ -164,6 +164,36 @@ def test_no_agent_exit_75_without_strict_deferred_envelope_is_a_failure(hermes_e
     assert saved["failure_streak"] == 1
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '{"status":"deferred","reason":"busy","next_attempt_at":NaN,"operator_alert":false}',
+        '{"status":"error","status":"deferred","reason":"busy",'
+        '"next_attempt_at":null,"operator_alert":false}',
+    ],
+)
+def test_no_agent_noncanonical_typed_deferral_envelope_is_a_failure(hermes_env, monkeypatch, payload):
+    """Non-finite JSON numbers and duplicate keys must not suppress a watchdog error."""
+    from cron.jobs import create_job, get_job
+    from cron import scheduler
+
+    script_path = hermes_env / "scripts" / "gmail-worker.sh"
+    script_path.write_text("#!/usr/bin/env bash\nexit 0\n")
+    monkeypatch.setattr(
+        scheduler,
+        "_run_job_script_with_claim_heartbeat",
+        lambda *_args, **_kwargs: (False, f"Script exited with code 75\nstderr:\n{payload}"),
+    )
+    job = create_job(
+        prompt=None, schedule="every 5m", script="gmail-worker.sh", no_agent=True, deliver="local"
+    )
+    assert scheduler.run_one_job(job) is True
+
+    saved = get_job(job["id"])
+    assert saved["last_status"] == "error"
+    assert saved["failure_streak"] == 1
+
+
 def test_run_job_no_agent_reloads_dotenv_before_script(hermes_env, monkeypatch):
     """Regression: a standalone cron tick process starts without home-channel
     vars in its environment, and the agent path's per-run dotenv reload never

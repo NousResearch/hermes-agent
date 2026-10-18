@@ -10,6 +10,7 @@ import contextvars
 import errno
 import json
 import logging
+import math
 import os
 import re
 import subprocess
@@ -1560,18 +1561,33 @@ def _run_no_agent_job(
         # payloads, retry exhaustion and alert-worthy deferrals stay real failures.
         deferred_prefix = "Script exited with code 75\nstderr:\n"
         if output.startswith(deferred_prefix) and "\nstdout:\n" not in output:
+            def reject_duplicate_keys(pairs):
+                parsed = dict(pairs)
+                if len(parsed) != len(pairs):
+                    raise ValueError("duplicate JSON key")
+                return parsed
+
+            def reject_nonstandard_constant(value):
+                raise ValueError(f"non-standard JSON constant: {value}")
+
             try:
-                deferred = json.loads(output[len(deferred_prefix):])
+                deferred = json.loads(
+                    output[len(deferred_prefix):],
+                    object_pairs_hook=reject_duplicate_keys,
+                    parse_constant=reject_nonstandard_constant,
+                )
             except (TypeError, ValueError):
                 deferred = None
+            next_attempt_at = deferred.get("next_attempt_at") if isinstance(deferred, dict) else None
             if (
                 isinstance(deferred, dict)
                 and set(deferred) == {"status", "reason", "next_attempt_at", "operator_alert"}
                 and deferred.get("status") == "deferred"
                 and deferred.get("reason") in {"cooldown", "pacing", "busy"}
-                and (deferred.get("next_attempt_at") is None
-                     or isinstance(deferred.get("next_attempt_at"), (int, float)))
-                and not isinstance(deferred.get("next_attempt_at"), bool)
+                and (next_attempt_at is None
+                     or (isinstance(next_attempt_at, (int, float))
+                         and not isinstance(next_attempt_at, bool)
+                         and math.isfinite(next_attempt_at)))
                 and deferred.get("operator_alert") is False
             ):
                 job["_script_deferred"] = True

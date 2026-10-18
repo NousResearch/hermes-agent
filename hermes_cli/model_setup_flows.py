@@ -1015,6 +1015,14 @@ def _model_flow_anthropic(config, current_model=""):
 
     # Check ALL credential sources
     existing_key = get_anthropic_key()
+    pool_key = False
+    if not existing_key:
+        # `hermes auth add anthropic --type oauth` stores the login only in the credential pool
+        # (manual:hermes_pkce) and the runtime resolves it from there, so offer it instead of
+        # demanding a new login. Dead/exhausted rows are already filtered out by the pool.
+        from agent.anthropic_credentials import _resolve_anthropic_pool_token
+        existing_key = _resolve_anthropic_pool_token(skip_borrowed=True) or ""
+        pool_key = bool(existing_key)
     cc_available = False
     with contextlib.suppress(Exception):
         from agent.anthropic_credentials import read_claude_code_credentials, is_claude_code_token_valid, _is_oauth_token
@@ -1023,13 +1031,18 @@ def _model_flow_anthropic(config, current_model=""):
             cc_available = True
 
     # Stale-OAuth guard: an expired OAuth token with no valid cc_creds fallback is treated
-    # as missing so the re-auth path is offered.
-    existing_is_stale_oauth = bool(existing_key and _is_oauth_token(existing_key) and not cc_available)
+    # as missing so the re-auth path is offered. Pool rows keep their own refresh token, so
+    # they are refreshable and never count as stale here.
+    existing_is_stale_oauth = bool(
+        existing_key and _is_oauth_token(existing_key) and not cc_available and not pool_key
+    )
     has_creds = (bool(existing_key) and not existing_is_stale_oauth) or cc_available
     needs_auth = not has_creds
 
     if has_creds:
-        if existing_key:
+        if pool_key:
+            print("  Anthropic credentials: from the credential pool ✓")
+        elif existing_key:
             from hermes_cli.env_loader import format_secret_source_suffix
             from hermes_cli.auth import PROVIDER_REGISTRY
 

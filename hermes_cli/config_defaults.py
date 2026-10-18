@@ -2108,16 +2108,10 @@ DEFAULT_CONFIG = {
                 "service.name": "hermes-gateway", "deployment.environment.name": "production"
             },
         },
-        # OTLP destination. headers_env maps header names to ENVIRONMENT VARIABLE NAMES (never
-        # secret values); values are read from the environment at export time.
+        # OTLP destination; headers_env maps header names to ENV VAR NAMES (never secrets), read at export.
         "export": {"otlp": {"enabled": False, "endpoint": "", "headers_env": {}}},
     },
-    "bots": {  # Bot Mode: the agent-to-agent teammate mesh.
-        # Install-wide mesh kill switch: every agent leaves the teammate roster at once, whatever
-        # its own `ui_meta.hermes-bots.private` says. Read from the shared root config only, since
-        # a per-profile copy cannot outrank its own profile. Agents keep running for the human.
-        "force_private": False,
-    },
+    "bots": {"force_private": False},  # True: every agent leaves the teammate mesh (root config only)
     "gateway": {  # Gateway settings (messaging platforms: Telegram, Discord, Slack, ...).
         "unmanaged_idle_exit_seconds": 600,  # client-auto-started gateway only; 0 disables
         # Seconds a SIGTERM-interrupted agent unwinds before teardown (short: service stop budgets).

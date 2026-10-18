@@ -36,6 +36,7 @@ from agent.turn_context import drop_stale_api_content
 from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
 from agent.primary_runtime_snapshot import _build_primary_runtime_snapshot
 from agent.credential_pool_quota_window import apply_spent_quota_window, is_quota_spent
+from agent.credential_pool_balanced import observe_agent_placement
 from agent.agent_runtime_helpers_reset_headers import _set_reset_from_retry_after, _set_reset_from_vendor_headers
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 logger = logging.getLogger(__name__)
@@ -1103,6 +1104,8 @@ def recover_with_credential_pool(
             rotate_status, label, getattr(next_entry, "id", "?"),
         )
         swapped = agent._swap_credential(next_entry) is not False
+        if swapped:
+            observe_agent_placement(agent, getattr(next_entry, "id", None))
         benched = next((e for e in pool.entries() if e.id == credential_id), None) if credential_id else None
         if (
             swapped
@@ -1429,8 +1432,8 @@ def restore_primary_runtime(agent) -> bool:
         # Reset the index even without activation: a failed _try_activate_fallback() can strand
         # _fallback_index past the chain end and silently block future fallbacks (#20465).
         agent._fallback_index = 0
-        from agent.turn_credential_placement import _revert_credential_rotation
-        _revert_credential_rotation(agent)
+        from agent.turn_credential_placement import place_credential_between_turns
+        place_credential_between_turns(agent)
         return False
     rt = agent._primary_runtime
     primary_provider = str((rt or {}).get("provider") or "").strip().lower()

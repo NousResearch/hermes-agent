@@ -119,7 +119,10 @@ class GatewayAgentCacheMixin:
         import hashlib, json as _j
         # Fingerprint the FULL credential, not a short prefix: OAuth/JWT-style tokens often share a
         # common prefix (e.g. "eyJhbGci"), so a prefix would give false cache hits across auth switches.
-        _api_key = str(runtime.get("api_key", "") or "")
+        # A ``balanced`` pool agent owns its credential (rotates on failure, re-places itself between
+        # turns): this turn's pool pick must not rebuild it onto another account and lose its cache.
+        _owns_credential = getattr(runtime.get("credential_pool"), "balanced", False) is True
+        _api_key = "" if _owns_credential else str(runtime.get("api_key", "") or "")
         blob = _j.dumps(
             [
                 model,

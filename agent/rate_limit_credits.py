@@ -7,6 +7,7 @@ import logging
 import os
 from typing import Any
 
+from agent.credential_pool_balanced import observe_agent_response
 from utils import is_truthy_value
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
@@ -68,6 +69,7 @@ class RateLimitCreditsMixin:
         self._capture_rate_limits(http_response)
         self._capture_credits(http_response)
         self._bench_spent_subscription_window(http_response)
+        observe_agent_response(self, http_response)
 
     def _bench_spent_subscription_window(self, http_response: Any) -> None:
         """Record a spent Anthropic plan window on the pool entry that served this response, so

@@ -387,7 +387,18 @@ class ChannelOverride:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ChannelOverride":
-        return cls(**{f.name: data.get(f.name) for f in fields(cls)}) if data else cls()
+        if not data:
+            return cls()
+        # Silent discard of unknown keys cost real debugging time (#79468): warn so typos in
+        # model/provider/system_prompt surface immediately instead of being swallowed. YAML
+        # coerces unquoted keys, so sort by repr - mixed-type keys must not turn into a crash.
+        known = {f.name for f in fields(cls)}
+        unknown = set(data) - known
+        if unknown:
+            logger.warning(
+                "Ignoring unknown channel_overrides key(s) %s; known keys: %s",
+                sorted(unknown, key=repr), ", ".join(sorted(known)))
+        return cls(**{f.name: data.get(f.name) for f in fields(cls)})
 
 
 # Platforms whose primary credential is ``PlatformConfig.token`` → its env var (empty-token

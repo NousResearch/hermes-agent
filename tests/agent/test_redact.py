@@ -1712,3 +1712,18 @@ class TestKeyedRpcUrlsAndBoxTables:
         out = redact_terminal_output(f"SOME_SERVICE_TOKEN={opaque}", "railway variables -s x --kv | grep TOKEN")
         assert opaque not in out
         assert redact_terminal_output("MAX_TOKENS=100", "railway variable set MAX_TOKENS=100") == "MAX_TOKENS=100"
+
+
+    @pytest.mark.parametrize("line", [
+        "RAVE_PAYROLL_BOT_PK=0x" + "b6e9" * 16,
+        "STAGING_TRADE_ACCESS_CODE=rave-dogfood-" + "6ATrQezYPZg5SHrGdz2HG",
+        "LP_EXECUTOR_PRIVATE_KEY=0x" + "37a5" * 16,
+    ])
+    def test_pk_and_access_code_names_masked(self, line):
+        name, value = line.split("=", 1)
+        out = redact_sensitive_text(line, force=True)
+        assert value not in out and out.startswith(name + "=")
+
+    @pytest.mark.parametrize("line", ["PKG_CONFIG_PATH=/usr/lib/pkgconfig", "EXIT_CODE=1", "STATUS_CODE=200"])
+    def test_pk_lookalike_names_unchanged(self, line):
+        assert redact_sensitive_text(line, force=True) == line

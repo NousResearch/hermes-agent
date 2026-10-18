@@ -4019,10 +4019,12 @@ class BasePlatformAdapter(ABC):
             logger.warning("Dropping internally routed event: expected session=%s derived=%s",
                            expected_session_key, session_key)
             return
+        from gateway.session_ingress_burst import burst_gate
+        behind_burst = await burst_gate(self, event, session_key)  # a serial reader's command waits too
         # On-entry self-heal: clear a guard whose owner task already exited.
         if session_key in self._active_sessions:
             self._heal_stale_session_lock(session_key)
-        if session_key in self._active_sessions or self._shared_burst_pending(event, session_key):
+        if session_key in self._active_sessions or behind_burst:
             await self._handle_message_while_active(event, session_key)
             return
         # Guard installed synchronously BEFORE the task spawns so a second message can't race in.
@@ -4032,10 +4034,6 @@ class BasePlatformAdapter(ABC):
         """True when a non-command input belongs to the shared runtime's session authority."""
         runner = getattr(self._message_handler, '__self__', None)
         return getattr(runner, 'session_authority', None) is not None and not event.get_command()
-
-    def _shared_burst_pending(self, event: MessageEvent, session_key: str) -> bool:
-        from gateway.session_ingress_burst import holds_busy_burst
-        return self._shared_runtime_owns_input(event) and holds_busy_burst(self, session_key)
 
     def _pending_recovery_owners(self, event: MessageEvent, session_key: str) -> list:
         """Adapters whose pending slot may hold *event* after busy admission: this one, plus the

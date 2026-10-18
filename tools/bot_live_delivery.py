@@ -3,9 +3,15 @@
 Only gateway/session_bot.py admits execution. Old claimed/terminal records remain
 inspectable; the legacy UI claim consumer is retired. No authority means refusal.
 Receipt storage derives from FalconOrtiz's live-owner mailbox (#101564).
+
+This module also owns the shared delivery receipts and the conversation lease spool: mail that
+lost a session-turn-lease wait is pinned to the CONVERSATION (``enqueue_lease_delivery``) and
+drained by the next turn that owns it (``claim_lease_delivery``), so a contended session retains
+the message instead of dropping it.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -25,8 +31,12 @@ log = logging.getLogger(__name__)
 
 DELIVERY_DIR_NAME = "bot_live_delivery"
 _SEQUENCE_FILE = ".sequence"
+QUARANTINE_DIR_NAME = "quarantine"
 _OWNER_KEYS = ("profile_home", "session_id", "lease_id", "live_session_id")
 _TERMINAL = frozenset({"settled", "failed", "cancelled", "ambiguous"})
+# Lane tag for mail pinned to a conversation rather than to a live-owner lease (a turn that lost
+# the session turn lease wait). Absent tag + a pinned ``owner`` dict means the live-owner lane.
+LEASE_QUEUE_LANE = "lease_queue"
 
 
 def _bot_chat_tip(home: Path) -> str | None:
@@ -222,7 +232,10 @@ def _locked(home: Path | str):
 
 
 def _read(path: Path) -> dict[str, Any] | None:
-    """Exact-id read: absent → None; unreadable or not a JSON object → raises (callers fail closed)."""
+    """Exact-id read: absent → None; unreadable or not a JSON object → raises (callers fail closed).
+
+    Directory sweeps call :func:`_scan_read`, which quarantines such a ticket instead of raising.
+    """
     try:
         record = json.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
@@ -230,6 +243,20 @@ def _read(path: Path) -> dict[str, Any] | None:
     if not isinstance(record, dict):
         raise ValueError(f"ticket {path.name} is not a JSON object ({type(record).__name__})")
     return record
+
+
+def _quarantine(path: Path, exc: BaseException) -> None:
+    target = path.parent / QUARANTINE_DIR_NAME
+    try:
+        target.mkdir(mode=0o700, exist_ok=True)
+        destination = target / path.name
+        if destination.exists():
+            destination = target / f"{path.stem}.{uuid.uuid4().hex[:8]}{path.suffix}"
+        os.replace(path, destination)
+        fsync_directory(target)
+        log.warning("Quarantined unreadable delivery record %s: %s", destination.name, exc)
+    except OSError:  # pragma: no cover - defensive: quarantine must never raise into a sweep
+        log.error("Could not quarantine unreadable delivery record %s", path, exc_info=True)
 
 
 # Tickets already reported unreadable by this process. The live poller rescans the
@@ -268,11 +295,20 @@ def _scan_read(path: Path) -> dict[str, Any] | None:
     Exact-id reads (admission idempotency, completion, result lookup) keep
     using _read so a permission error still fails closed instead of
     licensing an overwrite of a possibly-live receipt.
+
+    A ticket whose *content* is dead — unparseable JSON, invalid UTF-8, JSON
+    that is not an object — is moved to ``<spool>/quarantine/`` as it is
+    skipped: re-reading one bad byte on every pass would keep the lane noisy
+    forever, and the record is preserved, never deleted. An I/O error is left
+    in place (the record may be perfectly good once the environment recovers).
     """
     try:
         record = _read(path)
         problem = None if record is None else _ticket_shape_error(path, record)
-    except (OSError, ValueError) as exc:  # ValueError: corrupt JSON and invalid UTF-8 alike
+    except ValueError as exc:  # dead content: corrupt JSON, invalid UTF-8, or not a JSON object
+        _quarantine(path, exc)
+        return None
+    except OSError as exc:  # permission/IO error: uninspectable, not provably dead
         record, problem = None, str(exc)
     if problem is not None:
         level = logging.DEBUG if path in _warned_unreadable else logging.WARNING
@@ -296,7 +332,7 @@ def _next_sequence(root: Path) -> int:
         persisted = int(counter.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         persisted = 0
-    scanned = max((record.get("sequence", record["created_at"])
+    scanned = max((record.get("sequence") or record.get("created_at") or 0
                    for candidate in root.glob("*.json")
                    if (record := _scan_read(candidate)) is not None), default=0)
     sequence = max(persisted, scanned) + 1
@@ -306,6 +342,10 @@ def _next_sequence(root: Path) -> int:
 
 def _write(path: Path, record: dict[str, Any]) -> None:
     atomic_json_write(path, record, indent=None, sort_keys=True, fsync_dir=True, mode=0o600)
+
+
+def _digest(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def deliver_to_live_owner(
@@ -366,29 +406,49 @@ def claim_pending_delivery(profile_home, owner):
     return
 
 
+def _complete_in_place(
+    root: Path, key: str, *, status: str, reply: str, error: str, reason: str,
+) -> dict[str, Any]:
+    """Terminal-receipt discipline for both lanes: immutable, idempotent, claimed-first."""
+    if status not in _TERMINAL:
+        raise ValueError("invalid terminal delivery status")
+    outcome = dict(status=status, reply=reply, error=error, reason=reason)
+    path = root / f"{key}.json"
+    record = _read(path)
+    if record is None:
+        raise FileNotFoundError(f"delivery not found: {key}")
+    if record["status"] in _TERMINAL:
+        if any(record.get(k) != v for k, v in outcome.items()):
+            raise ValueError("delivery already has a different terminal receipt")
+        return record
+    if record["status"] != "claimed":
+        raise ValueError("delivery must be claimed before completion")
+    record.update(outcome, completed_at=time.time_ns())
+    _write(path, record)
+    return record
+
+
 def complete_delivery(
     profile_home: Path | str, delivery_id: str, *, status: str,
     reply: str = "", error: str = "", reason: str = "",
 ) -> dict[str, Any]:
     """Persist an immutable terminal receipt; duplicate identical completion is safe."""
-    key = _delivery_id(delivery_id)
-    if status not in _TERMINAL:
-        raise ValueError("invalid terminal delivery status")
-    outcome = dict(status=status, reply=reply, error=error, reason=reason)
     with _locked(profile_home) as root:
-        path = root / f"{key}.json"
-        record = _read(path)
-        if record is None:
-            raise FileNotFoundError(f"delivery not found: {key}")
-        if record["status"] in _TERMINAL:
-            if any(record.get(k) != v for k, v in outcome.items()):
-                raise ValueError("delivery already has a different terminal receipt")
-            return record
-        if record["status"] != "claimed":
-            raise ValueError("delivery must be claimed before completion")
-        record.update(outcome, completed_at=time.time_ns())
-        _write(path, record)
-        return record
+        return _complete_in_place(
+            root, _delivery_id(delivery_id), status=status, reply=reply, error=error, reason=reason,
+        )
+
+
+def complete_lease_delivery(
+    profile_home: Path | str, delivery_id: str, *, status: str,
+    reply: str = "", error: str = "", reason: str = "",
+) -> dict[str, Any]:
+    """Persist a conversation-lane terminal receipt (same discipline as ``complete_delivery``)."""
+    with _locked(profile_home) as root:
+        return _complete_in_place(
+            root, _lease_queue_key(delivery_id), status=status, reply=reply, error=error,
+            reason=reason,
+        )
 
 
 def cancel_queued_delivery(
@@ -409,6 +469,30 @@ def cancel_queued_delivery(
                       completed_at=time.time_ns())
         _write(path, record)
         return record
+#: ENUM B (§4.8): a sender never sees the transport's storage words. The storage layer keeps
+#: ``queued -> claimed -> settled`` (the ``claimed/``/``settled/`` dirs and the record's
+#: ``status`` field are unchanged); only this boundary translation renames them.
+_PUBLIC_STATUS = {"claimed": "running", "settled": "delivered"}
+
+
+def public_delivery_status(status: str) -> str:
+    """Translate a stored delivery status to the sender-visible ENUM B word (§4.8)."""
+    word = str(status or "")
+    return _PUBLIC_STATUS.get(word, word)
+
+
+def public_delivery_record(record: dict[str, Any] | None) -> dict[str, Any] | None:
+    """A sender-visible copy of ``record`` — status translated, storage never mutated."""
+    if record is None:
+        return None
+    public = dict(record)
+    public["status"] = public_delivery_status(record.get("status"))
+    return public
+
+
+def read_public_delivery_result(profile_home: Path | str, delivery_id: str) -> dict[str, Any] | None:
+    """Sender-facing read: :func:`read_delivery_result` with ENUM B status words (§4.8)."""
+    return public_delivery_record(read_delivery_result(profile_home, delivery_id))
 
 
 def read_delivery_result(profile_home: Path | str, delivery_id: str) -> dict[str, Any] | None:
@@ -486,3 +570,118 @@ async def await_delivery_async(
         if remaining is not None and remaining <= 0:
             return record
         await asyncio.sleep(_POLL_SECONDS if remaining is None else min(_POLL_SECONDS, remaining))
+
+
+def _lease_queue_key(delivery_id: str) -> str:
+    """Filesystem-safe spool key for a conversation-lane delivery id.
+
+    The live-owner lane hands over canonical hex ids; a turn that loses the lease wait hands over
+    whatever its caller uses (peer receipts, request ids), so a foreign id is digested, never
+    trusted as a path component.
+    """
+    if re.fullmatch(r"[0-9a-f]{32,64}", delivery_id):
+        return delivery_id
+    return _digest(delivery_id)
+
+
+def enqueue_lease_delivery(
+    profile_home: Path | str, *, conversation_id: str, message: str, holder: str = "",
+    author: str | dict[str, Any] | None = None, delivery_id: str | None = None,
+) -> dict[str, Any]:
+    """Spool an inbound turn that lost the session turn lease wait onto its conversation.
+
+    ``holder`` is recorded for inspection only: the point of this lane is that the delivery is
+    pinned to the CONVERSATION, not to a lease, so the next turn admitted on that conversation runs
+    the message instead of the transcript losing it. Re-sending the same ``delivery_id`` with the
+    same payload returns the record unchanged and a terminal record is never reopened, so a peer
+    that retries after delivery cannot make the conversation run the same message twice.
+    """
+    if not isinstance(conversation_id, str) or not conversation_id.strip():
+        raise ValueError("conversation_id must be a non-empty string")
+    if not isinstance(message, str) or not message.strip():
+        raise ValueError("message must be a non-empty string")
+    if author is not None and not isinstance(author, (str, dict)):
+        raise ValueError("author must be a string, a dict, or None")
+    record_id = str(delivery_id).strip() if delivery_id else uuid.uuid4().hex
+    if not record_id:
+        raise ValueError("delivery_id must be a non-empty string when given")
+    pinned_author = author.strip() if isinstance(author, str) else author
+    if not pinned_author:
+        pinned_author = None
+    with _locked(profile_home) as root:
+        path = root / f"{_lease_queue_key(record_id)}.json"
+        existing = _read(path)
+        if existing is not None:
+            if (
+                existing.get("lane") != LEASE_QUEUE_LANE
+                or existing.get("conversation_id") != conversation_id
+                or existing.get("message") != message
+                or existing.get("author") != pinned_author
+            ):
+                raise ValueError("delivery id already belongs to a different payload")
+            return existing
+        record: dict[str, Any] = {
+            "delivery_id": record_id,
+            "id": record_id,
+            "lane": LEASE_QUEUE_LANE,
+            "conversation_id": conversation_id,
+            "holder": str(holder or ""),
+            "message": message,
+            "status": "queued",
+            "created_at": time.time_ns(),
+            "sequence": _next_sequence(root),
+        }
+        if pinned_author is not None:
+            record["author"] = pinned_author
+        _write(path, record)
+        return record
+
+
+def _lease_body_bytes(record: dict[str, Any]) -> int:
+    """The byte size a caller spends its drain budget on: the stripped body in UTF-8."""
+    return len(str(record.get("message") or "").strip().encode("utf-8"))
+
+
+def claim_lease_delivery(
+    profile_home: Path | str, *, conversation_id: str, max_bytes: int | None = None,
+) -> dict[str, Any] | None:
+    """Claim this conversation's oldest queued lease delivery, exactly once.
+
+    The claimant (a turn that just took the conversation's session turn lease) owns the body from
+    here: the record is marked claimed and stays inspectable, so a crash mid-turn leaves a receipt
+    of an unknown outcome rather than a message that runs twice. ``complete_delivery`` closes it
+    once the body has been handed to the turn.
+
+    ``max_bytes`` is the room left in the batch the caller is assembling: when the oldest record's
+    body does not fit, ``None`` is returned and that record stays QUEUED and unclaimed, so a bounded
+    drain never claims a record it cannot run. The measure is the stripped body's UTF-8 length, the
+    same one the caller spends its budget with. ``None`` means no budget - take the head.
+    """
+    if not isinstance(conversation_id, str) or not conversation_id.strip():
+        raise ValueError("conversation_id must be a non-empty string")
+    if not _root(profile_home).is_dir():
+        # Nothing spooled for this profile: never create a store just to look in it.
+        return None
+    with _locked(profile_home) as root:
+        candidates: list[tuple[float, str, dict[str, Any]]] = []
+        for path in root.glob("*.json"):
+            record = _read(path)
+            if record is None or record.get("status") != "queued":
+                continue
+            if record.get("lane") != LEASE_QUEUE_LANE:
+                continue
+            if record.get("conversation_id") != conversation_id:
+                continue
+            candidates.append((
+                record.get("sequence") or record.get("created_at") or 0.0,
+                str(record.get("delivery_id") or path.name),
+                record,
+            ))
+        if not candidates:
+            return None
+        _, _, record = min(candidates, key=lambda item: (item[0], item[1]))
+        if max_bytes is not None and _lease_body_bytes(record) > max_bytes:
+            return None
+        record.update(status="claimed", claimed_at=time.time_ns())
+        _write(root / f"{_lease_queue_key(str(record['delivery_id']))}.json", record)
+        return record

@@ -283,15 +283,15 @@ def _external_process_provider_streams(provider: str) -> bool:
         return False
     try:
         pconfig = _rp().PROVIDER_REGISTRY.get(name)
-        if pconfig is not None:
-            return bool(getattr(pconfig, "supports_streaming", False))
-    except Exception:
-        pass
+    except Exception:  # health: allow BLE001 -- registry probe only: a failure falls through to the profile registry below
+        pconfig = None
+    if pconfig is not None:
+        return bool(getattr(pconfig, "supports_streaming", False))
     try:
         from providers import get_provider_profile
 
         profile = get_provider_profile(name)
-    except Exception:
+    except Exception:  # health: allow BLE001 -- an undiscoverable profile simply did not opt in
         return False
     return profile is not None and bool(getattr(profile, "supports_streaming", False))
 

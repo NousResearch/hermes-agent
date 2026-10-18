@@ -993,3 +993,39 @@ def test_a_voice_stopped_correction_is_consumed_not_requeued(make_agent, mode):
     sent = [m for m, _ in client.calls if m.startswith("session.")]
     assert sent == [{"steer": "session.steer", "interrupt": "session.redirect"}[mode]]
     assert agent._turn_ask_index == 3, "the running turn's history changed for a consumed stop"
+
+
+def test_a_session_switch_drops_the_previous_sessions_figures(make_agent):
+    """/new, /resume and /branch repoint ``session_id`` then call ``reset_session_state``: the bar and
+    /usage show the target's gateway figures (``session.stats``), never the session left behind, and
+    a late frame of the old session does not repaint them."""
+    agent, client = make_agent([])
+    agent.connection.state(SID).apply_usage(SESSION_USAGE)
+    assert agent.session_api_calls == 5 and agent._api_latency_history
+    original = client.rpc
+
+    async def rpc(method, *, _timeout=None, **params):
+        if method == "session.stats" and params.get("session_id") == "local-other":
+            return {"api_calls": 3, "input_tokens": 9}
+        return await original(method, _timeout=_timeout, **params)
+    client.rpc = rpc
+    agent.connection.state("local-other").messages = [{"role": "user", "content": "earlier"}]  # resumed
+    agent.session_id = "local-other"
+    agent.reset_session_state()
+    assert (agent.session_api_calls, agent.session_input_tokens, agent.session_output_tokens) == (3, 9, 0)
+    assert agent.context_compressor.last_prompt_tokens == 0 and agent._api_latency_history == []
+    agent.connection.state(SID).apply_usage(dict(SESSION_USAGE, api_calls=6))
+    assert agent.session_api_calls == 3
+    assert agent._on_request_withdrawn not in agent.connection.state(SID).request_listeners
+
+
+def test_new_session_reads_zero_without_a_stats_round_trip(make_agent):
+    """/new lands on a session the gateway just created (no transcript, no usage): its figures are
+    known zero, so the reset makes no ``session.stats`` call."""
+    agent, client = make_agent([])
+    agent.connection.state(SID).apply_usage(SESSION_USAGE)
+    agent.session_id = "local-fresh"
+    client.calls.clear()
+    agent.reset_session_state()
+    assert agent.session_api_calls == 0 and agent._api_latency_history == []
+    assert [method for method, _ in client.calls] == []

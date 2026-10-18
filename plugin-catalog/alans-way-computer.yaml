@@ -1,6 +1,6 @@
 name: alans-way-computer
 repo: https://github.com/capthvnsen/alans-way-agents
-sha: 0a61eb66894a00bf2e8a8091359ffb9bcf196a70
+sha: ebcac96f41f3af1ab4a1ebf70ba72eb35efc6c60
 subdir: alans-way-computer
 version: "0.21.6"
 title: "Alan's Way Plugin: Computer Use"
@@ -9,17 +9,18 @@ maintainer: capthvnsen
 tier: community
 category: tools
 requires_hermes: ">=0.21.5"
-docs_url: https://github.com/capthvnsen/alans-way-agents/tree/0a61eb66894a00bf2e8a8091359ffb9bcf196a70/alans-way-computer
+docs_url: https://github.com/capthvnsen/alans-way-agents/tree/ebcac96f41f3af1ab4a1ebf70ba72eb35efc6c60/alans-way-computer
 readme: true
 platforms: [linux, macos]
 known_issues:
-  - "Needs a Hermes build with the pluggable computer-use API (merged to main after 0.21.5). On older Hermes the plugin installs and does nothing. Install alans-way first and run its workspace setup, which writes the workspace_browser block this provider reuses."
-  - "Hermes asks for approval on every computer_use action type until it is granted. For an unattended Telegram bot, grant them once with Always in Telegram, or add cua:<action>:background entries to command_allowlist (see the README). Takes effect after a gateway restart."
-  - "Runs only in the plugin host: it cannot load under plugins.isolation: host, because the provider hands Hermes a live router session."
-  - "Typing without a target field works only on the VM's own desktop, where it types at the focused window (still approval-gated). On the user's computer the app never takes focus, so the agent uses set_value on a field instead."
-  - "The VM desktop path needs xdotool, a screenshot tool (scrot, maim or ImageMagick import), the AT-SPI bus and python3-gi on the VM. Without them those calls fail and the agent reports it; setup.sh warns about what is missing."
-  - "A default som capture may fetch the window screenshot even when it is omitted from the model after the 35% coverage check. Use mode vision to request it explicitly, or mode ax for an element-only capture. When a screenshot is omitted, coordinate= and element bounds are screen pixels."
-  - "Mac and Windows action replies update the held element list without shifting surviving numbers. On Linux, capture again before acting by number after a tree change; cut replies do not prove an unseen control is gone. A timeout or hung app can leave the action's outcome uncertain: capture before retrying."
+- "Needs a Hermes build with the pluggable computer-use API (merged to main after 0.21.5). On older Hermes the plugin installs and does nothing. Install alans-way first and run its workspace setup, which writes the workspace_browser block this provider reuses."
+- "Hermes asks for approval on every computer_use action type until it is granted. For an unattended Telegram bot, grant them once with Always in Telegram, or add cua:<action>:background entries to command_allowlist (see the README). Takes effect after a gateway restart."
+- "Runs only in the plugin host: it cannot load under plugins.isolation: host, because the provider hands Hermes a live router session."
+- "Typing without a target field works only on the VM's own desktop, where it types at the focused window (still approval-gated). On the user's computer the app never takes focus, so the agent uses set_value on a field instead."
+- "The VM desktop path needs xdotool, a screenshot tool (scrot, maim or ImageMagick import), the AT-SPI bus and python3-gi on the VM. Without them those calls fail and the agent reports it; setup.sh warns about what is missing."
+- "A default som capture may fetch the window screenshot even when it is omitted from the model after the 35% coverage check. Use mode vision to request it explicitly, or mode ax for an element-only capture. When a screenshot is omitted, coordinate= and element bounds are screen pixels."
+- "Mac and Windows action replies update the held element list without shifting surviving numbers. On Linux, capture again before acting by number after a tree change; cut replies do not prove an unseen control is gone. A timeout or hung app can leave the action's outcome uncertain: capture before retrying."
+- The provider implementation is unchanged by this re-pin. It is pinned alongside alans-way because it uses the configured workspace router; this catalog update does not independently establish remote end-to-end compatibility.
 capabilities:
   provides_tools: []
   provides_hooks: []

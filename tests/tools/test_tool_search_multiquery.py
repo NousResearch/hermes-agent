@@ -536,3 +536,26 @@ class TestConfigAndSchema:
         describe_params = schemas["tool_describe"]["parameters"]
         assert describe_params["required"] == ["names"]
         assert describe_params["properties"]["names"]["type"] == "array"
+
+    def test_bridge_descriptions_state_their_batching_limits(self):
+        """The bridge must not read as permission to batch everything.
+
+        `tool_call` with several LOCAL tools is rejected at dispatch ("takes exactly one entry"),
+        so the description has to say so before the model tries it; and `tool_describe`'s cap
+        belongs in the schema the model reads, not only in the error it gets back.
+        """
+        from tools import tool_search
+        from tools.tool_search import bridge_tool_schemas
+
+        schemas = {s["function"]["name"]: s["function"] for s in bridge_tool_schemas(3)}
+        call_desc = schemas["tool_call"]["description"]
+        assert "ONE entry per call" in call_desc
+        assert "connectors__" in call_desc
+
+        describe_desc = schemas["tool_describe"]["description"]
+        assert str(tool_search._MAX_DESCRIBE_NAMES_PER_CALL) in describe_desc
+        assert str(tool_search._MAX_DESCRIBE_NAMES_PER_CALL) in (
+            schemas["tool_describe"]["parameters"]["properties"]["names"]["description"]
+        )
+        # a whole MCP server's toolset must fit in one describe call
+        assert tool_search._MAX_DESCRIBE_NAMES_PER_CALL >= 40

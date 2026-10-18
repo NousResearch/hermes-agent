@@ -35,7 +35,10 @@ logger = logging.getLogger("tools.tool_search")
 # returns HTTP 502 for 8 or more (measured 2026-09-09), and one local call
 # maps to one gateway request. Describe has no such remote limit.
 _MAX_QUERIES_PER_CALL = 7
-_MAX_DESCRIBE_NAMES_PER_CALL = 10
+# Describe has no remote limit (unlike search): the cap only bounds one response's size. Set it
+# high enough that a whole MCP server's toolset fits in one call — at 10, listing the schemas of a
+# 43-tool server needed five round-trips, and the first attempt at 11 failed outright.
+_MAX_DESCRIBE_NAMES_PER_CALL = 40
 
 
 @dataclass(frozen=True)
@@ -285,21 +288,26 @@ def bridge_tool_schemas(deferred_count: int, listing: Optional[str] = None,
             TOOL_DESCRIBE_NAME,
             f"Load the full JSON schemas for tools returned by `{TOOL_SEARCH_NAME}`. "
             f"Required before `{TOOL_CALL_NAME}` if a tool's parameters are unknown. "
-            "Batch every schema you need into one call.",
+            f"Batch every schema you need into one call (up to {_MAX_DESCRIBE_NAMES_PER_CALL} names).",
             {
                 "names": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Exact tool names (as returned by tool_search). A single string is accepted and treated as one name.",
+                    "description": (
+                        "Exact tool names (as returned by tool_search). A single string is accepted "
+                        f"and treated as one name. At most {_MAX_DESCRIBE_NAMES_PER_CALL} names per call."
+                    ),
                 },
             },
             ["names"],
         ),
         _bridge_schema(
             TOOL_CALL_NAME,
-            "Invoke deferred tools: `calls` is an array of {name, arguments}, one entry per "
-            "invocation (batch independent calls; results come back in order). Arguments match "
-            f"the schema from `{TOOL_DESCRIBE_NAME}`; approvals and hooks apply as usual.",
+            "Invoke deferred tools: `calls` is an array of {name, arguments}. A **local** tool takes "
+            f"exactly ONE entry per call — issue the next as another `{TOOL_CALL_NAME}` call; only "
+            "connector tools (`connectors__…`) may be batched several to a call. Results come back "
+            f"in order. Arguments match the schema from `{TOOL_DESCRIBE_NAME}`; approvals and hooks "
+            "apply as usual.",
             {
                 "calls": {
                     "type": "array",

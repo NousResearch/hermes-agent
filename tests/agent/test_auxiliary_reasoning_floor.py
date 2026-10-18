@@ -74,3 +74,29 @@ def test_field_rejection_still_strips_instead_of_stepping_up():
     retry = client.chat.completions.create.call_args_list[1].kwargs
     assert "reasoning_effort" not in retry
     assert not auxiliary_reasoning_floor._FLOORED_ROUTES
+
+
+# Z.ai's China endpoint refuses the disable in Chinese (code 1214): "该模型始终思考，不支持关闭思考；
+# 请使用 low、high 或 max" — "this model always thinks, turning thinking off is not supported; use
+# low, high or max" (#129173). Before the markers learned the wording the floor rung never fired and
+# every session-start title call on that route 400'd.
+_ZAI_400 = (
+    "Error code: 400 - {'error': {'code': '1214', 'message': '该模型始终思考，不支持关闭思考；"
+    "请使用 low、high 或 max'}}"
+)
+
+
+def test_zai_chinese_required_400_takes_the_floor_rung():
+    """The Chinese-only wording steps the effort up exactly like the English one: one retry at
+    ``low`` with the rest of the request intact, then the route is remembered as a floor."""
+    client = MagicMock()
+    client.base_url = "https://open.bigmodel.cn/api/paas/v4"
+    client.chat.completions.create.side_effect = [RuntimeError(_ZAI_400), {"ok": True}]
+
+    assert _call(client) == {"ok": True}
+    first, retry = (c.kwargs for c in client.chat.completions.create.call_args_list[:2])
+    assert first["reasoning_effort"] == "none"
+    assert retry["reasoning_effort"] == auxiliary_reasoning_floor.REASONING_FLOOR_EFFORT
+    assert retry["model"] == first["model"]
+    assert retry["extra_body"]["response_format"] == {"type": "json_object"}
+    assert auxiliary_reasoning_floor._FLOORED_ROUTES

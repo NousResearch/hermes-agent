@@ -16,6 +16,14 @@
  * rename, export, and bulk actions live on the Sessions page. Keeping this
  * panel read-only (plus select / new) avoids duplicating that machinery and
  * keeps the chat context focused on switching conversations quickly.
+ *
+ * The rail lists conversations, so it asks for the Sessions page's "Chats"
+ * category (`AUTOMATION_SESSION_SOURCES` excluded): cron / tool / one-shot
+ * runs derive their title from the job, and a couple of scheduled jobs
+ * otherwise push every human conversation off the bottom of the list within
+ * hours. Automation runs stay reachable — the Sessions page has the
+ * "Automation" category and resumes any row into this tab — so the rail does
+ * not need its own filter.
  */
 
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -29,6 +37,7 @@ import { ChatWorkspacePicker } from "@/components/ChatWorkspacePicker";
 import { useI18n } from "@/i18n";
 import { api, type SessionInfo } from "@/lib/api";
 import { cn, timeAgo } from "@/lib/utils";
+import { AUTOMATION_SESSION_SOURCES } from "@/pages/SessionsPage_sources";
 
 const SESSION_LIMIT = 30;
 const SESSION_REFRESH_MS = 20_000;
@@ -100,7 +109,12 @@ export function ChatSessionList({
     setLoading(true);
     setError(null);
     api
-      .getSessions(SESSION_LIMIT, 0, scopeKey, "recent")
+      .getSessions(
+        SESSION_LIMIT,
+        0,
+        { profile: scopeKey, excludeSources: AUTOMATION_SESSION_SOURCES },
+        "recent",
+      )
       .then((res) => {
         if (reqRef.current !== myReq) return;
         setSessions(res.sessions);
@@ -202,7 +216,8 @@ export function ChatSessionList({
     if (!sessions || sessions.length === 0) {
       return (
         <div className="px-2 py-6 text-center text-xs text-text-secondary">
-          {t.sessions.noSessions}
+          {/* Automation rows are filtered out above; don't claim there are none. */}
+          {t.sessions.noSessionsInFilter}
         </div>
       );
     }

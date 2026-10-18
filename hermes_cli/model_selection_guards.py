@@ -6,10 +6,13 @@ tests and mock patch points remain valid; this module only aggregates them.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
-from typing import Iterable, List, Optional
+from typing import Iterable, Optional
 
 from agent.models_dev import ModelInfo
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -153,10 +156,12 @@ def data_policy_acknowledged_interactively() -> bool:
         return isinstance(security_cfg, dict) and security_cfg.get(
             "allow_data_training_tiers_interactive") is True
     except Exception:
+        logger.debug("interactive data-policy ack check failed; treating as unacknowledged",
+                     exc_info=True)
         return False
 
 
-def _drop_acknowledged_data_policy(warnings: List[SelectionWarning]) -> List[SelectionWarning]:
+def _drop_acknowledged_data_policy(warnings: list[SelectionWarning]) -> list[SelectionWarning]:
     """Drop ``data_policy`` entries when the profile has already recorded the interactive
     acknowledgement. Only that kind: cost and context-cache warnings still confirm."""
     if not any(w.kind == "data_policy" for w in warnings):

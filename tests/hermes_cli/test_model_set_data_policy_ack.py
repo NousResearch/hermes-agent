@@ -9,7 +9,7 @@ profile keeps being asked while an unacknowledged one would silently stop being 
 import pytest
 
 pytest.importorskip("fastapi")
-from fastapi.testclient import TestClient  # noqa: E402
+from fastapi.testclient import TestClient
 
 CONTRIBUTOR_MODEL = "muse-spark-1.2-contributor"
 

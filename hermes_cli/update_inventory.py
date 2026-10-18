@@ -259,28 +259,18 @@ def _launchd_owner_for_ledger_entry(entry: dict, pid: int, jobs: list) -> tuple[
     return None
 
 
-def _systemd_owner_for_ledger_entry(pid: int) -> tuple[str, str] | None:
-    """``(scope, unit)`` of the systemd unit whose live ``MainPID`` is this ledger row, if any.
+def _systemd_owner_for_ledger_pid(pid: int) -> tuple[str, str | None] | None:
+    """``(unit, scope)`` of the systemd unit whose live ``MainPID`` is *pid*, if any.
 
-    A unit-managed serve/dashboard records no live spawner — systemd started it, not the CLI — so
-    the spawner probe alone reads the row as ``manual-serve``: the plan then advertises a
-    respawn-argv restart and owes a durable manual handoff for a backend systemd brings back by
-    itself (#139387). ``_get_systemd_service_for_pid`` proves ownership through the unit's own live
-    ``MainPID`` before it names a unit, so a backend that merely runs under some ``.service`` cgroup
-    (started by hand from a shell that happens to be that unit's main process) is never claimed.
-    Linux only, and advisory like the launchd matcher: ``None`` on another host and on any probe
-    failure, which falls back to the spawner classification rather than aborting the inventory.
-    """
-    if sys.platform != "linux":
-        return None
+    A unit-launched backend sets neither ``HERMES_SPAWN`` nor ``HERMES_PARENT_PID``, so the spawner
+    probe reads ``manual-serve`` and the update tells the user to "ask the owner to relaunch
+    `hermes dashboard`" for a process systemd owns (#141021). Ownership is the unit's MainPID, not
+    cgroup membership (a hand-started dashboard inside some unrelated unit's cgroup is still manual);
+    ``None`` off Linux, when unreadable, or when no unit owns it."""
     with suppress(Exception):
         from hermes_cli import main_dashboard as _dash
 
-        unit = _dash._get_systemd_service_for_pid(pid)
-        if unit:
-            cgroup = _dash._get_pid_cgroup_path(pid)
-            scope = _dash._extract_scope_from_cgroup(cgroup) if cgroup else None
-            return (scope or "unknown", unit)
+        return _dash._systemd_owner_for_pid(pid)
     return None
 
 
@@ -302,9 +292,8 @@ def _collect_ledger_runtimes(plan: UpdatePlan, seen: set[int]) -> None:
     ledger_entries() live-verifies (pid, create_time) so PID reuse never fabricates a row. Desktop-
     supervised backends (spawner still alive) restart via the Desktop's own respawn, not ours.
     A backend owned by a loaded launchd job is classified ``launchd`` (kickstart restart, never a
-    detached argv respawn) — the spawner probe cannot see that (#116503) — and one owned by a
-    systemd unit is classified ``systemd`` for the same reason: the unit's own restart pass brings
-    it back, so the row owes no manual handoff (#139387)."""
+    detached argv respawn) — the spawner probe cannot see that (#116503); one that is a systemd
+    unit's MainPID is ``systemd`` for the same reason (#141021)."""
     with _probe("Serve/dashboard ledger inventory"):
         from hermes_cli.process_identity import ledger_entries, spawner_is_dead
 
@@ -321,22 +310,18 @@ def _collect_ledger_runtimes(plan: UpdatePlan, seen: set[int]) -> None:
                 "port": entry.get("port"), "create_time": entry.get("create_time"),
             }
             job = _launchd_owner_for_ledger_entry(entry, pid, launchd_jobs) if launchd_jobs else None
-            unit = _systemd_owner_for_ledger_entry(pid) if job is None else None
             if job:
                 supervisor, detail["launchd_domain"], detail["launchd_label"] = "launchd", job[0], job[1]
-            elif unit:
-                # A unit owns this backend: `Restart=always` would revive it mid-pull under a
-                # respawn-argv restart, and a manual handoff reminder would outlive the update that
-                # systemd's own restart already discharged. The fresh child's systemd pass covers
-                # `hermes-serve*`/`hermes-dashboard*` units, exactly as the gateway rows are.
-                supervisor = "systemd"
-                detail["systemd_scope"], detail["systemd_unit"] = unit
             elif _is_desktop_ssh_ledger_entry(entry):
                 # No local spawner, so the probe below would read manual-serve and file a reminder
                 # nobody here can discharge; its token file and owner nonce belong to the client.
                 supervisor = "desktop-ssh"
+            elif spawner_is_dead(entry) is False:
+                supervisor = "desktop"
+            elif unit := _systemd_owner_for_ledger_pid(pid):
+                supervisor, detail["systemd_unit"], detail["systemd_scope"] = "systemd", unit[0], unit[1]
             else:
-                supervisor = "desktop" if spawner_is_dead(entry) is False else "manual-serve"
+                supervisor = "manual-serve"
             plan.runtimes.append(_runtime(
                 str(purpose), str(entry.get("profile") or "default"), pid, supervisor, detail=detail,
             ))
@@ -569,7 +554,8 @@ def match_runtime_outcomes(
         for r in plan.runtimes:
             if isinstance(r, RuntimeRecord):
                 outcomes.append(
-                    {"kind": r.kind, "profile": r.profile, "pid": r.pid, "mechanism": r.restart_via, "outcome": _outcome(r)}
+                    {"kind": r.kind, "profile": r.profile, "pid": r.pid, "mechanism": r.restart_via, "outcome": _outcome(r),
+                     **{k: r.detail[k] for k in ("systemd_unit", "systemd_scope") if k in (r.detail or {})}}
                 )
     except Exception as exc:
         logger.debug("Runtime-outcome reconciliation failed: %s", exc)
@@ -620,9 +606,17 @@ def report_unaccounted_runtimes(outcomes: list[dict[str, Any]]) -> bool:
     if any(o.get("kind") in _SERVE_KINDS for o in missed):
         # A serve/dashboard is not reachable by any `gateway restart` command: name the process, not the wrong verb.
         # See #100479.
-        if sys.platform == "linux":
-            print("      systemctl --user restart hermes-serve.service   # unit-managed serve")
-        print("      relaunch `hermes serve` / `hermes dashboard`")
+        from hermes_cli.main_dashboard import _systemd_restart_commands
+
+        for o in missed:
+            if o.get("kind") in _SERVE_KINDS and o.get("systemd_unit"):
+                # The owning unit and scope are known: name its exact command (#141021).
+                for command in _systemd_restart_commands(o["systemd_unit"], o.get("systemd_scope")):
+                    print(f"      {command}   # pid {o['pid']}")
+        if any(o.get("kind") in _SERVE_KINDS and not o.get("systemd_unit") for o in missed):
+            if sys.platform == "linux":
+                print("      systemctl --user restart hermes-serve.service   # unit-managed serve")
+            print("      relaunch `hermes serve` / `hermes dashboard`")
     return True
 
 

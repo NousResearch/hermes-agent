@@ -264,18 +264,23 @@ def test_launchd_serve_row_never_pessimize_gateway_coverage():
 
 
 def test_systemd_serve_row_owes_no_manual_handoff(monkeypatch, tmp_path):
-    """#139387: systemd owns the restart, so a unit-owned dashboard must not file a durable
-    manual-restart reminder nor make the receipt's gateway coverage unverified — the update's own
-    systemd pass restarts the ``hermes-serve*``/``hermes-dashboard*`` unit that owns it."""
+    """#139387: a unit-owned dashboard is not a manual obligation — ``defer_manual_serve`` refuses it,
+    and the receipt reports no manual transfer owed, because the update's own systemd pass restarts
+    the ``hermes-serve*``/``hermes-dashboard*`` unit that owns it. Its durable reminder is the unit
+    twin (#141021): the same file, carrying the unit's restart command instead of "ask its owner"."""
     from hermes_cli import update_serve_obligations
 
     monkeypatch.setattr(update_serve_obligations, "get_hermes_home", lambda: tmp_path)
     monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: True)
     row = asdict(RuntimeRecord(
         kind="dashboard", profile="default", pid=901, supervisor="systemd", restart_via="systemd",
-        detail={"create_time": 1000.0, "systemd_unit": "hermes-dashboard.service"}))
+        detail={"create_time": 1000.0, "systemd_unit": "hermes-dashboard.service",
+                "systemd_scope": "user"}))
     assert defer_manual_serve(row) is False
     assert retain_receipt_manual_serves({"plan": {"runtimes": [row]}}) == []
-    assert not (tmp_path / "serve_restart_pending").exists()
+    pending = list((tmp_path / "serve_restart_pending").glob("*.json"))
+    assert len(pending) == 1, "a unit row files exactly one reminder, not a manual handoff"
+    assert json.loads(pending[0].read_text())["restart"] == [
+        "systemctl --user restart hermes-dashboard.service"]
     receipt = {"plan": {"runtimes": [{"kind": "gateway", "profile": "default"}, row]}, "fleet": []}
     assert fleet._receipt_owed_gateways(receipt, []) == {("gateway", "default")}

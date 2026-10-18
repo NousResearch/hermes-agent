@@ -28,6 +28,10 @@ NOT_SENT = "Gateway disconnected before the request was sent; nothing was sent."
 _GONE = frozenset({"not_found", "permission_denied", "profile_mismatch"})
 
 
+class CallStopped(GatewayClientError):
+    """The caller stopped waiting (:meth:`GatewayConnection.call_until`); the request was sent."""
+
+
 def lost_before(frame, epoch) -> bool:
     """``frame`` is a transport error from a connection older than ``epoch``: a reconnect replaced it,
     so it is no outcome of anything submitted on ``epoch``."""
@@ -52,8 +56,14 @@ class SessionState:
         # Called (loop thread) with each ``session.usage`` payload; GatewayAgent maps it onto main's
         # agent attributes, so a frame landing between turns is never dropped with the turn queue.
         self.usage_listeners: list = []
+        # Called (loop thread) with each ``request.cancel`` payload: the agent thread may be parked in a
+        # modal answering that very request (another viewer settled it), so it cannot read the queue.
+        self.request_listeners: list = []
         # A gateway-admitted notification turn the idle CLI queued a header for (gateway_tools_notify).
         self.admitted_turn: dict | None = None
+        # ``session.replay_gap``s seen, and how many a re-attach covered: the owner retired this viewer's
+        # subscription on overflow, so its frames stop until ``GatewayConnection.reattach``.
+        self.gaps = self.attached_gaps = 0
 
     def adopt_snapshot(self, snapshot):
         self.info = dict(snapshot.get("info") or {})
@@ -64,6 +74,12 @@ class SessionState:
         if self.info.get("title"):
             self.title = self.info["title"]
 
+    def runs_route(self, model, provider=""):
+        """Whether the session runs ``model`` (and ``provider``, when both sides name one)."""
+        current, current_provider = self.info.get("model"), self.info.get("provider")
+        return bool(current) and model == current and not (
+            provider and current_provider and provider != current_provider)
+
     def apply_event(self, kind, payload):
         if kind in ("session.info", "session.updated") and isinstance(payload, dict):
             self.info.update({k: v for k, v in payload.items() if k != "session_id"})
@@ -72,7 +88,16 @@ class SessionState:
         elif kind == "todo.updated" and isinstance(payload, dict):
             self.todos = list(payload.get("todos") or [])
         elif kind == "session.usage" and isinstance(payload, dict):
-            self.apply_usage(payload.get("usage") if isinstance(payload.get("usage"), dict) else payload)
+            # The gateway's frame carries the flat counters next to a nested TUI ``usage`` view this
+            # reader can't map (``session_usage.usage_frame``): the counters win when present.
+            nested = payload.get("usage")
+            flat = isinstance(payload.get("api_calls"), int) or not isinstance(nested, dict)
+            self.apply_usage(payload if flat else nested)
+        elif kind == "request.cancel" and isinstance(payload, dict):
+            for listener in list(self.request_listeners):
+                listener(payload)
+        elif kind == "session.replay_gap":
+            self.gaps += 1
 
     def apply_usage(self, usage):
         """One session-cumulative usage dict (``session.usage`` payload or ``session.stats`` result)."""
@@ -110,6 +135,8 @@ class GatewayConnection:
         # waiter or the frame comes first, so an answer faster than the verb's reply is kept.
         self._side: dict[str, queue.Queue] = {}
         self._side_lock = threading.Lock()
+        # The wake events of :meth:`call_until` commands in flight, each on its own socket.
+        self._commands: set[threading.Event] = set()
 
     @classmethod
     def shared(cls):
@@ -140,6 +167,10 @@ class GatewayConnection:
                         raise self._error
                     return
                 thread = self._thread
+                if thread is not None and self.closed and thread.is_alive() and thread is not threading.current_thread():
+                    # ``_run`` reports ready before its thread returns: that life is over, so let it
+                    # end instead of reading it as a dial in progress (and re-raising its stale error).
+                    thread.join(max(deadline - time.monotonic(), 0))
                 if thread is None or not thread.is_alive():
                     from agent.memory_provider import spawn_context_thread
 
@@ -260,6 +291,9 @@ class GatewayConnection:
 
     def close(self):
         self._detached = True
+        with self._side_lock:
+            for wake in self._commands:  # their sockets close too
+                wake.set()
         loop, stop = self.loop, self._stop
         if loop is not None and stop is not None and not self.closed:
             try:
@@ -286,12 +320,20 @@ class GatewayConnection:
             return False
         return True
 
-    def call(self, method, *, timeout=None, **params):
-        return self.call_tagged(method, timeout=timeout, **params)[0]
+    def call(self, method, *, timeout=None, abandon=None, **params):
+        return self.call_tagged(method, timeout=timeout, abandon=abandon, **params)[0]
 
-    def call_tagged(self, method, *, timeout=None, **params):
-        """``(result, epoch)``: the epoch of the socket that carried the request, so work it admitted
-        is tied to that gateway life even if another caller redials before this one reads ``epoch``."""
+    def reattach(self, session_id, abandon=None):
+        """``session.resume`` after a replay gap; its snapshot names the subscription to detach."""
+        state = self.state(session_id)
+        gaps = state.gaps
+        snapshot = self.call("session.resume", session_id=session_id, abandon=abandon)
+        state.adopt_snapshot(snapshot)
+        state.attached_gaps = gaps  # a gap during this resume (or a wait given up) still owes one
+        return snapshot
+
+    def _send(self, method, budget, params):
+        """``(future, epoch)`` of one request sent on the live socket (see :meth:`call_tagged`)."""
         if self._thread is not None and threading.current_thread() is self._thread:
             raise RuntimeError("GatewayConnection.call() on the gateway loop thread would deadlock")
         self.start()
@@ -299,10 +341,83 @@ class GatewayConnection:
         if live is None or loop is None:
             raise GatewayClientError(NOT_SENT)
         client, epoch = live
-        budget = DEFAULT_RPC_TIMEOUT if timeout is None else timeout
-        future = asyncio.run_coroutine_threadsafe(client.rpc(method, _timeout=budget, **params), loop)
+        return asyncio.run_coroutine_threadsafe(client.rpc(method, _timeout=budget, **params), loop), epoch
+
+    def call_until(self, method, wake, **params):
+        """``call`` with no answer deadline, for a verb that lasts as long as the work it runs (a plugin
+        command's handler), on a socket of its own to this connection's gateway: the gateway answers a
+        socket's requests one at a time, in arrival order (``tui_gateway/ws.py``), so a handler still
+        running never holds this connection's reads, prompts and interrupts. One dial and one send,
+        never retried. Waits for the answer or the transport's error, unless *wake* (a
+        ``threading.Event``, set by Ctrl+C or :meth:`close`) is set first: then raises
+        :class:`CallStopped`; the request was sent and its work goes on, but its answer is dropped. The
+        socket closes on any of these, and its thread is gone before this returns."""
+        import concurrent.futures
+        from agent.memory_provider import spawn_context_thread
+        if self._thread is not None and threading.current_thread() is self._thread:
+            raise RuntimeError("GatewayConnection.call_until() on the gateway loop thread would deadlock")
+        self.start()  # this viewer's gateway, dialled (or redialled after a hang-up) as for any call
+        if self.final:
+            raise GatewayClientError(NOT_SENT)
+        answer, sent = concurrent.futures.Future(), threading.Event()
+        answer.add_done_callback(lambda _done: wake.set())
+        thread = spawn_context_thread(lambda: asyncio.run(self._command(method, params, wake, answer, sent)),
+                                      name="hermes-gateway-command")
+        with self._side_lock:
+            self._commands.add(wake)
+        thread.start()
         try:
-            return future.result(budget + 5), epoch
+            wake.wait()
+        finally:
+            wake.set()  # also on KeyboardInterrupt: the socket closes
+            thread.join(10)
+            with self._side_lock:
+                self._commands.discard(wake)
+        if answer.done():
+            return answer.result()
+        if sent.is_set():
+            raise CallStopped(method)
+        raise GatewayClientError(NOT_SENT)
+
+    async def _command(self, method, params, wake, answer, sent):
+        """The command socket of :meth:`call_until`: dial, send once, settle ``answer`` with the reply or
+        the transport's error; a set ``wake`` without an answer cancels the dial or the wait."""
+        connect = self._connect
+        if connect is None:
+            from hermes_cli.gateway_client import connect_gateway
+            connect = connect_gateway
+        task = asyncio.current_task()
+        stop = asyncio.ensure_future(asyncio.to_thread(wake.wait))
+        stop.add_done_callback(lambda _stop: answer.done() or task.cancel())
+        try:
+            async with connect() as client:
+                sent.set()  # from here the request may have reached the gateway: never sent again
+                answer.set_result(await client.rpc(method, _timeout=float("inf"), **params))
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:  # health: allow BLE001 -- every transport failure is the caller's error
+            if not isinstance(exc, GatewayClientError):
+                exc = GatewayClientError(DISCONNECTED if sent.is_set() else NOT_SENT)
+            answer.set_exception(exc)
+        finally:
+            wake.set()  # ends the watcher above
+            await asyncio.gather(stop, return_exceptions=True)
+
+    def call_tagged(self, method, *, timeout=None, abandon=None, **params):
+        """``(result, epoch)``: the epoch of the socket that carried the request, so work it admitted
+        is tied to that gateway life even if another caller redials before this one reads ``epoch``.
+        ``abandon`` (polled) true stops the wait with :class:`CallStopped`; the answer is dropped."""
+        from concurrent.futures import wait
+        budget = DEFAULT_RPC_TIMEOUT if timeout is None else timeout
+        if abandon is not None and abandon():
+            raise CallStopped(method)
+        future, epoch = self._send(method, budget, params)
+        deadline = time.monotonic() + budget + 5
+        try:
+            while abandon is not None and not wait([future], 0.1).done and time.monotonic() < deadline:
+                if abandon():
+                    raise CallStopped(method)
+            return future.result(max(deadline - time.monotonic(), 0)), epoch
         except TimeoutError as exc:
             future.cancel()
             raise GatewayClientError(f"Gateway did not answer {method}") from exc

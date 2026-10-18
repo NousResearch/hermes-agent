@@ -360,11 +360,11 @@ class MattermostAdapter(BasePlatformAdapter):
         file_name: Optional[str] = None, metadata: _Metadata = None) -> SendResult:
         """Upload a local file and attach it to a post."""
         p = Path(file_path)
-        if not p.exists():
+        if not await asyncio.to_thread(p.exists):
             logger.warning("Mattermost: local file not found, skipping: %s", file_path)
             return SendResult(success=True, message_id=None)
         fname = file_name or p.name
-        file_id = await self._upload_file(chat_id, p.read_bytes(), fname,
+        file_id = await self._upload_file(chat_id, await asyncio.to_thread(p.read_bytes), fname,
                                           mimetypes.guess_type(fname)[0] or "application/octet-stream")
         if not file_id:
             return SendResult(success=False, error="File upload failed")
@@ -376,10 +376,10 @@ class MattermostAdapter(BasePlatformAdapter):
         if image_url.startswith("file://"):
             local_path = _unquote(image_url[7:])
             p = Path(local_path)
-            if not p.exists():
+            if not await asyncio.to_thread(p.exists):
                 logger.warning("Mattermost: skipping missing image %s", local_path)
                 return None
-            return p.read_bytes(), p.name, mimetypes.guess_type(p.name)[0] or "image/png"
+            return await asyncio.to_thread(p.read_bytes), p.name, mimetypes.guess_type(p.name)[0] or "image/png"
         from tools.url_safety import is_safe_url
         if not is_safe_url(image_url):
             logger.warning("Mattermost: blocked unsafe image URL in batch")
@@ -618,7 +618,7 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
             file_ids: list[str] = []
             for media in media_files or []:
                 file_path = media.get("path") if isinstance(media, dict) else media
-                if not file_path or not os.path.exists(file_path):
+                if not file_path or not await asyncio.to_thread(os.path.exists, file_path):
                     continue
                 form = aiohttp.FormData()
                 form.add_field("channel_id", chat_id)  # required so the server can attribute the upload

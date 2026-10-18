@@ -552,6 +552,7 @@ async def _dashboard_health_middleware(request: Request, call_next):
         raise
     if response.status_code >= 500:
         DASHBOARD_HEALTH.record_error(f"http_{response.status_code}", request.url.path)
+        _log.warning("dashboard answered %s on %s", response.status_code, request.url.path)
     return response
 
 

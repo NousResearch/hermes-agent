@@ -77,6 +77,16 @@ async def test_consent_change_registers_and_revokes_hook_without_restart(tmp_pat
         _approve(target, command, False)
         await async_wait_until(lambda: _hooks_in(target) == [], timeout=10, what="hook unregistered")
         assert bool(passes) == multiplex
+
+        # Consent landing while config.yaml is unreadable applies nothing; its recovery alone,
+        # with no further allowlist edit, must still register the hook.
+        (target / "config.yaml").rename(target / "config.yaml.bak")
+        _approve(target, command, True)
+        if multiplex:
+            await _passes(2)
+        assert _hooks_in(target) == []
+        (target / "config.yaml.bak").rename(target / "config.yaml")
+        await async_wait_until(lambda: len(_hooks_in(target)) == 1, timeout=10, what="hook after config recovery")
     finally:
         runner._running = False
         watcher.cancel()

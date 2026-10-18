@@ -14,7 +14,7 @@ changed since its adapters were last built is re-scanned too: creators make the 
 bot token afterwards, and without this an adapter-less profile would stay adapter-less forever.
 
 The same watcher tick (on every gateway, multiplexed or not) re-syncs a home's shell hooks when its
-``shell-hooks-allowlist.json`` changed: a non-TTY gateway skips unconsented hooks, so consent recorded
+``shell-hooks-allowlist.json`` (or ``config.yaml``) changed: a non-TTY gateway skips unconsented hooks, so consent recorded
 afterwards must register them without a restart (#132993). That re-runs hook registration only, never
 an adapter rebuild.
 """
@@ -38,6 +38,13 @@ _PROFILE_SIGNATURE_FILES = ("config.yaml", ".env")
 # read it can end in has no timeout of its own — on Windows the named pipe stalls there until
 # its peer answers — so the await needs one. A healthy identify answers in milliseconds.
 _OWN_GATEWAY_PROBE_TIMEOUT_SECS = 5.0
+
+
+def _stat_signature(path: Path) -> Optional[tuple]:
+    try:
+        return file_signature(os.stat(path))
+    except OSError:
+        return None
 
 
 def profile_serve_signature(home: Path) -> tuple:
@@ -103,8 +110,8 @@ class GatewayProfileReconcileMixin:
                 logger.warning("Served-profile reconcile failed; retrying next cycle", exc_info=True)
 
     async def _sync_hooks_on_consent_change(self) -> None:
-        """Re-sync the shell hooks of each home (launch + served) whose consent allowlist changed since
-        the last tick, under that home's scope: hooks consented since start register, revoked ones stop
+        """Re-sync the shell hooks of each home (launch + served) whose consent allowlist or config
+        changed since the last tick, under that home's scope: hooks consented since start register, revoked ones stop
         firing. A home seen for the first time syncs once (consent may have landed after startup
         registered). Hook registration only: adapters and sessions are never touched."""
         from hermes_constants import get_process_hermes_home
@@ -113,24 +120,28 @@ class GatewayProfileReconcileMixin:
             self._resync_changed_hook_consent, homes, self._hook_consent_signatures or {})
 
     def _resync_changed_hook_consent(self, homes, seen: dict) -> dict:
-        """Blocking half of ``_sync_hooks_on_consent_change``; returns the signatures it observed."""
+        """Blocking half of ``_sync_hooks_on_consent_change``; returns the signatures it applied. The
+        key covers ``config.yaml`` too: a sync that read an empty/unreadable config applied nothing,
+        so its recovery must re-run it. A failed sync is left unrecorded and retried next tick."""
         from agent.shell_hooks import ALLOWLIST_FILENAME, sync_from_config
         from gateway.run import _load_gateway_config, _profile_runtime_scope
+        from gateway.run_turn import GatewayTurnMixin
         current = {}
         for home in (h.resolve() for h in homes):
-            try:
-                current[str(home)] = sig = file_signature(os.stat(home / ALLOWLIST_FILENAME))
-            except OSError:
-                current[str(home)] = sig = None
-            if str(home) in seen and seen[str(home)] == sig:
+            sig = tuple(_stat_signature(home / name) for name in (ALLOWLIST_FILENAME, "config.yaml"))
+            if seen.get(str(home), ()) == sig:
+                current[str(home)] = sig
                 continue
             load = partial(_load_gateway_config, home / "config.yaml")
-            with _log_suppressed(logging.WARNING, "shell-hook re-sync failed for %s", home, exc_info=True):
-                if not self._multiplex_on():
+            scope = (_profile_runtime_scope(home) if self._multiplex_on()
+                     else GatewayTurnMixin._standalone_launch_scope())
+            try:
+                with scope:
                     sync_from_config(load)
-                    continue
-                with _profile_runtime_scope(home):
-                    sync_from_config(load)
+            except Exception:  # health: allow BLE001 -- one home's failure never blocks the others
+                logger.warning("shell-hook re-sync failed for %s; retrying next cycle", home, exc_info=True)
+                continue
+            current[str(home)] = sig
         return current
 
     # ── reconcile ─────────────────────────────────────────────────────────────────────────────────

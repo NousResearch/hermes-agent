@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from agent.credential_pool_admin import CredentialPoolAdminMixin
+from agent.credential_pool_balanced import STRATEGY_BALANCED, CredentialPoolBalancedMixin
 from agent.credential_pool_cooldown import _exhausted_ttl
 from agent.credential_pool_model_cooldowns import CredentialPoolModelCooldownMixin, model_cooldown_until
 from agent.credential_pool_quota_window import CredentialPoolQuotaWindowMixin
@@ -121,6 +122,7 @@ STRATEGY_ROUND_ROBIN = "round_robin"
 STRATEGY_RANDOM = "random"
 STRATEGY_LEAST_USED = "least_used"
 SUPPORTED_POOL_STRATEGIES = {
+    STRATEGY_BALANCED,
     STRATEGY_FILL_FIRST,
     STRATEGY_ROUND_ROBIN,
     STRATEGY_RANDOM,
@@ -889,7 +891,9 @@ class _RefreshDone(Exception):
         self.result = result
 
 
-class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin, CredentialPoolQuotaWindowMixin):
+class CredentialPool(
+    CredentialPoolAdminMixin, CredentialPoolBalancedMixin, CredentialPoolModelCooldownMixin, CredentialPoolQuotaWindowMixin,
+):
     def __init__(self, provider: str, entries: list[PooledCredential]):
         self.provider = provider
         self._entries = sorted(entries, key=lambda entry: entry.priority)
@@ -2050,7 +2054,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin,
 
     def _select_unlocked(
         self, *, refresh: bool = True, count: bool = True, model: Optional[str] = None,
-        base_url: Optional[str] = None,
+        base_url: Optional[str] = None, rotating_off: Optional[str] = None,
     ) -> tuple[Optional[PooledCredential], list[PooledCredential]]:
         """Select the best available entry; returns ``(entry, pending_refresh)``.
 
@@ -2076,6 +2080,8 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin,
             entry = random.choice(available)
         elif self._strategy == STRATEGY_LEAST_USED and len(available) > 1:
             entry = min(available, key=lambda e: e.request_count)
+        elif self._strategy == STRATEGY_BALANCED and len(available) > 1:
+            entry = self._choose_balanced(available, rotating_off)
         else:
             entry = available[0]
         # Count the selection under every strategy. The counter is ``least_used``'s
@@ -2229,7 +2235,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin,
                 logger.info("credential pool: %s unavailable for model %s; other models stay available", _label, model)
                 self._current_id = None
                 next_entry, _pending = self._select_unlocked(
-                    refresh=False, model=model, base_url=base_url,
+                    refresh=False, model=model, base_url=base_url, rotating_off=entry.id,
                 )
                 return next_entry
             self._mark_exhausted(entry, status_code, error_context, failure_reason=failure_reason)
@@ -2261,7 +2267,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin,
             else:
                 logger.info("credential pool: marking %s exhausted (status=%s), rotating", _label, status_code)
             self._current_id = None
-            next_entry, _pending = self._select_unlocked(refresh=False, base_url=base_url)
+            next_entry, _pending = self._select_unlocked(refresh=False, base_url=base_url, rotating_off=entry.id)
             if next_entry is not None and next_entry.id == entry.id:
                 # No-recovery guard (#97315): selection handed back the very entry that was
                 # just marked (the auth-store sync adopted fresher tokens, or a quota probe
@@ -2313,9 +2319,9 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin,
                 return None, pending_refresh
 
             below_cap = [e for e in available if self._active_leases.get(e.id, 0) < self._max_concurrent]
-            chosen = min(
-                below_cap or available,
-                key=lambda entry: (self._active_leases.get(entry.id, 0), entry.priority),
+            candidates = below_cap or available
+            chosen = self._choose_balanced_lease(candidates) if self.balanced else min(
+                candidates, key=lambda entry: (self._active_leases.get(entry.id, 0), entry.priority),
             )
             self._active_leases[chosen.id] = self._active_leases.get(chosen.id, 0) + 1
             self._current_id = chosen.id

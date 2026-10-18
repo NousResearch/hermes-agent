@@ -1223,6 +1223,72 @@ function Get-CommittedReceiptOutcome {
     return $null
 }
 
+function Test-UpdatedGatewayFleet([string]$GatewayHome, [string]$Logs, [datetime]$StartedAtUtc, [string]$Correlation) {
+    # `hermes update --gateway` can already relaunch and verify the
+    # multiplexed fleet. Starting it again made this hand-off wait for
+    # its full idle timeout even though the updated gateway was live.
+    # Use a fresh, live state record, not the updater's exit code alone.
+    $gatewayAlreadyCurrent = $false
+    $statePath = Join-Path $GatewayHome 'gateway_state.json'
+    $verificationIssue = 'gateway state file missing'
+    $verificationDeadline = (Get-Date).AddSeconds(15)
+    do {
+        if (Test-Path -LiteralPath $statePath) {
+            try {
+                $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+                # The receipt belongs to this update. Reading git here is
+                # unreliable: Desktop's PowerShell PATH may not include PM's
+                # Git even though the update child had it available.
+                # Run the installed, read-only module in the launch environment.
+                # profiles_to_serve is the topology authority; no PS YAML parser.
+                $probeCommand = @(Get-HermesRuntimeCommand -InstallRoot $InstallRoot -Module 'hermes_cli.desktop_gateway_reconcile')
+                $startedEpoch = ($StartedAtUtc - [datetimeoffset]::FromUnixTimeSeconds(0).UtcDateTime).TotalSeconds.ToString([cultureinfo]::InvariantCulture)
+                $probe = Invoke-HermesProbe $probeCommand[0] (@($probeCommand | Select-Object -Skip 1) + @('--correlation', $Correlation, '--started-at', $startedEpoch))
+                if ($probe.TimedOut -or $probe.Code -ne 0) { throw 'gateway topology/receipt probe failed' }
+                $evidence = $probe.Output | ConvertFrom-Json
+                $expectedSha = [string]$evidence.expected_sha
+                $pidValue = [int]$state.pid
+                # ConvertFrom-Json may produce a DateTime or text. Keep the
+                # original date value; parse text independent of user locale.
+                $heartbeat = [datetimeoffset]::MinValue
+                $parsedHeartbeat = $false
+                if ($state.updated_at -is [datetime]) {
+                    $heartbeat = [datetimeoffset]$state.updated_at
+                    $parsedHeartbeat = $true
+                } else {
+                    $parsedHeartbeat = [datetimeoffset]::TryParse(
+                        [string]$state.updated_at, [cultureinfo]::InvariantCulture,
+                        [Globalization.DateTimeStyles]::RoundtripKind, [ref]$heartbeat)
+                }
+                $heartbeatAge = ([datetimeoffset]::UtcNow - $heartbeat.ToUniversalTime()).TotalSeconds
+                # Match gateway.status's existing 120-second freshness window.
+                $fresh = $parsedHeartbeat -and $heartbeatAge -ge 0 -and $heartbeatAge -lt 120
+                $missing = @($evidence.missing_profiles)
+                $process = if ($pidValue -gt 0) { Get-Process -Id $pidValue -ErrorAction SilentlyContinue } else { $null }
+                $pidAlive = $null -ne $process
+                # gateway.status uses centiseconds with a 200cs drift tolerance.
+                $startMatches = $pidAlive -and $state.start_time -and
+                    [Math]::Abs([double]$state.start_time -
+                        [Math]::Round(($process.StartTime.ToUniversalTime() - [datetimeoffset]::FromUnixTimeSeconds(0).UtcDateTime).TotalSeconds * 100)) -le 200
+                $homeMatches = $state.hermes_home -and [string]::Equals(
+                    [IO.Path]::GetFullPath([string]$state.hermes_home).TrimEnd('\'),
+                    [IO.Path]::GetFullPath($GatewayHome).TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)
+                $gatewayAlreadyCurrent = $state.gateway_state -eq 'running' -and
+                    $pidAlive -and $startMatches -and $homeMatches -and $state.kind -ceq 'hermes-gateway' -and
+                    $expectedSha -and $state.code_sha -eq $expectedSha -and $fresh -and $missing.Count -eq 0
+                $verificationIssue = "receipt=$([bool]$expectedSha) running=$($state.gateway_state -eq 'running') pid=$pidAlive home=$([bool]$homeMatches) start=$([bool]$startMatches) sha=$($state.code_sha -eq $expectedSha) heartbeat=$fresh missingProfiles=$($missing.Count)"
+            } catch {
+                $verificationIssue = $_.Exception.Message
+            }
+        }
+        if ($gatewayAlreadyCurrent -or (Get-Date) -ge $verificationDeadline) { break }
+        # Gateway state and the receipt are published by separate
+        # processes; let a just-started fleet finish its first heartbeat.
+        Start-Sleep -Milliseconds 500
+    } while ($true)
+    return @{ Current = $gatewayAlreadyCurrent; Issue = $verificationIssue }
+}
+
 function Set-InstallRootCurrentDirectory([string]$Root) {
     $resolved = [System.IO.Path]::GetFullPath($Root)
     [Environment]::CurrentDirectory = $resolved
@@ -1604,6 +1670,7 @@ try {
     $env:HERMES_UPDATE_CORRELATION_ID = $script:UpdateCorrelation
     Write-HandoffLog ("running: python " + ($updateArgs -join " "))
     Publish-UiProgress "Updating code and dependencies"
+    $updateStartedAtUtc = [datetime]::UtcNow
     $res = Invoke-HermesStep $pythonExe $updateArgs "update"
     Write-HandoffLog "hermes update exit code: $($res.Code)"
     $res = Resolve-HermesUpdateOutcome $res
@@ -1684,10 +1751,9 @@ try {
     # finish:" line (hermes_cli/update_receipt.record_followup): never a plain success either.
     $owedSteps = @([regex]::Matches(($res.Output -join "`n"), "Update follow-up '([A-Za-z0-9_]+)' did not finish: ") |
         ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
-    if ($owedSteps.Count -gt 0) {
-        $owedHint = if ($owedSteps -contains 'gateway_restart') { " Run 'hermes gateway restart' to move the messaging gateway onto the new code now." } else { '' }
-        Add-Followup ("followup: owed by the committed update: " + ($owedSteps -join ', ')) ("some follow-up steps did not finish (" + ($owedSteps -join ', ') + "). The next launch or 'hermes update' retries them; the update log has the details." + $owedHint) -Manual
-    }
+    # Defer the gateway warning until final live verification; output can describe
+    # an early probe which the updater's later resume has already repaired.
+    $gatewayAlreadyCurrent = $false
 
     # A zero-exit update is not proof that the runtime survived the update.
     if (-not $desktopBuildFailed) {
@@ -1705,28 +1771,49 @@ try {
         }
     }
 
-    # Desktop stopped every locally running profile gateway before handing off
-    # so their venv launchers could not hold the update lock. That happens
-    # before `hermes update` captures its Windows pause inventory, leaving the
-    # updater nothing to resume on its normal success path. Restore the same
-    # all-profile fleet after the update -- also when a follow-up above failed:
-    # the code is committed and the gateways must not stay down. A remote-served
-    # Desktop must stay passive: its -NoGateway hand-off owns no local poller.
+    # The updater owns restart/resume. The handoff may only fill an absent
+    # local launch-home gateway, never sweep the sibling fleet. A remote-served
+    # Desktop owns no local poller and must remain passive.
     if (-not $NoGateway) {
         $gatewayFailure = $null
         try {
-            # Resolve again after update: PM may have published a new generation,
-            # and its command can include an isolation/bootstrap prefix.
-            $gatewayCommand = @(Get-HermesRuntimeCommand -InstallRoot $InstallRoot)
-            $gatewayArgs = @($gatewayCommand | Select-Object -Skip 1) + @("gateway", "start", "--all")
-            $gatewayRestart = Invoke-HermesStep $gatewayCommand[0] $gatewayArgs "gateway restart"
-            if ($gatewayRestart.Code -ne 0) { $gatewayFailure = "exit $($gatewayRestart.Code)" }
+            $gatewayStatus = Test-UpdatedGatewayFleet $HermesHome $LogDir $updateStartedAtUtc $script:UpdateCorrelation
+            $gatewayAlreadyCurrent = $gatewayStatus.Current
+            $verificationIssue = $gatewayStatus.Issue
+            $statePath = Join-Path $HermesHome "gateway_state.json"
+            $hasGatewayOwner = (Test-Path -LiteralPath $statePath) -or
+                (Test-Path -LiteralPath (Join-Path $HermesHome 'gateway.pid'))
+            if (-not $gatewayAlreadyCurrent -and $hasGatewayOwner) {
+                # A state record can belong to a healthy successor or another
+                # profile. Inconclusive evidence never authorizes --all's sweep.
+                $gatewayFailure = "existing gateway identity/readiness was not verified ($verificationIssue)"
+            } elseif (-not $gatewayAlreadyCurrent) {
+                # Resolve after PM may have published a new generation.
+                # A profile-scoped start cannot sweep newly healthy siblings.
+                $gatewayCommand = @(Get-HermesRuntimeCommand -InstallRoot $InstallRoot)
+                $gatewayArgs = @($gatewayCommand | Select-Object -Skip 1) + @("gateway", "start")
+                $gatewayRestart = Invoke-HermesStep $gatewayCommand[0] $gatewayArgs "gateway recovery"
+                if ($gatewayRestart.Code -ne 0) { $gatewayFailure = "exit $($gatewayRestart.Code)" }
+                else {
+                    $gatewayStatus = Test-UpdatedGatewayFleet $HermesHome $LogDir $updateStartedAtUtc $script:UpdateCorrelation
+                    $gatewayAlreadyCurrent = $gatewayStatus.Current
+                    if (-not $gatewayAlreadyCurrent) { $gatewayFailure = "recovery did not verify ($($gatewayStatus.Issue))" }
+                }
+            }
         } catch {
             $gatewayFailure = $_.Exception.Message
         }
         if ($gatewayFailure) {
-            Add-Followup "gateway start: $gatewayFailure" "it could not restart every messaging gateway. Run `hermes gateway start --all` in a terminal." -Manual
+            Add-Followup "gateway recovery: $gatewayFailure" "the messaging gateway fleet could not be verified. Check 'hermes gateway status' before restarting the affected profiles; the update log has the details." -Manual
         }
+    }
+
+    if ($gatewayAlreadyCurrent -and -not $NoGateway) {
+        $owedSteps = @($owedSteps | Where-Object { $_ -cne 'gateway_restart' })
+    }
+    if ($owedSteps.Count -gt 0) {
+        $owedHint = if ($owedSteps -contains 'gateway_restart') { " Run 'hermes gateway restart' to move the messaging gateway onto the new code now." } else { '' }
+        Add-Followup ("followup: owed by the committed update: " + ($owedSteps -join ', ')) ("some follow-up steps did not finish (" + ($owedSteps -join ', ') + "). The next launch or 'hermes update' retries them; the update log has the details." + $owedHint) -Manual
     }
 
     exit $finalCode

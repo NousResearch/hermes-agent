@@ -522,7 +522,49 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     if not scope.docker_profile_scoped:
         return _qualify_task_key(f"session:{session_key}")
     profile = _current_session_profile() or "default"
-    return "default" if profile == "default" else f"profile:{profile}"
+    base = "default" if profile == "default" else f"profile:{profile}"
+    return _workspace_container_key(base, task_id)
+
+
+def workspace_key_for(cwd: str) -> str:
+    """The ``:ws:`` digest of a host workspace: computed ONCE when the session binds it
+    (``gateway.session_policy.bind_turn_workspace``), so container keying never depends on live
+    filesystem state at lookup time."""
+    import hashlib
+    resolved = os.path.realpath(os.path.expanduser(cwd))
+    return hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:16]
+
+
+def _workspace_container_key(base: str, task_id: Optional[str]) -> str:
+    """Persistent Docker key for a session that registered a workspace: one container per
+    (profile, workspace), not per profile (#140665).
+
+    A gateway-owned CLI/Desktop session registers its client cwd as a ``cwd_source: "session"``
+    override (``gateway.session_policy.bind_turn_workspace``). Keyed by profile alone, every
+    concurrent session shared the container bound to whichever workspace created it first; sessions
+    in the same folder still share one. Sessions with no registered workspace keep the profile key.
+
+    Idempotent: an already-resolved ``<base>:ws:<digest>`` key maps to itself (``ensure_task_env``
+    hands the resolved key to ``get_active_env``, which resolves again). A ``delegate_task`` child has
+    only a container alias to its parent (``register_container_alias``), so the alias chain is
+    followed: the child runs in its parent's workspace container, never the profile's.
+    Reads the raw table (not :func:`resolve_task_overrides`, which calls back into key resolution).
+    """
+    if not task_id:
+        return base
+    if task_id.startswith(f"{base}:ws:"):
+        return task_id
+    for key in dict.fromkeys((task_id, _resolve_container_alias(task_id))):
+        overrides = _task_env_overrides.get(_qualify_task_key(key))
+        if not overrides or overrides.get("cwd_source") != "session":
+            continue
+        digest = overrides.get("workspace_key")
+        cwd = overrides.get("cwd")
+        if not digest and isinstance(cwd, str) and cwd.strip() and "\0" not in cwd:
+            digest = workspace_key_for(cwd)
+        if digest:
+            return f"{base}:ws:{digest}"
+    return base
 
 
 def resolve_task_overrides(task_id: Optional[str]) -> dict[str, Any]:

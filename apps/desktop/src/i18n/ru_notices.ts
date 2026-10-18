@@ -24,6 +24,9 @@ export const ruNotices = {
       'Чат занят: изменение MCP применится, когда завершится текущий ход и MCP будет перезагружен снова, или при повторном открытии чата',
     mcpReloadNotInChat: server => `${server} не включён в этом чате`,
     mcpReloadUnavailable: servers => `Не удалось подключиться: ${servers}`,
+    compactedTurnUnavailable:
+      'Это сообщение было сжато в краткое изложение при сжатии чата, поэтому его больше нельзя восстановить или изменить.',
+    staleTurnUnavailable: 'Этого сообщения больше нет в истории этого чата.',
     sessionCommands: ruSessionCommands
   },
   keepAwakeOffer: {

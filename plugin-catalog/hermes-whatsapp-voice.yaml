@@ -31,15 +31,15 @@ tier: community
 version: "0.1.12"
 category: voice
 docs_url: https://github.com/ashwanthbalakrishnan5/hermes-whatsapp-voice#readme
-requires_hermes: ">=0.21.5"
+requires_hermes: ">=0.21.6"
 platforms: [linux, macos]
 known_issues:
   - "Uses an unofficial, reverse-engineered WhatsApp protocol (whatsapp-rust): WhatsApp updates can break calls, and automated use may get the bot number restricted. Use a number you can afford to lose."
   - "Prebuilt sidecar binaries cover Linux amd64/arm64 and macOS arm64; elsewhere it builds from source (Rust 1.94+, cmake, a C compiler)."
 capabilities:
   provides_tools:
-  - whatsapp_call_owner
-  - whatsapp_call_status
+    - whatsapp_call_owner
+    - whatsapp_call_status
   provides_hooks: []
   provides_middleware: []
   requires_env: []

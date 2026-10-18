@@ -70,6 +70,33 @@ def _anthropic_oauth_status() -> dict[str, Any]:
                 "logged_in": True, "source": "env_var", "source_label": f"{var}{format_secret_source_suffix(var)}",
                 "token_preview": _truncate_token(value), "expires_at": None, "has_refresh_token": False,
             }
+
+    # A Hermes-managed OAuth login can outlive its seed file: the credential pool row
+    # (``manual:hermes_pkce``) keeps authenticating after ``.anthropic_oauth.json`` is
+    # removed or its seeder is suppressed, so the card must not report "not connected".
+    # Claude Code rows are excluded here on purpose — see the docstring above.
+    try:
+        from hermes_cli.auth import read_credential_pool
+        for row in read_credential_pool("anthropic"):
+            if not isinstance(row, dict) or row.get("auth_type") != "oauth":
+                continue
+            if "claude_code" in str(row.get("source") or ""):
+                continue
+            access, refresh = row.get("access_token"), row.get("refresh_token")
+            expires_at_ms = row.get("expires_at_ms")
+            expired = isinstance(expires_at_ms, (int, float)) and expires_at_ms <= time.time() * 1000
+            if not access and not refresh:
+                continue
+            if expired and not refresh:
+                continue  # an expired token with no refresh path is not a usable login
+            label = row.get("label") or row.get("id") or "anthropic"
+            return _token_status(
+                "credential_pool", f"Credential pool ({label})",
+                {"accessToken": access, "expiresAt": expires_at_ms, "refreshToken": refresh},
+            )
+    except Exception:
+        _log.debug("anthropic credential-pool status probe failed", exc_info=True)
+
     return dict(_LOGGED_OUT)
 
 

@@ -988,7 +988,7 @@ def _resolve_vertex_runtime(requested_provider: str, target_model: str = "") -> 
     _model_default = str(target_model or _get_model_config().get("default") or "").strip()
 
     # Vertex Model Garden is multi-publisher, so the publisher is not
-    # inferable from the model name — ``claude-opus-4-8`` and
+    # inferable from the model name — ``claude-opus-5-5`` and
     # ``gemini-3-pro`` are served by different publishers over different
     # wire protocols. ``is_anthropic_vertex_model`` therefore requires the
     # fully-qualified ``anthropic/<model>`` form, and a bare name silently
@@ -996,7 +996,7 @@ def _resolve_vertex_runtime(requested_provider: str, target_model: str = "") -> 
     #
     # Refuse it here rather than letting it become a 404. Previously the
     # design leaned on Vertex's own error ("publisher google — model
-    # claude-opus-4-8 not found") to teach the user, but that only arrives
+    # claude-opus-5-5 not found") to teach the user, but that only arrives
     # on the first real turn, names the wrong publisher, and reads like an
     # outage or a quota problem. Worse, the same missing prefix silently
     # changes deployment-time behaviour anywhere the prefix drives packaging
@@ -1012,7 +1012,7 @@ def _resolve_vertex_runtime(requested_provider: str, target_model: str = "") -> 
         _hint = (
             f" Did you mean '{_suggestion}'?"
             if _suggestion
-            else " Prefix it with the publisher, e.g. 'anthropic/claude-opus-4-8'"
+            else " Prefix it with the publisher, e.g. 'anthropic/claude-opus-5-5'"
             " for Claude or 'google/gemini-3-pro' for Gemini."
         )
         raise AuthError(

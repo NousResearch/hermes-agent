@@ -80,7 +80,7 @@ def spies(monkeypatch):
     return calls
 
 
-def _agent(provider, base_url, model="claude-opus-4-8"):
+def _agent(provider, base_url, model="claude-opus-5-5"):
     """Bare AIAgent carrying only what the swap path reads.
 
     switch_model explicitly supports this shape — see its ``_MISSING``
@@ -172,7 +172,7 @@ def test_switch_to_bedrock_claude_uses_bedrock_sdk(spies):
 def test_switch_to_native_anthropic_still_uses_direct_sdk(spies):
     """Guard the other direction — native Anthropic must NOT regress."""
     agent = _agent("anthropic", "https://api.anthropic.com")
-    _switch(agent, "claude-opus-4-8", "anthropic", "https://api.anthropic.com")
+    _switch(agent, "claude-opus-5-5", "anthropic", "https://api.anthropic.com")
 
     assert spies["direct"], "native Anthropic must use the direct adapter"
     assert spies["vertex"] == []
@@ -276,16 +276,16 @@ class TestSwitchModelEmptyBaseUrlGuard:
     def test_vertex_anthropic_switch_survives_empty_base_url(self, spies):
         """No base_url at all must still switch, and via the Vertex SDK."""
         agent = _agent("anthropic", "https://api.anthropic.com")
-        _switch_strict(agent, "anthropic/claude-opus-4-8", "vertex", "")
+        _switch_strict(agent, "anthropic/claude-opus-5-5", "vertex", "")
         assert agent.provider == "vertex"
-        assert agent.model == "anthropic/claude-opus-4-8"
+        assert agent.model == "anthropic/claude-opus-5-5"
         assert spies["vertex"] == [{"project_id": "proj-1", "region": "global"}]
         assert spies["direct"] == []
 
     def test_bedrock_anthropic_switch_survives_empty_base_url(self, spies):
         """Bedrock derives its endpoint from the region, same as Vertex."""
         agent = _agent("anthropic", "https://api.anthropic.com")
-        _switch_strict(agent, "claude-opus-4-8", "bedrock", "")
+        _switch_strict(agent, "claude-opus-5-5", "bedrock", "")
         assert agent.provider == "bedrock"
         # Which region a URL-less switch lands on is upstream's
         # ``bind_bedrock_runtime`` policy; this test only pins that the guard

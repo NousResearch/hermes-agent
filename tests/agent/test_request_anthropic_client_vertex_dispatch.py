@@ -41,7 +41,7 @@ def agent():
     a = object.__new__(AIAgent)
     a.api_mode = "anthropic_messages"
     a.provider = "vertex"
-    a.model = "claude-opus-4-8"
+    a.model = "claude-opus-5-5"
     a._anthropic_api_key = "vertex-adc"
     a._anthropic_base_url = (
         "https://aiplatform.googleapis.com/v1/projects/proj-1"

@@ -4860,17 +4860,14 @@ def _build_vertex_client(provider: str, model: Optional[str]) -> tuple[Optional[
             return False
 
     # ``is_anthropic_vertex_model`` intentionally requires the fully-
-    # qualified ``anthropic/<model>`` form so mistakes in main-agent
-    # config surface as a loud Vertex 404 (see the classifier's
-    # docstring for why). Auxiliary callers see the model AFTER
-    # ``normalize_model_for_provider`` has stripped the prefix —
-    # set_runtime_main then stores the bare form (``claude-opus-4-8``)
-    # as the "runtime main model", and vision / compression / title
-    # generation read that bare form via ``_read_main_model()``. Widen
-    # detection here to also match bare ``claude-*`` (case-insensitive)
-    # so aux dispatch stays correct across both forms, without touching
-    # the strict classifier the main-agent path relies on. Mirrors
-    # bedrock's dual accept of ``anthropic.claude-*`` and bare ``claude-*``.
+    # qualified ``anthropic/<model>`` form (the canonical config ID that
+    # ``normalize_model_for_provider`` now preserves). Aux callers can
+    # still see a bare ``claude-*`` (e.g. an explicit aux model override
+    # or a legacy runtime main model read via ``_read_main_model()``), so
+    # widen detection here to also match bare ``claude-*``
+    # (case-insensitive) without touching the strict classifier the
+    # main-agent path relies on. Mirrors bedrock's dual accept of
+    # ``anthropic.claude-*`` and bare ``claude-*``.
     _model_lc = (model or "").strip().lower()
     _is_anthropic = is_anthropic_vertex_model(model) or _model_lc.startswith("claude-")
 
@@ -4902,7 +4899,13 @@ def _build_vertex_client(provider: str, model: Optional[str]) -> tuple[Optional[
                            "requested but project_id resolution failed")
             return None, None
 
+        # ``normalize_model_for_provider`` keeps the canonical
+        # ``anthropic/<model>`` ID; AnthropicVertex substitutes ``model``
+        # verbatim into ``publishers/anthropic/models/{model}:rawPredict``,
+        # so strip the publisher prefix here to get the bare wire model.
         final_model = _normalize_resolved_model(model, provider)
+        if final_model and final_model.lower().startswith("anthropic/"):
+            final_model = final_model.split("/", 1)[1]
         try:
             real_client = build_anthropic_vertex_client(project_id, region)
         except (ImportError, RuntimeError) as exc:

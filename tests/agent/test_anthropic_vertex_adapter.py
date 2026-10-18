@@ -327,7 +327,7 @@ class TestIsAnthropicVertexModel:
 
     The strict form is deliberate. Vertex Model Garden is multi-vendor
     from day one, so a bare model name has no unambiguous meaning:
-    ``claude-opus-4-8`` under ``provider=vertex`` could plausibly be
+    ``claude-opus-5-5`` under ``provider=vertex`` could plausibly be
     misrouting a Gemini setup that accidentally shipped a Claude ID,
     and the right behavior is to surface that as a Vertex 404 pointing
     at the misconfiguration rather than silently guessing at the
@@ -339,17 +339,17 @@ class TestIsAnthropicVertexModel:
     @pytest.mark.parametrize(
         "model_id",
         [
-            "anthropic/claude-opus-4-8",
+            "anthropic/claude-opus-5-5",
             "anthropic/claude-sonnet-4-5",
             "anthropic/claude-haiku-4-5",
             "anthropic/claude-fable-5",
             # Version-suffixed IDs — the ``@YYYYMMDD`` form Vertex also accepts.
             "anthropic/claude-opus-4-5@20250929",
             # Case-insensitive.
-            "ANTHROPIC/claude-opus-4-8",
-            "Anthropic/Claude-Opus-4-8",
+            "ANTHROPIC/claude-opus-5-5",
+            "Anthropic/Claude-Opus-5-5",
             # Whitespace-tolerant (defensive against config-file whitespace).
-            "  anthropic/claude-opus-4-8  ",
+            "  anthropic/claude-opus-5-5  ",
         ],
     )
     def test_vendor_prefixed_anthropic_matches(self, model_id):
@@ -363,11 +363,11 @@ class TestIsAnthropicVertexModel:
             # Bare Claude names must NOT match — vendor prefix is required
             # (see class docstring). These will fall through to the
             # OpenAI-compat aggregator and 404 with an actionable error.
-            "claude-opus-4-8",
+            "claude-opus-5-5",
             "claude-sonnet-4-5",
             "claude-haiku-4-5",
             "claude-fable-5",
-            "CLAUDE-OPUS-4-8",
+            "CLAUDE-OPUS-5-5",
         ],
     )
     def test_bare_claude_rejected_without_vendor_prefix(self, model_id):
@@ -393,7 +393,7 @@ class TestIsAnthropicVertexModel:
             # OpenRouter-style Anthropic slug (different provider entirely
             # — should NOT reach the vertex dispatch, but the classifier
             # correctly returns False for the negative case too).
-            "openrouter/anthropic/claude-opus-4-8",
+            "openrouter/anthropic/claude-opus-5-5",
             # Non-Claude Anthropic-ish strings we shouldn't accidentally match.
             "claudius-something",
         ],

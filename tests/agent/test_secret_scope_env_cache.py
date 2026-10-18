@@ -77,3 +77,20 @@ def test_edits_and_deletion_are_seen(tmp_path, monkeypatch):
     env.write_bytes(b"KEY=ccc\n")
     assert ss.load_env_file(env) == {"KEY": "ccc"}
     assert len(calls) == 3
+
+
+def test_a_same_tick_same_size_rewrite_is_seen(tmp_path, monkeypatch):
+    """A rewrite inside one filesystem timestamp tick keeps every signature field (CI's ext4 ticks at
+    4 ms, some filesystems at whole seconds): a coarse clock is simulated by truncating the stamps."""
+    real = ss.file_signature
+    monkeypatch.setattr(ss, "file_signature",
+                        lambda st: tuple(v // 10**9 * 10**9 if i in (0, 3) else v for i, v in enumerate(real(st))))
+    env = tmp_path / ".env"
+    for _ in range(3):  # a write can straddle a second boundary; one same-tick pair is the case under test
+        env.write_bytes(b"KEY=aaa\n")
+        assert ss.load_env_file(env) == {"KEY": "aaa"}
+        tick = env.stat().st_mtime_ns // 10**9
+        env.write_bytes(b"KEY=bbb\n")
+        if env.stat().st_mtime_ns // 10**9 == tick:
+            break
+    assert ss.load_env_file(env) == {"KEY": "bbb"}

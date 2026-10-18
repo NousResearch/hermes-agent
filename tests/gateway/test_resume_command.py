@@ -100,6 +100,26 @@ class TestHandleResumeCommand:
         assert "/resume 1" in result
         db.close()
 
+    @pytest.mark.asyncio
+    async def test_resume_page_lists_older_named_sessions(self, tmp_path):
+        """`/resume page N` reaches titled sessions beyond the first page (#138575)."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        event = _make_event(text="/resume page 2")
+        lane_key = _session_key_for_event(event)
+        for i in range(11):
+            sid = f"resume_page_{i}"
+            db.create_session(sid, "telegram", session_key=lane_key,
+                              user_id="12345", chat_id="67890")
+            db.set_session_title(sid, f"Resume page {i}")
+
+        result = await _make_runner(session_db=db, event=event)._handle_resume_command(event)
+
+        assert "Resume page 0" in result
+        assert "Page 2" in result
+        db.close()
+
 
 
 
@@ -561,6 +581,10 @@ class TestHandleSessionsCommand:
         assert "`lane_root_0`" not in result
         assert "Foreign Work" not in result
         assert "current_root" not in result
+
+        older_page = await runner._handle_sessions_command(_make_event(text="/sessions page 2"))
+        assert "Lane Work 0" in older_page
+        assert "Page 2" in older_page
         db.close()
 
 

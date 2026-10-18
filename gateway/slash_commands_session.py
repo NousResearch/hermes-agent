@@ -33,6 +33,7 @@ logger = logging.getLogger("gateway.run")  # log-record parity with gateway/run.
 _RESET_CLEANUP_TIMEOUT_S = 30.0
 # chat_type values whose session key is per-user (DM-like), incl. the unknown/blank case.
 _DM_CHAT_TYPES = {"dm", "direct", "private", ""}
+_SESSION_LIST_PAGE_SIZE = 10
 
 _BRANCH_COPIED_FIELDS = ("content", "tool_calls", "tool_call_id", "finish_reason", "reasoning",
                          "reasoning_content", "reasoning_details", "codex_reasoning_items",
@@ -110,6 +111,25 @@ def _strip_resume_name(parts: list[str]) -> str:
     if len(name) >= 2 and (name[0], name[-1]) in {("<", ">"), ("[", "]"), ('"', '"'), ("'", "'")}:
         name = name[1:-1].strip()
     return name
+
+
+def _listing_page(parts: list[str]) -> tuple[int, list[str]]:
+    """Extract ``page N``/``--page N`` without treating it as a resume target."""
+    page = 1
+    cleaned: list[str] = []
+    index = 0
+    while index < len(parts):
+        if parts[index].lower() in {"page", "--page"}:
+            if index + 1 >= len(parts) or not parts[index + 1].isdigit():
+                raise ValueError("page must be a positive integer")
+            page = int(parts[index + 1])
+            if page < 1:
+                raise ValueError("page must be a positive integer")
+            index += 2
+            continue
+        cleaned.append(parts[index])
+        index += 1
+    return page, cleaned
 
 
 class GatewaySessionCommandsMixin:
@@ -957,15 +977,17 @@ class GatewaySessionCommandsMixin:
 
     # -------------------------------------------------------------- /resume, /sessions
 
-    async def _list_titled_sessions(self, source, session_key: str, allow_all: bool) -> list[dict]:
+    async def _list_titled_sessions(self, source, session_key: str, allow_all: bool,
+                                    page: int = 1) -> list[dict]:
         """Titled sessions visible to the caller (origin-scoped unless admin ``--all``)."""
         widen = allow_all and self._resume_caller_is_admin(source)
         # Rank by lineage activity, not root started_at: a lineage compressed for days is projected
         # onto its live tip and must sit where the user last touched it (#114271).
         sessions = await self._session_db.list_sessions_rich(
             source=source.platform.value if source.platform else None,
-            session_key=None if widen else session_key, limit=10, order_by_last_active=True)
-        titled = [s for s in sessions if s.get("title")][:10]
+            session_key=None if widen else session_key, limit=_SESSION_LIST_PAGE_SIZE + 1,
+            offset=(page - 1) * _SESSION_LIST_PAGE_SIZE, order_by_last_active=True)
+        titled = [s for s in sessions if s.get("title")]
         return [s for s in titled if await self._resume_row_visible(source, s, allow_all)]
 
     async def _resolve_resume_target(self, source, session_key: str, name: str, allow_all: bool):
@@ -976,6 +998,7 @@ class GatewaySessionCommandsMixin:
             except Exception as e:
                 logger.debug("Failed to list titled sessions for numeric resume: %s", e)
                 return t("gateway.resume.list_failed", error=e)
+            titled = titled[:_SESSION_LIST_PAGE_SIZE]
             index = int(name)
             if index < 1 or index > len(titled):
                 return t("gateway.resume.out_of_range", index=index)
@@ -1020,13 +1043,17 @@ class GatewaySessionCommandsMixin:
             parts = shlex.split(event.get_command_args().strip())
         except ValueError as exc:
             return t("gateway.resume.parse_error", error=exc)
+        try:
+            page, parts = _listing_page(parts)
+        except ValueError as exc:
+            return t("gateway.resume.parse_error", error=exc)
         allow_all = "--all" in parts
         allow_cross_room = "--cross-room" in parts
         name = _strip_resume_name(parts)
         if not name:
             try:
-                titled = await self._list_titled_sessions(source, session_key, allow_all)
-                return self._resume_listing_reply(source, titled, allow_all)
+                titled = await self._list_titled_sessions(source, session_key, allow_all, page)
+                return self._resume_listing_reply(source, titled, allow_all, page)
             except Exception as e:
                 logger.debug("Failed to list titled sessions: %s", e)
                 return t("gateway.resume.list_failed", error=e)
@@ -1077,7 +1104,7 @@ class GatewaySessionCommandsMixin:
             return t("gateway.resume.resumed_one", title=title, count=msg_count)
         return t("gateway.resume.resumed_many", title=title, count=msg_count)
 
-    def _resume_listing_reply(self, source, titled: list[dict], allow_all: bool) -> str:
+    def _resume_listing_reply(self, source, titled: list[dict], allow_all: bool, page: int = 1) -> str:
         """Numbered /resume list; a non-admin ``--all`` falls back to same-origin scoping and says so
         (sibling of the /sessions notice)."""
         scope_note = None
@@ -1089,7 +1116,7 @@ class GatewaySessionCommandsMixin:
             base = t("gateway.resume.no_named_sessions")
             return f"{base}\n{scope_note}" if scope_note else base
         lines = [t("gateway.resume.list_header")]
-        for idx, s in enumerate(titled[:10], start=1):
+        for idx, s in enumerate(titled[:_SESSION_LIST_PAGE_SIZE], start=1):
             title = s["title"]
             if source.platform == Platform.MATRIX and allow_all:
                 origin = self._gateway_session_origin_for_id(str(s.get("id") or ""))
@@ -1101,6 +1128,10 @@ class GatewaySessionCommandsMixin:
         if scope_note:
             lines.append(scope_note)
         lines.append(t("gateway.resume.list_footer_numbered"))
+        if len(titled) > _SESSION_LIST_PAGE_SIZE:
+            lines.append(f"Page {page}. Older: `/resume page {page + 1}`.")
+        elif page > 1:
+            lines.append(f"Page {page}.")
         return "\n".join(lines)
 
     async def _handle_sessions_command(self, event: MessageEvent) -> str:
@@ -1110,8 +1141,9 @@ class GatewaySessionCommandsMixin:
         from hermes_cli.session_listing import (
             format_gateway_session_listing, parse_session_listing_args, query_session_listing)
         try:
+            page, parts = _listing_page(shlex.split(event.get_command_args().strip()))
             include_all, include_unnamed, target, search_query = parse_session_listing_args(
-                event.get_command_args().strip())
+                shlex.join(parts))
         except ValueError as exc:
             return t("gateway.resume.parse_error", error=exc)
         if search_query == "":
@@ -1135,16 +1167,19 @@ class GatewaySessionCommandsMixin:
             include_all_sources=cross_origin, include_unnamed=include_unnamed,
             search_query=search_query,
             # Search filters in SQL: over-fetch so origin-invisible matches don't consume the page.
-            limit=50 if search_query else 10, exclude_sources=["tool"])
+            limit=50 if search_query else _SESSION_LIST_PAGE_SIZE + 1,
+            offset=0 if search_query else (page - 1) * _SESSION_LIST_PAGE_SIZE,
+            exclude_sources=["tool"])
         if not cross_origin:
             rows = [row for row in rows if await self._resume_row_visible(source, row, allow_all=False)]
-        rows = rows[:10]
+        has_more = not search_query and len(rows) > _SESSION_LIST_PAGE_SIZE
+        rows = rows[:_SESSION_LIST_PAGE_SIZE]
         if search_query:
             title = t("gateway.sessions.title_matching", query=search_query)
         else:
             title = t("gateway.sessions.title_all" if include_unnamed else "gateway.sessions.title_named")
         return format_gateway_session_listing(rows, include_source=cross_origin, title=title,
-                                              notice=scope_notice)
+                                              notice=scope_notice, page=page, has_more=has_more)
 
     # ----------------------------------------------------------------------- /branch
 

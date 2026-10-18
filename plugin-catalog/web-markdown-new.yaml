@@ -1,0 +1,14 @@
+name: web-markdown-new
+repo: https://github.com/Tsurgcom/hermes-web-markdown-new
+sha: 5400627771452c52e815d70d73e8038847c2f7cf
+version: "1.1.0"
+description: "Keyless web extract backend for Cloudflare markdown.new (tier community, category web). web_extract-only backend named 'markdown-new' — pairs with the ddgs search backend; returns the same Title/Markdown Content envelope as Jina Reader with per-URL error results. Disclosure — with web.extract_backend: markdown-new, every web_extract URL is sent to Cloudflare's keyless markdown.new service over HTTPS; no API key, no stored credentials, no env vars, no shell or subprocess use; URLs are scheme-validated (http/https only), responses are streamed under a 10 MB cap with a 30 s timeout, and 429/5xx get one bounded retry."
+maintainer: Tsurgcom
+tier: community
+category: web
+docs_url: https://github.com/Tsurgcom/hermes-web-markdown-new#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

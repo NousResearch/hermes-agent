@@ -13,6 +13,8 @@ the manual command. Three things then went wrong after it:
 
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -303,3 +305,32 @@ def test_next_run_carries_a_unit_row_forward_from_the_previous_receipt(monkeypat
         update_receipt.begin_update_receipt()
         carried = update_receipt._current.get().data["carried_manual_serves"]
     assert [row["pid"] for row in carried] == [DASH_PID]
+
+
+@pytest.mark.parametrize("reason, hinted", [
+    ("serve/dashboard unit(s) hermes-dashboard were not restarted onto the new code; see the systemctl advice above", False),
+    ("gateways may still run pre-update code or were stopped without a successor; recover with `hermes gateway restart`", True),
+    ("gateways may still run pre-update code or were stopped without a successor; recover with `hermes gateway restart`;"
+     " serve/dashboard unit(s) hermes-dashboard were not restarted onto the new code", True),
+    # update_finish owes gateway_restart with the raw exception when the restart phase itself crashes.
+    ("RuntimeError: systemctl list-units timed out", True),
+])
+def test_desktop_handoffs_add_the_gateway_hint_only_when_gateways_are_blamed(capsys, reason, hinted):
+    """#141071: both Desktop hand-offs keyed the "Run hermes gateway restart" hint on the step id alone.
+    Now only a serve/dashboard-only reason drops it; every other gateway_restart reason keeps it. Pin
+    each script's predicate against the line the producer prints."""
+    import re
+    from pathlib import Path
+
+    update_receipt.record_followup("gateway_restart", reason)
+    out = capsys.readouterr().out
+    scripts = Path(__file__).resolve().parents[2] / "scripts/desktop-update"
+    posix = (scripts / "posix.sh").read_text(encoding="utf-8")
+    serve_re, gw_re = re.findall(r'grep -Eq "(Update follow-up .gateway_restart[^"]+)"', posix)
+    sh = f'printf "%s\\n" "$OUT" | grep -Eq "{serve_re}" && ! printf "%s\\n" "$OUT" | grep -Eq "{gw_re}"'
+    serve_only = subprocess.run(["bash", "-c", sh], env={**os.environ, "OUT": out},
+                                capture_output=True, text=True, encoding="utf-8", check=False).returncode == 0
+    assert (not serve_only) is hinted
+    ps = (scripts / "windows.ps1").read_text(encoding="utf-8")
+    ps_serve, ps_gw = re.findall(r'-match "(Update follow-up .gateway_restart[^"]+)"', ps)
+    assert (not (bool(re.search(ps_serve, out)) and not re.search(ps_gw, out))) is hinted

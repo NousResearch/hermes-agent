@@ -1278,7 +1278,14 @@ if [ "$CODE" -eq 0 ]; then FINAL_CODE=0 FINAL_MSG="Update complete." UPDATE_COMM
   # end as a plain "Update complete." (review regression 1).
   OWED_STEPS="$(owed_followup_steps)"
   if [ -n "$OWED_STEPS" ]; then
+    # A gateway_restart owed only for serve/dashboard units (the reason then starts with
+    # "serve/dashboard") names their own command in the log; every other gateway_restart reason,
+    # including a raw restart-phase error, keeps the gateway hint (#141071).
     case " $OWED_STEPS " in *" gateway_restart "*) OWED_HINT=" Run hermes gateway restart to move the messaging gateway onto the new code now." ;; *) OWED_HINT="" ;; esac
+    if printf '%s\n' "$OUT" | grep -Eq "Update follow-up 'gateway_restart' did not finish: serve/dashboard " \
+      && ! printf '%s\n' "$OUT" | grep -Eq "Update follow-up 'gateway_restart' did not finish: .*hermes gateway restart"; then
+      OWED_HINT=""
+    fi
     if [ -n "$DONE_NOTE" ]; then DONE_NOTE="$DONE_NOTE Follow-up steps still owed: $OWED_STEPS.$OWED_HINT"
     else DONE_NOTE="Hermes was updated, but some follow-up steps did not finish ($OWED_STEPS). The next launch or hermes update retries them; the update log has the details.$OWED_HINT"; fi
     add_warning "followup" "owed by the committed update: $OWED_STEPS"

@@ -1685,7 +1685,12 @@ try {
     $owedSteps = @([regex]::Matches(($res.Output -join "`n"), "Update follow-up '([A-Za-z0-9_]+)' did not finish: ") |
         ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
     if ($owedSteps.Count -gt 0) {
-        $owedHint = if ($owedSteps -contains 'gateway_restart') { " Run 'hermes gateway restart' to move the messaging gateway onto the new code now." } else { '' }
+        # A gateway_restart owed only for serve/dashboard units (the reason then starts with
+        # "serve/dashboard") names their own command in the log; every other gateway_restart reason,
+        # including a raw restart-phase error, keeps the gateway hint (#141071).
+        $owedText = $res.Output -join "`n"
+        $serveOnly = ($owedText -match "Update follow-up 'gateway_restart' did not finish: serve/dashboard ") -and -not ($owedText -match "Update follow-up 'gateway_restart' did not finish: .*hermes gateway restart")
+        $owedHint = if (($owedSteps -contains 'gateway_restart') -and -not $serveOnly) { " Run 'hermes gateway restart' to move the messaging gateway onto the new code now." } else { '' }
         Add-Followup ("followup: owed by the committed update: " + ($owedSteps -join ', ')) ("some follow-up steps did not finish (" + ($owedSteps -join ', ') + "). The next launch or 'hermes update' retries them; the update log has the details." + $owedHint) -Manual
     }
 

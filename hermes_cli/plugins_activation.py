@@ -24,7 +24,7 @@ _GO_LIVE_LOCK = threading.Lock()
 # Hooks the gateway consults per inbound/outbound message: live as soon as the registry holds them.
 _GATEWAY_TRANSFORM_HOOKS = frozenset({
     "transform_llm_output", "transform_tool_result", "transform_terminal_output", "pre_gateway_dispatch",
-    "gateway_platform_event", "pre_command",
+    "gateway_platform_event", "gateway_message_delivered", "pre_command",
 })
 
 

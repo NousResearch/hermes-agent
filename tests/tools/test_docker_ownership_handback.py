@@ -34,14 +34,14 @@ def _fake_docker(monkeypatch, security_options: str, fail: str = ""):
         calls.append((argv, kwargs.get("input") or b""))
         sub = argv[1] if len(argv) > 1 else ""
         rc = 0
-        if "chown" in argv and fail == "chown-timeout":
+        if "/bin/chown" in argv and fail == "chown-timeout":
             raise subprocess.TimeoutExpired(argv, 10)
-        if "chown" in argv and fail == "chown":
+        if "/bin/chown" in argv and fail == "chown":
             rc = 1  # e.g. a container without CAP_CHOWN
         out = {"run": "fake-cid\n", "info": security_options}.get(sub, "")
         if sub == "inspect" and argv[-1] == "fake-cid":
             out = _inspect() if len(argv) == 3 else json.dumps(json.loads(_inspect())[0]["Mounts"])
-        if "find" in argv and "-user" in argv:
+        if "/usr/bin/find" in argv and "-user" in argv:
             out = (_ROOT_OWNED if argv[argv.index("-user") + 1] == "0" else _HOST_OWNED).decode()
             rc = 1 if fail == "find" else 0  # e.g. find missing from the image
         if kwargs.get("text") or kwargs.get("encoding"):
@@ -61,7 +61,7 @@ _EXTRA_USER = ["--user", "1000:1000"]  # docker_extra_args, not docker_run_as_ho
 
 
 def _to_root(calls):
-    return [stdin for argv, stdin in calls if "chown" in argv and "0:0" in argv[argv.index("chown"):]]
+    return [stdin for argv, stdin in calls if "/bin/chown" in argv and "0:0" in argv[argv.index("/bin/chown"):]]
 
 
 @pytest.mark.platforms("linux")
@@ -107,28 +107,37 @@ def test_root_container_teardown_hands_every_sandbox_mount_back_before_removal(
         return
     if scenario == "reclaim":
         assert _to_root(calls) == ([] if run_as_host_user or user_args else [_HOST_OWNED]), calls
+        assert all("PATH=/usr/sbin:/usr/bin:/sbin:/bin" in argv for argv, _ in calls if "/usr/bin/find" in argv), calls
         assert not record.exists()
         return
     env.cleanup()
     assert env.wait_for_cleanup(5)
 
     subcommands = [argv[1] for argv, _ in calls]
-    chowns = [(argv, stdin) for argv, stdin in calls if "chown" in argv]
+    chowns = [(argv, stdin) for argv, stdin in calls if "/bin/chown" in argv]
     if scenario == "none":
         assert chowns == [], chowns
         assert subcommands[-1] == "rm" and "stop" in subcommands
         return
     assert record.read_bytes() == _ROOT_OWNED
-    if scenario == "chown-timeout":
+    if scenario == "chown-timeout":  # the CLI is killed; the named throwaway must not run on
+        name = chowns[0][0][chowns[0][0].index("--name") + 1]
+        assert name.startswith("hermes-handback-fake-cid-") and [docker_env.find_docker(), "rm", "-f", name] in [
+            argv for argv, _ in calls], calls
         return
-    (walk,) = [argv for argv, _ in calls if "find" in argv]
+    (walk,) = [argv for argv, _ in calls if "/usr/bin/find" in argv]
     ((chown, stdin),) = chowns
     # After stop (no writer left, shutdown writes included), before rm, from the stopped container's volumes.
     stop, rm = subcommands.index("stop"), subcommands.index("rm")
     assert stop < calls.index((walk, b"")) < rm and stop < calls.index((chown, stdin)) < rm
     for argv in (walk, chown):
         assert argv[argv.index("--volumes-from") + 1] == "fake-cid" and "--user" in argv and "sha256:img" in argv
-    assert walk[walk.index("find") + 1:walk.index("-xdev")] == ["-P", "/root", "/workspace"]
+    for argv in (walk, chown):  # a binary planted on the image PATH under /root or /workspace never runs
+        joined = " ".join(argv[:argv.index("sha256:img")])
+        assert "--cap-drop ALL" in joined and "no-new-privileges" in joined and "--pids-limit" in argv, argv
+        assert "-e PATH=/usr/sbin:/usr/bin:/sbin:/bin -e LD_PRELOAD=" in joined and "--cap-add MKNOD" not in joined
+    assert chown[chown.index("sha256:img") + 1:][:1] == ["/usr/bin/xargs"]
+    assert walk[walk.index("/usr/bin/find") + 1:walk.index("-xdev")] == ["-P", "/root", "/workspace"]
     pruned = [walk[i + 1] for i, a in enumerate(walk) if a == "-path"]
     assert {"/root/.hermes/skills", "/workspace/shared"} <= set(pruned)  # docker_volumes and extra-args binds
     assert "1000:1000" in chown and stdin == _ROOT_OWNED

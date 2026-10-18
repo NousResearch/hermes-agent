@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import subprocess
 import sys
 import time
@@ -36,6 +37,12 @@ logger = logging.getLogger(__name__)
 # before any chown, so a timeout mid-chown never leaves a changed path unrecorded.
 _CHOWN_TIMEOUT_S = 10
 HANDBACK_RECORD = ".hermes-owner-handback"
+# Root runs agent-writable trees: name tools by absolute path (an image without them skips the pass)
+# and reset PATH and loader env so nothing planted under /root or /workspace runs instead.
+_SAFE_ENV = ["-e", "PATH=/usr/sbin:/usr/bin:/sbin:/bin", "-e", "LD_PRELOAD=", "-e", "LD_LIBRARY_PATH=", "-w", "/"]
+# The throwaway gets only what find and chown need, so even a planted binary gains no host power.
+_THROWAWAY_CONFINEMENT = ["--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE", "--cap-add", "FOWNER",
+                          "--security-opt", "no-new-privileges", "--pids-limit", "64", "--label", "hermes-handback=1"]
 
 _remapping_cache: dict[str, bool] = {}
 
@@ -95,7 +102,7 @@ def walk_argv(mounts: list[tuple[str, str]], mount_points: list[str], owner: int
     for point in sorted({p.rstrip("/") for p in mount_points}):
         if any(point.startswith(t.rstrip("/") + "/") for t in targets):
             prune += [*(["-o"] if prune else []), "-path", re.sub(r"([][*?\\])", r"\\\1", point)]
-    return ["find", "-P", *targets, "-xdev", *(["(", *prune, ")", "-prune", "-o"] if prune else []),
+    return ["/usr/bin/find", "-P", *targets, "-xdev", *(["(", *prune, ")", "-prune", "-o"] if prune else []),
             "-user", str(owner), "-print0"]
 
 
@@ -103,8 +110,7 @@ def _walk(docker_exe: str, target: list[str], mounts: list[tuple[str, str]], inf
           deadline: float) -> Optional[list[bytes]]:
     """Entries owned by *owner*, or ``None`` when the walk failed (its output may be partial)."""
     points = [m["Destination"] for m in info.get("Mounts") or []]
-    result = subprocess.run([docker_exe, *target, *walk_argv(mounts, points, owner)], capture_output=True,
-                            timeout=max(1.0, deadline - time.monotonic()), stdin=subprocess.DEVNULL, check=False)
+    result = _docker(docker_exe, target, walk_argv(mounts, points, owner), deadline, stdin=subprocess.DEVNULL)
     if result.returncode != 0:
         logger.debug("ownership walk exited %d: %s", result.returncode,
                      result.stderr.decode("utf-8", "replace").strip()[:500])
@@ -112,10 +118,21 @@ def _walk(docker_exe: str, target: list[str], mounts: list[tuple[str, str]], inf
     return [p for p in result.stdout.split(b"\0") if p]
 
 
+def _docker(docker_exe: str, target: list[str], argv: list[str], deadline: float, **kwargs):
+    """Run *argv* in *target*. A timeout only kills the CLI, so a named throwaway is removed then
+    instead of running on with the sandbox volumes."""
+    try:
+        return subprocess.run([docker_exe, *target, *argv], capture_output=True,
+                              timeout=max(1.0, deadline - time.monotonic()), check=False, **kwargs)
+    except subprocess.TimeoutExpired:
+        if "--name" in target:
+            run_capture([docker_exe, "rm", "-f", target[target.index("--name") + 1]], timeout=10)
+        raise
+
+
 def _chown(docker_exe: str, target: list[str], paths: list[bytes], owner: str, deadline: float) -> bool:
-    result = subprocess.run([docker_exe, *target, "xargs", "-0", "-r", "chown", "-h", owner, "--"],
-                            input=b"".join(p + b"\0" for p in paths), capture_output=True,
-                            timeout=max(1.0, deadline - time.monotonic()), check=False)
+    result = _docker(docker_exe, target, ["/usr/bin/xargs", "-0", "-r", "/bin/chown", "-h", owner, "--"], deadline,
+                     input=b"".join(p + b"\0" for p in paths))
     if result.returncode != 0:
         logger.debug("ownership chown to %s exited %d", owner, result.returncode)
     return result.returncode == 0
@@ -133,15 +150,17 @@ def hand_back_sandbox_files(docker_exe: str, container_id: str, mounts: list[tup
     info = _inspect(docker_exe, container_id) if ids else None
     if not info or not _runs_as_root(info):
         return
-    target = ["run", "--rm", "-i", "--pull", "never", "--network", "none", "--user", "0:0",
+    target = ["run", "--rm", "-i", "--pull", "never", "--network", "none", "--user", "0:0", *_THROWAWAY_CONFINEMENT,
+              *_SAFE_ENV, "--name", f"hermes-handback-{container_id[:12]}-{secrets.token_hex(4)}",
               "--volumes-from", container_id, "--entrypoint", "", info["Image"]]
     deadline = time.monotonic() + _CHOWN_TIMEOUT_S
     try:
         paths = _walk(docker_exe, target, mounts, info, 0, deadline)
         if not paths:
             return
+        known = set(record.read_bytes().split(b"\0")) if record.is_file() else set()
         with record.open("ab") as fh:  # append: an unreclaimed earlier record still applies
-            fh.write(b"".join(p + b"\0" for p in paths))
+            fh.write(b"".join(p + b"\0" for p in paths if p not in known))
         _chown(docker_exe, target, paths, f"{ids[0]}:{ids[1]}", deadline)
     except (subprocess.TimeoutExpired, OSError, KeyError) as e:
         logger.debug("ownership handback of %s failed: %s", container_id[:12], e)
@@ -163,7 +182,7 @@ def reclaim_sandbox_files(docker_exe: str, container_id: str, mounts: list[tuple
     if not info or not _runs_as_root(info):
         record.unlink(missing_ok=True)
         return
-    target = ["exec", "-i", "-u", "0:0", container_id]
+    target = ["exec", "-i", "-u", "0:0", *_SAFE_ENV, container_id]
     deadline = time.monotonic() + _CHOWN_TIMEOUT_S
     try:
         recorded = set(record.read_bytes().split(b"\0"))

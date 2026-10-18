@@ -50,6 +50,11 @@ class StreamJsonEmitter:
         agent.tool_progress_callback = self.on_tool_progress
         return self
 
+    def bind_session(self, session_id: str) -> None:
+        """Record the id the gateway assigned after ``init`` was written, so an interrupted or failed
+        run still reports which session holds the accepted work."""
+        self._session_id = session_id or self._session_id
+
     def on_text_delta(self, text: str | None) -> None:
         # Only None/"" (the turn-end sentinel) is dropped: whitespace deltas are part of the text, and
         # a consumer concatenating ``text`` events must reproduce the answer byte for byte.

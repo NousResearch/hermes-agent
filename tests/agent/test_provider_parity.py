@@ -58,7 +58,7 @@ class _FakeOpenAI:
 
 @pytest.fixture(autouse=True)
 def _reset_auxiliary_provider_state():
-    from agent.auxiliary_client import _reset_aux_unhealthy_cache
+    from agent.auxiliary_health import _reset_aux_unhealthy_cache
 
     _reset_aux_unhealthy_cache()
     yield

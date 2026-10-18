@@ -125,8 +125,10 @@ from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_lengt
 from hermes_cli.config import get_hermes_home
 from hermes_cli.config_providers import _canonical_api_mode
 from agent.auxiliary_health import (
-    _custom_health_base_url, _unhealthy_cache_key, fallback_candidate_quarantine_ttl,
-    fallback_candidate_unavailable_reason,
+    _AuxTimeoutQuarantine, _assert_route_dialable, _clear_aux_timeout_streak,
+    _custom_health_base_url, _is_provider_unhealthy, _log_skip_unhealthy,
+    _mark_provider_unhealthy, _note_aux_timeout, _unhealthy_cache_key,
+    fallback_candidate_quarantine_ttl, fallback_candidate_unavailable_reason,
 )
 from agent.auxiliary_unavailable import (
     AuxiliaryClientUnavailable, clear_nous_credential_failure, missing_provider_credentials_message,
@@ -3145,12 +3147,6 @@ def _get_provider_chain() -> list[tuple]:
     ]
 
 
-# "Recently 402'd" unhealthy-provider cache: a depleted provider stays so for hours, so hiding it
-# for a TTL saves an RTT per aux call. In-process only (profiles may use different keys).
-_AUX_UNHEALTHY_TTL_SECONDS = 600  # 10 minutes
-_aux_unhealthy_until: dict[Any, float] = {}
-_aux_unhealthy_logged_at: dict[Any, float] = {}
-_aux_unhealthy_reason: dict[Any, str] = {}
 # resolved_provider / explicit-config names → chain labels.
 _AUX_UNHEALTHY_LABEL_ALIASES = {
     "openrouter": "openrouter", "nous": "nous", "custom": "local/custom",
@@ -3164,71 +3160,6 @@ def _normalize_chain_label(provider: str) -> str:
         return ""
     p = str(provider).strip().lower()
     return _AUX_UNHEALTHY_LABEL_ALIASES.get(p, p)
-
-
-_AUX_UNHEALTHY_PAYMENT_REASON = "payment / credit error"
-
-
-def _mark_provider_unhealthy(
-    provider: str, ttl: Optional[float] = None, *, base_url: Optional[str] = None,
-    reason: str = _AUX_UNHEALTHY_PAYMENT_REASON, level: int = logging.WARNING,
-) -> None:
-    """Hide one provider endpoint until the TTL expires. ``reason`` is what the log says and what the
-    skip line echoes: absent credentials are an expected state (DEBUG), a confirmed 402 is a fault
-    (WARNING) — the old fixed payment wording sent local-only users chasing billing (#64144)."""
-    label = _normalize_chain_label(provider)
-    if not label:
-        return
-    key = _unhealthy_cache_key(label, base_url)
-    ttl = _AUX_UNHEALTHY_TTL_SECONDS if ttl is None else ttl
-    expires_at = time.time() + ttl
-    _aux_unhealthy_until[key] = expires_at
-    _aux_unhealthy_reason[key] = reason
-    logger.log(
-        level,
-        "Auxiliary: marking %s unhealthy for %ds (%s). "
-        "Subsequent auxiliary calls will skip it until %s.",
-        label, int(ttl), reason, time.strftime("%H:%M:%S", time.localtime(expires_at)),
-    )
-
-
-def _is_provider_unhealthy(label: str, base_url: Optional[str] = None) -> bool:
-    """True iff this provider endpoint is unhealthy and unexpired; lazily evicts expired entries."""
-    if not label:
-        return False
-    key = _unhealthy_cache_key(label, base_url)
-    expires_at = _aux_unhealthy_until.get(key)
-    if expires_at is None:
-        return False
-    if time.time() >= expires_at:
-        _aux_unhealthy_until.pop(key, None)
-        _aux_unhealthy_logged_at.pop(key, None)
-        _aux_unhealthy_reason.pop(key, None)
-        return False
-    return True
-
-
-def _log_skip_unhealthy(
-    label: str, task: Optional[str] = None, *, base_url: Optional[str] = None,
-) -> None:
-    """Log a skipped unhealthy provider at most once per minute per label."""
-    now = time.time()
-    key = _unhealthy_cache_key(label, base_url)
-    if now - _aux_unhealthy_logged_at.get(key, 0.0) >= 60:
-        _aux_unhealthy_logged_at[key] = now
-        expires_at = _aux_unhealthy_until.get(key, now)
-        logger.info(
-            "Auxiliary %s: skipping %s (%s, retry in %ds)",
-            task or "call", label, _aux_unhealthy_reason.get(key, _AUX_UNHEALTHY_PAYMENT_REASON),
-            max(0, int(expires_at - now)),
-        )
-
-
-def _reset_aux_unhealthy_cache() -> None:
-    """Clear the unhealthy cache (tests / explicit user reset)."""
-    _aux_unhealthy_until.clear()
-    _aux_unhealthy_logged_at.clear()
-    _aux_unhealthy_reason.clear()
 
 
 def _contains_any(text: str, needles: tuple[str, ...]) -> bool:
@@ -7862,11 +7793,19 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     if reason == "request timed out":
         # WARNING, naming the endpoint, the budget and the knob: the only other trace of a slow
         # local model is the fallback provider's complaint about a model it never had (#89445).
-        stalled = "Auxiliary chat stream" in str(first_err)
-        logger.warning("Auxiliary %s%s: request to %s %s (raise auxiliary.%s.%s for slow or reasoning "
-                       "models) on %s, trying fallback", task or "call", tag, route.base_info or resolved_provider,
-                       first_err if stalled else f"timed out after {route.timeout}s", task or "call",
-                       "no_progress_timeout" if stalled else "timeout", resolved_provider)
+        if isinstance(first_err, _AuxTimeoutQuarantine):
+            # The dial was withheld (endpoint quarantined for consecutive timeouts), so the
+            # skip is not a fresh strike — hand off to the fallback chain quietly.
+            logger.info("Auxiliary %s%s: %s, trying fallback", task or "call", tag, first_err)
+        else:
+            _note_aux_timeout(resolved_provider, base_url=route.base_info)
+            # WARNING, naming the endpoint, the budget and the knob: the only other trace of a slow
+            # local model is the fallback provider's complaint about a model it never had (#89445).
+            stalled = "Auxiliary chat stream" in str(first_err)
+            logger.warning("Auxiliary %s%s: request to %s %s (raise auxiliary.%s.%s for slow or reasoning "
+                           "models) on %s, trying fallback", task or "call", tag, route.base_info or resolved_provider,
+                           first_err if stalled else f"timed out after {route.timeout}s", task or "call",
+                           "no_progress_timeout" if stalled else "timeout", resolved_provider)
     else:
         logger.info("Auxiliary %s%s: %s on %s (%s), trying fallback",
                     task or "call", tag, reason, resolved_provider, first_err)
@@ -8193,7 +8132,7 @@ def _call_llm_impl(
         # (default 2 retries → 3 total attempts); a second/third failure or any non-transient error falls
         # through to ``first_err`` and the existing fallback handling unchanged. Unified home for the
         # transient retry every auxiliary task shares. (PR #16587)
-        return _validate_llm_response(
+        resp = _validate_llm_response(
             _relay_sync_completion(
                 client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode,
                 create=lambda request: _create_with_progress(
@@ -8204,7 +8143,13 @@ def _call_llm_impl(
             ),
             task, **validate_kw,
         )
+        # A response proves the endpoint alive: forget its timeout streak.
+        _clear_aux_timeout_streak(req.resolved_provider, base_url=req.base_info)
+        return resp
     try:
+        # A timeout-quarantined endpoint is not dialed: raise into the ladder directly so the
+        # fallback chain answers without paying another doomed full-budget RTT.
+        _assert_route_dialable(req)
         # Bounded same-provider retry (exponential backoff, auxiliary.transient_retries) for
         # transient blips before escalating to fallback — a dropped connection shouldn't
         # abandon a healthy provider (matters for pinned MoA advisors).
@@ -8361,13 +8306,18 @@ async def _async_call_llm_impl(
 
         async def _primary(**validate_kw: Any) -> Any:
             import asyncio
-            return await asyncio.to_thread(
+            resp = await asyncio.to_thread(
                 _validate_llm_response,
                 await _relay_async_completion(
                     client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode,
                     create=_acreate),
                 task, **validate_kw)
+            # A response proves the endpoint alive: forget its timeout streak.
+            _clear_aux_timeout_streak(req.resolved_provider, base_url=req.base_info)
+            return resp
         try:
+            # A timeout-quarantined endpoint is not dialed (see call_llm()).
+            _assert_route_dialable(req)
             return await _primary(provider=request_provider, base_url=req.base_info)
         except Exception as transient_err:
             # The async Codex adapter wraps the sync stream via to_thread: same TimeoutError here.

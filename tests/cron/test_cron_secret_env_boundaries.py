@@ -49,15 +49,9 @@ def hermes_env(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     (home / "scripts").mkdir(parents=True)
     (home / "cron").mkdir()
+    # No module reloads: the cron store and scripts dir follow HERMES_HOME at call time, and a
+    # reloaded cron.scheduler would leave gateway modules holding stale exception classes.
     monkeypatch.setenv("HERMES_HOME", str(home))
-    import importlib
-
-    import cron.jobs
-    import cron.scheduler
-    import hermes_constants
-    importlib.reload(hermes_constants)
-    importlib.reload(cron.jobs)
-    importlib.reload(cron.scheduler)
     return home
 
 

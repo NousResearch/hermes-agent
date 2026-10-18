@@ -8,6 +8,7 @@ from ctypes import wintypes
 import subprocess
 import sys
 import threading
+import time
 
 import psutil
 
@@ -44,6 +45,21 @@ class _ExtendedLimits(ctypes.Structure):
     ]
 
 
+def _process_id_list(capacity: int) -> ctypes.Structure:
+    class _ProcessIdList(ctypes.Structure):
+        _fields_ = [
+            ("NumberOfAssignedProcesses", wintypes.DWORD),
+            ("NumberOfProcessIdsInList", wintypes.DWORD),
+            ("ProcessIdList", ctypes.c_size_t * capacity),
+        ]
+    return _ProcessIdList()
+
+
+_SYNCHRONIZE_AND_QUERY = 0x00100000 | 0x1000  # SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION
+_ERROR_MORE_DATA = 234
+_WAIT_TIMEOUT = 0x102
+
+
 class _WindowsJob:
     def __init__(self):
         self._lock = threading.Lock()
@@ -52,7 +68,14 @@ class _WindowsJob:
             ("CreateJobObjectW", [ctypes.c_void_p, wintypes.LPCWSTR], wintypes.HANDLE),
             ("SetInformationJobObject", [wintypes.HANDLE, ctypes.c_int,
                                          ctypes.c_void_p, wintypes.DWORD], wintypes.BOOL),
+            ("QueryInformationJobObject", [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+                                           wintypes.DWORD, ctypes.c_void_p], wintypes.BOOL),
             ("AssignProcessToJobObject", [wintypes.HANDLE, wintypes.HANDLE], wintypes.BOOL),
+            ("TerminateJobObject", [wintypes.HANDLE, wintypes.UINT], wintypes.BOOL),
+            ("OpenProcess", [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD], wintypes.HANDLE),
+            ("IsProcessInJob", [wintypes.HANDLE, wintypes.HANDLE,
+                                ctypes.POINTER(wintypes.BOOL)], wintypes.BOOL),
+            ("WaitForSingleObject", [wintypes.HANDLE, wintypes.DWORD], wintypes.DWORD),
             ("CloseHandle", [wintypes.HANDLE], wintypes.BOOL),
         ):
             fn = getattr(self._api, name)
@@ -77,6 +100,79 @@ class _WindowsJob:
         # Popen retains the original process handle, avoiding a PID-reuse race.
         if not self._api.AssignProcessToJobObject(self._handle, int(proc._handle)):
             raise ctypes.WinError(ctypes.get_last_error())
+
+    def terminate(self, timeout: float = 5.0) -> bool:
+        """Kill the contained tree, wait until every member has exited, then close the job.
+
+        Termination is asynchronous, so close() alone returns while members may still run, and
+        the job's ActiveProcesses count was seen at zero while a killed member still existed.
+        Each member is therefore opened before the kill and its own handle waited on; members
+        started while the tree was dying are caught by listing the job again until it is empty.
+        False if members remained at the deadline (the handle is closed either way); an
+        already closed job counts as empty.
+        """
+        try:
+            with self._lock:
+                if self._handle is None:
+                    return True
+                deadline = time.monotonic() + timeout
+                while True:
+                    pids = self._member_pids()
+                    if not pids:
+                        return True
+                    handles = self._open_members(pids)
+                    try:
+                        if not self._api.TerminateJobObject(self._handle, 1):
+                            raise ctypes.WinError(ctypes.get_last_error())
+                        for handle in handles:
+                            remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
+                            waited = self._api.WaitForSingleObject(handle, remaining_ms)
+                            if waited == _WAIT_TIMEOUT:
+                                return False
+                            if waited != 0:  # WAIT_OBJECT_0
+                                raise ctypes.WinError(ctypes.get_last_error())
+                    finally:
+                        for handle in handles:
+                            self._api.CloseHandle(handle)
+                    if time.monotonic() >= deadline:
+                        return False
+                    time.sleep(0.01)
+        finally:
+            self.close()
+
+    def _member_pids(self) -> list[int]:
+        capacity = 16
+        while True:
+            info = _process_id_list(capacity)
+            if self._api.QueryInformationJobObject(  # 3 = BasicProcessIdList
+                    self._handle, 3, ctypes.byref(info), ctypes.sizeof(info), None):
+                if info.NumberOfProcessIdsInList >= info.NumberOfAssignedProcesses:
+                    return list(info.ProcessIdList[:info.NumberOfProcessIdsInList])
+            elif (error := ctypes.get_last_error()) != _ERROR_MORE_DATA:
+                raise ctypes.WinError(error)
+            capacity = max(capacity * 2, info.NumberOfAssignedProcesses)
+
+    def _open_members(self, pids: list[int]) -> list[int]:
+        """Open each listed member. The handle pins the PID, and the membership check made
+        through it rejects a PID recycled between the listing and the open. A member that could
+        not be opened is still listed on the next pass, so it is never taken for gone."""
+        handles = []
+        try:
+            for pid in pids:
+                handle = self._api.OpenProcess(_SYNCHRONIZE_AND_QUERY, False, pid)
+                if not handle:
+                    continue
+                in_job = wintypes.BOOL()
+                if (self._api.IsProcessInJob(handle, self._handle, ctypes.byref(in_job))
+                        and in_job.value):
+                    handles.append(handle)
+                else:
+                    self._api.CloseHandle(handle)
+        except BaseException:
+            for handle in handles:
+                self._api.CloseHandle(handle)
+            raise
+        return handles
 
     def close(self) -> None:
         """Terminate the contained tree; repeated closes are harmless."""

@@ -41,13 +41,8 @@ def hermes_env(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     (home / "scripts").mkdir(parents=True)
     (home / "cron").mkdir()
+    # No module reloads: the cron store follows HERMES_HOME at call time.
     monkeypatch.setenv("HERMES_HOME", str(home))
-    import importlib
-
-    import cron.jobs
-    import hermes_constants
-    importlib.reload(hermes_constants)
-    importlib.reload(cron.jobs)
     return home
 
 

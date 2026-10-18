@@ -293,6 +293,37 @@ def _drain_script_pipes(proc: subprocess.Popen) -> None:
         proc.wait(timeout=5.0)
 
 
+def _spawn_secret_contained(argv: list[str], popen_kwargs: dict[str, Any]):
+    """Start a secret-bearing script inside a kill-on-close Windows Job Object, assigned while
+    the process is still suspended, so every descendant it ever starts (a ``DETACHED_PROCESS``
+    child with its output on DEVNULL included; breakaway is not permitted) is contained from
+    its first instruction and dies when the job is closed. Elsewhere there is no race-free
+    equivalent, so the spawn is refused (secret resolution already fails closed there)."""
+    if sys.platform != "win32":
+        raise RuntimeError("secret_env scripts can only run inside a Windows Job Object")
+    from hermes_cli.local_runtime.processes import spawn_server
+
+    return spawn_server(argv, **popen_kwargs)
+
+
+def _end_secret_job(job_object) -> None:
+    """Kill whatever is left of a secret-bearing tree and wait until the job is empty. Past the
+    bound every member has already been told to terminate and can run no further code of its
+    own, so the run is not held: the lock is released with a warning."""
+    if not job_object.terminate():
+        logger.warning("secret_env script tree was still exiting when its job object closed")
+
+
+def _stop_script_tree(proc: subprocess.Popen, job_object) -> None:
+    """Cancel/timeout stop. A contained tree is ended as a whole through its job; otherwise the
+    psutil tree-kill with its process-group fallback."""
+    if job_object is not None:
+        _end_secret_job(job_object)
+    else:
+        _terminate_cron_script_tree(proc)
+    _drain_script_pipes(proc)
+
+
 def _windows_cron_bootstrap_argv(
     python_exe: str, env_overlay: dict[str, str], script_path: str) -> list[str]:
     """Bootstrap a cron script under the base interpreter with ``.pth`` support. Overlay mode puts
@@ -446,7 +477,9 @@ def _run_job_script(
     ``.py`` scripts (#8714). secret_env_resolver: only the no_agent path passes one (wake-gate
     and monitor scripts never do); its values are layered over the scrubbed env right before
     Popen and exact-match scrubbed from every output, whatever ``security.redact_secrets`` says.
-    It is entered before Popen and left after the run: it keeps the verified script locked.
+    It is entered before Popen and left after the run: it keeps the verified script locked. The
+    script then runs inside a job object (``_spawn_secret_contained``) whose remaining members are
+    killed before the lock is left, whatever way the run ends.
     """
     from cron.secret_env import SecretResolveError, scrub_secret_values
 
@@ -455,6 +488,7 @@ def _run_job_script(
         return False, err
     script_timeout = _get_script_timeout()
     secret_values: list[str] = []
+    job_object = None
     script_lock = contextlib.ExitStack()
     try:
         argv, env_overlay, err = _script_argv(path, interpreter)
@@ -500,21 +534,27 @@ def _run_job_script(
         # Use the job's workdir as the subprocess cwd when configured, otherwise default to the scripts-dir
         # parent (back-compat). NEVER mutate the Python process cwd — that would leak into concurrent
         # gateway sessions (#69396).
-        proc = subprocess.Popen(
-            argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            cwd=workdir or str(path.parent), env=env, **popen_kwargs)
+        popen_kwargs.update(
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            cwd=workdir or str(path.parent), env=env)
+        if secret_env_resolver is None:
+            proc = subprocess.Popen(argv, **popen_kwargs)
+        else:
+            proc, job_object = _spawn_secret_contained(argv, popen_kwargs)
+            # Registered after the lock, so it unwinds first: on every exit path no descendant
+            # (a detached child that outlived the script included) still holds the values once
+            # the lock is released and the function returns.
+            script_lock.callback(_end_secret_job, job_object)
         deadline = time.monotonic() + script_timeout
         while True:
             # Tree-kill on cancel AND timeout: killpg misses setsid grandchildren (watchdogs,
             # backgrounded shell jobs); kill_process_tree snapshots descendants BEFORE signalling.
             if cancel_event is not None and cancel_event.is_set():
-                _terminate_cron_script_tree(proc)
-                _drain_script_pipes(proc)
+                _stop_script_tree(proc, job_object)
                 return False, "Script cancelled because cron fire ownership was lost"
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                _terminate_cron_script_tree(proc)
-                _drain_script_pipes(proc)
+                _stop_script_tree(proc, job_object)
                 # Phase 4a (#85125): a script timeout must leave ZERO living descendants. killpg only
                 # reaches the script's own process group — a grandchild that called setsid (backgrounded
                 # shell jobs, watchdogs) escapes it and keeps running after the job reports failure (#71148
@@ -522,6 +562,10 @@ def _run_job_script(
                 # signalling, so own-session grandchildren are reached too — the unified deadline layer's
                 # tree-kill (#85147, d6a5cb9725).
                 return False, f"Script timed out after {script_timeout}s: {path}"
+            if job_object is not None and proc.poll() is not None:
+                # The script is done: a descendant still holding its pipes would keep the
+                # values (and communicate()) alive until the timeout.
+                _end_secret_job(job_object)
             try:
                 stdout_raw, stderr_raw = proc.communicate(timeout=min(0.1, remaining))
                 break

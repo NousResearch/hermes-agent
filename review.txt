@@ -11,3 +11,25 @@ Nothing found in: hidden staging exclusion across runtime/CLI discovery; 120-sec
 Evidence boundaries: source/diff review in a separate detached reviewer worktree, including both handoff companion artifacts and narrow supporting source. No reviewer tests, installs, service restarts, active-state writes, merge or deployment. Author reports corrected RPC/concurrency 6/6, existing transaction suite 16/16 and staged checks 11/11; these were not rerun by the reviewer. CI, live core and GUI rollout acceptance are not established by this review.
 
 Model: explicitly tool-selected gpt-6.1-sol; independent provider/runtime-model introspection is unavailable.
+
+---
+Adversarial review — updated policy follow-up, 2026-10-18
+
+Verdict: CONFIRMED
+
+PASS — no confident blocking correctness, security, data-loss, concurrency or contract issue.
+
+Adversarial source review of dc0523086a8948c9e90079915eaa8f99663ed3c2 against f86276d2ebc, including the complete diff, companion patch, migration script, full Linear issue and isolated Toolaria source.
+
+Nothing found in:
+- Update coalescing: profile/plugin keys, first-owner consent, exception propagation, pending-entry cleanup and per-request response IDs. Joining requests cannot broaden the owner's consent; completed calls recheck the catalog.
+- Catalog/desktop outcomes: immutable-pin update path, widening refusal before publication, extended request deadline and explicit unknown timeout outcome.
+- TypeSafe migration: canonical/legacy precedence, existing router_model preservation, validated safe key and authoritative managed-config writer. Reserved roots remain rejected.
+- Toolaria: absent/unknown retrieval availability preserves original output; disabled toolsets remain authoritative. Modern-host rescue/fetch IDs agree, and BlobStore.fetch checks session ownership. Older hosts conservatively retain original output.
+- Discovery: both runtime and CLI scanners exclude hidden staging siblings at both supported depths while retaining visible flat/category plugins.
+
+Nonblocking evidence limit: inline tool executors do not forward available_tools, so their availability remains unknown and Toolaria preserves their original output.
+
+Evidence boundaries: source-only review in a separate detached checkout; no tests, builds, edits, installs, restarts, live plugin/config changes, merge or deployment. Historical test counts were not freshly verified; missing raw artifacts were not treated as evidence. CI and live GUI/core rollout acceptance remain unestablished.
+
+Model: explicitly tool-selected gpt-6.1-sol; independent provider/runtime-model introspection unavailable.

@@ -6,3 +6,8 @@
 - [x] Diagnose restricted-session rescuer and apply smallest supported fix.
 - [x] Run relevant suites and actual isolated paths; record exact results.
 - [x] Complete one Sol review, push branch/PR, link issue and update handoff/report.
+
+## Authorized verification follow-up — 2026-10-18
+- [x] Reconcile local source, report availability, PR head and current CI evidence.
+- [x] Evaluate actual diff under the new adversarial-review rule and complete the required review.
+- [ ] Record verified findings and remaining approval boundaries, then commit/push branch and Linear handoff.

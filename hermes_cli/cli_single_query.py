@@ -323,7 +323,7 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
 
     if emitter is not None:
         _exit_code = emitter.emit_result(result, session_id=cli.session_id or "", exit_code=_exit_code)
-    exit_single_query(_exit_code)
+    exit_single_query(_exit_code, result=result)
 
 
 def _route_single_query_images(cli, query, effective_query, single_query_images, single_query_image_urls):
@@ -581,6 +581,7 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
         exit_single_query(_single_query_exit_code(
             cli._last_turn_result,
             credentials_rate_limited=getattr(cli, "_credentials_rate_limited", False),
-            credentials_terminal=getattr(cli, "_credentials_terminal", False)))
+            credentials_terminal=getattr(cli, "_credentials_terminal", False)),
+            result=cli._last_turn_result)
     finally:
         _finalize_single_query(cli)

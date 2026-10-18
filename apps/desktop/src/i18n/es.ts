@@ -6,6 +6,7 @@ import { esBoot } from './es_boot'
 import { esClarify } from './es_clarify'
 import { esConnectorAccounts } from './es_connector_accounts'
 import { esConnectorCard } from './es_connector_card'
+import { esDelegationFieldLabels } from './es_delegation_fields'
 import { esFirstRun } from './es_first_run'
 import { esLocalModels } from './es_local_models'
 import { esModelMenu } from './es_model_menu'
@@ -1341,14 +1342,7 @@ export const esOverrides = {
           timeout: 'Tiempo de espera del modelo de compresión (s)'
         }
       },
-      delegation: {
-        model: 'Modelo de subagente',
-        provider: 'Proveedor de subagente',
-        maxIterations: 'Límite de turnos del subagente',
-        maxConcurrentChildren: 'Subagentes paralelos',
-        childTimeoutSeconds: 'Tiempo límite del subagente',
-        reasoningEffort: 'Esfuerzo de razonamiento del subagente'
-      },
+      delegation: esDelegationFieldLabels,
       updates: {
         nonInteractiveLocalChanges: 'Cambios locales en actualización desde la app'
       }

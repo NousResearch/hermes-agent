@@ -88,6 +88,23 @@ def _clear_web_result_cache():
     search_memo.clear()
 
 
+@pytest.fixture(autouse=True)
+def _no_host_provider_listing():
+    """Keep the host's logged-in providers out of delegate_task model routing.
+
+    A model pin is checked against the model picker's provider listing, which
+    reads real auth state; an empty listing means "unreadable" and routes as
+    before. Tests that exercise routing monkeypatch ``_load_rows`` themselves.
+    """
+    try:
+        from tools import delegate_tool_routes
+    except Exception:
+        yield
+        return
+    with patch.object(delegate_tool_routes, "_load_rows", lambda current: []):
+        yield
+
+
 def register_all_web_providers():
     """Register all bundled web-search providers into the global registry.
 

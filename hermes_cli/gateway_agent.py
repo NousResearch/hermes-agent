@@ -60,14 +60,6 @@ class _CompressorView:
         self.threshold_tokens = 0
 
 
-class _TodoView:
-    def __init__(self):
-        self.items: list = []
-
-    def read(self):
-        return list(self.items)
-
-
 class _Turn:
     """One ``run_conversation``; what each consumer got of the reply's current segment (``shown``: the
     terminal, ``spoken``: ``stream_callback``) and the closed segments and interims (``seen``), for the
@@ -170,7 +162,10 @@ class GatewayAgent:
         self._checkpoint_mgr = None
         self.context_compressor = _CompressorView()
         self._reset_session_figures()
-        self._todo_store = _TodoView()
+        # Main's store type, the one /new, /resume and /branch swap in: a read-only mirror of the gateway's
+        # todo snapshot (``_set_todos``), read by the pet's done-plan beat.
+        from tools.todo_tool import TodoStore
+        self._todo_store = TodoStore()
         self._generation = None
         self._admission = None
         self._turn = None  # a turn a later one replaced stops taking frames
@@ -985,12 +980,19 @@ class GatewayAgent:
             data = json.loads(result) if isinstance(result, str) else result
         except ValueError:
             return
-        if isinstance(data, dict) and isinstance(data.get("todos"), list):
-            self._todo_store.items = list(data["todos"])
+        if isinstance(data, dict):
+            self._set_todos(data)
 
     def _on_todo(self, payload, stream_callback, starts):
-        if isinstance(payload.get("todos"), list):
-            self._todo_store.items = list(payload["todos"])
+        self._set_todos(payload)
+
+    def _set_todos(self, snapshot):
+        """The gateway's ``{todos, revision}`` into the CLI's ``TodoStore`` (``restore``: no new revision)."""
+        if isinstance(snapshot.get("todos"), list):
+            try:
+                self._todo_store.restore(snapshot["todos"], revision=snapshot.get("revision"))
+            except (ValueError, TypeError) as exc:
+                logger.debug("todo snapshot not mirrored: %s", exc)
 
     def _on_control_update(self, payload, stream_callback, starts):
         if self.control_update_callback is not None:

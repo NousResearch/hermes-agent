@@ -1029,3 +1029,18 @@ def test_new_session_reads_zero_without_a_stats_round_trip(make_agent):
     agent.reset_session_state()
     assert agent.session_api_calls == 0 and agent._api_latency_history == []
     assert [method for method, _ in client.calls] == []
+
+
+def test_todo_updates_after_a_session_switch_reach_the_cli_todo_store(make_agent):
+    """/new, /resume and /branch give the agent a fresh ``tools.todo_tool.TodoStore``; the gateway's
+    later ``todo.updated`` must still land where the CLI reads it (``read()``: the pet's done-plan beat)."""
+    from types import SimpleNamespace
+
+    from hermes_cli.cli_commands_mixin import _sync_agent_to_session
+    todos = [{"id": "1", "content": "ship it", "status": "completed"}]
+    agent, _ = make_agent([frame("todo.updated", {"todos": todos, "revision": 1}),
+                           frame("message.complete", {"text": "x", "outcome": "completed"})])
+    cli = SimpleNamespace(agent=agent, conversation_history=[])
+    _sync_agent_to_session(cli, SID, parent_session_id="", reason="resume")
+    agent.run_conversation("plan")
+    assert agent._todo_store.read() == todos

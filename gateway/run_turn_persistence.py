@@ -423,6 +423,8 @@ class GatewayTurnPersistenceMixin:
         from gateway.response_filters import display_metadata_for_event
         display_metadata = {**({"gateway_input_owner": prepared.persistence_owner} if prepared.persistence_owner else {}),
                             **display_metadata_for_event(event)}
+        if getattr(event, "ingress_provenance", None):
+            display_metadata["original_inputs"] = event.ingress_provenance
         if display_metadata:
             _user_entry["display_metadata"] = display_metadata
         if getattr(event, "message_id", None):
@@ -553,7 +555,13 @@ class GatewayTurnPersistenceMixin:
             # The queued-follow-up lane uploads this response's attachments itself; re-scanning here
             # would upload every file a second time.
             if response and adapter and not agent_result.get("media_already_delivered"):
-                await self._deliver_media_from_response(response, event, adapter)
+                from gateway.platforms.base import SendResult
+                await self._deliver_queued_first_response(
+                    response, source, adapter, metadata=self._event_thread_metadata(event, source),
+                    session_key=session_key, inbound_event=event, text_already_delivered=True,
+                    stream_consumer=SendResult(
+                        success=True, message_id=agent_result.get("delivery_message_id")),
+                )
             # Streaming delivered the body, but the footer was held back (`not already_sent` gate).
             if _footer_line and adapter:
                 try:

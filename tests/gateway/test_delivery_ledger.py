@@ -30,6 +30,20 @@ def _fresh_db(tmp_path, monkeypatch):
     yield
 
 
+def test_delivery_ledger_initialization_applies_wal_fallback(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "hermes_state_wal.apply_wal_with_fallback",
+        lambda conn, *, db_label: calls.append((conn, db_label)),
+    )
+    conn = sqlite3.connect(":memory:")
+    try:
+        dl._initialize_schema(conn)
+        assert calls == [(conn, "state.db (delivery_ledger)")]
+    finally:
+        conn.close()
+
+
 def _record(oid="ob-1", session_key="agent:main:slack:channel:C1", **kw):
     dl.record_obligation(
         obligation_id=oid,
@@ -142,6 +156,44 @@ class TestObligationId:
         assert a != dl.compute_obligation_id("sk1", "msg2", "hello")
         assert a != dl.compute_obligation_id("sk1", "msg1", "other")
         assert len(a) == 24
+
+    def test_durable_inbound_identity_ignores_regenerated_wording(self):
+        """One queued user input has one outbound owner across a restart."""
+        first = dl.compute_obligation_id(
+            "sk1", "msg1", "first generated answer", stable_inbound_id="in-1"
+        )
+        replay = dl.compute_obligation_id(
+            "sk1", "msg1", "different regenerated answer", stable_inbound_id="in-1"
+        )
+        assert first == replay
+
+
+def test_preserved_inbound_transfer_never_overwrites_original_reply():
+    oid = dl.compute_obligation_id("sk1", "", "", stable_inbound_id="in-1")
+    assert dl.record_obligation(
+        obligation_id=oid,
+        session_key="sk1",
+        platform="telegram",
+        chat_id="1",
+        thread_id=None,
+        content="canonical reply",
+        preserve_existing=True,
+    )
+    dl.mark_delivered(oid)
+    assert not dl.record_obligation(
+        obligation_id=oid,
+        session_key="sk1",
+        platform="telegram",
+        chat_id="1",
+        thread_id=None,
+        content="regenerated reply must not replace the first",
+        preserve_existing=True,
+    )
+    with dl._connect() as conn:
+        row = conn.execute(
+            "SELECT content, state FROM delivery_obligations WHERE obligation_id=?", (oid,)
+        ).fetchone()
+    assert row == ("canonical reply", "delivered")
 
 
 class TestSweep:

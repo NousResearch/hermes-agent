@@ -35,6 +35,7 @@ import pytest
 from gateway.config import GatewayConfig, HomeChannel, Platform
 from gateway.platforms.base import SendResult
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.shutdown_flush import record_durable_inbound_event, recover_durable_inbound_events
 from gateway.run import (
     _AGENT_PENDING_SENTINEL,
     _auto_continue_freshness_window,
@@ -276,6 +277,20 @@ class TestResumePendingSystemNote:
         assert "skip any unfinished work" not in note
         # But still guards against re-running already-recorded tool calls.
         assert "already appear in the history" in note
+
+    def test_empty_message_interactive_note_continues_task(self):
+        note = build_resume_recovery_note("restart_timeout", "", interactive=True)
+        assert "latest unanswered real user request" in note
+        assert "ask what they would like to do next" not in note
+        assert "first step that has no recorded result" in note
+
+    def test_real_user_message_steers_existing_task(self):
+        note = build_resume_recovery_note(
+            "restart_timeout", "use the saved URL and finish the answer"
+        )
+        assert "steering or a correction" in note
+        assert "cancels or replaces" in note
+        assert "skip any unfinished work" not in note
 
 
 
@@ -883,6 +898,33 @@ async def test_post_drain_inbound_processes_instead_of_queueing(monkeypatch):
     assert runner._startup_restore_queue == []
 
 
+@pytest.mark.asyncio
+async def test_startup_replay_keeps_durable_input_across_second_restart(tmp_path, monkeypatch):
+    """Adapter admission is RAM-only; a crash before an outbound transfer replays the turn."""
+    import gateway.shutdown_flush as shutdown_flush
+
+    flush_dir = tmp_path / "pending_messages"
+    flush_dir.mkdir()
+    monkeypatch.setattr(shutdown_flush, "_get_flush_dir", lambda: flush_dir)
+    inbound = MessageEvent(
+        text="do not lose this", message_type=MessageType.TEXT,
+        source=make_restart_source(chat_id="second-restart"), message_id="queued-1",
+    )
+    assert record_durable_inbound_event("agent:main:telegram:dm:second-restart", inbound)
+
+    first_runner, first_adapter = make_restart_runner()
+    first_runner._startup_restore_queue = [inbound]
+    first_adapter.handle_message = AsyncMock()
+    await first_runner._drain_startup_restore_queue()
+    first_adapter.handle_message.assert_awaited_once_with(inbound)
+    assert [event.text for event in recover_durable_inbound_events()] == ["do not lose this"]
+
+    second_runner, _ = make_restart_runner()
+    second_runner._startup_restore_queue = []
+    assert second_runner._restore_durable_inbound_queue() == 1
+    assert [event.text for event in second_runner._startup_restore_queue] == ["do not lose this"]
+
+
 # ---------------------------------------------------------------------------
 # Fresh-boot turn-machinery warm-up gate (#99373)
 # ---------------------------------------------------------------------------
@@ -1371,4 +1413,3 @@ async def test_startup_boot_sends_still_run_when_they_finish_quickly(monkeypatch
     runner._send_restart_notification.assert_awaited_once()
     runner._claim_pending_obligations.assert_awaited_once()
     runner._redeliver_claimed_obligations.assert_awaited_once()
-

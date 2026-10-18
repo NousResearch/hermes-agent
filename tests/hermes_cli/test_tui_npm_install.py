@@ -143,6 +143,11 @@ def test_runtime_node_comes_from_pm_without_legacy_repair(tmp_path, monkeypatch)
         acquired.append(name)
         return Runner(name, {"PATH": str(managed.parent)})
 
+    # which(path=...) receives the runner's PATH directly, but the real-home I/O guard
+    # exempts command lookup only against os.environ["PATH"]. Publishing the same directory
+    # keeps the lookup exempt on a PM-managed layout, where node itself lives under the
+    # real home and the symlink probe would otherwise resolve into it.
+    monkeypatch.setenv("PATH", str(managed.parent))
     monkeypatch.setattr(pm, "ensure", acquire)
     assert main_tui_launch._tui_node_bin("node") == str(managed)
     assert acquired == ["node"]

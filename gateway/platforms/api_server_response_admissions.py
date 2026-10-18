@@ -1,6 +1,7 @@
 """Responses retries observe their original admission before resolving mutable conversation names."""
 from functools import partial
 import hashlib
+import logging
 import uuid
 
 from hermes_state_runtime import RuntimeStoreError
@@ -119,6 +120,27 @@ def _stored_owner(adapter, session_id):
     return authority.logical_owner(session_id) if authority is not None else session_id
 
 
+async def _bind_successor(adapter, session_id, run_kwargs):
+    """Bind the session a chain moved to before any response starts. A streaming request has
+    answered 200 by the time its turn admits, so the bind's retryable ``chain_moved`` refusal must
+    happen here to reach the caller as a 503. The admission's own bind then finds this binding."""
+    from gateway.session_api import bind_api_steps, run_steps_off_loop
+    from gateway.session_authorities import active_authority
+    authority = active_authority(adapter.gateway_runner)
+    if authority is not None:
+        try:
+            await run_steps_off_loop(authority, bind_api_steps(
+                authority, session_id, walked_from=run_kwargs['walked_from'],
+                caller_key=run_kwargs['gateway_session_key']))
+        except RuntimeStoreError:
+            raise
+        except Exception as exc:
+            # A busy writer or I/O error: the caller maps store refusals only, and anything else
+            # would reach the client as aiohttp's bare 500 instead of the retryable 503.
+            logging.getLogger(__name__).warning('pre-stream bind of %s failed', session_id, exc_info=True)
+            raise RuntimeStoreError('storage_unavailable') from exc
+
+
 async def prepare_context(adapter, request, body, gateway_session_key, durable_key, scope, key):
     """Validate first-time requests; exact retries use the accepted payload and result only."""
     import asyncio
@@ -141,16 +163,16 @@ async def prepare_context(adapter, request, body, gateway_session_key, durable_k
         history, error = _parse_conversation_history(body['conversation_history'])
         if error is not None:
             return None, error
-    stored_session_id = None
+    stored_session_id = chain_root = None
     instructions = body.get('instructions')
     if not history and previous:
         stored = adapter._current_response_store().get(previous)
         if stored is None:
             return None, _error_response(f'Previous response not found: {previous}', 404)
         history = list(stored.get('conversation_history', []))
-        stored_session_id = await asyncio.to_thread(_stored_owner, adapter, stored.get('session_id'))
+        chain_root = await asyncio.to_thread(_stored_owner, adapter, stored.get('session_id'))
         from gateway.platforms.api_server_authority_runs import continued_session
-        stored_session_id, error = await continued_session(adapter, stored_session_id, request_id)
+        stored_session_id, error = await continued_session(adapter, chain_root, request_id)
         if error is not None:
             return None, error
         if instructions is None:
@@ -175,8 +197,12 @@ async def prepare_context(adapter, request, body, gateway_session_key, durable_k
         ephemeral_system_prompt=instructions, session_id=session_id,
         gateway_session_key=gateway_session_key, bind_declared_conversation=declared_selected,
         **overrides, route=route, relay_metadata=_request_relay_metadata(body))
+    if stored_session_id and stored_session_id != chain_root:
+        run_kwargs['walked_from'] = chain_root  # the chain moved past its swept stored session
     if durable_key:
         return await _admit(adapter, durable_key, request_id, request_binding(adapter, request, durable_key),
                             run_kwargs, body.get('model', adapter._model_name)), None
+    if 'walked_from' in run_kwargs:
+        await _bind_successor(adapter, session_id, run_kwargs)
     return dict(session_id=session_id, user_message=user_message, conversation_history=history,
                 instructions=instructions, run_kwargs=run_kwargs, run_agent=adapter._run_agent), None

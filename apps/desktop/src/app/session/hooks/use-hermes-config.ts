@@ -24,7 +24,6 @@ import {
 import { setShowToolActivityFromConfig } from '@/store/tool-activity'
 import { refreshVoiceLiveStatus } from '@/store/voice-live'
 import {
-  applyAutoSpeakFromConfig,
   applyBargeInEnabledFromConfig,
   applyBargeInThresholdFromConfig,
   applyThinkingSoundFromConfig,
@@ -166,7 +165,6 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
           return
         }
 
-        applyAutoSpeakFromConfig(config)
         applyVoiceStopPhraseFromConfig(config, defaults)
         applyBargeInEnabledFromConfig(config)
         applyBargeInThresholdFromConfig(config)

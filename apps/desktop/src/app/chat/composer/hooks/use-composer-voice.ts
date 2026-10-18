@@ -413,8 +413,7 @@ export function useComposerVoice({
   useEffect(() => () => void syncTtsLease(CONVERSATION_LEASE, false), [])
 
   // "Read replies aloud" is the same signal, held for as long as the toggle is
-  // on (it mirrors voice.auto_tts, so this also warms at startup when the
-  // preference is already set).
+  // on, including at startup when the saved desktop preference is enabled.
   const autoSpeakReplies = useStore($autoSpeakReplies)
 
   useEffect(() => {

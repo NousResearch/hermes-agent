@@ -1,8 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/hermes', () => ({
+  getHermesConfig: vi.fn(async () => ({ voice: { auto_tts: true, max_recording_seconds: 42 } })),
+  getHermesConfigDefaults: vi.fn(async () => ({})),
   getHermesConfigRecord: vi.fn(async () => ({})),
-  saveHermesConfig: vi.fn(async () => undefined)
+  saveHermesConfig: vi.fn(async () => undefined),
+  // use-hermes-config imports the profile store, which binds the API request profile on load.
+  setApiRequestProfile: vi.fn()
 }))
 
 import { saveHermesConfig } from '@/hermes'
@@ -20,7 +24,28 @@ import {
   applyVoiceStopPhraseFromConfig
 } from './voice-prefs'
 
-it('keeps the desktop toggle local across config refreshes', async () => {
+async function loadRenderer() {
+  // Reload JS state while keeping localStorage, as an app relaunch does.
+  vi.resetModules()
+  const prefs = await import('./voice-prefs')
+  const { act, renderHook } = await import('@testing-library/react/pure')
+  const { useHermesConfig } = await import('@/app/session/hooks/use-hermes-config')
+  const { result, unmount } = renderHook(() => useHermesConfig({ activeSessionIdRef: { current: null } }))
+
+  try {
+    await act(async () => {
+      await result.current.refreshHermesConfig()
+    })
+    // Ensure config hydration completed rather than swallowing an import error.
+    expect(result.current.voiceMaxRecordingSeconds).toBe(42)
+  } finally {
+    unmount()
+  }
+
+  return prefs
+}
+
+it('keeps the desktop toggle local even when storage is unavailable', async () => {
   for (const fails of [false, true]) {
     for (const enabled of [false, true]) {
       localStorage.clear()
@@ -38,10 +63,9 @@ it('keeps the desktop toggle local across config refreshes', async () => {
 
       try {
         await prefs.setAutoSpeakReplies(enabled)
-        prefs.applyAutoSpeakFromConfig({ voice: { auto_tts: !enabled } })
         expect(prefs.$autoSpeakReplies.get()).toBe(enabled)
         expect(saveHermesConfig).not.toHaveBeenCalled()
-        expect(localStorage.getItem('hermes.desktop.autoSpeakReplies')).toBe(fails ? null : String(enabled))
+        expect(localStorage.getItem('hermes.desktop.autoSpeakReplies.v2')).toBe(fails ? null : String(enabled))
       } finally {
         write.mockRestore()
       }
@@ -49,31 +73,33 @@ it('keeps the desktop toggle local across config refreshes', async () => {
   }
 })
 
-it('migrates the legacy preference once, not on every refresh', async () => {
-  for (const fails of [false, true]) {
-    for (const enabled of [false, true]) {
-      localStorage.clear()
-      vi.resetModules()
-      const prefs = await import('./voice-prefs')
-      const write = vi.spyOn(localStorage, 'setItem')
+it('defaults off with gateway auto-TTS enabled, including a previously seeded true', async () => {
+  for (const legacyValue of [null, 'true']) {
+    localStorage.clear()
 
-      if (fails) {
-        write.mockImplementation(() => {
-          throw new DOMException('Denied', 'SecurityError')
-        })
-      }
-
-      try {
-        prefs.applyAutoSpeakFromConfig(null)
-        expect(localStorage.getItem('hermes.desktop.autoSpeakReplies')).toBeNull()
-        prefs.applyAutoSpeakFromConfig({ voice: { auto_tts: enabled } })
-        prefs.applyAutoSpeakFromConfig({ voice: { auto_tts: !enabled } })
-        expect(prefs.$autoSpeakReplies.get()).toBe(enabled)
-        expect(localStorage.getItem('hermes.desktop.autoSpeakReplies')).toBe(fails ? null : String(enabled))
-      } finally {
-        write.mockRestore()
-      }
+    if (legacyValue !== null) {
+      localStorage.setItem('hermes.desktop.autoSpeakReplies', legacyValue)
     }
+
+    const prefs = await loadRenderer()
+    expect(prefs.$autoSpeakReplies.get()).toBe(false)
+    expect(localStorage.getItem('hermes.desktop.autoSpeakReplies.v2')).toBeNull()
+  }
+})
+
+it('preserves explicit on and off choices across relaunch and config refresh', async () => {
+  localStorage.clear()
+  localStorage.setItem('hermes.desktop.autoSpeakReplies', 'true')
+  let prefs = await loadRenderer()
+
+  for (const enabled of [true, false]) {
+    await prefs.setAutoSpeakReplies(enabled)
+    expect(prefs.$autoSpeakReplies.get()).toBe(enabled)
+    expect(localStorage.getItem('hermes.desktop.autoSpeakReplies.v2')).toBe(String(enabled))
+
+    prefs = await loadRenderer()
+    expect(prefs.$autoSpeakReplies.get()).toBe(enabled)
+    expect(localStorage.getItem('hermes.desktop.autoSpeakReplies.v2')).toBe(String(enabled))
   }
 })
 

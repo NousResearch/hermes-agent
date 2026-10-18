@@ -364,7 +364,7 @@ def _memory_tool(action, target, content, old_text, new_text, operations, doc, s
     # re-read the target and confirm old_text is gone. Bounded: one read per write.
     if result.get("success"):
         from tools.write_gate import verify_post_write
-        readback = verify_post_write(store, target, action, old_text)
+        readback = verify_post_write(store, target, action, old_text, content=content)
         if readback is not None:
             return "failed", readback
     return _applied(result)

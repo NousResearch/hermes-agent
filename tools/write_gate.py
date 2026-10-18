@@ -608,7 +608,8 @@ def _stage2_date_flag(add_contents: list[str], is_doc: bool) -> Optional[dict[st
 
 # --- Stage 7: post-write read-back (writer path) ----------------------------
 
-def verify_post_write(store, target: str, action: str, old_text: Optional[str]) -> Optional[str]:
+def verify_post_write(store, target: str, action: str, old_text: Optional[str],
+                       content: Optional[str] = None) -> Optional[str]:
     """Stage 7 — re-read *target* after the write and assert *old_text* is gone.
 
     Runs in the WRITER path AFTER the store write (bounded cost: one read per
@@ -617,6 +618,15 @@ def verify_post_write(store, target: str, action: str, old_text: Optional[str]) 
     ``readback_failed``) when ``old_text`` is still present — the store's own
     guards are the real safety net; this is an integrity attestation that the
     promised edit actually landed (T1-2).
+
+    ``content`` is the new text the write carried (``new_text`` for patch,
+    ``new_content`` for replace, ``None`` for remove).  A landed patch/replace
+    may legitimately leave ``old_text`` present when the new text contains the
+    old span (a span extension, or a rewrite that keeps the locating phrase) —
+    that is not a failed write.  The read-back flags only when ``old_text``
+    survives AND the new text does not explain it (``old_text not in content``);
+    for ``remove``, ``content`` is ``None`` and the check collapses to the
+    original eradication assertion.
     """
     if action not in ("replace", "patch", "remove") or not old_text:
         return None
@@ -626,7 +636,7 @@ def verify_post_write(store, target: str, action: str, old_text: Optional[str]) 
         _logger.warning("verify_post_write: read-back raised on %s; pass-through by design",
                          target, exc_info=True)
         return None
-    if any(old_text in e for e in entries):
+    if any(old_text in e and old_text not in (content or "") for e in entries):
         FAILURE_CLASS.set("readback_failed")
         _append_change_log_line({
             "timestamp": _now_iso(),

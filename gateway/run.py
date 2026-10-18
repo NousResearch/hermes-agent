@@ -1818,9 +1818,9 @@ def _profile_runtime_scope(
 @_asynccontextmanager
 async def _async_profile_runtime_scope(profile_home: Path):
     """Prepare the COMPLETE policy off-loop; bind only ContextVars in this task."""
-    from gateway.run_profile_scope import prepare_profile_runtime_scope, bind_profile_runtime_scope
+    from gateway.run_profile_scope import prepare_profile_runtime_scope, bind_profile_runtime_scope, run_off_loop
 
-    prepared = await asyncio.to_thread(prepare_profile_runtime_scope, Path(profile_home))
+    prepared = await run_off_loop(prepare_profile_runtime_scope, Path(profile_home))
     with bind_profile_runtime_scope(prepared):
         yield
 

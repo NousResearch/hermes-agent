@@ -1079,7 +1079,8 @@ class GatewayAdapterLifecycleMixin:
         # A platform that left core for a catalog plugin is installed before discovery below.
         from gateway.run_startup import recover_left_core_in
         await asyncio.to_thread(recover_left_core_in, profile_home, hydrate_secrets=False)
-        prepared = await asyncio.to_thread(prepare_profile_runtime_scope, profile_home, hydrate_secrets=False)
+        prepared = await self._run_in_executor_with_context(
+            functools.partial(prepare_profile_runtime_scope, profile_home, hydrate_secrets=False))
 
         def load_configs():
             with bind_profile_runtime_scope(prepared):
@@ -1094,7 +1095,7 @@ class GatewayAdapterLifecycleMixin:
                 return (profile_runtime_cfg, profile_cfg, get_plugin_manager(),
                         _own_policy_open_startup_violation(profile_cfg))
 
-        profile_runtime_cfg, profile_cfg, manager, violation = await asyncio.to_thread(load_configs)
+        profile_runtime_cfg, profile_cfg, manager, violation = await self._run_in_executor_with_context(load_configs)
         # Subscribe on-loop, after discovery: the callback must capture the live gateway loop.
         with bind_profile_runtime_scope(prepared):
             self._subscribe_plugin_rewire(manager, profile_name, profile_home)
@@ -1441,13 +1442,13 @@ class GatewayAdapterLifecycleMixin:
         from hermes_cli.profiles import get_profile_dir
         from gateway.config import load_gateway_config
         profile_home = get_profile_dir(profile_name)
-        prepared = await asyncio.to_thread(prepare_profile_runtime_scope, profile_home)
+        prepared = await self._run_in_executor_with_context(prepare_profile_runtime_scope, profile_home)
 
         def load_config():
             with bind_profile_runtime_scope(prepared):
                 return load_gateway_config().platforms.get(platform), _reconnect_attention_after_secs()
 
-        profile_config, attention_after = await asyncio.to_thread(load_config)
+        profile_config, attention_after = await self._run_in_executor_with_context(load_config)
         if attention is not None:
             attention["after"] = attention_after
         with bind_profile_runtime_scope(prepared):
@@ -1823,15 +1824,16 @@ class GatewayAdapterLifecycleMixin:
 
     def _standalone_scoped(self, handler):
         """Standalone twin of the ``_make_default_profile_*`` wrappers: run ``handler`` under
-        ``_standalone_launch_scope`` so slash commands and turns keep resolving the launch profile's
-        credentials after a hosted room flipped the process-wide guard (#112878). The credential
-        body is marked at entry (``launch_body``): a turn already running when a second profile
+        the async launch scope (policy prepared off-loop) so slash commands and turns keep resolving the
+        launch profile's credentials after a hosted room flipped the process-wide guard (#112878). The
+        credential body is marked at entry (``launch_body``): a turn already running when a second profile
         switches this gateway to multiplexing keeps resolving its launch credentials."""
         from tui_gateway.launch_profile_policy import launch_body
 
         async def _handler(*args):
-            with launch_body(), self._standalone_launch_scope():
-                return await handler(*args)
+            with launch_body():
+                async with self._async_scope_or_null(None, None):
+                    return await handler(*args)
 
         return _handler
 

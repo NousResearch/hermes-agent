@@ -18,7 +18,6 @@ Two facts anchor this module:
 from __future__ import annotations
 
 import contextlib
-import asyncio
 import logging
 import os
 import threading
@@ -244,8 +243,8 @@ async def async_launch_profile_scope_if_multiplexed():
         yield
         return
     from hermes_constants import get_process_hermes_home
-    from gateway.run_profile_scope import bind_profile_runtime_scope
+    from gateway.run_profile_scope import bind_profile_runtime_scope, run_off_loop
 
-    prepared = await asyncio.to_thread(_prepare_launch_profile_scope, get_process_hermes_home())
+    prepared = await run_off_loop(_prepare_launch_profile_scope, get_process_hermes_home())
     with bind_profile_runtime_scope(prepared):
         yield

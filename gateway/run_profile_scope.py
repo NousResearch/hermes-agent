@@ -1,4 +1,6 @@
 """Separate blocking profile-policy preparation from task-local binding."""
+import asyncio
+import sys
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,6 +20,17 @@ class PreparedProfileRuntimeScope:
     home: str
     secrets: Mapping[str, str] = field(repr=False)
     terminal: Mapping[str, str] = field(repr=False)
+
+
+async def run_off_loop(func, *args):
+    """Run blocking preparation on the live gateway's fenced executor (``_run_in_executor_with_context``,
+    joined by ``_shutdown_executor``), so it cannot outlive the SessionDB close (#94736). Hosts with no
+    gateway runner (``hermes serve``, scripts) use ``asyncio.to_thread``; both copy the caller's context."""
+    ref = getattr(sys.modules.get("gateway.run"), "_gateway_runner_ref", None)
+    runner = ref() if callable(ref) else None
+    if runner is not None:
+        return await runner._run_in_executor_with_context(func, *args)
+    return await asyncio.to_thread(func, *args)
 
 
 def prepare_profile_runtime_scope(

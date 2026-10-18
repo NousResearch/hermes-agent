@@ -361,14 +361,16 @@ async def test_launch_scope_blocked_read_keeps_loop_live(tmp_path, monkeypatch, 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("entry", ["startup", "reconnect"])
+@pytest.mark.parametrize("entry", ["startup", "reconnect", "primary_prefilter", "primary_reconnect"])
 @pytest.mark.parametrize("reader", ["raw_config", "liveness"])
 async def test_real_discord_constructor_keeps_loop_live(tmp_path, monkeypatch, entry, reader):
     from gateway import platform_registry as registry_module
     from gateway.platform_registry import PlatformEntry, PlatformRegistry
+    from gateway.config import PlatformConfig
     from plugins.platforms.discord import adapter as discord_adapter
     import hermes_cli.config as config_module
 
+    secondary = entry in ("startup", "reconnect")
     home = tmp_path / "profiles" / "served"
     _profile(home, "docker")
     monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda _name: home)
@@ -390,7 +392,21 @@ async def test_real_discord_constructor_keeps_loop_live(tmp_path, monkeypatch, e
     runner._connect_adapter_with_timeout = AsyncMock(return_value=True)
     runner._connect_initial_adapter_with_timeout = AsyncMock(return_value=True)
     runner._sync_voice_mode_state_to_adapter = lambda adapter: None
-    token = set_multiplex_context(True)
+    # Primary paths: the launch profile's own Discord adapter on a standalone host.
+    primary_config = PlatformConfig(enabled=True, token="FAKE_primary_discord_token")
+    runner.config = GatewayConfig(multiplex_profiles=secondary, platforms={Platform.DISCORD: primary_config})
+    runner.adapters = {}
+    runner._failed_platforms = {Platform.DISCORD: {"config": primary_config, "attempts": 0, "next_retry": 0}}
+    runner._abort_startup_if_shutdown_requested = AsyncMock(return_value=False)
+    runner._wire_adapter_handlers = lambda *a, **k: None
+    runner._flag_reconnect_needs_attention = lambda *a, **k: None
+    installed = {}
+
+    async def install(platform, adapter):
+        installed[platform] = adapter
+
+    runner._install_reconnected_adapter = install
+    token = set_multiplex_context(secondary)
     before_home, before_secrets = get_hermes_home(), current_secret_scope()
     try:
         async with _held_read_witness() as witness:
@@ -398,8 +414,9 @@ async def test_real_discord_constructor_keeps_loop_live(tmp_path, monkeypatch, e
 
             def held_reader(*args, **kwargs):
                 witness.hold()
-                assert get_hermes_home() == home
-                assert get_secret("PROFILE_MARKER") == "docker"
+                if secondary:
+                    assert get_hermes_home() == home
+                    assert get_secret("PROFILE_MARKER") == "docker"
                 return original(*args, **kwargs)
 
             if reader == "raw_config":
@@ -409,9 +426,16 @@ async def test_real_discord_constructor_keeps_loop_live(tmp_path, monkeypatch, e
             if entry == "startup":
                 assert await runner._start_one_profile_adapters("served", home, {}) == 1
                 adapter = runner._profile_adapters["served"][Platform.DISCORD]
-            else:
+            elif entry == "reconnect":
                 adapter, success = await runner._secondary_reconnect_attempt("served", Platform.DISCORD)
                 assert success
+            elif entry == "primary_prefilter":
+                aborted, _count, _skipped, pending = await runner._start_prefilter_platforms()
+                assert not aborted and len(pending) == 1
+                adapter = pending[0][2]
+            else:
+                await runner._reconnect_failed_platform(Platform.DISCORD, 1.0)
+                adapter = installed[Platform.DISCORD]
             assert isinstance(adapter, discord_adapter.DiscordAdapter)
             assert adapter._liveness_interval_seconds == 15.0
             # Events created by the prepared adapter remain usable on the owning loop.
@@ -448,3 +472,69 @@ async def test_non_opted_in_adapter_factory_keeps_owning_loop(tmp_path, monkeypa
     runner._create_adapter = loop_bound_factory
     async with run._async_profile_runtime_scope(home):
         assert await runner._create_adapter_off_loop(Platform("loop-bound"), PlatformConfig()) is adapter
+
+
+def _launch_home(tmp_path, monkeypatch):
+    from tui_gateway import launch_profile_policy as launch
+
+    home = tmp_path / "launch"
+    _profile(home, "docker")
+    monkeypatch.setattr("hermes_constants.get_process_hermes_home", lambda: home)
+    monkeypatch.setattr(launch, "_snapshot", {"LAUNCH_ONLY": "env-only"})
+    return home
+
+
+@pytest.mark.asyncio
+async def test_async_launch_scope_prepares_on_the_gateway_executor(tmp_path, monkeypatch):
+    """The launch scope's preparation joins the runner's fenced pool, which shutdown drains."""
+    from tui_gateway.launch_profile_policy import async_launch_profile_scope_if_multiplexed
+
+    _launch_home(tmp_path, monkeypatch)
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._executor_lock, runner._executor_closing, runner._executor = threading.Lock(), False, None
+    used = []
+    original = GatewayRunner._run_in_executor_with_context
+
+    async def recording(self, func, *args):
+        used.append(getattr(func, "__name__", func))
+        return await original(self, func, *args)
+
+    monkeypatch.setattr(GatewayRunner, "_run_in_executor_with_context", recording)
+    monkeypatch.setattr(run, "_gateway_runner_ref", lambda: runner)
+    token = set_multiplex_context(True)
+    try:
+        async with async_launch_profile_scope_if_multiplexed():
+            assert get_secret("LAUNCH_ONLY") == "env-only"
+        assert used, "launch-scope preparation bypassed the gateway executor"
+    finally:
+        reset_multiplex_context(token)
+        runner._shutdown_executor()
+
+
+@pytest.mark.asyncio
+async def test_standalone_handler_prepares_launch_scope_off_loop(tmp_path, monkeypatch):
+    """A standalone host whose hosted room flipped multiplexing binds the launch scope per event;
+    its .env/config.yaml reads must not run on the loop."""
+    home = _launch_home(tmp_path, monkeypatch)
+    original_builtin_open, original_path_open = builtins.open, Path.open
+    runner = GatewayRunner.__new__(GatewayRunner)
+    seen = []
+
+    async def handler(event):
+        seen.append((get_hermes_home(), get_secret("LAUNCH_ONLY")))
+        return "ok"
+
+    token = set_multiplex_context(True)
+    try:
+        async with _held_read_witness() as witness:
+            def hold(path):
+                if Path(path) == home / ".env":
+                    witness.hold()
+
+            monkeypatch.setattr(Path, "open", lambda p, *a, **k: (hold(p), original_path_open(p, *a, **k))[1])
+            monkeypatch.setattr(builtins, "open", lambda p, *a, **k: (
+                hold(p) if isinstance(p, (str, Path)) else None, original_builtin_open(p, *a, **k))[1])
+            assert await runner._standalone_scoped(handler)(object()) == "ok"
+        assert seen == [(home, "env-only")]
+    finally:
+        reset_multiplex_context(token)

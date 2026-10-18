@@ -1,0 +1,7 @@
+name: web-ddg-instant
+version: 1.0.0
+description: "DuckDuckGo Instant Answer API — free web search with no API key, no rate limit, no dependencies. Wraps https://api.duckduckgo.com/ (returns entity summaries and related topics; coverage is best for factual/entity queries, sparse for how-to/tutorial queries)."
+author: NousResearch
+kind: backend
+provides_web_providers:
+  - ddg-instant

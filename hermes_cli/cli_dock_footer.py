@@ -287,16 +287,9 @@ def dock_lines(monitor, *, columns, rows, selecting=False, actions=None):
     if selecting and monitor.steer_target is not None:
         lines.append(_steer_line(monitor, columns))
     if monitor.queued:
-        from hermes_cli.cli_session_dock import QUEUE_ROWS
-        shown = min(len(monitor.queued), QUEUE_ROWS if rows >= 24 else 1)
-        controls = "" if roster else t("cli.subagents.controls_collapse")
-        lines.append([("class:live-dock.dim", "  " + clip(
-            t("cli.subagents.queue_heading", count=len(monitor.queued), controls=controls), columns - 2))])
-        lines += [[("class:live-dock.dim", "    " + clip(f"{i}. {text}", columns - 4))]
-                  for i, text in enumerate(monitor.queued[:shown], 1)]
-        if len(monitor.queued) > shown:
-            lines.append([("class:live-dock.dim", "    " + clip(
-                t("cli.subagents.more_queued", count=len(monitor.queued) - shown), columns - 4))])
+        heading, items, more = monitor.queue_lines(rows)
+        lines.append([("class:live-dock.dim", "  " + clip(heading, columns - 2))])
+        lines += [[("class:live-dock.dim", "    " + clip(text, columns - 4))] for text in items + [more] if text]
     return lines
 
 

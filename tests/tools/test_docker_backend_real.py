@@ -13,6 +13,7 @@ zero coverage is the state this file exists to end.
 
 import json
 import os
+from pathlib import Path
 import shlex
 import subprocess
 import uuid
@@ -153,3 +154,48 @@ def test_home_survives_a_container_replacement(docker_task):
     assert r["output"].strip() == "durable"
     second = _container_id(docker_task)
     assert second and second != first
+
+
+@pytest.mark.parametrize("container_root", ["/work/hermes-runtime", "/home/hermes-runtime/work", "/Users/hermes-runtime/work"])
+def test_gateway_container_workspace_runs_real_terminal_and_file_tools(tmp_path, monkeypatch, container_root):
+    """Session creation through actual Docker I/O preserves the declared namespace (#140527)."""
+    from dataclasses import asdict
+    from gateway.session_policy import build_policy, policy_scope, restore_policy
+    from tools.file_tools import read_file_tool, write_file_tool
+    from tools.terminal_tool import clear_session_cwd
+
+    home = tmp_path / "profile"
+    home.mkdir()
+    workspace = tmp_path / "project-目录 with spaces"
+    workspace.mkdir()
+    (workspace / "child").mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    terminal = {
+        "backend": "docker", "cwd": container_root, "docker_image": _IMAGE,
+        "docker_mount_cwd_to_workspace": False, "container_persistent": False,
+        "docker_persist_across_processes": False, "docker_orphan_reaper": False,
+        "container_disk": 0, "docker_network": False,
+        "docker_volumes": [f"{workspace}:{container_root}:rw"],
+    }
+    (home / "config.yaml").write_text(json.dumps({"terminal": terminal}), encoding="utf-8")
+    policy = restore_policy(asdict(build_policy({"source": "tui", "cwd": container_root, "model": "probe"}, {})))
+    task_id = f"rb-workspace-{uuid.uuid4().hex[:8]}"
+    with policy_scope(policy):
+        try:
+            ran = _run("pwd; head -1 /etc/os-release", task_id)
+            assert ran["exit_code"] == 0, ran
+            assert ran["output"].splitlines()[0] == container_root, ran
+            assert "Debian" in ran["output"], ran
+            assert _container_id(task_id), "command did not use a running Docker container"
+            content = "真实容器文件 round-trip ✓\n"
+            wrote = json.loads(write_file_tool("receipt.txt", content, task_id=task_id))
+            assert "error" not in wrote, wrote
+            assert (workspace / "receipt.txt").read_text(encoding="utf-8") == content
+            read = json.loads(read_file_tool("receipt.txt", task_id=task_id))
+            assert content.rstrip() in read["content"], read
+            assert _run("cd child", task_id)["exit_code"] == 0
+            assert _run("pwd", task_id)["output"].strip() == container_root + "/child"
+        finally:
+            _teardown(task_id)
+            clear_session_cwd(task_id)

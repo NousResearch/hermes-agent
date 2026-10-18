@@ -553,6 +553,15 @@ class TestRestartWaitsForApiServerPort:
 
 
 class TestStopProfileGateway:
+
+    @pytest.fixture(autouse=True)
+    def owned_process_home(self, monkeypatch):
+        # These signal/reaping tests simulate an independently owned process.
+        # Ambiguous/shared ownership is exercised by the lifecycle regressions.
+        from gateway import host_attach
+        from hermes_cli import dashboard_procs
+        monkeypatch.setattr(host_attach, '_probe_host_gateway', lambda wait: None)
+        monkeypatch.setattr(dashboard_procs, '_hermes_home_for_pid', lambda pid: str(gateway.get_hermes_home()))
     @pytest.mark.platforms("windows")
     def test_windows_stop_drains_marker_before_force_termination(self, monkeypatch):
         """Windows must let the marker watcher run before escalating (#112750)."""

@@ -386,3 +386,29 @@ def test_stop_secondary_keeps_host_and_survives_host_restart(mux, peer):
     finally:
         peer.release.set()
         stop(proc, expect=None)
+
+
+def test_standalone_secondary_stops_without_stopping_host(mux):
+    """Positive OS ownership still permits stopping a real independent gateway."""
+    root, boot = mux['root'], mux['boot']
+    config = {**mux['config'], 'gateway': {'standalone': True, 'multiplex_profiles': False}}
+    (boot / 'config.yaml').write_text(json.dumps(config))
+    host, desc = start_daemon(mux)
+    child = None
+    try:
+        assert served_homes(desc) == {root.resolve()}
+        standalone = {**mux, 'root': boot, 'env': {**mux['env'], 'HERMES_HOME': str(boot)},
+                      'log': mux['log'].with_name('standalone.log')}
+        child, _ = start_daemon(standalone)
+        stopped = subprocess.run(
+            [sys.executable, '-m', 'hermes_cli.main', '-p', 'boot', 'gateway', 'stop'],
+            cwd=ROOT, env=mux['env'], capture_output=True, text=True, timeout=45, check=False)
+        assert stopped.returncode == 0, (stopped.stdout, stopped.stderr)
+        child.wait(timeout=30)
+        assert host.poll() is None
+        assert control(root, 'identify')['instance_id'] == desc['instance_id']
+        assert not (boot / 'gateway.parked').exists()
+    finally:
+        if child is not None:
+            stop(child, expect=None)
+        stop(host, expect=None)

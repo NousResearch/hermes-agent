@@ -66,16 +66,19 @@ With `hermes --tui -w`, closing the terminal detaches from the gateway-owned
 session. Its worktree is retained even when clean: the turn may still be running
 there, and resuming the session uses the same working directory. Review and prune
 it after the session's work is finished.
-A conservative pruner runs automatically at startup (it only removes clean,
-fully-merged scratch trees past an age threshold), but preserved trees and
-merged local branches still accumulate on busy machines. Reclaim them
-explicitly:
+A sweep runs automatically at `hermes -w` startup and every 6 hours from the
+cron ticker: idle clean+merged trees are removed, and idle trees with
+uncommitted changes or unpushed commits are **archived, then removed**
+(restorable with `hermes worktree restore <name>`; see
+[Stale worktree sweep](./git-worktrees.md#stale-worktree-sweep-and-restore)).
+Reclaim or inspect explicitly:
 
 ```bash
-hermes worktree list              # audit: age, size, verdict, reason per tree
-hermes worktree list --json       # machine-readable audit (trees, external trees, branches)
-hermes worktree prune             # remove safe trees + delete merged branches
-hermes worktree prune --dry-run   # show the plan without changing anything
+hermes worktree list              # audit: age, size, verdict, reason per tree + archives
+hermes worktree list --json       # machine-readable audit (trees, external trees, branches, archives)
+hermes worktree prune             # run the sweep now + delete merged branches
+hermes worktree prune --dry-run   # print every archive/remove/skip decision and why; changes nothing
+hermes worktree restore <name>    # recreate an archived tree (add --path DIR to put it elsewhere)
 hermes worktree prune --older-than 7   # only reap trees idle for 7+ days
 hermes worktree prune --trees-only     # leave local branches alone
 hermes worktree prune --branches-only  # leave worktrees alone
@@ -85,16 +88,18 @@ Worktrees registered **outside** `.worktrees/` (created by hand or by another
 tool) are reported read-only in `list` output and are never removed. The one
 exception is metadata: registrations whose directory no longer exists are
 dropped via `git worktree prune` (no files are touched). `--older-than DAYS`
-only ever narrows what gets reaped — a tree carrying real work is kept at any
-age regardless of the flag.
+only ever narrows what gets reaped, including what the stale-worktree sweep
+archives and removes during that run: a tree idle for less than DAYS is
+never touched.
 
 Inside a session, `/worktree prune [--dry-run]` does the same (and never
 touches the tree the session is running in).
 
 Safety guarantees (all modes, any age):
 
-- Uncommitted **tracked** changes are never deleted.
-- **Unique unpushed commits** are never deleted — commits that were
+- Uncommitted changes and **unique unpushed commits** are never deleted
+  without a restorable archive (`refs/hermes/archive/<tree>`); with
+  `worktrees.archive_dirty: false` they are never deleted at all — commits that were
   rebase/squash-merged upstream are detected via `git cherry`
   patch-equivalence and count as merged, which is what lets the dominant
   "merged PR, tree preserved forever" leak finally reclaim.
@@ -109,18 +114,28 @@ Safety guarantees (all modes, any age):
   removed but its **branch ref is kept**, so the lane is one
   `git worktree add .worktrees/<name> <branch>` away from restored. If the
   remote can't be reached, the tree is preserved.
-- Trees **in use by a running hermes session** are never touched.
+- Trees **in use** are never touched: a running hermes session's lock, or any
+  live process whose working directory (or, on Linux, an open file) is inside
+  the tree. Each tree is checked again right before it is archived or removed,
+  and again after its archive is built; a tree that changed meanwhile is kept.
 - **Untracked-only scratch** (PR body drafts, notes) is archived to
   `~/.hermes/archive/worktree-prune/` before its tree is removed — never
   destroyed.
+- **Nothing irreproducible is deleted unarchived**: a tree is kept when it holds
+  an embedded repository (even a gitignored one), a commit only a per-worktree
+  ref (`refs/worktree/*`, `refs/bisect/*`) reaches, an untracked file over the
+  archive size cap. Ignored files (`.env` copies, caches, build output) are not
+  archived and are deleted with the tree; a nested git repository inside an
+  ignored folder keeps it. See
+  [ignored files](./git-worktrees.md#stale-worktree-sweep-and-restore).
 - Branch deletion is content-gated, not name-gated: any local branch whose
   commits are all on upstream is safe to delete; branches with unique work,
   checked-out branches, and `main`/`master`/`develop` are always kept.
 
-The same conservative pruner also runs from the cron scheduler (at most once
-every 6 hours, in the background), so gateway-only machines — where nobody
-launches `hermes -w` for days — no longer accumulate merged scratch trees
-between CLI sessions.
+The same sweep also runs from the cron scheduler (at most once every 6 hours
+per profile, in the background) over every repository the profile created a
+worktree in, so gateway-only machines — where nobody launches `hermes -w` for
+days — no longer accumulate scratch trees between CLI sessions.
 
 When `.worktrees/` grows past 10 trees or 5 GB, startup prints a one-line
 notice pointing at these commands.

@@ -37,20 +37,39 @@ def _arguments_key(arguments: Any) -> str:
     return json.dumps(arguments, sort_keys=True, separators=(",", ":"))
 
 
+def _is_empty_arguments(arguments: Any) -> bool:
+    if isinstance(arguments, str):
+        if not arguments.strip():
+            return True
+        try:
+            arguments = json.loads(arguments)
+        except ValueError:
+            return False
+    return arguments in (None, {}, [])
+
+
 def _conflicting_calls(tool_calls: list | None) -> tuple[list, set[str]]:
+    """Split a batch into first-seen calls and the IDs shared with an empty shadow.
+
+    Reused IDs with different, non-empty arguments are legitimate parallel calls
+    that ``_uniquify_tool_call_ids`` repairs; only an empty-argument call sharing
+    an ID with a different call is treated as a conflict.
+    """
     seen = {}
     conflicts = set()
     unique_calls = []
     for call in tool_calls or []:
         cid = _call_id(call)
         key = (call.function.name, _arguments_key(call.function.arguments))
+        empty = _is_empty_arguments(call.function.arguments)
         if cid and cid in seen:
-            if seen[cid] != key:
+            seen_key, seen_empty = seen[cid]
+            if seen_key != key and (empty or seen_empty):
                 conflicts.add(cid)
         else:
             unique_calls.append(call)
             if cid:
-                seen[cid] = key
+                seen[cid] = (key, empty)
     return unique_calls, conflicts
 
 

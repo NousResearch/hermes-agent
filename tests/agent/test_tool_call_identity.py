@@ -54,9 +54,16 @@ def test_same_id_same_payload_is_not_a_conflict():
     assert len(unique) == 1
 
 
-def test_same_id_different_payload_conflicts():
+def test_same_id_with_an_empty_shadow_conflicts():
     _, conflicts = _conflicting_calls([_call("a", args={"p": 1}), _call("a", args={})])
     assert conflicts == {"a"}
+    _, conflicts = _conflicting_calls([_call("a", args={}), _call("a", args={"p": 1})])
+    assert conflicts == {"a"}
+
+
+def test_same_id_with_distinct_real_arguments_is_left_to_upstream_repair():
+    _, conflicts = _conflicting_calls([_call("a", args={"path": "1"}), _call("a", args={"path": "2"})])
+    assert conflicts == set()
 
 
 def test_argument_key_order_does_not_create_a_conflict():

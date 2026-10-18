@@ -325,6 +325,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("topup", "Show your Nous balance and manage billing on the portal", "Info"),
     CommandDef("insights", "Show usage insights and analytics", "Info",
                args_hint="[days]", desktop="advanced"),
+    CommandDef("billing", "Show server-side per-call usage + cost stats (billing collector)", "Info",
+               args_hint="[--group-by day|model|agent|task_id] [--model ...] [--provider ...] "
+                         "[--agent ...] [--task-id ...] [--since ...] [--until ...] [--no-usage] [--json] [--enable]",
+               aliases=("bill",), desktop="advanced"),
     CommandDef("platforms", "Show gateway/messaging platform status", "Info",
                cli_only=True, aliases=("gateway",), desktop="terminal"),
     CommandDef("platform", "Pause, resume, or list a failing gateway platform", "Info",

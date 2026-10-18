@@ -2356,8 +2356,13 @@ DEFAULT_CONFIG = {
         # (or set HERMES_BILLING_COLLECTOR=1) to start recording. No API keys/PII are stored.
         "billing_collector": {
             "enabled": False,
-            # Retention window (days) for billing rows; older rows are purged on cleanup.
+            # Retention: prune rows older than ttl_days. OFF by default — billing.db
+            # is only trimmed when retention.enabled is flipped on (or a cron job
+            # calls cleanup()). Existing rows are never touched unless enabled.
             "ttl_days": 90,
+            "retention": {
+                "enabled": False,
+            },
         },
     },
 

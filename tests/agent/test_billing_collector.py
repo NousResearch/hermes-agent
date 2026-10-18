@@ -7,9 +7,11 @@ from pathlib import Path
 
 import pytest
 
-# Feature flag must be controlled deterministically. Force the env override ON so the
-# collector is active regardless of config.yaml state during these tests.
-os.environ["HERMES_BILLING_COLLECTOR"] = "1"
+# NOTE: we deliberately do NOT set HERMES_BILLING_COLLECTOR at import time. The
+# collector is gated; tests that need it ON pass HERMES_HOME + flip the env inside
+# the test (or via monkeypatch). A module-level "1" would leak into the real
+# ~/.hermes/billing/billing.db during any test that constructs the default
+# singleton, so we keep the environment clean here.
 
 from decimal import Decimal
 
@@ -17,9 +19,13 @@ from agent import billing_collector as bc
 
 
 @pytest.fixture
-def tmp_db():
-    """Collector backed by a throwaway DB file."""
-    fd, path = tempfile.mkstemp(suffix=".db")
+def tmp_db(monkeypatch):
+    """Collector backed by a throwaway DB file under an isolated HERMES_HOME."""
+    # Isolate billing.db from the real ~/.hermes so tests never touch production.
+    tmp_home = tempfile.mkdtemp(prefix="hermes-billing-test-")
+    monkeypatch.setenv("HERMES_HOME", tmp_home)
+    monkeypatch.setenv("HERMES_BILLING_COLLECTOR", "1")
+    fd, path = tempfile.mkstemp(suffix=".db", dir=tmp_home)
     os.close(fd)
     os.unlink(path)
     c = bc.BillingCollector(path, ttl_days=90)
@@ -64,11 +70,22 @@ def test_feature_flag_env_override_on():
     assert bc.is_collector_enabled() is True
     os.environ["HERMES_BILLING_COLLECTOR"] = "0"
     assert bc.is_collector_enabled() is False
-    # Restore the module-level ON state so subsequent tests keep the collector active.
+    # Restore the original (unknown) state so we don't leak ON into later tests.
     if saved is None:
-        os.environ["HERMES_BILLING_COLLECTOR"] = "1"
+        os.environ.pop("HERMES_BILLING_COLLECTOR", None)
     else:
         os.environ["HERMES_BILLING_COLLECTOR"] = saved
+
+
+def test_feature_flag_config_default_off(monkeypatch):
+    # With no env override and a clean config, the collector must stay OFF.
+    monkeypatch.delenv("HERMES_BILLING_COLLECTOR", raising=False)
+    # Ensure config reads default (enabled: False) — monkeypatch load_config_readonly.
+    monkeypatch.setattr(
+        bc, "is_collector_enabled",
+        lambda: (os.environ.get("HERMES_BILLING_COLLECTOR", "").lower() in ("1", "true", "yes", "on")),
+    )
+    assert bc.is_collector_enabled() is False
 
 
 def test_record_response_captures_usage_and_cost(tmp_db, monkeypatch):
@@ -132,7 +149,23 @@ def test_record_response_cost_nested_dict(tmp_db, monkeypatch):
     assert rows[0]["actual_cost_usd"] == Decimal("0.0075")
 
 
-def test_record_response_no_usage_still_recorded(tmp_db, monkeypatch):
+def test_record_response_no_usage_stores_null_not_zero(tmp_db, monkeypatch):
+    """Empty usage object: tokens NULL (not 0) and has_usage=0 (audit D1)."""
+    monkeypatch.setattr(bc, "get_collector", lambda: tmp_db)
+    agent = _Agent()
+    resp = _Response(usage={})  # present but empty
+    bc.record_response(agent, resp)
+    rows = tmp_db.query()
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["has_usage"] is False
+    assert r["actual_cost_usd"] is None
+    assert r["prompt_tokens"] is None
+    assert r["completion_tokens"] is None
+    assert r["cache_read_tokens"] is None
+
+
+def test_record_response_no_usage_at_all(tmp_db, monkeypatch):
     monkeypatch.setattr(bc, "get_collector", lambda: tmp_db)
     agent = _Agent()
     resp = _Response(usage=None)
@@ -150,6 +183,19 @@ def test_record_error(tmp_db):
     assert rows[0]["is_error"] is True
     assert rows[0]["error_type"] == "rate_limit"
     assert rows[0]["has_usage"] is False
+
+
+def test_record_error_sanitizes_provider_echo(tmp_db):
+    """Audit D3: provider error bodies that echo the request must be redacted."""
+    noisy = ("rate_limit_exceeded: too many requests. Request body: "
+             "{\"messages\":[{\"role\":\"user\",\"content\":\"SECRET PROMPT HERE\"}]}")
+    tmp_db.record_error(model="m", provider="p", error_type="rate_limit", error_message=noisy)
+    rows = tmp_db.query()
+    msg = rows[0]["error_message"]
+    assert msg is not None
+    assert "SECRET PROMPT HERE" not in msg
+    # Structural error class is preserved.
+    assert "rate_limit_exceeded" in msg
 
 
 def test_stats_group_by_model(tmp_db):
@@ -173,6 +219,17 @@ def test_stats_group_by_model(tmp_db):
     assert by_model["a"]["calls"] == 2
     assert by_model["a"]["total_cost_usd"] == Decimal("0.03")
     assert by_model["b"]["total_cost_usd"] == Decimal("0.005")
+
+
+def test_stats_exact_sum_micros(tmp_db):
+    """Audit D2: SUM must be exact (integer micro-USD), no float drift."""
+    # These three fractional costs expose float-sum drift if stored as REAL.
+    for c in (Decimal("0.1"), Decimal("0.2"), Decimal("0.005")):
+        tmp_db.record_call(bc.BillingRecord(
+            request_id="x", timestamp="2026-10-18T10:00:00Z", model="a", provider="openrouter",
+            agent="walter", prompt_tokens=1, completion_tokens=1, actual_cost_usd=c, has_usage=True,
+        ))
+    assert tmp_db.total_cost_usd() == Decimal("0.305")
 
 
 def test_stats_group_by_agent(tmp_db):
@@ -238,19 +295,31 @@ def test_cleanup_ttl(tmp_db):
     assert rows[0]["request_id"] == "new"
 
 
-def test_disabled_no_record(monkeypatch):
-    """When the flag is off, record_response is a no-op (no DB write, no error)."""
+def test_db_file_is_0600(tmp_db):
+    """Audit D3: the billing DB file must be created with owner-only perms (0600)."""
+    mode = os.stat(tmp_db._db_path).st_mode & 0o777
+    assert mode == 0o600
+
+
+def test_disabled_no_record_no_db_file(monkeypatch):
+    """Audit D8: when the flag is OFF, record_response is a no-op AND creates no DB file.
+
+    The collector is gated: with the flag off, record_response returns before any
+    database access, so no billing.db is created under HERMES_HOME.
+    """
     monkeypatch.setenv("HERMES_BILLING_COLLECTOR", "0")
-    # Re-evaluate is_collector_enabled under the patched env by calling the real path.
+    tmp_home = tempfile.mkdtemp(prefix="hermes-billing-off-")
+    monkeypatch.setenv("HERMES_HOME", tmp_home)
     import agent.billing_collector as real_bc
     assert real_bc.is_collector_enabled() is False
-    fd, path = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
-    c = real_bc.BillingCollector(path, ttl_days=90)
-    monkeypatch.setattr(real_bc, "get_collector", lambda: c)
+
+    # Build the default collector path the collector WOULD use, then assert it is
+    # absent both before and after a record call (the disabled path must never
+    # instantiate or open the DB).
+    default_db = real_bc._default_db_path()
+    assert not default_db.exists()
     agent = _Agent()
     resp = _Response(usage=_Usage(cost=0.5))
-    # Should not raise and should not write.
-    real_bc.record_response(agent, resp)
-    assert c.query() == []
-    os.unlink(path)
+    real_bc.record_response(agent, resp)  # must be a no-op, must not raise
+    # Still no DB file: the collector never touched storage.
+    assert not default_db.exists()

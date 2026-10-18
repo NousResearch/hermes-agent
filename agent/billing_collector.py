@@ -11,11 +11,9 @@ No API keys / PII are stored. The only identity-bearing columns are the Hermes
 profile (``agent``), the kanban task id (``task_id``) and the request id — none of
 which are secret.
 
-Usage is pulled from the normalized ``usage`` object; the factual dollar cost
-(``actual_cost_usd``) is read from the provider's raw ``usage.cost`` field (OpenRouter
-emits it on every response, including streaming). When a cost cannot be read, the row
-is still recorded with ``has_usage`` / cost NULL so absence is a separate, queryable
-fact rather than silence.
+Cost is stored as INTEGER micro-USD (``actual_cost_micro_usd``) to avoid IEEE-754
+rounding drift across SUM aggregation. ``actual_cost_usd`` is still exposed as a
+``Decimal`` at the read boundary by dividing by 1_000_000.
 """
 
 from __future__ import annotations
@@ -23,6 +21,7 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+import stat
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -39,6 +38,9 @@ logger = logging.getLogger("agent.billing_collector")
 _TTL_DAYS_DEFAULT = 90
 _ENV_FLAG = "HERMES_BILLING_COLLECTOR"
 _CONFIG_PATH = ("telemetry", "billing_collector", "enabled")
+
+# Cost is stored as integer micro-USD to keep SUM() exact (no float drift).
+_MICRO = 1_000_000
 
 
 def is_collector_enabled() -> bool:
@@ -131,7 +133,7 @@ CREATE TABLE IF NOT EXISTS billing_records (
     cache_write_tokens INTEGER,
     completion_tokens INTEGER,
     reasoning_tokens  INTEGER,
-    actual_cost_usd   REAL,
+    actual_cost_micro_usd INTEGER,
     currency          TEXT NOT NULL DEFAULT 'USD',
     billing_source    TEXT NOT NULL DEFAULT 'server_response',
     has_usage         INTEGER NOT NULL DEFAULT 0,
@@ -178,6 +180,38 @@ class BillingCollector:
         with self._lock, self._connect() as conn:
             conn.executescript(_SCHEMA)
             conn.commit()
+            # Restrict the DB file to the owner only (no group/world access).
+            try:
+                os.chmod(self._db_path, stat.S_IRUSR | stat.S_IWUSR)
+            except OSError:
+                logger.debug("billing_collector: chmod 0600 failed on %s", self._db_path, exc_info=True)
+            # Restrict the -wal/-shm siblings too, if present.
+            for suffix in ("-wal", "-shm"):
+                sib = self._db_path.with_suffix(self._db_path.suffix + suffix)
+                if sib.exists():
+                    try:
+                        os.chmod(sib, stat.S_IRUSR | stat.S_IWUSR)
+                    except OSError:
+                        pass
+
+    # -- cost helpers -------------------------------------------------------
+    @staticmethod
+    def _micros(usd: Optional[Decimal]) -> Optional[int]:
+        if usd is None:
+            return None
+        try:
+            return int((usd * _MICRO).to_integral_value(rounding="ROUND_HALF_UP"))
+        except (InvalidOperation, ValueError, TypeError):
+            return None
+
+    @staticmethod
+    def _to_decimal(micros: Optional[int]) -> Optional[Decimal]:
+        if micros is None:
+            return None
+        try:
+            return Decimal(micros) / _MICRO
+        except (InvalidOperation, ValueError, TypeError):
+            return None
 
     # -- writes -------------------------------------------------------------
     def record_call(self, rec: BillingRecord) -> None:
@@ -189,7 +223,7 @@ class BillingCollector:
                     INSERT INTO billing_records (
                         request_id, timestamp, model, provider, agent, task_id, turn_id,
                         prompt_tokens, cache_read_tokens, cache_write_tokens, completion_tokens,
-                        reasoning_tokens, actual_cost_usd, currency, billing_source,
+                        reasoning_tokens, actual_cost_micro_usd, currency, billing_source,
                         has_usage, is_error, error_type, error_message
                     ) VALUES (?,?,?,?,?,?,?, ?,?,?,?, ?,?,?,?, ?,?,?,?)
                     """,
@@ -206,7 +240,7 @@ class BillingCollector:
                         rec.cache_write_tokens,
                         rec.completion_tokens,
                         rec.reasoning_tokens,
-                        None if rec.actual_cost_usd is None else str(rec.actual_cost_usd),
+                        self._micros(rec.actual_cost_usd),
                         rec.currency,
                         rec.billing_source,
                         1 if rec.has_usage else 0,
@@ -218,6 +252,9 @@ class BillingCollector:
                 conn.commit()
         except Exception:
             logger.warning("billing_collector: record_call failed", exc_info=True)
+        else:
+            # Best-effort retention pruning (no-op unless explicitly enabled).
+            maybe_schedule_cleanup()
 
     def record_error(
         self,
@@ -245,7 +282,7 @@ class BillingCollector:
                 has_usage=False,
                 is_error=True,
                 error_type=error_type,
-                error_message=_truncate(error_message, 2000),
+                error_message=_sanitize_error(error_message),
             )
         )
 
@@ -312,12 +349,10 @@ class BillingCollector:
     @staticmethod
     def _row_to_dict(r: sqlite3.Row) -> Dict[str, Any]:
         d = dict(r)
-        cost = d.get("actual_cost_usd")
-        if cost is not None:
-            try:
-                d["actual_cost_usd"] = Decimal(str(cost))
-            except (InvalidOperation, ValueError):
-                d["actual_cost_usd"] = None
+        # Expose actual_cost_usd (Decimal) at the read boundary; store is micros.
+        micros = d.get("actual_cost_micro_usd")
+        d["actual_cost_usd"] = BillingCollector._to_decimal(micros)
+        d.pop("actual_cost_micro_usd", None)
         d["has_usage"] = bool(d.get("has_usage"))
         d["is_error"] = bool(d.get("is_error"))
         return d
@@ -338,6 +373,7 @@ class BillingCollector:
 
         ``group_by`` is one of: ``day``, ``model``, ``agent``, ``task_id``,
         ``provider``. Returns one row per group with sums and call counts.
+        Cost is summed in integer micro-USD so aggregation is exact.
         """
         valid_groups = {
             "day": "substr(timestamp, 1, 10)",
@@ -379,7 +415,8 @@ class BillingCollector:
             "SUM(COALESCE(cache_read_tokens, 0)) AS cache_read_tokens, "
             "SUM(COALESCE(cache_write_tokens, 0)) AS cache_write_tokens, "
             "SUM(COALESCE(completion_tokens, 0)) AS completion_tokens, "
-            "SUM(CASE WHEN actual_cost_usd IS NOT NULL THEN actual_cost_usd ELSE 0 END) AS total_cost_usd "
+            # Exact integer sum, converted back to Decimal at the boundary.
+            "COALESCE(SUM(actual_cost_micro_usd), 0) AS total_cost_micro_usd "
             f"FROM billing_records{where} GROUP BY bucket ORDER BY bucket ASC"
         )
         out: List[Dict[str, Any]] = []
@@ -388,11 +425,12 @@ class BillingCollector:
                 conn.row_factory = sqlite3.Row
                 for r in conn.execute(sql, params):
                     row = dict(r)
-                    tc = row.get("total_cost_usd")
+                    micros = row.get("total_cost_micro_usd") or 0
                     try:
-                        row["total_cost_usd"] = Decimal(str(tc)) if tc is not None else Decimal("0")
-                    except (InvalidOperation, ValueError):
+                        row["total_cost_usd"] = Decimal(int(micros)) / _MICRO
+                    except (InvalidOperation, ValueError, TypeError):
                         row["total_cost_usd"] = Decimal("0")
+                    row.pop("total_cost_micro_usd", None)
                     row["calls"] = int(row.get("calls") or 0)
                     row["calls_with_usage"] = int(row.get("calls_with_usage") or 0)
                     row["calls_error"] = int(row.get("calls_error") or 0)
@@ -426,11 +464,10 @@ class BillingCollector:
         try:
             with self._lock, self._connect() as conn:
                 row = conn.execute(
-                    "SELECT SUM(CASE WHEN actual_cost_usd IS NOT NULL THEN actual_cost_usd ELSE 0 END) "
-                    "FROM billing_records"
+                    "SELECT COALESCE(SUM(actual_cost_micro_usd), 0) FROM billing_records"
                 ).fetchone()
-                val = row[0] if row else None
-                return Decimal(str(val)) if val is not None else Decimal("0")
+                micros = row[0] if row else 0
+                return Decimal(int(micros)) / _MICRO
         except Exception:
             return Decimal("0")
 
@@ -466,6 +503,38 @@ def _truncate(text: Optional[str], limit: int) -> Optional[str]:
     if text is None:
         return None
     return text if len(text) <= limit else text[:limit] + "...[truncated]"
+
+
+# Provider error bodies sometimes echo fragments of the caller's request
+# (prompts, tool arguments, tokens). Strip anything that looks like it could
+# carry user content before persisting a billing error row.
+_ERROR_REDACT_MARKERS = (
+    "request body", "prompt", "messages", "tool_call", "tool_calls", "content",
+    "your request", "request contained", "invalid request", "context",
+)
+
+
+def _sanitize_error(text: Optional[str]) -> Optional[str]:
+    """Redact provider-echoed request fragments from an error message.
+
+    Keeps the structural error class (e.g. ``429 Too Many Requests``,
+    ``rate_limit_exceeded``) but drops the trailing body that providers often
+    append after a marker. Never raises.
+    """
+    if not text:
+        return None
+    lowered = text.lower()
+    cut = len(text)
+    for marker in _ERROR_REDACT_MARKERS:
+        idx = lowered.find(marker)
+        if idx != -1 and idx < cut:
+            cut = idx
+    head = text[:cut].strip()
+    if not head:
+        # Marker sat at the very start (unusual) — keep a short prefix so the
+        # structural error type is still queryable.
+        head = text[:160].strip()
+    return _truncate(head, 2000)
 
 
 def _extract_raw_cost(usage: Any) -> Optional[Decimal]:
@@ -525,20 +594,18 @@ def record_response(
         usage = getattr(response, "usage", None)
         prompt = cache_read = cache_write = completion = reasoning = None
         actual_cost: Optional[Decimal] = None
-        has_usage = bool(usage)
+        has_usage = False
         if usage is not None:
-            try:
-                from agent.usage_pricing import normalize_usage
-
-                cu = normalize_usage(usage, provider=provider, api_mode=getattr(agent, "api_mode", None))
-                prompt = cu.prompt_tokens
-                cache_read = cu.cache_read_tokens or None
-                cache_write = cu.cache_write_tokens or None
-                completion = cu.output_tokens
-                reasoning = cu.reasoning_tokens or None
-            except Exception:
-                logger.debug("billing_collector: usage normalization failed", exc_info=True)
+            # Token fields are None when the provider reported no value (not 0),
+            # and has_usage is derived from real data presence so an empty usage
+            # object stores NULL tokens with has_usage=0 rather than zeros.
+            prompt, cache_read, cache_write, completion, reasoning = _normalize_tokens(
+                usage, provider, getattr(agent, "api_mode", None)
+            )
             actual_cost = _extract_raw_cost(usage)
+            has_usage = actual_cost is not None or any(
+                t is not None for t in (prompt, cache_read, cache_write, completion, reasoning)
+            )
         currency = "USD"
         cost_obj = getattr(usage, "cost", None) if not isinstance(usage, dict) else (usage or {}).get("cost")
         if isinstance(cost_obj, dict):
@@ -567,6 +634,95 @@ def record_response(
         logger.debug("billing_collector: record_response failed", exc_info=True)
 
 
+def _normalize_tokens(usage, provider, api_mode):
+    """Normalize ``usage`` into token columns.
+
+    Returns ``(prompt, cache_read, cache_write, completion, reasoning)`` where
+    absent/empty fields are ``None`` so the row stores NULL rather than 0.
+    """
+    p = cr = cw = c = rs = None
+    try:
+        from agent.usage_pricing import normalize_usage
+
+        cu = normalize_usage(usage, provider=provider, api_mode=api_mode)
+        p = cu.prompt_tokens or None
+        cr = cu.cache_read_tokens or None
+        cw = cu.cache_write_tokens or None
+        c = cu.output_tokens or None
+        rs = cu.reasoning_tokens or None
+    except Exception:
+        logger.debug("billing_collector: usage normalization failed", exc_info=True)
+    return (p, cr, cw, c, rs)
+
+
+# ---------------------------------------------------------------------------
+# Retention scheduler (opt-in)
+# ---------------------------------------------------------------------------
+# Retention is OFF by default. When ``telemetry.billing_collector.retention.enabled``
+# is true, ``maybe_schedule_cleanup()`` prunes rows older than ``ttl_days`` at most
+# once per 24h (first run happens lazily on the next successful record). This keeps
+# ``cleanup()`` actually invoked without a separate cron job, and never runs when
+# the flag is off.
+
+_RETENTION_CONFIG_PATH = ("telemetry", "billing_collector", "retention", "enabled")
+_retention_ttl_path = ("telemetry", "billing_collector", "ttl_days")
+_retention_lock = threading.Lock()
+_retention_last_run: float = 0.0
+_RETENTION_INTERVAL_S = 24 * 3600
+
+
+def _retention_enabled() -> bool:
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly() or {}
+        node = cfg
+        for key in _RETENTION_CONFIG_PATH:
+            node = node.get(key) if isinstance(node, dict) else None
+            if node is None:
+                return False
+        return bool(node)
+    except Exception:
+        return False
+
+
+def _retention_ttl_days() -> int:
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly() or {}
+        node = cfg
+        for key in _retention_ttl_path:
+            node = node.get(key) if isinstance(node, dict) else None
+            if node is None:
+                return _TTL_DAYS_DEFAULT
+        return int(node)
+    except Exception:
+        return _TTL_DAYS_DEFAULT
+
+
+def maybe_schedule_cleanup() -> None:
+    """Prune old billing rows at most once per 24h when retention is enabled.
+
+    Cheap, best-effort, and never raises. Call from the write path after a
+    successful record so billing.db does not grow without bound.
+    """
+    if not _retention_enabled():
+        return
+    global _retention_last_run
+    now = datetime.now(timezone.utc).timestamp()
+    if now - _retention_last_run < _RETENTION_INTERVAL_S:
+        return
+    with _retention_lock:
+        if now - _retention_last_run < _RETENTION_INTERVAL_S:
+            return
+        _retention_last_run = now
+    try:
+        get_collector().cleanup(ttl_days=_retention_ttl_days())
+    except Exception:
+        logger.debug("billing_collector: scheduled cleanup failed", exc_info=True)
+
+
 # ---------------------------------------------------------------------------
 # CLI entry point: `python -m agent.billing_collector [--group-by day|model|agent|task_id] [--model ...] ...`
 # ---------------------------------------------------------------------------
@@ -586,7 +742,7 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
     p.add_argument("--until")
     p.add_argument("--no-usage", action="store_true", help="Exclude rows without usage")
     p.add_argument("--json", action="store_true", help="Emit JSON instead of a table")
-    p.add_argument("--limit", type=int, default=1000)
+    p.add_argument("--limit", type=int, default=1000, help="Max rows when using --rows")
     args = p.parse_args(argv)
 
     if not is_collector_enabled():

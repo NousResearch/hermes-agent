@@ -8,7 +8,7 @@ import json
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, cast
 
 from agent.context_compressor import (
     _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY, MODEL_ONLY_DISPLAY_METADATA_KEY, _is_checkpoint_item,
@@ -24,6 +24,7 @@ from hermes_state_common import (
     _json_or, _legacy_reset_child_sql, _placeholders, _sql_json_extract)
 from hermes_state_detached_results import SessionDetachedResultsMixin
 from hermes_state_identity import (
+    authored_user_occurrence, legacy_user_display_group, user_display_index_current,
     _absorbed_uids_json, _restore_identity_columns, _stable_tool_key, _tool_call_uid_map, _tool_call_uid_or_none, _tool_call_uids_json)
 
 logger = logging.getLogger("hermes_state")  # caplog tests pin the origin module's name
@@ -280,7 +281,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin):
             "role": role, "content": encoded_content, "timestamp": message_timestamp,
             "tool_call_id": msg.get("tool_call_id"), "tool_calls": encoded_tool_calls,
             "tool_name": encoded_tool_name, "display_kind": msg.get("display_kind"),
-            "display_metadata": display_metadata,
+            "display_metadata": display_metadata, "message_uid": message_uid_or_none(msg),
+            "_compressed_summary": msg.get("_compressed_summary", 0),
         }
         return (session_id, role, encoded_content, msg.get("tool_call_id"),
             encoded_tool_calls, encoded_tool_name,
@@ -1180,6 +1182,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin):
 
     def _display_dedupe_key(self, row) -> tuple[Any, ...]:
         """Historical display identity, including normalized live content from user handoff carriers."""
+        if key := authored_user_occurrence(self, row):
+            return key
         dedupe_content = row["content"]
         if row["role"] == "user":
             handoff, live_view = split_user_originated_turn({
@@ -1219,20 +1223,13 @@ class SessionMessagesMixin(SessionDetachedResultsMixin):
         return [seen[key] for key in sorted(seen, key=first_id.__getitem__)]
 
     def _reconcile_display_orders(self, conn, session_id: str) -> None:
-        """Re-fold split display generations by the recomputed display key.
-
-        A compaction generation that computed the display identity differently (or cloned
-        without inheriting it) leaves one logical message in two ``display_order`` groups,
-        and ``GROUP BY display_order`` then projects it twice (#122167). Folding by the same
-        recomputed key :meth:`_dedupe_display_generations` uses keeps every display projection
-        on one definition of a logical message; the live copy wins its group via the read
-        path's ``ORDER BY candidate.active DESC, candidate.id DESC``. Writes only on drift."""
+        """Reconcile derived keys/first chronology; active/latest wins at read time (#122167)."""
         first_id: dict[bytes, int] = {}
         last_id = 0
         while True:
             rows = conn.execute(
                 "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name, "
-                "display_kind, display_metadata, display_order, display_identity "
+                "display_kind, display_metadata, display_order, display_identity, message_uid, _compressed_summary "
                 "FROM messages INDEXED BY idx_messages_session_id "
                 "WHERE session_id = ? AND id > ? AND (active = 1 OR compacted = 1) "
                 "ORDER BY id LIMIT 1000",
@@ -1255,6 +1252,13 @@ class SessionMessagesMixin(SessionDetachedResultsMixin):
         """Backfill one legacy session once, preserving the pre-index display identity exactly."""
         with self._read_ctx() as conn:
             columns = set(self._message_column_names(conn))
+            current = user_display_index_current(conn)
+        if not current and not self.read_only:
+            self._execute_write(lambda conn: self._advance_user_display_index(conn.cursor()))
+            with self._read_ctx() as conn:
+                current = user_display_index_current(conn)
+        if not current:
+            return False
         if not {"display_order", "display_identity"} <= columns:
             return False
         if self._read_one(_DISPLAY_INDEX_MISSING_SQL, (session_id,)) is None:
@@ -1272,12 +1276,15 @@ class SessionMessagesMixin(SessionDetachedResultsMixin):
         return bool(self._execute_write(_do))
 
     def _legacy_display_page(self, session_id: str, *, active_clause: str, limit: Optional[int], offset: int,
-                             latest: bool) -> list[Any]:
+                             latest: bool, count_only: bool = False):
         """Project a legacy read-only display page without retaining transcript payloads."""
-        representatives: dict[bytes, tuple[int, int]] = {}
+        representatives: dict[Any, tuple[int, int, int]] = {}
         with self._read_ctx() as conn:
+            columns = set(self._message_column_names(conn))
             conn.execute("BEGIN")
             try:
+                indexed = {"display_order", "display_identity"} <= columns and conn.execute(_DISPLAY_INDEX_MISSING_SQL, (session_id,)).fetchone() is None
+                order_column = "display_order" if "display_order" in columns else "NULL AS display_order"
                 has_session_index = conn.execute(
                     "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?",
                     ("idx_messages_session_id",),
@@ -1285,20 +1292,24 @@ class SessionMessagesMixin(SessionDetachedResultsMixin):
                 index_hint = "INDEXED BY idx_messages_session_id" if has_session_index else "NOT INDEXED"
                 rows = conn.execute(
                     "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name, active, "
-                    f"display_kind, display_metadata FROM messages {index_hint} "
+                    f"display_kind, display_metadata, _compressed_summary, {order_column}, "
+                    f"{'message_uid' if 'message_uid' in columns else 'NULL AS message_uid'} "
+                    f"FROM messages {index_hint} "
                     f"WHERE session_id = ?{active_clause} ORDER BY id ASC",
                     (session_id,))
                 for row in rows:
                     if self._is_model_only_row(row):
                         continue
-                    identity = self._display_identity(self._display_dedupe_key(row))
+                    identity, order = legacy_user_display_group(self, row, indexed)
                     current = representatives.get(identity)
                     candidate = (row["active"], row["id"])
-                    if current is None or candidate > current:
-                        representatives[identity] = candidate
+                    if current is None or candidate > current[:2]:
+                        representatives[identity] = (*candidate, current[2] if current else order)
                 rows.close()
 
-                identities = list(representatives)
+                identities = sorted(representatives, key=lambda key: representatives[key][2])
+                if count_only:
+                    return len(identities)
                 identities = identities[::-1][offset:][:limit][::-1] if latest else identities[offset:][:limit]
                 selected_ids = [representatives[identity][1] for identity in identities]
                 selected = {}
@@ -1362,9 +1373,9 @@ class SessionMessagesMixin(SessionDetachedResultsMixin):
         ).fetchall()
 
     def display_message_count(self, session_id: str) -> int:
-        """Rows a display read of this segment paints: one per ``display_order`` group of
-        ``_display_rows_from_conn``'s set. Unindexed legacy rows count as one group (the read
-        backfills them), so the count is zero exactly when the read paints nothing."""
+        """Count authored occurrences and unchanged non-user display groups."""
+        if not self._ensure_display_order(session_id):
+            return cast(int, self._legacy_display_page(session_id, active_clause=_DISPLAY_ACTIVE_CLAUSE, limit=0, offset=0, latest=False, count_only=True))
         row = self._read_one(
             "SELECT COUNT(*) FROM (SELECT DISTINCT display_order FROM messages"
             f" WHERE session_id = ?{_DISPLAY_ACTIVE_CLAUSE}{DISPLAY_VISIBLE_SQL})", (session_id,))
@@ -1374,7 +1385,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin):
         """Exact display snapshot on an already-held transaction; None means fail closed."""
         if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone() is None:
             return None
-        if conn.execute(_DISPLAY_INDEX_MISSING_SQL, (session_id,)).fetchone():
+        if not user_display_index_current(conn) or conn.execute(_DISPLAY_INDEX_MISSING_SQL, (session_id,)).fetchone():
             return None
         return [
             self._row_to_message_dict(row, warn_context="verified delete", summary_flag=True)

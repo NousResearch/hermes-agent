@@ -161,9 +161,9 @@ class TestDisplayDedupe:
                 f"""
                 INSERT INTO messages
                     (session_id, role, content, tool_call_id, tool_calls,
-                     tool_name, timestamp, active, compacted)
+                     tool_name, timestamp, active, compacted, message_uid)
                 SELECT session_id, role, content, tool_call_id, tool_calls,
-                       tool_name, timestamp, 0, 1
+                       tool_name, timestamp, 0, 1, message_uid
                 FROM messages
                 WHERE session_id = ? AND id IN ({placeholders})
                 """,
@@ -365,7 +365,9 @@ class TestDisplayDedupe:
             f"{HISTORICAL_TASK_HEADING}\nold work\n\n"
             f"{_SUMMARY_END_MARKER}"
         )
-        carrier_id = db.append_message(sid, role="user", content=carrier, timestamp=100.0)
+        original_uid = db._read_one("SELECT message_uid FROM messages WHERE id = ?", (original_id,))[0]
+        carrier_id = db.append_message(sid, role="user", content=carrier, timestamp=100.0,
+                                       message_uid=original_uid)
         # Simulate rows written before display_order existed; lazy backfill must use
         # the same normalized user-turn key as the historical Python projection.
         db._execute_write(lambda conn: conn.execute(

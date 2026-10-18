@@ -31,6 +31,7 @@ from hermes_state_holders import _read_proc_argv
 from hermes_state_search import _delete_meta, _meta_row
 from hermes_state_errors import is_sqlite_lock_error
 from hermes_state_titles import next_title_in_lineage
+from hermes_state_identity import USER_DISPLAY_VERSION_KEY, USER_DISPLAY_VERSION, repair_user_display_slice, user_display_index_current
 
 # Pre-split logger identity so log filtering/capture is unchanged.
 logger = logging.getLogger("hermes_state")
@@ -996,7 +997,7 @@ class SessionSchemaMixin:
             cursor.executemany(
                 "INSERT OR IGNORE INTO state_meta (key, value) VALUES (?, ?)",
                 [("store_instance_id", str(uuid.uuid4())), ("store_created_at_utc", now_iso),
-                 (_MESSAGE_UID_BACKFILL_DONE, "1")],  # a fresh store has no legacy rows to backfill
+                 (_MESSAGE_UID_BACKFILL_DONE, "1"), (USER_DISPLAY_VERSION_KEY, USER_DISPLAY_VERSION)],
             )
         else:
             self._run_data_migrations(cursor, row[0], fts5_available)
@@ -1061,7 +1062,9 @@ class SessionSchemaMixin:
         if current_version < 25:
             # v25: de-duplicate system prompt snapshots (old column stays a read fallback).
             self._dedupe_legacy_system_prompts(cursor)
+        deadline = time.monotonic() + _MESSAGE_UID_BACKFILL_BUDGET_S
         self._advance_message_uid_backfill(cursor)
+        self._advance_user_display_index(cursor, deadline=deadline)
         fts_migrations_complete = True
         if current_version < 30 and fts5_available:
             # v29: cron sessions leave the trigram substring index (they stay in the word index);
@@ -1114,6 +1117,39 @@ class SessionSchemaMixin:
         # one skip: claiming current would lie.
         if current_version < SCHEMA_VERSION and fts_migrations_complete and fts5_available:
             cursor.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
+
+    def _advance_user_display_index(self, cursor: sqlite3.Cursor, *, deadline=None) -> None:
+        """Version/cursor repair uses the existing bounded backfill admission budget."""
+        if user_display_index_current(cursor.connection):
+            return
+        if _meta_row(cursor, _MESSAGE_UID_BACKFILL_DONE) is None:
+            return
+        if deadline is not None and time.monotonic() >= deadline:
+            return
+        cursor_key = "display_user_occurrence_cursor"
+        progress = _meta_row(cursor, cursor_key)
+        lower = int(progress[0]) if progress else 0
+        deadline = deadline if deadline is not None else time.monotonic() + _MESSAGE_UID_BACKFILL_BUDGET_S
+        while True:
+            ids = cursor.execute("SELECT id FROM messages WHERE id > ? ORDER BY id LIMIT ?",
+                                 (lower, _MESSAGE_UID_BACKFILL_CHUNK)).fetchall()
+            if not ids:
+                self.set_meta(USER_DISPLAY_VERSION_KEY, USER_DISPLAY_VERSION, cursor=cursor)
+                _delete_meta(cursor, cursor_key)
+                return
+            upper = ids[-1][0]
+            cursor.execute("SAVEPOINT user_display_slice")
+            try:
+                repair_user_display_slice(self, cursor.connection, lower, upper)
+                self.set_meta(cursor_key, str(upper), cursor=cursor)
+                cursor.execute("RELEASE user_display_slice")
+            except BaseException:
+                cursor.execute("ROLLBACK TO user_display_slice")
+                cursor.execute("RELEASE user_display_slice")
+                raise
+            lower = upper
+            if time.monotonic() >= deadline:
+                return
 
     def _advance_message_uid_backfill(self, cursor: sqlite3.Cursor) -> None:
         """Mint ``message_uid`` onto rows written before the column existed, one bounded slice per open.

@@ -6,6 +6,7 @@ import hashlib
 import json
 import threading
 import time
+import tracemalloc
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -20,6 +21,7 @@ from agent.memory_provider import (
     MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES,
     MAX_MEMORY_OBSERVATION_NODES,
     MAX_MEMORY_OBSERVATION_OPERATION_NODES,
+    MAX_MEMORY_OBSERVATION_STRING_CHARS,
     MAX_MEMORY_OBSERVATIONS,
     MemoryObservation,
     MemoryPrefetchResult,
@@ -1739,6 +1741,34 @@ def test_str_subclass_cannot_lie_about_length_before_serialization(monkeypatch):
         _freeze_memory_observation_payload(payload)
 
     assert serialized == []
+
+
+@pytest.mark.parametrize("as_key", [False, True], ids=["value", "mapping-key"])
+def test_oversized_str_subclass_is_rejected_before_copy(as_key):
+    """Oversized strings and object keys fail without allocating a base-str copy."""
+    calls = []
+
+    class HostileString(str):
+        def __str__(self):
+            calls.append("str")
+            raise AssertionError("provider __str__ must not run")
+
+        def __len__(self):
+            return 1
+
+    oversized = HostileString("x" * (MAX_MEMORY_OBSERVATION_STRING_CHARS + 2_000_000))
+    payload = {oversized: True} if as_key else oversized
+
+    tracemalloc.start()
+    try:
+        with pytest.raises(ValueError):
+            _freeze_memory_observation_payload(payload)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+    assert calls == []
+    assert peak < 512_000, peak
 
 
 @pytest.mark.parametrize("field_name", ["source_kind", "schema", "provider_name"])

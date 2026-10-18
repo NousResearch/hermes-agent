@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import threading
+import tracemalloc
 from pathlib import Path
+
+import pytest
 
 from agent.memory_manager import MemoryManager
 from agent.memory_provider import (
+    MAX_MEMORY_OBSERVATION_FIELD_CHARS,
     MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES,
     MemoryObservation,
     MemoryPrefetchResult,
@@ -19,6 +23,16 @@ from tests.agent.test_memory_observation import (
     _observation,
     _stub_direct_prefetch,
 )
+
+
+def _measure_peak_allocation(call):
+    tracemalloc.start()
+    try:
+        result = call()
+        peak = tracemalloc.get_traced_memory()[1]
+        return result, peak
+    finally:
+        tracemalloc.stop()
 
 
 class _InfiniteObservationTuple(tuple):
@@ -282,3 +296,72 @@ def test_structured_prefetch_context_subclass_is_normalized_before_spill(
     assert "full content saved to " in result.context
     saved = Path(result.context.split("full content saved to ", 1)[1].split("]", 1)[0])
     assert saved.read_text(encoding="utf-8") == str.__str__(context) + "\n"
+
+
+@pytest.mark.parametrize(
+    "field_name", ["source_kind", "schema", "provider", "provider_name"]
+)
+def test_oversized_prefetch_metadata_subclass_is_rejected_before_copy(
+    monkeypatch, field_name
+):
+    from agent import memory_manager_prefetch
+    from agent.memory_manager_prefetch import normalize_prefetch_result
+
+    calls = []
+
+    class HostileString(str):
+        def __str__(self):
+            calls.append("str")
+            raise AssertionError("provider __str__ must not run")
+
+        def __len__(self):
+            return 1
+
+    oversized = HostileString("x" * (MAX_MEMORY_OBSERVATION_FIELD_CHARS + 2_000_000))
+    monkeypatch.setattr(memory_manager_prefetch.logger, "warning", lambda *_a, **_kw: None)
+    observation = MemoryObservation(
+        source_kind=oversized if field_name == "source_kind" else "recall",
+        schema=oversized if field_name == "schema" else "fixture.context",
+        version=1,
+        provider=oversized if field_name == "provider" else "",
+        payload={"kept": True},
+    )
+    provider = StructuredMemoryProvider(
+        name=oversized if field_name == "provider_name" else "fixture",
+        result=MemoryPrefetchResult(context="context", observations=(observation,)),
+    )
+
+    normalized, peak = _measure_peak_allocation(
+        lambda: normalize_prefetch_result(
+            provider, provider.result, remaining_bytes=64 * 1024
+        )
+    )
+
+    assert normalized.result.observations == ()
+    assert calls == []
+    assert peak < 512_000, peak
+
+
+def test_oversized_prefetch_field_key_is_skipped_before_copy():
+    from agent.memory_manager_prefetch import _builtin_dict_fields
+
+    calls = []
+
+    class HostileString(str):
+        def __str__(self):
+            calls.append("str")
+            raise AssertionError("provider __str__ must not run")
+
+        def __len__(self):
+            return 1
+
+    oversized_key = HostileString("x" * 2_000_000)
+    fields, peak = _measure_peak_allocation(
+        lambda: _builtin_dict_fields(
+            {oversized_key: "ignored", "context": "kept"}, ("context",)
+        )
+    )
+
+    assert fields == {"context": "kept"}
+    assert calls == []
+    assert peak < 512_000, peak

@@ -1206,7 +1206,15 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
                 _consumed, _consumer_reply = await self._hm_post_admission_consume(event, source, _quick_key)
                 if _consumed:
                     return True, _consumer_reply
-                return True, await admit_message(authority, event)
+                from hermes_state_runtime import RuntimeStoreError
+                try:
+                    return True, await admit_message(authority, event)
+                except RuntimeStoreError:
+                    # The running turn was already interrupted. The FIFO does not have this
+                    # send, so keep it for that turn's drain instead of dropping it.
+                    if self._is_session_running(_quick_key):
+                        self._queue_or_replace_pending_event(_quick_key, event)
+                    raise
         if (authority is None and not is_internal and not event.get_command()
                 and getattr(self, 'session_authority', None) is not None):
             # Scoped to a home this process does not serve: never fall back to the launch ledger.

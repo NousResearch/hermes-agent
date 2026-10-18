@@ -11,6 +11,7 @@ import {
   type DroppedFile,
   extractDroppedFiles,
   HERMES_PATHS_MIME,
+  isImagePath,
   partitionDroppedFiles,
   resolveImageAttachmentPreview,
   useComposerActions
@@ -169,6 +170,18 @@ function stubTransfer(
     _pathByFile: pathByFile
   } as unknown as DataTransfer & { _pathByFile: Map<File, string> }
 }
+
+describe('isImagePath HEIC/HEIF support', () => {
+  it('treats iPhone HEIC/HEIF photos as images so they attach through the vision pipeline', () => {
+    expect(isImagePath('/Users/nikita/Downloads/IMG_2968.HEIC')).toBe(true)
+    expect(isImagePath('/Users/nikita/Downloads/IMG_2968.heic')).toBe(true)
+    expect(isImagePath('/Users/nikita/Downloads/photo.heif')).toBe(true)
+    expect(isImagePath('/Users/nikita/Downloads/photo.jpg')).toBe(true)
+    // Media containers that share the .he* neighborhood stay excluded.
+    expect(isImagePath('/Users/nikita/Movies/clip.mov')).toBe(false)
+    expect(isImagePath('/Users/nikita/Movies/clip.mp4')).toBe(false)
+  })
+})
 
 describe('extractDroppedFiles', () => {
   afterEach(() => {

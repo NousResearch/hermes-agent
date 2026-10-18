@@ -49,9 +49,13 @@ class _FakeClientFactory:
 def _install_fake_lark(monkeypatch, built_client="env-client"):
     builder = _FakeBuilder(built_client)
     fake_lark = types.ModuleType("lark_oapi")
-    setattr(fake_lark, "Client", _FakeClientFactory(builder))
-    setattr(fake_lark, "LogLevel", types.SimpleNamespace(ERROR="ERROR"))
-    setattr(fake_lark, "__path__", [])
+    fake_lark.__dict__.update(
+        {
+            "Client": _FakeClientFactory(builder),
+            "LogLevel": types.SimpleNamespace(ERROR="ERROR"),
+            "__path__": [],
+        }
+    )
     monkeypatch.setitem(__import__("sys").modules, "lark_oapi", fake_lark)
     fake_core = types.ModuleType("lark_oapi.core")
     fake_core.__path__ = []

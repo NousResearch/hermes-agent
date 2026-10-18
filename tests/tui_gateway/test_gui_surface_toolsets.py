@@ -189,7 +189,21 @@ class TestConfigLoadFailure:
         assert server._load_enabled_toolsets("tui") == []
         assert "config.yaml is unreadable" in capsys.readouterr().err
 
-    def test_coding_posture_with_config_error_yields_no_toolsets(self, no_desktop_env):
+    def test_coding_posture_bypasses_unrelated_cli_config_error(self, no_desktop_env):
+        """A resolved coding posture is a fixed narrow selection; it never reads platform_toolsets.cli."""
         self._config(no_desktop_env, lambda: {"platform_toolsets": "oops"}, posture=["coding"])
 
+        assert server._load_enabled_toolsets("tui") == ["coding", "project"]
+
+    def test_failing_coding_posture_still_fails_closed_on_config_error(self, no_desktop_env, capsys):
+        """A posture that cannot be resolved falls through to the CLI config; a broken one stays []."""
+        import agent.coding_context as cc
+
+        def posture_unavailable(**_):
+            raise RuntimeError("coding context unavailable")
+
+        self._config(no_desktop_env, lambda: {"platform_toolsets": "oops"})
+        no_desktop_env.setattr(cc, "coding_selection", posture_unavailable)
+
         assert server._load_enabled_toolsets("tui") == []
+        assert "starting with no tools" in capsys.readouterr().err

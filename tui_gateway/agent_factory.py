@@ -390,7 +390,7 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
     coding posture (coding_context collapses to coding toolset + enabled MCP servers in a code workspace);
     else the configured CLI toolsets. Client-surface toolsets fold in here — only this surface can answer them.
     An explicitly saved EMPTY list (``platform_toolsets.cli: []`` that resolves to nothing) is a
-    zero-tool state and returns [] — never None, which would mean unrestricted (#82010)."""
+    zero-tool state and returns [] — never None, which would mean unrestricted (#82010); so does a config error."""
     session_platform = platform or _resolve_session_platform()
     explicit = [item.strip() for item in os.environ.get("HERMES_TUI_TOOLSETS", "").split(",") if item.strip()]
     fallback_notice = None
@@ -432,10 +432,10 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
         if _platform_toolsets_explicitly_saved(cfg, "cli"):
             return []
         return None
-    except Exception:
-        if fallback_notice is not None:
-            _tui_notice("[tui] no valid HERMES_TUI_TOOLSETS entries and configured CLI toolsets could not be loaded; enabling all toolsets")
-        return None
+    except Exception as exc:  # fail closed like #82010: None here would grant every toolset
+        logger.warning("CLI toolsets could not be loaded; session starts with no tools", exc_info=True)
+        _tui_notice(f"[tui] configured CLI toolsets could not be loaded ({type(exc).__name__}: {exc}); starting with no tools — check config.yaml")
+        return []
 
 
 def _load_disabled_toolsets() -> list[str] | None:

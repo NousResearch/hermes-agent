@@ -943,7 +943,9 @@ class GatewayAgentCacheMixin:
     def _commit_then_release_soft(self, agent: Any, key: str, boundary: bool = False) -> None:
         """Commit end-of-session memory (if warranted), then soft-release — on the daemon eviction
         thread. Order matters: commit needs the live memory manager before ``release_clients``."""
-        codex_retirements(self).release(agent)
+        # A failed close remains fenced in the registry; memory extraction still has to run.
+        with _log_suppressed(logging.DEBUG, "Codex retirement failed; retaining owner for retry", exc_info=True):
+            codex_retirements(self).release(agent)
         try:
             self._commit_memory_before_soft_evict(agent, key, boundary)
         finally:
@@ -954,7 +956,9 @@ class GatewayAgentCacheMixin:
         resume, so terminal sandbox, browser daemon and bg processes outlive the AIAgent instance."""
         if agent is None:
             return
-        codex_retirements(self).release(agent)
+        # Best-effort cleanup must continue without weakening the successor's strict wait.
+        with _log_suppressed(logging.DEBUG, "Codex retirement failed; retaining owner for retry", exc_info=True):
+            codex_retirements(self).release(agent)
         with suppress(Exception):
             if hasattr(agent, "release_clients"):
                 agent.release_clients()

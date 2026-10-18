@@ -7,14 +7,17 @@ import {
   useMessagePartText
 } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { type ComponentProps, type FC, type ReactNode, useEffect, useRef, useState } from 'react'
+import { type ComponentProps, type FC, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 
+import { useSessionView } from '@/app/chat/session-view'
 import { CatalogInstallTool } from '@/components/assistant-ui/catalog-install-tool'
 import { ClarifyTool } from '@/components/assistant-ui/clarify'
 import { ConnectorExecution, ConnectorTool } from '@/components/assistant-ui/connector-tool'
 import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { McpSetupTool } from '@/components/assistant-ui/mcp-setup-tool'
-import { StartChatTool } from '@/components/assistant-ui/start-chat-tool'
+import { SetupBeatTool } from '@/components/assistant-ui/setup-beat/setup-beat-tool'
+import { setThemeCall } from '@/components/assistant-ui/theme-picker/args'
+import { ThemeTool } from '@/components/assistant-ui/theme-picker/theme-tool'
 import { AgentDeliveryNotice, deliveryTargetFromCommand } from '@/components/assistant-ui/thread/agent-delivery'
 import { TimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { DelegateTool } from '@/components/assistant-ui/tool/delegate'
@@ -24,7 +27,6 @@ import { formatElapsed, useElapsedSeconds, useMeasuredDuration } from '@/compone
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { GeneratedImage } from '@/components/chat/generated-image-result'
 import { SCAFFOLD_LABEL_CLASS, SCAFFOLD_META_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
-import { useOnboardingChatActive } from '@/components/onboarding-chat/assembly'
 import { useI18n } from '@/i18n'
 import { mcpTargets, toolLabels } from '@/lib/connector-tools'
 import { generatedImageFromResult } from '@/lib/generated-images'
@@ -33,6 +35,7 @@ import { isTodoToolName } from '@/lib/todos'
 import { type CardToolName, isCardTool, isCardToolName } from '@/lib/tool-render-class'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
+import { onboardingChatStore } from '@/store/onboarding-session'
 import { $reasoningCollapsedByDefault, $showReasoning } from '@/store/reasoning-disclosure'
 import { useForcedTextDirection } from '@/store/text-direction'
 import { $showToolActivity } from '@/store/tool-activity'
@@ -94,17 +97,25 @@ const ClarifyToolPart: FC<TimelineToolCallProps> = props => {
   )
 }
 
-const StartChatToolPart: FC<TimelineToolCallProps> = props => {
-  if (props.isError || settledWithoutResult(props)) {
+const ThemeToolPart: FC<TimelineToolCallProps> = props => {
+  if (settledWithoutResult(props)) {
     return <ToolFallback {...props} />
   }
 
   return (
     <>
       <TimelineTimestamp className="mb-0.5 block" completedAt={props.completedAt} timestamp={props.timestamp} />
-      <StartChatTool {...props} />
+      <ThemeTool {...props} />
     </>
   )
+}
+
+const SetupBeatToolPart: FC<TimelineToolCallProps> = props => {
+  if (settledWithoutResult(props)) {
+    return <ToolFallback {...props} />
+  }
+
+  return <SetupBeatTool {...props} />
 }
 
 const ConnectionsToolPart: FC<TimelineToolCallProps> = props =>
@@ -116,8 +127,8 @@ const TOOL_CARDS: Record<CardToolName, FC<TimelineToolCallProps>> = {
   image_generate: ImageGenerateTool,
   manage_catalog: CatalogInstallTool,
   manage_connections: ConnectionsToolPart,
-  setup_choose: ClarifyToolPart,
-  start_chat: StartChatToolPart
+  set_theme: ThemeToolPart,
+  setup_beat: SetupBeatToolPart
 }
 
 // A failure the user still has to see. The gateway's tool.complete carries the
@@ -162,6 +173,11 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
     const ToolCard = TOOL_CARDS[props.toolName]
 
     return <ToolCard {...props} />
+  }
+
+  // A reloaded transcript holds the model's own call: set_theme reached through the tool_call bridge.
+  if (setThemeCall(props.toolName, props.args)) {
+    return <ThemeToolPart {...props} />
   }
 
   if (toolLabels(props.args).length > 0) {
@@ -211,7 +227,10 @@ const ThinkingDisclosure: FC<{
   timerKey: string
 }> = ({ children, completedAt, messageRunning = false, pending = false, timestamp, timerKey }) => {
   const { t } = useI18n()
-  const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
+  const sessionId = useStore(useSessionView().$runtimeId)
+  const onboardingChat = useStore(useMemo(() => onboardingChatStore(sessionId), [sessionId]))
+  // The first-run chat rests reasoning collapsed: its cards and short replies carry the run.
+  const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault) || onboardingChat
   // `null` = no explicit user toggle yet. Live reasoning remains visible by
   // default, unless the user opts into the low-jitter collapsed presentation.
   const [userOpen, setUserOpen] = useState<boolean | null>(null)
@@ -226,7 +245,8 @@ const ThinkingDisclosure: FC<{
   // a still-running turn) never latch, so they stay collapsed.
   const [sawLivePreview, setSawLivePreview] = useState(false)
 
-  if (pending && !sawLivePreview) {
+  // Not while collapsed: a block that never showed a preview must not open when the preference lifts.
+  if (pending && !sawLivePreview && !reasoningCollapsedByDefault) {
     setSawLivePreview(true)
   }
 
@@ -353,10 +373,6 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
   const showReasoning = useStore($showReasoning)
   const messageId = useAuiState(s => s.message.id)
   const messageRunning = useAuiState(s => s.message.status?.type === 'running')
-  // The guide's reasoning is it reading its own runbook ("Now step 4: offer
-  // the layout picker"), and a first-time user reading that alongside the
-  // greeting breaks the one conversation the guide is trying to have.
-  const guidedChat = useOnboardingChatActive()
 
   const pending = useAuiState(
     s =>
@@ -395,7 +411,7 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
     }, undefined)
   )
 
-  if (!hasContent || guidedChat || !showReasoning) {
+  if (!hasContent || !showReasoning) {
     return null
   }
 

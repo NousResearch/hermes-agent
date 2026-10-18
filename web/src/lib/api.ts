@@ -3,6 +3,9 @@ import {
   type ModelOptionProvider,
   type ModelOptionsResult,
 } from "@hermes/shared";
+import { createDashboardSessionMutations } from "./session-mutations";
+
+const mutateSessionHttp = createDashboardSessionMutations(fetchJSON);
 
 import type { AuxiliaryModelsResponse } from "./api-aux";
 import type {
@@ -140,6 +143,7 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/dashboard/theme",
   "/api/dashboard/font",
   "/api/dashboard/plugins",
+  "/api/plugins/", // a plugin's backend: the selected profile's copy, as its bundle is (PLG-3)
   // The shared-metrics answer is one per profile (telemetry.shared_metrics in its config.yaml).
   "/api/shared-metrics",
 ];
@@ -351,12 +355,9 @@ export async function buildWsUrl(
   path: string,
   params?: Record<string, string>,
 ): Promise<string> {
-  return buildHermesWebSocketUrl({
-    authParam: await buildWsAuthParam(),
-    basePath: BASE,
-    params,
-    path,
-  });
+  const profile = getManagementProfile(); // a plugin socket names it as its REST calls do (PLG-3)
+  if (profile && path.startsWith("/api/plugins/") && !params?.profile) params = { ...params, profile };
+  return buildHermesWebSocketUrl({ authParam: await buildWsAuthParam(), basePath: BASE, params, path });
 }
 
 /** Build a ``?profile=<name>`` query suffix, or "" when unset.
@@ -488,12 +489,7 @@ export const api = {
       ),
     ),
   deleteSession: (id: string, profile = getManagementProfile()) =>
-    fetchJSON<{ ok: boolean }>(
-      appendProfileParam(`/api/sessions/${encodeURIComponent(id)}`, profile),
-      {
-        method: "DELETE",
-      },
-    ),
+    mutateSessionHttp<{ ok: boolean }>(id, "DELETE", {}, profile),
   getEmptySessionsCount: (profile = getManagementProfile()) =>
     fetchJSON<{ count: number }>(
       appendProfileParam("/api/sessions/empty/count", profile),
@@ -512,14 +508,7 @@ export const api = {
       body: JSON.stringify({ ids, profile: profile || undefined }),
     }),
   renameSession: (id: string, title: string, profile = getManagementProfile()) =>
-    fetchJSON<{ ok: boolean; title: string }>(
-      `/api/sessions/${encodeURIComponent(id)}`,
-      {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title, profile: profile || undefined }),
-      },
-    ),
+    mutateSessionHttp<{ ok: boolean; title: string }>(id, "PATCH", { title }, profile),
   getSessionStats: (profile = getManagementProfile()) =>
     fetchJSON<SessionStoreStats>(appendProfileParam("/api/sessions/stats", profile)),
   exportSessionUrl: (id: string, profile = getManagementProfile()) =>
@@ -527,12 +516,11 @@ export const api = {
   importSessions: (
     sessions: Array<Record<string, unknown>>,
     profile = getManagementProfile(),
-  ) =>
-    fetchJSON<SessionImportResponse>("/api/sessions/import", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessions, profile: profile || undefined }),
-    }),
+  ) => {
+    const id = sessions[0]?.id;
+    if (typeof id !== "string" || !id) return Promise.reject(new Error("session id is required"));
+    return mutateSessionHttp<SessionImportResponse>(id, "POST", { sessions }, profile);
+  },
   pruneSessions: (
     older_than_days: number,
     source?: string,
@@ -1068,8 +1056,8 @@ export const api = {
     ),
 
   // Dashboard plugins
-  getPlugins: () =>
-    fetchJSON<PluginManifestResponse[]>("/api/dashboard/plugins"),
+  getPlugins: (profile = getManagementProfile()) => // the profile the caller's asset URLs will name
+    fetchJSON<PluginManifestResponse[]>(`/api/dashboard/plugins${profile ? `?profile=${encodeURIComponent(profile)}` : ""}`),
   rescanPlugins: () =>
     fetchJSON<{ ok: boolean; count: number }>("/api/dashboard/plugins/rescan"),
 
@@ -1906,10 +1894,10 @@ export interface HookCreate {
 export interface UpdateCheckResponse {
   install_method: string;
   current_version: string;
-  // commits behind: >=1 known count, 0 up to date, -1 behind by unknown
-  // count (nix/pypi), or null when the check could not run.
+  // commits behind: >=1 known, 0 up to date, -1 unknown count (nix/pypi), null = check could not run.
   behind: number | null;
   update_available: boolean;
+  rollback_to?: string | null; // a stable release this build already contains: applying it moves back
   can_apply: boolean;
   update_command: string;
   message: string | null;
@@ -2780,7 +2768,7 @@ export interface CatalogEntry {
   repo: string;
   sha: string;
   sha_short: string;
-  tier: "official" | "community";
+  tier: "official" | "verified" | "community";
   maintainer: string;
   requires_hermes: string;
   platforms: string[];

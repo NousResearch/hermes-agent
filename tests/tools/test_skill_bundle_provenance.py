@@ -584,3 +584,31 @@ def test_unified_search_trust_rank_survives_limit_cut():
         results = unified_search("s", [], source_filter="all", limit=10)
 
     assert results[0].identifier == "official/cat/s-official"
+
+
+def test_bundle_content_hash_stays_symmetric_with_disk_hash_including_caches(tmp_path):
+    """#130331: content_hash(dir) must equal bundle_content_hash(the same file set),
+    and a __pycache__ entry on either side — disk or fetched bundle — must not
+    desync the pair (a cache entry used to hash as a local edit on disk only)."""
+    from tools.skills_guard import content_hash
+    from tools.skills_hub_install import bundle_content_hash
+
+    skill = tmp_path / "skill"
+    (skill / "scripts").mkdir(parents=True)
+    (skill / "SKILL.md").write_text("# skill\n", encoding="utf-8")
+    (skill / "scripts" / "tool.py").write_text("print('hi')\n", encoding="utf-8")
+    pycache = skill / "scripts" / "__pycache__"
+    pycache.mkdir()
+    (pycache / "tool.cpython-314.pyc").write_bytes(b"\x00bytecode")
+
+    h_disk = content_hash(skill)
+
+    files = {"SKILL.md": "# skill\n", "scripts/tool.py": "print('hi')\n"}
+    bundle = SkillBundle(name="demo", files=dict(files), source="github",
+                         identifier="someone/demo", trust_level="community")
+    assert bundle_content_hash(bundle) == h_disk
+
+    bundle_with_cache = SkillBundle(
+        name="demo", files={**files, "scripts/__pycache__/tool.cpython-314.pyc": b"\x00bytecode"},
+        source="github", identifier="someone/demo", trust_level="community")
+    assert bundle_content_hash(bundle_with_cache) == h_disk

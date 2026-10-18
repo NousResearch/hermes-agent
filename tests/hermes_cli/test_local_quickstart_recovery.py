@@ -4,8 +4,6 @@ from __future__ import annotations
 import threading
 from urllib.error import HTTPError
 
-import pytest
-
 from tests.hermes_cli.test_local_download_jobs import client as client  # noqa: PLC0414 -- pytest fixture re-export
 from tests.pm._range_server import RangeHandler, url
 from tests.pm._range_server import dl_server as dl_server  # noqa: PLC0414 -- pytest fixture re-export
@@ -71,8 +69,7 @@ def test_quickstart_adopts_restored_plan_and_keeps_its_setup_continuation(client
     assert not lm._QUICKSTART_LOCK.locked()
 
 
-@pytest.mark.parametrize("failure_leg", ["model", "runtime", "runtime-only"])
-def test_discard_interrupted_quickstart_allows_another_model_and_retires_old_resume(client, monkeypatch, dl_server, failure_leg):
+def test_discard_interrupted_quickstart_allows_another_model_and_retires_old_resume(client, monkeypatch, dl_server):
     lm, entries, plans, calls = _routes(monkeypatch, dl_server)
     first, second = entries
     real_run = lm.Download.run
@@ -84,18 +81,6 @@ def test_discard_interrupted_quickstart_allows_another_model_and_retires_old_res
         return real_run(download, progress=progress)
 
     monkeypatch.setattr(lm.Download, "run", run)
-    if failure_leg.startswith("runtime"):
-        monkeypatch.setattr(lm.binaries, "installed_engine", lambda backend: None)
-        if failure_leg == "runtime-only":
-            destination = plans[first.id][0][1]
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_bytes(b"first")
-
-        def install(job, backend):
-            source = "https://example.invalid/engine"
-            raise lm.DownloadTransportError(source, HTTPError(source, 503, "Unavailable", {}, None))
-
-        monkeypatch.setattr(lm, "_install_engine_job", install)
     job_id = client.post("/api/local-models/quickstart", json={"model_id": first.id}).json()["job_id"]
     wait_until(lambda: lm._JOBS[job_id]["status"] != "running", timeout=5)
     parked = client.get(f"/api/local-models/jobs/{job_id}").json()

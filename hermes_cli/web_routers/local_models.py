@@ -215,7 +215,7 @@ def _record_rate(job: dict[str, Any], done: int) -> None:
 def _job_view(job: dict[str, Any]) -> dict[str, Any]:
     out = dict(job)
     out.pop("plan_saved", None)
-    out.pop("partial_url", None)
+    out.pop("partial_urls", None)
     running = _RUNNING.get(job["job_id"], {})
     pause = running.get("pause")
     out["pause_requested"] = bool(pause is not None and pause.is_set() and out["status"] == "running")
@@ -261,23 +261,27 @@ def _spawn_job(job: dict[str, Any], name: str, body: Callable[[], None], *, fail
 
     def _run():
         status = "done"
+        download = None
         try:
             body()
             if download_label is not None:
                 _finish(job, f"{download_label} ready")
                 _refresh_runtime("post-download runtime refresh skipped")
-        except DownloadPaused:
+        except DownloadPaused as exc:
             status = "paused"
+            download = exc
         except Exception as exc:
             if fail_msg:
                 logger.warning(fail_msg, exc)
-            recoverable = resumable and isinstance(exc, DownloadTransportError) and exc.recoverable
+            download = DownloadTransportError.find(exc)
+            recoverable = resumable and download is not None and download.recoverable
             status = "paused" if recoverable else "error"
             job["error"] = str(exc)
             if recoverable:
-                job["partial_url"] = exc.url
                 job.update(phase="interrupted", detail=_interrupted_detail(job.get("done_bytes", 0)))
         finally:
+            if status == "paused" and download is not None:
+                job["partial_urls"] = tuple(dict.fromkeys((*job.get("partial_urls", ()), *download.urls)))
             try:
                 if status != "paused" and on_exit is not None:
                     on_exit()
@@ -323,11 +327,12 @@ def _spawn_job(job: dict[str, Any], name: str, body: Callable[[], None], *, fail
                 return False
             if remove_plan and key and not download_plans.discard_plan(key):
                 return False
-            if remove_plan and not key and job.get("partial_url"):
+            if remove_plan and job.get("partial_urls"):
                 from pm.download_state import discard_partial
                 from pm.paths import partials_root
 
-                discard_partial(partials_root(), job["partial_url"])
+                for url in job["partial_urls"]:
+                    discard_partial(partials_root(), url)
             if on_exit is not None:
                 on_exit()
             with _JOBS_LOCK:

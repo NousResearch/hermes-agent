@@ -125,12 +125,14 @@ class HashError(DownloadError):
 class DownloadPaused(DownloadError):
     """pause() was called mid-download; partials were left intact."""
 
+    urls: tuple[str, ...] = ()
+
 
 class DownloadTransportError(DownloadError):
     """An exhausted network request, with its original status and URL."""
 
     def __init__(self, url: str, cause: Exception):
-        self.url = url
+        self.urls = (url,)
         self.status = cause.code if isinstance(cause, urllib.error.HTTPError) else None
         # A host that does not resolve is not worth a retry, but the pinned
         # mirror is a different host and the hash still guards the bytes.
@@ -144,6 +146,33 @@ class DownloadTransportError(DownloadError):
         refused = edge_block(cause) or ("the host refused access" if self.status in (401, 403) else None)
         reason = f"{cause}; {refused}" if refused else str(cause)
         super().__init__(f"download failed from {url}: {reason}")
+
+    @property
+    def url(self) -> str:
+        return self.urls[-1]
+
+    @classmethod
+    def find(cls, error: BaseException | None):
+        """Find the transport cause without changing an installer's error contract."""
+        while error is not None:
+            if isinstance(error, cls):
+                return error
+            error = error.__cause__
+        return None
+
+    def as_record(self) -> dict:
+        return {"urls": self.urls, "status": self.status, "recoverable": self.recoverable,
+                "fallback_allowed": self.fallback_allowed, "message": str(self)}
+
+    @classmethod
+    def from_record(cls, record: dict):
+        error = cls.__new__(cls)
+        error.urls = tuple(record["urls"])
+        error.status = record["status"]
+        error.recoverable = record["recoverable"]
+        error.fallback_allowed = record["fallback_allowed"]
+        DownloadError.__init__(error, record["message"])
+        return error
 
 
 @dataclass(frozen=True)
@@ -355,16 +384,21 @@ class Download:
     def _try_sources(self, source: Source, operation, failures: list[DownloadTransportError]):
         urls = tuple(dict.fromkeys((source.url, *source.fallbacks)))
         for index, url in enumerate(urls):
-            self._check_pause()
             candidate = Source(url, source.dest, source.sha256, urls[index + 1:])
             try:
+                self._check_pause()
                 return candidate, operation(candidate)
+            except DownloadPaused as exc:
+                exc.urls = tuple(dict.fromkeys([item for error in failures for item in error.urls] + [url]))
+                raise
             except DownloadTransportError as exc:
                 failures.append(exc)
                 if not exc.fallback_allowed or index == len(urls) - 1:
-                    if len(failures) == 1:
-                        raise
-                    raise DownloadError("\n".join(str(error) for error in failures)) from exc
+                    message = "\n".join(str(error) for error in failures)
+                    exc.urls = tuple(dict.fromkeys(url for error in failures for url in error.urls))
+                    exc.recoverable = any(error.recoverable for error in failures)
+                    exc.args = (message,)
+                    raise
                 logging.getLogger(__name__).debug("%s; trying pinned mirror %s", exc, urls[index + 1])
 
     def _transfer(self, source: Source, tick) -> int:

@@ -78,14 +78,22 @@ _WORKER_ERRORS = {"ValueError": ValueError, "TypeError": TypeError, "KeyError": 
 
 def _raise_worker_error(error: dict):
     """Re-raise a worker failure as the caller-side exception it names."""
+    download = None
+    if "download" in error:
+        from pm.downloader import DownloadTransportError
+        download = DownloadTransportError.from_record(error["download"])
     if "package" in error:
         from pm.workspace import ResolutionConflict
         kind = ResolutionConflict if error["type"] == "ResolutionConflict" else InstallError
-        raise kind(error["package"], error["cause"], error["remedy"])
+        raise kind(error["package"], error["cause"], error["remedy"]) from download
+    if error["type"] == "DownloadTransportError" and download is not None:
+        raise download
     if error["type"] == "DownloadPaused":
         from pm.downloader import DownloadPaused
-        raise DownloadPaused(error["message"])
-    raise _WORKER_ERRORS.get(error["type"], RuntimeError)(error["message"])
+        paused = DownloadPaused(error["message"])
+        paused.urls = tuple(error.get("urls", ()))
+        raise paused
+    raise _WORKER_ERRORS.get(error["type"], RuntimeError)(error["message"]) from download
 
 
 def _request(operation, arguments, *, callbacks=None, pause_event=None, project_root=None):

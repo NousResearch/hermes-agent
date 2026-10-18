@@ -156,6 +156,9 @@ beside **Resume**, including setup interrupted during engine installation.
 Discard removes the pending plan and job and deletes partial files it can lock.
 Completed files and partials used by another transfer or saved plan remain
 untouched.
+Temporary engine-download failures also retain Resume and Discard. The PM
+worker preserves the download cause inside the package-install error, including
+all attempted source URLs, so recovery and cleanup use the same information.
 Plans are restored at backend startup and reconciled once a minute. Job status
 reads do not scan or change files. Desktop recovery messages use the selected
 language.

@@ -3,7 +3,7 @@ import hashlib
 
 import pytest
 
-from pm.downloader import Download, DownloadError, HashError, Source
+from pm.downloader import Download, DownloadError, DownloadTransportError, HashError, Source
 from tests.pm._range_server import RangeHandler, dl_server, url
 
 
@@ -50,7 +50,7 @@ def test_bad_hash_is_not_a_mirror_miss(tmp_path, dl_server):
     assert all(path != "/mirror" for path, *_ in RangeHandler.ranges_seen)
 
 
-@pytest.mark.parametrize("mirror_status", [401, 403, 404])
+@pytest.mark.parametrize("mirror_status", [401, 403, 404, 503])
 def test_exhausted_mirrors_name_each_attempted_url(tmp_path, dl_server, monkeypatch, mirror_status):
     original = RangeHandler.do_GET
 
@@ -62,11 +62,16 @@ def test_exhausted_mirrors_name_each_attempted_url(tmp_path, dl_server, monkeypa
 
     monkeypatch.setattr(RangeHandler, "do_GET", respond)
     primary, mirror = (url(dl_server, path) for path in ("/missing", "/also-missing"))
-    with pytest.raises(DownloadError) as failure:
-        Download([Source(primary, tmp_path / "absent", "0" * 64, fallbacks=(mirror,))],
-                 partials_dir=tmp_path / "partials").run()
+    download = Download([Source(primary, tmp_path / "absent", "0" * 64, fallbacks=(mirror,))],
+                        partials_dir=tmp_path / "partials")
+    monkeypatch.setattr(download, "_wait_retry", lambda _: None)
+    with pytest.raises(DownloadTransportError) as failure:
+        download.run()
     assert primary in str(failure.value) and mirror in str(failure.value)
     assert "404" in str(failure.value) and str(mirror_status) in str(failure.value)
+    assert failure.value.urls == (primary, mirror)
+    assert failure.value.url == mirror and failure.value.status == mirror_status
+    assert failure.value.recoverable is (mirror_status == 503)
     assert not (tmp_path / "absent").exists()
 
 

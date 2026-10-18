@@ -113,9 +113,16 @@ def main():
                 result = str(result)
             response = {"result": result}
         except BaseException as exc:
+            from pm.downloader import DownloadPaused, DownloadTransportError
+
             error = {"type": type(exc).__name__, "message": str(exc)}
             if isinstance(exc, InstallError):
                 error.update(package=exc.package, cause=exc.cause, remedy=exc.remedy)
+            if isinstance(exc, DownloadPaused):
+                error["urls"] = exc.urls
+            download = DownloadTransportError.find(exc)
+            if download is not None:
+                error["download"] = download.as_record()
             response = {"error": error}
         response["receipt"] = receipt.last_completed()
     send({"type": "result", **response})

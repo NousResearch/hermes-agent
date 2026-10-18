@@ -419,7 +419,16 @@ def test_native_unicode_launcher_runs_in_requested_home(monkeypatch, tmp_path, s
     script = tmp_path / ("launcher" + suffix)
     gateway_windows._atomic_write(script, build(sys.executable, str(home), str(home), ""), script.with_suffix(".tmp"))
     command = ["cscript.exe", "//B", "//Nologo", str(script)] if suffix == ".vbs" else ["cmd.exe", "/d", "/c", str(script)]
-    result = subprocess.run(command, capture_output=True, timeout=15, check=False)
+    spawn_options = {}
+    if suffix == ".cmd":
+        # CI may already use UTF-8. Exercise the user's legacy console code page in
+        # a separate console so neither the runner nor the caller's console changes.
+        wrapper = tmp_path / "legacy-codepage.cmd"
+        wrapper.write_text('@echo off\r\nchcp 437 >nul\r\ncall "%~dp0launcher.cmd"\r\n',
+                           encoding="ascii", newline="")
+        command[-1] = str(wrapper)
+        spawn_options["creationflags"] = subprocess.CREATE_NEW_CONSOLE
+    result = subprocess.run(command, capture_output=True, timeout=15, check=False, **spawn_options)
     assert result.returncode == 0, result.stderr
     assert wait_until(marker.exists, timeout=10)
     assert marker.read_text(encoding="utf-8") == str(home)

@@ -52,12 +52,14 @@ def _tool_msg(cid, content):
 
 
 def _build(n_pairs, big_indices, big_chars=9000, small="ok"):
-    """system + n_pairs of (assistant tool_call, tool result).
+    """system + opening user turn + n_pairs of (assistant tool_call, tool result).
 
     Tool results whose pair index is in ``big_indices`` get a distinct payload
-    of ``big_chars`` characters; the rest get a tiny payload.
+    of ``big_chars`` characters; the rest get a tiny payload. The opening user
+    turn keeps ``call_0``'s result outside the ``protect_first_n`` head, which
+    the prune shields (#123935).
     """
-    msgs = [{"role": "system", "content": "sys"}]
+    msgs = [{"role": "system", "content": "sys"}, {"role": "user", "content": "go"}]
     for i in range(n_pairs):
         cid = f"call_{i}"
         msgs.append(_assistant_call(cid))

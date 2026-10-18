@@ -76,7 +76,10 @@ def _seed_session(home, session_id, *, source, cwd=None, tokens=None, cost=None,
     db = SessionDB(db_path=home / "state.db")
     try:
         db.create_session(session_id, source=source, cwd=str(cwd) if cwd else None)
-        db.append_message(session_id=session_id, role="user", content="hi")
+        # Not a probe formula ("hi" now reads as one-shot debris and would be
+        # hidden by the shared session-listing filter before it ever reaches
+        # the tree builder).
+        db.append_message(session_id=session_id, role="user", content="plan the weekly review")
         if pinned:
             assert db.set_session_pinned(session_id, True)
     finally:

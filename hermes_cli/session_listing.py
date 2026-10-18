@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 import shlex
 from pathlib import Path
 from typing import Any
@@ -47,6 +49,133 @@ def subagent_listing_scope(
     if not show_subagent_sessions(hermes_home):
         return False, exclude_sources
     return True, [s for s in excluded if s != SUBAGENT_SOURCE] or None
+
+
+PING_PROBE_PREVIEW = "ping, reply with one word"
+# Stable provenance values for non-user work. These are preferred over prompt
+# heuristics; the latter remain only for legacy rows created before provenance
+# was recorded.
+AUTOMATED_SESSION_SOURCES = frozenset({
+    "automation", "automated", "jev", "probe", "scheduled",
+    "tool", "kanban", "cron",
+})
+
+
+def is_automated_session(session: dict[str, Any]) -> bool:
+    """Return whether a row is explicitly marked as automation/non-chat work."""
+    source = str(session.get("source") or "").strip().casefold()
+    if source in AUTOMATED_SESSION_SOURCES:
+        return True
+
+    for raw in (session.get("origin_json"), session.get("model_config")):
+        if not raw:
+            continue
+        try:
+            metadata = raw if isinstance(raw, dict) else json.loads(str(raw))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(metadata, dict):
+            continue
+        origin = (
+            metadata.get("_session_origin")
+            or metadata.get("session_origin")
+            or metadata.get("origin")
+            or metadata.get("kind")
+        )
+        if isinstance(origin, dict):
+            kind = origin.get("kind") or origin.get("type")
+        else:
+            kind = origin
+        if str(kind or "").strip().casefold() in {"automation", "automated", "scheduled", "probe", "jev", "tool"}:
+            return True
+        if metadata.get("_automation") is True or metadata.get("automation") is True:
+            return True
+    return False
+
+
+# Short, exact replies used by connectivity/startup probes. Keep this list
+# deliberately narrow so a real conversation mentioning "hello" survives.
+TRIVIAL_PROBE_TOKENS = frozenset({"hi", "hello", "hey", "ping", "pong", "ok"})
+TOOL_INVENTORY_MAX_MESSAGES = 5
+
+
+def is_tool_inventory_probe(text: str) -> bool:
+    """Return whether text is a short tool/capability inventory request."""
+    return bool(
+        re.search(r"\blist\b.*\btools?\b", text)
+        or re.search(r"\bmcp_[a-z0-9_-]+\b", text)
+        or "browser automation tools" in text
+    )
+
+
+def is_ping_probe_session(session: dict[str, Any]) -> bool:
+    """Return whether a session row is automated probe/debris, not a real chat.
+
+    Probe text can appear in either the title or preview because automatic
+    title generation sometimes copies a one-shot prompt verbatim. Titled
+    sessions with ordinary names are kept, even when their preview mentions
+    one of these phrases.
+    """
+    title = str(session.get("title") or "").strip().casefold()
+    preview = str(session.get("preview") or "").strip().casefold()
+
+    def looks_like_probe(text: str) -> bool:
+        if not text:
+            return False
+        if text == PING_PROBE_PREVIEW:
+            return True
+        if re.fullmatch(r"(?:ping,\s*)?reply\s+with\s+one\s+word(?:\s+only)?", text):
+            return True
+        if text in TRIVIAL_PROBE_TOKENS:
+            return True
+        if is_tool_inventory_probe(text):
+            return True
+        # Connectivity/model checks commonly ask for a fixed short token. Keep
+        # this anchored so a real conversation mentioning "reply with" survives.
+        if re.fullmatch(
+            r"(?:ping,\s*)?reply\s+with\s+(?:exactly|just)\s*:?\s*[a-z0-9_-]+(?:\s+only)?",
+            text,
+        ):
+            return True
+        return any(
+            marker in text
+            for marker in (
+                "say hello",
+                "hello, reply",
+                "what model are you",
+                "starting deepseek session",
+                "[note: model was just switched",
+                "回复一句话告诉我",
+                "请只回复",
+                "只回复四个字",
+                "reply exactly:",
+                "shall we talk in chinese or english",
+            )
+        )
+
+    if title and looks_like_probe(title):
+        # An exact greeting/token can be a legitimate chat title after a
+        # longer conversation; only treat the short form as probe debris.
+        count = session.get("message_count")
+        if title in TRIVIAL_PROBE_TOKENS:
+            return count is None or count <= 2
+        if is_tool_inventory_probe(title):
+            return count is None or count <= TOOL_INVENTORY_MAX_MESSAGES
+        return True
+    if not preview:
+        return not title
+    if looks_like_probe(preview):
+        if not title:
+            return True
+        # Auto-titling can paraphrase a probe prompt into a real-looking title
+        # ("Ping connectivity test"). A probe session is still just one
+        # exchange — keep titled sessions that continued past it.
+        count = session.get("message_count")
+        max_probe_messages = (
+            TOOL_INVENTORY_MAX_MESSAGES if is_tool_inventory_probe(preview) else 2
+        )
+        return count is None or count <= max_probe_messages
+    return False
 
 
 def parse_session_listing_args(raw_args: str) -> tuple[bool, bool, str, str | None]:
@@ -107,6 +236,16 @@ def query_session_listing(
     result: list[dict[str, Any]] = []
     for row in rows:
         is_current = bool(current_session_id and row.get("id") == current_session_id)
+        # Probe/automation debris stays hidden in browse modes; a search by id
+        # may be the only handle for such a row, so searches keep them.
+        if not search and is_automated_session(row):
+            continue
+        if not search and is_ping_probe_session(row):
+            continue
+        if (row.get("source") or "").strip().lower() == "cron" and not search:
+            # Scheduled watchdog/monitor runs flood the recent list; keep them
+            # reachable via search.
+            continue
         if (is_current and not include_current_session) or (
             not include_unnamed and not row.get("title") and not search and not is_current
         ):

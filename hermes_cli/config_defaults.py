@@ -38,6 +38,27 @@ DEFAULT_CONFIG = {
     # sooner than this many seconds, stay on it (the retry backoff rides out the window) instead
     # of switching the turn to a fallback model.
     "fallback": {"min_switch_reset_seconds": 0},
+
+    # Optional TypeSafe Jev task router. Disabled by default and advisory-only
+    # when enabled; it never changes the active model in shadow mode.
+    "jev_router": {
+        "enabled": False,
+        "model": "jev-latest",
+        "endpoint": "https://api.typesafe.ai/v1/systemone",
+        "timeout_seconds": 3.0,
+        "log_path": "",
+    },
+    # Optional local Laya task router. Disabled by default and advisory-only;
+    # it runs beside Jev for shadow comparison and never changes the model.
+    "laya_router": {
+        "enabled": False,
+        "device": "auto",
+        "default": "english",
+        "max_loaded": 2,
+        "preload": False,
+        "log_path": "",
+        "outcome_log_path": "",
+    },
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
     # journal_mode: SQLite journal mode for every Hermes DB. "wal" default; use "delete" on

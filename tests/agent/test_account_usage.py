@@ -83,6 +83,43 @@ def test_codex_usage_prefers_explicit_live_agent_credentials(monkeypatch, codex_
     assert calls[0]["headers"]["Authorization"] == "Bearer live-agent-token"
 
 
+def test_codex_usage_labels_weekly_only_primary_window(monkeypatch):
+    """ProLite-style plans: primary IS the weekly window (secondary null)."""
+    calls = []
+    payload = {
+        "plan_type": "prolite",
+        "rate_limit": {
+            "allowed": True,
+            "primary_window": {
+                "used_percent": 76,
+                "limit_window_seconds": 604800,
+                "reset_at": 1789820761,
+            },
+            "secondary_window": None,
+        },
+        "credits": {"has_credits": False},
+    }
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda timeout: _FakeClient(calls, payload),
+    )
+    monkeypatch.setattr(
+        account_usage,
+        "resolve_codex_runtime_credentials",
+        lambda **kwargs: {
+            "api_key": "pooled-token",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+        },
+    )
+
+    snapshot = account_usage.fetch_account_usage("openai-codex")
+
+    assert snapshot is not None
+    assert [w.label for w in snapshot.windows] == ["Weekly"]
+    assert snapshot.windows[0].used_percent == 76
+
+
 def test_codex_usage_falls_back_to_native_credential_pool(monkeypatch, codex_usage_payload):
     calls = []
     monkeypatch.setattr(

@@ -805,6 +805,160 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
                     print(f"  {_t('import.wrapper_created', path=wrapper_path)}")
         print(f"  {_t('import.use_it', name=imported)}")
 
+    def _leave_preflight(self) -> dict:
+        """Collect local, read-only state used by ``/leave`` and Ctrl+C.
+
+        This deliberately does not ask the model anything.  The safety check
+        is useful precisely when the current model turn has just been
+        interrupted, so it must remain deterministic and work offline.
+        """
+        try:
+            from tools.process_registry import process_registry
+            processes = process_registry.list_sessions()
+        except Exception:
+            processes = []
+        running_processes = [p for p in processes if p.get("status") == "running"]
+
+        try:
+            from tools.async_delegation import list_async_delegations
+            delegations = list_async_delegations()
+        except Exception:
+            delegations = []
+        running_delegations = [
+            d for d in delegations if d.get("status") in ("running", "stalling")
+        ]
+
+        pending_memory = pending_skills = []
+        try:
+            from tools.write_approval import list_pending
+            pending_memory = list_pending("memory")
+            pending_skills = list_pending("skills")
+        except Exception:
+            pass
+
+        return {
+            "agent_running": bool(getattr(self, "_agent_running", False)),
+            "processes": running_processes,
+            "delegations": running_delegations,
+            "pending_memory": pending_memory,
+            "pending_skills": pending_skills,
+            "interrupted_turn": self._get_interrupted_turn_marker(),
+        }
+
+    def _get_interrupted_turn_marker(self):
+        """Read the durable marker for the last interrupted CLI turn."""
+        db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "session_id", None)
+        if db is None or not session_id:
+            return None
+        try:
+            marker = db.get_session_model_config_value(
+                session_id, "_cli_interrupted_turn"
+            )
+            return marker if isinstance(marker, dict) else None
+        except Exception:
+            return None
+
+    def _persist_interrupted_turn_marker(self, prompt: str) -> None:
+        """Persist enough context to warn after a restart or resume."""
+        db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "session_id", None)
+        if db is None or not session_id:
+            return
+        try:
+            db.patch_session_model_config(
+                session_id,
+                {
+                    "_cli_interrupted_turn": {
+                        "timestamp": time.time(),
+                        "prompt": str(prompt or "")[:500],
+                    }
+                },
+            )
+        except Exception:
+            pass
+
+    def _clear_interrupted_turn_marker(self) -> None:
+        """Clear the marker after a subsequent turn completes normally."""
+        db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "session_id", None)
+        if db is None or not session_id:
+            return
+        try:
+            db.patch_session_model_config(session_id, {"_cli_interrupted_turn": None})
+        except Exception:
+            pass
+
+    def _print_leave_preflight(self, state: dict, *, interrupted: bool = False) -> None:
+        """Print a concise, actionable safe-leave status report."""
+        from cli import _cprint
+
+        if interrupted:
+            _cprint("\n  ⚡ Current turn interrupted. Checking safe-leave status…")
+        findings = []
+        if state["agent_running"]:
+            findings.append("current agent turn is still cleaning up")
+        if state["processes"]:
+            findings.append(f"{len(state['processes'])} background process(es) running")
+        if state["delegations"]:
+            findings.append(f"{len(state['delegations'])} background delegation(s) running")
+        if state["pending_memory"]:
+            findings.append(f"{len(state['pending_memory'])} pending memory write(s)")
+        if state["pending_skills"]:
+            findings.append(f"{len(state['pending_skills'])} pending skill write(s)")
+        if state.get("interrupted_turn"):
+            findings.append("the previous CLI turn was interrupted")
+
+        if not findings:
+            _cprint("  ✓ No running or pending work detected. Use /leave to exit safely.")
+            return
+
+        _cprint("  ⚠ Unfinished work detected:")
+        for finding in findings:
+            _cprint(f"    • {finding}")
+        _cprint("  Use /leave to recheck, or /leave --stop to stop background work.")
+
+    def _handle_leave_command(self, command: str) -> bool:
+        """Safely leave only when no observable work remains.
+
+        Returns the normal CLI dispatch convention: ``False`` requests exit,
+        while ``True`` keeps the REPL alive so the user can review or stop the
+        reported work. Pending memory/skill writes are already durable on disk;
+        they are reported rather than silently approved or discarded.
+        """
+        parts = command.split()
+        unknown = [part for part in parts[1:] if part != "--stop"]
+        if unknown:
+            from cli import _cprint
+            _cprint("  Usage: /leave [--stop]")
+            return True
+
+        state = self._leave_preflight()
+        if "--stop" in parts and (state["processes"] or state["delegations"]):
+            self._handle_stop_command()
+            state = self._leave_preflight()
+
+        hard_blockers = (state["agent_running"], state["processes"], state["delegations"])
+        soft_warnings = (
+            state["pending_memory"], state["pending_skills"], state.get("interrupted_turn")
+        )
+        if any(hard_blockers):
+            self._print_leave_preflight(state)
+            return True
+
+        if any(soft_warnings):
+            self._print_leave_preflight(state)
+            from cli import _cprint
+            _cprint(
+                "  These records are durable and will remain available after exit. "
+                "Review them in the next session if needed."
+            )
+            return False
+
+        from cli import _cprint
+        _cprint("  ✓ Safe to leave. Exiting Hermes…")
+        return False
+
     # ---- /handoff -------------------------------------------------------------------------
 
     _HANDOFF_PENDING_TIMEOUT = 60.0
@@ -971,12 +1125,12 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             _cp(f"  {_t('resume.usage')}")
             if self._show_recent_sessions(reason="resume"):
                 # Arm a one-shot bare-number selection; must be the same list the table showed
-                # and the numbered branch resolves (all use _list_recent_sessions(limit=10)).
+                # and the numbered branch resolves (all use _list_recent_sessions(limit=30)).
                 # Arm a one-shot pending-resume selection so the user can type just the number (`3`) on the
                 # next line instead of having to retype `/resume 3`. The list here must match the one shown
                 # by _show_recent_sessions and used for index resolution below — all three go through
-                # _list_recent_sessions(limit=10). See #34584.
-                self._pending_resume_sessions = self._list_recent_sessions(limit=10)
+                # _list_recent_sessions(limit=30). See #34584.
+                self._pending_resume_sessions = self._list_recent_sessions(limit=30)
                 return
             return _cp(f"  {_t('resume.tip_find_sessions')}")
         # Any explicit /resume <target> supersedes a previously-armed bare numbered prompt.
@@ -1035,7 +1189,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         it could not be resolved. An empty compression-chain head redirects to the descendant
         that actually holds the transcript."""
         if target.isdigit():
-            sessions = self._list_recent_sessions(limit=10)
+            sessions = self._list_recent_sessions(limit=30)
             index = int(target)
             if index < 1 or index > len(sessions):
                 return _cp(*_lines(_gt("resume.out_of_range", index=index)))

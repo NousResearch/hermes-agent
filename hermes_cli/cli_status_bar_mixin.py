@@ -8,6 +8,7 @@ inside each method (``from cli import ...``) — never at module load time (impo
 from __future__ import annotations
 
 import errno
+import os
 import shutil
 import threading
 import time
@@ -20,6 +21,14 @@ from typing import Any, Dict, Optional
 _SB = "class:status-bar"
 _DIM = "class:status-bar-dim"
 _STRONG = "class:status-bar-strong"
+# Quota-segment severities reported by hermes_cli.glm_status / gpt_status (local patch).
+_QUOTA_KINDS = {
+    "dim": "class:status-bar-dim",
+    "strong": "class:status-bar-strong",
+    "good": "class:status-bar-good",
+    "warn": "class:status-bar-warn",
+    "crit": "class:status-bar-critical",
+}
 _AGENT_COUNTERS = (
     "session_input_tokens", "session_output_tokens", "session_cache_read_tokens",
     "session_cache_write_tokens", "session_prompt_tokens", "session_completion_tokens",
@@ -1125,6 +1134,70 @@ class CLIStatusBarMixin:
         except Exception:
             return f"☤ {self.model if getattr(self, 'model', None) else 'Hermes'}"
 
+    def _glm_status_fragments(self) -> list:
+        """GLM Coding Plan quota segments for the status bar (local patch).
+
+        Sourced from the hermes_cli.glm_status poller; returns [] when the
+        active model is not a GLM model, the poller has no data yet, no API
+        key exists, or HERMES_GLM_STATUS_BAR=0.
+        """
+        if os.environ.get("HERMES_GLM_STATUS_BAR", "1") != "1":
+            return []
+        # Only show while the active model is a GLM model (local patch).
+        agent = getattr(self, "agent", None)
+        model_name = (getattr(agent, "model", None) or self.model or "")
+        if "glm" not in str(model_name).lower():
+            return []
+        try:
+            from hermes_cli.glm_status import build_segment, get_poller
+
+            poller = get_poller()
+            poller.start(refresh=self._invalidate)
+            width = self._get_tui_terminal_width()
+            data = poller.snapshot()
+            if not data:
+                # Network/fetch failure with a GLM model active: show a dim
+                # placeholder so "no data" is distinguishable from "gated
+                # off" (non-GLM model) and "key missing" (poller never errs).
+                if poller.error() and width >= 52:
+                    sep = " │ " if width >= 76 else " · "
+                    return [(_DIM, sep), (_DIM, "GLM --")]
+                return []
+            return [(_QUOTA_KINDS[k], t) for k, t in build_segment(data, width, model_name)]
+        except Exception:
+            return []
+
+    def _gpt_status_fragments(self) -> list:
+        """OpenAI Codex/GPT subscription quota for the active model only."""
+        try:
+            from hermes_cli.gpt_status import build_segment, get_poller, is_gpt_route
+
+            provider = str(getattr(self, "provider", "") or "")
+            model = str(getattr(self, "model", "") or "")
+            if not is_gpt_route(provider, model):
+                get_poller().clear()
+                return []
+            agent = getattr(self, "agent", None)
+            poller = get_poller()
+            poller.start(
+                provider=provider,
+                model=model,
+                base_url=str(getattr(self, "base_url", "") or ""),
+                api_key=str(
+                    getattr(agent, "api_key", None)
+                    or getattr(self, "api_key", None)
+                    or ""
+                ),
+                refresh=self._invalidate,
+            )
+            data = poller.snapshot()
+            if not data:
+                return []
+            width = self._get_tui_terminal_width()
+            return [(_QUOTA_KINDS[k], text) for k, text in build_segment(data, width)]
+        except Exception:
+            return []
+
     def _get_status_bar_fragments(self):
         if (
             not self._status_bar_visible
@@ -1158,6 +1231,11 @@ class CLIStatusBarMixin:
                 stash_indicator = ""
             if stash_indicator and _ok("stash"):
                 frags.extend([(_DIM, " · "), (_STRONG, stash_indicator)])
+            # GLM / GPT quota segments (local patch) — appended before the trailing pad so the
+            # width trim below treats them as drop-first.
+            for _quota in (self._glm_status_fragments(), self._gpt_status_fragments()):
+                if _quota:
+                    frags.extend(_quota + [(_SB, " ")])
             frags.append((_SB, " "))  # one-cell right margin
             # Battery is the first element when enabled: prepend ahead of the ☤ marker.
             battery_label = snapshot.get("battery_label") or ""

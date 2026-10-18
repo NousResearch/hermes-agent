@@ -330,11 +330,33 @@ class AIAgent(
                 # @session:<profile>/<id> deep links) treat NULL as unowned — rows minted NULL after the
                 # one-shot backfill vanished from the sidebar (#99222).
                 profile_for_session = None
+            # Creation-time model_config: the row's init config plus a live /yolo toggle, plus two things
+            # only this path can record —
+            # (1) explicit automation provenance from the environment (JEV, a scheduled wrapper, CI): the
+            #     primary signal the session listers use to hide probe/automation debris; prompt/title
+            #     heuristics are only for legacy rows created before this metadata existed;
+            # (2) the effective primary route, so a resume rebuilds the same provider/cache namespace
+            #     instead of falling back to the current global model config (credentials are excluded and
+            #     re-resolved on resume).
+            _init_model_config = dict(self._session_row_model_config() or {})
+            try:
+                from gateway.session_context import get_session_env
+                _session_origin = get_session_env("HERMES_SESSION_ORIGIN", "")
+            except Exception:
+                _session_origin = os.environ.get("HERMES_SESSION_ORIGIN", "")
+            _session_origin = str(_session_origin or "").strip()
+            if _session_origin:
+                _init_model_config["_session_origin"] = _session_origin
+                _init_model_config["_automation"] = True
+            for _route_key in ("provider", "base_url", "api_mode"):
+                _route_value = getattr(self, _route_key, None)
+                if _route_value:
+                    _init_model_config[_route_key] = _route_value
             # Carry the gateway routing identity: when the gateway SessionStore degraded to JSONL (corrupt
             # state.db) this lazy create is the ONLY durable write, and an identity-less row is unrecoverable.
             self._session_db.create_session(
                 session_id=self.session_id, source=source, model=self.model,
-                model_config=self._session_row_model_config(), system_prompt=self._cached_system_prompt,
+                model_config=_init_model_config, system_prompt=self._cached_system_prompt,
                 user_id=getattr(self, "_user_id", None), session_key=getattr(self, "_gateway_session_key", None),
                 chat_id=getattr(self, "_chat_id", None), chat_type=getattr(self, "_chat_type", None),
                 thread_id=getattr(self, "_thread_id", None),

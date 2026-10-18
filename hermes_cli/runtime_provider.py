@@ -13,6 +13,7 @@ import re
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -793,6 +794,104 @@ _EXPLICIT_RESOLVERS: dict[str, Callable[..., dict[str, Any]]] = {
 }
 
 
+# Same-company endpoint variants a provider may legitimately be switched
+# between (e.g. z.ai's Coding Plan keys auto-detect to open.bigmodel.cn).
+# Only hosts reachable from the provider's own credential/routing domain
+# belong here; anything else is a cross-provider mismatch to be rejected
+# by _explicit_base_url_allowed() below.
+_PROVIDER_HOST_FAMILIES: Dict[str, frozenset] = {
+    "zai": frozenset({"api.z.ai", "open.bigmodel.cn"}),
+    "kimi-coding": frozenset({"api.moonshot.ai", "api.moonshot.cn"}),
+    "kimi-coding-cn": frozenset({"api.moonshot.cn", "api.moonshot.ai"}),
+    "alibaba": frozenset({"dashscope-intl.aliyuncs.com", "dashscope.aliyuncs.com"}),
+    "alibaba-coding-plan": frozenset({
+        "coding-intl.dashscope.aliyuncs.com", "coding.dashscope.aliyuncs.com",
+    }),
+    "minimax": frozenset({"api.minimax.io"}),
+    "minimax-cn": frozenset({"api.minimaxi.com"}),
+}
+
+
+def _explicit_base_url_allowed(provider: str, explicit_base_url: str) -> tuple:
+    """Guard against a stale explicit base_url leaking across providers.
+
+    Mid-session /model switches and one-turn overrides carry an explicit
+    base_url forward through CLI state (``_explicit_base_url``) and the
+    auxiliary-client main-runtime context. When the *provider* changes but
+    the stale URL survives, the new provider's model ids get POSTed to the
+    previous provider's host and fail with confusing upstream errors
+    (observed: provider=deepseek + base_url=open.bigmodel.cn → HTTP 400
+    ``modelCode：不存在``, and the fallback chain then mis-detects both
+    entries as "the same backend" and skips the working fallback).
+
+    Rejection is deliberately NARROW: the URL is dropped only when its host
+    provably belongs to a DIFFERENT first-class provider's endpoint family
+    (registry ``inference_base_url`` or ``_PROVIDER_HOST_FAMILIES``). Hosts
+    that belong to no known provider — custom proxies, gateways, mirrors,
+    mocks (``proxy.example.com``), LAN boxes — stay allowed, because
+    pointing a registered provider at a private endpoint is a supported
+    setup (ai-gateway, GEMINI_BASE_URL, …). A host shared by BOTH the
+    requested provider and another provider (openrouter.ai-style
+    aggregators) is also allowed.
+
+    Returns ``(allowed: bool, reason: str)``. Fail-open everywhere else.
+    """
+    url = (explicit_base_url or "").strip()
+    if not url:
+        return True, ""
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return True, ""
+    if not host:
+        return True, ""
+    # Self-hosted / LAN endpoints are provider-agnostic — always allow.
+    if (
+        host in ("localhost",)
+        or host.startswith("127.")
+        or host.startswith("10.")
+        or host.startswith("192.168.")
+        or host.endswith(".local")
+        or host.endswith(".lan")
+        or host.endswith(".internal")
+        or host.endswith(".example.com")
+        or host.endswith(".example")
+        or host.endswith(".test")
+        or host.endswith(".invalid")
+        or host.endswith(".localhost")
+    ):
+        return True, ""
+
+    # Which known providers claim this host, and does the requested provider?
+    claiming: set = set()
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+
+        for pid, pconfig in PROVIDER_REGISTRY.items():
+            pchost = ""
+            if pconfig.inference_base_url:
+                try:
+                    pchost = (urlsplit(pconfig.inference_base_url).hostname or "").lower()
+                except ValueError:
+                    pchost = ""
+            family_hosts = _PROVIDER_HOST_FAMILIES.get(pid, ())
+            if host == pchost or host in family_hosts:
+                claiming.add(pid)
+    except Exception:
+        return True, ""
+    if not claiming:
+        return True, ""  # unknown host: custom proxy/mirror/mock — allowed
+    if provider in claiming:
+        return True, ""  # host belongs to the requested provider (maybe shared)
+    foreign = sorted(claiming)
+    return (
+        False,
+        f"explicit base_url host '{host}' belongs to provider(s) {foreign}, "
+        f"not to provider '{provider}'; dropping the stale URL so the "
+        f"provider's own endpoint is used",
+    )
+
+
 def _resolve_explicit_runtime(*, provider: str, requested_provider: str, model_cfg: dict[str, Any],
                               explicit_api_key: Optional[str] = None, explicit_base_url: Optional[str] = None,
                               target_model: Optional[str] = None) -> Optional[dict[str, Any]]:
@@ -800,6 +899,18 @@ def _resolve_explicit_runtime(*, provider: str, requested_provider: str, model_c
     explicit_base_url = str(explicit_base_url or "").strip().rstrip("/")
     if not explicit_api_key and not explicit_base_url:
         return None
+    # Cross-provider stale-URL guard (see _explicit_base_url_allowed). The
+    # explicit api_key may still be correct for *this* provider (it was
+    # resolved by model_switch for the new provider); only a base_url that
+    # provably belongs to a DIFFERENT provider's endpoint family is dropped.
+    _url_allowed, _url_reason = _explicit_base_url_allowed(provider, explicit_base_url)
+    if not _url_allowed:
+        logger.warning(
+            "resolve_runtime_provider: %s — provider=%s url=%s",
+            _url_reason, provider, explicit_base_url,
+        )
+        explicit_base_url = ""
+
     resolver = _EXPLICIT_RESOLVERS.get(provider)
     if resolver is not None:
         return resolver(requested_provider, model_cfg, explicit_api_key, explicit_base_url, target_model)

@@ -188,8 +188,16 @@ class DirectAlias(NamedTuple):
     key_env: str = ""
 
 
-# Built-in direct aliases (extended via config.yaml model_aliases:)
-_BUILTIN_DIRECT_ALIASES: dict[str, DirectAlias] = {}
+# Built-in direct aliases (can be extended/overridden via config.yaml model_aliases:)
+#
+# Keep these as exact provider+model mappings for high-traffic shorthand that
+# should not drift when the live catalog's "latest" model changes.  Generic
+# family aliases still live in MODEL_ALIASES above this direct-alias layer.
+_BUILTIN_DIRECT_ALIASES: dict[str, DirectAlias] = {
+    "deepseek": DirectAlias("deepseek-flash", "deepseek", ""),
+    "glm": DirectAlias("glm-5.2", "zai", ""),
+    "kimi": DirectAlias("kimi-k3", "kimi-coding-cn", ""),
+}
 
 
 def _clean(value: Any) -> str:
@@ -764,6 +772,11 @@ def resolve_alias(raw_input: str, current_provider: str, user_providers: Optiona
     reverse_fallback: Optional[tuple[str, str, str]] = None
     current_id = _provider_identity(current_provider, user_providers, custom_providers)
     for alias_name, da in DIRECT_ALIASES.items():
+        # Built-in shortcuts are command aliases only.  Do not reverse-match their target
+        # model IDs, because a bare model like "deepseek-flash" may also be valid on the
+        # current aggregator provider and should stay there.
+        if alias_name in _BUILTIN_DIRECT_ALIASES and _BUILTIN_DIRECT_ALIASES[alias_name] == da:
+            continue
         if da.model.lower() != key:
             continue
         if _provider_identity(da.provider, user_providers, custom_providers) == current_id:
@@ -802,6 +815,16 @@ def resolve_alias(raw_input: str, current_provider: str, user_providers: Optiona
 
     prefix = f"{vendor}/{family}" if is_aggregator(current_provider) else family
     matches = [mid for mid in catalog if mid.lower().startswith(prefix.lower())]
+
+    # If no match on the current provider, try the alias's native provider: `o4` (an openai
+    # alias) must still be able to switch away from, say, deepseek to openai. Prefer the
+    # latest/highest version there.
+    if not matches and vendor != current_provider:
+        native_matches = [mid for mid in list_provider_models(vendor) or [] if mid.lower().startswith(family.lower())]
+        if native_matches:
+            native_matches.sort(key=lambda m: _model_sort_key(m, family))
+            return (vendor, native_matches[0], key)
+
     if not matches:
         return None
 
@@ -1192,6 +1215,7 @@ class _Switch:
     api_mode: str = ""
     validation_headers: dict = field(default_factory=dict)
     suppress_ollama_headers: bool = False
+    direct_alias_used: bool = False
     validation: dict = field(default_factory=dict)
 
     def fail(self, message: str, **fields) -> ModelSwitchResult:
@@ -1584,8 +1608,13 @@ def _resolve_switch_credentials(st: _Switch) -> Optional[ModelSwitchResult]:
     if st.resolved_alias:
         _ensure_direct_aliases()
         da = DIRECT_ALIASES.get(st.resolved_alias)
-        if da is not None and da.base_url:
-            _apply_direct_alias_endpoint(st, da)
+        if da is not None:
+            # A built-in/user direct alias is an exact pinned mapping even when it declares no
+            # base_url (deepseek/glm/kimi shortcuts): validation must not reject it just because
+            # the provider's /models listing omits a hidden or gated id.
+            st.direct_alias_used = True
+            if da.base_url:
+                _apply_direct_alias_endpoint(st, da)
 
     # Fills an empty mode (alias cleared it) and overrides a STALE mode carried from previous
     # session state when the host mandates one wire protocol (e.g. gpt-5.x on api.openai.com
@@ -1643,12 +1672,16 @@ def _validate_switch(st: _Switch) -> Optional[ModelSwitchResult]:
                       "message": f"Could not validate `{st.new_model}`: {e}"}
 
     if not validation.get("accepted"):
-        if not _config_declares_model(
+        if st.direct_alias_used or _config_declares_model(
                 st.new_model, st.target_provider, st.base_url, st.user_providers, st.custom_providers):
+            # Direct aliases are exact user/built-in mappings: some providers expose hidden,
+            # gated or legacy ids that the chat endpoint accepts but /models omits, so a listing
+            # rejection must not veto a shortcut the user intentionally pinned.
+            validation = {"accepted": True, "persist": True, "recognized": False, "message": validation.get("message", "")}
+        else:
             return st.fail(
                 validation.get("message", "Invalid model"),
                 new_model=st.new_model, target_provider=st.target_provider, provider_label=st.provider_label)
-        validation = {"accepted": True, "persist": True, "recognized": False, "message": validation.get("message", "")}
     st.validation = validation
     return None
 

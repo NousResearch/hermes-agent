@@ -117,7 +117,9 @@ class ProviderDef:
 # -- Aliases: human-friendly / legacy names grouped by canonical (models.dev where possible) id;
 # ``ALIASES`` is the inverted lookup table. ---------------------------------------------------
 _ALIAS_GROUPS: dict[str, tuple[str, ...]] = {
-    "openrouter": ("openai",), "zai": ("glm", "z-ai", "z.ai", "zhipu"), "xai": ("x-ai", "x.ai", "grok"),
+    # Local: bare "openai" is deliberately NOT an alias of openrouter — the user has a direct
+    # OpenAI API key in providers.openai, so "openai" resolves to the first-class provider.
+    "openrouter": (), "zai": ("glm", "z-ai", "z.ai", "zhipu"), "xai": ("x-ai", "x.ai", "grok"),
     "xai-oauth": ("grok-oauth", "xai-oauth", "x-ai-oauth", "xai-grok-oauth"),
     "nvidia": ("nim", "nvidia-nim", "build-nvidia", "nemotron"),
     "kimi-for-coding": ("kimi", "kimi-coding", "kimi-coding-cn", "moonshot"),
@@ -253,6 +255,17 @@ def _plugin_profile_pdef(name: str) -> Optional[ProviderDef]:
 
 def get_label(provider_id: str) -> str:
     """Human-readable display name: label override, else models.dev name, else the id."""
+    # Check user-defined custom providers first — before alias normalisation, so bare
+    # "openai" doesn't show as "OpenRouter" when the user has configured a direct OpenAI
+    # endpoint via ``providers:`` or ``custom_providers:`` in config.yaml.
+    try:
+        from hermes_cli.runtime_provider import _get_named_custom_provider
+        cp = _get_named_custom_provider(provider_id)
+        if cp and cp.get("name"):
+            return cp["name"]
+    except Exception:
+        pass
+
     canonical = normalize_provider(provider_id)
     if canonical in _LABEL_OVERRIDES:
         return _LABEL_OVERRIDES[canonical]

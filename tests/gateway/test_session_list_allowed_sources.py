@@ -42,13 +42,14 @@ def _call(limit: int | None = None):
 def test_session_list_surfaces_all_user_facing_sources(monkeypatch):
     """acp / webhook / custom sources should all appear; only ``tool`` is hidden."""
     rows = [
-        {"id": "tui-1", "source": "tui", "started_at": 9},
-        {"id": "tool-1", "source": "tool", "started_at": 8},
-        {"id": "tg-1", "source": "telegram", "started_at": 7},
-        {"id": "acp-1", "source": "acp", "started_at": 6},
-        {"id": "cli-1", "source": "cli", "started_at": 5},
-        {"id": "webhook-1", "source": "webhook", "started_at": 4},
-        {"id": "custom-1", "source": "my-custom-source", "started_at": 3},
+        {"id": "tui-1", "source": "tui", "title": "T", "preview": "p", "message_count": 4, "started_at": 9},
+        {"id": "tool-1", "source": "tool", "title": "t", "preview": "p", "message_count": 4, "started_at": 8},
+        {"id": "tg-1", "source": "telegram", "title": "Tg", "preview": "p", "message_count": 4, "started_at": 7},
+        {"id": "acp-1", "source": "acp", "title": "A", "preview": "p", "message_count": 4, "started_at": 6},
+        {"id": "cli-1", "source": "cli", "title": "C", "preview": "p", "message_count": 4, "started_at": 5},
+        {"id": "webhook-1", "source": "webhook", "title": "W", "preview": "p", "message_count": 4, "started_at": 4},
+        {"id": "custom-1", "source": "my-custom-source", "title": "M", "preview": "p", "message_count": 4, "started_at": 3},
+        {"id": "cron-1", "source": "cron", "title": "watchdog run", "preview": "p", "message_count": 2, "started_at": 2},
     ]
     db = _StubDB(rows)
     monkeypatch.setattr(server, "_get_db", lambda: db)
@@ -65,7 +66,9 @@ def test_session_list_surfaces_all_user_facing_sources(monkeypatch):
     assert "webhook-1" in ids, "webhook sessions were being hidden by the old allow-list"
     assert "custom-1" in ids, "custom HERMES_SESSION_SOURCE values were being hidden"
 
-    # Only internal sub-agent runs stay hidden.
+    # Internal/scheduled runs stay hidden: tool sub-agent rows and cron
+    # watchdog/monitor runs (they have their own sidebar section).
     assert "tool-1" not in ids
+    assert "cron-1" not in ids
 
 

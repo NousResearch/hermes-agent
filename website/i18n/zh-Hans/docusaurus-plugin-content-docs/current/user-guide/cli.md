@@ -101,7 +101,7 @@ hermes -w -z "Fix issue #123"     # 在 worktree 中以单次查询模式运行
 | `Ctrl+B` | 语音模式启用时开始/停止录音（`voice.record_key`，默认：`ctrl+b`） |
 | `Ctrl+G` | 在 `$EDITOR`（vim/nvim/nano/VS Code 等）中打开当前输入缓冲区。保存并退出后，编辑后的文本将作为下一条 prompt 发送——适合编写长篇多段落 prompt。 |
 | `Ctrl+X Ctrl+E` | 外部编辑器的 Emacs 风格备用绑定（与 `Ctrl+G` 行为相同）。 |
-| `Ctrl+C` | 中断 agent（2 秒内双击强制退出） |
+| `Ctrl+C` | 中断 agent；第一次按下还会检查未完成任务（2 秒内双击强制退出） |
 | `F6` | 打开全屏实时子智能体监视器，保留输入草稿。方向键选择，`Enter` 查看近期日志，`s` 引导，`x` 请求停止并确认。 |
 | `F7` | 将实时子智能体栏切换为单行摘要或恢复多行预览，不改变输入焦点。 |
 | `Ctrl+D` | 退出 |
@@ -248,6 +248,11 @@ personalities:
 - **`Ctrl+C`**——中断当前操作（2 秒内双击强制退出）
 - 正在进行的终端命令会立即被终止（SIGTERM，1 秒后 SIGKILL）
 - 中断期间输入的多条消息会合并为一条 prompt
+
+第一次按下 `Ctrl+C` 后，Hermes 会执行本地安全退出检查，并报告仍在
+运行的后台任务、待处理的 memory/skill 写入，或上一次被中断的 turn。
+可以使用 `/leave` 再次检查后退出；`/leave --stop` 还会停止运行中的后台
+进程和 delegation。待处理写入已经持久化，不会被自动批准或丢弃。
 
 ### 繁忙输入模式
 

@@ -22,11 +22,37 @@ export function mergeWidgetAppItems(input: string, items: CompletionItem[]): Com
     return items
   }
 
+  // A user widget may intentionally share a name with a skill command. Keep
+  // the gateway/skill entry as the canonical completion and don't show the
+  // widget a second time. Normalize whitespace/case because completion
+  // providers may decorate display text while keeping the same command name.
+  const commandKey = (text: string) => text.trim().replace(/^\/+/, '/').toLowerCase()
+  const seen = new Set(items.map(item => commandKey(item.text)))
   const local = rankSlashItems(listWidgetApps(), input, app => ({ description: app.help, id: app.id }))
-    .filter(app => !items.some(item => item.text === `/${app.id}`))
+    .filter(app => {
+      const key = commandKey(`/${app.id}`)
+      if (seen.has(key)) {
+        return false
+      }
+      seen.add(key)
+      return true
+    })
     .map(app => ({ display: `/${app.id}`, meta: app.help, text: `/${app.id}` }))
 
-  return [...items, ...local]
+  // Also collapse duplicates already returned by a provider; first entry wins
+  // so the gateway's canonical ordering and metadata remain stable.
+  const merged = [...items, ...local]
+  const unique: CompletionItem[] = []
+  const emitted = new Set<string>()
+  for (const item of merged) {
+    const key = commandKey(item.text)
+    if (emitted.has(key)) {
+      continue
+    }
+    emitted.add(key)
+    unique.push(item)
+  }
+  return unique
 }
 
 const TAB_PATH_RE = /((?:["']?(?:[A-Za-z]:[\\/]|\.{1,2}\/|~\/|\/|@|[^"'`\s]+\/))[^\s]*)$/

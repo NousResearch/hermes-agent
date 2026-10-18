@@ -278,14 +278,36 @@ def _default_exclude(args):
     return None if getattr(args, "source", None) else ["tool"]
 
 
+def _listing_exclude(args):
+    """``_default_exclude`` plus scheduled cron runs, for human-facing listings.
+
+    Cron watchdog/monitor sessions flood ``list``/``browse``; an explicit
+    ``--source cron`` still shows them. ``sessions pin`` keeps the plain
+    exclude so a pinned cron session stays visible there.
+    """
+    base = _default_exclude(args)
+    return None if base is None else [*base, "cron"]
+
+
+def _drop_probe_sessions(rows):
+    """Remove automation/probe debris rows from a human-facing listing."""
+    from hermes_cli.session_listing import is_automated_session, is_ping_probe_session
+
+    return [s for s in rows if not is_automated_session(s) and not is_ping_probe_session(s)]
+
+
 def _cmd_list(db, args):
     from hermes_state_sessions import workspace_key as _ws_key
     # LIMIT lives in the query, so probe one row past the cap: it is the only way to know the
     # page was cut without a second COUNT query (``--limit 0`` is ``LIMIT 0``: no rows, no probe).
     limit = args.limit
+    # Probe/automation rows are dropped after the query, so over-fetch before trimming:
+    # otherwise a page full of debris would look complete and hide the truncation hint.
     sessions = db.list_sessions_rich(
-        source=args.source, exclude_sources=_default_exclude(args), limit=limit + 1 if limit > 0 else limit,
+        source=args.source, exclude_sources=_listing_exclude(args),
+        limit=limit * 2 + 1 if limit > 0 else limit,
     )
+    sessions = _drop_probe_sessions(sessions)
     truncated = limit > 0 and len(sessions) > limit
     sessions = sessions[:limit] if truncated else sessions
 
@@ -918,9 +940,10 @@ def _cmd_retitle_skills(db, args):
 
 def _cmd_browse(db, args):
     limit = getattr(args, "limit", 500) or 500
-    sessions = db.list_sessions_rich(
-        source=getattr(args, "source", None), exclude_sources=_default_exclude(args), limit=limit
-    )
+    sessions = _drop_probe_sessions(db.list_sessions_rich(
+        source=getattr(args, "source", None), exclude_sources=_listing_exclude(args),
+        limit=max(limit * 2, limit),
+    ))[:limit]
     if not sessions:
         db.close()
         print("No sessions found.")

@@ -229,6 +229,19 @@ def _retire_agent(cli) -> None:
 class CLIAgentSetupMixin:
     """Agent construction + session-resume display methods for ``HermesCLI``."""
 
+    def _restore_resumed_model_route(self, session_meta: dict) -> None:
+        """Compatibility alias for restoring the resumed session's model route.
+
+        Upstream now owns this restore end-to-end: ``_restore_session_state()`` ->
+        ``_restore_session_model()`` (model/provider/base_url/api_mode plus credential
+        re-resolution, LLAMACPP alias handling and reasoning config) runs on every
+        resume path. Local call sites still use this name, so delegate rather than
+        duplicating the older, narrower implementation here.
+        """
+        restore = getattr(self, "_restore_session_model", None)
+        if callable(restore):
+            restore(session_meta)
+
     def _ensure_runtime_credentials(self) -> bool:
         """Re-resolve provider credentials before agent use so key rotation / token
         refresh are picked up without restarting the CLI. False on auth failure."""
@@ -828,6 +841,22 @@ class CLIAgentSetupMixin:
         from cli import CLI_CONFIG, _record_output_history_entry, _strip_reasoning_tags, _suspend_output_history
         from tools.ansi_strip import sanitize_display_text as _sanitize_display_text
         display_history = getattr(self, "_resume_display_history", self.conversation_history)
+        # Local: warn that the previous turn was interrupted (pending writes may not
+        # have been reviewed) before the recap is skipped or rendered. Guarded by
+        # getattr so this works whether or not the marker machinery ships in the build.
+        _marker_fn = getattr(self, "_get_interrupted_turn_marker", None)
+        if callable(_marker_fn):
+            try:
+                interrupted_marker = _marker_fn()
+            except Exception:
+                interrupted_marker = None
+            if interrupted_marker:
+                prompt = str(interrupted_marker.get("prompt") or "").strip()
+                suffix = f": {prompt[:120]}" if prompt else ""
+                self._console_print(
+                    f"[bold yellow]⚠ Previous turn was interrupted{suffix}. "
+                    "Review pending writes before continuing.[/]"
+                )
         if not display_history or self.resume_display == "minimal":
             return
         _disp = CLI_CONFIG.get("display", {})

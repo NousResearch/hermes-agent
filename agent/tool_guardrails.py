@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Mapping
 
 from utils import safe_json_loads
-from agent.tool_result_classification import file_mutation_result_landed, is_guardrail_refusal
+from agent.tool_result_classification import file_mutation_result_landed, is_guardrail_refusal, structured_web_result_failure
 
 
 IDEMPOTENT_TOOL_NAMES = frozenset({
@@ -227,6 +227,10 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
     # fires the next, harder one. Mirrored in ``agent.display._detect_tool_failure``.
     if is_guardrail_refusal(result):
         return False, ""
+
+    web_failed = structured_web_result_failure(tool_name, result)
+    if web_failed is not None:
+        return web_failed, " [error]" if web_failed else ""
 
     if tool_name == "terminal":
         data = safe_json_loads(result)

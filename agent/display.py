@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 from utils import safe_json_loads
 from agent.i18n import t
 from agent.redact import redact_sensitive_text
-from agent.tool_result_classification import file_mutation_result_landed, is_guardrail_refusal
+from agent.tool_result_classification import file_mutation_result_landed, is_guardrail_refusal, structured_web_result_failure
 
 logger = logging.getLogger(__name__)
 
@@ -1029,6 +1029,13 @@ def _detect_tool_failure(tool_name: str, result: Any) -> tuple[bool, str]:
     # "BLOCKED: ... Do NOT retry" text (which stays in the JSON for the model).
     if isinstance(data, dict) and data.get("user_summary"):
         return True, f" [{_tail_trunc(str(data['user_summary']), _DEGRADED_SUFFIX_MAX_LEN)}]"
+
+    web_failed = structured_web_result_failure(tool_name, result)
+    if web_failed is not None:
+        if not web_failed:
+            return False, ""
+        err = (data.get("error") or data.get("message")) if isinstance(data, dict) else None
+        return True, f" [{_trim_error(str(err))}]" if err else t("display.failure.generic")
 
     # Terminal: non-zero exit code is the canonical failure signal.
     if tool_name == "terminal":

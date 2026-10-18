@@ -125,7 +125,7 @@ def get_keep() -> int:
 # --- Snapshot ---
 def _count_skill_files(base: Path) -> int:
     try:
-        return sum(1 for p in base.rglob("SKILL.md") if not is_excluded_skill_path(p))
+        return sum(1 for p in base.rglob("SKILL.md") if not is_excluded_skill_path(p, root=base))
     except OSError:
         return 0
 

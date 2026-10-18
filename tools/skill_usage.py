@@ -216,7 +216,7 @@ def _iter_skill_mds(base: Path, *, local_only: bool) -> Iterator[tuple[str, Path
     """``(frontmatter name, SKILL.md)`` under *base* minus metadata/VCS/venv/cache dirs; *local_only* also skips
     external skill dirs mounted below the tree (curation must not touch them)."""
     for skill_md in base.rglob("SKILL.md"):
-        if not (is_excluded_skill_path(skill_md) or (local_only and is_external_skill_path(skill_md))):
+        if not (is_excluded_skill_path(skill_md, root=base) or (local_only and is_external_skill_path(skill_md))):
             yield _read_skill_name(skill_md, fallback=skill_md.parent.name), skill_md
 
 
@@ -687,7 +687,7 @@ def _find_external_skill_dir(skill_name: str) -> Optional[Path]:
     """Skill dir under configured external dirs by frontmatter name."""
     from agent.skill_utils import get_all_skills_dirs
     return next((found for base in get_all_skills_dirs()[1:] if base.exists()
-                 if (found := _match_skill_dir((p for p in base.rglob("SKILL.md") if not is_excluded_skill_path(p)),
+                 if (found := _match_skill_dir((p for p in base.rglob("SKILL.md") if not is_excluded_skill_path(p, root=base)),
                                                skill_name)) is not None), None)
 
 
@@ -720,7 +720,7 @@ def _external_skill_names() -> set:
         if not base.exists():
             continue
         for skill_md in base.rglob("SKILL.md"):
-            if not is_excluded_skill_path(skill_md):
+            if not is_excluded_skill_path(skill_md, root=base):
                 names.add(_read_skill_name(skill_md, fallback=skill_md.parent.name))
     return names
 

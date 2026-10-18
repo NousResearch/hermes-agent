@@ -734,6 +734,8 @@ gateway:
     interrupting_tail: ". I'll respond to your message shortly."
     slash_rejected: "⏳ Agent is running — `/{command}` can't run mid-turn. Wait for the current response or `/stop` first."
     plugin_command_rejected: "⏳ Agent is running — `/{command}` is a plugin command and can't run mid-turn. Your text was not sent to the model. Wait for the current response or `/stop` first."
+    quick_command_rejected: "⏳ Agent is running — `/{command}` is a quick command and can't run mid-turn. Your text was not sent to the model. Wait for the current response or `/stop` first."
+    quick_command_alias_unresolved: "⏳ Agent is running — `/{command}` is an alias for `/{target}`, which isn't a known command, so nothing ran and your text was not sent to the model. Wait for the current response or `/stop` first."
     reject_goal: "Agent is running — use /goal status / pause / clear / wait mid-run, or /stop before setting a new goal."
     reject_loop: "Agent is running — use /loop status / pause / stop mid-run, or /stop before setting a new loop."
     draining_maintenance: "⏳ This agent is draining for a maintenance action and isn't accepting new turns right now. It'll be back in a moment — please resend shortly."

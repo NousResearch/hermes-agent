@@ -725,6 +725,8 @@ gateway:
     interrupting_tail: ". Ek sal binnekort op jou boodskap antwoord."
     slash_rejected: "⏳ Agent loop — `/{command}` kan nie midde-in 'n beurt uitgevoer word nie. Wag vir die huidige antwoord of gebruik eers `/stop`."
     plugin_command_rejected: "⏳ Agent loop — `/{command}` is 'n inprop-opdrag en kan nie midde-in 'n beurt uitgevoer word nie. Jou teks is nie na die model gestuur nie. Wag vir die huidige antwoord of gebruik eers `/stop`."
+    quick_command_rejected: "⏳ Agent loop — `/{command}` is 'n vinnige opdrag en kan nie midde-in 'n beurt uitgevoer word nie. Jou teks is nie na die model gestuur nie. Wag vir die huidige antwoord of gebruik eers `/stop`."
+    quick_command_alias_unresolved: "⏳ Agent loop — `/{command}` is 'n alias vir `/{target}`, wat nie 'n bekende opdrag is nie, so niks het geloop nie en jou teks is nie na die model gestuur nie. Wag vir die huidige antwoord of gebruik eers `/stop`."
     reject_goal: "Agent loop — gebruik /goal status / pause / clear / wait tydens die lopie, of /stop voordat jy 'n nuwe doelwit stel."
     reject_loop: "Agent loop — gebruik /loop status / pause / stop tydens die lopie, of /stop voordat jy 'n nuwe lus stel."
     draining_maintenance: "⏳ Hierdie agent word vir 'n onderhoudsaksie gedreineer en aanvaar nie nou nuwe beurte nie. Dit sal oor 'n oomblik terug wees — stuur asseblief binnekort weer."

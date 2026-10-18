@@ -1647,27 +1647,25 @@ class GatewayBusySessionMixin:
         """Slash-command / photo-burst handling on the busy fast-path → ``(handled, result)``. Each
         core command's mid-run behavior is declared on its CommandDef (busy_policy / busy_handler);
         a plugin-registered command has no CommandDef and is rejected here (see
-        ``_hm_busy_plugin_command_reject``)."""
+        ``_hm_busy_plugin_command_reject``), and so is a user-defined quick command (see
+        ``_hm_busy_quick_command``): neither registry is the core one, so neither name resolves in
+        it and both would otherwise fall through to steer/queue/interrupt."""
         from hermes_cli.commands import resolve_command as _resolve_cmd_inner
         _evt_cmd = event.get_command()
         _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
 
         if _cmd_def_inner:
-            # /status and /context are intentionally pre-gate so users always see session state.
-            if _cmd_def_inner.name == "status":
-                return True, await self._handle_status_command(event)
-            if _cmd_def_inner.name == "context":
-                return True, await self._handle_context_command(event)
-            # Slash access control mirrors the cold-path gate so non-admins can't bypass gating
-            # just because an agent is busy. /help and /whoami are the always-allowed floor.
-            _denied = self._check_slash_access(source, _cmd_def_inner.name)
-            if _denied is not None:
-                return True, _denied
-            if _cmd_def_inner.name in ("stop", "new"):
-                await self._hm_stop_owner_turn(_quick_key)
-            # Any recognized slash command dispatches per its declared busy_policy (dispatch /
-            # interrupt_then_dispatch / reject). Unrecognized commands and plain text fall through.
-            return True, await self._dispatch_busy_slash_command(event, _cmd_def_inner, _quick_key, source)
+            return await self._hm_busy_core_command(event, source, _quick_key, _cmd_def_inner)
+
+        # User-defined quick commands (config.yaml: quick_commands) live in the config dict, not in
+        # the core registry, and the idle path resolves them only in
+        # ``_hm_dispatch_quick_and_plugin_commands``. Built-ins keep precedence there, so the same
+        # order holds here; quick commands come before the plugin registry because the idle dispatch
+        # checks them first too.
+        if _evt_cmd:
+            _qcmd = self._hm_quick_commands().get(_evt_cmd)
+            if _qcmd is not None:
+                return await self._hm_busy_quick_command(event, source, _quick_key, _evt_cmd, _qcmd)
 
         # A plugin command resolves in its own registry (hermes_cli.plugins._plugin_commands), never
         # in the core one — intercept it before the steer/queue/interrupt fall-through below, or its
@@ -1683,6 +1681,90 @@ class GatewayBusySessionMixin:
             self._hm_merge_pending_for_source(source, _quick_key, event)
             return True, None
         return False, None
+
+    async def _hm_busy_core_command(
+        self, event: MessageEvent, source: SessionSource, _quick_key: str, cmd_def
+    ) -> tuple[bool, Optional[str]]:
+        """Dispatch an already-resolved CORE command on the busy fast-path → ``(handled, result)``.
+
+        Shared by a command typed directly and by a quick-command ``type: alias`` rewritten to its
+        target (``_hm_busy_quick_command``), so an alias inherits exactly the destination's declared
+        mid-run behavior instead of duplicating the routing.
+        """
+        # /status and /context are intentionally pre-gate so users always see session state.
+        if cmd_def.name == "status":
+            return True, await self._handle_status_command(event)
+        if cmd_def.name == "context":
+            return True, await self._handle_context_command(event)
+        # Slash access control mirrors the cold-path gate so non-admins can't bypass gating
+        # just because an agent is busy. /help and /whoami are the always-allowed floor.
+        _denied = self._check_slash_access(source, cmd_def.name)
+        if _denied is not None:
+            return True, _denied
+        if cmd_def.name in ("stop", "new"):
+            await self._hm_stop_owner_turn(_quick_key)
+        # Any recognized slash command dispatches per its declared busy_policy (dispatch /
+        # interrupt_then_dispatch / reject). Unrecognized commands and plain text fall through.
+        return True, await self._dispatch_busy_slash_command(event, cmd_def, _quick_key, source)
+
+    async def _hm_busy_quick_command(
+        self, event: MessageEvent, source: SessionSource, _quick_key: str, command: str, qcmd: Any
+    ) -> tuple[bool, Optional[str]]:
+        """A user-defined quick command (config.yaml ``quick_commands``) typed mid-turn →
+        ``(handled, result)``; no character of its prompt reaches the model.
+
+        Quick commands resolve only on the idle path, so mid-turn the name resolved nowhere and the
+        raw text fell through to steer/queue/interrupt: an ``exec`` command's typed prompt entered
+        the running turn's model context while its shell handler never ran — the sibling leak of the
+        plugin command above (same class, different registry).
+
+        The mid-run policy is the core's, per type:
+
+        * ``exec`` — rejected with a visible message. It runs operator shell code in the gateway
+          process; dispatching it beside a live turn would race that turn's reply, and queueing the
+          event would only replay the raw text as a model turn once the current one ends.
+        * ``alias`` — expanded to its target and dispatched as that CORE command, so the target's
+          own ``busy_policy`` / ``busy_handler`` decides (an alias to /stop still stops the turn,
+          an alias to /model keeps /model's mid-run reject). Only an alias whose target resolves
+          nowhere is rejected whole: there is nothing to dispatch and the fall-through would leak
+          the raw text.
+        * anything else — unsupported or absent ``type``, a malformed entry, an ``exec`` without a
+          ``command``: the same visible rejection the idle path reports.
+
+        The slash access gate runs on the TYPED name first, exactly as the idle path does before it
+        dispatches, so a caller who could not run the quick command when idle cannot run it mid-turn.
+        """
+        _denied = self._check_slash_access(source, command)
+        if _denied is not None:
+            return True, _denied
+        qtype = qcmd.get("type") if isinstance(qcmd, dict) else None
+        if qtype == "exec":
+            if not qcmd.get("command"):
+                return True, t("gateway.quick_command.no_command", command=command)
+            logger.info(
+                "Rejected exec quick command /%s on the busy path — a quick command never steers, "
+                "queues or interrupts a running turn", command,
+            )
+            return True, t("gateway.busy.quick_command_rejected", command=command)
+        if qtype != "alias":
+            return True, t("gateway.quick_command.unsupported_type", command=command)
+        target = self._hm_expand_alias_quick_command(event, qcmd)
+        if target is None:
+            return True, t("gateway.quick_command.no_target", command=command)
+        from hermes_cli.commands import resolve_command as _resolve_target
+        _target_def = _resolve_target(target)
+        if _target_def is not None:
+            # The target owns its mid-run behavior: /status and /context answer pre-gate, /stop
+            # stops the turn, a dispatch-policy command runs, a reject-policy one returns its text.
+            return await self._hm_busy_core_command(event, source, _quick_key, _target_def)
+        _plugin_reject = self._hm_busy_plugin_command_reject(target)
+        if _plugin_reject is not None:
+            return True, _plugin_reject
+        logger.info(
+            "Rejected alias quick command /%s on the busy path — target /%s resolves nowhere",
+            command, target,
+        )
+        return True, t("gateway.busy.quick_command_alias_unresolved", command=command, target=target)
 
     def _hm_busy_plugin_command_reject(self, command: Optional[str]) -> Optional[str]:
         """Reject text when *command* is a plugin-registered slash command, else ``None``.

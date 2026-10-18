@@ -725,6 +725,8 @@ gateway:
     interrupting_tail: ". Risponderò al tuo messaggio a breve."
     slash_rejected: "⏳ L'agente è in esecuzione — `/{command}` non può essere eseguito a metà turno. Attendi la risposta corrente o usa prima `/stop`."
     plugin_command_rejected: "⏳ L'agente è in esecuzione — `/{command}` è un comando di plugin e non può essere eseguito a metà turno. Il tuo testo non è stato inviato al modello. Attendi la risposta corrente o usa prima `/stop`."
+    quick_command_rejected: "⏳ L'agente è in esecuzione — `/{command}` è un comando rapido e non può essere eseguito a metà turno. Il tuo testo non è stato inviato al modello. Attendi la risposta corrente o usa prima `/stop`."
+    quick_command_alias_unresolved: "⏳ L'agente è in esecuzione — `/{command}` è un alias di `/{target}`, che non è un comando noto: non è stato eseguito nulla e il tuo testo non è stato inviato al modello. Attendi la risposta corrente o usa prima `/stop`."
     reject_goal: "L'agente è in esecuzione — usa /goal status / pause / clear / wait durante l'esecuzione, oppure /stop prima di impostare un nuovo obiettivo."
     reject_loop: "L'agente è in esecuzione — usa /loop status / pause / stop durante l'esecuzione, oppure /stop prima di impostare un nuovo loop."
     draining_maintenance: "⏳ Questo agente sta completando il lavoro in corso per un'azione di manutenzione e al momento non accetta nuovi turni. Tornerà tra poco — reinvia il messaggio a breve."

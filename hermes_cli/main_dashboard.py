@@ -247,6 +247,11 @@ def _systemd_restart_commands(unit: str, scope: str | None) -> list[str]:
     return {"user": [user_cmd], "system": [system_cmd]}.get(scope or "", [user_cmd, system_cmd])
 
 
+def _format_restart_commands(commands: list[str]) -> str:
+    """Join restart commands as a user-facing hint: each backticked, separated by " or "."""
+    return " or ".join(f"`{c}`" for c in commands)
+
+
 def _try_restart_systemd_service(svc_name: str, cgroup_path: str | None = None) -> bool:
     """Restart *svc_name* via systemctl (``--user`` for user-scope units). True on success.
 

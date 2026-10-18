@@ -1686,10 +1686,11 @@ try {
         ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
     if ($owedSteps.Count -gt 0) {
         # A gateway_restart owed only for serve/dashboard units (the reason then starts with
-        # "serve/dashboard") names their own command in the log; every other gateway_restart reason,
-        # including a raw restart-phase error, keeps the gateway hint (#141071).
-        $owedText = $res.Output -join "`n"
-        $serveOnly = ($owedText -match "Update follow-up 'gateway_restart' did not finish: serve/dashboard ") -and -not ($owedText -match "Update follow-up 'gateway_restart' did not finish: .*hermes gateway restart")
+        # "serve/dashboard ", hermes_cli/update_cmd_fleet_verify.SERVE_ONLY_REASON_PREFIX) names their own
+        # command in the log. The hint drops only when EVERY gateway_restart line is serve-only; any other
+        # reason, including a raw restart-phase error, keeps it (#141071).
+        $gwReasons = @((($res.Output -join "`n") -split "`r?`n") | Where-Object { $_ -cmatch "Update follow-up 'gateway_restart' did not finish: " })
+        $serveOnly = ($gwReasons.Count -gt 0) -and -not @($gwReasons | Where-Object { ($_ -cnotmatch "did not finish: serve/dashboard ") -or ($_ -cmatch "hermes gateway restart") }).Count
         $owedHint = if (($owedSteps -contains 'gateway_restart') -and -not $serveOnly) { " Run 'hermes gateway restart' to move the messaging gateway onto the new code now." } else { '' }
         Add-Followup ("followup: owed by the committed update: " + ($owedSteps -join ', ')) ("some follow-up steps did not finish (" + ($owedSteps -join ', ') + "). The next launch or 'hermes update' retries them; the update log has the details." + $owedHint) -Manual
     }

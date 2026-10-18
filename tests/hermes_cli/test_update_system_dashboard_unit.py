@@ -307,30 +307,46 @@ def test_next_run_carries_a_unit_row_forward_from_the_previous_receipt(monkeypat
     assert [row["pid"] for row in carried] == [DASH_PID]
 
 
-@pytest.mark.parametrize("reason, hinted", [
-    ("serve/dashboard unit(s) hermes-dashboard were not restarted onto the new code; see the systemctl advice above", False),
-    ("gateways may still run pre-update code or were stopped without a successor; recover with `hermes gateway restart`", True),
-    ("gateways may still run pre-update code or were stopped without a successor; recover with `hermes gateway restart`;"
-     " serve/dashboard unit(s) hermes-dashboard were not restarted onto the new code", True),
+def _producer_reason(*, gateway_owed=False, units=(), down=(), stale=()):
+    restart = SimpleNamespace(failed_or_stale_units=list(units))
+    return fleet_verify._owed_restart_reason(
+        restart, [], gateway_owed=gateway_owed, stale_serves=set(stale), down_serves=set(down))
+
+
+@pytest.mark.parametrize("reasons, hinted", [
+    ([_producer_reason(units=["hermes-dashboard"])], False),
+    ([_producer_reason(down=[4242])], False),
+    ([_producer_reason(stale=[4242], units=["hermes-serve-work.service"])], False),
+    ([_producer_reason(gateway_owed=True)], True),
+    ([_producer_reason(gateway_owed=True, units=["hermes-dashboard"])], True),
+    ([_producer_reason()], True),  # nothing classified: the historical gateway wording
     # update_finish owes gateway_restart with the raw exception when the restart phase itself crashes.
-    ("RuntimeError: systemctl list-units timed out", True),
+    (["RuntimeError: systemctl list-units timed out"], True),
+    # A serve-only line next to a raw-exception line: a gateway may still be owed.
+    ([_producer_reason(units=["hermes-dashboard"]), "RuntimeError: boom"], True),
 ])
-def test_desktop_handoffs_add_the_gateway_hint_only_when_gateways_are_blamed(capsys, reason, hinted):
+def test_desktop_handoffs_add_the_gateway_hint_only_when_gateways_are_blamed(capsys, reasons, hinted):
     """#141071: both Desktop hand-offs keyed the "Run hermes gateway restart" hint on the step id alone.
-    Now only a serve/dashboard-only reason drops it; every other gateway_restart reason keeps it. Pin
-    each script's predicate against the line the producer prints."""
+    Now the hint drops only when every gateway_restart reason the producer prints is serve/dashboard-only.
+    Runs the real posix.sh block in bash, and windows.ps1's two patterns with its per-line rule."""
     import re
     from pathlib import Path
 
-    update_receipt.record_followup("gateway_restart", reason)
+    for reason in reasons:
+        update_receipt.record_followup("gateway_restart", reason)
     out = capsys.readouterr().out
     scripts = Path(__file__).resolve().parents[2] / "scripts/desktop-update"
     posix = (scripts / "posix.sh").read_text(encoding="utf-8")
-    serve_re, gw_re = re.findall(r'grep -Eq "(Update follow-up .gateway_restart[^"]+)"', posix)
-    sh = f'printf "%s\\n" "$OUT" | grep -Eq "{serve_re}" && ! printf "%s\\n" "$OUT" | grep -Eq "{gw_re}"'
-    serve_only = subprocess.run(["bash", "-c", sh], env={**os.environ, "OUT": out},
-                                capture_output=True, text=True, encoding="utf-8", check=False).returncode == 0
-    assert (not serve_only) is hinted
+    block = posix[posix.index('    GW_REASONS="$('):]
+    block = block[:block.index("\n    fi\n") + len("\n    fi\n")]
+    sh = f'OWED_HINT=hint\n{block}\nprintf %s "$OWED_HINT"'
+    posix_hint = subprocess.run(["bash", "-c", sh], env={**os.environ, "OUT": out}, capture_output=True,
+                                text=True, encoding="utf-8", check=True).stdout == "hint"
+    assert posix_hint is hinted
     ps = (scripts / "windows.ps1").read_text(encoding="utf-8")
-    ps_serve, ps_gw = re.findall(r'-match "(Update follow-up .gateway_restart[^"]+)"', ps)
-    assert (not (bool(re.search(ps_serve, out)) and not re.search(ps_gw, out))) is hinted
+    line_pat = re.search(r'\$_ -cmatch "(Update follow-up [^"]+)"', ps).group(1)
+    serve_pat = re.search(r'\$_ -cnotmatch "([^"]+)"', ps).group(1)
+    gw_pat = re.search(r'\(\$_ -cmatch "(hermes gateway restart)"\)', ps).group(1)
+    lines = [ln for ln in out.splitlines() if re.search(line_pat, ln)]
+    serve_only = bool(lines) and not [ln for ln in lines if not re.search(serve_pat, ln) or re.search(gw_pat, ln)]
+    assert (not serve_only) is hinted

@@ -16,15 +16,19 @@ logger = logging.getLogger(__name__)
 
 def defer_manual_serve(runtime: dict, *, require_alive: bool = False) -> bool:
     """Transfer an identified manual runtime to its own durable restart reminder."""
-    from hermes_cli.process_identity import _pid_alive_matches
-
     if runtime.get("kind") not in ("serve", "dashboard") or runtime.get("supervisor") != "manual-serve" or runtime.get("restart_via") != "respawn-argv":
         return False
-    pid = runtime.get("pid")
-    detail = runtime.get("detail")
-    if not isinstance(detail, dict):
+    if not isinstance(runtime.get("detail"), dict):
         return False
-    created = detail.get("create_time")
+    return _defer_identified(runtime, require_alive=require_alive)
+
+
+def _defer_identified(runtime: dict, *, extra: dict | None = None, require_alive: bool = False) -> bool:
+    """Shared tail of the manual and unit deferrals: True when the incarnation is gone or its reminder
+    (plus *extra* fields) was filed; False while it is still owed and nothing durable was written."""
+    from hermes_cli.process_identity import _pid_alive_matches
+
+    pid, created = runtime.get("pid"), runtime["detail"].get("create_time")
     if type(pid) is not int or pid <= 0:
         return False
     identified = type(created) in (int, float) and math.isfinite(created) and created > 0
@@ -38,10 +42,11 @@ def defer_manual_serve(runtime: dict, *, require_alive: bool = False) -> bool:
             return False
         if alive is False:
             return True
-        _write_reminder({"kind": runtime["kind"], "profile": runtime.get("profile", "unknown"), "pid": pid, "create_time": created})
+        _write_reminder({"kind": runtime["kind"], "profile": runtime.get("profile", "unknown"), "pid": pid,
+                         "create_time": created, **(extra or {})})
         return True
     except (OSError, ValueError, TypeError) as exc:
-        logger.debug("Could not preserve manual serve obligation: %s", exc)
+        logger.debug("Could not preserve serve restart obligation: %s", exc)
         return False
 
 
@@ -84,26 +89,12 @@ def defer_unit_serve(runtime: dict) -> bool:
     ``--no-gateway-restart``) is never mentioned again. True when the row is discharged (process gone)
     or the reminder was filed; False when it is still owed and nothing durable could be written."""
     from hermes_cli.main_dashboard import _systemd_restart_commands
-    from hermes_cli.process_identity import _pid_alive_matches
 
     if not is_unit_serve_row(runtime):
         return False
-    detail, pid = runtime["detail"], runtime.get("pid")
-    created = detail.get("create_time")
-    if type(pid) is not int or pid <= 0:
-        return False
-    if not (type(created) in (int, float) and math.isfinite(created) and created > 0):
-        return _pid_alive_matches(pid, None) is False
-    try:
-        if _pid_alive_matches(pid, created) is False:
-            return True
-        _write_reminder({"kind": runtime["kind"], "profile": runtime.get("profile", "unknown"), "pid": pid,
-                         "create_time": created,
-                         "restart": _systemd_restart_commands(str(detail["systemd_unit"]), detail.get("systemd_scope"))})
-        return True
-    except (OSError, ValueError, TypeError) as exc:
-        logger.debug("Could not preserve unit serve obligation: %s", exc)
-        return False
+    detail = runtime["detail"]
+    return _defer_identified(runtime, extra={
+        "restart": _systemd_restart_commands(str(detail["systemd_unit"]), detail.get("systemd_scope"))})
 
 
 def retain_receipt_manual_serves(receipt: dict) -> list[dict]:
@@ -129,6 +120,7 @@ def retain_receipt_manual_serves(receipt: dict) -> list[dict]:
 
 def warn_pending_manual_serves(*, startup: bool = False, pending_manual: list[dict] | None = None) -> None:
     """Warn about manual debt independently of gateway evidence; optionally reuse a snapshot's failed transfers."""
+    from hermes_cli.main_dashboard import _format_restart_commands, _systemd_restart_commands
     from hermes_cli.process_identity import _pid_alive_matches
     from hermes_cli.update_receipt import read_latest_receipt
 
@@ -136,13 +128,12 @@ def warn_pending_manual_serves(*, startup: bool = False, pending_manual: list[di
     if pending_manual is None:
         pending_manual = retain_receipt_manual_serves(read_latest_receipt() or {})
     for row in pending_manual:
-        print(f"  ⚠ {row['kind']} [{row.get('profile', 'unknown')}] pid {row.get('pid', 'unknown')}: manual restart reminder could not be saved; restart remains pending in the update receipt.", file=stream)
+        unit_row = is_unit_serve_row(row)
+        print(f"  ⚠ {row['kind']} [{row.get('profile', 'unknown')}] pid {row.get('pid', 'unknown')}: {'unit' if unit_row else 'manual'} restart reminder could not be saved; restart remains pending in the update receipt.", file=stream)
         detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
-        if is_unit_serve_row(row):
-            from hermes_cli.main_dashboard import _systemd_restart_commands
-
+        if unit_row:
             commands = _systemd_restart_commands(str(detail["systemd_unit"]), detail.get("systemd_scope"))
-            print(f"    Restart its unit: {' or '.join(f'`{c}`' for c in commands)}", file=stream)
+            print(f"    Restart its unit: {_format_restart_commands(commands)}", file=stream)
         elif type(detail.get("create_time")) in (int, float):
             print("    Ask its owner to relaunch `hermes serve` / `hermes dashboard`; check reminder storage permissions and free space.", file=stream)
         else:
@@ -158,7 +149,7 @@ def warn_pending_manual_serves(*, startup: bool = False, pending_manual: list[di
             restart = row.get("restart")
             if isinstance(restart, list) and restart:
                 print(f"  ⚠ {row['kind']} [{row['profile']}] pid {row['pid']}: unit restart still pending; this process may still serve pre-update code.", file=stream)
-                print(f"    Restart its unit: {' or '.join(f'`{c}`' for c in restart)}", file=stream)
+                print(f"    Restart its unit: {_format_restart_commands(restart)}", file=stream)
                 continue
             print(f"  ⚠ {row['kind']} [{row['profile']}] pid {row['pid']}: manual restart still pending; this process may still serve pre-update code.", file=stream)
             print("    Ask its owner to relaunch `hermes serve` / `hermes dashboard` (reconnect Desktop for an SSH backend).", file=stream)

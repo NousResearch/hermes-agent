@@ -735,6 +735,19 @@ def _scoped_manual_gateway_pids(pids, *, keep=(), quiet: bool = False) -> list[i
     return [pid for pid in pids if pid in keep or pid in owned]
 
 
+def _is_serve_or_dashboard_unit(unit: str) -> bool:
+    """``hermes-serve*``/``hermes-dashboard*`` (``.service``) by the same exact-or-hyphenated shape."""
+    return (
+        unit == "hermes-serve.service"
+        or unit.startswith("hermes-serve-")
+        # #125297: ``hermes-dashboard*`` units are systemd-supervised dashboard backends — the
+        # same fleet this pass restarts. Leaving them out meant a successful update reported
+        # the dashboard ``deferred`` (still on pre-update code) while nothing ever restarted it.
+        or unit == "hermes-dashboard.service"
+        or unit.startswith("hermes-dashboard-")
+    )
+
+
 def _is_hermes_gateway_unit(unit: str) -> bool:
     """Exact base unit or hyphenated profile family only: ``startswith("hermes-serve")``
     would accept ``hermes-server.service``."""
@@ -743,13 +756,7 @@ def _is_hermes_gateway_unit(unit: str) -> bool:
         # cannot enter the restart path. See #83595.
         unit == "hermes-gateway.service"
         or unit.startswith("hermes-gateway-")
-        or unit == "hermes-serve.service"
-        or unit.startswith("hermes-serve-")
-        # #125297: ``hermes-dashboard*`` units are systemd-supervised dashboard backends — the
-        # same fleet this pass restarts. Leaving them out meant a successful update reported
-        # the dashboard ``deferred`` (still on pre-update code) while nothing ever restarted it.
-        or unit == "hermes-dashboard.service"
-        or unit.startswith("hermes-dashboard-")
+        or _is_serve_or_dashboard_unit(unit)
     )
 
 
@@ -1018,7 +1025,7 @@ _DESKTOP_SERVE_SKIP_REASON = (
 # survivors reported by _surviving_pre_update_serve_runtimes.
 _SERVE_SKIP_REASON = (
     "no per-profile relaunch command reaches a serve/dashboard runtime; recovered by the fresh"
-    " systemd unit pass when it owns a hermes-serve* unit, else left running for explicit"
+    " systemd unit pass when a hermes-serve*/hermes-dashboard* unit owns it, else left running for explicit"
     " operator restart"
 )
 # A launchd-owned backend (#116503): the fresh child has no per-label kickstart for serve/dashboard

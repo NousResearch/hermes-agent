@@ -605,8 +605,8 @@ def _kill_stale_dashboard_processes(
     Manually-started dashboards are not auto-restarted because we don't know the original launch args
     (--host, --port, --insecure, --tui, --no-open). See #68934.
     *already_restarted_units* names units (no ``.service`` suffix) the caller already handled directly —
-    e.g. ``hermes update``'s systemd fleet-restart loop, which restarts (or, without root, declines and
-    names) ``hermes-serve*``/``hermes-dashboard*`` units before this function runs. Without excluding them,
+    e.g. ``hermes update``'s systemd fleet-restart loop, which restarts, declines (without root) or fails
+    ``hermes-serve*``/``hermes-dashboard*`` units, reporting each, before this function runs. Without excluding them,
     a Serve-only install's freshly restarted process is found again here and restarted a second time for
     no benefit (review on #83595), and a declined system unit is retried into a polkit prompt (#141021).
     """

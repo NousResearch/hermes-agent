@@ -183,13 +183,12 @@ def _named_gateways_still_owed() -> bool:
 
 
 def _is_serve_unit(name: object) -> bool:
-    """A serve/dashboard unit by the fleet loop's OWN name gate (``hermes-serve*``/``hermes-dashboard*``,
+    """A serve/dashboard unit by the fleet loop's own name gate (``hermes-serve*``/``hermes-dashboard*``,
     bare or ``.service``). Anything else it records as failed (gateway units, launchd labels,
     listing-failure markers) is gateway evidence."""
-    from hermes_cli.update_cmd_fleet import _is_hermes_gateway_unit, _service_unit_supports_graceful_sigusr1_restart
+    from hermes_cli.update_cmd_fleet import _is_serve_or_dashboard_unit
 
-    base = str(name).removesuffix(".service")
-    return _is_hermes_gateway_unit(f"{base}.service") and not _service_unit_supports_graceful_sigusr1_restart(base)
+    return _is_serve_or_dashboard_unit(f"{str(name).removesuffix('.service')}.service")
 
 
 def _restart_phase_owes_gateway(restart) -> bool:
@@ -210,6 +209,14 @@ def _split_unaccounted(outcomes) -> tuple[bool, set]:
     return any(o.get("kind") not in _SERVE_KINDS for o in missed), serve_pids
 
 
+# The Desktop hand-offs (scripts/desktop-update/posix.sh, windows.ps1) drop their "Run hermes gateway
+# restart" hint only when every gateway_restart reason starts with this prefix, so every serve-only
+# part below starts with it and the gateway part always comes first (#141071).
+SERVE_ONLY_REASON_PREFIX = "serve/dashboard "
+_GATEWAY_OWED_REASON = "gateways may still run pre-update code or were stopped without a successor"
+_GATEWAY_RECOVERY = "; recover with `hermes gateway restart`"
+
+
 def _owed_restart_reason(restart, stopped, *, gateway_owed: bool, stale_serves: set, down_serves: set) -> str:
     """The ``gateway_restart`` follow-up's reason, naming what is actually owed (#141021).
 
@@ -219,25 +226,24 @@ def _owed_restart_reason(restart, stopped, *, gateway_owed: bool, stale_serves: 
     parts = []
     if gateway_owed:
         parts.append(
-            "gateways may still run pre-update code or were stopped without a successor"
+            _GATEWAY_OWED_REASON
             + (f" (stopped PIDs {', '.join(map(str, stopped))})" if stopped else "")
-            + "; recover with `hermes gateway restart`")
+            + _GATEWAY_RECOVERY)
     units = sorted({str(u).removesuffix(".service") for u in restart.failed_or_stale_units if _is_serve_unit(u)})
     if units:
         parts.append(
-            f"serve/dashboard unit(s) {', '.join(units)} were not restarted onto the new code;"
+            f"{SERVE_ONLY_REASON_PREFIX}unit(s) {', '.join(units)} were not restarted onto the new code;"
             " see the systemctl advice above")
     if down_serves:
         parts.append(
-            f"serve/dashboard process(es) {', '.join(map(str, sorted(down_serves)))} were stopped during the"
+            f"{SERVE_ONLY_REASON_PREFIX}process(es) {', '.join(map(str, sorted(down_serves)))} were stopped during the"
             " update and not brought back; relaunch `hermes serve` / `hermes dashboard`")
     if stale_serves - down_serves:
         parts.append(
-            f"serve/dashboard process(es) {', '.join(map(str, sorted(stale_serves - down_serves)))} still run"
+            f"{SERVE_ONLY_REASON_PREFIX}process(es) {', '.join(map(str, sorted(stale_serves - down_serves)))} still run"
             " pre-update code; restart them as advised above")
     # Nothing classified (an unknown incompleteness): keep the historical, conservative wording.
-    return "; ".join(parts) or (
-        "gateways may still run pre-update code or were stopped without a successor; recover with `hermes gateway restart`")
+    return "; ".join(parts) or (_GATEWAY_OWED_REASON + _GATEWAY_RECOVERY)
 
 
 def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_resume, update_complete):

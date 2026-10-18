@@ -1279,11 +1279,13 @@ if [ "$CODE" -eq 0 ]; then FINAL_CODE=0 FINAL_MSG="Update complete." UPDATE_COMM
   OWED_STEPS="$(owed_followup_steps)"
   if [ -n "$OWED_STEPS" ]; then
     # A gateway_restart owed only for serve/dashboard units (the reason then starts with
-    # "serve/dashboard") names their own command in the log; every other gateway_restart reason,
-    # including a raw restart-phase error, keeps the gateway hint (#141071).
+    # "serve/dashboard ", hermes_cli/update_cmd_fleet_verify.SERVE_ONLY_REASON_PREFIX) names their own
+    # command in the log. The hint drops only when EVERY gateway_restart line is serve-only; any other
+    # reason, including a raw restart-phase error, keeps it (#141071).
     case " $OWED_STEPS " in *" gateway_restart "*) OWED_HINT=" Run hermes gateway restart to move the messaging gateway onto the new code now." ;; *) OWED_HINT="" ;; esac
-    if printf '%s\n' "$OUT" | grep -Eq "Update follow-up 'gateway_restart' did not finish: serve/dashboard " \
-      && ! printf '%s\n' "$OUT" | grep -Eq "Update follow-up 'gateway_restart' did not finish: .*hermes gateway restart"; then
+    GW_REASONS="$(printf '%s\n' "$OUT" | grep "Update follow-up 'gateway_restart' did not finish: ")"
+    if [ -n "$GW_REASONS" ] && ! printf '%s\n' "$GW_REASONS" | grep -vq "did not finish: serve/dashboard " \
+      && ! printf '%s\n' "$GW_REASONS" | grep -q "hermes gateway restart"; then
       OWED_HINT=""
     fi
     if [ -n "$DONE_NOTE" ]; then DONE_NOTE="$DONE_NOTE Follow-up steps still owed: $OWED_STEPS.$OWED_HINT"

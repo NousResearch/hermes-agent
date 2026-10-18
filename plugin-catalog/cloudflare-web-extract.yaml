@@ -1,0 +1,14 @@
+name: cloudflare-web-extract
+repo: https://github.com/Tsurgcom/cloudflare-web-extract
+sha: 28fd57e2a22a955f9e5122ee3d9450c0ce9fe9d0
+version: "0.1.0"
+description: "Keyless source-first web extract backend built on Cloudflare's official Markdown for Agents content negotiation (category web). Fetches the target site directly with Accept: text/markdown, text/html — Cloudflare's edge converts enabled zones on the fly; other sites are converted locally with a stdlib HTML-to-text washer. No third-party converter service, no API key, no login; the only host contacted is the site itself. Not a Cloudflare official plugin — an independent community plugin by Tsurgcom. Disclosure — returned page content enters the agent context as untrusted data; do not extract authenticated or private pages; some sites block bots (403/429), which the backend reports as structured per-URL errors. No env vars, no stored credentials, no shell or subprocess use; URLs are scheme-validated (http/https only), responses are streamed under a 10 MB cap with a 30 s timeout, and 429/5xx get one bounded retry."
+maintainer: Tsurgcom
+tier: community
+category: web
+docs_url: https://github.com/Tsurgcom/cloudflare-web-extract#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

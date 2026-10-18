@@ -31,6 +31,8 @@ class ReadResult:
     not_found: bool = False
     similar_files: list[str] = field(default_factory=list)
     _snapshot: Optional[tuple] = None
+    # The display gutter removes one final newline; keep it for plain reads.
+    _trailing_newline: bool = False
     # sha256 of the exact on-disk bytes ``read_file_raw`` decoded (BOM included).
     _content_sha256: Optional[str] = None
 

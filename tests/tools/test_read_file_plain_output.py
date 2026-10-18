@@ -47,6 +47,17 @@ def test_plain_output_preserves_literal_lines_and_page_contract(tmp_path, monkey
         file_tools.clear_file_ops_cache("plain-document")
 
 
+def test_plain_output_preserves_terminal_newlines(tmp_path):
+    for index, content in enumerate(("alpha\n", "\n", "alpha\n\n", "alpha\nbeta\n", "1|keep\n")):
+        path = tmp_path / f"terminated-{index}.txt"
+        path.write_text(content, encoding="utf-8")
+        task = f"terminated-{index}"
+        try:
+            assert _call(path, task, line_numbers=False)["content"] == content
+        finally:
+            file_tools.clear_file_ops_cache(task)
+
+
 def test_output_format_keeps_dedup_write_and_denial_boundaries(tmp_path):
     path = tmp_path / "guarded.txt"
     path.write_text("1|keep", encoding="utf-8")

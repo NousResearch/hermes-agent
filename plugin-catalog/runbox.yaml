@@ -1,6 +1,6 @@
 name: runbox
 repo: https://github.com/Zek-Takai/hermes-runbox
-sha: b62512bf7914d30e063e4f55ecb2abad76d2ddcf
+sha: 544e6f35c65c45d085a90078a328dbd8c3fb8872
 subdir: plugin
 title: runbox
 version: "0.1.0"
@@ -10,10 +10,10 @@ tier: community
 category: tools
 requires_hermes: ">=0.22.2"
 platforms: [linux, macos]
-image: https://raw.githubusercontent.com/Zek-Takai/hermes-runbox/b62512bf7914d30e063e4f55ecb2abad76d2ddcf/docs/runbox-banner.png
+image: https://raw.githubusercontent.com/Zek-Takai/hermes-runbox/544e6f35c65c45d085a90078a328dbd8c3fb8872/docs/runbox-banner.png
 screenshots:
-  - https://raw.githubusercontent.com/Zek-Takai/hermes-runbox/b62512bf7914d30e063e4f55ecb2abad76d2ddcf/docs/runbox-desktop.png
-  - https://raw.githubusercontent.com/Zek-Takai/hermes-runbox/b62512bf7914d30e063e4f55ecb2abad76d2ddcf/docs/runbox-demo.gif
+  - https://raw.githubusercontent.com/Zek-Takai/hermes-runbox/544e6f35c65c45d085a90078a328dbd8c3fb8872/docs/runbox-desktop.png
+  - https://raw.githubusercontent.com/Zek-Takai/hermes-runbox/544e6f35c65c45d085a90078a328dbd8c3fb8872/docs/runbox-demo.gif
 known_issues:
   - "Needs Docker: on macOS install colima and the docker CLI (brew install colima docker); on Linux a running Docker daemon. The first start on macOS downloads the VM image and takes a few minutes."
   - "The Hermes data folder must be under your home folder on macOS (colima shares only that)."

@@ -1,24 +1,3 @@
-# KATALOG GİRDİSİ (yerel kopya) — hermes-agent `plugin-catalog/offpeak-bekci.yaml` girdisinin tek kaynağı.
-# PR: https://github.com/NousResearch/hermes-agent/pull/139797 — dal `add-offpeak-bekci`, fork `onkanat/hermes-agent`.
-# Katalog kuralları: hermes-agent/plugin-catalog/README.md (madde 1-17); `sha` 40-hex zorunlu.
-#
-# GÖVDE EŞİTLİĞİ (ölçülür, iddia edilmez): PR'a giden dosya bu dosyanın yorumsuz gövdesidir —
-# `name:` satırından sonrası birebir aynı olmalı. Doğrulama:
-#   sed -n '/^name:/,$p' plugin-catalog/offpeak-bekci.yaml | shasum -a 256
-#   17.10.2026 (7b9a1c4, gövde): 68570f01a13889df6bdabbfcc930b457d7c31cd67f5b103004e2d80b9e4a659e
-#
-# PIN KURALI: pin = YAYIN AĞACINI taşıyan, yayınlanmış son içerik commit'i (bir commit kendi hash'ini
-# taşıyamaz → sabit nokta yok; `sha:` satırını tazeleyen defterleme commit'i onun üstüne biner).
-# Şu an pin `7b9a1c4…` = **0.1.4** yükü (İngilizce-önce kullanıcı metni + `dil` ayarı; `metinler.py` bu commit'te);
-# yayın ucu `bc23159` = katalog sürüm satırı hizası. Pin tazeleme gerekçesi (0.1.1 → 0.1.2): kuyruk özeti
-# yanıltıcıydı → artık toplam/onaylı/koşuldu yazar; iki yarı (sunucu + masaüstü) BİRLİKTE güncellenmelidir
-# (0.1.1 → 0.1.2'de `desktop/plugin.js` DEĞİŞMEDİ, `bekci_core.py` değişti).
-# BAĞIMLILIK: eklenti hiçbir bağımlılık bildirmez (`requires_env: []` · `python_dependencies: []`) →
-# `--no-deps` GEREKSİZDİR ve **aktif bir eklentiyi değiştirirken reddedilir** ("--no-deps cannot replace
-# an active plugin"); bağımlılık yokken doğru kurulum `hermes plugins install <repo> --ref <pin> --force
-# --enable` (16.10.2026: bir peer makinesinde ölçüldü).
-#
-# TEMİZ KLONDA KABUL (atlanmaz): git clone https://github.com/onkanat/hermes-offpeak-bekci /tmp/x && git -C /tmp/x checkout 7b9a1c4abbe3f30b7869c41f35c9056af676d020 && hermes plugins validate /tmp/x --install-deps   → EXIT=0 (16.10.2026: geçti; bağımlılık olmadığı için --install-deps no-op'tur)
 name: offpeak-bekci
 repo: https://github.com/onkanat/hermes-offpeak-bekci
 sha: 7b9a1c4abbe3f30b7869c41f35c9056af676d020
@@ -39,6 +18,4 @@ capabilities:
     - on_session_end
   provides_middleware:
     - llm_execution
-  # Kayıtlı komutlar manifestte beyan edilmez (şemada alan yok); bilgi amaçlı:
-  # /offpeak-durum · /offpeak-onayla · /offpeak-kur · /offpeak-kaldir
   requires_env: []

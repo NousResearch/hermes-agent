@@ -147,4 +147,47 @@ def test_build_message_event_uses_channel_identity_for_channel_posts(telegram_ad
     assert event.source.user_name == "wzrd"
     assert event.platform_update_id == 12345
 
+def test_effective_update_message_ignores_edits(telegram_adapter_cls):
+    adapter = _make_adapter(telegram_adapter_cls)
+    msg = _make_channel_message("edited text")
+
+    # Edited message update
+    update_edited_msg = SimpleNamespace(
+        message=None,
+        edited_message=msg,
+        channel_post=None,
+        edited_channel_post=None,
+        effective_message=msg,
+    )
+    assert adapter._effective_update_message(update_edited_msg) is None
+
+    # Edited channel post update
+    update_edited_post = SimpleNamespace(
+        message=None,
+        edited_message=None,
+        channel_post=None,
+        edited_channel_post=msg,
+        effective_message=msg,
+    )
+    assert adapter._effective_update_message(update_edited_post) is None
+
+    # Normal message update
+    update_normal_msg = SimpleNamespace(
+        message=msg,
+        edited_message=None,
+        channel_post=None,
+        edited_channel_post=None,
+        effective_message=msg,
+    )
+    assert adapter._effective_update_message(update_normal_msg) is msg
+
+    # Normal channel post update
+    update_normal_post = SimpleNamespace(
+        message=None,
+        edited_message=None,
+        channel_post=msg,
+        edited_channel_post=None,
+        effective_message=msg,
+    )
+    assert adapter._effective_update_message(update_normal_post) is msg
 

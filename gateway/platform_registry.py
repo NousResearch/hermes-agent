@@ -175,6 +175,9 @@ class PlatformEntry:
     # Env names whose presence drives that enable, cited by the explicit-disable WARNING and used by
     # ``hermes_cli.profile_channels`` as the platform's credential set; () = none declared.
     env_enable_credentials: tuple = ()
+    # Opt in only when construction needs no running loop. Wiring/connect still run on-loop;
+    # Discord's constructor reads profile config and persisted thread state before connecting.
+    factory_off_loop: bool = False
 
 
 def core_ships_platform(name: str) -> bool:

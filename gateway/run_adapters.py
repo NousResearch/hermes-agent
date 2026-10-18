@@ -813,10 +813,7 @@ class GatewayAdapterLifecycleMixin:
         logger.info("Reconnecting %s (attempt %d)...", platform.value, attempt)
         adapter = None
         try:
-            from gateway.platform_registry import platform_registry
-            # A re-armed plugin import + register() joins its load deadline: run it off the event loop.
-            await self._run_in_executor_with_context(platform_registry.get, platform.value)
-            adapter = self._create_adapter(platform, platform_config)
+            adapter = await self._create_adapter_off_loop(platform, platform_config)
             if not adapter:
                 if not self._adapter_may_heal(platform, platform_config):
                     # Became builtin/registered-but-None: a config change is needed, so stop retrying.
@@ -1312,7 +1309,7 @@ class GatewayAdapterLifecycleMixin:
                 platform.value, exc_info=True,
             ):
                 with bind_profile_runtime_scope(prepared):
-                    adapter = self._create_adapter(platform, platform_config)
+                    adapter = await self._create_adapter_off_loop(platform, platform_config)
                 if not adapter:
                     logger.warning(
                         "[MULTIPLEX] Profile '%s': skipping platform '%s' - adapter creation returned None",
@@ -1465,7 +1462,7 @@ class GatewayAdapterLifecycleMixin:
                     platform.value, profile_name,
                 )
                 return None, None
-            adapter = self._create_adapter(platform, profile_config)
+            adapter = await self._create_adapter_off_loop(platform, profile_config)
             if adapter is None:
                 logger.warning(
                     "Secondary %s reconnect skipped: adapter unavailable (profile: %s)",

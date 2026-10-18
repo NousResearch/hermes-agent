@@ -10,11 +10,12 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from contextlib import asynccontextmanager
 
 import pytest
 
-import gateway.run as run
-import tools.terminal_scope as terminal_scope
+from gateway import run
+from tools import terminal_scope
 from agent.secret_scope import current_secret_scope, get_secret, set_multiplex_context, reset_multiplex_context
 from gateway.config import GatewayConfig, Platform
 from gateway.run import GatewayRunner
@@ -279,3 +280,171 @@ async def test_async_scope_pairing_grant_refreshes_bound_secrets(tmp_path, monke
         assert __import__("os").environ["DISCORD_ALLOWED_USERS"] == "ambient-admin"
     finally:
         reset_multiplex_context(token)
+
+
+@asynccontextmanager
+async def _held_read_witness():
+    started, released = threading.Event(), threading.Event()
+    loop_thread = threading.get_ident()
+    observed = SimpleNamespace(probes=0, on_loop=False)
+    stop = asyncio.Event()
+
+    def hold():
+        observed.on_loop |= threading.get_ident() == loop_thread
+        if started.is_set():
+            return
+        started.set()
+        released.wait(2.0)  # Finite red-path escape; a live loop releases it immediately.
+
+    async def probe():
+        while not stop.is_set():
+            if started.is_set() and not released.is_set():
+                observed.probes += 1
+                released.set()
+            await asyncio.sleep(0)
+
+    observed.hold = hold
+    ticker = asyncio.create_task(probe())
+    try:
+        yield observed
+        assert started.is_set(), "the real reader was not reached"
+        assert observed.probes > 0, "gateway loop starved while the reader was held"
+        assert not observed.on_loop, "blocking preparation still ran on the loop thread"
+    finally:
+        released.set()
+        stop.set()
+        await ticker
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("policy_file", [".env", "config.yaml"])
+async def test_launch_scope_blocked_read_keeps_loop_live(tmp_path, monkeypatch, policy_file):
+    from gateway.run_adapters import GatewayAdapterLifecycleMixin
+    from tui_gateway import launch_profile_policy as launch
+
+    home = tmp_path / "launch"
+    _profile(home, "docker")
+    monkeypatch.setattr("hermes_constants.get_process_hermes_home", lambda: home)
+    monkeypatch.setattr(launch, "_snapshot", {"PROFILE_MARKER": "frozen", "LAUNCH_ONLY": "env-only"})
+    monkeypatch.setenv("LAUNCH_ONLY", "polluted")
+    original_path_open, original_builtin_open = Path.open, builtins.open
+    token = set_multiplex_context(True)
+    before_home, before_secrets = get_hermes_home(), current_secret_scope()
+    try:
+        async with _held_read_witness() as witness:
+            def hold(path):
+                if Path(path) == home / policy_file:
+                    witness.hold()
+
+            def path_open(path, *args, **kwargs):
+                hold(path)
+                return original_path_open(path, *args, **kwargs)
+
+            def builtin_open(path, *args, **kwargs):
+                if isinstance(path, (str, Path)):
+                    hold(path)
+                return original_builtin_open(path, *args, **kwargs)
+
+            monkeypatch.setattr(Path, "open", path_open)
+            monkeypatch.setattr(builtins, "open", builtin_open)
+            scope = GatewayAdapterLifecycleMixin._async_scope_or_null(run._async_profile_runtime_scope, None)
+            async with scope:
+                assert get_hermes_home() == home
+                assert get_secret("PROFILE_MARKER") == "docker"
+                assert get_secret("LAUNCH_ONLY") == "env-only"
+                assert terminal_env("TERMINAL_ENV") == "docker"
+                assert await asyncio.to_thread(get_secret, "LAUNCH_ONLY") == "env-only"
+        assert get_hermes_home() == before_home
+        assert current_secret_scope() is before_secrets
+    finally:
+        reset_multiplex_context(token)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry", ["startup", "reconnect"])
+@pytest.mark.parametrize("reader", ["raw_config", "liveness"])
+async def test_real_discord_constructor_keeps_loop_live(tmp_path, monkeypatch, entry, reader):
+    from gateway import platform_registry as registry_module
+    from gateway.platform_registry import PlatformEntry, PlatformRegistry
+    from plugins.platforms.discord import adapter as discord_adapter
+    import hermes_cli.config as config_module
+
+    home = tmp_path / "profiles" / "served"
+    _profile(home, "docker")
+    monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda _name: home)
+    monkeypatch.setattr("hermes_cli.env_loader.hydrate_profile_secret_sources", lambda _home: None)
+    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+    registry = PlatformRegistry()
+    monkeypatch.setattr(registry_module, "platform_registry", registry)
+    monkeypatch.setattr(discord_adapter, "discord_deps_present", lambda: True)
+    discord_adapter.register(SimpleNamespace(register_platform=lambda **kwargs: registry.register(PlatformEntry(**kwargs))))
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(multiplex_profiles=True)
+    runner._running = True
+    runner._profile_adapters = {}
+    runner._profile_failed_platforms = {}
+    runner._snapshot_profile_busy_modes = lambda *a: None
+    runner._subscribe_plugin_rewire = lambda *a: None
+    runner._register_config_hooks = lambda *a, **k: None
+    runner._configure_profile_adapter = lambda *a: None
+    runner._connect_adapter_with_timeout = AsyncMock(return_value=True)
+    runner._connect_initial_adapter_with_timeout = AsyncMock(return_value=True)
+    runner._sync_voice_mode_state_to_adapter = lambda adapter: None
+    token = set_multiplex_context(True)
+    before_home, before_secrets = get_hermes_home(), current_secret_scope()
+    try:
+        async with _held_read_witness() as witness:
+            original = config_module.read_raw_config if reader == "raw_config" else discord_adapter.DiscordAdapter._config_value
+
+            def held_reader(*args, **kwargs):
+                witness.hold()
+                assert get_hermes_home() == home
+                assert get_secret("PROFILE_MARKER") == "docker"
+                return original(*args, **kwargs)
+
+            if reader == "raw_config":
+                monkeypatch.setattr(config_module, "read_raw_config", held_reader)
+            else:
+                monkeypatch.setattr(discord_adapter.DiscordAdapter, "_config_value", held_reader)
+            if entry == "startup":
+                assert await runner._start_one_profile_adapters("served", home, {}) == 1
+                adapter = runner._profile_adapters["served"][Platform.DISCORD]
+            else:
+                adapter, success = await runner._secondary_reconnect_attempt("served", Platform.DISCORD)
+                assert success
+            assert isinstance(adapter, discord_adapter.DiscordAdapter)
+            assert adapter._liveness_interval_seconds == 15.0
+            # Events created by the prepared adapter remain usable on the owning loop.
+            ready = asyncio.create_task(adapter._ready_event.wait())
+            asyncio.get_running_loop().call_soon(adapter._ready_event.set)
+            assert await asyncio.wait_for(ready, 2.0)
+        assert get_hermes_home() == before_home
+        assert current_secret_scope() is before_secrets
+    finally:
+        reset_multiplex_context(token)
+
+
+@pytest.mark.asyncio
+async def test_non_opted_in_adapter_factory_keeps_owning_loop(tmp_path, monkeypatch):
+    from gateway import platform_registry as registry_module
+    from gateway.platform_registry import PlatformEntry, PlatformRegistry
+    from gateway.config import PlatformConfig
+
+    home = tmp_path / "served"
+    _profile(home, "docker")
+    monkeypatch.setattr("hermes_cli.env_loader.hydrate_profile_secret_sources", lambda _home: None)
+    registry = PlatformRegistry()
+    monkeypatch.setattr(registry_module, "platform_registry", registry)
+    loop = asyncio.get_running_loop()
+    adapter = object()
+
+    def loop_bound_factory(platform, config):
+        assert asyncio.get_running_loop() is loop
+        assert get_hermes_home() == home
+        return adapter
+
+    registry.register(PlatformEntry("loop-bound", "Loop bound", lambda config: adapter, lambda: True))
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._create_adapter = loop_bound_factory
+    async with run._async_profile_runtime_scope(home):
+        assert await runner._create_adapter_off_loop(Platform("loop-bound"), PlatformConfig()) is adapter

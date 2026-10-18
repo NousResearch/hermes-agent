@@ -23,6 +23,7 @@ class PreparedProfileRuntimeScope:
 def prepare_profile_runtime_scope(
     profile_home: Path, prepared_secret_scope: Optional[Mapping[str, str]] = None, *,
     hydrate_secrets: bool = True,
+    env_overlay: Optional[dict[str, str]] = None,
 ) -> PreparedProfileRuntimeScope:
     """Blocking preparation phase; async callers must offload it, not the ContextVar binding."""
     from gateway.run import _load_profile_secret_scope
@@ -35,7 +36,7 @@ def prepare_profile_runtime_scope(
         if secrets is None:
             secrets = (_load_profile_secret_scope(profile_home) if hydrate_secrets
                        else owner_secret_scope(profile_home))
-        terminal = prepare_profile_terminal_scope(profile_home)
+        terminal = prepare_profile_terminal_scope(profile_home, env_overlay=env_overlay)
         return PreparedProfileRuntimeScope(
             str(profile_home), MappingProxyType(dict(secrets)),
             terminal if isinstance(terminal, TerminalPolicyRefusal) else MappingProxyType(terminal))

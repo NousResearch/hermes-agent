@@ -9,10 +9,12 @@ failures are fail-OPEN (``continue``); the turn budget is the backstop.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import os
 import re
+import sqlite3
 import subprocess
 import threading
 import time
@@ -448,6 +450,9 @@ class GoalState:
     waiting_on_delegations: int = 0
     waiting_reason: Optional[str] = None
     waiting_since: float = 0.0
+    # Monotonic identity for queued continuations. Pause/resume advances it so an old durable wake
+    # cannot revive after cleanup failure.
+    continuation_generation: int = 0
     contract: GoalContract = field(default_factory=GoalContract)
     # /goal gate add <cmd>: ALL must pass before the judge may declare done.
     gates: list[GoalGate] = field(default_factory=list)
@@ -461,6 +466,7 @@ class GoalState:
         raw_subgoals = data.get("subgoals") or []
         ints = {k: int(data.get(k) or 0) for k in ("turns_used", "consecutive_parse_failures", "consecutive_transport_failures", "waiting_on_delegations")}
         floats = {k: float(data.get(k) or 0.0) for k in ("created_at", "last_turn_at", "waiting_until", "waiting_since")}
+        ints["continuation_generation"] = int(data.get("continuation_generation") or 0)
         return cls(
             goal=data.get("goal", ""),
             status=data.get("status", "active"),
@@ -666,6 +672,56 @@ def save_goal(session_id: str, state: GoalState) -> None:
         db.set_meta(_meta_key(session_id), state.to_json())
     except Exception as exc:
         logger.debug("GoalManager: set_meta failed: %s", exc)
+
+
+def _load_goal_snapshot(session_id: str) -> tuple[Optional[str], Optional[GoalState]]:
+    """Read the exact durable goal JSON together with its parsed state."""
+    if not session_id:
+        return None, None
+    db = _get_session_db()
+    if db is None:
+        return None, None
+    try:
+        raw = db.get_meta(_meta_key(session_id))
+    except (OSError, RuntimeError, sqlite3.Error) as exc:
+        logger.debug("GoalManager: snapshot read failed: %s", exc)
+        return None, None
+    if not raw:
+        return raw, None
+    try:
+        return raw, GoalState.from_json(raw)
+    except (AttributeError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        logger.warning("GoalManager: could not parse stored goal for %s: %s", session_id, exc)
+        return raw, None
+
+
+def _commit_goal_if_unchanged(
+    session_id: str, expected_raw: str, state: GoalState,
+) -> tuple[bool, Optional[str]]:
+    """Atomically publish an evaluation result iff its input row is unchanged.
+
+    ``SessionDB._execute_write`` owns ``BEGIN IMMEDIATE`` and the commit.  Keeping the compare and
+    upsert in its callback closes the cross-process race that an in-process lock cannot cover.
+    """
+    db = _get_session_db()
+    if db is None:
+        return False, None
+    key = _meta_key(session_id)
+    candidate_raw = state.to_json()
+
+    def _write(conn):
+        row = conn.execute("SELECT value FROM state_meta WHERE key = ?", (key,)).fetchone()
+        current_raw = None if row is None else row[0]
+        if current_raw != expected_raw:
+            return False, current_raw
+        conn.execute(
+            "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, candidate_raw),
+        )
+        return True, candidate_raw
+
+    return db._execute_write(_write)
 
 
 def clear_goal(session_id: str) -> None:
@@ -1097,7 +1153,7 @@ class GoalManager:
     def __init__(self, session_id: str, *, default_max_turns: int = DEFAULT_MAX_TURNS):
         self.session_id = session_id
         self.default_max_turns = int(default_max_turns or DEFAULT_MAX_TURNS)
-        self._state: Optional[GoalState] = load_goal(session_id)
+        self._loaded_raw, self._state = _load_goal_snapshot(session_id)
 
     # --- introspection ------------------------------------------------
 
@@ -1143,7 +1199,9 @@ class GoalManager:
     # --- mutation -----------------------------------------------------
 
     def _save(self) -> Optional[GoalState]:
-        save_goal(self.session_id, self._state)
+        if not getattr(self, "_evaluation_only", False):
+            save_goal(self.session_id, self._state)
+            self._loaded_raw = self._state.to_json() if self._state is not None else None
         return self._state
 
     def _require_goal(self) -> GoalState:
@@ -1159,6 +1217,7 @@ class GoalManager:
     def _pause_state(self, reason: str) -> None:
         self._state.status = "paused"
         self._state.paused_reason = reason
+        self._state.continuation_generation += 1
         self._save()
 
     def _pause_decision(self, paused_reason: str, verdict: str, reason: str, message: str) -> dict[str, Any]:
@@ -1172,6 +1231,7 @@ class GoalManager:
         self._state = GoalState(
             goal=goal, status="active", turns_used=0, created_at=time.time(), last_turn_at=0.0,
             max_turns=int(max_turns) if max_turns else self.default_max_turns,
+            continuation_generation=0,
             contract=contract if contract is not None else GoalContract(),
         )
         return self._save()
@@ -1188,6 +1248,7 @@ class GoalManager:
             return None
         self._state.status = "paused"
         self._state.paused_reason = reason
+        self._state.continuation_generation += 1
         self._state.clear_wait()   # a wait barrier is meaningless once paused
         return self._save()
 
@@ -1196,6 +1257,7 @@ class GoalManager:
             return None
         self._state.status = "active"
         self._state.paused_reason = None
+        self._state.continuation_generation += 1
         self._state.clear_wait()   # resuming starts fresh
         if reset_budget:
             self._state.turns_used = 0
@@ -1485,24 +1547,48 @@ class GoalManager:
         """Run gates + judge and update state. Return a decision dict (``status``, ``should_continue``,
         ``continuation_prompt``, ``verdict``, ``reason``, ``message``). Both real user prompts and our
         own continuations increment ``turns_used`` — both consume model budget."""
+        # The manager's load is the evaluation's optimistic version. Check the durable row before
+        # starting slow work, but never replace the candidate with a newer goal. The final atomic
+        # compare below closes the race after this preflight read.
+        expected_raw = self._loaded_raw
+        current_raw, current_state = _load_goal_snapshot(self.session_id)
+        if current_raw != expected_raw:
+            self._state = current_state
+            self._loaded_raw = current_raw
+            return _decision("inactive", False, None, "inactive", "goal changed during evaluation", "")
         state = self._state
         if state is None or state.status != "active":
             return _decision(state.status if state else None, False, None, "inactive", "no active goal", "")
 
+        # Gate commands and the auxiliary judge can run for minutes. Work on a private copy so their
+        # bookkeeping never becomes visible until one atomic compare-and-write commits it. Controls
+        # from another GoalManager can therefore win while either slow operation is in flight.
+        worker = object.__new__(GoalManager)
+        worker.session_id = self.session_id
+        worker.default_max_turns = self.default_max_turns
+        worker._state = copy.deepcopy(state)
+        worker._evaluation_only = True
+        state = worker._state
+
         # Parked on a live process or an unexpired deadline: quiesce without burning a turn.
-        if self.is_waiting():
-            return self._waiting_decision(state)
+        if worker.is_waiting():
+            return self._commit_evaluation(expected_raw, worker, worker._waiting_decision(state))
 
         state.turns_used += 1
         state.last_turn_at = time.time()
 
         # Gates run BEFORE the judge: a failing gate is deterministic evidence the goal is not done,
         # so the judge is skipped and the gate's output drives the next turn (same turn budget).
-        gate_decision = self._check_gates()
+        gate_decision = worker._check_gates()
         if gate_decision is not None:
             if gate_decision.get("should_continue") and state.turns_used >= state.max_turns:
-                return self._budget_pause(state, "gate_failed", gate_decision.get("reason", ""), note=" (a quality gate is still failing)")
-            return gate_decision
+                decision = worker._budget_pause(
+                    state, "gate_failed", gate_decision.get("reason", ""),
+                    note=" (a quality gate is still failing)",
+                )
+            else:
+                decision = gate_decision
+            return self._commit_evaluation(expected_raw, worker, decision)
 
         verdict, reason, parse_failed, wait_directive, transport_failed = judge_goal(
             state.goal, last_response, subgoals=state.subgoals or None, background_processes=background_processes,
@@ -1517,51 +1603,66 @@ class GoalManager:
         state.consecutive_transport_failures = state.consecutive_transport_failures + 1 if transport_failed else 0
 
         if verdict == "wait" and wait_directive:
-            parked = self._apply_wait_directive(wait_directive, reason, active_delegations=active_delegations)
+            parked = worker._apply_wait_directive(wait_directive, reason, active_delegations=active_delegations)
             if parked is not None:
-                return parked
+                return self._commit_evaluation(expected_raw, worker, parked)
 
         # BLOCKED is NOT done: pause so the user sees the judge's reason and can re-scope or override,
         # instead of burning turns on an unachievable goal or waving it through as complete.
         # BLOCKED verdict: the judge ruled the goal genuinely cannot be satisfied as stated (impossible, out
         # of scope, needs user input). See #100954.
         if verdict == "blocked":
-            return self._pause_decision(
+            decision = worker._pause_decision(
                 f"judged unachievable: {reason}", "blocked", reason,
                 f"🚫 Goal judged unachievable — paused: {reason} Re-scope with /goal set, or override with /goal resume.",
             )
+            return self._commit_evaluation(expected_raw, worker, decision)
 
         if verdict == "done":
             state.status = "done"
-            self._save()
-            return _decision("done", False, None, "done", reason, f"✓ Goal achieved: {reason}")
+            decision = _decision("done", False, None, "done", reason, f"✓ Goal achieved: {reason}")
+            return self._commit_evaluation(expected_raw, worker, decision)
 
         # Persistent judge failures (API unreachable / unparseable output) auto-pause and point at the
         # goal_judge config so a broken judge can't burn the whole turn budget.
         n_tx, n_parse = state.consecutive_transport_failures, state.consecutive_parse_failures
         if n_tx >= DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES:
-            return self._pause_decision(
+            decision = worker._pause_decision(
                 f"judge API unreachable {n_tx} turns in a row (check auxiliary.goal_judge provider/key in config.yaml)",
                 "continue", reason,
                 f"⏸ Goal paused — judge API returned errors ({n_tx} turns). Check the goal_judge provider/key in "
                 + _JUDGE_CONFIG_HINT.format(provider="deepseek", model="deepseek-flash"),
             )
+            return self._commit_evaluation(expected_raw, worker, decision)
         if n_parse >= DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES:
-            return self._pause_decision(
+            decision = worker._pause_decision(
                 f"judge model returned unparseable output {n_parse} turns in a row", "continue", reason,
                 f"⏸ Goal paused — the judge model ({n_parse} turns) isn't returning the required JSON verdict. "
                 "Route the judge to a stricter model in "
                 + _JUDGE_CONFIG_HINT.format(provider="openrouter", model="google/gemini-3-flash-preview"),
             )
+            return self._commit_evaluation(expected_raw, worker, decision)
 
         if state.turns_used >= state.max_turns:
-            return self._budget_pause(state, "continue", reason)
+            return self._commit_evaluation(expected_raw, worker, worker._budget_pause(state, "continue", reason))
 
-        self._save()
-        return _decision(
-            "active", True, self.next_continuation_prompt(), "continue", reason,
+        decision = _decision(
+            "active", True, worker.next_continuation_prompt(), "continue", reason,
             f"↻ Continuing toward goal ({state.turns_used}/{state.max_turns}): {reason}",
         )
+        return self._commit_evaluation(expected_raw, worker, decision)
+
+    def _commit_evaluation(
+        self, expected_raw: Optional[str], worker: GoalManager, decision: dict[str, Any],
+    ) -> dict[str, Any]:
+        committed, current_raw = _commit_goal_if_unchanged(self.session_id, expected_raw or "", worker._state)
+        if committed:
+            self._state = worker._state
+            self._loaded_raw = worker._state.to_json()
+            return decision
+        self._state = GoalState.from_json(current_raw) if current_raw else None
+        self._loaded_raw = current_raw
+        return _decision("inactive", False, None, "inactive", "goal changed during evaluation", "")
 
     def next_continuation_prompt(self) -> Optional[str]:
         s = self._state

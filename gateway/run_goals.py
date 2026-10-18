@@ -335,7 +335,15 @@ class GatewayGoalsMixin:
             # Commit the continuation there, as main's TUI chained it after the turn.
             from gateway.session_automation import admit_route_wake
             try:
-                await admit_route_wake(self, self._delivery_adapter_for(source), source, prompt, "goal-continuation")
+                state = mgr.state
+                metadata = {
+                    "goal_continuation_generation": state.continuation_generation,
+                    "goal_continuation_created_at": state.created_at,
+                } if state is not None else None
+                await admit_route_wake(
+                    self, self._delivery_adapter_for(source), source, prompt,
+                    "goal-continuation", metadata,
+                )
             except Exception:  # health: allow BLE001 -- best-effort like the FIFO enqueue below; traceback logged
                 logger.debug("goal continuation: local admission failed", exc_info=True)
             return
@@ -347,6 +355,14 @@ class GatewayGoalsMixin:
                 self._enqueue_fifo(_quick_key, self._synthetic_prompt_event(source, prompt), adapter)
         except Exception as exc:
             logger.debug("goal continuation: enqueue failed: %s", exc)
+
+    @staticmethod
+    def _goal_hook_result_is_eligible(agent_result: Any) -> bool:
+        """A visible failure/interruption is guidance, not evidence for the goal judge."""
+        if not isinstance(agent_result, dict):
+            return True
+        return not (agent_result.get("failed") or agent_result.get("interrupted")
+                    or agent_result.get("completed") is False)
 
     async def _run_post_turn_hooks(
         self, *, agent_result: Any, source: Any, is_internal: bool, event: Any = None,
@@ -367,7 +383,10 @@ class GatewayGoalsMixin:
         # Empty interrupted/errored responses must not drive /goal, but an in-flight /loop tick
         # still needs to be released and rescheduled.
         hooks = [("loop completion", self._post_turn_loop_completion)]
-        if final_text.strip():
+        eligible = self._goal_hook_result_is_eligible(agent_result)
+        if event is not None and hasattr(event, "_goal_hook_eligible"):
+            eligible = eligible and bool(event._goal_hook_eligible)
+        if eligible and final_text.strip():
             hooks.insert(0, ("goal continuation", self._post_turn_goal_continuation))
         for label, hook in hooks:
             try:

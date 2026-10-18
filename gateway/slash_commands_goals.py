@@ -54,18 +54,23 @@ class GatewayGoalCommandsMixin:
         # executor hop; manager I/O must also stay off the messaging event loop.
         result = await self._run_in_executor_with_context(dispatch)
         if result.clear_pending:
-            self._clear_goal_continuations(event, result.clear_pending)
+            await self._clear_goal_continuations(event, result.clear_pending)
         if result.prompt:
             self._enqueue_goal_turn(event, result.prompt, label="command enqueue", kickoff=result.kickoff)
         return result.output
 
-    def _clear_goal_continuations(self, event: MessageEvent, verb: str) -> None:
+    async def _clear_goal_continuations(self, event: MessageEvent, verb: str) -> None:
         try:
             adapter, quick_key = self._adapter_and_key_for(event)
             if adapter and quick_key:
                 self._clear_goal_pending_continuations(quick_key, adapter)
         except Exception as exc:
-            logger.debug("goal %s: pending continuation cleanup failed: %s", verb, exc)
+            logger.debug("goal %s: adapter continuation cleanup failed: %s", verb, exc, exc_info=True)
+        try:
+            from gateway.session_automation import withdraw_goal_continuations
+            await withdraw_goal_continuations(self, event.source)
+        except Exception as exc:  # health: allow BLE001 -- durable withdrawal must remain independent of adapter cleanup
+            logger.debug("goal %s: durable continuation cleanup failed: %s", verb, exc, exc_info=True)
 
     def _enqueue_goal_turn(
         self, event: MessageEvent, text: str, *, label: str, kickoff: bool

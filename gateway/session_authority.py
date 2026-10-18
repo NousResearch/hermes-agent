@@ -930,14 +930,12 @@ class SessionAuthority:
                 # waits queued, as main's pending slot did; /stop and /new still cancel it.
                 return 'classic_busy', first
             self._require_admission_open()
-            from gateway.session_runtime_workers import tracked_write
+            from gateway.session_runtime_workers import track_mutation
+            from gateway.session_automation import claim_with_goal_check
             live.rescan = False  # a _schedule from here on may not be visible to this claim's read
-            # The row these checks validated, never whichever is first when the write runs: a
-            # cancellation commits from a worker thread and can advance the FIFO at any point.
-            row = await tracked_write(self, partial(claim_session_input, self.db, epoch=self.epoch,
-                                                    session_id=ref.session_id, _guard=self._admission_gate(),
-                                                    head=first['admission_id'] if first is not None else None),
-                                      then=partial(self._stamp_claim, ref, live))
+            # Include inactive-goal withdrawal in the shield: a disconnect cannot separate a
+            # refused claim from cancellation and the observer settlement it owes.
+            row = await asyncio.shield(track_mutation(self, claim_with_goal_check(self, ref, live, first)))
             # Input scheduled while this claim's transaction ran may postdate its read: re-read
             # instead of letting the drain exit idle over a committed admission.
             return (False if row is None and live.rescan else row), first

@@ -5,13 +5,17 @@ A producer ACK means committed input, not successful inference or outbound deliv
 """
 from copy import deepcopy
 from datetime import UTC, datetime
+import asyncio
 import json
 import logging
+import math
 
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session_contract import SessionRef
-from hermes_state_runtime import RuntimeStoreError, admit_session_input, list_session_admissions
+from hermes_state_runtime import (
+    RuntimeStoreError, admit_session_input, get_session_admission, list_session_admissions,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +138,21 @@ def _descriptor(payload):
     return payload.get('local_automation_v1') or (payload.get('native_text_v1') or {}).get('automation') or {}
 
 
+def _goal_continuation_metadata(metadata):
+    generation = metadata.get('goal_continuation_generation')
+    created_at = metadata.get('goal_continuation_created_at')
+    if generation is None and created_at is None:
+        return {}
+    if type(generation) is not int or generation < 0:
+        raise RuntimeStoreError('invalid_params')
+    if type(created_at) not in (int, float) or not math.isfinite(float(created_at)) or created_at < 0:
+        raise RuntimeStoreError('invalid_params')
+    return {
+        'goal_continuation_generation': generation,
+        'goal_continuation_created_at': float(created_at),
+    }
+
+
 def _tick_metadata(metadata):
     """A liveness tick's stored output (``heartbeat_tick``): what a later tick folds in."""
     tick = metadata.get('heartbeat_tick')
@@ -245,9 +264,114 @@ async def _withdraw(authority, row):
     try:
         receipt = await authority.cancel_queued(
             actor, SessionRef(authority.profile_id, row['target_session_id']), row['admission_id'])
-    except RuntimeStoreError:
-        return False
+    except RuntimeStoreError as exc:
+        if exc.reason not in {'stale_generation', 'not_found'}:
+            raise
+        current = get_session_admission(authority.db, admission_id=row['admission_id'])
+        if current is None or current.get('status') != 'queued':
+            return False
+        raise
     return receipt.outcome == 'cancelled'
+
+
+def is_goal_continuation_row(row, route):
+    """True only for this route's durable /goal continuation admission.
+
+    The producer and route are part of the trusted descriptor. Matching the visible prompt or a
+    user supplied request id would let pause/clear remove an unrelated queued message.
+    """
+    if row.get('status') != 'queued' or row.get('principal_id') != 'automation:' + route:
+        return False
+    payload = row.get('payload') or {}
+    descriptor = payload.get('local_automation_v1')
+    if not isinstance(descriptor, dict) or descriptor.get('identity') != row.get('request_id'):
+        return False
+    try:
+        identity = json.loads(row['request_id'])
+    except (TypeError, ValueError):
+        return False
+    return (isinstance(identity, list) and len(identity) == 3
+            and identity[0] == 'goal-continuation' and identity[1] == route)
+
+
+class InactiveGoalContinuation(RuntimeStoreError):
+    """A trusted goal wake lost its active goal, not its route authorization."""
+
+    def __init__(self):
+        super().__init__('admission_conflict')
+
+
+def check_goal_claim(db, route, conn, row):
+    """Fence the selected goal wake against pause/clear in the claim's writer transaction."""
+    if not is_goal_continuation_row(row, route):
+        return
+    root = str(row['payload']['local_automation_v1'].get('owner') or '').strip()
+    descriptor = row['payload']['local_automation_v1']
+    tip = db._compression_tip_on(conn, root) if root else ''
+    raw = conn.execute('SELECT value FROM state_meta WHERE key=?', ('goal:' + tip,)).fetchone() if tip else None
+    try:
+        state = json.loads(raw[0]) if raw is not None else None
+        active = isinstance(state, dict) and state.get('status') == 'active'
+        expected_generation = descriptor.get('goal_continuation_generation')
+        expected_created_at = descriptor.get('goal_continuation_created_at')
+        has_identity = expected_generation is not None or expected_created_at is not None
+        has_generation = isinstance(state, dict) and 'continuation_generation' in state
+        if has_identity:
+            active = (active and has_generation and type(expected_generation) is int and expected_generation >= 0
+                      and type(expected_created_at) in (int, float)
+                      and math.isfinite(float(expected_created_at))
+                      and expected_generation == int(state.get('continuation_generation') or 0)
+                      and float(expected_created_at) == float(state.get('created_at') or 0.0))
+        else:
+            # A descriptor without identity is compatible only with a fully untouched pre-identity
+            # goal row. Any save by current code stamps continuation_generation, so an old wake cannot
+            # revive after pause/resume or replacement even when cleanup missed it.
+            active = active and not has_generation
+    except (TypeError, ValueError, AttributeError, json.JSONDecodeError):
+        active = False
+    if not active:
+        # Roll back the claim without advancing generation. The authority's normal cancellation
+        # path owns the durable terminal transition AND the shielded observer settlement.
+        raise InactiveGoalContinuation()
+
+
+async def claim_with_goal_check(authority, ref, live, first):
+    """Claim the validated head, or cancel its inactive goal and settle all waiting observers."""
+    from functools import partial
+    from gateway.session_authority import claim_session_input
+    from gateway.session_runtime_workers import tracked_write
+    try:
+        return await tracked_write(authority, partial(
+            claim_session_input, authority.db, epoch=authority.epoch, session_id=ref.session_id,
+            _guard=authority._admission_gate(),
+            _preclaim=partial(check_goal_claim, authority.db, live.route),
+            head=first['admission_id'] if first is not None else None),
+            then=partial(authority._stamp_claim, ref, live))
+    except InactiveGoalContinuation:
+        # Pause/clear may have committed after the asynchronous preflight. Withdraw through the
+        # authority so status and all observers settle together; the caller's drain will re-read FIFO.
+        if first is not None:
+            await _withdraw(authority, first)
+        return False
+
+
+async def withdraw_goal_continuations(runner, source):
+    """Withdraw queued durable goal wakes for *source* and settle their observers."""
+    from gateway.session_authorities import active_authority
+    authority = active_authority(runner)
+    if authority is None:
+        return 0
+    route = runner._session_key_for_source(source)
+    entry = runner.session_store.lookup_by_session_key(route)
+    if entry is None or source.platform != Platform.LOCAL:
+        return 0
+    rows = await asyncio.to_thread(list_session_admissions, authority.db,
+                                    session_id=_route_owner(authority, entry))
+    withdrawn = 0
+    for row in rows:
+        if is_goal_continuation_row(row, route) and await _withdraw(authority, row):
+            withdrawn += 1
+    return withdrawn
 
 
 def _route_owner(authority, entry):
@@ -306,7 +430,8 @@ def automation_display_metadata(metadata):
 # proof at execution from the target the pre-claim check validated, and the turn's resolver reads it.
 _AUTOMATION_METADATA = frozenset({'gateway_session_key', 'gateway_session_id', 'automation_identities',
     'turn_author', 'notification_origin', 'original_trigger_message_id', 'notification_category',
-    'display_kind', 'display_text', 'gateway_proven_session_id', 'gateway_completion_ids', 'heartbeat_tick'})
+    'display_kind', 'display_text', 'gateway_proven_session_id', 'gateway_completion_ids', 'heartbeat_tick',
+    'goal_continuation_generation', 'goal_continuation_created_at'})
 
 
 def admission_display(payload):
@@ -348,7 +473,7 @@ def snapshot_automation(authority, adapter, event, identity):
             or set(event.metadata) - _AUTOMATION_METADATA):
         raise RuntimeStoreError('invalid_params')
     notification = (automation_notification_metadata(event.metadata) | automation_display_metadata(event.metadata)
-                    | _tick_metadata(event.metadata))
+                    | _tick_metadata(event.metadata) | _goal_continuation_metadata(event.metadata))
     entry = _owner(runner, event, authority)
     if event.source.platform == Platform.LOCAL:
         return snapshot_local_automation(authority, adapter, event, identity, entry)
@@ -415,6 +540,7 @@ def snapshot_local_automation(authority, adapter, event, identity, entry):
     descriptor.update(automation_notification_metadata(event.metadata))
     descriptor.update(automation_display_metadata(event.metadata))
     descriptor.update(_tick_metadata(event.metadata))
+    descriptor.update(_goal_continuation_metadata(event.metadata))
     if event.metadata.get('turn_author') is not None:
         from agent.turn_author import parse_turn_author
         descriptor['turn_author'] = parse_turn_author(event.metadata['turn_author'])
@@ -453,6 +579,7 @@ def restore_local_automation(authority, ref, row):
             'gateway_session_id': entry.session_id})
     event.metadata.update(automation_notification_metadata(descriptor))
     event.metadata.update(automation_display_metadata(descriptor))
+    event.metadata.update(_goal_continuation_metadata(descriptor))
     if descriptor.get('turn_author') is not None:
         event.metadata['turn_author'] = deepcopy(descriptor['turn_author'])
     if descriptor.get('heartbeat'):

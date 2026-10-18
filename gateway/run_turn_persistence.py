@@ -549,9 +549,18 @@ class GatewayTurnPersistenceMixin:
         529: "gateway.errors.hint_overloaded",
     }
 
+    async def _hmwa_run_agent_for_event(self, event, **kwargs):
+        # Delivery returns text or None for streaming. Carry the raw outcome separately so a
+        # visible failure notice never becomes evidence for another persistent goal turn.
+        event._goal_hook_eligible = False
+        result = await self._run_agent(**kwargs)
+        event._goal_hook_eligible = self._goal_hook_result_is_eligible(result)
+        return result
+
     async def _hmwa_agent_error_reply(self, e, event, source, session_entry, session_key, prepared):
         """``except Exception`` body of the agent turn: stop typing, log, persist the inbound user
         turn once, and build the sanitized user-facing error reply."""
+        event._goal_hook_eligible = False
         # Retain Slack thread/workspace routing so a failed turn cannot leave its status visible.
         await self._hmwa_stop_typing_for_turn(event, source)
         logger.exception("Agent error in session %s", session_key)

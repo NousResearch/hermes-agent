@@ -530,7 +530,7 @@ function pendingTransition(
  * the tier pre-selected; lower = an in-app "Downgrade" (chargeless, scheduled via the
  * gateway). The already-scheduled downgrade target renders as an inert "Scheduled"
  * marker; other lower tiers stay actionable (picking one reschedules). With no active
- * subscription the lowest-order ($0 / free) tier stands in as the current plan, so
+ * subscription the $0 (free) tier stands in as the current plan, so
  * there is no "subscribe to Free" upgrade and no downgrade state.
  *
  * Empty unless `capable`: only a plans-capable account gets actionable tiles, and the
@@ -539,6 +539,10 @@ function pendingTransition(
  * Choose URLs when the subscription payload has no portal_url, so org_id + plan are
  * never dropped.
  */
+function isFreeTier(tier: SubscriptionTierOption): boolean {
+  return parseAmount(tier.dollars_per_month_display) === 0
+}
+
 function derivePlanTiers(
   subscription: null | SubscriptionStateResponse,
   fallbackPortalUrl: null | string,
@@ -565,11 +569,13 @@ function derivePlanTiers(
     return []
   }
 
-  // No active subscription → the lowest-order ($0 / free) tier stands in as the
-  // current plan: inert, never a "subscribe to Free" upgrade, and (being lowest)
-  // never leaving room for a downgrade.
-  const currentTier = explicitCurrent ?? (current == null ? gridTiers[0] : undefined)
-  const currentOrder = currentTier?.tier_order
+  // No active subscription → the $0 tier stands in as the current plan: inert and
+  // never a "subscribe to Free" upgrade. Free is identified by price, never by
+  // display order (the portal's order need not put it first). Every other tier is
+  // then an upgrade — without a subscription there is nothing to downgrade from.
+  const noSubscription = current == null && !explicitCurrent
+  const currentTier = explicitCurrent ?? (noSubscription ? gridTiers.find(isFreeTier) : undefined)
+  const currentOrder = noSubscription ? undefined : currentTier?.tier_order
   const manageBase = subscription.portal_url ?? fallbackPortalUrl
   // Only a downgrade has a target tier to mark; a cancellation has none.
   const pendingName = pending?.kind === 'downgrade' ? pending.tierName : null

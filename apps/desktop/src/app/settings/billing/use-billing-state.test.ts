@@ -634,6 +634,59 @@ describe('derivePlanTiers (plans grid)', () => {
     })
   })
 
+  it('identifies the free tier by price, not display order, when there is no subscription', () => {
+    // Portal display order is not price order: Plus (order 2) sorts before Free (order 5).
+    const tier = (name: string, price: number, order: number) => ({
+      dollars_per_month_display: `$${price}`,
+      is_current: false,
+      is_enabled: true,
+      monthly_credits: String(price),
+      name,
+      tier_id: name.toLowerCase(),
+      tier_order: order
+    })
+
+    const view = deriveBillingView(
+      okBilling(todayBillingState),
+      okSubscription({
+        ...todaySubscriptionState,
+        can_change_plan: true,
+        context: 'personal',
+        current: null,
+        tiers: [tier('Free', 0, 5), tier('Plus', 20, 2), tier('Super', 100, 4), tier('Ultra', 200, 9)]
+      })
+    )
+
+    const byName = Object.fromEntries(view.tiers.map(t => [t.name, t.state]))
+
+    expect(byName).toEqual({ Free: 'current', Plus: 'upgrade', Super: 'upgrade', Ultra: 'upgrade' })
+  })
+
+  it('marks no tier current when there is no subscription and the catalog has no free tier', () => {
+    const view = deriveBillingView(
+      okBilling(todayBillingState),
+      okSubscription({
+        ...todaySubscriptionState,
+        can_change_plan: true,
+        context: 'personal',
+        current: null,
+        tiers: [
+          {
+            dollars_per_month_display: '$20',
+            is_current: false,
+            is_enabled: true,
+            monthly_credits: '22',
+            name: 'Plus',
+            tier_id: 'plus',
+            tier_order: 1
+          }
+        ]
+      })
+    )
+
+    expect(view.tiers.map(t => t.state)).toEqual(['upgrade'])
+  })
+
   it('still lists a tier whose name has no art mapping (text-only card, no layout break)', () => {
     const view = deriveBillingView(
       okBilling(todayBillingState),

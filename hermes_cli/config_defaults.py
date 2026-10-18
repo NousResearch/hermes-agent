@@ -2350,6 +2350,15 @@ DEFAULT_CONFIG = {
             # Non-HTTPS refused unless the host is localhost.
             "endpoint": "https://telemetry.nousresearch.com/v1/telemetry",
         },
+        # Server-side billing collector: captures factual per-call usage + cost (from the live
+        # upstream response, e.g. OpenRouter usage.cost) into a SEPARATE local SQLite file
+        # (~/.hermes/billing/billing.db), never the core state.db. Off by default — flip to true
+        # (or set HERMES_BILLING_COLLECTOR=1) to start recording. No API keys/PII are stored.
+        "billing_collector": {
+            "enabled": False,
+            # Retention window (days) for billing rows; older rows are purged on cleanup.
+            "ttl_days": 90,
+        },
     },
 
     "doctor": {

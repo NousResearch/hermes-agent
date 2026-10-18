@@ -832,6 +832,82 @@ class CLIInfoMixin:
 
         cmd_insights(SimpleNamespace(days=days, source=source))
 
+    def _cmd_billing(self, command: str = "/billing"):
+        """Show server-side billing collector stats (`--group-by day|model|agent|task_id`,
+        `--model`, `--provider`, `--agent`, `--since`, `--until`, `--no-usage`, `--json`, `--enable`)."""
+        parts = command.split()
+        group_by = "day"
+        model = provider = agent = task_id = since = until = None
+        no_usage = False
+        as_json = False
+        enable = False
+        i = 1
+        while i < len(parts):
+            a = parts[i]
+            if a == "--group-by" and i + 1 < len(parts):
+                group_by = parts[i + 1]; i += 2
+            elif a == "--model" and i + 1 < len(parts):
+                model = parts[i + 1]; i += 2
+            elif a == "--provider" and i + 1 < len(parts):
+                provider = parts[i + 1]; i += 2
+            elif a == "--agent" and i + 1 < len(parts):
+                agent = parts[i + 1]; i += 2
+            elif a == "--task-id" and i + 1 < len(parts):
+                task_id = parts[i + 1]; i += 2
+            elif a == "--since" and i + 1 < len(parts):
+                since = parts[i + 1]; i += 2
+            elif a == "--until" and i + 1 < len(parts):
+                until = parts[i + 1]; i += 2
+            elif a == "--no-usage":
+                no_usage = True; i += 1
+            elif a == "--json":
+                as_json = True; i += 1
+            elif a == "--enable":
+                enable = True; i += 1
+            else:
+                i += 1
+
+        try:
+            from agent import billing_collector as bc
+            from decimal import Decimal
+
+            if enable:
+                import os as _os
+                _os.environ["HERMES_BILLING_COLLECTOR"] = "1"
+                print("  billing collector enabled for this session (HERMES_BILLING_COLLECTOR=1). "
+                      "Persist via telemetry.billing_collector.enabled: true in config.")
+                return
+
+            if not bc.is_collector_enabled():
+                print("  billing collector disabled. Enable with /billing --enable (this session) "
+                      "or set telemetry.billing_collector.enabled: true (persistent).")
+                return
+
+            col = bc.get_collector()
+            rows = col.stats(
+                group_by=group_by, model=model, provider=provider, agent=agent,
+                task_id=task_id, since=since, until=until, include_no_usage=not no_usage,
+            )
+            if as_json:
+                import json
+                print(json.dumps(
+                    [dict(r, total_cost_usd=str(r["total_cost_usd"])) for r in rows], indent=2
+                ))
+                return
+
+            print(f"  Billing by {group_by}  (total ${col.total_cost_usd():.4f})")
+            print(f"  {'bucket':<18} {'calls':>6} {'w/usg':>6} {'err':>4} {'cost_usd':>11} {'prompt_tok':>11}")
+            print("  " + "-" * 62)
+            for r in rows:
+                cost = r.get("total_cost_usd") or Decimal("0")
+                print(
+                    f"  {str(r.get('bucket')):<18} {r.get('calls', 0):>6} "
+                    f"{r.get('calls_with_usage', 0):>6} {r.get('calls_error', 0):>4} "
+                    f"{float(cost):>11.4f} {int(r.get('prompt_tokens') or 0):>11}"
+                )
+        except Exception as e:
+            print(f"  Error reading billing stats: {e}")
+
     def _check_config_mcp_changes(self) -> None:
         """Detect mcp_servers changes in config.yaml (polled from process_loop every
         CONFIG_WATCH_INTERVAL seconds) and react.

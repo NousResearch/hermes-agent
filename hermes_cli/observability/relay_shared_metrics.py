@@ -599,9 +599,14 @@ class _Runtime:
 
     def finish_task(self, event: dict[str, Any]) -> None:
         """Close one task scope exactly once with bounded terminal fields."""
-        session = self._any_session(event)
+        session, named = self._any_session(event), _text(event, "session_id")
         if session is None:
             return
+        if named and named != session.session_id:
+            # A close naming another session reaches a task-id match only across that conversation's rotation.
+            with self._lineage_lock:
+                if self._lineage_of.get(named) is None or self._lineage_of.get(named) != self._lineage_of.get(session.session_id):
+                    return
         with session.lock:
             finished = not session.closing and self._finish_task(
                 session, _text(event, "task_id"), event

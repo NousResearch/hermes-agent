@@ -16,6 +16,32 @@ from agent.lazy_forward import forward as _forward
 logger = logging.getLogger("run_agent")
 
 
+def claim_session_end(agent) -> Optional[tuple[str, str]]:
+    """``(task_id, turn_id)`` of the open run whose ``on_session_end`` the caller now owns: the first of
+    ``run_conversation``'s finally and a CLI exit that cannot wait for the daemon agent thread."""
+    try:
+        return agent._session_end_unclaimed.pop()
+    except (AttributeError, IndexError):  # no run open (or persistence disabled), or already claimed
+        return None
+
+
+def _emit_session_end(agent, result: Any, error: Optional[BaseException]) -> None:
+    """The run's ``on_session_end``, after its task metrics closed; a failing observer changes nothing."""
+    if (ids := claim_session_end(agent)) is None:
+        return
+    try:
+        from hermes_cli.lifecycle import invoke_hook
+        from hermes_cli.observability.relay_shared_metrics import _terminal_flags
+        flags = _terminal_flags(result, error)
+        invoke_hook(
+            "on_session_end", session_id=getattr(agent, "session_id", None), task_id=ids[0], turn_id=ids[1],
+            model=getattr(agent, "model", None), platform=getattr(agent, "platform", None) or "",
+            **{key: flags[key] for key in ("completed", "failed", "interrupted", "turn_exit_reason")},
+        )
+    except Exception:
+        logger.warning("on_session_end hook failed", exc_info=True)
+
+
 class TurnFacadeMixin:
     """run_conversation()/chat() (see module docstring)."""
 
@@ -65,6 +91,9 @@ class TurnFacadeMixin:
         }
         relay_turn_id = f"{session_id or 'session'}:{effective_task_id}:{uuid.uuid4().hex[:8]}"
         self._relay_pending_turn_id = relay_turn_id
+        # Opened before admission so every exit below ends the run once; a review fork opens none.
+        self._session_end_unclaimed = [] if getattr(self, "_persist_disabled", False) else [
+            (effective_task_id, relay_turn_id)]
         relay_parent_session_id = (
             str(getattr(self, "_parent_session_id", None) or "")
             if task_context["platform"] == "subagent"
@@ -72,8 +101,8 @@ class TurnFacadeMixin:
         )
         relay_lease = relay_turn = lease = None
         # Scope tokens start None: early returns leave the try before the set_*() calls and
-        # the finally resets each one unconditionally.
-        token = affinity_token = acct_token = None
+        # the finally resets each one unconditionally; so does the outcome on_session_end reports.
+        token = affinity_token = acct_token = result = error = None
         task_started = task_finished = False
         relay_outcome = "failed"
 
@@ -84,16 +113,14 @@ class TurnFacadeMixin:
                 self, session_id=session_id, relay_turn_id=relay_turn_id, task_context=task_context,
                 conversation_history=conversation_history,
             )
-            if admission.early_result is not None:
+            if (result := admission.early_result) is not None:
                 carry_unadmitted_user_message(
-                    admission.early_result, user_message, persist_user_message,
+                    result, user_message, persist_user_message,
                     timestamp=persist_user_timestamp, display_kind=persist_user_display_kind,
                     display_metadata=persist_user_display_metadata, platform_id=persist_user_platform_id,
                 )
-                relay_outcome = (
-                    "cancelled" if admission.early_result.get("interrupted") else "timed_out"
-                )
-                return admission.early_result
+                relay_outcome = "cancelled" if result.get("interrupted") else "timed_out"
+                return result
             lease = admission.lease
             conversation_history = admission.conversation_history
 
@@ -173,6 +200,7 @@ class TurnFacadeMixin:
                 finish_task_run(**task_context, result=result)
             return result
         except BaseException as exc:
+            error = exc
             if isinstance(exc, (KeyboardInterrupt, InterruptedError)) or (
                 type(exc).__name__ == "CancelledError"
             ):
@@ -188,6 +216,7 @@ class TurnFacadeMixin:
                 finish_task_run(**task_context, error=exc)
             raise
         finally:
+            _emit_session_end(self, result, error)  # after finish_task_run: the richer task close wins
             try:
                 if relay_turn is not None:
                     relay_runtime.SESSION_COORDINATOR.end_turn(relay_turn, outcome=relay_outcome)

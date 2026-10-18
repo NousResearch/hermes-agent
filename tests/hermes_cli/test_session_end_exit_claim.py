@@ -1,9 +1,4 @@
-"""A CLI exit and the run's own boundary end an interrupted run exactly once between them.
-
-The interactive CLI's agent thread is a daemon: an exit cannot wait for it, so the exit fires
-``on_session_end`` for a run still in flight. Whichever of the two claims the run first fires it;
-the other stays silent (``agent.turn_finalizer.claim_session_end``).
-"""
+"""The CLI exit and the public run boundary share one claim for the run's end hook."""
 
 import threading
 from types import SimpleNamespace
@@ -48,9 +43,10 @@ def test_exit_ends_a_run_stuck_in_its_provider_call_and_the_run_stays_silent(rea
         raise InterruptedError("provider call abandoned")
 
     ready._interruptible_api_call = _stuck_call
-    run = threading.Thread(target=ready.run_conversation, args=("hello",), daemon=True)
+    run = threading.Thread(target=ready.run_conversation, args=("hello",), kwargs={"task_id": "task-stuck"}, daemon=True)
     run.start()
     assert in_call.wait(30)
+    stuck_turn_id = ready._current_turn_id
 
     _shutdown_mid_turn(cli_mod, ready)
     release.set()
@@ -59,6 +55,7 @@ def test_exit_ends_a_run_stuck_in_its_provider_call_and_the_run_stays_silent(rea
     assert not run.is_alive()
     [end] = session_ends
     assert (end["completed"], end["interrupted"], end["reason"]) == (False, True, "shutdown")
+    assert (end["task_id"], end["turn_id"]) == ("task-stuck", stuck_turn_id)
 
 
 def test_exit_after_the_run_ended_itself_fires_nothing_more(ready, session_ends, cli_mod):

@@ -111,33 +111,6 @@ def _invoke_hook_safely(name: str, logger: logging.Logger, **kwargs) -> list:
         return []
 
 
-def claim_session_end(agent) -> bool:
-    """One ``on_session_end`` per run: ``run_conversation`` opens the slot, and its own boundary or a
-    CLI exit that cannot wait for the daemon agent thread pops it; only the first pop wins."""
-    try:
-        return agent._session_end_unclaimed.pop()
-    except (AttributeError, IndexError):  # no run opened on this agent, or already claimed
-        return False
-
-
-def emit_session_end(agent, result, error, *, task_id, entry_turn_id) -> None:
-    """The run's ``on_session_end`` plugin hook; memory providers end with the session, not here."""
-    if getattr(agent, "_persist_disabled", False) or not claim_session_end(agent):
-        return
-    from agent.conversation_loop import logger
-    from hermes_cli.observability.relay_shared_metrics import _terminal_flags
-    flags = _terminal_flags(result, error)
-    # A context build that failed before binding this run's ids left the previous run's on the agent.
-    bound = getattr(agent, "_current_turn_id", "") != entry_turn_id
-    _invoke_hook_safely(
-        "on_session_end", logger, session_id=agent.session_id,
-        task_id=agent._current_task_id if bound else task_id or "",
-        turn_id=agent._current_turn_id if bound else getattr(agent, "_relay_pending_turn_id", None) or "",
-        model=agent.model, platform=getattr(agent, "platform", None) or "",
-        **{key: flags[key] for key in ("completed", "failed", "interrupted", "turn_exit_reason")},
-    )
-
-
 def _guarded_cleanup(label: str, fn: Callable[[], Any], errors: list[str], logger) -> None:
     """Post-loop cleanup must never lose the response: each step is guarded
     independently and errors surface via ``cleanup_errors`` (#8049)."""
@@ -818,6 +791,8 @@ def finalize_turn(
                 review_skills=_should_review_skills,
             )
 
+    # Plugin on_session_end fires in AIAgent.run_conversation, after the run's task metrics close;
+    # memory provider on_session_end()/shutdown_all() belong to the CLI/gateway session end.
     agent._turn_preflight_display_snapshot = None
     agent._turn_received_provider_response = False
     return result

@@ -549,7 +549,7 @@ def register(ctx):
 | [`pre_llm_call`](../../user-guide/features/hooks.md#pre_llm_call) | 每轮一次，工具调用循环前 | `session_id: str, user_message: str, conversation_history: list, is_first_turn: bool, model: str, platform: str` | [上下文注入](#pre_llm_call-上下文注入) |
 | [`post_llm_call`](../../user-guide/features/hooks.md#post_llm_call) | 每轮一次，工具调用循环后（仅成功轮次） | `session_id: str, user_message: str, assistant_response: str, conversation_history: list, model: str, platform: str` | 忽略 |
 | [`on_session_start`](../../user-guide/features/hooks.md#on_session_start) | 新会话创建（仅第一轮） | `session_id: str, model: str, platform: str` | 忽略 |
-| [`on_session_end`](../../user-guide/features/hooks.md#on_session_end) | 每次 `run_conversation` 调用结束 + CLI 退出 | `session_id: str, completed: bool, interrupted: bool, model: str, platform: str` | 忽略 |
+| [`on_session_end`](../../user-guide/features/hooks.md#on_session_end) | 每次 `run_conversation` 调用结束时触发一次（CLI 轮次中途退出时改由退出处理器触发） | `session_id: str, completed: bool, interrupted: bool, model: str, platform: str` | 忽略 |
 | [`on_session_finalize`](../../user-guide/features/hooks.md#on_session_finalize) | CLI/网关销毁活跃会话 | `session_id: str \| None, platform: str` | 忽略 |
 | [`on_session_reset`](../../user-guide/features/hooks.md#on_session_reset) | 网关切换新会话键（`/new`、`/reset`） | `session_id: str, platform: str` | 忽略 |
 

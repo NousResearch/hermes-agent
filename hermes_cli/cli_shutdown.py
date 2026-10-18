@@ -193,15 +193,15 @@ def _oneshot_agent_and_session(cli):
 
 
 def _invoke_interrupted_session_end(agent, session_id, reason: str) -> None:
-    """``on_session_end`` for a run this exit cut off before its own boundary ended it (never raises)."""
+    """``on_session_end`` for a run this exit cut off before its own façade ended it (never raises)."""
     with suppress(Exception):
-        from agent.turn_finalizer import claim_session_end
+        from agent.turn_facade import claim_session_end
         from hermes_cli.lifecycle import invoke_hook as _invoke_hook
-        if claim_session_end(agent):
+        if (ids := claim_session_end(agent)) is not None:
             _invoke_hook(
-                "on_session_end", session_id=session_id, completed=False, interrupted=True,
-                model=getattr(agent, "model", None), platform=getattr(agent, "platform", None) or "cli",
-                reason=reason,
+                "on_session_end", session_id=session_id, task_id=ids[0], turn_id=ids[1], completed=False,
+                interrupted=True, model=getattr(agent, "model", None),
+                platform=getattr(agent, "platform", None) or "cli", reason=reason,
             )
 
 

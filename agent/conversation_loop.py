@@ -45,7 +45,7 @@ from agent.turn_api_error import handle_api_error
 from agent.turn_api_request import build_api_request
 from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, failed_turn_notice, site_copy
 from agent.turn_final_response import finish_text_response
-from agent.turn_finalizer import emit_session_end, finalize_turn
+from agent.turn_finalizer import finalize_turn
 from agent.turn_iteration_prep import (
     announce_api_call,
     apply_retry_restarts,
@@ -1731,12 +1731,12 @@ def run_conversation(
     title_user_message: Optional[str] = None,
     prelude: Optional[Prelude] = None,
 ) -> dict[str, Any]:
-    """Run one turn (see ``_run_conversation_turn``), export its boundary, fire its ``on_session_end``.
+    """Run one turn (see ``_run_conversation_turn``) and export the current-turn boundary.
 
     Every envelope that leaves the loop — success, partial/error, interrupt, retry-exhausted,
-    tool-limit, preflight timeout, codex runtime — and every raised exception passes through here,
-    so the ``{turn_id, current_turn_user_idx}`` pair is stamped beside the exact ``messages`` it
-    addresses (after every history rewrite) and the end hook fires once, last, per run.
+    tool-limit, preflight timeout, codex runtime — passes through here, so the
+    ``{turn_id, current_turn_user_idx}`` pair is stamped beside the exact ``messages`` it
+    addresses, after every history rewrite including post-turn micro-compaction.
     """
     from agent.turn_context import export_current_turn_boundary
     from agent.voice_turn_route import end_voice_turn_route
@@ -1744,42 +1744,34 @@ def run_conversation(
 
     # Steer / redirect / interrupt set this mid-turn; the result reports whether the turn ran untouched.
     agent._turn_user_intervened = False
-    agent._session_end_unclaimed, entry_turn_id = [True], getattr(agent, "_current_turn_id", "")
-    result = error = None
-    try:
-        # Images attached natively to this user turn stay visible to vision_analyze for the turn, so
-        # it does not embed the same pixels a second time into the same request (#76411).
-        with native_turn_images(user_message):
-            try:
-                result = _run_conversation_turn(
-                    agent,
-                    user_message,
-                    system_message=system_message,
-                    conversation_history=conversation_history,
-                    task_id=task_id,
-                    stream_callback=stream_callback,
-                    persist_user_message=persist_user_message,
-                    persist_user_timestamp=persist_user_timestamp,
-                    persist_user_display_kind=persist_user_display_kind,
-                    persist_user_display_metadata=persist_user_display_metadata,
-                    persist_user_platform_id=persist_user_platform_id,
-                    moa_config=moa_config,
-                    turn_author=turn_author,
-                    title_user_message=title_user_message,
-                    prelude=prelude,
-                )
-            finally:
-                end_voice_turn_route(agent)
-        result = export_current_turn_boundary(agent, result, user_message)
-        if isinstance(result, dict):
-            result["user_intervened"] = bool(getattr(agent, "_turn_user_intervened", False))
-        _close_durable_failed_turn(agent, result)
-        return result
-    except BaseException as exc:
-        error = exc
-        raise
-    finally:
-        emit_session_end(agent, result, error, task_id=task_id, entry_turn_id=entry_turn_id)
+    # Images attached natively to this user turn stay visible to vision_analyze for the turn, so
+    # it does not embed the same pixels a second time into the same request (#76411).
+    with native_turn_images(user_message):
+        try:
+            result = _run_conversation_turn(
+                agent,
+                user_message,
+                system_message=system_message,
+                conversation_history=conversation_history,
+                task_id=task_id,
+                stream_callback=stream_callback,
+                persist_user_message=persist_user_message,
+                persist_user_timestamp=persist_user_timestamp,
+                persist_user_display_kind=persist_user_display_kind,
+                persist_user_display_metadata=persist_user_display_metadata,
+                persist_user_platform_id=persist_user_platform_id,
+                moa_config=moa_config,
+                turn_author=turn_author,
+                title_user_message=title_user_message,
+                prelude=prelude,
+            )
+        finally:
+            end_voice_turn_route(agent)
+    result = export_current_turn_boundary(agent, result, user_message)
+    if isinstance(result, dict):
+        result["user_intervened"] = bool(getattr(agent, "_turn_user_intervened", False))
+    _close_durable_failed_turn(agent, result)
+    return result
 
 
 _FAILED_TURN_ERROR_MAX_CHARS = 2000

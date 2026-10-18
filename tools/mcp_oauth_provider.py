@@ -652,8 +652,11 @@ def prepare_oauth_config(server_name: str, server_url: str, oauth_config: dict |
     manager's cached entry) instead of resolving it from the current config again."""
     from tools import mcp_oauth as mo
     cfg = dict(oauth_config or {})
+    identity = mo.grant_identity(server_url, cfg)  # before defaults: the identity is the config's
     mo.apply_oauth_provider_defaults(cfg, server_name=server_name, server_url=server_url)
-    return cfg, mo.HermesTokenStorage(server_name, token_dir=token_dir)
+    storage = mo.HermesTokenStorage(server_name, token_dir=token_dir)
+    storage.bind_identity(identity)
+    return cfg, storage
 
 
 def build_provider_kwargs(cfg: dict, storage: HermesTokenStorage, *, ssh_proxy_hint: bool) -> dict[str, Any]:

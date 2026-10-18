@@ -373,7 +373,10 @@ class MCPOAuthManager:
                     logger.info("MCP OAuth '%s': server or OAuth identity changed, discarding cache", server_name)
                     if entry.provider is not None:
                         self._detach_provider(entry.provider)
-                    if identity_changed and entry.pool_path == requested_pool:
+                    if (identity_changed and entry.pool_path == requested_pool
+                            and not requested_storage.holds_grant_for_bound_identity()):
+                        # Wipe the old identity's grant, never one already minted for the new
+                        # identity (another process may have authorized and saved the edit).
                         HermesTokenStorage(server_name, hermes_home=key[0],
                                            token_dir=Path(entry.pool_path).parent).remove()
                     entry = None

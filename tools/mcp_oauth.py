@@ -14,6 +14,7 @@ import contextlib
 import contextvars
 from dataclasses import dataclass
 import errno
+import hashlib
 import html
 import importlib.util as _importlib_util
 import json
@@ -353,6 +354,15 @@ def oauth_identity(oauth: Any) -> Any:
     if not isinstance(oauth, dict):
         return oauth
     return {k: v for k, v in oauth.items() if k not in _NON_IDENTITY_OAUTH_KEYS}
+
+
+def grant_identity(server_url: str | None, oauth: Any) -> str:
+    """What a stored grant is FOR: the endpoint and the ``oauth:`` identity it was minted under.
+    Stamped into the token file at write time and checked at read time, so a grant is never
+    presented to, or wiped on behalf of, an identity it was not minted for. Hashed because the
+    block may hold a resolved client secret."""
+    material = json.dumps([server_url, oauth_identity(oauth or {})], sort_keys=True, default=str)
+    return hashlib.sha256(material.encode()).hexdigest()
 
 
 def _shared_server_identity(entry: dict[str, Any]) -> tuple[Any, ...] | None:
@@ -756,6 +766,11 @@ class HermesTokenStorage:
         # ``set_tokens`` write. See ``tools.mcp_oauth_provider.enforce_refresh_token_issuer``.
         self.loaded_issuer: str | None = None
         self._bound_issuer: str | None = None
+        # Grant identity (see ``grant_identity``): stamped on writes, checked on reads. None for
+        # storages opened only to manage files (remove, restore, tombstones), which check nothing.
+        self._bound_identity: str | None = None
+        if requested is not None:
+            self.bind_identity(grant_identity(requested.get("url"), requested.get("oauth")))
 
     @property
     def pool_path(self) -> str:
@@ -821,14 +836,39 @@ class HermesTokenStorage:
                 data["expires_in"] = int(max(implied_expiry - time.time(), 0))
 
     def _fixup_loaded_tokens(self, data: dict) -> None:
-        # ``hermes_issuer`` is Hermes bookkeeping, not an SDK OAuthToken field: pop before validation.
+        # ``hermes_issuer`` / ``hermes_identity`` are Hermes bookkeeping, not OAuthToken fields.
         self.loaded_issuer = data.pop("hermes_issuer", None)
+        data.pop("hermes_identity", None)
         self._rebase_expires_in(data)
+
+    def bind_identity(self, identity: str | None) -> None:
+        """Set the grant identity this storage serves (see :func:`grant_identity`)."""
+        self._bound_identity = identity
+
+    def stored_identity(self) -> str | None:
+        """The identity stamped on the stored grant; None when absent or written before stamping."""
+        data = _read_json(self._tokens_path())
+        identity = data.get("hermes_identity") if isinstance(data, dict) else None
+        return identity if isinstance(identity, str) else None
+
+    def _grant_is_foreign(self) -> bool:
+        """True when the stored grant was minted for a different identity than this storage's.
+        An unstamped grant (written before stamping) is not foreign: it is adopted and stamped
+        on its next write."""
+        stored = self.stored_identity() if self._bound_identity else None
+        return stored is not None and stored != self._bound_identity
+
+    def holds_grant_for_bound_identity(self) -> bool:
+        return self._bound_identity is not None and self.stored_identity() == self._bound_identity
 
     async def get_tokens(self) -> "OAuthToken | None":
         self.loaded_issuer = None
         if self._quarantine_path().exists():
             raise OAuthStorageDetachedError("The pool's previous identity is being revoked")
+        if self._grant_is_foreign():
+            logger.warning("MCP OAuth '%s': the stored grant was minted for a different endpoint or "
+                           "client; not presenting it", self._server_name)
+            return None
         return self._load_model(self._tokens_path(), "OAuthToken", "tokens", self._fixup_loaded_tokens)
 
     async def set_tokens(self, tokens: "OAuthToken") -> None:
@@ -840,6 +880,8 @@ class HermesTokenStorage:
         if self._bound_issuer:  # which authorization server granted these tokens (never sent on the wire)
             payload["hermes_issuer"] = self._bound_issuer
             self.loaded_issuer = self._bound_issuer
+        if self._bound_identity:  # what the grant is for (see grant_identity; never sent on the wire)
+            payload["hermes_identity"] = self._bound_identity
         _write_json(self._tokens_path(), payload)
         logger.debug("OAuth tokens saved for %s", self._server_name)
 
@@ -1085,8 +1127,9 @@ class HermesTokenStorage:
         return True
 
     def has_cached_tokens(self) -> bool:
-        """True if we have tokens on disk (may be expired)."""
-        return not self._quarantine_path().exists() and self._tokens_path().exists()
+        """True if we have tokens on disk (may be expired) that this storage may present."""
+        return (not self._quarantine_path().exists() and self._tokens_path().exists()
+                and not self._grant_is_foreign())
 
     def credential_stamp(self) -> tuple:
         """``stat()`` of the token and client files: what any re-authorization rewrites. No bytes read."""

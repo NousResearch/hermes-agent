@@ -711,3 +711,86 @@ def test_stale_reconnect_never_presents_a_newer_endpoints_grant(local):
     with pytest.raises(OAuthStorageDetachedError):
         stale._hermes_assert_authority()
     assert json.loads(minted.read_text())["access_token"] == "MINTED_FOR_B", "B's grant survives"
+
+
+def _stamp(path: Path, url: str, oauth=None) -> Path:
+    """Stamp a seeded grant as minted for (url, oauth), as ``set_tokens`` does."""
+    from tools.mcp_oauth import grant_identity
+
+    data = json.loads(path.read_text())
+    data["hermes_identity"] = grant_identity(url, oauth)
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return path
+
+
+def test_set_tokens_stamps_the_grant_and_reads_check_it(tmp_path, monkeypatch):
+    import asyncio
+
+    from tools.mcp_oauth import HermesTokenStorage, _sdk_class, grant_identity
+
+    home = tmp_path / ".hermes"
+    _write_config(home, {"srv": dict(SERVER)})
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    writer = HermesTokenStorage("srv", hermes_home=home, requested=dict(SERVER))
+    token = _sdk_class("OAuthToken").model_validate({"access_token": "A_GRANT", "token_type": "Bearer"})
+    asyncio.run(writer.set_tokens(token))
+    assert writer.stored_identity() == grant_identity(SERVER["url"], None)
+
+    same = HermesTokenStorage("srv", hermes_home=home, requested={**SERVER, "oauth": {"flow": "device"}})
+    assert asyncio.run(same.get_tokens()).access_token == "A_GRANT", "flow is not identity"
+    other = HermesTokenStorage("srv", hermes_home=home, requested=dict(CHANGED))
+    assert asyncio.run(other.get_tokens()) is None, "a grant is never presented to another identity"
+    assert other.has_cached_tokens() is False
+
+    legacy = _seed_tokens(home, "srv", "LEGACY")  # written before stamping: adopted, not foreign
+    assert "hermes_identity" not in json.loads(legacy.read_text())
+    assert asyncio.run(other.get_tokens()).access_token == "LEGACY"
+
+
+def test_cross_process_authorized_edit_keeps_the_new_grant(local):
+    """Another process authorizes endpoint B and saves it; this process still caches A. Its
+    reconnect with B's parameters must keep the grant minted for B, not wipe it as A's."""
+    from tools.mcp_oauth_manager import get_manager
+
+    home, _ = local
+    manager = get_manager()
+    manager.get_or_build_provider("srv", SERVER["url"], None)
+    _write_config(home, {"srv": dict(CHANGED)})
+    minted = _stamp(_seed_tokens(home, "srv", "MINTED_FOR_B"), CHANGED["url"])
+
+    manager.get_or_build_provider("srv", CHANGED["url"], None)
+    assert minted.exists(), "the reconnect wiped the grant just authorized for B"
+    assert json.loads(minted.read_text())["access_token"] == "MINTED_FOR_B"
+
+
+def test_identity_change_still_wipes_the_old_identitys_grant(local):
+    from tools.mcp_oauth_manager import get_manager
+
+    home, grant = local
+    _stamp(grant, SERVER["url"])
+    manager = get_manager()
+    manager.get_or_build_provider("srv", SERVER["url"], None)
+    _write_config(home, {"srv": dict(CHANGED)})
+    from tools.mcp_oauth import OAuthNonInteractiveError
+    with pytest.raises(OAuthNonInteractiveError):  # nothing left to present: B needs a login
+        manager.get_or_build_provider("srv", CHANGED["url"], None)
+    assert not grant.exists(), "A's grant must not survive into B's pool"
+
+
+def test_fresh_process_on_stale_parameters_never_presents_a_newer_grant(local):
+    """No cached provider. Disk holds endpoint B and B's grant; the caller still passes A."""
+    import asyncio
+
+    from tools.mcp_oauth_manager import get_manager, reset_manager_for_tests
+
+    home, _ = local
+    reset_manager_for_tests()
+    _write_config(home, {"srv": dict(CHANGED)})
+    minted = _stamp(_seed_tokens(home, "srv", "MINTED_FOR_B"), CHANGED["url"])
+    try:
+        provider = get_manager().get_or_build_provider("srv", SERVER["url"], None)
+    except Exception as exc:  # non-interactive: no presentable grant, so the build fails closed
+        assert "no cached tokens" in str(exc)
+    else:
+        assert asyncio.run(provider.context.storage.get_tokens()) is None
+    assert json.loads(minted.read_text())["access_token"] == "MINTED_FOR_B"

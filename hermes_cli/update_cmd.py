@@ -1191,6 +1191,8 @@ def _pull_updates(
                 # --keep-stash (desktop updater): leave edits parked rather than re-apply silently.
                 _m()._park_stashed_changes(auto_stash_ref)
             else:
+                if not prompt_for_restore:
+                    print("  ℹ Non-interactive run — restoring stashed local changes automatically.")
                 _m()._restore_stashed_changes(
                     git_cmd, _m().PROJECT_ROOT, auto_stash_ref, prompt_user=prompt_for_restore,
                     input_fn=gw_input_fn, checkout_move=_moves_for(_windows_gateway_resume))
@@ -1320,6 +1322,27 @@ def _missing_branch_stop(git_cmd, branch) -> str:
         return "checkout_move_failed"
 
 
+def _interactive_console() -> bool:
+    """Whether stdio is a console someone can actually answer a prompt on.
+
+    ``isatty()`` alone is not enough on Windows: a hidden console (a Scheduled Task with
+    ``-WindowStyle Hidden``, or a ``CREATE_NO_WINDOW`` child that inherits an open stdin handle)
+    reports a TTY pair, yet nobody will ever type into it, so a bare ``input()`` blocks the
+    update forever (#92303). A console window that exists but is not visible is exactly that
+    unattended case; no window at all is ConPTY (Windows Terminal), which is attended.
+    """
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return False
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            console = ctypes.windll.kernel32.GetConsoleWindow()
+            return not console or ctypes.windll.user32.IsWindowVisible(console)
+        except Exception:  # health: allow BLE001 -- a failed probe must not silently disable prompts
+            return True
+    return True
+
+
 @dataclass
 class _CheckoutPlan:
     """What the pre-pull checkout phase decided (see ``_prepare_checkout_for_update``)."""
@@ -1428,7 +1451,7 @@ def _prepare_checkout_for_update(
     prompt_for_restore = (
         auto_stash_ref is not None
         and not assume_yes
-        and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty())))
+        and (gateway_mode or _interactive_console()))
 
     if release_tag:
         # An ancestor release still needs applying when switching channels.
@@ -1538,7 +1561,7 @@ def _resolve_update_options(args, gateway_mode: bool) -> _UpdateOptions:
     # Interactive terminals always stash-and-ask; only non-interactive updates consult
     # updates.non_interactive_local_changes (auto-restore vs discard).
     discard_local_changes = False
-    if gateway_mode or assume_yes or not (sys.stdin.isatty() and sys.stdout.isatty()):
+    if gateway_mode or assume_yes or not _interactive_console():
         # A config read failure must never change the safe default.
         with _best_effort("Could not read updates.non_interactive_local_changes: %s"):
             _mode = str(_updates_config().get("non_interactive_local_changes", "stash")).lower()

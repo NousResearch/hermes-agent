@@ -134,13 +134,13 @@ def _restore_snapshot_safety_nets(pre_update_snapshot_id) -> None:
 def _ask_configure_new_options(*, assume_yes: bool, gateway_mode: bool) -> str:
     """The yes/no answer for "configure new options now?": "y" under --yes, the messenger's reply in
     gateway mode, "auto" (safe migrations only) when non-interactive, else ``input()``."""
-    from hermes_cli.update_cmd import _gateway_prompt
+    from hermes_cli.update_cmd import _gateway_prompt, _interactive_console
     if assume_yes:
         print("  ℹ --yes: auto-applying config migration (skipping API-key prompts).")
         return "y"
     if gateway_mode:
         return _gateway_prompt("Would you like to configure new options now? [Y/n]", "n").strip().lower()
-    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+    if not _interactive_console():
         print("  ℹ Non-interactive session — applying safe config migrations.")
         return "auto"
     try:

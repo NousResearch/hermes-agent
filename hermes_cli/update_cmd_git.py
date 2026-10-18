@@ -337,12 +337,12 @@ def _offer_upstream_remote(git_cmd: list[str], cwd: Path, *, assume_yes: bool, i
     """Prompt to add ``upstream`` and add it; False when the user declined, the run is non-interactive, or add failed.
 
     ``--yes`` means "don't block", not "mutate my remotes", so a non-interactive skip is NOT persisted."""
-    from hermes_cli.update_cmd import _add_upstream_remote, _mark_skip_upstream_prompt
+    from hermes_cli.update_cmd import _add_upstream_remote, _interactive_console, _mark_skip_upstream_prompt
     print(
         "\nℹ Your fork is not tracking the official Hermes repository.\n"
         "  This means you may miss updates from NousResearch/hermes-agent.\n"
     )
-    if assume_yes or (input_fn is None and not (sys.stdin.isatty() and sys.stdout.isatty())):
+    if assume_yes or (input_fn is None and not _interactive_console()):
         print(f"  Skipping upstream setup (non-interactive run).\n  Add it later with: {_UPSTREAM_ADD_CMD}")
         return False
     if input_fn is not None:

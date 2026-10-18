@@ -7,8 +7,11 @@ profile. Nothing on the older side knows how to stop it. So the gateway watches 
 revision ``gateway.code_skew`` records. Once the checkout has provably moved (two consecutive
 reads, never while an update holds the tree) to code whose state-store modules lack the runtime
 ledger, it logs why and stops with the normal drain (a hard exit if that stop fails on the older
-tree). It never asks for a restart, so a service manager that relaunches it starts the older
-release's own gateway. Every uncertain read keeps it up.
+tree). The stop is a plain stop, never a restart of this process, but it exits with the
+service-restart code (75): systemd relaunches on any exit, while the launchd plist's
+``KeepAlive.SuccessfulExit=false`` parks exit 0 and would leave the gateway down for good. Either
+supervisor then starts the older release's own gateway from the tree on disk. Every uncertain read
+keeps it up.
 """
 
 from __future__ import annotations
@@ -18,6 +21,8 @@ import logging
 import os
 from pathlib import Path
 from typing import Callable, Optional
+
+from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +46,8 @@ def downgrade_reason(skew, *, update_in_progress: bool, predates: Callable[[], b
     if not skew or update_in_progress or not predates():
         return None
     return ("This gateway loaded {}, but its checkout is now at {}, a release that predates the gateway "
-            "runtime. Downgrading is unsupported; stopping (no restart) so the older release can run its "
-            "own gateway.".format(*tuple(skew)))
+            "runtime. Downgrading is unsupported; stopping so the service manager starts the older "
+            "release's own gateway.".format(*tuple(skew)))
 
 
 async def _stop_or_exit(runner, *, hard_exit: Callable[[int], None] = os._exit) -> None:
@@ -84,6 +89,14 @@ async def runtime_downgrade_watcher(runner, *, poll_s: float = POLL_S, skew_fn=N
         if seen >= _CONFIRMATIONS:
             logger.error("%s", reason)
             runner._exit_reason = reason
+            # A confirmed downgrade past a free update lock means the tree on disk is
+            # the operator's settled choice. Exit with the service-restart code so the
+            # supervisor relaunches and the settled tree serves — systemd's
+            # Restart=always already does this on any exit; the launchd plist
+            # (KeepAlive SuccessfulExit=false) parks exit 0, which would leave the
+            # gateway down until a human notices. The stop itself stays a plain stop:
+            # the relaunch runs whatever release is on disk, not this process.
+            runner._exit_code = GATEWAY_SERVICE_RESTART_EXIT_CODE
             # Detached, strongly held: stop() cancels every background task, this watcher included,
             # and a stop awaited from here would be cancelled with it (the #12875 class).
             runner._runtime_downgrade_stop = asyncio.get_running_loop().create_task(_stop_or_exit(runner))

@@ -12,6 +12,10 @@ v1 fire sites (see hooks.md for the per-kind coverage table):
 * ``kind="cron"``   — cron job output: the live-adapter lane and the standalone lane of
   ``cron/scheduler_delivery.py``.
 
+``session_id`` is the agent turn's final session id (the value ``post_llm_call`` received, after any
+mid-turn compression rotation) so an observer can correlate the two without a session-store lookup;
+``None`` where the lane does not carry it (cron, the queued lane).
+
 Observer-only: return values are ignored and callbacks are isolated. Dispatch happens AFTER the send
 succeeded and never on the delivery path: loop-side sites start a background task, the cron thread
 schedules onto the gateway loop, and the hook is in the plugin dispatcher's timeout-bounded set. A
@@ -49,7 +53,7 @@ def _field(result: Any, name: str) -> Any:
     return getattr(result, name, None)
 
 
-def delivered_message_ids(result: Any) -> List[str]:
+def delivered_message_ids(result: Any) -> list[str]:
     """Every message id a send produced, in send order, from any adapter's result shape.
 
     Adapters disagree on ``SendResult.message_id`` for split payloads (the base contract says it is
@@ -57,7 +61,7 @@ def delivered_message_ids(result: Any) -> List[str]:
     ``raw_response["message_ids"]``). Prefer the explicit ordered list, else
     ``continuation_message_ids`` + ``message_id``; duplicates and sentinels are dropped.
     """
-    ordered: List[Any] = []
+    ordered: list[Any] = []
     raw = _field(result, "raw_response")
     raw_ids = raw.get("message_ids") if isinstance(raw, dict) else None
     if isinstance(raw_ids, (list, tuple)) and raw_ids:
@@ -67,7 +71,7 @@ def delivered_message_ids(result: Any) -> List[str]:
         if isinstance(continuation, (list, tuple)):
             ordered.extend(continuation)
         ordered.append(_field(result, "message_id"))
-    ids: List[str] = []
+    ids: list[str] = []
     for value in ordered:
         normalized = _id(value)
         if normalized is not None and normalized not in ids:
@@ -93,11 +97,12 @@ def build_payload(
     message_ids: Optional[Iterable[Any]] = None,
     text: Optional[str] = None,
     session_key: Optional[str] = None,
+    session_id: Optional[str] = None,
     job_id: Optional[str] = None,
     streamed: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """The v1 keyword payload. All ids are bounded strings; unknown values are ``None``."""
-    ids: List[str] = []
+    ids: list[str] = []
     for value in message_ids or ():
         normalized = _id(value)
         if normalized is not None and normalized not in ids:
@@ -112,6 +117,7 @@ def build_payload(
         "last_message_id": ids[-1] if ids else None,
         "text": text[:_TEXT_MAX] if isinstance(text, str) else None,
         "session_key": session_key or None,
+        "session_id": _id(session_id),
         "job_id": _id(job_id),
         "streamed": bool(streamed),
         "profile": _active_profile(),
@@ -128,10 +134,10 @@ def _has_subscribers() -> bool:
 
 
 # Strong references to in-flight loop-side dispatches (a bare create_task result may be GC'd mid-run).
-_PENDING: "set[asyncio.Task]" = set()
+_PENDING: set[asyncio.Task] = set()
 
 
-async def _dispatch(payload: Dict[str, Any]) -> None:
+async def _dispatch(payload: dict[str, Any]) -> None:
     try:
         from hermes_cli.lifecycle import ainvoke_hook
 

@@ -904,8 +904,8 @@ class BuzzAdapter(BasePlatformAdapter):
         self, chat_id: str, image_url: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None) -> SendResult:
         """Send an image: local files upload via --file, URLs go as a link."""
-        local = Path(image_url).expanduser() if not image_url.startswith(("http://", "https://")) else None
-        if local is not None and local.is_file():
+        local = await asyncio.to_thread(Path(image_url).expanduser) if not image_url.startswith(("http://", "https://")) else None
+        if local is not None and await asyncio.to_thread(local.is_file):
             return await self._send_file_attachment(chat_id, local, caption=caption, reply_to=reply_to, metadata=metadata, probe=False)
         # Markdown renders in Buzz, so a URL arrives as a clickable image link.
         text = f"{caption}\n{image_url}" if caption else image_url
@@ -919,8 +919,8 @@ class BuzzAdapter(BasePlatformAdapter):
 
         See #74999.
         """
-        local = Path(file_path).expanduser()
-        if probe and not local.is_file():
+        local = await asyncio.to_thread(Path(file_path).expanduser) if probe else file_path  # probe=False: caller's expanded path
+        if probe and not await asyncio.to_thread(local.is_file):
             # Never leak host filesystem paths into chat-visible errors.
             return SendResult(success=False, error="Media file not found")
         args = ["messages", "send", "--channel", str(chat_id), "--file", str(local), "--content", "-"]
@@ -935,8 +935,8 @@ class BuzzAdapter(BasePlatformAdapter):
 
         See #74999.
         """
-        local = Path(image_path).expanduser()
-        if local.is_file():
+        local = await asyncio.to_thread(Path(image_path).expanduser)
+        if await asyncio.to_thread(local.is_file):
             return await self._send_file_attachment(chat_id, local, caption=caption, reply_to=reply_to, metadata=metadata, probe=False)
         return await super().send_image_file(chat_id=chat_id, image_path=image_path, caption=caption, reply_to=reply_to, metadata=metadata, **kwargs)
 

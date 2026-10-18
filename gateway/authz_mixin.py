@@ -208,9 +208,9 @@ class GatewayAuthorizationMixin:
         """
         if not platform:
             return None
-        return self._adapters_for_profile(profile).get(platform)
+        return self._adapters_for_profile(profile, platform).get(platform)
 
-    def _adapters_for_profile(self, profile: Optional[str]) -> dict:
+    def _adapters_for_profile(self, profile: Optional[str], platform: Optional[Platform] = None) -> dict:
         """The live adapter map *profile* may deliver through: ``_profile_adapters[p]`` for a
         secondary, ``self.adapters`` only for the primary/default. ``_profile_adapters`` is consulted
         BEFORE the active profile name: multiplex turns override ``HERMES_HOME`` so
@@ -224,6 +224,11 @@ class GatewayAuthorizationMixin:
         profile_adapters = self._profile_adapters_map()
         if profile_name in profile_adapters:
             adapters = profile_adapters[profile_name]
+            # A profile with its own bot on one platform can still be routed through the shared bot
+            # on another (own BlueBubbles, shared Discord): judge *platform* on its own.
+            if platform is not None and platform not in adapters and self._is_shared_bot_satellite(
+                    profile_name, platform):
+                return self._primary_adapters()
             if adapters or not self._is_shared_bot_satellite(profile_name):
                 return adapters
             return self._primary_adapters()
@@ -234,7 +239,7 @@ class GatewayAuthorizationMixin:
                 primary_profile = self._active_profile_name()
         return self._primary_adapters() if profile_name == primary_profile else {}
 
-    def _is_shared_bot_satellite(self, profile_name: str) -> bool:
+    def _is_shared_bot_satellite(self, profile_name: str, platform: Optional[Platform] = None) -> bool:
         """A served profile with NO adapter of its own that a ``profile_routes`` entry targets through the
         default profile's bot: it drains through the primary's adapters (gateway/AGENTS.md). Its
         ``_profile_adapters`` entry is the ``{}`` startup placeholder; a secondary connected on ANY
@@ -245,10 +250,13 @@ class GatewayAuthorizationMixin:
         if not getattr(config, "multiplex_profiles", False):
             return False
         # A bot that failed to connect is queued for reconnect: that profile owns a credential.
-        if (getattr(self, "_profile_failed_platforms", None) or {}).get(profile_name):
+        # With *platform*, only that platform's own credential counts (see _adapters_for_profile).
+        failed = (getattr(self, "_profile_failed_platforms", None) or {}).get(profile_name) or {}
+        if (platform in failed) if platform is not None else failed:
             return False
         routes = getattr(config, "profile_routes", None) or []
-        if not any(r.enabled and r.profile == profile_name and r.bot_profile is None for r in routes):
+        if not any(r.enabled and r.profile == profile_name and r.bot_profile is None
+                   and (platform is None or str(r.platform).lower() == platform.value) for r in routes):
             return False
         from gateway.run import _multiplex_profile_homes
         try:

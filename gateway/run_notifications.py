@@ -814,7 +814,11 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 return self.adapters.get(Platform.RELAY)
         # One resolver with authz/kanban/cron: a secondary's own map, or the primary's for a
         # shared-bot satellite; a disconnected secondary fails closed to ``{}``.
-        adapters = self._adapters_for_profile(getattr(source, "profile", None))
+        try:
+            _platform = Platform(platform_name)
+        except ValueError:
+            _platform = None
+        adapters = self._adapters_for_profile(getattr(source, "profile", None), _platform)
         try:
             _transport = resolve_delivery_transport(Platform(platform_name), self.config, adapters)
         except Exception:

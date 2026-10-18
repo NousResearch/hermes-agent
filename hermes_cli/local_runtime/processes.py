@@ -57,6 +57,7 @@ def _process_id_list(capacity: int) -> ctypes.Structure:
 
 
 _SYNCHRONIZE_AND_QUERY = 0x00100000 | 0x1000  # SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION
+_ERROR_INVALID_PARAMETER = 87
 _ERROR_MORE_DATA = 234
 _WAIT_TIMEOUT = 0x102
 
@@ -74,6 +75,7 @@ class _WindowsJob:
         self._lock = threading.Lock()
         self._tracked: list[subprocess.Popen] = []
         self._members: dict[int, int] = {}  # pid -> held SYNCHRONIZE handle, until it signals
+        self._unconfirmed: set[int] = set()  # listed pids not yet opened nor proven gone
         self._api = ctypes.WinDLL("kernel32", use_last_error=True)
         for name, args, result in (
             ("CreateJobObjectW", [ctypes.c_void_p, wintypes.LPCWSTR], wintypes.HANDLE),
@@ -126,7 +128,9 @@ class _WindowsJob:
         Each member is therefore opened before the kill and its own handle waited on; members
         started while the tree was dying are caught by listing the job again until it is empty.
         A member's handle is kept until it signals, across passes and calls, so one that left
-        the listing without being seen to exit is still awaited. If the tree is not confirmed
+        the listing without being seen to exit is still awaited; a listed PID that could not be
+        opened stays unconfirmed until a later open settles it (see _open_members), never merely
+        because the listing stopped showing it. If the tree is not confirmed
         gone by the deadline, or a WinAPI call fails, JobShutdownError is raised and the job
         stays open: KILL_ON_JOB_CLOSE stays armed and the members held, so a later terminate()
         can still confirm them. An already closed job counts as empty.
@@ -150,7 +154,8 @@ class _WindowsJob:
         pids = self._member_pids()
         self._open_members(pids)
         # A listed member that could not be opened keeps the job unconfirmed.
-        if not pids and not self._members and all(p.poll() is not None for p in self._tracked):
+        if (not pids and not self._members and not self._unconfirmed
+                and all(p.poll() is not None for p in self._tracked)):
             return True
         if time.monotonic() >= deadline:
             raise JobShutdownError("contained processes were still running at the deadline")
@@ -183,17 +188,31 @@ class _WindowsJob:
     def _open_members(self, pids: list[int]) -> None:
         """Hold each listed member not held yet. The handle pins the PID (a listed PID that is
         held is that same process), and the membership check made through it rejects a PID
-        recycled between the listing and the open. A member that could not be opened is still
-        listed on the next pass, so it is never taken for gone."""
-        for pid in pids:
+        recycled between the listing and the open.
+
+        A listed PID is let go unheld only on evidence that its process is gone: no process has
+        that PID (ERROR_INVALID_PARAMETER; a process object outlives its exit while any handle
+        is open, and a PID is reused only once it is deleted), or the PID now names a process
+        outside the job (members cannot break away, so it was recycled). Any other failure
+        leaves it unconfirmed and retried on every pass: the listing drops a member while it is
+        still being torn down, so its absence from a later listing is no proof it exited."""
+        for pid in set(pids) | self._unconfirmed:
             if pid in self._members:
                 continue
             handle = self._api.OpenProcess(_SYNCHRONIZE_AND_QUERY, False, pid)
             if not handle:
+                if ctypes.get_last_error() == _ERROR_INVALID_PARAMETER:
+                    self._unconfirmed.discard(pid)
+                else:
+                    self._unconfirmed.add(pid)
                 continue
             in_job = wintypes.BOOL()
-            if (self._api.IsProcessInJob(handle, self._handle, ctypes.byref(in_job))
-                    and in_job.value):
+            if not self._api.IsProcessInJob(handle, self._handle, ctypes.byref(in_job)):
+                self._unconfirmed.add(pid)
+                self._api.CloseHandle(handle)
+                continue
+            self._unconfirmed.discard(pid)
+            if in_job.value:
                 self._members[pid] = handle
             else:
                 self._api.CloseHandle(handle)
@@ -216,6 +235,7 @@ class _WindowsJob:
         for handle in self._members.values():
             self._api.CloseHandle(handle)
         self._members.clear()
+        self._unconfirmed.clear()
         if self._handle is not None:
             if not self._api.CloseHandle(self._handle):
                 raise ctypes.WinError(ctypes.get_last_error())

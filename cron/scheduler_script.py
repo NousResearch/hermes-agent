@@ -366,23 +366,79 @@ class _SecretRun:
         return True
 
 
-def _hold_secret_run(run: _SecretRun) -> None:
-    from hermes_cli.local_runtime.processes import JobShutdownError
+_held_secret_lock = threading.Lock()
+# The one thread retrying every held run, or None. Cleared under the lock by the worker as it
+# leaves, so a hold racing its exit starts a new one instead of trusting a dying thread.
+_held_secret_worker: Optional[threading.Thread] = None
 
-    def retry() -> None:
+
+def _hold_secret_run(run: _SecretRun) -> None:
+    with _held_secret_lock:
+        _held_secret_runs.add(run)
+    ensure_secret_hold_retry()
+
+
+def ensure_secret_hold_retry() -> None:
+    """Make sure a worker is retrying the held runs. Called on every hold and on every scheduler
+    tick, so a worker that could not be started (or died) is replaced: the held values and locks
+    are never left without someone to release them. A no-op when nothing is held."""
+    global _held_secret_worker
+    with _held_secret_lock:
+        if not _held_secret_runs or _held_secret_worker is not None:
+            return
+        worker = threading.Thread(
+            target=_retry_held_secret_runs, name="cron-secret-env-hold", daemon=True)
+        try:
+            worker.start()
+        except Exception:  # RuntimeError: can't start new thread
+            logger.error("could not start the secret_env hold retry; the next scheduler tick "
+                         "tries again, the secret values and script locks stay held", exc_info=True)
+            return
+        _held_secret_worker = worker
+
+
+def _retry_held_secret_runs() -> None:
+    global _held_secret_worker
+    try:
         while True:
             time.sleep(_SECRET_TREE_RETRY_INTERVAL)
-            try:
-                run.end_tree()
-            except JobShutdownError:
-                continue
-            run.stack.close()
-            _held_secret_runs.discard(run)
-            logger.info("secret_env script tree confirmed stopped; secret values and script lock released")
-            return
+            with _held_secret_lock:
+                runs = list(_held_secret_runs)
+            for run in runs:
+                _retry_held_secret_run(run)
+            with _held_secret_lock:
+                if not _held_secret_runs:
+                    _held_secret_worker = None
+                    return
+    finally:
+        with _held_secret_lock:
+            if _held_secret_worker is threading.current_thread():
+                _held_secret_worker = None
 
-    _held_secret_runs.add(run)
-    threading.Thread(target=retry, name="cron-secret-env-hold", daemon=True).start()
+
+def _retry_held_secret_run(run: _SecretRun) -> None:
+    """One attempt. Any failure to confirm the tree gone keeps the run held for the next one;
+    once confirmed, the resolver context is left exactly once and only then the run dropped."""
+    from hermes_cli.local_runtime.processes import JobShutdownError
+
+    try:
+        run.end_tree()
+    except JobShutdownError:
+        return
+    except Exception:
+        logger.error("unexpected error confirming a held secret_env script tree stopped; "
+                     "still holding its secret values and script lock", exc_info=True)
+        return
+    try:
+        run.stack.close()
+    except Exception:
+        # ExitStack unwinds every callback before re-raising, so there is nothing to retry.
+        logger.error("secret_env script tree confirmed stopped, but leaving its resolver "
+                     "context failed", exc_info=True)
+    else:
+        logger.info("secret_env script tree confirmed stopped; secret values and script lock released")
+    with _held_secret_lock:
+        _held_secret_runs.discard(run)
 
 
 def _stop_script_tree(proc: subprocess.Popen, run: _SecretRun) -> None:

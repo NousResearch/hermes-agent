@@ -31,8 +31,10 @@ def _log_tick_yield_once(reason: str) -> None:
 
 
 def tick(verbose=True, adapters=None, loop=None, sync=True, *, can_dispatch=None):
+    from cron.scheduler_script import ensure_secret_hold_retry
     from hermes_cli.backend_retirement import retirement
 
+    ensure_secret_hold_retry()  # replace a held secret_env run's retry if it could not start
     # Hold admission through the entire scan/advance/submit handoff. A predicate alone races
     # prepare after the check but before a due job enters the running-job ledger.
     with retirement.work() as admitted:

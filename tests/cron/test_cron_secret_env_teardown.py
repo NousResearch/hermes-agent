@@ -14,10 +14,12 @@ only: secret_env fails closed elsewhere.
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import hashlib
 import json
 import threading
 import time
+import types
 
 import psutil
 import pytest
@@ -132,7 +134,8 @@ def secret_run(tmp_path, monkeypatch):
 
 
 class _FaultyApi:
-    """The job's kernel32 with some calls answering `faults[name]` until `allow` is set."""
+    """The job's kernel32 with some calls answering `faults[name]` until `allow` is set; a
+    callable fault is called with the real function and the arguments."""
 
     def __init__(self, api, faults, allow):
         self._api, self._faults, self._allow = api, faults, allow
@@ -141,15 +144,39 @@ class _FaultyApi:
         real = getattr(self._api, name)
         if name not in self._faults:
             return real
-        return lambda *args: real(*args) if self._allow.is_set() else self._faults[name]
+        fault = self._faults[name]
+
+        def call(*args):
+            if self._allow.is_set():
+                return real(*args)
+            return fault(real, *args) if callable(fault) else fault
+        return call
+
+
+def _denied(real, *args):
+    ctypes.set_last_error(5)  # ERROR_ACCESS_DENIED
+    return 0
 
 
 _API_FAULTS = {
     "still_exiting": {"WaitForSingleObject": 0x102},  # WAIT_TIMEOUT
     "wait_failed": {"WaitForSingleObject": 0xFFFFFFFF},  # WAIT_FAILED
     # A listed member the owner may not open, which the kill did not reach either.
-    "unopenable": {"OpenProcess": 0, "TerminateJobObject": 1},
+    "unopenable": {"OpenProcess": _denied, "TerminateJobObject": 1},
 }
+
+
+def _faulty_jobs(monkeypatch, faults, allow):
+    from hermes_cli.local_runtime import processes
+
+    real_new_job = processes.new_job
+
+    def new_job():
+        job = real_new_job()
+        job._api = _FaultyApi(job._api, faults, allow)
+        return job
+
+    monkeypatch.setattr(processes, "new_job", new_job)
 
 
 @pytest.mark.platforms("windows")
@@ -170,14 +197,7 @@ def test_unconfirmed_tree_keeps_values_and_lock_until_confirmed(secret_run, monk
 
         monkeypatch.setattr(processes._WindowsJob, "terminate", terminate)
     else:
-        real_new_job = processes.new_job
-
-        def new_job():
-            job = real_new_job()
-            job._api = _FaultyApi(job._api, _API_FAULTS[fault], allow)
-            return job
-
-        monkeypatch.setattr(processes, "new_job", new_job)
+        _faulty_jobs(monkeypatch, _API_FAULTS[fault], allow)
 
     success, output = scheduler_script._run_job_script(
         str(script), secret_env_resolver=resolver)
@@ -232,3 +252,139 @@ def test_ordinary_run_confirms_the_tree_gone_before_release(secret_run):
     assert success is True
     assert exits == [{"alive": [False, False], "processes": 2, "locked": True}]
     assert not _locked(script)
+
+
+def _listed_then_dropped(state):
+    """A BasicProcessIdList query that, once it has listed a member, lists nobody."""
+    def query(real, handle, info_class, info, size, returned):
+        ok = real(handle, info_class, info, size, returned)
+        listing = info._obj
+        if ok and state["seen"]:
+            listing.NumberOfAssignedProcesses = listing.NumberOfProcessIdsInList = 0
+            state["dropped"] += 1
+        elif ok and listing.NumberOfProcessIdsInList:
+            state["seen"] = True
+        return ok
+    return query
+
+
+@pytest.mark.platforms("windows")
+@pytest.mark.parametrize("unheld", ["OpenProcess", "IsProcessInJob"])
+def test_member_never_held_is_not_taken_for_gone_when_the_listing_drops_it(
+        secret_run, monkeypatch, unheld):
+    from cron import scheduler_script
+
+    script, resolver, exits = secret_run
+    allow = threading.Event()
+    state = {"seen": False, "dropped": 0}
+    _faulty_jobs(monkeypatch, {
+        unheld: _denied,
+        # The kill reports success, yet the member lives on: its process never signals.
+        "TerminateJobObject": 1,
+        "QueryInformationJobObject": _listed_then_dropped(state),
+    }, allow)
+
+    success, output = scheduler_script._run_job_script(
+        str(script), secret_env_resolver=resolver)
+
+    assert (success, output) == (False, scheduler_script._SECRET_TEARDOWN_FAILED)
+    # The member left the listing while it was still running, and the run stays held.
+    assert state["dropped"] > 0
+    assert any(_alive(i) for i in _identities(script.parent))
+    assert exits == []
+    assert _locked(script)
+    assert len(scheduler_script._held_secret_runs) == 1
+
+    allow.set()
+    assert _wait(lambda: exits), "the held run was never released"
+    assert exits == [{"alive": [False, False], "processes": 2, "locked": True}]
+
+
+@pytest.mark.platforms("windows")
+@pytest.mark.parametrize("fault", ["unexpected_error", "retry_not_started"])
+def test_held_run_keeps_its_retry_through_faults_and_is_released_once(
+        secret_run, monkeypatch, fault):
+    from cron import scheduler, scheduler_script
+    from hermes_cli.local_runtime import processes
+
+    script, resolver, exits = secret_run
+    allow, allow_start = threading.Event(), threading.Event()
+    attempts = []
+    real_terminate = processes._WindowsJob.terminate
+
+    def terminate(job, timeout):
+        if allow.is_set():
+            return real_terminate(job, timeout)
+        attempts.append(fault)
+        if fault == "unexpected_error" and len(attempts) > 1:
+            raise RuntimeError("injected: unexpected teardown error")
+        raise processes.JobShutdownError("injected: teardown did not run")
+
+    monkeypatch.setattr(processes._WindowsJob, "terminate", terminate)
+    if fault == "retry_not_started":
+        class Thread(threading.Thread):
+            def start(self):
+                if not allow_start.is_set():
+                    raise RuntimeError("can't start new thread")
+                super().start()
+
+        monkeypatch.setattr(scheduler_script, "threading",
+                            types.SimpleNamespace(**{**vars(threading), "Thread": Thread}))
+
+    success, output = scheduler_script._run_job_script(
+        str(script), secret_env_resolver=resolver)
+
+    assert (success, output) == (False, scheduler_script._SECRET_TEARDOWN_FAILED)
+    if fault == "retry_not_started":
+        time.sleep(0.5)
+        scheduler.tick(verbose=False)  # the retry still cannot start: nothing is released
+        assert attempts == [fault] and scheduler_script._held_secret_worker is None
+        allow_start.set()
+        scheduler.tick(verbose=False)
+    assert _wait(lambda: len(attempts) >= 4), "the held run is no longer retried"
+    assert scheduler_script._held_secret_worker.is_alive()
+    assert exits == []
+    assert _locked(script)
+    assert len(scheduler_script._held_secret_runs) == 1
+
+    allow.set()
+    assert _wait(lambda: not scheduler_script._held_secret_runs)
+    assert _wait(lambda: scheduler_script._held_secret_worker is None)
+    scheduler.tick(verbose=False)
+    assert exits == [{"alive": [False, False], "processes": 2, "locked": True}]
+    assert not _locked(script)
+
+
+@pytest.mark.platforms("windows")
+def test_resolver_exit_failure_after_confirmation_drops_the_run_once(
+        secret_run, monkeypatch, caplog):
+    from cron import scheduler_script
+    from hermes_cli.local_runtime import processes
+
+    script, resolver, exits = secret_run
+    allow = threading.Event()
+    real_terminate = processes._WindowsJob.terminate
+
+    def terminate(job, timeout):
+        if not allow.is_set():
+            raise processes.JobShutdownError("injected: teardown did not run")
+        real_terminate(job, timeout)
+
+    monkeypatch.setattr(processes._WindowsJob, "terminate", terminate)
+
+    @contextlib.contextmanager
+    def failing_exit(path):
+        with resolver(path) as values:
+            yield values
+        raise RuntimeError("injected: resolver exit failed")
+
+    success, _output = scheduler_script._run_job_script(
+        str(script), secret_env_resolver=failing_exit)
+    assert success is False and exits == []
+
+    allow.set()
+    assert _wait(lambda: not scheduler_script._held_secret_runs)
+    assert _wait(lambda: scheduler_script._held_secret_worker is None)
+    assert exits == [{"alive": [False, False], "processes": 2, "locked": True}]
+    assert not _locked(script)
+    assert "leaving its resolver context failed" in caplog.text

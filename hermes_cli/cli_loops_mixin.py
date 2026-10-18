@@ -304,11 +304,14 @@ class CLILoopsMixin:
                 if bundled_count:
                     print(f"  {t('cli.plugins.bundled_available', count=bundled_count)}")
                 return
-            try:  # loaded-plugin details (tools/hooks/commands counts, errors) by name
-                from hermes_cli.plugins import get_plugin_manager
-                loaded = {p["name"]: p for p in get_plugin_manager().list_plugins()}
-            except Exception:
-                loaded = {}
+            from hermes_cli import gateway_plugin_commands
+            loaded = gateway_plugin_commands.loaded(self)  # the gateway's; None off the gateway
+            if loaded is None:
+                try:  # loaded-plugin details (tools/hooks/commands counts, errors) by name
+                    from hermes_cli.plugins import get_plugin_manager
+                    loaded = {p["name"]: p for p in get_plugin_manager().list_plugins()}
+                except Exception:
+                    loaded = {}
             print(t("cli.plugins.user_plugins_header", count=len(user_entries)))
             for name, version, _desc, source, _dir, key in sorted(user_entries):
                 state = _plugin_status(name, enabled, disabled, key=key)
@@ -723,8 +726,9 @@ class CLILoopsMixin:
             _cprint(f"  {_DIM}{t('cli.loop.paused_interrupted')}{_RST}")
             return
         decision = mgr.complete_tick(self._last_assistant_response_text())
+        # With the live-work dock up its loop row carries the countdown; the one-shot line would go stale.
         if (not _print_decision_message(decision) and decision.get("status") == "active"
-                and mgr.state is not None):
+                and mgr.state is not None and getattr(self, "_subagent_monitor", None) is None):
             _cprint(f"  {_DIM}{t('cli.loop.remaining', label=mgr.state.remaining_label())}{_RST}")
 
     def _maybe_continue_goal_after_turn(self) -> None:

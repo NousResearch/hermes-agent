@@ -135,26 +135,30 @@ class GatewayClient:
 
     async def rpc(self, method, *, _timeout=None, **params):
         """Send one request and await its answer; ``_timeout`` (seconds, never sent on the wire)
-        overrides ``DEFAULT_RPC_TIMEOUT`` for a verb that legitimately takes longer."""
+        overrides ``DEFAULT_RPC_TIMEOUT`` for a verb that legitimately takes longer (``math.inf``: no
+        deadline; the answer, a hang-up or the caller's cancel ends the wait)."""
         self.sequence += 1
         rid = self.sequence
         future = asyncio.get_running_loop().create_future()
         self.pending[rid] = future
         try:
             await self.websocket.send(json.dumps({"jsonrpc": "2.0", "id": rid, "method": method, "params": params}))
-            return await asyncio.wait_for(future, DEFAULT_RPC_TIMEOUT if _timeout is None else _timeout)
+            budget = DEFAULT_RPC_TIMEOUT if _timeout is None else _timeout
+            return await asyncio.wait_for(future, None if budget == float("inf") else budget)
         finally:
             self.pending.pop(rid, None)
 
 
-def _session_ticket(home: Path, endpoint, *, purpose="interactive", scope=None) -> str:
+def _session_ticket(home: Path, endpoint, *, purpose="interactive", scope=None, subject=None) -> str:
     from hermes_cli.gateway_runtime import control_home_for
     from hermes_cli.gateway_runtime_discovery import connect_private, _identify_response
     # A served secondary's ticket is minted by the multiplexer's socket, bound to the secondary.
     home = control_home_for(home, endpoint)
+    # ``subject`` names the principal a same-user caller acts for (the standalone dashboard's
+    # authenticated user) instead of the socket UID; the owner's peer gate stays the boundary.
     request = json.dumps({"protocol": 1, "id": 1, "verb": "session-ticket", "params": {
         "profile_id": endpoint.profile_id, "instance_id": endpoint.instance_id, "purpose": purpose,
-        **({"scope": scope} if scope else {}),
+        **({"scope": scope} if scope else {}), **({"subject": subject} if subject else {}),
     }}).encode() + b"\n"
     if os.name == "nt":
         from gateway.runtime_bootstrap_windows import query_runtime_control
@@ -182,18 +186,21 @@ def _session_ticket(home: Path, endpoint, *, purpose="interactive", scope=None) 
 
 
 @asynccontextmanager
-async def connect_gateway(endpoint=None):
+async def connect_gateway(endpoint=None, subject=None):
     """Attach to this home's owner. ``endpoint``: an already-discovered ready owner to dial as-is
-    (maintenance that must never start a gateway); default ensures one, starting it if needed."""
+    (maintenance that must never start a gateway); default ensures one, starting it if needed.
+    ``subject``: mint the ticket for this principal (the caller's authenticated dashboard user)
+    rather than the socket identity; only a peer the owner already trusts may name one."""
     from websockets.asyncio.client import connect
     from hermes_constants import get_hermes_home
-    from hermes_cli.gateway_runtime import ensure_gateway_runtime
+    from hermes_cli.gateway_runtime import attachable, ensure_gateway_runtime, gateway_profile_home
     from urllib.parse import urlsplit
 
     remote = "" if endpoint is not None else os.environ.get("HERMES_TUI_GATEWAY_URL", "").strip()
     protocols = None
     if endpoint is not None:
-        ticket = await asyncio.to_thread(_session_ticket, get_hermes_home().resolve(), endpoint)
+        ticket = await asyncio.to_thread(_session_ticket, gateway_profile_home(get_hermes_home()), endpoint,
+                                         subject=subject)
         url, protocols = gateway_ws_target(endpoint, ticket)
     elif remote:
         parsed = urlsplit(remote)
@@ -201,11 +208,12 @@ async def connect_gateway(endpoint=None):
             raise GatewayClientError("Invalid explicit gateway WebSocket URL; no local fallback")
         url = remote
     else:
-        home = get_hermes_home().resolve()
+        # A per-task overlay home is served by the profile its symlinked lock names (#138949).
+        home = gateway_profile_home(get_hermes_home())
         # A client's own start: the daemon it may launch ends itself once idle (no client, adapter,
         # cron/kanban work or admission), and the next client starts a fresh one.
         result = await asyncio.to_thread(ensure_gateway_runtime, home, idle_exit=True)
-        if result.state != "ready" or result.endpoint is None:
+        if not attachable(result):
             detail = getattr(result, "detail", None)
             if result.reason_code == "runtime_exited" and detail:
                 # A multi-line startup report (redacted traceback tail + where the full log is).

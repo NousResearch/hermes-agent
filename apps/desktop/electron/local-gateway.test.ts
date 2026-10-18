@@ -150,6 +150,37 @@ test('ensure consumes structured readiness without acquiring a child owner', asy
   await expect(ensureLocalGateway(async () => ({ code: 5, stdout: JSON.stringify({ state: 'starting', reason_code: 'deadline' }) }))).rejects.toThrow('starting')
 })
 
+test('a restart-wait owner is attached to answer a parked prompt; a plain drain stays refused (#139041)', async () => {
+  const endpoint = { profile_id: '/private/profile', instance_id: 'owner', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1234', capabilities: ['session-authority-v1'], supervisor: 'none', code_sha: 'old' }
+  const restartStale = vi.fn(async () => ({ done: Promise.resolve() }))
+  const wait = { code: 6, stdout: JSON.stringify({ state: 'draining', reason_code: 'restart_wait', endpoint, client_code_sha: 'new' }) }
+  const connection = await ensureLocalGateway(async () => wait, undefined, restartStale)
+  expect(connection.gatewayEndpoint).toEqual(endpoint)
+  expect(restartStale).not.toHaveBeenCalled() // already restarting: never a second restart
+  await expect(ensureLocalGateway(async () => ({ code: 6, stdout: JSON.stringify({ state: 'draining', reason_code: 'update_paused', endpoint: null }) }))).rejects.toThrow('Gateway draining (update_paused)')
+})
+
+test('a stale owner this window restarts is attached in its restart wait before the restart finishes (#139041)', async () => {
+  // `hermes gateway restart` waits for the old owner to exit; a turn parked on approval/clarify
+  // there waits for an answer only this window can give. Awaiting the restart first deadlocked both.
+  const { createStaleGatewayRestarter } = await import('./local-gateway')
+  const endpoint = { profile_id: '/h', instance_id: 'old', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1234', capabilities: ['session-authority-v1'], supervisor: 'none', code_sha: 'old' }
+  let finishRestart = () => {}
+  const restarted: string[] = []
+  const restartStale = createStaleGatewayRestarter(owner => { restarted.push(owner)
+
+ return new Promise<void>(resolve => { finishRestart = resolve }) }, () => undefined)
+  const answers = [
+    { code: 0, stdout: JSON.stringify({ state: 'ready', endpoint, client_code_sha: 'new' }) },
+    { code: 6, stdout: JSON.stringify({ state: 'draining', reason_code: 'restart_wait', endpoint, client_code_sha: 'new' }) }
+  ]
+  const attached = ensureLocalGateway(async () => answers.shift()!, undefined, restartStale)
+  const outcome = await Promise.race([attached, new Promise(resolve => setTimeout(() => resolve('blocked on the restart'), 500))])
+  finishRestart()
+  expect(outcome).toMatchObject({ gatewayEndpoint: { instance_id: 'old' } })
+  expect(restarted).toEqual(['default'])
+})
+
 test('an ensure child that never reached the protocol boundary is diagnosed from stderr, not as a JSON parse error', async () => {
   // `main`'s hermes has no `gateway ensure` subcommand: argparse usage on stderr, nothing on stdout.
   const legacy = { code: 2, stdout: '', stderr: "usage: hermes gateway [-h] ...\nhermes gateway: 'ensure' is not a `hermes gateway` command.\nRun `hermes gateway --help` to see all commands.\n" }
@@ -197,6 +228,19 @@ test('a dial against a replaced local gateway forgets the cached endpoint once a
   expect(result).toBe('ticket-for-alive')
   expect(forgotten).toEqual(['primary'])
   expect(ensures).toBe(2)
+})
+
+test('a redial whose re-ensure comes back without a gateway endpoint names that, not a TypeError', async () => {
+  const { localGatewayDial } = await import('./local-gateway')
+  const endpoint = { profile_id: '/h', control_home: null, instance_id: 'dead', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1234', capabilities: ['session-authority-v1'], supervisor: 'none' }
+  const mint = vi.fn(async () => { throw new Error('Gateway ticket control socket missing') })
+  const ensure = vi.fn()
+    .mockResolvedValueOnce({ baseUrl: 'http://127.0.0.1:1234', gatewayEndpoint: endpoint })
+    .mockResolvedValueOnce({ baseUrl: 'http://127.0.0.1:1234' })
+
+  await expect(localGatewayDial({ ensure, forget: vi.fn(), launchHome: '/h', mint, prepare: () => 'unused', profile: '' }))
+    .rejects.toThrow('Local gateway connection has no gateway endpoint')
+  expect(mint).toHaveBeenCalledTimes(1)
 })
 
 test('a ready owner running other code than this Hermes is restarted once, then re-ensured', async () => {
@@ -415,6 +459,48 @@ test('a ?profile= request on the shared host descriptor mints for the sibling pr
   expect(() => routedGatewayEndpoint(endpoint, 'http://127.0.0.1:1/x?profile=../evil', path.resolve('hermes-home'))).toThrow('Invalid profile route')
 })
 
+test('a profile SOUL route mints for the profile named in its path', () => {
+  const endpoint = { profile_id: path.resolve('hermes-home'), instance_id: 'i', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1', capabilities: [], supervisor: 'none', control_home: null }
+
+  expect(routedGatewayEndpoint(endpoint, 'http://127.0.0.1:1/api/profiles/p2/soul', path.resolve('hermes-home'))).toMatchObject({
+    profile_id: path.resolve('hermes-home', 'profiles', 'p2'),
+    control_home: path.resolve('hermes-home')
+  })
+})
+
+// Every /api/profiles/<name>/* route the Profiles screen calls is checked against the path's
+// profile (native_http._check_profile_scope); collection routes beneath it stay on their selector.
+test('every named Profiles-screen route mints for its profile; collection routes do not', () => {
+  const endpoint = { profile_id: path.resolve('hermes-home'), instance_id: 'i', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1', capabilities: [], supervisor: 'none', control_home: null }
+  const route = (p: string) => routedGatewayEndpoint(endpoint, `http://127.0.0.1:1${p}`, endpoint.profile_id).profile_id
+
+  for (const p of ['/api/profiles/p2', '/api/profiles/p2/soul', '/api/profiles/p2/setup-command', '/api/profiles/p2/export']) {
+    expect(route(p)).toBe(path.resolve('hermes-home', 'profiles', 'p2'))
+  }
+
+  expect(route('/api/profiles/default/soul')).toBe(endpoint.profile_id)
+
+  for (const p of ['/api/profiles/active', '/api/profiles/import', '/api/profiles/projects/tree', '/api/profiles/sessions']) {
+    expect(route(p)).toBe(endpoint.profile_id)
+  }
+
+  expect(route('/api/profiles/sessions?profile=p2')).toBe(path.resolve('hermes-home', 'profiles', 'p2'))
+})
+
+// A profile may be NAMED like a collection route: only the exact collection paths stay on their
+// selector, so `/api/profiles/projects/soul` still mints for the `projects` profile.
+test('a profile named like a collection route still gets its own ticket', () => {
+  const endpoint = { profile_id: path.resolve('hermes-home'), instance_id: 'i', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1', capabilities: [], supervisor: 'none', control_home: null }
+  const route = (p: string) => routedGatewayEndpoint(endpoint, `http://127.0.0.1:1${p}`, endpoint.profile_id).profile_id
+
+  for (const name of ['projects', 'sessions', 'active', 'import']) {
+    expect(route(`/api/profiles/${name}/soul`)).toBe(path.resolve('hermes-home', 'profiles', name))
+  }
+
+  expect(route('/api/profiles/sessions/sidebar?recents_profile=p2')).toBe(path.resolve('hermes-home', 'profiles', 'p2'))
+  expect(route('/api/profiles/sessions/pull-requests?profile=p2')).toBe(path.resolve('hermes-home', 'profiles', 'p2'))
+})
+
 // The batched sidebar names its owner in `recents_profile`; a grant for the window's own profile
 // is refused there (profile_scope_mismatch) and the sidebar drops that profile's sessions.
 test('a sidebar read mints for the profile its recents_profile names', () => {
@@ -500,4 +586,26 @@ test('an ensure refusal names its remedy instead of only a status pointer', asyn
   await expect(ensureLocalGateway(async () => ({
     code: 3, stdout: JSON.stringify({ state: 'incompatible', reason_code: 'runtime_protocol', detail, endpoint: null })
   }))).rejects.toThrow(`Gateway incompatible (runtime_protocol). ${detail}. Use hermes gateway status for recovery.`)
+})
+
+test('an elevated or other-session gateway is named with its remedy, not as authorization (#139845, #140252)', async () => {
+  const cases = [
+    ['gateway_elevated', 'The running gateway (PID 23460) was started as administrator, so this non-elevated app cannot reach it. Stop it from an administrator prompt (hermes gateway stop), then start Hermes without elevation'],
+    ['gateway_other_session', 'The running gateway (PID 23460) runs in another Windows logon session (session 0, e.g. a boot-time scheduled task), so this app cannot reach it. Stop it (hermes gateway stop from an administrator prompt) and let only one auto-start task launch the gateway']
+  ]
+
+  for (const [reason_code, detail] of cases) {
+    const failure = ensureLocalGateway(async () => ({
+      code: 4, stdout: JSON.stringify({ state: 'inaccessible', reason_code, detail, endpoint: null })
+    }))
+
+    await expect(failure).rejects.toThrow(`Gateway inaccessible (${reason_code}). ${detail}.`)
+    await expect(failure).rejects.not.toThrow('authorization')
+  }
+})
+
+test('an update-paused ensure refusal points to the restart that completes its tail', async () => {
+  await expect(ensureLocalGateway(async () => ({
+    code: 6, stdout: JSON.stringify({ state: 'draining', reason_code: 'update_paused', endpoint: null })
+  }))).rejects.toThrow('Gateway draining (update_paused). Use hermes gateway restart for recovery.')
 })

@@ -6,8 +6,8 @@ from contextlib import asynccontextmanager
 import pytest
 
 from hermes_cli.gateway_agent import GatewayAgent
-from hermes_cli.gateway_client import GatewayClientError
-from hermes_cli.gateway_connection import GatewayConnection
+from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
+from hermes_cli.gateway_connection import DISCONNECTED, GatewayConnection
 
 SID = "local-abc"
 
@@ -29,9 +29,12 @@ class FakeClient:
         self.result = result if result is not None else {}
         self.usage = usage or {}
         self.on_interrupt = None
+        self.mutate_replies = []
 
     async def rpc(self, method, *, _timeout=None, **params):
         self.calls.append((method, params))
+        if method == "session.mutate" and self.mutate_replies:
+            return self.mutate_replies.pop(0)
         if method == "prompt.submit":
             asyncio.get_running_loop().call_soon(lambda: asyncio.ensure_future(self._play()))
             return {"admission_id": "adm-1", "status": "queued", "execution_generation": 7}
@@ -259,6 +262,25 @@ def test_session_usage_event_feeds_mains_status_bar_attributes(make_agent):
     n = len(agent._api_latency_history)
     assert n == 1 and round(sum(agent._api_output_history) / sum(agent._api_latency_history)) == 116
     assert agent.get_rate_limit_state() is None
+
+
+def test_gateway_session_usage_frame_feeds_the_status_bar_mid_turn(make_agent):
+    """The frame the gateway really publishes (`usage_frame`: flat counters plus the nested TUI
+    `usage` view) lands the flat counters, not the nested view, on main's attributes mid-turn."""
+    from gateway.session_usage import usage_frame
+    usage = dict(SESSION_USAGE, compression_count=2)
+    seen = []
+    agent, _ = make_agent([frame("session.usage", usage_frame(usage), admission=None),
+                           frame("message.complete", {"text": "x", "outcome": "completed"})])
+    agent.context_compressor.context_length = 0
+    # Runs after the agent's own listener: what the status bar shows right after the mid-turn frame.
+    agent._state().usage_listeners.append(lambda cached: seen.append((
+        dict(cached), agent.session_api_calls, agent.context_compressor.context_length,
+        agent.context_compressor.compression_count, list(agent._api_latency_history))))
+    agent.run_conversation("q")
+    cached, *bar = seen[0]
+    assert bar == [5, 128000, 2, [0.2]]
+    assert cached["api_calls"] == 5 and "context_max" not in cached
 
 
 def test_turn_end_reads_session_stats_cumulative(make_agent):
@@ -659,3 +681,206 @@ def test_fast_tier_reaches_the_session_on_each_rebuild_and_back_to_normal(make_a
     assert fast and again and normal
     sets = [p["value"] for m, p in client.calls if m == "config.set" and p.get("key") == "service_tier"]
     assert sets == ["priority", "normal"]
+
+
+class RefusingClient(FakeClient):
+    """``prompt.submit`` raises ``error`` instead of admitting the turn."""
+
+    def __init__(self, error):
+        super().__init__([])
+        self.error = error
+
+    async def rpc(self, method, *, _timeout=None, **params):
+        if method == "prompt.submit":
+            self.calls.append((method, params))
+            raise self.error
+        return await super().rpc(method, _timeout=_timeout, **params)
+
+
+def submit_against(error):
+    conn = GatewayConnection(connect=connect_with(RefusingClient(error)))
+    conn.start(5)
+    try:
+        return GatewayAgent(connection=conn, session_id=SID).run_conversation("q")
+    finally:
+        conn.close()
+
+
+def test_a_session_busy_refusal_at_submit_is_the_session_busy_verdict():
+    """The owner answered: the session is busy. That is the busy verdict (send again), not a
+    lost gateway connection."""
+    result = submit_against(GatewayRPCError("session_busy"))
+    assert result["failed"] is True and result["completed"] is False
+    assert result["failure_reason"] == "session_busy"
+    assert result["failure_retryable"] is True
+
+
+@pytest.mark.parametrize("reason", ["permission_denied", "runtime_draining", "invalid_params"])
+def test_other_owner_refusals_at_submit_are_not_a_lost_connection(reason):
+    """A received refusal keeps main's unclassified failed result: no gateway_connection label and
+    no retryability verdict."""
+    result = submit_against(GatewayRPCError(reason))
+    assert result["failed"] is True and result["error"] == reason
+    assert result["failure_reason"] is None
+    assert "failure_retryable" not in result
+
+
+def test_a_transport_loss_at_submit_is_still_gateway_connection():
+    result = submit_against(GatewayClientError(DISCONNECTED))
+    assert result["failed"] is True and result["error"] == DISCONNECTED
+    assert result["failure_reason"] == "gateway_connection" and result["failure_retryable"] is False
+
+
+def test_model_switch_is_the_session_model_mutation_and_a_rebuilt_agent_shows_it(make_agent):
+    """/model, /model --once and /new's reset to the config default call main's
+    ``agent.switch_model`` (#134889 M1). The gateway commits the target as a generation-fenced
+    ``session.mutate model`` (no key or endpoint leaves the CLI), and the agent main rebuilds for the
+    next turn reads the committed model from the session, not the old one."""
+    agent, client = make_agent([], model="old-model", provider="openrouter")
+    agent.switch_model(new_model="new-model", new_provider="anthropic", api_key="sk-local",
+                       base_url="https://example.invalid", api_mode="anthropic_messages", capabilities=None)
+    mutations = [p for m, p in client.calls if m == "session.mutate"]
+    assert len(mutations) == 1
+    assert mutations[0]["operation"] == "model"
+    assert mutations[0]["payload"] == {"model": "new-model", "provider": "anthropic"}
+    assert (mutations[0]["expected_revision"], mutations[0]["expected_generation"]) == (1, 7)
+    assert (agent.model, agent.provider) == ("new-model", "anthropic")
+    rebuilt = GatewayAgent(connection=agent.connection, session_id=SID, model="old-model", provider="openrouter")
+    assert (rebuilt.model, rebuilt.provider) == ("new-model", "anthropic")
+
+
+def test_a_guarded_model_target_commits_only_on_the_users_yes_to_the_owners_warning(make_agent):
+    """The owner's guard refusal (cost, data policy, large context) is the user's to answer: its
+    warning goes to the CLI's prompt and only a yes re-sends with its token. A no commits nothing;
+    with no prompt (-q) the token is never sent. A second refusal after a yes (the session moved)
+    raises, so main rolls its fields back and the agent keeps the old model."""
+    refusal = {"status": "confirmation_required", "confirm": "tok-1", "confirm_message": "Expensive model"}
+    asked = []
+    agent, client = make_agent([], model="old-model",
+                               model_confirm_callback=lambda r: asked.append(r["confirm_message"]) or True)
+    client.mutate_replies = [refusal, {"status": "committed", "model": "pricey-model"}]
+    assert agent.switch_model(new_model="pricey-model", new_provider="openrouter") is True
+    assert asked == ["Expensive model"]
+    sent = [p["payload"] for m, p in client.calls if m == "session.mutate"]
+    assert sent == [{"model": "pricey-model", "provider": "openrouter"},
+                    {"model": "pricey-model", "provider": "openrouter", "confirm": "tok-1"}]
+    assert agent.model == "pricey-model"
+    declined, declined_client = make_agent([], model="old-model", model_confirm_callback=lambda r: False)
+    unattended, unattended_client = make_agent([], model="old-model")
+    declined_client.mutate_replies, unattended_client.mutate_replies = [refusal], [refusal]
+    assert declined.switch_model(new_model="pricey-model", new_provider="openrouter") is False
+    with pytest.raises(GatewayClientError, match="interactive session"):
+        unattended.switch_model(new_model="pricey-model", new_provider="openrouter")
+    for refused, refused_client in ((declined, declined_client), (unattended, unattended_client)):
+        assert [p["payload"] for m, p in refused_client.calls if m == "session.mutate"] == [
+            {"model": "pricey-model", "provider": "openrouter"}]
+        assert refused.model == "old-model"
+    other, other_client = make_agent([], model="old-model", model_confirm_callback=lambda r: True)
+    other_client.mutate_replies = [refusal, dict(refusal, confirm="tok-2")]
+    with pytest.raises(GatewayClientError, match="Model not switched"):
+        other.switch_model(new_model="pricey-model", new_provider="openrouter")
+    assert other.model == "old-model"
+
+
+def test_moa_one_shot_preset_rides_this_turns_submit_as_its_model_override(make_agent):
+    """``/moa <prompt>`` (#134889 CLI-18): main rebuilds its agent on the MoA virtual provider for
+    one turn, but the session's info names the session's own model. The preset must reach the turn
+    as its admission's ``model_override``; a regular rebuild sends none."""
+    done = [frame("message.complete", {"text": "ok", "outcome": "completed"})]
+    agent, client = make_agent(done)
+    agent.connection.state(SID).info.update(model="claude-sonnet", provider="anthropic")
+    moa = GatewayAgent(connection=agent.connection, session_id=SID, model="default", provider="moa")
+    moa.run_conversation("compare these designs")
+    submit = dict(client.calls)["prompt.submit"]
+    assert submit["model_override"] == {"model": "default", "provider": "moa"}
+    client.calls.clear()
+    regular = GatewayAgent(connection=agent.connection, session_id=SID, model="claude-sonnet", provider="anthropic")
+    regular.run_conversation("next")
+    assert "model_override" not in dict(client.calls)["prompt.submit"]
+
+
+def test_moa_one_shot_overrides_a_moa_session_running_another_preset(make_agent):
+    """A session already on the MoA provider runs ITS preset; ``/moa`` with another preset must still
+    send that preset as the turn's override. Only the same preset is the session's own route."""
+    done = [frame("message.complete", {"text": "ok", "outcome": "completed"})]
+    agent, client = make_agent(done)
+    agent.connection.state(SID).info.update(model="fast", provider="moa")
+    GatewayAgent(connection=agent.connection, session_id=SID, model="deep", provider="moa").run_conversation("go")
+    assert dict(client.calls)["prompt.submit"]["model_override"] == {"model": "deep", "provider": "moa"}
+    client.calls.clear()
+    GatewayAgent(connection=agent.connection, session_id=SID, model="fast", provider="moa").run_conversation("again")
+    assert "model_override" not in dict(client.calls)["prompt.submit"]
+
+
+def test_a_committed_model_switch_stands_when_the_refresh_after_it_fails(make_agent):
+    """Once ``session.mutate`` commits, the gateway runs the next turn on the new model. A failed
+    ``session.resume`` refresh after that must not raise: main's caller would roll its fields back to
+    a model the session no longer has. The agent shows the model and provider the gateway committed."""
+    agent, client = make_agent([], model="old-model", provider="openrouter")
+    client.mutate_replies = [{"status": "committed", "model": "claude-sonnet-4", "provider": "anthropic"}]
+    rpc = client.rpc
+
+    async def refresh_fails(method, **params):
+        if method == "session.resume" and any(m == "session.mutate" for m, _ in client.calls):
+            raise GatewayClientError(DISCONNECTED)
+        return await rpc(method, **params)
+    client.rpc = refresh_fails
+    agent.switch_model(new_model="sonnet")
+    assert len([m for m, _ in client.calls if m == "session.mutate"]) == 1
+    assert (agent.model, agent.provider) == ("claude-sonnet-4", "anthropic")
+    rebuilt = GatewayAgent(connection=agent.connection, session_id=SID, model="old-model", provider="openrouter")
+    assert (rebuilt.model, rebuilt.provider) == ("claude-sonnet-4", "anthropic")
+
+
+def test_a_background_review_summary_during_a_turn_is_printed_like_mains(make_agent):
+    """``/refine`` (#134889 M3) and the post-turn review run in the gateway, which publishes their
+    summary as a ``review.summary`` frame (no admission). One landing while a turn streams is printed
+    as main's ``display.review.summary_cli`` line, never dropped."""
+    printed = []
+    agent, _ = make_agent([frame("review.summary", {"text": "💾 Self-improvement review: Memory updated"}, admission=None),
+                           frame("message.complete", {"text": "ok", "outcome": "completed"})])
+    agent._print_fn = printed.append
+    agent.run_conversation("hi")
+    assert printed == ["  💾 Self-improvement review: Memory updated"]
+
+
+def test_another_viewer_completing_the_clarify_batch_releases_mains_panel(make_agent, monkeypatch):
+    """Another viewer (Desktop/Ink) locks every answer of the batch the classic CLI is showing: the
+    gateway settles it and withdraws the request (``request.cancel`` reason ``resolved``). main's real
+    batch panel (``CLIModalMixin._clarify_callback``) blocks the agent thread, so the withdrawal must
+    close it from the connection thread; the pump then reads the turn's completion instead of sitting
+    in the modal until clarify_timeout."""
+    import cli
+    from tests.hermes_cli.test_cli_clarify_batch import _make_cli_stub
+    monkeypatch.setattr(cli, "CLI_CONFIG", {"agent": {"clarify_timeout": 60}})
+    panel = _make_cli_stub()
+    panel._ring_bell = lambda **kw: None
+    request = {"jsonrpc": "2.0", "id": "srq-clr", "method": "clarify", "params": {"session_id": SID, "questions": [
+        {"qid": "q0", "question": "colour?", "choices": ["red", "blue"]},
+        {"qid": "q1", "question": "size?", "choices": ["s", "l"]}]}}
+    withdrawn = frame("request.cancel", {"id": "srq-clr", "method": "clarify", "reason": "resolved"}, admission=None)
+    agent, _client = make_agent(
+        [request, "wait", withdrawn, frame("message.complete", {"text": "ok", "outcome": "completed"})],
+        clarify_callback=panel._clarify_callback, modal_withdraw_callback=panel._withdraw_gateway_modal)
+    replies = []
+    agent.connection.reply = lambda rid, result: replies.append((rid, result)) or True
+    out = {}
+    worker = threading.Thread(target=lambda: out.update(agent.run_conversation("ask")), daemon=True)
+    worker.start()
+    worker.join(10)
+    assert not worker.is_alive(), "the CLI stayed blocked in its clarify panel"
+    assert panel._clarify_state is None
+    assert out["completed"] is True or out.get("final_response") is not None
+    # Its late reply is a cancel the gateway drops (the request is already settled).
+    assert replies == [("srq-clr", {"answers": {}, "outcome": "cancelled"})]
+
+
+def test_a_withdrawal_for_another_request_leaves_the_panel_open(make_agent):
+    agent, _client = make_agent([])
+    closed = []
+    agent.modal_withdraw_callback = closed.append
+    agent._open_request = ("srq-mine", "clarify")
+    agent._on_request_withdrawn({"id": "srq-other", "method": "clarify", "reason": "resolved"})
+    assert closed == []
+    agent._on_request_withdrawn({"id": "srq-mine", "method": "clarify", "reason": "resolved"})
+    assert closed == ["clarify"]

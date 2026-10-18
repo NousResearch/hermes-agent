@@ -28,6 +28,10 @@ def build_tools_parser(subparsers, *, cmd_tools: Callable) -> None:
     )
     tools_sub = tools_parser.add_subparsers(dest="tools_action")
 
+    report = tools_sub.add_parser("report", help="Report effective tool names as JSON without starting an agent")
+    report.add_argument("--toolsets", required=True, help="Toolsets requested for the invocation")
+    report.add_argument("--require-tool", action="append", default=[], dest="required_tools")
+
     # hermes tools list [--platform cli]
     tools_list_p = tools_sub.add_parser(
         "list",

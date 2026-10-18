@@ -108,6 +108,7 @@ For more context, see the upstream Astral reports: [astral-sh/uv#13553](https://
 hermes              # Interactive CLI — start a conversation
 hermes model        # Choose your LLM provider and model
 hermes tools        # Configure which tools are enabled
+hermes tools report --toolsets file,terminal,vision --require-tool vision_analyze
 hermes config set   # Set individual config values
 hermes config get   # Print individual config values
 hermes gateway      # Start the messaging gateway (Telegram, Discord, etc.)
@@ -116,6 +117,12 @@ hermes claw migrate # Migrate from OpenClaw (if coming from OpenClaw)
 hermes update       # Update to the latest version
 hermes doctor       # Diagnose any issues
 ```
+
+`hermes tools report` prints effective tool names as JSON using the selected
+`HERMES_HOME` configuration, including disabled toolsets and availability checks.
+It starts no agent, changes no settings, and exits nonzero if a repeated
+`--require-tool` requirement is missing. Supervisors can use it before starting
+work that depends on specific capabilities.
 
 📖 **[Full documentation →](https://hermes-agent.nousresearch.com/docs/)**
 

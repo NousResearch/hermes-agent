@@ -15292,7 +15292,11 @@ def cmd_acp(args):
 
 def cmd_tools(args):
     action = getattr(args, "tools_action", None)
-    if action in {"list", "disable", "enable"}:
+    if action == "report":
+        from hermes_cli.tool_report import report_tools
+
+        sys.exit(report_tools(args.toolsets, args.required_tools))
+    elif action in {"list", "disable", "enable"}:
         from hermes_cli.tools_config import tools_disable_enable_command
 
         tools_disable_enable_command(args)

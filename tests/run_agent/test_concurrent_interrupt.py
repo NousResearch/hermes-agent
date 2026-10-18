@@ -2,6 +2,8 @@
 
 import threading
 import time
+from concurrent.futures import Future
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -142,4 +144,59 @@ def test_clear_interrupt_clears_worker_tids(monkeypatch):
         "clear_interrupt() did not clear the interrupt bit for a tracked "
         "worker tid — stale interrupt can leak into the next turn"
     )
+
+
+@pytest.mark.parametrize("names", [("slow", "fast"), ("fast", "slow"), ("slow", "slow")])
+@pytest.mark.parametrize("failure", ["timeout", "missing_result"])
+def test_concurrent_timeout_preserves_each_result(monkeypatch, names, failure):
+    """An expired call must not crash collection or discard a successful sibling."""
+    from agent import tool_executor
+    import tools.daemon_pool
+
+    agent = _make_agent(monkeypatch)
+    agent._tool_guardrails = SimpleNamespace(
+        before_call=lambda *a: SimpleNamespace(allows_execution=True)
+    )
+    agent._append_guardrail_observation = lambda name, args, result, **kw: result
+    agent._record_file_mutation_result = MagicMock()
+    agent._tool_result_content_for_active_model = lambda name, result: result
+    agent._subdirectory_hints.check_tool_call.return_value = None
+    activity = []
+    agent._touch_activity = activity.append
+    monkeypatch.setattr(tool_executor, "get_active_env", lambda *a: None)
+    # Execute healthy workers immediately and leave the simulated hung worker
+    # pending. An already-expired deadline makes this deterministic, with no
+    # sleeps, real hung threads, or wall-clock-dependent assertions.
+    class Pool:
+        def __init__(self, **kw):
+            pass
+
+        def submit(self, fn, index, call, name, args, trace):
+            future = Future()
+            if name != "slow":
+                fn(index, call, name, args, trace)
+                future.set_result(None)
+            elif failure == "missing_result":
+                future.set_result(None)
+            return future
+
+        def shutdown(self, **kw):
+            pass
+
+    monkeypatch.setattr(tools.daemon_pool, "DaemonThreadPoolExecutor", Pool)
+    monkeypatch.setattr(tool_executor, "_resolve_concurrent_tool_timeout", lambda: 0.0)
+    calls = [_FakeToolCall(name, call_id=f"call_{i}") for i, name in enumerate(names)]
+    messages = []
+    agent._execute_tool_calls_concurrent(_FakeAssistantMsg(calls), messages, "test_task")
+
+    assert [m["tool_call_id"] for m in messages] == [c.id for c in calls]
+    completions = [a for a in activity if a.startswith("tool completed:")]
+    assert len(completions) == len(calls)
+    for name, message, completion in zip(names, messages, completions):
+        if name == "slow":
+            assert ("timed out" if failure == "timeout" else "did not return a result") in message["content"]
+            assert completion.endswith(" (error)")
+        else:
+            assert message["content"] == '{"ok": true}'
+            assert not completion.endswith(" (error)")
 

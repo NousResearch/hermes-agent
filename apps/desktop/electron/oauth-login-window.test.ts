@@ -121,6 +121,33 @@ test('a revealed attempt stays open on the chooser for the user', async () => {
   expect(settled).toBe(false)
 })
 
+test('a click that joins while the chooser check is pending keeps its window', async () => {
+  const h = harness()
+
+  let resolveCookie: (present: boolean) => void = () => {}
+
+  h.deps.hasSessionCookie = () =>
+    new Promise<boolean>(resolve => {
+      resolveCookie = resolve
+    })
+
+  const attempt = h.start({ silent: true, background: true })
+  let outcome = 'pending'
+
+  void attempt.result.then(
+    () => (outcome = 'resolved'),
+    error => (outcome = `rejected: ${error.message}`)
+  )
+
+  h.windows[0].navigate(`${GATEWAY}/login`)
+  attempt.reveal()
+  resolveCookie(false)
+  await vi.advanceTimersByTimeAsync(0)
+
+  expect(h.windows[0].state).toMatchObject({ destroyed: false, shown: true })
+  expect(outcome).toBe('pending')
+})
+
 test('a foreground silent sign-in reveals itself when auto-SSO does not finish', async () => {
   const h = harness()
 

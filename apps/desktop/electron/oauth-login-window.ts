@@ -137,7 +137,13 @@ export function startOauthLoginWindow<S>(
     // plus a slow poll for IdPs that finish via in-page JS.
     live.webContents.on('did-navigate', (_event: unknown, url?: string) => {
       if (hiddenRecovery && typeof url === 'string' && url.split(/[?#]/)[0] === chooserUrl) {
-        void deps.hasSessionCookie().then(present => finish(present ? null : new Error(SIGN_IN_REQUIRED)))
+        // A click may join while the check is pending; reveal() clears
+        // hiddenRecovery, and the user's window must survive that race.
+        void deps.hasSessionCookie().then(present => {
+          if (present || hiddenRecovery) {
+            finish(present ? null : new Error(SIGN_IN_REQUIRED))
+          }
+        })
 
         return
       }
@@ -164,10 +170,7 @@ export function startOauthLoginWindow<S>(
     }
 
     if (hiddenRecovery) {
-      deadlineTimer = setTimeout(
-        () => finish(new Error('Silent sign-in did not complete; sign-in required.')),
-        deadlineMs
-      )
+      deadlineTimer = setTimeout(() => finish(new Error(SIGN_IN_REQUIRED)), deadlineMs)
     }
 
     // The user's click joined this flow: show this window (a second one would

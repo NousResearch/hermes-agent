@@ -98,7 +98,7 @@ def main(binary):
         assert child.wait(timeout=5) == 0
         assert child.stderr.read() == b""
         # Even DISPLAY pointing at X11 must not claim global access on Wayland.
-        denied = subprocess.run([binary, "--check"], env={**env, "WAYLAND_DISPLAY": "wayland-test"}, capture_output=True, timeout=5)
+        denied = subprocess.run([binary, "--check"], env={**env, "WAYLAND_DISPLAY": "wayland-test"}, capture_output=True, timeout=5, check=False)
         assert json.loads(denied.stdout) == {"type": "error", "code": "unavailable"}
         print("isolated XI2: summon, key/modifier/mouse/wheel/drag cancellation, duration, EOF, and Wayland checks passed")
     finally:

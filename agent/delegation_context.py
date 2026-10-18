@@ -138,7 +138,7 @@ def scrub_kanban_env(env: Mapping[str, str] | MutableMapping[str, str]) -> dict[
     return cleaned
 
 
-def kanban_path_is_fenced(path: "os.PathLike[str] | str") -> bool:
+def kanban_path_is_fenced(path: os.PathLike[str] | str) -> bool:
     """Whether Kanban mutations at *path* (a board DB or board-metadata root) are denied for this
     process: always for an in-process delegate child (the parent's own board); for a spawned
     descendant only when *path* is the dispatcher-pinned ``HERMES_KANBAN_DB`` or lies under the

@@ -88,7 +88,7 @@ def _json(obj: Any, status: int = 200, headers: Optional[dict[str, str]] = None)
 
 
 def _iso(ts: Optional[float] = None) -> str:
-    return _dt.datetime.fromtimestamp(ts or time.time(), _dt.timezone.utc).isoformat()
+    return _dt.datetime.fromtimestamp(ts or time.time(), _dt.UTC).isoformat()
 
 
 class DiscordStandin(StandinServer):

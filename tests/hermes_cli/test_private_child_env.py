@@ -73,7 +73,7 @@ def test_private_names_block_inheritance_forced_extras_and_real_child(managers):
         assert env["KEEP_ME"] == env["KEEP_FORCED"] == "ok"
         # No credential value is printed, even if the regression fails.
         code = "import os,json;print(json.dumps(any(k.upper()=='EXAMPLE_CONTROL_TOKEN' for k in os.environ)))"
-        actual = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, timeout=10)
+        actual = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, timeout=10, check=False)
         assert actual.returncode == 0 and json.loads(actual.stdout) is False
         assert "EXAMPLE_CONTROL_TOKEN" not in hermes_subprocess_env(
             inherit_credentials=True, base_env={"EXAMPLE_CONTROL_TOKEN": "fake"})
@@ -123,7 +123,7 @@ def test_unload_before_dispatch_keeps_key_out_of_actual_child(managers, monkeypa
         def child():
             env = build_subprocess_env(base={"EXAMPLE_CONTROL_TOKEN": "fake"})
             code = "import os,json;print(json.dumps('EXAMPLE_CONTROL_TOKEN' in os.environ))"
-            result = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, timeout=10)
+            result = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, timeout=10, check=False)
             assert result.returncode == 0
             return json.loads(result.stdout)
         assert run("terminal", {}, child) is False

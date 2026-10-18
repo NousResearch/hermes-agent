@@ -10,7 +10,7 @@ from __future__ import annotations
 import base64
 import json
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
@@ -67,7 +67,7 @@ class _LoopbackUsageServer:
 
 
 def _usage_payload(session_used: float = 20.0, weekly_used: float = 5.0) -> dict:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return {
         "plan_type": "pro",
         "rate_limit": {

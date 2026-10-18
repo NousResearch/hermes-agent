@@ -303,7 +303,10 @@ def _micro_compact_after_turn(agent, messages, final_response, logger, task_id) 
             and not getattr(agent, "_persist_disabled", False)
         ):
             _before = len(messages)
-            _compacted = _compressor._micro_compact(messages)
+            # A rotating compaction earlier in this turn may have moved the agent to a child session.
+            _compacted = _compressor._micro_compact(
+                messages, turn_session_id=getattr(agent, "_inflight_turn_session_id", None),
+            )
             # Defrag rewrites the newest MICRO marker in place and pops _db_persisted;
             # the compressor flags us to invalidate the flush-scan cursor, else the
             # rewritten row is identity-skipped (stale).
@@ -740,8 +743,9 @@ def finalize_turn(
     if _cleanup_errors:
         result["cleanup_errors"] = _cleanup_errors
     # A /steer landing after the final assistant turn has no tool batch to drain into;
-    # hand it back so it becomes the next user turn instead of being lost.
-    _leftover_steer = agent._drain_pending_steer()
+    # hand it back so it becomes the next user turn instead of being lost. A gateway transfer
+    # (ticketed) stays buffered: the claim's settlement returns it to its own queue place.
+    _leftover_steer = (getattr(agent, "_drain_leftover_steer", None) or agent._drain_pending_steer)()
     if _leftover_steer:
         result["pending_steer"] = _leftover_steer
     agent._response_was_previewed = False

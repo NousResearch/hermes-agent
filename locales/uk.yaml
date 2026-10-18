@@ -73,6 +73,8 @@ gateway:
     next_turn_only: "    (лише на наступний хід — відновиться після однієї відповіді)"
     switch_cancelled: "🟡 Перемикання моделі скасовано. Поточна модель без змін ({model})."
     guard_confirm: "⚠️ **{title}**\n\n{message}\n\n_Текстова альтернатива: відповідайте `{prefix}approve`, щоб перемкнути, або `{prefix}cancel`, щоб залишити поточну модель._"
+    err_once_local: "`--once` is not available in this session; use `/model <name>` and switch back after the turn."
+    local_next_turn: "Applies from your next message."
   agents:
     header: "🤖 **Активні агенти та завдання**"
     active_agents: "**Активні агенти:** {count}"
@@ -184,8 +186,8 @@ gateway:
     choice_normal: "normal — стандартна обробка"
     choice_auto: "auto — швидко в перші секунди кожного ходу"
     choice_cold: "cold — швидко лише на першому ході сесії"
-    choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, ціна ×6)"
-    ultrafast_not_supported: "⚡ Ultrafast доступний лише для GPT-6 Astra (поточна модель: `{model}`)."
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast, ціна ×6"
+    ultrafast_not_supported: "⚡ Ultrafast недоступний для `{model}` у цьому обліковому записі або маршруті."
   footer:
     status: "📎 Нижній колонтитул середовища: **{state}**\nПоля: `{fields}`\nПлатформа: `{platform}`"
     usage: "Використання: `/footer [on|off|status]`"
@@ -435,7 +437,6 @@ gateway:
     last_activity: "**Остання активність:** {timestamp}"
     model: "**Модель:** `{model}`"
     model_provider: "**Модель:** `{model}` ({provider})"
-    free_tier: "Nous · безкоштовний тариф · nous/welcome · /login для входу"
     context: "**Контекст:** {used} / {total} ({pct}%)"
     context_used: "**Контекст:** ~{used} токенів"
     tokens: "**Усього токенів виставлено за весь час:** {tokens} _(це не поточний розмір контексту; використайте `/context`)_"
@@ -779,8 +780,6 @@ gateway:
   plan:
     ack_task: "Планування: {task}"
     ack_conversation: "Планую на основі контексту цієї розмови…"
-  initiate_setup:
-    ack: "Запуск налаштування…"
   init:
     start_failed: "Не вдалося запустити /init — спробуйте ще раз."
     ack_update: "Оновлюю AGENTS.md за результатами сканування проєкту…"
@@ -843,7 +842,6 @@ gateway:
   startup:
     handoff_thread_title: "Hermes — {title}"
     restarted: "♻ Шлюз успішно перезапущено. Ваш сеанс продовжується."
-    free_tier_line: "Інференс: безкоштовний тариф Nous (nous/welcome). Увійдіть, щоб отримати більше: /login"
     online: "♻️ Шлюз онлайн — Hermes повернувся й готовий до роботи."
     db_corrupt: "⚠️ Виявлено пошкодження бази даних сеансів. Повідомлення можуть не зберігатися. Варіанти відновлення:\n1. Виконайте `hermes {profile_arg}doctor --fix`\n2. Зупиніть шлюз, потім відновіть командами:\n   hermes {profile_arg}sessions recover --source {db_path} --inspect-only\n   (якщо повідомляє, що відновлення можливе) hermes {profile_arg}sessions recover --source {db_path} --output recovered-state.db\n   — відновлення спочатку робить знімок пошкодженого файлу; НЕ запускайте `sqlite3 ... \".recover\"` на робочому state.db — вразливий CLI sqlite3 може пошкодити його ще більше\n3. Відновіть із резервної копії в {backups_dir}/\nВиконайте `hermes {profile_arg}doctor` для очищеної діагностики."
     db_fts_corrupt: "⚠️ База даних сеансів повідомила про пошкодження, обмежене пошуковим індексом (FTS5); таблиці повідомлень не пошкоджено. Повідомлення можуть не зберігатися, доки його не полагоджено: виконайте `hermes {profile_arg}doctor --fix`, потім перезапустіть шлюз. Не запускайте інструменти відновлення й не відновлюйте резервну копію, якщо `hermes {profile_arg}doctor` не підтвердить пошкодження."
@@ -1558,8 +1556,6 @@ slash:
     description: "Повторно виконувати запит із заданим інтервалом у цьому сеансі"
   plan:
     description: "Записати план реалізації в markdown до .hermes/plans/, нічого не виконуючи"
-  initiate-setup:
-    description: "Запустити початкове налаштування: дізнатися про вас і налаштувати Hermes під вас"
   moa:
     description: "Виконати один запит через типовий пресет Mixture of Agents, потім повернути вашу модель"
   subgoal:
@@ -1972,6 +1968,7 @@ cli:
     desc_switch_anyway: "Використати цю модель для поточного сеансу Hermes."
     choice_cancel: "Скасувати"
     desc_keep_current_model: "Залишити поточну модель."
+    confirm_choice_prompt: "Вибір [1/2]: "
     switch_cancelled: "Зміну моделі скасовано."
     selection_failed: "✗ Не вдалося вибрати модель: {error}"
     switch_failed: "⚠ Не вдалося змінити модель на {model} ({error}); залишаємося на {old_model}."
@@ -2279,6 +2276,7 @@ cli:
     failed: "Не вдалося підключитися"
     authorized_no_tools: "Авторизовано. Інструменти недоступні."
     connected: "Підключено"
+    named_account: "Hermes назвав цей обліковий запис {name} «{alias}». Його можна перейменувати будь-коли."
     waiting: "Очікування…"
   editor:
     only_interactive: "Зовнішній редактор доступний лише в інтерактивному CLI."
@@ -2660,7 +2658,7 @@ cli:
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
       feature_ultrafast: "OpenAI Ultrafast"
-      ultrafast_not_supported: "(._.) Ultrafast доступний лише для GPT-6 Astra (поточна модель: {model})."
+      ultrafast_not_supported: "(._.) Ultrafast недоступний для {model} у цьому обліковому записі або маршруті."
       usage: "Використання: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature}: встановлено {value} {scope}"
@@ -2918,8 +2916,6 @@ cli:
     plan:
       planning: "📋 Планування: {task}"
       from_conversation: "📋 Планування на основі контексту цієї розмови..."
-    initiate_setup:
-      starting: "🧭 Запуск налаштування..."
     init:
       updating: "⚡ Оновлення AGENTS.md за результатами сканування проєкту..."
       generating: "⚡ Генерація AGENTS.md за результатами сканування проєкту..."
@@ -3116,6 +3112,10 @@ cli:
     loaded: "(завантажено)"
     not_found: "(не знайдено)"
     microsoft_entra_id: "Microsoft Entra ID"
+    google_vertex_oauth: "Google OAuth (Vertex AI)"
+    key_cmd_token: "key_cmd token (command)"
+    minimax_oauth: "MiniMax OAuth"
+    token_provider: "Token provider"
     api_key_not_set: "Не задано!"
     value_not_set: "не задано"
     section_model: "Модель"

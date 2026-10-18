@@ -45,7 +45,12 @@ _HOOK_TIMEOUT_BOUNDED_HOOKS: set[str] = {
     "pre_auxiliary_call", "post_auxiliary_call", "pre_verify", "on_session_start", "on_session_end",
     # Fail-open consumer on every inbound gateway message: a hung plugin must not stall the profile.
     "post_gateway_admission",
+    # Observer on every local session's commands, fired by the gateway (gateway/session_commands.py).
+    "pre_command",
 }
+# Hooks whose calls are told apart by another payload field: one session's commands are one
+# sequence, so a still-running callback skips that session's next command, not another session's.
+_HOOK_CALL_IDENTITY_FIELDS: dict[str, tuple[str, ...]] = {"pre_command": ("session_key",)}
 
 # Policy hooks: timeout / still-running must fail closed (block the tool).
 _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: set[str] = {"pre_tool_call"}
@@ -112,7 +117,7 @@ class PluginSystemPromptSection:
     """A plugin-owned section rendered once for each new session."""
 
     id: str
-    content: Union[str, Callable[[Mapping[str, Any]], str]]
+    content: str | Callable[[Mapping[str, Any]], str]
     position: str
     max_chars: int
     plugin: str
@@ -157,7 +162,7 @@ _MAX_HOOK_CALLBACK_TIMEOUT_SECS = 600.0
 _HOOK_SKIPPED = object()  # returned by _run_hook_callback_bounded on skip/timeout
 
 
-def _hook_call_identity(kwargs: dict[str, Any]) -> Optional[str]:
+def _hook_call_identity(kwargs: dict[str, Any], hook_name: str = "") -> Optional[str]:
     """Identity of the call this callback fires for, or ``None`` when the event has none.
 
     Concurrent invocations of the same tool in one session must not collapse into one
@@ -166,7 +171,7 @@ def _hook_call_identity(kwargs: dict[str, Any]) -> Optional[str]:
     payload; nothing new is plumbed. Deliberately not ``api_request_id`` — one API request
     carries many tool calls, which would re-collapse the keys.
     """
-    for field in ("tool_call_id", "turn_id"):
+    for field in _HOOK_CALL_IDENTITY_FIELDS.get(hook_name, ("tool_call_id", "turn_id")):
         value = kwargs.get(field)
         if isinstance(value, str) and value:
             return value
@@ -178,6 +183,43 @@ def _hook_uses_callback_timeout(hook_name: str, timeout: float) -> bool:
     if timeout <= 0 or hook_name in _HOOK_CALLER_THREAD_HOOKS:
         return False
     return hook_name in _HOOK_TIMEOUT_BOUNDED_HOOKS or hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
+
+
+_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0
+
+
+def resolve_plugin_command_result(result: Any) -> Any:
+    """Resolve a plugin command result, awaiting async handlers: ``asyncio.run`` when no loop is
+    running, else a helper thread with its own loop (30s bound so a hung handler cannot wedge the
+    terminal)."""
+    if not inspect.isawaitable(result):
+        return result
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(result)
+    outcome: dict[str, Any] = {}
+    failure: dict[str, BaseException] = {}
+    done = threading.Event()
+
+    def _runner() -> None:
+        try:
+            outcome["value"] = asyncio.run(result)
+        except BaseException as exc:  # pragma: no cover - re-raised below
+            failure["exc"] = exc
+        finally:
+            done.set()
+
+    # copy_context: the helper thread must see the caller's profile/secret scope, else an
+    # async hook under a running loop reads the default HERMES_HOME and get_secret raises.
+    threading.Thread(target=contextvars.copy_context().run, args=(_runner,),
+                     name="hermes-plugin-command-await", daemon=True).start()
+    if not done.wait(timeout=_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS):
+        raise TimeoutError("Plugin command async handler did not complete within "
+                           f"{_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS:.0f}s")
+    if "exc" in failure:
+        raise failure["exc"]
+    return outcome.get("value")
 
 
 class PluginDispatchMixin:
@@ -205,7 +247,6 @@ class PluginDispatchMixin:
         are (loop-safe), otherwise the bare coroutine object is appended to the results and the
         plugin's body never runs (#12449).
         """
-        from hermes_cli.plugins import resolve_plugin_command_result
         return resolve_plugin_command_result(callback(**cls._hook_callback_kwargs(callback, payload)))
 
     def invoke_hook(self, hook_name: str, **kwargs: Any) -> list[Any]:
@@ -217,6 +258,10 @@ class PluginDispatchMixin:
         closed with a block directive, others skip. ``_HOOK_CALLER_THREAD_HOOKS`` always run on the
         caller thread. ``pre_llm_call`` may return ``{"context": "..."}`` (or a str) to inject.
         """
+        from agent.safe_worker_policy import safe_worker_enabled
+
+        if safe_worker_enabled():
+            return []
         from hermes_cli.plugins import _resolve_hook_callback_timeout
         # Gateway platform events define event-local envelopes; a bus-wide version here would turn
         # unrelated adapter payloads into one monolithic compatibility contract.
@@ -279,7 +324,7 @@ class PluginDispatchMixin:
         # Suppression is a fact about the CALLBACK — a hung one must keep its back-off —
         # so that key stays coarse. The gate must instead tell CONCURRENT CALLS apart.
         suppression_key = (hook_name, id(cb))
-        gate_key = (*suppression_key, _hook_call_identity(kwargs))
+        gate_key = (*suppression_key, _hook_call_identity(kwargs, hook_name))
         token = object()
         with self._hook_timeout_lock:
             suppressed_until = self._hook_timeout_suppressed_until.get(suppression_key)
@@ -415,7 +460,6 @@ class PluginDispatchMixin:
 
     def _deliver_event(self, item: _QueuedPluginEvent) -> None:
         """Deliver one queued event on the host-owned worker thread."""
-        from hermes_cli.plugins import resolve_plugin_command_result
         with self._event_lock:
             if item.generation != self._event_generation:
                 return
@@ -480,6 +524,10 @@ class PluginDispatchMixin:
 
     def has_hook(self, hook_name: str) -> bool:
         """Return True when at least one callback is registered for a hook."""
+        from agent.safe_worker_policy import safe_worker_enabled
+
+        if safe_worker_enabled():
+            return False
         return bool(self._hooks.get(hook_name))
 
     async def ainvoke_hook(self, hook_name: str, **kwargs: Any) -> list[Any]:
@@ -508,7 +556,7 @@ class PluginDispatchMixin:
                     ret = await (asyncio.wait_for(ret, timeout) if use_timeout else ret)
                 if ret is not None:
                     results.append(ret)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning("Hook '%s' callback %s timed out after %.0fs", hook_name, callback_name, timeout)
                 if fail_closed:  # policy hook: fail closed with a block directive
                     results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
@@ -522,12 +570,20 @@ class PluginDispatchMixin:
 
     def iter_hook_callbacks(self, hook_name: str) -> tuple[Callable, ...]:
         """Return a stable snapshot of callbacks registered for a hook."""
+        from agent.safe_worker_policy import safe_worker_enabled
+
+        if safe_worker_enabled():
+            return ()
         return tuple(self._hooks.get(hook_name, ()))
 
     def render_system_prompt_sections(
         self, session_info: Mapping[str, Any]
     ) -> list[RenderedPluginSystemPromptSection]:
         """Render all registered sections deterministically and fail open."""
+        from agent.safe_worker_policy import safe_worker_enabled
+
+        if safe_worker_enabled():
+            return []
         frozen_info = types.MappingProxyType(dict(session_info))
         rendered: list[RenderedPluginSystemPromptSection] = []
         total_chars = len(PLUGIN_SECTIONS_START) + len(PLUGIN_SECTIONS_END) + 2
@@ -588,6 +644,10 @@ class PluginDispatchMixin:
 
     def has_middleware(self, kind: str) -> bool:
         """Return True when at least one callback is registered for middleware."""
+        from agent.safe_worker_policy import safe_worker_enabled
+
+        if safe_worker_enabled():
+            return False
         return bool(self._middleware.get(kind))
 
     def invoke_middleware(
@@ -599,8 +659,11 @@ class PluginDispatchMixin:
         next callback sees, so rewrites compose, and each callback gets its own copy of the payload and
         of ``original_<key>`` so an in-place edit cannot leak.
         """
+        from agent.safe_worker_policy import safe_worker_enabled
         from hermes_cli.middleware import _safe_copy
 
+        if safe_worker_enabled():
+            return []
         results: list[Any] = []
         for cb in self._middleware.get(kind, []):
             call_kwargs = kwargs

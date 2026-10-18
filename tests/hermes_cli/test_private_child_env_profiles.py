@@ -169,7 +169,7 @@ def test_other_profile_private_key_absent_in_real_child(profiles, monkeypatch):
         # Only a boolean is printed, including when this regression fails.
         code = "import os,json;print(json.dumps('EXAMPLE_PROFILE_ALPHA_PRIVATE' in os.environ))"
         actual = subprocess.run([sys.executable, "-c", code], env=env,
-                                capture_output=True, text=True, timeout=10)
+                                capture_output=True, text=True, timeout=10, check=False)
         assert actual.returncode == 0
         assert json.loads(actual.stdout) is False
 

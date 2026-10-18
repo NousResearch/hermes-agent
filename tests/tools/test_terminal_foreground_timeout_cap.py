@@ -5,6 +5,7 @@ process with notify_on_complete (never refused: in one 1,393-agent run 454 refus
 re-sent lower/split/background, 251 of them test suites).
 """
 import json
+import shlex
 from unittest.mock import patch, MagicMock
 
 # ---------------------------------------------------------------------------
@@ -37,10 +38,11 @@ class TestForegroundTimeoutCap:
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hh"))
         marker = tmp_path / "ran"
+        marker_arg = shlex.quote(marker.as_posix())
         with patch("tools.terminal_tool._get_env_config", return_value=_make_env_config(cwd=str(tmp_path))), \
              patch("tools.terminal_tool._start_cleanup_thread"), \
              patch("tools.terminal_tool._check_all_guards", return_value={"approved": True}):
-            result = json.loads(terminal_tool(command=f"echo x >> {marker}", timeout=9999))
+            result = json.loads(terminal_tool(command=f"echo x >> {marker_arg}", timeout=9999))
 
         assert result.get("error") is None
         assert result["output"] == "Background process started" and result["session_id"].startswith("proc_")
@@ -50,7 +52,7 @@ class TestForegroundTimeoutCap:
         deadline = time.time() + 10
         while not marker.exists() and time.time() < deadline:
             time.sleep(0.05)
-        assert marker.read_text().count("x") == 1  # ran exactly once, in the background
+        assert marker.read_text(encoding="utf-8-sig").count("x") == 1  # ran exactly once, in the background
 
     def test_zero_timeout_rejected(self):
         """timeout=0 must be rejected, not silently coerced to the default."""
@@ -149,7 +151,7 @@ class TestPromotionKeepsTheDetachmentGuard:
 
         with patch("tools.terminal_tool._get_env_config", return_value=_make_env_config()), \
              patch("tools.terminal_tool._start_cleanup_thread"):
-            result = json.loads(terminal_tool(command="sleep 5 &", timeout=9999))
+            result = json.loads(terminal_tool(command="sleep 5 & echo started", timeout=9999))
             result2 = json.loads(terminal_tool(command="nohup make test", timeout=9999))
         assert "'&' backgrounding" in result["error"]
         assert "nohup" in result2["error"]

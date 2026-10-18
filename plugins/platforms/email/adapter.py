@@ -33,6 +33,7 @@ from gateway.platforms.event import MessageEvent, MessageType
 from gateway.config import Platform, PlatformConfig
 from utils import is_truthy_value
 from gateway.platforms._shared import get_scoped_secret as _get_secret, coerce_port, decode_json_list_literal, send_error
+from gateway.platforms.send_targets import StandaloneSendPolicy, regex_stripped_parser
 
 logger = logging.getLogger(__name__)
 
@@ -86,8 +87,8 @@ _MISSING_AUTHSERV_HINT = (" Set EMAIL_AUTHSERV_ID (or platforms.email.authserv_i
 # One token of a clause: a property we read (``header.from=x``; the value may be or contain a quoted-string), or
 # any other whitespace-delimited token consumed whole, so text inside quotes or other values is never read as a prop.
 _QUOTED = r'"(?:[^"\\]|\\.)*"'
-_AUTH_PROP_RE = re.compile(r'(header\.from|header\.d|smtp\.mailfrom|smtp\.from|envelope-from)\s*=\s*((?:%s|[^\s";])+)'
-                           r'|(?:%s|[^\s"])+' % (_QUOTED, _QUOTED), re.IGNORECASE)
+_AUTH_PROP_RE = re.compile(rf'(header\.from|header\.d|smtp\.mailfrom|smtp\.from|envelope-from)\s*=\s*((?:{_QUOTED}|[^\s";])+)'
+                           rf'|(?:{_QUOTED}|[^\s"])+', re.IGNORECASE)
 
 
 def _esecret_int(name: str, default: int) -> int:
@@ -117,7 +118,7 @@ def _tls_context(verify: bool, host: str) -> ssl.SSLContext:
     return ssl._create_unverified_context()
 
 
-def _close_imap(imap: "imaplib.IMAP4") -> None:
+def _close_imap(imap: imaplib.IMAP4) -> None:
     """Teardown that guarantees the socket closes: ``logout()`` only guards ``OSError``, so ``IMAP4.abort`` on a
     broken connection skipped ``shutdown()`` and leaked one fd per failed poll (fatal on macOS's 256 soft limit).
 
@@ -175,7 +176,7 @@ def _open_smtp(host: str, port: int, security: str, ctx: ssl.SSLContext, smtp_cl
     return smtp
 
 
-def _send_imap_id(imap: "imaplib.IMAP4") -> None:
+def _send_imap_id(imap: imaplib.IMAP4) -> None:
     """Send RFC 2971 IMAP ID: 163/NetEase require it after LOGIN (else every UID command
     returns ``BYE Unsafe Login``); other servers may reject it, so failures are swallowed.
 
@@ -226,7 +227,7 @@ def check_email_requirements() -> bool:
     return all(_get_secret(name, "").strip() for name in ("EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_IMAP_HOST", "EMAIL_SMTP_HOST"))
 
 
-def _safe_decode(payload: bytes, charset: "Optional[str]") -> str:
+def _safe_decode(payload: bytes, charset: Optional[str]) -> str:
     """Decode without ever raising: ``errors="replace"`` does not guard a missing codec (``LookupError``), so fall back alias → UTF-8 → latin-1.
 
     Unknown or malformed charset labels (``unknown-8bit``, misspelled names, attacker-controlled garbage)
@@ -545,7 +546,7 @@ class EmailAdapter(BasePlatformAdapter):
         host, port, security, ctx = self._smtp_host, self._smtp_port, self._smtp_security, _tls_context(self._smtp_tls_verify, self._smtp_host)
         try:
             return _open_smtp(host, port, security, ctx, smtplib.SMTP, smtplib.SMTP_SSL, timeout=SMTP_CONNECT_TIMEOUT)
-        except (socket.timeout, TimeoutError, ConnectionError, OSError) as exc:
+        except (TimeoutError, ConnectionError, OSError) as exc:
             if isinstance(exc, ssl.SSLError):
                 raise
             return _open_smtp(host, port, security, ctx, _IPv4SMTP, _IPv4SMTP_SSL, timeout=SMTP_CONNECT_TIMEOUT)
@@ -665,7 +666,7 @@ class EmailAdapter(BasePlatformAdapter):
             self._set_fatal_error("email_imap_fetch_failed", self._last_fetch_error or "IMAP fetch failed", retryable=True)
             await self._notify_fatal_error()
 
-    def _mark_uid_consumed(self, imap: "imaplib.IMAP4", uid: Any) -> None:
+    def _mark_uid_consumed(self, imap: imaplib.IMAP4, uid: Any) -> None:
         """Remember a rejected UID and mark it seen without fetching its MIME body."""
         self._seen_uids.add(uid)
         self._trim_seen_uids()
@@ -744,11 +745,11 @@ class EmailAdapter(BasePlatformAdapter):
                 "message_id": msg.get("Message-ID", ""), "in_reply_to": msg.get("In-Reply-To", ""),
                 "date": msg.get("Date", ""), "sender_authenticated": sender_authenticated, "auth_reason": auth_reason}
 
-    def _parse_fetched_headers(self, uid: bytes, raw_headers: "bytes | bytearray") -> Optional[dict[str, Any]]:
+    def _parse_fetched_headers(self, uid: bytes, raw_headers: bytes | bytearray) -> Optional[dict[str, Any]]:
         """Parse the bounded IMAP header preflight without constructing a MIME tree."""
         return self._message_metadata(uid, BytesHeaderParser().parsebytes(bytes(raw_headers)))
 
-    def _parse_fetched_message(self, uid: bytes, raw_email: "bytes | bytearray") -> Optional[dict[str, Any]]:
+    def _parse_fetched_message(self, uid: bytes, raw_email: bytes | bytearray) -> Optional[dict[str, Any]]:
         """Parse an authorized RFC822 payload into a dispatchable dict."""
         msg = email_lib.message_from_bytes(raw_email)
         if (metadata := self._message_metadata(uid, msg)) is None:
@@ -996,12 +997,34 @@ def _is_connected(config) -> bool:
     return bool((gateway_mod.get_env_value("EMAIL_ADDRESS") or "").strip())
 
 
+# System-prompt platform hint (PlatformEntry.platform_hint); cached-prompt bytes, keep stable.
+_PLATFORM_HINT = (
+    "You are communicating via email. Write clear, well-structured responses suitable for email. Use "
+    "plain text formatting (no markdown). Keep responses concise but complete. You can send file "
+    "attachments — include MEDIA:/absolute/path/to/file in your response. The subject line is preserved "
+    "for threading. Do not include greetings or sign-offs unless contextually appropriate."
+)
+
+
+_SEND_TARGET_RE = re.compile(r"^\s*[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\s*$")
+
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
+    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
     ctx.register_platform(
+        target_ref_syntax_fn=regex_stripped_parser(_SEND_TARGET_RE),
+        standalone_send=StandaloneSendPolicy(text_direct=True),
         name="email", label="Email", adapter_factory=EmailAdapter, check_fn=check_email_requirements, is_connected=_is_connected,
+        dashboard_description="Talk to Hermes through an IMAP/SMTP mailbox.",
+        docs_url="https://hermes-agent.nousresearch.com/docs/user-guide/messaging/",
+        dashboard_env_vars=("EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_IMAP_HOST", "EMAIL_SMTP_HOST"),
+        dashboard_required_env=("EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_IMAP_HOST", "EMAIL_SMTP_HOST"),
         required_env=["EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_SMTP_HOST"],
-        install_hint="Email uses the Python stdlib (smtplib/imaplib) — no extra deps", allowed_users_env="EMAIL_ALLOWED_USERS",
-        allow_all_env="EMAIL_ALLOW_ALL_USERS", cron_deliver_env_var="EMAIL_HOME_ADDRESS", standalone_sender_fn=_standalone_send,
-        max_message_length=50_000, pii_safe=True, emoji="📧", allow_update_command=True)
+        install_hint="Email uses the Python stdlib (smtplib/imaplib) — no extra deps", cron_deliver_env_var="EMAIL_HOME_ADDRESS", standalone_sender_fn=_standalone_send,
+        max_message_length=50_000, pii_safe=True, emoji="📧", allow_update_command=True,
+        platform_hint=_PLATFORM_HINT,
+        display_tier="minimal",
+        env_overrides=gateway_env.ENV_OVERRIDES,
+        env_enable_credentials=gateway_env.ENV_ENABLE_CREDENTIALS, **gateway_env.AUTHZ,
+    )

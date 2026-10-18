@@ -7,7 +7,7 @@ the standard log dir, not inside the user's ``skills/`` data directory.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 
 import pytest
@@ -51,7 +51,7 @@ def _make_llm_meta(**overrides):
 def test_write_run_report_creates_both_files(curator_env):
     """Each run writes both a run.json (machine) and a REPORT.md (human)."""
     curator = curator_env["curator"]
-    start = datetime.now(timezone.utc)
+    start = datetime.now(UTC)
 
     run_dir = curator._write_run_report(
         started_at=start,
@@ -80,7 +80,7 @@ def test_same_second_reruns_get_unique_dirs(curator_env):
     """If the curator somehow runs twice in the same second, the second
     report still gets its own directory rather than overwriting the first."""
     curator = curator_env["curator"]
-    start = datetime(2026, 4, 29, 5, 33, 34, tzinfo=timezone.utc)
+    start = datetime(2026, 4, 29, 5, 33, 34, tzinfo=UTC)
 
     kwargs = dict(
         started_at=start,
@@ -155,7 +155,7 @@ def test_curator_rewrites_cron_skills_when_skill_consolidated(curator_env_with_c
     after = [{"name": "foo-umbrella", "state": "active", "pinned": False}]
 
     run_dir = curator._write_run_report(
-        started_at=datetime.now(timezone.utc),
+        started_at=datetime.now(UTC),
         elapsed_seconds=3.0,
         auto_counts={"checked": 1, "marked_stale": 0, "archived": 0, "reactivated": 0},
         auto_summary="no changes",

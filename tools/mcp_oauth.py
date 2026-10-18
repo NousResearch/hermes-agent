@@ -442,7 +442,7 @@ def _storage_fingerprint(entry: Any) -> str | None:
     if not isinstance(entry, dict):
         return None
     fields = _requested_identity(entry)
-    fields["oauth"] = oauth_identity(fields["oauth"])
+    fields["oauth"] = oauth_identity(fields["oauth"] or {})  # absent and empty blocks are one identity
     return json.dumps(fields, sort_keys=True, default=str)
 
 
@@ -705,6 +705,9 @@ def _can_open_browser() -> bool:
     return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
+_UNREAD = object()  # sentinel: "read the file yourself" for HermesTokenStorage._load_model
+
+
 def _read_json(path: Path) -> dict | None:
     """Read a JSON file, returning None if it doesn't exist or is invalid."""
     if not path.exists():
@@ -791,10 +794,11 @@ class HermesTokenStorage:
         return self._tokens_path(), self._client_info_path(), self._meta_path()
 
     @staticmethod
-    def _load_model(path: Path, sdk_name: str, label: str, fixup=None):
+    def _load_model(path: Path, sdk_name: str, label: str, fixup=None, *, payload: Any = _UNREAD):
         """Read *path* into SDK model *sdk_name*; None if absent, no SDK, or corrupt.
-        ``fixup(data)`` may rewrite the raw dict before validation."""
-        data = _read_json(path)
+        ``fixup(data)`` may rewrite the raw dict before validation. ``payload``, when given, is
+        the already-read file content: checks on it and the returned model then see one read."""
+        data = _read_json(path) if payload is _UNREAD else payload
         if data is not None and not isinstance(data, dict):
             # A non-object payload (list/str/number) has no fields for the fixups' ``.get``/``.pop``
             # and cannot validate: treat it like any other corrupt file instead of crashing auth init.
@@ -845,18 +849,24 @@ class HermesTokenStorage:
         """Set the grant identity this storage serves (see :func:`grant_identity`)."""
         self._bound_identity = identity
 
-    def stored_identity(self) -> str | None:
-        """The identity stamped on the stored grant; None when absent or written before stamping."""
-        data = _read_json(self._tokens_path())
+    @staticmethod
+    def _stamp_of(data: Any) -> str | None:
         identity = data.get("hermes_identity") if isinstance(data, dict) else None
         return identity if isinstance(identity, str) else None
 
-    def _grant_is_foreign(self) -> bool:
-        """True when the stored grant was minted for a different identity than this storage's.
-        An unstamped grant (written before stamping) is not foreign: it is adopted and stamped
-        on its next write."""
-        stored = self.stored_identity() if self._bound_identity else None
+    def stored_identity(self) -> str | None:
+        """The identity stamped on the stored grant; None when absent or written before stamping."""
+        return self._stamp_of(_read_json(self._tokens_path()))
+
+    def _payload_is_foreign(self, data: Any) -> bool:
+        """True when *data* (one read of the token file) was minted for a different identity than
+        this storage's. An unstamped grant (written before stamping) is not foreign: it is adopted
+        and stamped on its next write."""
+        stored = self._stamp_of(data) if self._bound_identity else None
         return stored is not None and stored != self._bound_identity
+
+    def _grant_is_foreign(self) -> bool:
+        return self._payload_is_foreign(_read_json(self._tokens_path()))
 
     def holds_grant_for_bound_identity(self) -> bool:
         return self._bound_identity is not None and self.stored_identity() == self._bound_identity
@@ -865,11 +875,15 @@ class HermesTokenStorage:
         self.loaded_issuer = None
         if self._quarantine_path().exists():
             raise OAuthStorageDetachedError("The pool's previous identity is being revoked")
-        if self._grant_is_foreign():
+        # One read: the identity check must cover the exact bytes returned. A second read could see
+        # another process's atomic replacement (a grant for a different endpoint) after the check.
+        data = _read_json(self._tokens_path())
+        if self._payload_is_foreign(data):
             logger.warning("MCP OAuth '%s': the stored grant was minted for a different endpoint or "
                            "client; not presenting it", self._server_name)
             return None
-        return self._load_model(self._tokens_path(), "OAuthToken", "tokens", self._fixup_loaded_tokens)
+        return self._load_model(self._tokens_path(), "OAuthToken", "tokens", self._fixup_loaded_tokens,
+                                payload=data)
 
     async def set_tokens(self, tokens: "OAuthToken") -> None:
         payload = _model_json(tokens)

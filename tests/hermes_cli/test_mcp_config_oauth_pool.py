@@ -794,3 +794,45 @@ def test_fresh_process_on_stale_parameters_never_presents_a_newer_grant(local):
     else:
         assert asyncio.run(provider.context.storage.get_tokens()) is None
     assert json.loads(minted.read_text())["access_token"] == "MINTED_FOR_B"
+
+
+def test_identity_check_and_returned_grant_come_from_one_read(tmp_path, monkeypatch):
+    """Lyra round 3 P0: another process atomically replaces the token file (B's stamped grant)
+    between the identity check and the load. The grant returned must be the one checked."""
+    import asyncio
+
+    import tools.mcp_oauth as mo
+
+    home = tmp_path / ".hermes"
+    _write_config(home, {"srv": dict(SERVER)})
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    path = _stamp(_seed_tokens(home, "srv", "GRANT_FOR_A"), SERVER["url"])
+    storage = mo.HermesTokenStorage("srv", hermes_home=home, requested=dict(SERVER))
+    real_read, reads = mo._read_json, []
+
+    def read_then_peer_publishes_b(p):
+        data = real_read(p)
+        if Path(p) == path and not reads:
+            reads.append(1)
+            _stamp(_seed_tokens(home, "srv", "GRANT_FOR_B"), CHANGED["url"])
+        return data
+
+    monkeypatch.setattr(mo, "_read_json", read_then_peer_publishes_b)
+    token = asyncio.run(storage.get_tokens())
+    assert token is None or token.access_token == "GRANT_FOR_A", "B's grant was returned to A"
+
+
+def test_adding_an_empty_oauth_block_does_not_fence_reconnects(local):
+    """Lyra round 3 P1: an absent ``oauth`` block and ``oauth: {}`` are one identity."""
+    from tools.mcp_oauth_manager import get_manager
+
+    home, grant = local
+    manager = get_manager()
+    first = manager.get_or_build_provider("srv", SERVER["url"], None)
+    _write_config(home, {"srv": {**SERVER, "oauth": {}}})
+    again = manager.get_or_build_provider("srv", SERVER["url"], {})
+    assert not getattr(again, "_hermes_detached", False), "an equivalent edit fenced the provider"
+    again._hermes_assert_authority()
+    assert manager.get_or_build_provider("srv", SERVER["url"], {}) is again
+    assert grant.exists() and json.loads(grant.read_text())["access_token"] == "LOCAL"
+    assert first is again, "the equivalent edit should keep the cached provider"

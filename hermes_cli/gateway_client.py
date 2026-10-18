@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from contextlib import asynccontextmanager, suppress
 import json
 import os
@@ -20,6 +21,14 @@ DEFAULT_RPC_TIMEOUT = 30
 # request, ``compression.context_total_ceiling_seconds`` to 600 s). Same budget as Desktop's
 # ``SESSION_COMPRESS_TIMEOUT_MS`` so every surface gives up at the same point.
 COMPRESS_RPC_TIMEOUT = 660
+# A full event queue parks the socket reader; a consumer that takes no event for this long has
+# stalled and is failed. Same bound as the owner's own send deadline (``tui_gateway/ws.py``).
+EVENT_STALL_TIMEOUT = 30
+# Events read past a full queue while an RPC answer is awaited (the owner sends a re-attached
+# session's frames ahead of its ``session.resume`` answer, and a recovery RPC is awaited from the
+# queue's only consumer). Bounded: past either cap the reader waits for the consumer again.
+EVENT_OVERFLOW_FRAMES = 16384
+EVENT_OVERFLOW_BYTES = 8 * 1024 * 1024
 
 
 def gateway_ws_target(endpoint, ticket):
@@ -90,13 +99,72 @@ class GatewayUnavailableError(GatewayClientError):
         self.state = state
 
 
+class EventQueue(asyncio.Queue):
+    """The client's bounded event queue plus an ordered overflow behind it: each ``get`` refills the
+    queue from the overflow, so items arrive in read order and ``qsize``/``full`` see only the queue."""
+
+    def __init__(self, maxsize):
+        super().__init__(maxsize)
+        self.overflow = deque()  # (size, item)
+        self.overflow_bytes = 0
+        self.moved = asyncio.Event()  # an item left the overflow (or an RPC started waiting)
+
+    def _get(self):
+        item = super()._get()
+        if self.overflow:
+            size, held = self.overflow.popleft()
+            self.overflow_bytes -= size
+            super()._put(held)
+        self.moved.set()
+        return item
+
+    def hold(self, item, size=0):
+        """Queue *item* behind everything already read, never dropping it."""
+        if not self.overflow:
+            try:
+                self.put_nowait(item)
+                return
+            except asyncio.QueueFull:
+                pass
+        self.overflow.append((size, item))
+        self.overflow_bytes += size
+
+
+def put_behind(events, item):
+    """Queue a local item (ACP's post-ack recovery) behind every frame read so far; never dropped."""
+    if isinstance(events, EventQueue):
+        events.hold(item)
+    else:
+        events.put_nowait(item)
+
+
 class GatewayClient:
     def __init__(self, websocket):
         self.websocket = websocket
-        self.events = asyncio.Queue(maxsize=4096)
+        self.events = EventQueue(maxsize=4096)
         self.pending = {}
         self.sequence = 0
         self.reader = None
+
+    def _read_on(self):
+        """Keep reading past a full queue: nothing is held, or an awaited answer may sit behind the
+        held frames (its waiter may be the queue's only consumer) and the overflow has room."""
+        events = self.events
+        return not events.overflow or (
+            len(events.overflow) < EVENT_OVERFLOW_FRAMES and events.overflow_bytes < EVENT_OVERFLOW_BYTES
+            and any(not future.done() for future in self.pending.values()))
+
+    async def _deliver(self, frame, size):
+        self.events.hold(frame, size)
+        if self._read_on():
+            return
+        # Frames the socket already buffered (a CLI resumed from Ctrl-Z) are read without yielding,
+        # so the consumer has not had a turn yet: wait for it (or for an RPC that needs the reader).
+        # Not wait_for: on 3.11 it swallows a close that lands as the wait completes.
+        async with asyncio.timeout(EVENT_STALL_TIMEOUT):
+            while not self._read_on():
+                self.events.moved.clear()
+                await self.events.moved.wait()
 
     async def __aenter__(self):
         self.reader = asyncio.create_task(self._read())
@@ -119,8 +187,8 @@ class GatewayClient:
                     else:
                         future.set_result(frame.get("result", {}))
                 elif "method" in frame:
-                    self.events.put_nowait(frame)
-        except (ConnectionClosed, OSError, ValueError, asyncio.QueueFull):
+                    await self._deliver(frame, len(raw))
+        except (ConnectionClosed, OSError, ValueError, TimeoutError):
             pass
         finally:
             error = GatewayClientError("Gateway disconnected; turn outcome is unknown. "
@@ -128,10 +196,11 @@ class GatewayClient:
             for future in self.pending.values():
                 if not future.done():
                     future.set_exception(error)
-            # A stalled consumer is failed rather than silently losing terminal events.
-            if self.events.full():
+            # A stalled consumer is failed rather than silently losing terminal events: behind
+            # whatever is held, or in place of the oldest queued frame when nothing is.
+            if self.events.full() and not self.events.overflow:
                 self.events.get_nowait()
-            self.events.put_nowait(error)
+            self.events.hold(error)
 
     async def rpc(self, method, *, _timeout=None, **params):
         """Send one request and await its answer; ``_timeout`` (seconds, never sent on the wire)
@@ -141,6 +210,7 @@ class GatewayClient:
         rid = self.sequence
         future = asyncio.get_running_loop().create_future()
         self.pending[rid] = future
+        self.events.moved.set()  # a reader waiting on the consumer reads on toward this answer
         try:
             await self.websocket.send(json.dumps({"jsonrpc": "2.0", "id": rid, "method": method, "params": params}))
             budget = DEFAULT_RPC_TIMEOUT if _timeout is None else _timeout

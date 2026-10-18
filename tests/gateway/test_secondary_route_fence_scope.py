@@ -415,6 +415,43 @@ async def test_a_pruned_route_stays_out_of_the_mirror_and_a_reused_id_keeps_one_
 
 
 @pytest.mark.asyncio
+async def test_a_malformed_retirement_value_fences_its_route_without_aborting_a_save_or_the_import(
+        tmp_path, monkeypatch):
+    """No writer stores a marker or fence that isn't JSON, but reading one must not raise
+    ``malformed JSON``: it fences its route (a fence as a permanent one, a marker as an unscoped
+    one), and the rest of a whole-index save, a per-entry save and the sessions.json import go on."""
+    from hermes_state_mutation_retirement import (
+        RETIRED_PREFIX, ROUTE_FENCE_PREFIX, _reclaim_expired, expiring_retirements, retire_routes)
+    async with _served(tmp_path, monkeypatch) as served:
+        store, launch = served.store, served.launch.db
+        launch.set_meta(ROUTE_FENCE_PREFIX + 'alpha:bad-fence', '{not json')
+        launch.set_meta(RETIRED_PREFIX + 'bad-marker', '{not json')
+        routes = {'agent:alpha:telegram:1': 'bad-fence', 'agent:alpha:telegram:2': 'bad-marker',
+                  'agent:alpha:telegram:3': 'fine'}
+        for key, sid in routes.items():
+            store._entries[key] = _entry(key, sid)
+        with store._lock:
+            store._save()
+        assert set(_durable(store)) == {'agent:alpha:telegram:3'}, 'a malformed value aborted the whole-index save'
+        for key in ('agent:alpha:telegram:1', 'agent:alpha:telegram:2'):
+            store._routing_db.save_gateway_routing_entry(
+                key, json.dumps(_entry(key, routes[key]).to_dict()), scope=store._routing_scope())
+            assert key not in _durable(store), f'a malformed value let a per-entry save restore {key}'
+
+        store._routing_db._execute_write(lambda conn: conn.execute('DELETE FROM gateway_routing'))
+        store._save_sessions_json({key: _entry(key, sid).to_dict() for key, sid in routes.items()})
+        _restart(store)
+        assert set(store._entries) == {'agent:alpha:telegram:3'}, 'a malformed value aborted the import'
+
+        # The lane's other reads of these values: listing, reclaiming and rewriting a marker.
+        assert expiring_retirements(launch, ['bad-marker']) == set()
+        launch._execute_write(lambda conn: _reclaim_expired(conn, ROUTE_FENCE_PREFIX, time.time()))
+        assert launch.get_meta(ROUTE_FENCE_PREFIX + 'alpha:bad-fence') == '{not json'
+        launch._execute_write(lambda conn: retire_routes(conn, ['bad-marker']))  # a launch delete over it
+        assert 'own' not in json.loads(launch.get_meta(RETIRED_PREFIX + 'bad-marker')), 'it became launch-only'
+
+
+@pytest.mark.asyncio
 async def test_deleting_the_launch_session_keeps_an_earlier_releases_shared_fence_on_every_route(tmp_path, monkeypatch):
     """Before the upgrade, alpha deleted its ``user-42`` while the launch profile had a live
     ``user-42``: the shared index got the launch store's unscoped marker, and no (profile, id)

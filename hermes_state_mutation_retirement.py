@@ -298,8 +298,9 @@ def _mark_retired(conn, key, *, expires, **fields):
                      (key, json.dumps({**value, 'expires': True})))
     else:
         conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=CASE '
-                     "WHEN json_valid(state_meta.value) AND (json_extract(state_meta.value, '$.own') IS NOT NULL "
-                     "OR json_extract(state_meta.value, '$.expires')) THEN excluded.value "
+                     "WHEN NOT json_valid(state_meta.value) THEN json_remove(excluded.value, '$.own') "
+                     "WHEN json_extract(state_meta.value, '$.own') IS NOT NULL "
+                     "OR json_extract(state_meta.value, '$.expires') THEN excluded.value "
                      "ELSE json_remove(excluded.value, '$.own') END", (key, json.dumps(value)))
 
 
@@ -334,17 +335,22 @@ def route_fence_key(namespace, session_id):
 # fencing at the horizon by itself: only the owner's own store sweeps the owner's marker, and nothing
 # guarantees the launch profile ever sweeps this one. A delete's fence (no ``expires``) never does:
 # its age test is NULL, which ``coalesce`` reads as not expired. An unscoped marker (no ``own``: an
-# earlier release's, written for either) still fences every route.
+# earlier release's, written for either) still fences every route. So does a marker or fence that is
+# not valid JSON (no writer stores one): ``json_extract`` raises ``malformed JSON`` on it even behind
+# ``json_valid(...) AND``, so each JSON read sits in a ``CASE WHEN json_valid(...)`` branch.
 # Bound by name (``route_retired_params``): :entry is the route's JSON, :ns its key's
 # ``route_namespace``, :now the save's time.
 ROUTE_RETIRED_SQL = """(
     EXISTS (SELECT 1 FROM state_meta m
              WHERE m.key = :retired_prefix || json_extract(:entry, '$.session_id')
-               AND (:ns = 'main' OR NOT (json_valid(m.value) AND json_extract(m.value, '$.own') IS NOT NULL)))
+               AND (:ns = 'main' OR NOT CASE WHEN json_valid(m.value)
+                                             THEN json_extract(m.value, '$.own') IS NOT NULL ELSE 0 END))
     OR EXISTS (SELECT 1 FROM state_meta f
                 WHERE f.key = :fence_prefix || :ns || ':' || json_extract(:entry, '$.session_id')
-                  AND NOT coalesce(json_valid(f.value) AND json_extract(f.value, '$.expires')
-                                   AND json_extract(f.value, '$.retired_at') < :now - :horizon, 0)
+                  AND NOT CASE WHEN json_valid(f.value)
+                               THEN coalesce(json_extract(f.value, '$.expires')
+                                             AND json_extract(f.value, '$.retired_at') < :now - :horizon, 0)
+                               ELSE 0 END
                   AND (:ns != 'main' OR NOT EXISTS (
                           SELECT 1 FROM sessions s WHERE s.id = json_extract(:entry, '$.session_id')))))"""
 

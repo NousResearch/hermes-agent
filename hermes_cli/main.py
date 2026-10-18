@@ -2992,7 +2992,7 @@ def _prepare_agent_startup(args) -> None:
         from agent.outbound_webhooks import register_from_config as register_outbound_webhooks
 
         _hooks_cfg = load_config()
-        register_from_config(_hooks_cfg, accept_hooks=_accept_hooks)
+        register_from_config(_hooks_cfg, accept_hooks=_accept_hooks, interactive=args.command in {None, "chat", "rl"})
         if _accept_hooks and args.command == "gateway":  # every session-open re-sync keeps honouring it
             from agent.shell_hooks import accept_for_process
             accept_for_process()

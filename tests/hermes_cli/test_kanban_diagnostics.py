@@ -240,10 +240,10 @@ _LAST_CRASH_END = 1789234174        # 2026-09-12 17:29Z
 _NEWEST_END = 1789346851            # 2026-09-14 00:47Z
 
 
-def _run_at(outcome, run_id, started_at, ended_at, error=None):
+def _run_at(outcome, run_id, started_at, ended_at, error=None, worker_pid=None):
     return {
         "id": run_id, "outcome": outcome, "error": error,
-        "started_at": started_at, "ended_at": ended_at,
+        "started_at": started_at, "ended_at": ended_at, "worker_pid": worker_pid,
     }
 
 
@@ -297,11 +297,13 @@ def test_repeated_crashes_finished_streak_is_historical_not_current():
     ]
 
 
-def test_repeated_crashes_finished_streak_behind_a_blocked_run_is_historical():
-    """Same shape with the newest run `blocked` (t_6db2248b): the streak is
-    over, so the finding dates it instead of claiming a live crash."""
+def test_repeated_crashes_synthesized_blocked_run_keeps_historical_warning():
+    """An operator/orchestrator block on an unclaimed card synthesizes a
+    zero-duration run (started_at == ended_at, worker_pid=None). That is not
+    evidence a worker booted, so the prior crash streak stays as a dated
+    historical warning."""
     task = _task(status="ready")
-    runs = [_run_at("blocked", 6, 1789346111, 1789346472, error=None)]
+    runs = [_run_at("blocked", 6, 1789346472, 1789346472, error=None, worker_pid=None)]
     runs += _five_old_crashes()
 
     d = _crash_rule_diag(task, runs)
@@ -311,6 +313,22 @@ def test_repeated_crashes_finished_streak_behind_a_blocked_run_is_historical():
     assert d.data["newest_outcome"] == "blocked"
     assert "outcome=blocked" in d.detail
     assert "not a current crash" in d.detail
+
+
+def test_repeated_crashes_claimed_worker_blocked_or_review_requested_breaks_streak():
+    """A real claimed worker run that ended in `blocked` or `review_requested`
+    came from the worker's own terminal kanban call (kanban_block /
+    kanban_request_review), proving the agent booted and ran properly â€” it
+    breaks the crash streak just like `completed` / `reclaimed`."""
+    task = _task(status="ready")
+    for terminal_outcome in ("blocked", "review_requested"):
+        runs = [_run_at(terminal_outcome, 6, 1789346111, 1789346472, error=None, worker_pid=4242)]
+        runs += _five_old_crashes()
+        found = [
+            d for d in kd.compute_task_diagnostics(task, [], runs)
+            if d.kind == "repeated_crashes"
+        ]
+        assert found == [], f"expected {terminal_outcome} from claimed worker to break streak, got {found}"
 
 
 def test_repeated_crashes_finished_streak_behind_a_live_run_is_historical():

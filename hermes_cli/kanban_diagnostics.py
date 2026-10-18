@@ -504,6 +504,23 @@ def _rule_repeated_crashes(task, events, runs, now, cfg) -> list[Diagnostic]:
                 last_crash = r
         elif outcome in {"completed", "reclaimed"}:
             break
+        elif outcome in {"blocked", "review_requested"}:
+            # A real claimed worker run that ended in ``blocked`` or
+            # ``review_requested`` came from the worker's own terminal kanban
+            # call (``kanban_block`` / ``kanban_request_review``), which proves
+            # the agent booted and ran the task properly -- break the streak.
+            # An operator/orchestrator transition on an unclaimed card
+            # synthesizes a zero-duration run (no worker_pid, started_at ==
+            # ended_at); that is not evidence a worker ran, so keep scanning
+            # and let the historical-warning path report the prior crashes.
+            r_pid = _task_field(r, "worker_pid")
+            r_start = _task_field(r, "started_at")
+            r_end = _task_field(r, "ended_at")
+            is_claimed_worker_run = bool(r_pid) or (
+                r_start is not None and r_end is not None and r_start != r_end
+            )
+            if is_claimed_worker_run:
+                break
     if consecutive < threshold:
         return []
     newest = ordered[0]

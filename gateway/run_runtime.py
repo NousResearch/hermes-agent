@@ -88,6 +88,18 @@ def profile_parked(runner, name):
     return bool(name) and name in (descriptor.get('parked_profiles') or {})
 
 
+def refuse_parked_scope(runner):
+    """An API request under a parked profile's ``/p/<profile>/`` prefix finds no authority: refuse it
+    retryably (``runtime_draining``, a 503 with ``Retry-After``), not with the final
+    ``profile_mismatch`` of a profile this gateway does not serve."""
+    from gateway.session_authorities import served_profile_name
+    from hermes_constants import get_hermes_home
+    name = served_profile_name(get_hermes_home())
+    if profile_parked(runner, name):
+        from gateway.parked_route_refusal import ParkedProfileRefusal
+        raise ParkedProfileRefusal(name)
+
+
 def parked_profile_map(runner):
     descriptor = getattr(runner, 'session_runtime_descriptor', None)
     if descriptor is None:
@@ -260,6 +272,12 @@ def stop_managed_turns(runner):
     return sum(stop_authority_turns(authority) for authority in _authorities(runner))
 
 
+def interrupt_side_agents(runner, reason):
+    """Whole-runtime shutdown: interrupt every counted side agent (``session_runtime_workers``)."""
+    from gateway.session_runtime_workers import interrupt_side_agents as interrupt
+    return interrupt(runner, reason)
+
+
 async def _retire_profile_authority(authority, timeout=None):
     """Stop profile-local services and turns before its ownership is released.
 
@@ -321,7 +339,7 @@ async def serve_profile_runtime(runner, name, home):
     """Hot-serve one reserved profile's runtime: build its authority, recover its durable state and
     publish it in the descriptor/ticket store — the steps boot performs per secondary. Raises when
     the profile's store is unusable; the caller parks it (and releases the reservation). Its
-    queued native rows are recovered once its adapters connect (``recover_served_profile_native``)."""
+    queued native rows are recovered once its adapters connect (``recover_served_native_rows``)."""
     from gateway.session_authorities import owner_scope
     from gateway.session_hosted_service import _ensure_hosted_service, start_ready_hosted_services
     from gateway.session_local_recovery import recover_local_sessions
@@ -380,20 +398,20 @@ def _recover_published_api_turns(runner, authority):
         recover_authority_api_turns(api, authority)
 
 
-async def recover_served_profile_native(runner, home):
-    """Boot's native-row recovery for one hot-served profile, run once its adapters connected (boot
-    runs it after every adapter connects). A store that cannot answer leaves the rows queued for
-    the next start and never stops the reconcile of the other profiles."""
-    registry = getattr(runner, 'session_authorities', None)
-    if registry is None:
+async def recover_served_native_rows(runner):
+    """Boot's native-row recovery once hot-served profiles' adapters connected (boot runs it after
+    every adapter connects), in every serving ledger: a ``bot_profile`` route runs a bot's messages
+    on another profile, so the new bots can carry rows queued in any ledger. A session already
+    draining keeps its one drain. A store that cannot answer leaves its rows queued for the next
+    start and never stops the other ledgers or the reconcile."""
+    if getattr(runner, 'session_authorities', None) is None:
         return
-    authority = registry.for_home(await asyncio.to_thread(Path(home).resolve))
-    if authority is None or getattr(authority, 'retiring', False):
-        return
-    try:
-        await recover_profile_native_sessions(runner, authority)
-    except Exception:  # health: allow BLE001 -- logged; the rows stay queued for the next start
-        logger.error('Native session recovery failed for %s', authority.profile_id, exc_info=True)
+    from gateway.session_authorities import serving_authorities
+    for authority in serving_authorities(runner):
+        try:
+            await recover_profile_native_sessions(runner, authority)
+        except Exception:  # health: allow BLE001 -- logged; the rows stay queued for the next start
+            logger.error('Native session recovery failed for %s', authority.profile_id, exc_info=True)
 
 
 async def unserve_profile_runtime(runner, home):

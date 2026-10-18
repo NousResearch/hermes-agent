@@ -7,7 +7,8 @@ Worker receipt reads additionally require the original private adoption proof.
 import hmac
 import json
 
-from hermes_state_runtime import RuntimeStoreError, _epoch, _json, _row, _secret_digest, _text, admission_fingerprint
+from hermes_state_runtime import (RuntimeStoreError, _epoch, _row, _secret_digest, _text, admission_digests,
+                                  admission_fingerprint)
 
 RESULT_PREFIX = 'gateway.admission.result.v1.'
 ADMISSION_PREFIX = 'gateway.terminal_admission.v1.'
@@ -121,16 +122,17 @@ def terminal_admission(conn, admission_id):
     return json.loads(saved[0]) if saved else None
 
 
-def retry_terminal_admission(db, *, epoch, principal_id, session_id, request_id, payload, intent='queue'):
+def retry_terminal_admission(db, *, epoch, principal_id, session_id, request_id, payload, intent='queue',
+                             legacy_payload=None):
     """None means a live target; a retired miss/conflict is a definitive refusal.
 
     This is a read-only identity lookup, not authorization to attach, restore a
     route, or write. HTTP authentication/grant checks must precede this query.
+    ``legacy_payload`` also names a row an older release retired (``admission_digests``).
     """
     for value in (principal_id, session_id, request_id):
         _text(value)
-    digest = admission_fingerprint(canonical_target=session_id,
-        payload={'input': json.loads(_json(payload)), 'intent': intent})
+    digest, legacy = admission_digests(session_id, payload, intent, legacy_payload)
     with db._read_ctx() as conn:
         _epoch(conn, epoch)
         from hermes_state_mutation_retirement import RETIRED_PREFIX
@@ -141,7 +143,7 @@ def retry_terminal_admission(db, *, epoch, principal_id, session_id, request_id,
         if saved is None:
             raise RuntimeStoreError('not_found')
         row = terminal_admission(conn, json.loads(saved[0]))
-        if row['payload_digest'] != digest:
+        if row['payload_digest'] not in (digest, legacy):
             raise RuntimeStoreError('admission_conflict')
         return _row(row)
 

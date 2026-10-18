@@ -8,6 +8,7 @@ module (top-level import = cycle), and lazy lookup keeps ``patch("...api_server.
 
 import asyncio
 import copy
+import hashlib
 import json
 import logging
 import re
@@ -92,9 +93,49 @@ def _settled(record):
 
 
 def _responses_fingerprint_keys(body):
-    """``truncation`` joins the fingerprint only when sent, so an exact retry of a request
-    recorded before it was fingerprinted keeps matching its stored key."""
+    """The identity an older release stored. ``truncation`` joins the fingerprint only when sent,
+    so an exact retry of a request recorded before it was fingerprinted keeps matching its stored key."""
     return _RESPONSES_FINGERPRINT_KEYS + (("truncation",) if body.get("truncation") is not None else ())
+
+
+def _canonical_json(value):
+    """JSON with sorted object members: the same request serialized in another order is the same identity.
+    ASCII-escaped, so every parsed string encodes, a lone surrogate (a valid JSON escape) included."""
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _chat_tools_digest(body):
+    """Digest of a Chat Completions request's ``tools`` and ``tool_choice``; None when it sends neither,
+    so such a request keeps the identity it always had (an older owner computes the same one)."""
+    if body.get("tools") is None and body.get("tool_choice") is None:
+        return None
+    return hashlib.sha256(_canonical_json(
+        {"tools": body.get("tools"), "tool_choice": body.get("tool_choice")}).encode()).hexdigest()
+
+
+def _responses_identity(body):
+    """``(body, keys)`` a Responses request is fingerprinted by. ``tool_choice`` joins when sent, as
+    canonical JSON; like ``truncation``, a request without it keeps the older fingerprint."""
+    if body.get("tool_choice") is None:
+        return body, _responses_fingerprint_keys(body)
+    return ({**body, "tool_choice": _canonical_json(body["tool_choice"])},
+            _responses_fingerprint_keys(body) + ("tool_choice",))
+
+
+def _responses_durable_key(adapter, request, store, replay, request_key, body):
+    """``(request key, fingerprint)`` of a canonical Responses request. A key an older release
+    stored has a fingerprint without ``tool_choice``: its exact retry keeps that fingerprint, so it
+    replays and settles under it."""
+    from gateway.platforms.api_server import _make_request_fingerprint
+    from gateway.platforms.api_server_response_admissions import request_binding
+    identity_body, keys = _responses_identity(body)
+    current = (request_key, _make_request_fingerprint(identity_body, keys=keys))
+    legacy = (request_key, _make_request_fingerprint(body, keys=_responses_fingerprint_keys(body)))
+
+    def stored(durable_key):
+        return (store.request_key_matches(request_key, request_binding(adapter, request, durable_key))
+                and (replay is None or replay.get('fingerprint') == durable_key[1]))
+    return legacy if not stored(current) and stored(legacy) else current
 
 
 def _response_identity(store, durable_key):
@@ -904,7 +945,7 @@ class OpenAICompatRoutesMixin:
             # id from a header-less client is NOT: delegate_task keeps its forced-sync fallback
             # there — the wake would hard-fail or land in history that client never reloads.
             session_history_delivery=("1" if provided_session_id else ""))
-        run_kwargs.update(self._authority_chat_kwargs(request, provided_session_id))
+        run_kwargs.update(self._authority_chat_kwargs(request, provided_session_id, body))
         # This is presentation only. The ordinary API-key/session authorization
         # above still applies; it grants no internal ingress or control authority.
         if provided_session_id and body.get("hermes_notification_category") == "diagnostic":
@@ -1014,12 +1055,16 @@ class OpenAICompatRoutesMixin:
         key = request.headers.get('Idempotency-Key')
         return f'chat:{self._run_idempotency_scope(request)}:{key}' if key else None
 
-    def _authority_chat_kwargs(self, request: web.Request, provided_session_id) -> dict:
-        """Admission identity of a Chat Completions turn under session authority; none before it."""
+    def _authority_chat_kwargs(self, request: web.Request, provided_session_id, body) -> dict:
+        """Admission identity of a Chat Completions turn under session authority; none before it.
+        A keyed turn that sends ``tools`` or ``tool_choice`` also names them by digest: a retry that
+        changes them is another request, never a replay."""
         if getattr(self.gateway_runner, 'session_authority', None) is None:
             return {}
-        return dict(request_id=self._chat_request_id(request), history_from_session=bool(provided_session_id),
-                    run_owner_scope=self._run_idempotency_scope(request))
+        request_id = self._chat_request_id(request)
+        return dict(request_id=request_id, history_from_session=bool(provided_session_id),
+                    run_owner_scope=self._run_idempotency_scope(request),
+                    tools_digest=request_id and _chat_tools_digest(body))
 
     async def _implicit_chat_session(self, request: web.Request, session_id: str) -> tuple:
         """A derived (header-less) id whose session was deleted names a new conversation with the
@@ -1279,18 +1324,17 @@ class OpenAICompatRoutesMixin:
             # expanded: the first success already advanced the conversation, so re-expanding
             # would build a different admission payload and refuse the retry as a conflict.
             # Streaming and nonstreaming share the record: transport mode is not identity.
-            from gateway.platforms.api_server import _make_request_fingerprint
             idempotency_scope = self._run_idempotency_scope(request)
-            durable_key = (f'idem:{idempotency_scope}:{idempotency_key}',
-                           _make_request_fingerprint(body, keys=_responses_fingerprint_keys(body)))
+            request_key = f'idem:{idempotency_scope}:{idempotency_key}'
             from gateway.platforms.api_server import _openai_error
             from gateway.platforms.api_server_response_admissions import request_binding
             response_store = self._current_response_store()
+            replay = response_store.get(request_key)
+            durable_key = _responses_durable_key(self, request, response_store, replay, request_key, body)
             binding = request_binding(self, request, durable_key)
             if not response_store.request_key_matches(durable_key[0], binding):
                 return durable_key, idempotency_scope, idempotency_key, web.json_response(
                     _openai_error('admission_conflict', code='admission_conflict'), status=409)
-            replay = response_store.get(durable_key[0])
             if replay is not None:
                 if replay.get('fingerprint') != durable_key[1]:
                     return durable_key, idempotency_scope, idempotency_key, web.json_response(
@@ -1391,9 +1435,10 @@ class OpenAICompatRoutesMixin:
 
         async def _compute_response():
             return await run_agent(**run_kwargs)
+        identity_body, identity_keys = _responses_identity(body)
         outcome, err = await self._run_idempotent(
-            request, body, _compute_response, log_label="responses",
-            fingerprint_keys=list(_responses_fingerprint_keys(body)), route="responses",
+            request, identity_body, _compute_response, log_label="responses",
+            fingerprint_keys=list(identity_keys), route="responses",
         )
         if err is not None:
             return err

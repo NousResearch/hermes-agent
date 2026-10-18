@@ -249,10 +249,25 @@ def admit_api_steps(adapter, **kwargs):
     return admitted
 
 
+def _name_tools(payload, tools_digest):
+    """A keyed Chat Completions turn that sends ``tools`` or ``tool_choice`` names them by digest
+    (``api_tools_v1``), so a retry that changes or drops them is a changed request. The member sits
+    beside ``api_turn_v1``, which an owner validates strictly; execution reads only ``text`` and
+    ``api_turn_v1``, so an older owner still runs the row. A turn without them keeps the identity it
+    always had. -> the payload without the digest, as an older release admitted the same request
+    (its exact retry still names that row), or None for a turn with no digest."""
+    if tools_digest is None:
+        return None
+    legacy = dict(payload)
+    payload['api_tools_v1'] = tools_digest
+    return legacy
+
+
 def _admit_api_payload(authority, adapter, sid, request_id, payload, settings, declared_key, kwargs):
     from hermes_state_terminal import retry_terminal_admission
+    legacy = _name_tools(payload, kwargs.get('tools_digest'))
     row = retry_terminal_admission(authority.db, epoch=authority.epoch, principal_id='api',
-        session_id=sid, request_id=request_id, payload=payload)
+        session_id=sid, request_id=request_id, payload=payload, legacy_payload=legacy)
     if row is not None:
         check_api_settings(adapter, settings)
         from gateway.session_contract import SessionRef
@@ -261,7 +276,7 @@ def _admit_api_payload(authority, adapter, sid, request_id, payload, settings, d
                                     caller_key=kwargs.get('gateway_session_key'))
     check_api_turn(authority, ref, payload)
     row = yield partial(admit_session_input, authority.db, epoch=authority.epoch, principal_id='api',
-                        session_id=sid, request_id=request_id, payload=payload,
+                        session_id=sid, request_id=request_id, payload=payload, legacy_payload=legacy,
                         _authorize_write=authority._admission_gate(partial(
                             _admit_target, sid, request_id, payload['api_turn_v1']['settings'],
                             client_key=bool(kwargs.get('request_id')))))

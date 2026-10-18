@@ -101,12 +101,19 @@ The identity fields differ by endpoint:
 
 - **Responses:** `input`, `instructions`, `previous_response_id`, `conversation`,
   `conversation_history`, `model`, `provider`, `model_options` and `tools`, plus
-  `truncation` when sent.
+  `tool_choice` and `truncation` when sent.
 - **Chat Completions:** the last user message, the earlier messages (unless
   `X-Hermes-Session-Id` is sent, in which case history comes from the session), the
-  system prompt, and the turn settings such as the requested model, provider and
-  `model_options`. `tools` and `tool_choice` are not part of it: a retry that changes
-  only those replays the original answer instead of a conflict.
+  system prompt, the turn settings such as the requested model, provider and
+  `model_options`, and `tools` and `tool_choice` when either is sent.
+
+Chat Completions `tools` and `tool_choice`, and Responses `tool_choice`, are compared as
+JSON values, so the order of their object members doesn't matter. A retry that changes
+or drops them is a conflict. A request that sends neither keeps the identity it had
+before these fields joined it, so a retry that only adds them to such a key replays the
+original answer. A key first sent to an older release, which did not record these
+fields, keeps replaying its exact retries, and a retry that changes only these fields
+replays too.
 
 Delivery mode is not part of the identity on either endpoint: a retry may switch
 between JSON and `stream: true` and gets the same answer in the requested form.

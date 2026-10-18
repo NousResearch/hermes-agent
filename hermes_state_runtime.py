@@ -114,9 +114,19 @@ def begin_runtime_epoch(db, *, instance_id: str) -> int:
 ADMISSION_QUEUE_MAX = 32
 
 
+def admission_digests(session_id, payload, intent, legacy_payload=None):
+    """``(digest, legacy)`` of an input. ``legacy_payload`` is the same request as an older release
+    admitted it, before a field joined its identity: a row stored then carries ``legacy``, and its
+    exact retry still names it. A row stored with the field never matches ``legacy``."""
+    def digest(value):
+        return admission_fingerprint(canonical_target=session_id,
+                                     payload={'input': json.loads(_json(value)), 'intent': intent})
+    return digest(payload), (None if legacy_payload is None else digest(legacy_payload))
+
+
 def admit_session_input(db, *, epoch: int, principal_id: str, session_id: str,
                         request_id: str, payload: dict, intent: str = 'queue',
-                        _authorize_write=None, _replay_guard=None) -> dict:
+                        _authorize_write=None, _replay_guard=None, legacy_payload=None) -> dict:
     """Admit input; the trusted private guard raises to refuse a NEW write.
 
     The guard receives the owning transaction connection, must not commit it or
@@ -124,6 +134,7 @@ def admit_session_input(db, *, epoch: int, principal_id: str, session_id: str,
     and terminal replays bypass it: they cannot create or change accepted work.
     ``_replay_guard(conn)`` runs on the exact live replay instead, inside the same
     transaction (a replacement's binding to the admission it retired).
+    ``legacy_payload`` also names an existing row an older release stored (``admission_digests``).
     """
     for value in (principal_id, session_id, request_id):
         _text(value)
@@ -132,17 +143,17 @@ def admit_session_input(db, *, epoch: int, principal_id: str, session_id: str,
     encoded = _json(payload)
     from hermes_state_terminal import retry_terminal_admission
     retired = retry_terminal_admission(db, epoch=epoch, principal_id=principal_id, session_id=session_id,
-        request_id=request_id, payload=payload, intent=intent)
+        request_id=request_id, payload=payload, intent=intent, legacy_payload=legacy_payload)
     if retired is not None:
         return retired
-    digest = admission_fingerprint(canonical_target=session_id, payload={'input': json.loads(encoded), 'intent': intent})
+    digest, legacy = admission_digests(session_id, payload, intent, legacy_payload)
     def write(conn):
         _epoch(conn, epoch)
         _session(conn, session_id)
         old = conn.execute('''SELECT * FROM session_admissions
             WHERE principal_id=? AND target_session_id=? AND request_id=?''', (principal_id, session_id, request_id)).fetchone()
         if old is not None:
-            if old['payload_digest'] != digest:
+            if old['payload_digest'] not in (digest, legacy):
                 raise RuntimeStoreError('admission_conflict')
             if _replay_guard is not None:
                 _replay_guard(conn)

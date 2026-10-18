@@ -4161,7 +4161,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         route: Optional[dict[str, Any]] = None, session_model: Optional[str] = None,
         requested_runtime: Optional[dict[str, Any]] = None, route_source: str = "global",
         confirmed_runtime_lock: bool = False, bind_declared_conversation: bool = False,
-        request_id: Optional[str] = None, history_from_session: bool = False, run_owner_scope=None,
+        request_id: Optional[str] = None, history_from_session: bool = False, run_owner_scope=None, tools_digest=None,
         session_history_delivery: str = "", turn_author: Optional[dict[str, Any]] = None,
         relay_metadata: Optional[dict[str, Any]] = None, notification_category: str = "result",
         resume_unanswered_turn: bool = False, approval_notify_callback=None,
@@ -4193,7 +4193,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 route=route, session_model=session_model, requested_runtime=requested_runtime,
                 route_source=route_source, confirmed_runtime_lock=confirmed_runtime_lock,
                 bind_declared_conversation=bind_declared_conversation, request_id=request_id, run_owner_scope=run_owner_scope,
-                history_from_session=history_from_session, session_history_delivery=session_history_delivery,
+                tools_digest=tools_digest, history_from_session=history_from_session, session_history_delivery=session_history_delivery,
                 turn_author=turn_author, resume_unanswered_turn=resume_unanswered_turn, relay_metadata=relay_metadata,
                 approval_notify_callback=approval_notify_callback, approval_session_key=approval_session_key)
         loop = asyncio.get_running_loop()

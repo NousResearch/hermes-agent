@@ -77,9 +77,11 @@ def run_args(args, *, client=None) -> int:
         print(json.dumps({"dry_run": True, "method": plan.method, "path": plan.path,
                           "payload": plan.payload}, ensure_ascii=False, indent=2))
         return 0
+    import httpx
+
     try:
         result = asyncio.run(execute_plan(plan, client))
-    except Exception:
+    except (OSError, ValueError, RuntimeError, httpx.HTTPError):
         # Remote bodies and transport errors may embed credentials; do not echo them.
         print("qqbot: request failed; check configuration, permissions and connectivity", file=sys.stderr)
         return 1

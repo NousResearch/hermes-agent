@@ -1,10 +1,14 @@
 """Public CLI parser/handler contracts; default writes never open resources."""
+import asyncio
+from contextlib import asynccontextmanager
 import json
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
 from plugins.platforms.qqbot import manage
+from plugins.platforms.qqbot.management import QQBotManagementClient
 
 
 @pytest.mark.parametrize("operation", ["menu-put", "panel-create", "panel-update", "panel-targets", "panel-delete"])
@@ -55,3 +59,55 @@ def test_help_and_remote_failure_are_safe(capsys):
     client = type("Client", (), {"request": AsyncMock(side_effect=RuntimeError("secret-value"))})()
     assert manage.main(["menu-get"], client=client) == 1
     assert "secret-value" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("error_type", [OSError, ValueError, RuntimeError, httpx.ConnectError, httpx.ReadTimeout])
+def test_expected_request_errors_are_secret_safe(error_type, capsys, caplog):
+    client = type("Client", (), {"request": AsyncMock(side_effect=error_type("secret-value"))})()
+    assert manage.main(["menu-get"], client=client) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "qqbot: request failed; check configuration, permissions and connectivity\n"
+    assert caplog.records == []
+
+
+@pytest.mark.parametrize("error_type", [TypeError, AssertionError, asyncio.CancelledError, KeyboardInterrupt])
+def test_unexpected_errors_and_cancellation_propagate(error_type, capsys):
+    error = error_type("unexpected failure")
+    client = type("Client", (), {"request": AsyncMock(side_effect=error)})()
+    with pytest.raises(error_type) as exc:
+        manage.main(["menu-get"], client=client)
+    assert exc.value is error
+    captured = capsys.readouterr()
+    assert captured.out == captured.err == ""
+
+
+@pytest.mark.parametrize("authentication", [True, False])
+@pytest.mark.parametrize("failure", ["status", "json", "business", "non-object"])
+def test_real_http_failures_are_secret_safe(failure, authentication, monkeypatch, capsys, caplog):
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        if not authentication and request.url.host == "bots.qq.com":
+            return httpx.Response(200, json={"access_token": "secret-token"})
+        if failure == "status":
+            return httpx.Response(403, text="secret-value")
+        if failure == "json":
+            return httpx.Response(200, text="secret-value")
+        if failure == "business":
+            return httpx.Response(200, json={"code": 123, "message": "secret-value"})
+        return httpx.Response(200, json=["secret-value"])
+
+    @asynccontextmanager
+    async def open_client():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+            yield QQBotManagementClient(http, "app", "secret-value")
+
+    monkeypatch.setattr(manage, "open_management_client", open_client)
+    assert manage.main(["menu-get"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "qqbot: request failed; check configuration, permissions and connectivity\n"
+    assert len(calls) == (1 if authentication else 2)
+    assert caplog.records == []

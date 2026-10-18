@@ -16,9 +16,9 @@ def _freeze_scalar(value: Any, budget: list[int]) -> Any:
         _provider._account_encoded_bytes(budget, _provider._encoded_json_scalar_size(value))
         return value
     if isinstance(value, str):
-        value = str.__str__(value)
         if str.__len__(value) > _provider.MAX_MEMORY_OBSERVATION_STRING_CHARS:
             raise ValueError("observation payload string is too long")
+        value = str.__str__(value)
         _provider._account_encoded_bytes(budget, _provider._encoded_json_scalar_size(value))
         return value
     if isinstance(value, int):
@@ -45,9 +45,9 @@ def _freeze_mapping(
     for index, (key, child) in enumerate(dict.items(value)):
         if not isinstance(key, str):
             raise ValueError("observation payload object keys must be bounded strings")
-        key = str.__str__(key)
         if str.__len__(key) > _provider.MAX_MEMORY_OBSERVATION_STRING_CHARS:
             raise ValueError("observation payload object keys must be bounded strings")
+        key = str.__str__(key)
         if index:
             _provider._account_encoded_bytes(budget, 1)
         _provider._account_encoded_bytes(

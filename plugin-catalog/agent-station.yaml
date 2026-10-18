@@ -1,6 +1,6 @@
 name: agent-station
 repo: https://github.com/thealps01-netizen/agent-station
-sha: 2988656b12c330b4d87301154dcd5765f620e20c
+sha: ce8e97d25a3de6894e7f6066977c6346120b655b
 subdir: ""
 description: "Read-only Hermes Desktop page for the focused chat: the main agent and its subagents, background commands and a Replay of file edits."
 title: "Agent Station"
@@ -8,12 +8,12 @@ maintainer: thealps01-netizen
 tier: community
 category: desktop
 requires_hermes: ">=0.21.7"
-version: "3.0.2"
+version: "3.0.3"
 docs_url: https://github.com/thealps01-netizen/agent-station#readme
 screenshots:
-  - "https://raw.githubusercontent.com/thealps01-netizen/agent-station/2988656b12c330b4d87301154dcd5765f620e20c/Docs/images/agents.png"
-  - "https://raw.githubusercontent.com/thealps01-netizen/agent-station/2988656b12c330b4d87301154dcd5765f620e20c/Docs/images/commands.png"
-  - "https://raw.githubusercontent.com/thealps01-netizen/agent-station/2988656b12c330b4d87301154dcd5765f620e20c/Docs/images/replay.png"
+  - "https://raw.githubusercontent.com/thealps01-netizen/agent-station/ce8e97d25a3de6894e7f6066977c6346120b655b/Docs/images/agents.png"
+  - "https://raw.githubusercontent.com/thealps01-netizen/agent-station/ce8e97d25a3de6894e7f6066977c6346120b655b/Docs/images/commands.png"
+  - "https://raw.githubusercontent.com/thealps01-netizen/agent-station/ce8e97d25a3de6894e7f6066977c6346120b655b/Docs/images/replay.png"
 readme: true
 capabilities:
   provides_tools: []

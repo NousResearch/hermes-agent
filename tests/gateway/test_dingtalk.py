@@ -493,6 +493,33 @@ class TestIncomingHandlerProcess:
         processing_gate.set()
         await asyncio.sleep(0.05)
 
+    @pytest.mark.asyncio
+    async def test_dispatched_task_is_referenced_until_done(self):
+        """The event loop holds tasks weakly: the handler must keep the
+        dispatched message task alive until it finishes, then drop it."""
+        import gc
+        from plugins.platforms.dingtalk.adapter import _IncomingHandler, DingTalkAdapter
+
+        gate, finished = asyncio.Event(), asyncio.Event()
+
+        async def gated_on_message(msg):
+            await gate.wait()
+            finished.set()
+
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._on_message = gated_on_message
+        handler = _IncomingHandler(adapter, asyncio.get_running_loop())
+        callback = MagicMock()
+        callback.data = {"msgtype": "text", "text": {"content": "hi"}, "senderId": "u", "conversationId": "c"}
+
+        assert (await handler.process(callback))[0] == 200
+        gc.collect()
+        assert len(handler._message_tasks) == 1
+        gate.set()
+        await asyncio.wait_for(finished.wait(), timeout=5)
+        await asyncio.sleep(0)
+        assert not handler._message_tasks
+
 # ---------------------------------------------------------------------------
 # Text extraction — mention preservation + platform sanity
 # ---------------------------------------------------------------------------

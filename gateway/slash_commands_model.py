@@ -480,7 +480,7 @@ class GatewayModelCommandsMixin:
         return bool(result.success)
 
     async def _model_listing_reply(
-        self, event: MessageEvent, ctx: _ModelSwitchContext, profile_home
+        self, event: MessageEvent, ctx: _ModelSwitchContext, profile_home, force_refresh: bool = False
     ) -> Optional[str]:
         """``/model`` with no args: interactive picker where supported, else the text list."""
         from hermes_cli.model_switch import list_authenticated_providers
@@ -493,7 +493,10 @@ class GatewayModelCommandsMixin:
             # Chat `/model` is a read path: catalogs come from the disk cache and stale ones warm
             # in the background, and only the selected custom endpoint is probed live, so one
             # degraded provider can't stall the reply (#74003). Mirrors the GUI read path.
-            non_blocking_catalogs=True, probe_custom_providers=False, probe_current_custom_provider=True,
+            # ``/model --refresh`` just wiped the cache, so a non-blocking read would hit the cold
+            # row and show the short curated fallback list; wait for the live fetch instead.
+            non_blocking_catalogs=not force_refresh, probe_custom_providers=False,
+            probe_current_custom_provider=True,
         )
         adapter = self._delivery_adapter_for(ctx.source)
         if adapter is not None and getattr(type(adapter), "send_model_picker", None) is not None:
@@ -613,7 +616,7 @@ class GatewayModelCommandsMixin:
         ctx.read_config()
         ctx.apply_override(self._session_model_overrides.get(session_key, {}))
         if not request.target and not request.explicit_provider:
-            return await self._model_listing_reply(event, ctx, profile_home)
+            return await self._model_listing_reply(event, ctx, profile_home, force_refresh=request.force_refresh)
         result, error = await self._perform_model_switch(ctx, request.target, request.explicit_provider, source)
         if error is not None:
             return error

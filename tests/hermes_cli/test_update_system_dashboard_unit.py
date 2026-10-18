@@ -77,3 +77,41 @@ def test_dashboard_pass_still_restarts_the_unit_when_the_fleet_loop_never_saw_it
     _systemd_owned_dashboard(monkeypatch, calls)
     dashboard_procs._kill_stale_dashboard_processes(restart_managed=True, already_restarted_units={"hermes-gateway"})
     assert ["systemctl", "restart", UNIT] in calls
+
+
+def test_systemd_owned_ledger_dashboard_is_classified_systemd(monkeypatch):
+    calls: list = []
+    _systemd_owned_dashboard(monkeypatch, calls)
+    entry = {"pid": DASH_PID, "create_time": 1000.0, "purpose": "dashboard", "profile": "",
+             "argv": "hermes dashboard --host 0.0.0.0 --port 9119 --no-open", "host": "0.0.0.0", "port": 9119}
+    fake_pi = SimpleNamespace(ledger_entries=lambda **k: [entry], spawner_is_dead=lambda e: None)
+    monkeypatch.setitem(sys.modules, "hermes_cli.process_identity", fake_pi)
+    plan = UpdatePlan()
+    update_inventory._collect_ledger_runtimes(plan, set())
+    (row,) = plan.runtimes
+    assert (row.supervisor, row.restart_via) == ("systemd", "systemd")
+    assert (row.detail["systemd_unit"], row.detail["systemd_scope"]) == (UNIT, "system")
+
+
+def test_hand_started_dashboard_in_a_foreign_cgroup_stays_manual(monkeypatch):
+    """No unit owns the PID as MainPID → still manual-serve (its respawn reminder still applies)."""
+    monkeypatch.setattr(main_dashboard, "_get_systemd_service_for_pid", lambda pid: None)
+    entry = {"pid": 4321, "create_time": 1.0, "purpose": "dashboard", "argv": "hermes dashboard"}
+    monkeypatch.setitem(sys.modules, "hermes_cli.process_identity",
+                        SimpleNamespace(ledger_entries=lambda **k: [entry], spawner_is_dead=lambda e: None))
+    plan = UpdatePlan()
+    update_inventory._collect_ledger_runtimes(plan, set())
+    assert plan.runtimes[0].supervisor == "manual-serve"
+
+
+def test_stale_unit_dashboard_hint_names_its_unit_and_scope(monkeypatch, capsys):
+    plan = UpdatePlan(runtimes=[RuntimeRecord(
+        kind="dashboard", profile="default", pid=DASH_PID, supervisor="systemd", restart_via="systemd",
+        detail={"create_time": 1000.0, "systemd_unit": UNIT, "systemd_scope": "system"})])
+    monkeypatch.setitem(sys.modules, "hermes_cli.process_identity", SimpleNamespace(
+        ledger_entries=lambda: [{"pid": DASH_PID, "purpose": "dashboard", "create_time": 1000.0}]))
+    rows = update_cmd._surviving_pre_update_serve_runtimes(plan)
+    update_cmd._warn_stale_serve_runtimes(rows)
+    out = capsys.readouterr().out
+    assert f"`sudo systemctl restart {UNIT}`" in out
+    assert "Ask their owner" not in out and "hermes-serve.service" not in out

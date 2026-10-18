@@ -34,11 +34,16 @@ def _surviving_pre_update_serve_runtimes(plan) -> list[dict]:
             if not isinstance(pid, int) or pid <= 0:
                 continue
             detail = getattr(runtime, "detail", None)
+            detail = detail if isinstance(detail, dict) else {}
             planned[pid] = {
                 "pid": pid, "kind": str(getattr(runtime, "kind", "")),
                 "profile": str(getattr(runtime, "profile", "")),
                 "supervisor": str(getattr(runtime, "supervisor", "")),
-                "_create_time": _numeric(detail.get("create_time") if isinstance(detail, dict) else None)}
+                "_create_time": _numeric(detail.get("create_time"))}
+            if detail.get("systemd_unit"):
+                # The owning unit and scope name the exact restart command (#141021).
+                planned[pid]["systemd_unit"] = str(detail["systemd_unit"])
+                planned[pid]["systemd_scope"] = detail.get("systemd_scope")
     except Exception as exc:
         logger.debug("Could not read planned serve runtimes: %s", exc)
         return []
@@ -234,9 +239,16 @@ def _warn_stale_serve_runtimes(rows) -> None:
         print(
             f"      pid {row.get('pid')} — {row.get('kind')}"
             f" (profile {row.get('profile') or 'default'}, {row.get('supervisor') or 'unknown'})")
-    print("    Ask their owner to relaunch `hermes serve` / `hermes dashboard`, or reconnect Desktop for an SSH backend.")
-    if sys.platform == "linux" and any(row.get("supervisor") == "systemd" for row in rows):
-        print("    For unit-managed backends: `systemctl --user restart hermes-serve.service`.")
+    unit_rows = [row for row in rows if row.get("supervisor") == "systemd"]
+    if len(unit_rows) < len(rows):
+        print("    Ask their owner to relaunch `hermes serve` / `hermes dashboard`, or reconnect Desktop for an SSH backend.")
+    # A unit-managed backend restarts through its own unit and scope — never "ask the owner to
+    # relaunch", and never a hardcoded user-scope hermes-serve (#141021).
+    for row in unit_rows:
+        unit = row.get("systemd_unit") or "<unit>"
+        command = {"user": "systemctl --user", "system": "sudo systemctl"}.get(
+            row.get("systemd_scope"), "systemctl [--user]")
+        print(f"    pid {row.get('pid')} is managed by systemd: `{command} restart {unit}`")
     if sys.platform == "darwin" and any(row.get("supervisor") == "launchd" for row in rows):
         print("    For launchd-managed backends: `launchctl kickstart -k gui/$UID/<label>`.")
 

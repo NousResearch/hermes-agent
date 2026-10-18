@@ -259,6 +259,24 @@ def _launchd_owner_for_ledger_entry(entry: dict, pid: int, jobs: list) -> tuple[
     return None
 
 
+def _systemd_owner_for_ledger_pid(pid: int) -> tuple[str, str | None] | None:
+    """``(unit, scope)`` of the systemd unit whose live ``MainPID`` is *pid*, if any.
+
+    A unit-launched backend sets neither ``HERMES_SPAWN`` nor ``HERMES_PARENT_PID``, so the spawner
+    probe reads ``manual-serve`` and the update tells the user to "ask the owner to relaunch
+    `hermes dashboard`" for a process systemd owns (#141021). Ownership is the unit's MainPID, not
+    cgroup membership (a hand-started dashboard inside some unrelated unit's cgroup is still manual);
+    ``None`` off Linux, when unreadable, or when no unit owns it."""
+    with suppress(Exception):
+        from hermes_cli import main_dashboard as _dash
+
+        unit = _dash._get_systemd_service_for_pid(pid)
+        if unit:
+            cgroup = _dash._get_pid_cgroup_path(pid)
+            return unit, _dash._extract_scope_from_cgroup(cgroup) if cgroup else None
+    return None
+
+
 def _is_desktop_ssh_ledger_entry(entry: dict) -> bool:
     """Is this row the backend a (possibly remote) Desktop spawned over SSH? The canonical argv
     predicate also classifies rows written before the ledger carried ``isolated``, which is exactly
@@ -277,7 +295,8 @@ def _collect_ledger_runtimes(plan: UpdatePlan, seen: set[int]) -> None:
     ledger_entries() live-verifies (pid, create_time) so PID reuse never fabricates a row. Desktop-
     supervised backends (spawner still alive) restart via the Desktop's own respawn, not ours.
     A backend owned by a loaded launchd job is classified ``launchd`` (kickstart restart, never a
-    detached argv respawn) — the spawner probe cannot see that (#116503)."""
+    detached argv respawn) — the spawner probe cannot see that (#116503); one that is a systemd
+    unit's MainPID is ``systemd`` for the same reason (#141021)."""
     with _probe("Serve/dashboard ledger inventory"):
         from hermes_cli.process_identity import ledger_entries, spawner_is_dead
 
@@ -300,8 +319,12 @@ def _collect_ledger_runtimes(plan: UpdatePlan, seen: set[int]) -> None:
                 # No local spawner, so the probe below would read manual-serve and file a reminder
                 # nobody here can discharge; its token file and owner nonce belong to the client.
                 supervisor = "desktop-ssh"
+            elif spawner_is_dead(entry) is False:
+                supervisor = "desktop"
+            elif unit := _systemd_owner_for_ledger_pid(pid):
+                supervisor, detail["systemd_unit"], detail["systemd_scope"] = "systemd", unit[0], unit[1]
             else:
-                supervisor = "desktop" if spawner_is_dead(entry) is False else "manual-serve"
+                supervisor = "manual-serve"
             plan.runtimes.append(_runtime(
                 str(purpose), str(entry.get("profile") or "default"), pid, supervisor, detail=detail,
             ))

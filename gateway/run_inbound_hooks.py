@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import functools
+import inspect
 import logging
 import os
 import signal
@@ -17,6 +19,7 @@ import sys
 from typing import Optional, Tuple
 
 from agent.i18n import t
+from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource, build_session_context
 
@@ -246,16 +249,19 @@ class GatewayInboundHooksMixin:
         """Plugin-registered slash command *command* → ``(handled, result, command)``. No quick
         commands: a local session resolves those in its own profile before calling this."""
         # Underscores normalize to hyphens so Telegram's underscored autocomplete form matches
-        # plugin commands registered with hyphens. The dispatcher binds HERMES_SESSION_* like
-        # the agent-turn path (#108698), runs sync handlers on the gateway pool (#105279) and
-        # forwards the conversation's identity to handlers that opt into it.
+        # plugin commands registered with hyphens. Under multiplexed profiles the handler is looked
+        # up and run in the chat's own profile, so ``profile``/``hermes_home`` name its owner.
         if command:
             try:
-                from gateway.plugin_commands import dispatch_plugin_command
+                from gateway.run import _async_profile_runtime_scope
+                from hermes_cli.plugins import get_plugin_command_handler
 
-                handled, result = await dispatch_plugin_command(self, event, source, command)
-                if handled:
-                    return True, result, command
+                scope = (_async_profile_runtime_scope(self._resolve_profile_home_for_source(source))
+                         if getattr(self.config, "multiplex_profiles", False) else contextlib.nullcontext())
+                async with scope:
+                    plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
+                    if plugin_handler:
+                        return True, await self._hm_run_plugin_handler(plugin_handler, event, source), command
             except Exception as e:
                 logger.warning("Plugin command dispatch failed: %s", e, exc_info=True)
         return False, None, command
@@ -274,15 +280,28 @@ class GatewayInboundHooksMixin:
         # message has none yet, so session_key is derived from source. Sync handlers run on the
         # gateway pool (contextvars carried), never the loop thread: blocking I/O there starves
         # the liveness watchdog and the process exits 75 mid-handler (#105279).
+        if session_entry is None and getattr(self, "session_store", None) is not None:
+            # The chat's current session, if it has one (lookup only: a command never creates one), so
+            # HERMES_SESSION_ID / session_id name what a later /new reports as old_session_id (#123245).
+            session_entry = await self.async_session_store.lookup_by_session_key(
+                self._session_key_for_source(source))
         _plugin_context = build_session_context(source, self.config, session_entry)
         if session_entry is None:
             _plugin_context.session_key = self._session_key_for_source(source)
         user_args = event.get_command_args().strip() if args is None else args
+        from hermes_cli.plugin_command_dispatch import invoke_plugin_command, plugin_command_context
+        session_id = _plugin_context.session_id or ""
+        context = plugin_command_context(
+            source=source, session_id=session_id, session_key=_plugin_context.session_key,
+            platform=source.platform.value, task_id=session_id, stored_session_id=session_id,
+            # A gateway-owned CLI/Desktop session is local; only messaging chats are remote.
+            surface="local" if source.platform is Platform.LOCAL else "gateway")
+        call = functools.partial(invoke_plugin_command, plugin_handler, user_args, **context)
         with self._session_env_scope(_plugin_context):
-            if asyncio.iscoroutinefunction(plugin_handler):
-                result = await plugin_handler(user_args)
+            if inspect.iscoroutinefunction(plugin_handler):
+                result = await call()
             else:
-                result = await self._run_in_executor_with_context(plugin_handler, user_args)
-                if asyncio.iscoroutine(result):
+                result = await self._run_in_executor_with_context(call)
+                if inspect.isawaitable(result):
                     result = await result
         return str(result) if result else None

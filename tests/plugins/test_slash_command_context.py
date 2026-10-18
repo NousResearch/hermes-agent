@@ -77,6 +77,7 @@ def test_desktop_dispatch_owns_each_profile_and_session_through_async_thread(tmp
             "session_id": ("stored-" if lazy else "compressed-") + name, "task_id": "stored-" + name,
             "runtime_session_id": "runtime-" + name, "stored_session_id": "stored-" + name,
             "profile": name, "hermes_home": home, "surface": source,
+            "session_key": "stored-" + name, "platform": source, "source": None,
         }
         legacy = server._methods[method]("legacy", {
             "session_id": "runtime-" + name, "command": "/owner-legacy Exact Case",
@@ -118,6 +119,7 @@ def test_cli_process_command_uses_its_own_agent_not_last_active_session(tmp_path
             "session_id": client.agent.session_id, "task_id": client.agent._current_task_id,
             "stored_session_id": client.session_id, "runtime_session_id": None,
             "profile": "default", "hermes_home": str(home), "surface": "cli",
+            "session_key": client.session_id, "platform": "cli", "source": None,
         }
     assert clients[0].process_command("/owner-legacy Exact Case") is True
     assert capsys.readouterr().out.strip() == "legacy:Exact Case"
@@ -153,22 +155,28 @@ async def test_gateway_dispatch_resolves_durable_owner_with_real_session_store(t
         assert command == "owner_probe"
         assert isinstance(result, str)
         payload = json.loads(result)
-        entry = await runner.async_session_store.lookup_by_session_key(runner._session_key_for_source(source))
-        assert entry is not None
+        key = runner._session_key_for_source(source)
+        entry = await runner.async_session_store.lookup_by_session_key(key)
         target = str(homes[source.profile])
+        session_id = entry.session_id if entry else ""
         assert payload == {
             "raw": "On", "registered_home": target, "active_home": target,
-            "session_id": entry.session_id, "task_id": entry.session_id,
-            "stored_session_id": entry.session_id, "runtime_session_id": None,
+            "session_id": session_id, "task_id": session_id or None,
+            "stored_session_id": session_id or None, "runtime_session_id": None,
             "profile": source.profile or "default", "hermes_home": target, "surface": "gateway",
+            "session_key": key, "platform": "telegram", "source": payload["source"],
         }
-        return entry.session_id
+        return session_id
 
     try:
+        # A command never creates a session: a fresh chat's handler sees no session id.
+        assert await asyncio.gather(*(dispatch(source) for source in sources)) == [""] * len(sources)
+        for source in sources:
+            runner.session_store.get_or_create_session(source)  # the chat's first message
         first = await asyncio.gather(*(dispatch(source) for source in sources))
         second = await asyncio.gather(*(dispatch(source) for source in sources))
         assert first == second
-        assert len(set(first)) == len(sources)
+        assert all(first) and len(set(first)) == len(sources)
         assert get_hermes_home() == home
     finally:
         for db in runner.session_store._db_handles.values():

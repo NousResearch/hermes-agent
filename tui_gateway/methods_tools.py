@@ -505,19 +505,19 @@ def _run_plugin_command(handler, arg: str, session, runtime_session_id) -> str:
     the socket/worker thread where nothing upstream binds it (only the turn path does), so a handler
     saw ``""`` or the launch process's inherited values. Same class as the messaging gateway's
     #108698; ``_set_session_context`` is the turn path's own seam."""
-    tokens = _set_session_context(session.get("session_key", "") or "", cwd=str(session.get("cwd") or "")) if session else []
+    key = str(session.get("session_key") or "") if session else ""
+    tokens = _set_session_context(key, cwd=str(session.get("cwd") or "")) if session else []
     try:
         session = session or {}
         home = session.get("profile_home") or _tools_mod("hermes_constants").get_hermes_home()
         with _tools_mod("hermes_cli.plugins_loader")._plugin_home_scope(home):
-            commands = _tools_mod("hermes_cli.plugins_command")
-            stored_id = session.get("session_key") or None
-            context = commands.plugin_command_context(
-                session_id=getattr(session.get("agent"), "session_id", None) or stored_id,
-                task_id=stored_id, stored_session_id=stored_id,
-                runtime_session_id=runtime_session_id if session else None,
+            dispatch = _tools_mod("hermes_cli.plugin_command_dispatch")
+            context = dispatch.plugin_command_context(
+                session_id=getattr(session.get("agent"), "session_id", None) or key, session_key=key,
+                platform=_session_source(session) if session else None, task_id=key,
+                stored_session_id=key, runtime_session_id=runtime_session_id if session else None,
                 surface=session.get("source") or "tui")
-            result = commands.invoke_plugin_command(handler, arg, **context)
+            result = dispatch.invoke_plugin_command(handler, arg, **context)
             return str(_tools_mod("hermes_cli.plugins").resolve_plugin_command_result(result) or "")
     finally:
         _clear_session_context(tokens)

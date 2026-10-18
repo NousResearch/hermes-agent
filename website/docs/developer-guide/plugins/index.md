@@ -1037,6 +1037,40 @@ skill_view("my-workflow")              # → built-in version (unchanged)
 The old `shutil.copy2` pattern (copying a skill into `~/.hermes/skills/`) still works but creates name collision risk with built-in skills. Prefer `ctx.register_skill()` for new plugins.
 :::
 
+### Read the skill catalog
+
+A plugin that shows which skills the agent can see (a catalog view, "open this skill", drift checks
+against the installed copy) should call the same helpers the `skills_list` and `skill_view` tools use,
+not walk the skill directories itself. These names are public and covered by the compatibility
+contract:
+
+| Import | What it gives you |
+|---|---|
+| `tools.skills_tool.find_all_skills(*, skip_disabled=False)` | Loadable skills as `{"name", "description", "category"}` dicts: the cached, first-wins, platform/environment-gated walk `skills_list` uses. `name` is what `skill_view()` accepts. |
+| `tools.skills_tool.sort_skills(skills)` | The one listing order (category, then name). |
+| `tools.skills_tool.skill_search_dirs()` | `(roots, active_dir)`: `(tier, dir)` roots in precedence order (project, local, `create_dir`, external) and the live profile's skills dir. |
+| `tools.skills_tool.skill_lookup_path_error(name)` | An error string if `name` is absolute or contains `..`, else `None`. Check it before any lookup. |
+| `tools.skills_tool.locate_skill(name, local_category_name, roots)` | `(error_json, skill_dir, skill_md)` for one name over `roots`: tier precedence, same-tier collision refusal and the project-skill quarantine gate. `local_category_name` is an extra relative path to try (it is not a category filter), so pass `None` unless you need one. `skill_md` is set only when `error_json` is `None`. |
+| `tools.skills_sync.dir_hash(directory)` | The package hash the bundled-skill sync stores, so you can tell whether a user's copy still matches what was installed. |
+| `tools.skill_usage.read_skill_name(skill_md, fallback)` | The frontmatter `name:` of a `SKILL.md`, else `fallback`. |
+
+```python
+from tools.skills_tool import find_all_skills, locate_skill, skill_lookup_path_error, skill_search_dirs, sort_skills
+
+def list_skills():
+    return sort_skills(find_all_skills())
+
+def open_skill(name):
+    if err := skill_lookup_path_error(name):
+        return err
+    roots, _active = skill_search_dirs()
+    error, _skill_dir, skill_md = locate_skill(name, None, roots)
+    return error or skill_md.read_text(encoding="utf-8-sig", errors="replace")
+```
+
+Plugin-registered skills (`ctx.register_skill`) are not on disk under these roots; `find_all_skills()`
+returns the on-disk catalog only.
+
 ### Ship a language pack
 
 A plugin can add a UI language or override the wording of an existing one for every surface at once —
@@ -1544,7 +1578,7 @@ After registration, users can type `/mystatus` in any session. The command appea
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `name` | `str` | Command name without the leading slash (e.g. `"lcm"`, `"mystatus"`) |
-| `handler` | `Callable[[str], str \| None]` | Called with the raw argument string. May also be `async`. |
+| `handler` | `Callable[[str], str \| None]` | Called with the raw argument string, plus any calling-session keywords it declares (see below). May also be `async`. |
 | `description` | `str` | Shown in `/help`, autocomplete, and Telegram bot menu |
 
 **Key differences from `register_cli_command()`:**
@@ -1553,54 +1587,38 @@ After registration, users can type `/mystatus` in any session. The command appea
 |---|---|---|
 | Invoked as | `/name` in a session | `hermes name` in a terminal |
 | Where it works | CLI sessions, Telegram, Discord, etc. | Terminal only |
-| Handler receives | Raw args string | argparse `Namespace` |
+| Handler receives | Raw args string (+ opt-in session context) | argparse `Namespace` |
 | Use case | Diagnostics, status, quick actions | Complex subcommand trees, setup wizards |
 
 **Conflict protection:** If a plugin tries to register a name that conflicts with a built-in command (`help`, `model`, `new`, etc.), the registration is silently rejected with a log warning. Built-in commands always take precedence.
 
-**Session-aware handlers:** The first argument stays the raw string. CLI, messaging gateway,
-TUI, and desktop dispatch additionally offer the following keyword fields. Declare just the
-fields you need, or accept `**kwargs` for the full payload; old one-argument callbacks are unchanged.
+**Calling-session context:** a handler can learn which chat and session invoked it by declaring any of these keyword parameters (or `**kwargs` for all of them). Handlers that declare none keep the one-argument `handler(raw_args)` call, so existing plugins are unaffected:
 
-```python
-def _handle_workspace(raw_args: str, *, session_id=None, task_id=None,
-                      runtime_session_id=None, stored_session_id=None,
-                      profile=None, hermes_home=None, surface=None):
-    if not session_id:
-        return "This command needs an active conversation."
-    return f"Conversation {session_id}, profile {profile}: {raw_args}"
-```
-
-| Keyword | Meaning |
+| Keyword | Value |
 |---|---|
-| `session_id` | Current agent conversation ID; before lazy agent initialization, the stored conversation ID. Messaging uses the canonical session-store entry. |
-| `task_id` | Execution identity: desktop/TUI's durable session key, messaging's conversation ID, or CLI agent's current/last task ID (`None` before the first turn). Never the desktop runtime UUID. |
+| `session_id` | The calling session's id (the one `on_session_reset` later reports as `old_session_id`). Empty when the chat has no session yet. |
+| `session_key` | The routing key of the calling chat. |
+| `platform` | Where the command came from: `telegram`, `discord`, …, `local` (CLI/Desktop sessions owned by the gateway), `cli`, `tui`, `desktop`. |
+| `source` | The adapter-derived `gateway.session.SessionSource` (`user_id`, `chat_id`, `chat_type`, `thread_id`, …) when the gateway dispatched the command, else `None`. |
+| `task_id` | Execution identity: desktop/TUI's durable session key, the messaging session id, or the CLI agent's current task id (`None` before the first turn). Never the desktop runtime UUID. |
 | `runtime_session_id` | Desktop/TUI runtime handle, or `None` elsewhere. |
-| `stored_session_id` | Durable ID used to resume the conversation (may differ from the current agent ID). |
+| `stored_session_id` | Durable id used to resume the conversation (may differ from the current agent id). |
 | `profile` | Owning profile name (`default`, a named profile, or `custom` for an arbitrary home). |
-| `hermes_home` | Owning profile's `pathlib.Path`; use this rather than reading process environment. |
-| `surface` | `cli`, `gateway`, or the desktop/TUI session's source (`desktop`, `tui`, etc.). |
+| `hermes_home` | Owning profile's `pathlib.Path`; use this rather than reading the process environment. |
+| `surface` | `cli`, `gateway` (messaging chats), `local` (gateway-owned CLI/Desktop sessions), or the desktop/TUI session's source (`desktop`, `tui`, …). |
 
-Unavailable identities are `None`. These are invocation snapshots, not mutable agent or session
-objects. Do not guess an owner from a process-global "last session"; commands that mutate
-session-owned resources should refuse missing identity. A messaging command resolves/creates the
-canonical session-store entry before invocation, so an action before the first prompt has the same
-owner as the subsequent conversation. Desktop/TUI lookup and execution use the session's profile,
-not a client-supplied profile override. No prompt, history, or tool schema is changed by dispatch.
-
-**Async handlers:** All surfaces await async results. CLI/desktop/TUI use a helper thread when
-called from an already-running event loop, copying the caller's context (including profile home).
-The existing 30-second bound applies to that helper-thread wait; it is not cancellation of the
-plugin's operation. The messaging gateway awaits on its own loop. You can use sync or async functions:
+Every surface passes them: messaging platforms, the classic CLI, the TUI and Desktop. Unavailable identities are empty or `None`; they are invocation snapshots, not live agent or session objects. A command never creates a session: in a messaging chat with no session yet, `session_id` is empty until the first message. Commands that act on session-owned resources should refuse a missing identity rather than guess from a process-global "last session". Desktop/TUI lookup and execution use the session's own profile. Sync handlers run in the gateway executor and async handlers are awaited, as before.
 
 ```python
-async def _handle_check(raw_args: str) -> str:
-    result = await some_async_operation()
-    return f"Check result: {result}"
+def _handle_whoami(raw_args: str, *, session_id: str = "", platform: str = "", source=None) -> str:
+    user = source.user_id if source is not None else "local user"
+    return f"{user} on {platform}, session {session_id or '(none yet)'}"
 
 def register(ctx):
-    ctx.register_command("check", handler=_handle_check, description="Run async check")
+    ctx.register_command("whoami", handler=_handle_whoami, description="Show the calling session")
 ```
+
+`source` is transport identity, not an authorization grant: authorize from stable ids (`source.user_id`, `source.chat_id`), never from display names or the command text, and fail closed when a sensitive command gets `source=None`. Handler exceptions propagate; Hermes never retries the call with fewer arguments.
 
 **Where handlers run:** a slash command handler runs in the gateway process that owns the session, also when the user types the command in the classic `hermes chat` CLI. The handler is not running in the user's terminal or directory, so:
 

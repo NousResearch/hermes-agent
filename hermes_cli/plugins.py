@@ -649,11 +649,11 @@ class PluginContext:
         argument_mode: str | None = None,
     ) -> Optional[PluginRegistration]:
         """Register an in-session slash command (``/name``); handler ``fn(raw_args: str) -> str | None``
-        (sync or async). Handlers may opt into session_id, task_id, runtime_session_id,
-        stored_session_id, profile, hermes_home and surface keyword fields; narrow legacy
-        signatures still receive only raw_args. ``args_hint`` (e.g. ``"<file>"``) lets adapters
-        like Discord surface an argument field; without it the command registers parameterless
-        there but still accepts trailing text."""
+        (sync or async), plus the calling-session keywords it declares (``plugin_command_dispatch``):
+        session_id, session_key, platform, source, task_id, runtime_session_id, stored_session_id,
+        profile, hermes_home and surface; narrow legacy signatures still receive only raw_args.
+        ``args_hint`` (e.g. ``"<file>"``) lets adapters like Discord surface an argument field;
+        without it the command registers parameterless there but still accepts trailing text."""
         clean = name.lower().strip().lstrip("/").replace(" ", "-")
         if not clean:
             logger.warning("Plugin '%s' tried to register a command with an empty name.", self.manifest.name)

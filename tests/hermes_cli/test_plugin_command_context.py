@@ -4,7 +4,7 @@ import pytest
 
 
 def test_invocation_passes_only_declared_context_without_retrying_handlers():
-    from hermes_cli.plugins_command import invoke_plugin_command
+    from hermes_cli.plugin_command_dispatch import invoke_plugin_command
 
     context = {"session_id": "conversation-a", "task_id": "task-a"}
     assert invoke_plugin_command(lambda raw: raw, "status", **context) == "status"

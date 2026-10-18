@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96"><style>
+g{fill:none;stroke:#ffe6cb;stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round}.a{stroke:#ffbd38}.af{fill:#ffbd38;stroke:none}.mer{animation:mer 3s ease-in-out infinite}@keyframes mer{0%,100%{rx:9px}50%{rx:20px}}.p{transform-origin:50px 15px;animation:tw 2s ease-in-out infinite}@keyframes tw{50%{transform:scale(1.5);opacity:.5}}@media (prefers-reduced-motion: reduce){*{animation:none!important}}</style>
+<defs><radialGradient id="h" cx=".3" cy=".25" r=".9"><stop offset="0" stop-color="#0d3a36"/><stop offset="1" stop-color="#041c1c"/></radialGradient></defs>
+<rect x="2" y="2" width="92" height="92" rx="24" fill="url(#h)" stroke="#ffe6cb" stroke-opacity=".2" stroke-width="1.5"/>
+<g transform="translate(16 16)"><circle cx="32" cy="32" r="22"/><ellipse class="mer" cx="32" cy="32" rx="9" ry="22"/><path d="M11 25h42M11 39h42"/><circle class="af p" cx="50" cy="15" r="4"/></g></svg>

@@ -1575,6 +1575,9 @@ def _session_info(agent, session: dict | None = None) -> dict:
     pending_model = str(pending_switch.get("display_model") or "").strip()
     pending_provider = str(pending_switch.get("display_provider") or "").strip()
     provider = mirror.get("provider", getattr(agent, "provider", ""))
+    requested_provider = str(getattr(agent, "requested_provider", "") or "").strip()
+    if provider == "custom" and requested_provider.lower() not in {"", "custom", "auto"}:
+        provider = requested_provider
     if provider == "custom" and "provider" not in mirror and agent is not None:
         # Clients reuse this identity for new chats without carrying the endpoint or key.
         # Broadcast/resume callers need not be bound to this session's profile.

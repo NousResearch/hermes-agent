@@ -143,7 +143,11 @@ def session_inventory(authority, policy, agent, cwd):
         if agent is not None:
             from agent.voice_turn_route import session_runtime_view
             view = session_runtime_view(agent)
-            info["provider"] = getattr(view, "provider", "") or ""
+            provider = str(getattr(view, "provider", "") or "")
+            requested = str(getattr(view, "requested_provider", "") or "").strip()
+            if provider.lower() == "custom" and requested.lower() not in {"", "custom", "auto"}:
+                provider = requested
+            info["provider"] = provider
             info["tools"] = _grouped(getattr(agent, "tools", None))
             info["system_prompt"] = getattr(agent, "_cached_system_prompt", "") or ""
             compressor = getattr(agent, "context_compressor", None)
@@ -210,7 +214,12 @@ def agent_inventory(agent) -> dict:
     info: dict = {}
     with contextlib.suppress(Exception):
         from agent.voice_turn_route import session_runtime_view
-        info["provider"] = getattr(session_runtime_view(agent), "provider", "") or ""
+        view = session_runtime_view(agent)
+        provider = str(getattr(view, "provider", "") or "")
+        requested = str(getattr(view, "requested_provider", "") or "").strip()
+        if provider.lower() == "custom" and requested.lower() not in {"", "custom", "auto"}:
+            provider = requested
+        info["provider"] = provider
     with contextlib.suppress(Exception):
         info["tools"] = _grouped(getattr(agent, "tools", None))
     info["system_prompt"] = getattr(agent, "_cached_system_prompt", "") or ""

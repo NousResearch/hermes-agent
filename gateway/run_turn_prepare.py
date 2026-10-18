@@ -258,7 +258,24 @@ class GatewayTurnPrepareMixin:
         model = getattr(agent, "model", None)
         if not model:
             return
-        runtime = {k: getattr(agent, k, None) for k in ("provider", "base_url", "api_mode")}
+        adapter_provider = str(getattr(agent, "provider", "") or "").strip()
+        requested_provider = str(getattr(agent, "requested_provider", "") or "").strip()
+        provider = adapter_provider
+        if adapter_provider.lower() == "custom":
+            if requested_provider.lower() not in {"", "custom", "auto"}:
+                provider = requested_provider
+            else:
+                try:
+                    from hermes_cli.runtime_provider import canonical_custom_identity
+                    provider = canonical_custom_identity(
+                        base_url=str(getattr(agent, "base_url", "") or ""), model=model) or provider
+                except Exception:
+                    logger.debug("custom provider identity lookup failed", exc_info=True)
+        runtime = {
+            "provider": provider,
+            "base_url": getattr(agent, "base_url", None),
+            "api_mode": getattr(agent, "api_mode", None),
+        }
         runtime["fallback_active"] = bool(getattr(agent, "_fallback_activated", False))
         runtime = {k: v for k, v in runtime.items() if v not in (None, "")}
         try:

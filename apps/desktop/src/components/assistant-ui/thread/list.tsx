@@ -22,6 +22,7 @@ import { usePaneLifecycle, usePaneVisible } from '@/components/pane-shell/pane-v
 import { useI18n } from '@/i18n'
 import { messagePaintWeight } from '@/lib/render-weight'
 import { cn } from '@/lib/utils'
+import { notify } from '@/store/notifications'
 import {
   COMPOSER_CLEARANCE_SLOT,
   getThreadScrollPosition,
@@ -52,6 +53,7 @@ import { resolveShowEarlierAction, shouldAutoShowEarlier, useTranscriptWindow } 
 import { useMessagesBelow } from './use-messages-below'
 import { useStickyPromptClip } from './use-sticky-prompt-clip'
 import { useTimelineReveal } from './use-timeline-reveal'
+import { useZeroHeightViewportGuard } from './zero-height-guard'
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
 
@@ -1561,6 +1563,31 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
   useMessagesBelow({ contentRef, scrollRef, isAtBottom, paneVisible, rows, sessionKey, sessionId: scrollSessionId })
   useStickyPromptClip({ contentRef, scrollRef, paneVisible, rows })
+
+  // A loaded transcript in a zero-height pane paints nothing and says nothing
+  // (#141084). Raise it instead of leaving the pane silently blank: the toast
+  // is the one surface that survives the collapsed subtree, since every layer
+  // inside it measures 0px too.
+  const reportCollapsedViewport = useCallback(() => {
+    // desktop.log carries no trace of this otherwise: the RPC succeeded, the
+    // rows are mounted, and only the box is wrong (#141084).
+    window.hermesDesktop?.logLine?.(
+      `[thread] aui_thread-viewport measured 0px with ${rows.length} turn rows mounted and the pane visible`
+    )
+    notify({
+      durationMs: 12_000,
+      id: 'thread-viewport-zero-height',
+      kind: 'error',
+      message: t.desktop.viewportZeroHeightBody,
+      title: t.desktop.viewportZeroHeightTitle
+    })
+  }, [rows.length, t])
+
+  useZeroHeightViewportGuard({
+    armed: paneVisible && !renderEmpty && rows.length > 0,
+    onCollapse: reportCollapsedViewport,
+    viewportRef: scrollRef
+  })
 
   return (
     <div

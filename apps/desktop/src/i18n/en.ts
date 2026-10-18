@@ -5016,6 +5016,9 @@ export const en: Translations = {
     resumeStrandedTitle: "Couldn't load this session",
     resumeStrandedBody:
       'The connection to this session failed and automatic retries gave up. Check that the gateway is running, then try again.',
+    viewportZeroHeightTitle: 'This chat pane has no height',
+    viewportZeroHeightBody:
+      'The transcript loaded, but the pane around it is 0px tall, so nothing can draw. Resize the window or reset the layout, then reopen this chat.',
     poolSlotTimeoutBody:
       "Too many bots are running at once for this computer's limit. Raise the limit in Settings → Advanced, or wait for one to finish and retry.",
     poolSlotTimeoutOpenSettings: 'Open Advanced Settings',

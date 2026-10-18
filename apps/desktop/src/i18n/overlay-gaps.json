@@ -609,6 +609,8 @@
   "desktop.resetZoom": ["de","es","fr","ru"],
   "desktop.slashCommandIgnoredBody": ["de","es","fr","ru"],
   "desktop.slashCommandIgnoredTitle": ["de","es","fr","ru"],
+  "desktop.viewportZeroHeightBody": ["ar","de","es","fr","ja","ru","zh","zh-hant"],
+  "desktop.viewportZeroHeightTitle": ["ar","de","es","fr","ja","ru","zh","zh-hant"],
   "desktop.zoomIn": ["de","es","fr","ru"],
   "desktop.zoomOut": ["de","es","fr","ru"],
   "errors.boundaryDetails": ["ar","ja","ru","zh","zh-hant"],

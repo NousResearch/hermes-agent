@@ -798,13 +798,25 @@ def drive_share(args):
             sys.exit(1)
         permission["domain"] = args.domain
 
+    # Drive rejects role=owner unless transferOwnership is set, and an
+    # ownership transfer always notifies the new owner (the API refuses
+    # sendNotificationEmail=false for it).
+    transfer_ownership = args.role == "owner"
+    if transfer_ownership and args.type != "user":
+        print("ERROR: --role owner requires --type user", file=sys.stderr)
+        sys.exit(1)
+    notify = True if transfer_ownership else args.notify
+
     if _gws_binary():
+        params = {
+            "fileId": args.file_id,
+            "sendNotificationEmail": notify,
+        }
+        if transfer_ownership:
+            params["transferOwnership"] = True
         result = _run_gws(
             ["drive", "permissions", "create"],
-            params={
-                "fileId": args.file_id,
-                "sendNotificationEmail": args.notify,
-            },
+            params=params,
             body=permission,
         )
         print(json.dumps({
@@ -820,7 +832,8 @@ def drive_share(args):
     result = service.permissions().create(
         fileId=args.file_id,
         body=permission,
-        sendNotificationEmail=args.notify,
+        sendNotificationEmail=notify,
+        transferOwnership=transfer_ownership,
         fields="id",
     ).execute()
     print(json.dumps({

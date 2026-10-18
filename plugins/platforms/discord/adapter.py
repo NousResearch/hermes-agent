@@ -30,7 +30,7 @@ from contextlib import nullcontext, suppress
 from typing import Callable, Dict, List, Optional, Any, Tuple
 from urllib.parse import quote, urljoin
 
-from agent.async_utils import (consume_detached_task_result as _consume_background_task_result)
+from agent.async_utils import consume_detached_task_result as _consume_background_task_result, spawn_detached_task as _spawn_detached_task
 from agent.display import ToolPreview
 from agent.i18n import get_language, t
 from agent.retry_utils import parse_retry_after_seconds
@@ -1436,7 +1436,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                     "[%s] Failed to notify gateway supervisor about Discord task exit: %s",
                     self.name, notify_exc, exc_info=True,
                 )
-        asyncio.create_task(_notify())
+        _spawn_detached_task(_notify())
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Discord and start receiving events."""
@@ -3750,7 +3750,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         audio_path = os.path.join(
             tempfile.gettempdir(), "hermes_voice", f"ack_{_uuid.uuid4().hex[:12]}.mp3",
         )
-        os.makedirs(os.path.dirname(audio_path), exist_ok=True)
+        await asyncio.to_thread(os.makedirs, os.path.dirname(audio_path), exist_ok=True)
         try:
             from tools.tts_tool import text_to_speech_tool
             result_json = await asyncio.to_thread(
@@ -3758,7 +3758,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             )
             result = json.loads(result_json)
             actual = result.get("file_path", audio_path)
-            if not result.get("success") or not os.path.isfile(actual):
+            if not result.get("success") or not await asyncio.to_thread(os.path.isfile, actual):
                 return False
             decode_to_pcm = _voice_mixer_module().decode_to_pcm
             pcm = await asyncio.to_thread(decode_to_pcm, actual)
@@ -3775,9 +3775,9 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             return False
         finally:
             for p in {audio_path, locals().get("actual")}:
-                if p and os.path.isfile(p):
+                if p and await asyncio.to_thread(os.path.isfile, p):
                     try:
-                        os.unlink(p)
+                        await asyncio.to_thread(os.unlink, p)
                     except OSError:
                         pass
 
@@ -4043,7 +4043,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
     async def _process_voice_input(self, guild_id: int, user_id: int, pcm_data: bytes, captured_for: int | None):
         """Convert PCM -> WAV -> STT -> callback; dropped if the binding moved off *captured_for* during STT."""
         from tools.voice_mode_transcript import is_whisper_hallucination
-        tmp_f = tempfile.NamedTemporaryFile(suffix=".wav", prefix="vc_listen_", delete=False)
+        tmp_f = await asyncio.to_thread(tempfile.NamedTemporaryFile, suffix=".wav", prefix="vc_listen_", delete=False)
         wav_path = tmp_f.name
         tmp_f.close()
         try:
@@ -4077,7 +4077,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 logger.warning("Voice input processing failed: %s", e, exc_info=True)
         finally:
             try:
-                os.unlink(wav_path)
+                await asyncio.to_thread(os.unlink, wav_path)
             except OSError:
                 pass
 
@@ -4237,7 +4237,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             logger.debug("[Discord] Could not send unauthorized ephemeral: %s", e)
         # Fire-and-forget: don't block the interaction handler on Telegram I/O.
         try:
-            asyncio.create_task(self._notify_unauthorized_slash(
+            _spawn_detached_task(self._notify_unauthorized_slash(
                 user_name, user_id, chan_id, guild_id, command_text, reason,
             ))
         except Exception as e:
@@ -6587,8 +6587,8 @@ def _define_discord_view_classes() -> None:
                 from hermes_constants import get_hermes_home
                 response_path = get_hermes_home() / ".update_response"
                 tmp = response_path.with_suffix(".tmp")
-                tmp.write_text(answer, encoding="utf-8")
-                tmp.replace(response_path)
+                await asyncio.to_thread(tmp.write_text, answer, encoding="utf-8")
+                await asyncio.to_thread(tmp.replace, response_path)
                 logger.info("Discord update prompt answered '%s' by %s", answer, interaction.user.display_name)
             except Exception as exc:
                 logger.error("Failed to write update response: %s", exc)
@@ -7140,7 +7140,7 @@ async def _standalone_send(
                 # Filter readable media first to pick JSON vs multipart before opening a session.
                 valid_media = []
                 for media_path, _is_voice in media_files:
-                    if not os.path.exists(media_path):
+                    if not await asyncio.to_thread(os.path.exists, media_path):
                         warnings.append(_standalone_warn_missing_media(media_path))
                         continue
                     valid_media.append(media_path)
@@ -7196,7 +7196,7 @@ async def _standalone_send(
             # content, and caption_pending makes a missing file fall back to a plain message.
             caption_pending = bool(caption)
             for media_path, _is_voice in media_files:
-                if not os.path.exists(media_path):
+                if not await asyncio.to_thread(os.path.exists, media_path):
                     warnings.append(_standalone_warn_missing_media(media_path))
                     if caption_pending:
                         try:
@@ -7220,7 +7220,7 @@ async def _standalone_send(
                             content_type="application/json",
                         )
                         caption_pending = False
-                    with open(media_path, "rb") as f:  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
+                    with await asyncio.to_thread(open, media_path, "rb") as f:
                         form.add_field("files[0]", f, filename=filename)
                         async with session.post(url, headers=auth_headers, data=form, **_req_kw) as resp:
                             data, err = await _standalone_response_json_or_error(resp, "Discord API error")

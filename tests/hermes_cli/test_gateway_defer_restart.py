@@ -313,3 +313,79 @@ def test_dynamic_assembly_control_reaches_request_and_signal(tmp_path):
     assert proc.returncode == 0
     assert "REQUEST_PUBLISHED" in side_effects
     assert "SIGNAL 4242" in side_effects
+
+
+def test_dynamic_script_from_real_dispatch_carries_cron_provenance(tmp_path, monkeypatch):
+    """G2-R1-A closure: provenance must FLOW FROM PRODUCTION CODE.
+
+    Real dispatch binds the cron execution identity BEFORE the no_agent script
+    runs; the spawn boundary (_inject_session_context_env) promotes it into the
+    child env; the dynamically assembled command reaches the REAL CLI entry and
+    is refused. Nothing in this test injects HERMES_CRON_SESSION manually —
+    deleting it from the parent env is the whole point."""
+    import os
+    import sys
+    from pathlib import Path
+
+    from cron import executions, jobs, scheduler
+
+    repo = Path(hd.__file__).resolve().parents[1]
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    shim_py = bin_dir / "shim.py"
+    shim_py.write_text(_CHAIN_SHIM)
+    shim = bin_dir / "hermes"
+    shim.write_text(f'#!/bin/bash\nexec "{sys.executable}" "{shim_py}" "$@"\n')
+    shim.chmod(0o755)
+    script_dir = tmp_path / "home" / "scripts"
+    script_dir.mkdir(parents=True)
+    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path / "home")
+    # Real command shape: dynamic assembly in three argv (left=defer, right=restart,
+    # hermes gateway "$left-$right"). The script records the CLI's own output and
+    # exit code into the sentinel log — evidence, not stubbing. Relative script
+    # name: the run path resolves it under the ACTIVE home's scripts dir.
+    (script_dir / "job.sh").write_text(
+        "#!/bin/sh\n"
+        "left=defer\n"
+        "right=restart\n"
+        'hermes gateway "$left-$right" >> "$CHAIN_LOG" 2>&1\n'
+        'echo "EXIT $?" >> "$CHAIN_LOG"\n')
+    log = tmp_path / "side_effects.log"
+
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    monkeypatch.setenv("CHAIN_REPO", str(repo))
+    monkeypatch.setenv("CHAIN_LOG", str(log))
+    monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+    monkeypatch.delenv("_HERMES_CRON_EXTERNAL_WORKER", raising=False)
+
+    seen: dict = {}
+    monkeypatch.setattr(scheduler, "claim_dispatch", lambda job_id: True)
+    monkeypatch.setattr(
+        scheduler, "finish_execution",
+        lambda eid, *, success, error=None, **k: seen.setdefault("finish", (success, error)))
+    def _capture_delivery(*a, **k):
+        parts = [str(x) for x in a]
+        for x in a:  # expand delivery objects — repr hides the payload fields
+            if hasattr(x, "__dict__"):
+                parts.extend(str(v) for v in vars(x).values())
+        parts.append(str(k))
+        seen.setdefault("delivered", " ".join(parts))
+
+    monkeypatch.setattr(scheduler, "_save_compose_deliver", _capture_delivery)
+
+    with jobs.use_cron_store(tmp_path / "cron"):
+        fire = executions.create_execution("dyn-a", source="test")
+        job = {"id": "dyn-a", "name": "dyn-a", "prompt": "clean",
+               "script": "job.sh", "no_agent": True, "enabled": True,
+               "schedule": "every 1h", "execution_id": fire["id"]}
+        scheduler._run_one_job_body(job)
+
+    side_effects = log.read_text() if log.exists() else ""
+    assert side_effects.strip()  # the script really ran
+    assert "trusted cron provenance" in side_effects  # REAL entry reached + refused
+    assert "EXIT 7" in side_effects                   # refusal exit code
+    assert "REQUEST_PUBLISHED" not in side_effects    # never published
+    assert "SIGNAL" not in side_effects               # never signaled
+    assert seen.get("finish") is not None             # the run was booked
+    # (the wrapper script exits 0 after recording the CLI's exit code — that is
+    #  the wrapper's semantics; the refusal evidence is EXIT 7 above)

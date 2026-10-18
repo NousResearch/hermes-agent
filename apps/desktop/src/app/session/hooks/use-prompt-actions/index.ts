@@ -4,7 +4,7 @@ import { stripAnsi } from '@hermes/shared/ansi'
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
-import { type ResolvedOwner, transcribeAudio } from '@/hermes'
+import { ATTACH_REQUEST_TIMEOUT_MS, type ResolvedOwner, transcribeAudio } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { attachmentPathNeedsUpload } from '@/lib/attachment-upload-policy'
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
@@ -167,11 +167,15 @@ export async function uploadComposerAttachment(
   const stageForSession = async (liveSessionId: string): Promise<ComposerAttachment> => {
     if (attachment.kind === 'image') {
       const result = imagePayload
-        ? await requestGateway<ImageAttachResponse>('image.attach_bytes', {
-            session_id: liveSessionId,
-            content_base64: imagePayload.contentBase64,
-            filename: imagePayload.filename
-          })
+        ? await requestGateway<ImageAttachResponse>(
+            'image.attach_bytes',
+            {
+              session_id: liveSessionId,
+              content_base64: imagePayload.contentBase64,
+              filename: imagePayload.filename
+            },
+            ATTACH_REQUEST_TIMEOUT_MS
+          )
         : await requestGateway<ImageAttachResponse>('image.attach', {
             path,
             session_id: liveSessionId
@@ -192,12 +196,16 @@ export async function uploadComposerAttachment(
       }
     }
 
-    const result = await requestGateway<FileAttachResponse>('file.attach', {
-      name: label,
-      path,
-      session_id: liveSessionId,
-      ...(fileDataUrl ? { data_url: fileDataUrl } : {})
-    })
+    const result = await requestGateway<FileAttachResponse>(
+      'file.attach',
+      {
+        name: label,
+        path,
+        session_id: liveSessionId,
+        ...(fileDataUrl ? { data_url: fileDataUrl } : {})
+      },
+      ATTACH_REQUEST_TIMEOUT_MS
+    )
 
     if (!result.attached || !result.ref_text) {
       throw new Error(result.message || `Could not attach ${label}`)

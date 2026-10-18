@@ -603,11 +603,7 @@ def test_idle_sweep_busy_after_probe_failure_still_resets_clock(
 
 
 def test_idle_sweeper_survives_a_router_restart(monkeypatch):
-    """The sweeper belongs to the supervisor, not to the first router process: the watchdog
-    respawns a crashed router, and a sweeper that exited with the crash left every model loaded
-    afterwards resident for good. It stops only when the supervisor is stopped."""
-    import time
-
+    """A crashed router does not end the supervisor's idle sweep; stopping it does."""
     from hermes_cli.local_runtime import bootstrap
 
     class _Proc:
@@ -624,14 +620,14 @@ def test_idle_sweeper_survives_a_router_restart(monkeypatch):
             self.sweeps = 0
 
         def sweep_idle(self):
+            phase = self.sweeps
             self.sweeps += 1
+            if phase < len(entered):
+                entered[phase].set()
+                released[phase].wait(timeout=10)
 
-    def wait_until(pred):
-        deadline = time.monotonic() + 5
-        while not pred():
-            assert time.monotonic() < deadline, "timed out"
-            time.sleep(0.01)
-
+    entered = [threading.Event() for _ in range(3)]
+    released = [threading.Event() for _ in range(3)]
     monkeypatch.setattr(bootstrap, "_REFIT_EVERY_S", 0.01)
     monkeypatch.setattr(bootstrap, "_SWEEP_EVERY_S", 0)
     monkeypatch.setattr(bootstrap, "refit_idle_presets", lambda sup: False)
@@ -639,16 +635,20 @@ def test_idle_sweeper_survives_a_router_restart(monkeypatch):
     bootstrap._start_idle_sweeper(sup)
     sweeper = next(t for t in threading.enumerate() if t.name == "local-runtime-idle-sweep")
 
-    wait_until(lambda: sup.sweeps >= 1)
-    sup.proc = _Proc(-9)            # router crashed
-    time.sleep(0.1)
-    sup.proc = _Proc(None)          # watchdog respawned it
-    swept = sup.sweeps
-    wait_until(lambda: sup.sweeps >= swept + 3)
-    assert sweeper.is_alive()
-
-    sup._stop_event.set()           # supervisor.stop()
-    sweeper.join(timeout=5)
+    try:
+        assert entered[0].wait(timeout=5), "initial router was not swept"
+        sup.proc = _Proc(-9)
+        released[0].set()
+        assert entered[1].wait(timeout=5), "sweeper exited with the crashed router"
+        sup.proc = _Proc(None)
+        released[1].set()
+        assert entered[2].wait(timeout=5), "replacement router was not swept"
+        assert sweeper.is_alive()
+    finally:
+        sup._stop_event.set()
+        for release in released:
+            release.set()
+        sweeper.join(timeout=5)
     assert not sweeper.is_alive()
 
 

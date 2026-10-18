@@ -122,6 +122,24 @@ class A2ASecurityContext:
         return hmac.new(self.push_secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
 
 
+def browser_post_refusal(headers) -> Optional[str]:
+    """Why a no-token POST must be refused as browser-originated, or None.
+
+    No-token mode trusts anything that reaches 127.0.0.1, and a web page open in the operator's
+    browser reaches it too. Refuse what only a browser sends: an ``Origin`` header, a
+    ``Sec-Fetch-Site`` other than ``none``/``same-origin``, or a body type a page can POST without a
+    CORS preflight (A2A is JSON, so anything but a JSON media type). Local agents and SDKs send JSON
+    and none of these headers."""
+    if headers.get("Origin") is not None:
+        return "browser-originated request refused (no A2A token configured)"
+    if (headers.get("Sec-Fetch-Site") or "none").strip().lower() not in {"none", "same-origin"}:
+        return "cross-site request refused (no A2A token configured)"
+    media_type = (headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+    if media_type != "application/json" and not media_type.endswith("+json"):
+        return "Content-Type must be application/json"
+    return None
+
+
 def localhost_only() -> bool:
     """Fresh-context convenience for callers outside the adapter."""
     return A2ASecurityContext.capture().localhost_only()

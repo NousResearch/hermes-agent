@@ -292,6 +292,30 @@ class GatewayGoalsMixin:
         await self._warm_goals_session_db(label)
         return factory(sid)
 
+    async def _revive_blocked_goal_for_user_turn(self, session_entry, source, event) -> None:
+        """Resume only after turn admission, independently of model success or delivery."""
+        if (getattr(event, "internal", False)
+                or not getattr(event, "allow_gateway_control", True)
+                or getattr(event, "_heartbeat_session_id", None)
+                or self._is_goal_continuation_event(event)):
+            return
+        from gateway.session_authorities import active_authority
+        from gateway.session_viewer_automation import viewer_driven
+        if viewer_driven(active_authority(self), getattr(source, "chat_id", None)):
+            # The classic CLI classifies its own wakeups and revives through ``session.automation``.
+            return
+        from hermes_cli.goals import GoalManager
+
+        with self._profile_scope_for_source(source):
+            await self._warm_goals_session_db("goal recovery")
+            mgr = GoalManager(session_entry.session_id, default_max_turns=self._goal_max_turns_from_config())
+            if not mgr.resume_for_user_input():
+                return
+            try:
+                await self._send_goal_status_notice(source, f"▶ Goal resumed: {mgr.state.goal}")
+            except Exception as exc:
+                logger.debug("goal recovery notice failed: %s", exc)
+
     async def _post_turn_goal_continuation(
         self, *, session_entry: Any, source: Any, final_response: str,
     ) -> None:
@@ -303,7 +327,9 @@ class GatewayGoalsMixin:
             return lambda sid: GoalManager(session_id=sid, default_max_turns=max_turns)
 
         mgr = await self._post_turn_manager(session_entry, "goal continuation", "goals", _load)
-        if mgr is None or not mgr.is_active():
+        if mgr is None:
+            return
+        if not mgr.is_active():
             return
 
         _bg_procs, _active_deleg = None, 0
@@ -357,6 +383,10 @@ class GatewayGoalsMixin:
         if viewer_driven(active_authority(self), getattr(source, "chat_id", None)):
             return  # the classic CLI viewer judges and continues through ``session.automation``
         final_text = self._final_text_for_post_turn_hooks(agent_result, event)
+        # Error notices and interrupted partial replies are not goal progress.
+        # Events from legacy/direct callers without an outcome retain text fallback.
+        if getattr(event, "_agent_turn_succeeded", None) is False:
+            final_text = ""
         try:
             session_entry = await self.async_session_store.get_or_create_session(
                 source, touch_activity=not is_internal,
@@ -364,7 +394,7 @@ class GatewayGoalsMixin:
         except Exception as exc:
             logger.debug("post-turn session resolution failed: %s", exc)
             return
-        # Empty interrupted/errored responses must not drive /goal, but an in-flight /loop tick
+        # Unsuccessful or empty responses must not drive /goal, but an in-flight /loop tick
         # still needs to be released and rescheduled.
         hooks = [("loop completion", self._post_turn_loop_completion)]
         if final_text.strip():

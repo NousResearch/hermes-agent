@@ -182,10 +182,11 @@ export const SessionControlGoalSection = memo(function SessionControlGoalSection
 
   const visibleState = visibleStateOf(goal, isBusy)
 
-  const iconClass = goal.last_verdict === 'blocked' ? 'text-red-500' : GOAL_ICON_CLASS[visibleState]
+  const iconClass =
+    visibleState === 'paused' && goal.last_verdict === 'blocked' ? 'text-red-500' : GOAL_ICON_CLASS[visibleState]
 
   const stateLabel =
-    goal.last_verdict === 'blocked'
+    visibleState === 'paused' && goal.last_verdict === 'blocked'
       ? s.goalBlocked
       : {
           active: s.goalActive,

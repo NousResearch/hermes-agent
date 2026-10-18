@@ -88,5 +88,9 @@ the child keeps the existing precedence of `delegation.reasoning_effort` over
 the parent's reasoning configuration. An explicit value takes precedence for
 that child only and is normalized by Hermes' reasoning parser. `False` and
 `"none"` explicitly disable reasoning; unsupported values raise
-`SubagentLifecycleError` before a child is constructed. This field is available
-to in-process plugins and host-isolated plugins through the same request mapping.
+`SubagentLifecycleError` before a child is constructed. Conflicting raw
+reasoning controls inherited through `request_overrides` (a parent or
+provider-level `reasoning`, `reasoning_effort`, or `thinking` entry) are
+dropped for that launch so they cannot reverse the explicit policy; unrelated
+request overrides are preserved. This field is available to in-process plugins
+and host-isolated plugins through the same request mapping.

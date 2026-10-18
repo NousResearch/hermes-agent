@@ -27,7 +27,7 @@ from hermes_cli.plugin_validate_core_override import check_core_override
 from hermes_cli.plugin_validate_desktop import check_desktop_surface
 from hermes_cli.plugin_validate_private_imports import check_private_imports
 from hermes_cli.plugin_validate_locales import check_language_packs
-from hermes_cli.plugins_manifest import _CONFIG_SCHEMA_TYPES
+from hermes_cli.plugins_manifest import _CONFIG_SCHEMA_TYPES, hooks_manifest_key
 
 _UPPER_SNAKE_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 # Admission accepts exactly the ``config_schema`` types the loader type-checks at load time (and the
@@ -427,9 +427,12 @@ def _check_capabilities(
     else:
         report.add("capability probe", True, "register() ran in isolation")
 
+    hooks_key = hooks_manifest_key(manifest)
+    if hooks_key == "hooks":
+        report.warn("plugin.yaml declares hooks under the legacy `hooks:` key; rename it to provides_hooks")
     for kind, manifest_key in (
         ("tools", "provides_tools"),
-        ("hooks", "provides_hooks"),
+        ("hooks", hooks_key),
         ("middleware", "provides_middleware"),
     ):
         declared = set(_declared_list(manifest, manifest_key))

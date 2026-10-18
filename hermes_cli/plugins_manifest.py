@@ -528,6 +528,15 @@ def _manifest_kind(data: Mapping, key: str, plugin_dir: Path) -> str:
     return kind
 
 
+def hooks_manifest_key(data: Mapping) -> str:
+    """The manifest key declared hooks are read from: ``provides_hooks``, else the legacy ``hooks:``.
+
+    ``hooks:`` is the spelling the bundled manifests carried for months; external copies of it must
+    keep declaring the same thing (#108371). ``hermes plugins validate`` resolves it the same way.
+    """
+    return "hooks" if "hooks" in data and "provides_hooks" not in data else "provides_hooks"
+
+
 def parse_manifest_file(
     manifest_file: Path, plugin_dir: Path, source: str, prefix: str
 ) -> Optional[PluginManifest]:
@@ -552,9 +561,7 @@ def parse_manifest_file(
             description=data.get("description", ""), author=_display_author(data.get("author", "")),
             requires_env=data.get("requires_env", []),
             provides_tools=data.get("provides_tools", []),
-            # ``hooks:`` is the spelling the bundled manifests carried for months; external copies of it
-            # must keep declaring the same thing (#108371).
-            provides_hooks=data.get("provides_hooks", data.get("hooks", [])), source=source, path=str(plugin_dir),
+            provides_hooks=data.get(hooks_manifest_key(data), []), source=source, path=str(plugin_dir),
             kind=kind, key=key, requires_hermes=str(data.get("requires_hermes") or "").strip(),
             capabilities=_parse_declared_capabilities(data.get("capabilities"), name),
             **_parse_manifest_v2_fields(data, key), emits=data.get("emits") or [],

@@ -360,6 +360,33 @@ class TestSkillView:
         assert by_name["success"] is True
         assert "Step 1" in by_name["content"]
 
+    def test_skill_view_with_date_in_frontmatter_metadata(self, tmp_path):
+        """YAML dates (e.g. ``updated: 2026-03-05``) parse to ``datetime.date``
+        objects that ``json.dumps`` can't serialize by default. The shared ``_json``
+        serializer must fall back to ``str()`` so skill_view doesn't crash.
+
+        Regression for the chief-of-staff skill from alirezarezvani/claude-skills
+        whose frontmatter contains ``metadata.updated: 2026-03-05``.
+        """
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "date-heavy-skill",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  version: 1.0.0\n"
+                    "  author: Alireza Rezvani\n"
+                    "  category: c-level\n"
+                    "  updated: 2026-03-05\n"
+                ),
+            )
+            raw = skill_view("date-heavy-skill")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["name"] == "date-heavy-skill"
+        assert result["metadata"]["updated"] == "2026-03-05"
+
     def test_registered_view_tracks_use_with_task_and_session(self, tmp_path):
         from tools.skills_tool import _skill_view_with_bump
 

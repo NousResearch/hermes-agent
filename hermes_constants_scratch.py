@@ -106,7 +106,9 @@ def subtree_touch_state(path: Path, cutoff: float) -> str:
     """Tri-state form of :func:`subtree_touched_since`: ``touched`` (recent write seen),
     ``scan-failed`` (unreadable — idle cannot be established, so the entry is kept, but
     a failed scan is not activity and is never reported as such), or ``idle``.
-    Same walk, same stop-at-first-recent shortcut, same symlink rules."""
+    Same walk, same stop-at-first-recent shortcut, same symlink rules. A hardlinked file
+    (``st_nlink > 1``) does not count either: its mtime is the inode's, and
+    ``git clone --local`` hardlinks packs that git freshens from the source repo."""
     try:
         if os.lstat(path).st_mtime >= cutoff:
             return _TOUCHED
@@ -120,10 +122,11 @@ def subtree_touch_state(path: Path, cutoff: float) -> str:
             with os.scandir(stack.pop()) as it:
                 for child in it:
                     try:
-                        if child.stat(follow_symlinks=False).st_mtime >= cutoff:
-                            return _TOUCHED
+                        st = child.stat(follow_symlinks=False)
                     except OSError:
                         return _SCAN_FAILED
+                    if st.st_mtime >= cutoff and not (st.st_nlink > 1 and child.is_file(follow_symlinks=False)):
+                        return _TOUCHED
                     if child.is_dir(follow_symlinks=False):
                         stack.append(child.path)
         except OSError:

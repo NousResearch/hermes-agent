@@ -1011,7 +1011,7 @@ def _anthropic_authenticate() -> bool:
 def _model_flow_anthropic(config, current_model=""):
     """Flow for Anthropic provider — OAuth subscription, API key, or Claude Code creds."""
     from hermes_cli.auth import get_anthropic_key
-    from hermes_cli.models import _PROVIDER_MODELS
+    from hermes_cli.models import _PROVIDER_MODELS, provider_model_ids
 
     # Check ALL credential sources
     existing_key = get_anthropic_key()
@@ -1055,8 +1055,15 @@ def _model_flow_anthropic(config, current_model=""):
         return
     print()
 
+    # Live catalog (curated ∪ /v1/models), static list only if discovery itself blows up: the
+    # bundled list lags new releases, so a static-only picker hides models the account already
+    # serves — and `hermes model --refresh` cannot add what the flow never asks for.
+    try:
+        model_rows = provider_model_ids("anthropic")
+    except Exception:
+        model_rows = _PROVIDER_MODELS.get("anthropic", [])
     selected = _pick_model_or_prompt(
-        _PROVIDER_MODELS.get("anthropic", []), "Model name (e.g., claude-sonnet-4-20250514): ",
+        model_rows, "Model name (e.g., claude-sonnet-4-20250514): ",
         current_model=current_model, confirm_provider="anthropic")
     # Clear base_url: resolve_runtime_provider() always hardcodes Anthropic's URL, and a
     # stale value can contaminate other providers on a later switch.

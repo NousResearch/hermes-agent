@@ -3,6 +3,7 @@ import { useEffect, useRef } from 'react'
 
 import { $programStatusEnabled, $turnOutcome, deriveProgramStatus, encodeProgramStatus } from '../lib/programStatus.js'
 
+import { $connectionOperation } from './connectionOperationStore.js'
 import { $overlayState } from './overlayStore.js'
 import { $uiState } from './uiStore.js'
 
@@ -17,14 +18,15 @@ export function useProgramStatus(stdout: NodeJS.WriteStream | undefined): void {
   const overlay = useStore($overlayState)
   const outcome = useStore($turnOutcome)
   const enabled = useStore($programStatusEnabled)
+  const connectionTargets = useStore($connectionOperation)?.targets
   const last = useRef('')
 
   useEffect(() => {
-    if (!enabled || !stdout?.isTTY) {
+    if (enabled !== true || !stdout?.isTTY) {
       return
     }
 
-    const { kind, state } = deriveProgramStatus(busy, overlay, outcome)
+    const { kind, state } = deriveProgramStatus(busy, overlay, outcome, connectionTargets)
     const seq = encodeProgramStatus(state, kind)
 
     const timer = setTimeout(() => {
@@ -35,5 +37,5 @@ export function useProgramStatus(stdout: NodeJS.WriteStream | undefined): void {
     }, SETTLE_MS)
 
     return () => clearTimeout(timer)
-  }, [busy, enabled, outcome, overlay, stdout])
+  }, [busy, connectionTargets, enabled, outcome, overlay, stdout])
 }

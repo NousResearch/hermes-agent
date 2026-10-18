@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
-import { deriveProgramStatus, encodeProgramStatus } from '../lib/programStatus.js'
+import { completionOutcome, deriveProgramStatus, encodeProgramStatus } from '../lib/programStatus.js'
 import type { ApprovalReq } from '../types.js'
 
 const decode = (seq: string) => {
@@ -30,5 +30,18 @@ describe('OSC 7501 program status', () => {
     expect(deriveProgramStatus(true, getOverlayState(), null)).toEqual({ state: 'working' })
     expect(deriveProgramStatus(false, getOverlayState(), 'error')).toEqual({ state: 'error' })
     expect(deriveProgramStatus(false, getOverlayState(), null)).toEqual({ state: 'idle' })
+  })
+
+  it('a connection card blocks only while a row waits on the user; backend interrupts read idle', () => {
+    patchOverlayState({ connection: { opId: 'op' } })
+    const target = (state: string, connect_url?: string) => ({ connect_url, name: 'x', state }) as never
+
+    expect(deriveProgramStatus(true, getOverlayState(), null, [target('initiated')])).toEqual({ state: 'working' })
+    expect(deriveProgramStatus(true, getOverlayState(), null, [target('connected')])).toEqual({ state: 'working' })
+    expect(deriveProgramStatus(true, getOverlayState(), null, [target('initiated', 'https://x')])).toEqual({
+      kind: 'auth',
+      state: 'blocked'
+    })
+    expect(completionOutcome(false, { status: 'interrupted' })).toBe('idle')
   })
 })

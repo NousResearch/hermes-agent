@@ -1,6 +1,7 @@
 // OSC 7501 Program Status Protocol (https://www.superlogical.com/rex/docs/build/program-status):
 // the TUI's twin of hermes_cli/terminal_notify.py::program_status_sequence. Terminals that track it
 // show which Hermes tab is working, waiting on the user, finished or failed.
+import type { ConnectionOperationTarget } from '@hermes/shared/gateway-events'
 import { atom } from 'nanostores'
 
 import type { OverlayState } from '../app/interfaces.js'
@@ -14,13 +15,15 @@ const MSG_LIMIT_BYTES = 2048
 // eslint-disable-next-line no-control-regex
 const MSG_CONTROLS = /[\u0000-\u001f\u007f-\u009f]+/g
 
-export const $programStatusEnabled = atom(true)
+// null until the first successful config read, so an opted-out user never sees a startup report.
+export const $programStatusEnabled = atom<boolean | null>(null)
 // How the last turn ended (message.complete / error set it, message.start clears it); shown once busy drops.
 export const $turnOutcome = atom<TurnOutcome>(null)
 
 // A cancelled turn reports idle (the spec's rule for user interrupts); a reply-less failure is error.
 export function completionOutcome(interrupted: boolean, payload: { partial?: unknown; status?: unknown }): TurnOutcome {
-  if (interrupted) {
+  // The backend's own verdict too: a voice barge-in interrupts without the TUI's local flag.
+  if (interrupted || payload.status === 'interrupted') {
     return 'idle'
   }
 
@@ -54,16 +57,27 @@ const BLOCKING: readonly [keyof OverlayState, BlockedKind][] = [
   ['secret', 'auth'],
   ['vaultUnlock', 'auth'],
   ['vaultCode', 'auth'],
-  ['vaultSaveLogin', 'auth'],
-  ['connection', 'auth']
+  ['vaultSaveLogin', 'auth']
 ]
+
+const RESOLVED = new Set(['connected', 'not_connected', 'skipped'])
+
+// A connection card waits on the user only for a row still unresolved and not mid-authorize
+// (initiated without a link yet = the backend minting it); answered or working rows are not blocking.
+export const connectionNeedsUser = (targets: readonly ConnectionOperationTarget[] | undefined): boolean =>
+  (targets ?? []).some(
+    target => !RESOLVED.has(target.state) && !(target.state === 'initiated' && !target.connect_url)
+  )
 
 export function deriveProgramStatus(
   busy: boolean,
   overlay: OverlayState,
-  outcome: TurnOutcome
+  outcome: TurnOutcome,
+  connectionTargets?: readonly ConnectionOperationTarget[]
 ): { kind?: BlockedKind; state: ProgramState } {
-  const blocked = BLOCKING.find(([key]) => Boolean(overlay[key]))
+  const blocked =
+    BLOCKING.find(([key]) => Boolean(overlay[key])) ??
+    (overlay.connection && connectionNeedsUser(connectionTargets) ? (['connection', 'auth'] as const) : undefined)
 
   if (blocked) {
     return { kind: blocked[1], state: 'blocked' }

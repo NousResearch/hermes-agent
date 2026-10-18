@@ -884,6 +884,49 @@ def _redact_url_credentials(text: str, code_file: bool) -> str:
     return _URL_BARE_TOKEN_RE.sub(lambda m: f"{m.group(1)}{_mask_token(m.group(2))}{m.group(3)}", text)
 
 
+# Keyword/value connection strings (ADO.NET, Npgsql, ODBC, JDBC SQL Server):
+# ``Host=db;Username=app;Password=s3cret;Database=x``. _DB_CONNSTR_RE only covers the
+# ``scheme://user:pass@`` URL form, so a .NET connection string printed by ``kubectl
+# get configmap``, ``cat appsettings.json`` or ``env`` leaked its password verbatim.
+# The value runs to ``;``, a quote or end of line; ADO.NET quoting (``"a;b"``,
+# ``'a;b'``, doubled-quote escapes) is honoured so a ``;`` inside a quoted password
+# does not leave a cleartext tail.
+_KV_CONNSTR_PW_RE = re.compile(
+    r"((?:^|(?<=[;\"'\s]))\s*(?:password|pwd)\s*=\s*)"
+    r"(\"(?:[^\"]|\"\")*\"|'(?:[^']|'')*'|[^;\r\n\"']+)",
+    re.IGNORECASE | re.MULTILINE,
+)
+_KV_CONNSTR_GATE_RE = re.compile(r"(?:password|pwd)\s*=", re.IGNORECASE)
+# A ``password=``/``pwd=`` key is only treated as a connection-string field when its line
+# also carries a ``;``-delimited companion key. Keeps prose (``the password= field``), form
+# bodies (handled by _redact_form_body) and lone CLI flags out of this pass.
+_KV_CONNSTR_COMPANION_RE = re.compile(
+    r"(?:^|[;\"'\s])\s*(?:host|server|data\s+source|address|addr|network\s+address|"
+    r"user\s*id|uid|user(?:name)?|database|initial\s+catalog|port)\s*=",
+    re.IGNORECASE,
+)
+
+
+def _redact_kv_connection_strings(text: str, code_file: bool) -> str:
+    """Mask ``Password=``/``Pwd=`` values inside keyword/value connection strings."""
+    def _sub(m):
+        line_start = text.rfind("\n", 0, m.start()) + 1
+        line_end = text.find("\n", m.end())
+        line = text[line_start:len(text) if line_end == -1 else line_end]
+        if ";" not in line or not _KV_CONNSTR_COMPANION_RE.search(line):
+            return m.group(0)
+        value = m.group(2)
+        bare = value.strip().strip("\"'")
+        # Templates, not credentials: ``Password={0}``, ``Password=${DB_PASS}``, ``{pw}``.
+        if code_file and bare.startswith(("{", "${")) and bare.endswith("}"):
+            return m.group(0)
+        if value[:1] in "\"'":
+            return f"{m.group(1)}{value[0]}***{value[0]}"
+        trail = value[len(value.rstrip()):]
+        return f"{m.group(1)}***{trail}"
+    return _KV_CONNSTR_PW_RE.sub(_sub, text)
+
+
 def _redact_phone(m):
     phone = m.group(1)
     keep = 2 if len(phone) <= 8 else 4
@@ -977,6 +1020,11 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     # #33801.
     if "://" in text:
         text = _redact_url_credentials(text, code_file)
+
+    # Keyword/value connection strings (``Host=…;Password=…``): the .NET/ODBC/JDBC form the
+    # URL pass above never sees. Gate: a ``;`` plus a ``password=``/``pwd=`` key in any casing.
+    if ";" in text and _KV_CONNSTR_GATE_RE.search(text):
+        text = _redact_kv_connection_strings(text, code_file)
 
     if "eyJ" in text:
         text = _JWT_RE.sub(lambda m: _mask_token(m.group(0)), text)

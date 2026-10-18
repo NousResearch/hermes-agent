@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 def _localized(key: str, default: str) -> str:
     """``t(key)`` with *default* when no catalog (not even ``en``) carries the key."""
     value = t(key)
-    return default if value == key else value
+    return default if value == key or not value.strip() else value
 
 
 # Category identifiers -> ``slash.category.<slug>`` (identifiers stay English; labels are localized

@@ -283,6 +283,29 @@ describe('/undo and /retry while a compression holds the session', () => {
       expect(callsOf(requestGateway, 'prompt.submit')).toEqual([])
     })
   }
+
+  it('keeps the wait text for a busy refusal only, not another refusal naming the same field', async () => {
+    const other = new JsonRpcGatewayError('invalid_params', {
+      code: 4001,
+      data: { field: 'compression', reason: 'invalid_params' }
+    })
+
+    const requestGateway = gateway(method => {
+      if (method === 'session.resume') {
+        return SNAPSHOT
+      }
+
+      if (method === 'session.rewind') {
+        throw other
+      }
+    })
+
+    const handle = await mount(requestGateway)
+    await handle.submitText('/undo')
+
+    expect(renderedText(handle)).toContain('error: invalid_params')
+    expect(renderedText(handle)).not.toContain('a /compress is running')
+  })
 })
 
 describe('/steer', () => {

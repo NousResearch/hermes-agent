@@ -19,7 +19,7 @@ async def _rewind(db, owner, ref, target):
 
 
 @pytest.mark.asyncio
-async def test_rewind_under_a_held_compression_lock_names_the_lock(tmp_path, monkeypatch):
+async def test_rewind_under_a_held_compression_lock_names_the_lock(tmp_path, monkeypatch, caplog):
     async def handle(event):
         return 'ok'
     store, db, authority, owner, ref = _owner(tmp_path, monkeypatch, handle)
@@ -28,9 +28,14 @@ async def test_rewind_under_a_held_compression_lock_names_the_lock(tmp_path, mon
         target = transcript_target(authority, ref)
         db.append_message(target, 'user', 'keep')
         assert db.try_acquire_compression_lock(target, 'another-writer')
-        reply = await _rewind(db, owner, ref, target)
+        import logging
+        with caplog.at_level(logging.DEBUG, logger='gateway.session_controls'):
+            reply = await _rewind(db, owner, ref, target)
         assert reply['error']['message'] == 'session_busy', reply
         assert reply['error']['data'] == {'reason': 'session_busy', 'field': 'compression'}
+        # A retrying client (Desktop's edit retries busy for 6 s) must not flood the log.
+        refusals = [r for r in caplog.records if 'session.mutate refused' in r.getMessage()]
+        assert refusals and all(r.levelno == logging.DEBUG for r in refusals), refusals
         assert [m['content'] for m in db.get_messages(target)] == ['keep']
     finally:
         await owner.close()

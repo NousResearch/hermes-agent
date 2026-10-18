@@ -103,7 +103,8 @@ def walk_argv(mounts: list[tuple[str, str]], mount_points: list[str], owner: int
         if any(point.startswith(t.rstrip("/") + "/") for t in targets):
             prune += [*(["-o"] if prune else []), "-path", re.sub(r"([][*?\\])", r"\\\1", point)]
     return ["/usr/bin/find", "-P", *targets, "-xdev", *(["(", *prune, ")", "-prune", "-o"] if prune else []),
-            "-user", str(owner), "-print0"]
+            # Device nodes and FIFOs stay root's: a host-owned block device is raw disk access.
+            "(", "-type", "f", "-o", "-type", "d", "-o", "-type", "l", ")", "-user", str(owner), "-print0"]
 
 
 def _walk(docker_exe: str, target: list[str], mounts: list[tuple[str, str]], info: dict, owner: int,

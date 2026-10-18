@@ -138,6 +138,7 @@ def test_root_container_teardown_hands_every_sandbox_mount_back_before_removal(
         assert "-e PATH=/usr/sbin:/usr/bin:/sbin:/bin -e LD_PRELOAD=" in joined and "--cap-add MKNOD" not in joined
     assert chown[chown.index("sha256:img") + 1:][:1] == ["/usr/bin/xargs"]
     assert walk[walk.index("/usr/bin/find") + 1:walk.index("-xdev")] == ["-P", "/root", "/workspace"]
+    assert " ".join(walk).endswith('( -type f -o -type d -o -type l ) -user 0 -print0'), walk  # no device nodes
     pruned = [walk[i + 1] for i, a in enumerate(walk) if a == "-path"]
     assert {"/root/.hermes/skills", "/workspace/shared"} <= set(pruned)  # docker_volumes and extra-args binds
     assert "1000:1000" in chown and stdin == _ROOT_OWNED

@@ -14,8 +14,6 @@ export const feedbackEn = {
   submission: {
     sessionNotReady: 'session not ready yet',
     shellExit: (code: unknown) => `exit ${code}`,
-    steerRejectedQueued: 'steer rejected — message queued for next turn',
-    steerFailedQueued: 'steer failed — message queued for next turn'
   },
   sys: { on: 'on', off: 'off' },
   usage: {

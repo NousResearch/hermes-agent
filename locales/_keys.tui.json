@@ -1343,8 +1343,6 @@
   "status.summoning",
   "submission.sessionNotReady",
   "submission.shellExit",
-  "submission.steerFailedQueued",
-  "submission.steerRejectedQueued",
   "subscription.confirm.blockedFallback",
   "subscription.confirm.cancelBody",
   "subscription.confirm.cancelKeepCredits",

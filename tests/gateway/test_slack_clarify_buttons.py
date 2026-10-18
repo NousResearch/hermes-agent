@@ -115,6 +115,7 @@ class TestSlackSendClarify:
         kwargs = mock_client.chat_postMessage.call_args[1]
         blocks = kwargs["blocks"]
         assert blocks[0]["type"] == "section"
+        assert blocks[0]["expand"] is True
         assert "Which environment?" in blocks[0]["text"]["text"]
         assert blocks[1]["type"] == "actions"
         elements = blocks[1]["elements"]
@@ -133,6 +134,57 @@ class TestSlackSendClarify:
                 action_ids = [element["action_id"] for element in block["elements"]]
                 assert len(action_ids) == len(set(action_ids))
 
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("outcome", ["go", "other", "expired"])
+    async def test_long_plan_stays_expanded_after_interaction(self, outcome):
+        from tools import clarify_gateway as cm
+
+        adapter = _make_adapter()
+        _attach_auth_runner(adapter)
+        client = adapter._team_clients["T1"]
+        client.chat_postMessage = AsyncMock(return_value={"ts": "1.3"})
+        client.chat_update = AsyncMock()
+        question = (
+            "Spawn sub-agent to review PR Improve search\n```\n"
+            "- Review correctness, security & tests.\n"
+            "- Check the implementation against the requested behavior.\n"
+            "- Report actionable findings and verification results.\n```"
+        )
+        cm.register("cid-expanded", "sk-expanded", question, ["Go"])
+        await adapter.send_clarify(
+            chat_id="C1", question=question, choices=["Go"],
+            clarify_id="cid-expanded", session_key="sk-expanded")
+        posted = client.chat_postMessage.call_args.kwargs
+        original_text = posted["blocks"][0]["text"]["text"]
+        assert original_text == "❓ " + question.replace("&", "&amp;")
+        assert posted["text"] == original_text
+
+        if outcome == "expired":
+            await adapter.retire_clarify_card("cid-expanded", "⏳ expired")
+        else:
+            token = "0" if outcome == "go" else "other"
+            action_id = "hermes_clarify_choice_0" if outcome == "go" else "hermes_clarify_other"
+            await adapter._handle_clarify_action(AsyncMock(), {
+                "message": {"ts": "1.3", "blocks": posted["blocks"]},
+                "channel": {"id": "C1"},
+                "user": {"name": "reviewer", "id": "U_N"},
+            }, {"action_id": action_id, "value": f"cid-expanded|{token}"})
+
+        updated = client.chat_update.call_args.kwargs
+        assert (updated["channel"], updated["ts"]) == ("C1", "1.3")
+        assert updated["blocks"][0]["text"]["text"] == original_text
+        assert updated["blocks"][0]["expand"] is True
+        assert all(block["type"] != "actions" for block in updated["blocks"])
+        assert updated["blocks"][1]["elements"][0]["text"] == updated["text"]
+        expected_status = {"go": "Go", "other": "Awaiting typed answer", "expired": "expired"}
+        assert expected_status[outcome] in updated["text"]
+        if outcome == "go":
+            assert cm._entries["cid-expanded"].response == "Go"
+            assert cm._entries["cid-expanded"].event.is_set()
+        elif outcome == "other":
+            pending = cm.get_pending_for_session("sk-expanded")
+            assert pending is not None and pending.awaiting_text is True
 
     @pytest.mark.asyncio
     async def test_mrkdwn_escapes_question(self):

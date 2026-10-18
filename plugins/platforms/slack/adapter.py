@@ -5442,7 +5442,7 @@ class SlackAdapter(BasePlatformAdapter):
                 self._button(t("platform.slack.clarify.other")[:75], "hermes_clarify_other",
                              f"{clarify_id}|other", emoji=True)
             )
-            blocks: list = [{"type": "section", "text": {"type": "mrkdwn", "text": body}}]
+            blocks: list = [{"type": "section", "expand": True, "text": {"type": "mrkdwn", "text": body}}]
             for start in range(0, len(elements), 5):
                 blocks.append({"type": "actions", "elements": elements[start : start + 5]})
             return body, blocks
@@ -5553,7 +5553,7 @@ class SlackAdapter(BasePlatformAdapter):
         placeholder: str, label: str, team_id: Optional[str] = None, sanitize: bool = True) -> None:
         """Rewrite a button prompt to show the outcome and drop the buttons."""
         updated_blocks = [
-            {"type": "section", "text": {"type": "mrkdwn", "text": original_text or placeholder}},
+            {"type": "section", "expand": True, "text": {"type": "mrkdwn", "text": original_text or placeholder}},
             {"type": "context", "elements": [{"type": "mrkdwn", "text": decision_text}]}]
         try:
             await self._get_client(channel_id, team_id=team_id).chat_update(

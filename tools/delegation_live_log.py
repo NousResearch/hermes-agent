@@ -84,6 +84,34 @@ def _write_result_sidecar(path: Optional[Path], text: Any) -> None:
         logger.debug("Live transcript result sidecar failed (%s): %s", path, exc)
 
 
+def _full_summary_text(entry: Any) -> Any:
+    """The child's whole answer, for the result sidecar.
+
+    ``_apply_summary_budget`` (``delegate_tool_results``) replaces ``entry["summary"]`` with a
+    head/tail window once the answer outgrows the parent's budget, and leaves the untrimmed text
+    in ``summary_full_path``. Read that first: writing ``summary`` alone freezes the window into
+    the sidecar, which is the one outcome the sidecar exists to prevent.
+    """
+    if not isinstance(entry, dict):
+        return None
+    spill = entry.get("summary_full_path")
+    if spill:
+        # The spill path is stored backend-translated (``to_agent_visible_cache_path``); finalize
+        # runs host-side, so map it back or a Docker child's path would simply not resolve.
+        try:
+            from tools.credential_files import from_agent_visible_cache_path
+            host_spill = from_agent_visible_cache_path(str(spill))
+        except Exception:
+            host_spill = str(spill)
+        try:
+            text = Path(host_spill).read_text(encoding="utf-8", errors="replace")
+            if text:
+                return text
+        except OSError as exc:
+            logger.debug("Live transcript sidecar spill unreadable (%s): %s", host_spill, exc)
+    return entry.get("summary") or entry.get("result")
+
+
 def _redact(text: str) -> str:
     """Mask credentials (``force=True``: safety boundary, even when the global
     toggle is off); if the redactor is unavailable, withhold rather than leak."""
@@ -191,7 +219,10 @@ class LiveTranscriptWriter:
     def _on_complete(self, tool_name, preview, args, kwargs):
         dur = kwargs.get("duration_seconds")
         summary = kwargs.get("summary") or preview
-        _write_result_sidecar(self.path, kwargs.get("summary"))
+        # No result sidecar here. ``delegate_tool_child_run.emit_complete`` caps this event's
+        # ``summary`` at 500 chars, so writing it would freeze a prefix into the sidecar — and an
+        # answer short enough to survive that cap is already whole in the log (assistant lines
+        # elide only past ``_ASSISTANT_MAX``). ``finalize`` owns the sidecar.
         self.marker(_joined(
             f"status={kwargs.get('status', '?')}",
             f"duration={dur}s" if dur is not None else "",
@@ -221,8 +252,10 @@ class LiveTranscriptWriter:
 
     def finalize(self, entry: dict[str, Any]) -> None:
         """Terminal marker with exit-reason detail subagent.complete lacks."""
-        # A child that died before subagent.complete still has its answer here.
-        _write_result_sidecar(self.path, entry.get("summary") or entry.get("result"))
+        # The single write of the child's answer. finalize runs after the summary budget trim
+        # (delegate_tool_dispatch), so it is also the only hook still able to reach the untrimmed
+        # text — via the spill path the trim left on the entry.
+        _write_result_sidecar(self.path, _full_summary_text(entry))
         exit_reason = entry.get("exit_reason")
         self.marker(_joined(
             f"end status={entry.get('status', '?')}",

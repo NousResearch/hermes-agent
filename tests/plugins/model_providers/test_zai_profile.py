@@ -266,3 +266,37 @@ class TestZaiFullKwargsIntegration:
         expected = None if thinking is None else (
             {"type": thinking, "clear_thinking": False} if thinking == "enabled" else {"type": thinking})
         assert kwargs.get("extra_body", {}).get("thinking") == expected
+
+
+class TestZaiModelListing:
+    """``fetch_models`` must reach a real catalog on both z.ai wires."""
+
+    @staticmethod
+    def _listing(zai_profile, base_url):
+        import io
+        import json
+        from contextlib import contextmanager
+        from unittest.mock import patch
+
+        seen: list[str] = []
+        body = json.dumps({"data": [{"id": "glm-5.3", "type": "model"}]}).encode()
+
+        @contextmanager
+        def fake_open(req, timeout=None):
+            seen.append(req.full_url)
+            yield io.BytesIO(body)
+
+        with patch("hermes_cli.urllib_security.open_credentialed_url", side_effect=fake_open):
+            models = zai_profile.fetch_models(api_key="k", base_url=base_url)
+        return seen, models
+
+    def test_anthropic_endpoint_lists_under_v1(self, zai_profile):
+        # The bare /models there answers 200 with a 404 envelope -> empty catalog.
+        seen, models = self._listing(zai_profile, "https://api.z.ai/api/anthropic/")
+        assert seen == ["https://api.z.ai/api/anthropic/v1/models"]
+        assert models == ["glm-5.3"]
+
+    def test_openai_compatible_endpoint_keeps_models_path(self, zai_profile):
+        seen, models = self._listing(zai_profile, "https://api.z.ai/api/coding/paas/v4")
+        assert seen == ["https://api.z.ai/api/coding/paas/v4/models"]
+        assert models == ["glm-5.3"]

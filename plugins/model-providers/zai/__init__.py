@@ -6,6 +6,7 @@ GLM-4.5+ defaults to thinking ON, so ``reasoning_config`` is translated to
 
 import re
 from typing import Any
+from urllib.parse import urlsplit
 
 from agent import reasoning_effort as re_
 from providers import register_provider
@@ -44,6 +45,17 @@ def _glm_5_2_reasoning_effort(reasoning_config: dict | None, *, model: str | Non
 
 class ZaiProfile(ProviderProfile):
     """Z.AI / GLM — extra_body.thinking on/off + GLM-5.2 reasoning_effort."""
+
+    def fetch_models(
+        self, *, api_key: str | None = None, base_url: str | None = None, timeout: float = 8.0
+    ) -> list[str] | None:
+        # The Anthropic-compatible endpoint (``…/api/anthropic``) lists models at ``/v1/models``;
+        # its bare ``/models`` answers HTTP 200 with a 404 error envelope, which reads as an empty
+        # catalog and pins the picker to ``fallback_models``.
+        base = (base_url or "").strip().rstrip("/")
+        if urlsplit(base).path.endswith("/anthropic"):
+            base_url = f"{base}/v1"
+        return super().fetch_models(api_key=api_key, base_url=base_url, timeout=timeout)
 
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context

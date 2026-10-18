@@ -109,6 +109,6 @@ Not ready for staging migration. Schema creation is additive, but an existing-bo
 ## Final candidate state
 
 - Branch: `codex/mission-ownership-phase1`.
-- Implementation revision: to be filled with the hardening commit hash in a report-only follow-up commit.
+- Implementation revision: `84ef37eb2895edb311ce3d711d84c15c0a154eb0` (hardening commit; parent is the verified starting candidate below).
 - Parent: `672658051d8e694804417c700c232ac27e81e61d`.
-- Git status: to be recorded after the report-only follow-up commit.
+- Git status: clean after the report-only follow-up commit; that commit updates this report only and does not change implementation code.

@@ -4229,6 +4229,7 @@ from hermes_cli.kanban_db_boards import (
     list_boards,
     read_board_metadata,
     remove_board,
+    task_ids_on_any_board,
     write_board_metadata,
 )
 from hermes_cli.kanban_db_connect import (

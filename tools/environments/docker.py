@@ -33,6 +33,7 @@ from tools.environments.docker_egress import (
     _egress_reuse_fingerprint, check_docker_env_collisions, check_extra_args_collisions,
     check_forward_env_collisions, merge_egress_env,
 )
+from tools.environments.docker_ownership import hand_back_sandbox_files, handback_ids, reclaim_sandbox_files
 from tools.environments.path_utils import sanitize_task_id_for_path
 from tools.environments.remote_common import (
     bash_argv, client_env_with, load_hermes_env_vars, prepend_unset, resolve_passthrough_env, run_capture)
@@ -671,6 +672,9 @@ class DockerEnvironment(BaseEnvironment):
         self._init_env_values: dict[str, str] = {}
         self._workspace_dir: Optional[str] = None
         self._home_dir: Optional[str] = None
+        # (host_dir, container_path) of the Hermes-created sandbox bind mounts; owner handback targets.
+        self._sandbox_mounts: list[tuple[str, str]] = []
+        self._run_as_host_user = run_as_host_user
         logger.info("DockerEnvironment volumes: %s", volumes)
         if volumes is not None and not isinstance(volumes, list):
             logger.warning("docker_volumes config is not a list: %r", volumes)
@@ -749,6 +753,10 @@ class DockerEnvironment(BaseEnvironment):
             task_label, profile_name, egress_label, network)
         if not reused:
             self._container_id = self._docker_run(cwd)
+        # Container paths of every other bind mount: the owner handback never descends into them.
+        self._other_mount_paths = [
+            parsed[1] for parsed in map(_split_volume_spec, volume_args) if parsed]
+        reclaim_sandbox_files(self._docker_exe, self._container_id, self._sandbox_mounts, self._other_mount_paths)
 
         # Init-time env forwarding args seed the snapshot.
         self._init_env_args = self._build_init_env_args()
@@ -880,11 +888,13 @@ class DockerEnvironment(BaseEnvironment):
             sandbox = get_sandbox_dir() / "docker" / _sandbox_dir_name(task_id)
             self._home_dir = str(sandbox / "home")
             os.makedirs(self._home_dir, exist_ok=True)
-            writable_args += ["-v", f"{self._home_dir}:/root"]
+            self._sandbox_mounts = [(self._home_dir, "/root")]
             if mount_workspace:
                 self._workspace_dir = str(sandbox / "workspace")
                 os.makedirs(self._workspace_dir, exist_ok=True)
-                writable_args += ["-v", f"{self._workspace_dir}:/workspace"]
+                self._sandbox_mounts.append((self._workspace_dir, "/workspace"))
+            for host_dir, container_path in self._sandbox_mounts:
+                writable_args += ["-v", f"{host_dir}:{container_path}"]
         else:
             writable_args += ["--tmpfs", "/workspace:rw,exec,size=10g"] if mount_workspace else []
             writable_args += ["--tmpfs", "/home:rw,exec,size=1g", "--tmpfs", "/root:rw,exec,size=1g"]
@@ -1251,6 +1261,10 @@ class DockerEnvironment(BaseEnvironment):
         for d in (self._workspace_dir, self._home_dir):
             if d:
                 shutil.rmtree(d, ignore_errors=True)
+                if os.path.lexists(d):
+                    logger.warning(
+                        "Could not remove Docker sandbox dir %s (files the container wrote as root?); "
+                        "remove it with: sudo rm -rf %s", d, shlex.quote(d))
 
     def cleanup(self, *, force_remove: bool = False):
         """Tear down per persist mode. Persist mode (default) leaves the container RUNNING —
@@ -1281,8 +1295,15 @@ class DockerEnvironment(BaseEnvironment):
         # Capture what the worker needs — the thread can outlive ``self``.
         docker_exe = self._docker_exe
         log_id = container_id[:12]
+        sandbox_mounts = list(getattr(self, "_sandbox_mounts", []))
+        other_mounts = list(getattr(self, "_other_mount_paths", []))
+        runs_as_host_user = bool(getattr(self, "_run_as_host_user", False))
 
         def _do_cleanup() -> None:
+            # Root in the still-running container is the only non-sudo way to give its files back.
+            ids = handback_ids(docker_exe, runs_as_host_user) if sandbox_mounts else None
+            if ids is not None:
+                hand_back_sandbox_files(docker_exe, container_id, sandbox_mounts, other_mounts, ids)
             for argv, fail_msg in ((["stop", "-t", "10"], "docker stop %s timed out / failed: %s"),
                                    (["rm", "-f"], "docker rm -f %s failed: %s")):
                 try:

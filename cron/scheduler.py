@@ -517,8 +517,9 @@ from cron.jobs import (
 from cron import store_health
 from cron.execution_identity import enter_cron_execution, exit_cron_execution
 from cron.executions import (
-    _TERMINAL_STATES, HANDOFF_ADOPTION_GRACE_SECONDS, create_execution, finish_execution,
-    get_execution, mark_execution_handoff_pending, mark_execution_running,
+    _TERMINAL_STATES, HANDOFF_ADOPTION_GRACE_SECONDS, create_execution,
+    discard_unstarted_execution, finish_execution, get_execution,
+    mark_execution_handoff_pending, mark_execution_running,
     recover_interrupted_executions, settle_unstarted_execution, terminalize_dead_owner)
 from cron.scheduler_liveness import ExecutionProgressStamper, _inactivity_watchdog_loop
 from cron.scheduler_bookkeeping import _classify_delivery_outcome
@@ -4241,8 +4242,10 @@ def _process_due_job(job: dict, adapters, loop, verbose: bool) -> bool:
             job["execution_id"], job["id"], f"Fire claim failed: {type(exc).__name__}: {exc}")
         raise
     if not claimed:
-        finish_execution(
-            job["execution_id"], success=False, error="Fire claim lost; execution was not started.")
+        if not discard_unstarted_execution(job["execution_id"]):
+            logger.warning(
+                "Job '%s' lost its fire claim but its unstarted execution row "
+                "could not be discarded", job.get("name", job["id"]))
         return True
     # CAS returns the persisted record; bool fallback only for older test doubles.
     claimed_job = dict(claimed) if isinstance(claimed, dict) else dict(job)

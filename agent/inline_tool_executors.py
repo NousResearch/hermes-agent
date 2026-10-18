@@ -14,7 +14,8 @@ from dataclasses import dataclass
 from importlib import import_module
 from typing import Any, Callable, Dict, Optional, Tuple
 
-from tools.arg_coercion import coerce_tool_args
+from tools.arg_coercion import ToolArgUnparseableError, coerce_tool_args, unparseable_container_message
+from tools.registry import tool_error
 
 
 def tool_hook_ids(agent, effective_task_id: str, tool_call_id: Optional[str]) -> dict[str, str]:
@@ -304,7 +305,13 @@ _RAW_INLINE_TOOL_EXECUTORS: dict[str, InlineToolExecutor] = {
 
 def _coerced(name: str, executor: InlineToolExecutor) -> InlineToolExecutor:
     def _exec(agent, args: dict, ctx: InlineToolContext) -> Any:
-        return executor(agent, coerce_tool_args(name, args), ctx)
+        try:
+            coerced = coerce_tool_args(name, args)
+        except ToolArgUnparseableError as exc:
+            # Corrupt JSON-encoded container arg: refuse with the standard JSON
+            # error string (inline executors return tool-result JSON strings).
+            return tool_error(unparseable_container_message(exc))
+        return executor(agent, coerced, ctx)
     return _exec
 
 

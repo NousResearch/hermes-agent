@@ -6,17 +6,23 @@ coerce_tool_args() fixes these type mismatches by comparing argument values
 against the tool's JSON Schema before dispatch.
 """
 
+import json
 from unittest.mock import patch
+
+import pytest
 
 import model_tools
 from tools.arg_coercion import (
     coerce_tool_args,
+    ToolArgUnparseableError,
+    unparseable_container_message,
     _coerce_value,
     _coerce_number,
     _coerce_boolean,
     _schema_accepts_kind,
     _normalize_json_strings_for_schema,
 )
+from tools.registry import registry
 
 
 # ── Low-level coercion helpers ────────────────────────────────────────────
@@ -109,6 +115,98 @@ class TestCoerceToolArgs:
                 "properties": properties,
             },
         }
+
+    def test_truncated_array_string_is_refused(self):
+        """A JSON-encoded array string that fails to parse raises instead of wrapping.
+
+        Regression: a truncated ``operations`` value was previously wrapped into a
+        one-element list, so the tool failed with a misleading inner error and the
+        model burned turns recovering.
+        """
+        schema = self._mock_schema({"operations": {"type": "array"}})
+        truncated = '["patch", {"action": "add", "content": "cut off mid-str'
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            with pytest.raises(ToolArgUnparseableError) as exc_info:
+                coerce_tool_args("test_tool", {"operations": truncated})
+        exc = exc_info.value
+        assert exc.tool_name == "test_tool"
+        assert exc.param == "operations"
+        assert exc.expected_kind == "array"
+        assert "Unterminated string" in exc.detail
+        assert exc.preview == truncated[:120]
+
+    def test_truncated_object_string_is_refused(self):
+        """The object path refuses too (it used to hand the raw string to the tool)."""
+        schema = self._mock_schema({"payload": {"type": "object"}})
+        corrupt = '{"path": "C:\\new", "mode": "add'
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            with pytest.raises(ToolArgUnparseableError) as exc_info:
+                coerce_tool_args("test_tool", {"payload": corrupt})
+        exc = exc_info.value
+        assert exc.param == "payload"
+        assert exc.expected_kind == "object"
+        assert "Unterminated string" in exc.detail
+
+    def test_invalid_escape_in_array_string_is_refused(self):
+        schema = self._mock_schema({"operations": {"type": "array"}})
+        corrupt = r'["read_file \qhome", "x"]'
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            with pytest.raises(ToolArgUnparseableError) as exc_info:
+                coerce_tool_args("test_tool", {"operations": corrupt})
+        assert "Invalid \\escape" in exc_info.value.detail
+
+    def test_bare_plain_string_still_wrapped(self):
+        """Regression guard: plain-text (non-bracket) value for an array param wraps."""
+        schema = self._mock_schema({"tags": {"type": "array"}})
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            assert coerce_tool_args("test_tool", {"tags": "urgent"}) == {"tags": ["urgent"]}
+
+    def test_wrong_container_type_not_consumed(self):
+        """Regression guard: valid JSON of the WRONG container type is not coerced.
+
+        Object param holding a JSON array string: unchanged pass-through (the
+        original behaviour). Array param holding a JSON object string: the array
+        branch keeps its pre-existing bare-value wrapping (``[value]``) — only
+        bracket-prefixed *unparseable* strings are refused. See report note.
+        """
+        with patch("tools.arg_coercion.registry.get_schema",
+                   return_value=self._mock_schema({"payload": {"type": "object"}})):
+            assert coerce_tool_args("test_tool", {"payload": '[1, 2]'}) == {"payload": '[1, 2]'}
+        with patch("tools.arg_coercion.registry.get_schema",
+                   return_value=self._mock_schema({"items": {"type": "array"}})):
+            assert coerce_tool_args("test_tool", {"items": '{"a": 1}'}) == {"items": ['{"a": 1}']}
+
+    def test_union_array_null_truncated_string_is_refused(self):
+        """Union coverage: anyOf [array, null] refuses a truncated array string."""
+        schema = self._mock_schema({"items": {"anyOf": [{"type": "array"}, {"type": "null"}]}})
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            with pytest.raises(ToolArgUnparseableError) as exc_info:
+                coerce_tool_args("test_tool", {"items": '["a", "b'})
+        assert exc_info.value.expected_kind == "array"
+
+    def test_union_array_string_keeps_non_json_text(self):
+        """Union coverage: anyOf [array, string] keeps raw bracket text — the string
+        branch is schema-valid, so refusing it would break legitimate calls."""
+        schema = self._mock_schema({"tags": {"anyOf": [{"type": "array"}, {"type": "string"}]}})
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            result = coerce_tool_args("test_tool", {"tags": "[INFO] something"})
+        assert result["tags"] == "[INFO] something"
+
+    def test_non_container_param_untouched(self):
+        """Regression guard: a ``string`` param keeps a bracket-prefixed value verbatim."""
+        schema = self._mock_schema({"command": {"type": "string"}})
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            args = {"command": "[INFO] something"}
+            assert coerce_tool_args("test_tool", args) == args
+
+    def test_nested_corrupt_string_still_passes_through(self):
+        """Documented limitation: corruption nested inside an already-parsed
+        container is not detected (no refusal), so the tool still sees it."""
+        schema = self._mock_schema({"items": {"type": "array", "items": {"type": "object",
+                                                                        "properties": {"note": {"type": "string"}}}}})
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            result = coerce_tool_args("test_tool", {"items": ['{"note": "cut off']})
+            assert result["items"] == ['{"note": "cut off']
 
     def test_coerces_integer_arg(self):
         schema = self._mock_schema({"limit": {"type": "integer"}})
@@ -394,3 +492,110 @@ class TestCoerceToolArgsNested:
         args = {"todos": [_json.dumps({"id": "1", "content": "x", "status": "pending"})]}
         result = coerce_tool_args("todo_list", args)
         assert result["todos"][0] == {"id": "1", "content": "x", "status": "pending"}
+
+
+# ── Dispatch-level refusal of unparseable container args ───────────────────
+
+_REFUSAL_SCHEMA = {
+    "name": "probe_arg_refusal",
+    "description": "test probe",
+    "parameters": {
+        "type": "object",
+        "properties": {"operations": {"type": "array", "items": {"type": "object"}}},
+    },
+}
+_TRUNCATED_OPERATIONS = '[{"action": "add", "content": "the stream was cut he'
+
+
+class TestDispatchRefusal:
+    """ToolArgUnparseableError is caught per call site and returned as a
+    model-actionable tool error; the handler is never invoked."""
+
+    def test_handle_function_call_refuses_and_fires_post_tool_call(self):
+        invocations = []
+        hook_calls = []
+
+        def handler(args, **ctx):
+            invocations.append(args)
+            return json.dumps({"ok": True})
+
+        registry.register("probe_arg_refusal", "test", _REFUSAL_SCHEMA, handler)
+        try:
+            with patch("hermes_cli.lifecycle.has_hook", return_value=True), \
+                 patch("hermes_cli.lifecycle.invoke_hook",
+                       side_effect=lambda name, **kw: hook_calls.append((name, kw)) or []):
+                result = model_tools.handle_function_call(
+                    "probe_arg_refusal",
+                    {"operations": _TRUNCATED_OPERATIONS},
+                    tool_call_id="call-refusal",
+                    skip_pre_tool_call_hook=True,
+                    skip_tool_request_middleware=True,
+                    skip_tool_execution_middleware=True,
+                )
+            # Control: the same stub with VALID args must dispatch — otherwise the
+            # "handler not invoked" assertion below would be vacuous.
+            with patch("hermes_cli.lifecycle.has_hook", return_value=False):
+                ok_result = model_tools.handle_function_call(
+                    "probe_arg_refusal",
+                    {"operations": [{"action": "add"}]},
+                    skip_pre_tool_call_hook=True,
+                    skip_tool_request_middleware=True,
+                    skip_tool_execution_middleware=True,
+                )
+        finally:
+            registry.deregister("probe_arg_refusal")
+
+        assert invocations == [{"operations": [{"action": "add"}]}], \
+            "handler must not run for the refused call but must run for the control"
+        assert json.loads(ok_result) == {"ok": True}
+
+        error = json.loads(result)["error"]
+        assert "Re-issue" in error
+        assert "'operations'" in error
+        assert "truncated or corrupt JSON-encoded array" in error
+
+        post = [kw for name, kw in hook_calls if name == "post_tool_call"]
+        assert post, "post_tool_call must still fire on the coercion-failure path"
+        assert post[-1]["tool_name"] == "probe_arg_refusal"
+        assert post[-1]["status"] == "error"
+        assert "Re-issue" in post[-1]["result"]
+        assert post[-1]["tool_call_id"] == "call-refusal"
+
+    def test_inline_executor_wrapper_surfaces_error_string(self):
+        from agent.inline_tool_executors import InlineToolContext, _coerced
+
+        invocations = []
+
+        def fake_executor(agent, args, ctx):
+            invocations.append(args)
+            return json.dumps({"ok": True})
+
+        wrapped = _coerced("probe_arg_refusal", fake_executor)
+        with patch("tools.arg_coercion.registry.get_schema", return_value=_REFUSAL_SCHEMA):
+            result = wrapped(None, {"operations": _TRUNCATED_OPERATIONS},
+                             InlineToolContext(effective_task_id="task-1"))
+        assert invocations == []
+        assert "Re-issue" in json.loads(result)["error"]
+
+    def test_tool_search_validation_marks_candidate_invalid(self):
+        from tools.tool_search_validation import validate_deferred_call_args
+
+        with patch("tools.arg_coercion.registry.get_schema", return_value=_REFUSAL_SCHEMA):
+            error = validate_deferred_call_args(
+                "probe_arg_refusal", {"operations": _TRUNCATED_OPERATIONS})
+        assert error is not None, "corrupt container string must invalidate the candidate"
+        parsed = json.loads(error)
+        assert "Re-issue" in parsed["error"]
+        assert "The tool was NOT invoked." in parsed["error"]
+        assert parsed["constraint"] == "unparseable-json-string"
+        assert parsed["path"] == "operations"
+
+    def test_valid_container_string_still_validates_clean(self):
+        """Control for the validator: a parseable JSON-encoded array passes through
+        coercion and is not flagged by the refusal path."""
+        from tools.tool_search_validation import validate_deferred_call_args
+
+        with patch("tools.arg_coercion.registry.get_schema", return_value=_REFUSAL_SCHEMA):
+            error = validate_deferred_call_args(
+                "probe_arg_refusal", {"operations": '[{"action": "add"}]'})
+        assert error is None or "unparseable-json-string" not in error

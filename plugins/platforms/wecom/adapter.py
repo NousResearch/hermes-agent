@@ -110,6 +110,7 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
     MAX_STREAM_CONTENT_LENGTH = MAX_STREAM_CONTENT_LENGTH
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
     _SPLIT_THRESHOLD = 3900  # chunks near the 4000-char client split are almost certainly continued
+    serial_receive_loop = True  # _read_events awaits each frame before reading the next
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WECOM)

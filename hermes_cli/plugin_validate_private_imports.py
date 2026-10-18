@@ -56,6 +56,10 @@ _PUBLIC = frozenset({
     "hermes_cli.gateway_setup_wizard:offer_home_channel", "hermes_cli.gateway_setup_wizard:save_env_values",
     "hermes_cli.gateway_setup_wizard:prompt_csv", "hermes_cli.setup:prompt", "hermes_cli.setup:prompt_choice",
     "hermes_cli.setup:prompt_yes_no", "hermes_cli.cli_output",
+    # plugins/index.md § Read the skill catalog
+    "tools.skills_tool:find_all_skills", "tools.skills_tool:sort_skills", "tools.skills_tool:skill_search_dirs",
+    "tools.skills_tool:locate_skill", "tools.skills_tool:skill_lookup_path_error",
+    "tools.skills_sync:dir_hash", "tools.skill_usage:read_skill_name",
 })
 
 _SHOWN = 10

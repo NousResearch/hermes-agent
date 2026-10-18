@@ -1,10 +1,19 @@
 import { describe, expect, it } from 'vitest'
 
+import { Box } from '@/lib/icons'
+
 import { CONFIG_SUBPAGES, configSubpageForField } from './config-subpages'
 import { sectionFieldEntries } from './helpers'
 import { movedSettingsTabRedirect } from './moved-tabs'
+import { settingsSubpageIcon } from './subpages'
 
 describe('Subagents settings destination', () => {
+  it('distinguishes Subagents from Mixture of Agents in navigation', () => {
+    const subagents = CONFIG_SUBPAGES.model.find(page => page.id === 'delegation')!
+    const moa = CONFIG_SUBPAGES.model.find(page => page.id === 'moa')!
+
+    expect(settingsSubpageIcon(subagents, Box)).not.toBe(settingsSubpageIcon(moa, Box))
+  })
   it('moves every delegation field, including config-present fields, into Model only', () => {
     const config = {
       delegation: {

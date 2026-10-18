@@ -1,7 +1,7 @@
 import type { ModelOptionProvider } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
-import { useMemo, useState } from 'react'
+import { type ReactNode, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -15,6 +15,7 @@ import { $customModels, customModelSlug, withCustomModels } from '@/store/custom
 
 import { CONTROL_TEXT } from './constants'
 import { ModelSelect } from './model-select'
+import { ListRow } from './primitives'
 
 export interface DelegationModelProviderValue {
   model: string
@@ -34,6 +35,7 @@ interface DelegationModelProviderFieldProps {
   model: string
   provider: string
   baseUrl?: string
+  modelDescription?: ReactNode
   scope?: ProfileScope
   onChange: (next: DelegationModelProviderValue) => void
 }
@@ -45,7 +47,14 @@ export function DelegationModelProviderField(props: DelegationModelProviderField
   return <DelegationRouteEditor key={identity} {...props} />
 }
 
-function DelegationRouteEditor({ model, provider, baseUrl = '', scope, onChange }: DelegationModelProviderFieldProps) {
+function DelegationRouteEditor({
+  model,
+  provider,
+  baseUrl = '',
+  modelDescription,
+  scope,
+  onChange
+}: DelegationModelProviderFieldProps) {
   const { t } = useI18n()
   const c = t.settings.config
   // Match tools/delegate_tool_config.py: native SDK routes ignore a direct URL.
@@ -138,82 +147,99 @@ function DelegationRouteEditor({ model, provider, baseUrl = '', scope, onChange 
   }
 
   return (
-    <div className="grid gap-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <Select onValueChange={chooseProvider} value={mode}>
-          <SelectTrigger aria-label={c.delegationProviderSelectLabel} className={cn('min-w-48 flex-1', CONTROL_TEXT)}>
-            <SelectValue placeholder={t.settings.model.provider} />
-          </SelectTrigger>
-          <SelectContent>
-            {hasDirectEndpoint && <SelectItem value={DIRECT_VALUE}>{c.delegationDirect}</SelectItem>}
-            <SelectItem value={INHERIT_VALUE}>{c.delegationInherit}</SelectItem>
-            <SelectItem value={MODEL_ONLY_VALUE}>{c.delegationModelOnly}</SelectItem>
-            {displayProviders.map(p => (
-              <SelectItem key={p.slug} value={providerItem(p.slug)}>
-                {p.name}
-              </SelectItem>
-            ))}
-            <SelectItem value={CUSTOM_PROVIDER_VALUE}>{c.delegationCustomProvider}</SelectItem>
-          </SelectContent>
-        </Select>
-        {!inherit && !useParentModel && (
-          <ModelSelect
-            aria-label={c.delegationModelSelectLabel}
-            className="min-w-56 flex-1"
-            models={direct || modelOnly || manualProvider ? [] : (selectedProvider?.models ?? [])}
-            onValueChange={setDraftModel}
-            provider={direct || modelOnly || manualProvider ? undefined : selectedProvider}
-            providerSlug={modelOnly || direct || manualProvider ? '' : draftProvider}
-            value={draftModel}
-          />
-        )}
-      </div>
-      {manualProvider && (
-        <Input
-          aria-label={c.delegationCustomProviderLabel}
-          onChange={event => setDraftProvider(event.target.value)}
-          placeholder="custom:provider"
-          value={draftProvider}
+    <div className="grid gap-1">
+      <ListRow
+        action={
+          <div className="grid w-full min-w-0 max-w-full @2xl:w-72 gap-2">
+            <Select onValueChange={chooseProvider} value={mode}>
+              <SelectTrigger
+                aria-label={c.delegationProviderSelectLabel}
+                className={cn(CONTROL_TEXT, '[&_[data-slot=select-value]]:truncate')}
+              >
+                <SelectValue placeholder={t.settings.model.provider} />
+              </SelectTrigger>
+              <SelectContent>
+                {hasDirectEndpoint && <SelectItem value={DIRECT_VALUE}>{c.delegationDirect}</SelectItem>}
+                <SelectItem value={INHERIT_VALUE}>{c.delegationInherit}</SelectItem>
+                <SelectItem value={MODEL_ONLY_VALUE}>{c.delegationModelOnly}</SelectItem>
+                {displayProviders.map(p => (
+                  <SelectItem key={p.slug} value={providerItem(p.slug)}>
+                    {p.name}
+                  </SelectItem>
+                ))}
+                <SelectItem value={CUSTOM_PROVIDER_VALUE}>{c.delegationCustomProvider}</SelectItem>
+              </SelectContent>
+            </Select>
+            {manualProvider && (
+              <Input
+                aria-label={c.delegationCustomProviderLabel}
+                onChange={event => setDraftProvider(event.target.value)}
+                placeholder="custom:provider"
+                value={draftProvider}
+              />
+            )}
+          </div>
+        }
+        description={inherit || useParentModel ? modelDescription : undefined}
+        title={c.delegationProviderSelectLabel}
+      />
+      {!inherit && !useParentModel && (
+        <ListRow
+          action={
+            <ModelSelect
+              aria-label={c.delegationModelSelectLabel}
+              className="w-full min-w-0 max-w-full @2xl:w-72 [&_[data-slot=select-value]]:truncate"
+              models={direct || modelOnly || manualProvider ? [] : (selectedProvider?.models ?? [])}
+              onValueChange={setDraftModel}
+              provider={direct || modelOnly || manualProvider ? undefined : selectedProvider}
+              providerSlug={modelOnly || direct || manualProvider ? '' : draftProvider}
+              value={draftModel}
+            />
+          }
+          description={modelDescription}
+          title={c.delegationModelSelectLabel}
         />
       )}
-      {!inherit && !modelOnly && (
-        <label className="flex items-center gap-2 text-xs text-muted-foreground">
-          <Checkbox checked={useParentModel} onCheckedChange={checked => setUseParentModel(checked === true)} />
-          {c.delegationParentModel}
-        </label>
-      )}
-      {useParentModel && <p className="text-xs text-muted-foreground">{c.delegationParentModelWarning}</p>}
-      {hasDirectEndpoint && (
-        <p className="text-xs text-muted-foreground">{direct ? c.delegationDirectActive : c.delegationDirectClear}</p>
-      )}
-      {modelOptions.isError && (
-        <div className="flex flex-wrap items-center gap-2" role="status">
-          <p className="text-xs text-muted-foreground">{c.delegationCatalogFailed}</p>
-          <Button
-            disabled={modelOptions.isFetching}
-            onClick={() => void modelOptions.refetch()}
-            size="xs"
-            variant="secondary"
-          >
-            {t.common.retry}
-          </Button>
-        </div>
-      )}
-      {pending && (
-        <div className="flex items-center gap-2">
-          <Button
-            disabled={!changed || !validProvider || !validModel}
-            onClick={() => onChange({ model: nextModel, provider: nextProvider, resetDirectEndpoint })}
-            size="xs"
-          >
-            {t.common.apply}
-          </Button>
-          <Button onClick={reset} size="xs" variant="text">
-            {t.common.cancel}
-          </Button>
-          <span className="text-xs text-muted-foreground">{c.delegationDraftHint}</span>
-        </div>
-      )}
+      <div className="grid justify-items-end gap-3 pb-3 text-right">
+        {!inherit && !modelOnly && (
+          <label className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Checkbox checked={useParentModel} onCheckedChange={checked => setUseParentModel(checked === true)} />
+            {c.delegationParentModel}
+          </label>
+        )}
+        {useParentModel && <p className="text-xs text-muted-foreground">{c.delegationParentModelWarning}</p>}
+        {hasDirectEndpoint && (
+          <p className="text-xs text-muted-foreground">{direct ? c.delegationDirectActive : c.delegationDirectClear}</p>
+        )}
+        {modelOptions.isError && (
+          <div className="flex flex-wrap items-center gap-2" role="status">
+            <p className="text-xs text-muted-foreground">{c.delegationCatalogFailed}</p>
+            <Button
+              disabled={modelOptions.isFetching}
+              onClick={() => void modelOptions.refetch()}
+              size="xs"
+              variant="secondary"
+            >
+              {t.common.retry}
+            </Button>
+          </div>
+        )}
+        {pending && (
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <span className="text-xs text-muted-foreground">{c.delegationDraftHint}</span>
+            <Button onClick={reset} size="sm" variant="text">
+              {t.common.cancel}
+            </Button>
+            <Button
+              disabled={!changed || !validProvider || !validModel}
+              onClick={() => onChange({ model: nextModel, provider: nextProvider, resetDirectEndpoint })}
+              size="sm"
+            >
+              {t.common.apply}
+            </Button>
+          </div>
+        )}
+      </div>
     </div>
   )
 }

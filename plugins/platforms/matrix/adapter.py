@@ -6,6 +6,10 @@ Env vars (config.yaml ``matrix:`` keys alias several — env wins):
   MATRIX_E2EE_MODE off|optional|required (legacy MATRIX_ENCRYPTION=true => required);
   MATRIX_DEVICE_ID (stable E2EE device), MATRIX_RECOVERY_KEY (cross-signing after key rotation),
   MATRIX_RECOVERY_KEY_OUTPUT_FILE (one-time 0600 write of a bootstrapped key), MATRIX_PROXY;
+  MATRIX_REFRESH_TOKEN (refresh token for MAS / matrix.org, rotated on use);
+  MATRIX_OIDC_CLIENT_ID (public client id for MAS OAuth2 token refresh);
+  MATRIX_OAUTH_TOKEN_ENDPOINT (override for MAS OAuth2 token_endpoint, skips discovery);
+  MATRIX_OIDC_ISSUER (override for OIDC issuer URL, skips homeserver well-known);
   MATRIX_ALLOWED_USERS, MATRIX_ALLOWED_ROOMS (whitelist; DMs exempt), MATRIX_IGNORE_USER_PATTERNS
   (regexes for bridge ghosts), MATRIX_HOME_ROOM (cron delivery), MATRIX_REACTIONS (default true);
   MATRIX_REQUIRE_MENTION (default true), MATRIX_THREAD_REQUIRE_MENTION, MATRIX_FREE_RESPONSE_ROOMS,
@@ -237,6 +241,19 @@ def _is_permanent_matrix_auth_error(exc: BaseException) -> bool:
         return True
     status = getattr(exc, "http_status", None)
     return isinstance(status, int) and status in (401, 403)
+
+
+def _is_m_unknown_token_error(exc: Exception) -> bool:
+    """Return True if *exc* is a Matrix M_UNKNOWN_TOKEN / MUnknownToken error."""
+    try:
+        from mautrix.errors import MatrixInvalidToken  # type: ignore
+
+        if isinstance(exc, MatrixInvalidToken):
+            return True
+    except ImportError:
+        pass
+    text = str(exc).lower()
+    return "m_unknown_token" in text or "unknown_token" in text or getattr(exc, "errcode", "") == "M_UNKNOWN_TOKEN"
 
 
 def _split_reply_fallback(body: str) -> tuple[str, str]:
@@ -791,6 +808,15 @@ def ensure_matrix_deps() -> bool:
     return True
 
 
+# Consecutive access-token refresh failures before the adapter gives up. MAS
+# refresh tokens are single-use; a server that keeps rejecting freshly-issued
+# tokens must never drive an unbounded refresh/rotate loop (#94096 review).
+# A SUCCESSFUL refresh resets the counter, so a healthy chain rotating every
+# ~4h never trips the cap (32h live repro showed a lifetime cap exhausting
+# a valid chain).
+_MAX_REFRESH_ATTEMPTS = 8
+
+
 class MatrixAdapter(BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
 
@@ -834,6 +860,30 @@ class MatrixAdapter(BasePlatformAdapter):
         self._encryption: bool = self._e2ee_mode != "off"
         self._device_id: str = config.extra.get("device_id", "") or _get_scoped_secret("MATRIX_DEVICE_ID", "").strip()
         self._device_id_unverified: bool = False
+        self._refresh_token: str = config.extra.get("refresh_token", "") or _get_scoped_secret(
+            "MATRIX_REFRESH_TOKEN", ""
+        ).strip()
+        self._refresh_lock: asyncio.Lock = asyncio.Lock()
+        # MAS OAuth2 refresh state (#94096 v2): OIDC discovery cache + bounded
+        # total refresh attempts so a rejecting server can't drive an
+        # endless refresh/rotate loop. Overrides let operators point
+        # directly at the OAuth2 issuer when the homeserver has no
+        # machine-readable well-known pointer (matrix.org case).
+        self._oidc_client_id: str = str(
+            config.extra.get("oidc_client_id", "")
+            or _get_scoped_secret("MATRIX_OIDC_CLIENT_ID", "").strip()
+        )
+        self._oidc_token_endpoint: Optional[str] = None
+        self._oidc_token_endpoint_override: str = str(
+            config.extra.get("oauth_token_endpoint", "")
+            or _get_scoped_secret("MATRIX_OAUTH_TOKEN_ENDPOINT", "").strip()
+        )
+        self._oidc_issuer_override: str = str(
+            config.extra.get("oidc_issuer", "")
+            or _get_scoped_secret("MATRIX_OIDC_ISSUER", "").strip()
+        )
+        self._oidc_hint_logged: bool = False
+        self._refresh_attempts: int = 0
         self._client: Any = None  # mautrix.client.Client
         self._crypto_db: Any = None  # mautrix.util.async_db.Database
         self._store_dir: Optional[Path] = None  # pinned per profile in connect()
@@ -1109,6 +1159,325 @@ class MatrixAdapter(BasePlatformAdapter):
         await api.session.close()
         return False
 
+    async def _refresh_access_token(self, api, reason: str = "") -> bool:
+        """Refresh the Matrix access token using the stored refresh token.
+
+        Two paths, tried in order:
+
+        1. Legacy ``POST /_matrix/client/v3/refresh`` (native MSC2918
+           homeservers - self-hosted Synapse with short-lived session
+           tokens).
+        2. MAS / OAuth2 deployments (matrix.org): those tokens are NOT
+           honored by the legacy endpoint (Synapse only knows tokens it
+           issued itself - live-verified in #94096), so we fall back to the
+           OAuth2 token endpoint from OIDC discovery with
+           ``grant_type=refresh_token`` and the public client id from
+           ``MATRIX_OIDC_CLIENT_ID``.
+
+        On success updates ``api.token``, ``self._access_token`` and rotates
+        ``self._refresh_token`` in memory (best-effort). Attempts are
+        bounded: after ``_MAX_REFRESH_ATTEMPTS`` consecutive failures the
+        helper gives up so a rejecting server can never drive an endless
+        refresh/rotate loop; a successful refresh resets the counter, so a
+        healthy chain rotating every few hours never trips the cap.
+        """
+        if not self._refresh_token or not self._homeserver:
+            return False
+        async with self._refresh_lock:
+            # Re-check after acquiring lock (another task may have refreshed)
+            if not self._refresh_token:
+                return False
+            if self._refresh_attempts >= _MAX_REFRESH_ATTEMPTS:
+                logger.error(
+                    "Matrix: giving up token refresh after %d consecutive "
+                    "failures (server keeps rejecting); restart required.",
+                    self._refresh_attempts,
+                )
+                return False
+            self._refresh_attempts += 1
+
+            # --- Path 1: legacy native refresh -------------------------
+            try:
+                resp = await api.request(
+                    "POST", "/_matrix/client/v3/refresh", {"refresh_token": self._refresh_token}
+                )
+                if self._apply_refresh_response(api, resp):
+                    logger.info(
+                        "Matrix: refreshed access token via legacy refresh "
+                        "(reason=%s)", reason or "unknown",
+                    )
+                    return True
+                return False
+            except Exception as legacy_exc:
+                if not _is_m_unknown_token_error(legacy_exc):
+                    logger.warning("Matrix: legacy refresh failed: %s", legacy_exc)
+                    return False
+                logger.info(
+                    "Matrix: legacy refresh rejected (%s) - trying MAS "
+                    "OAuth2 token endpoint", legacy_exc,
+                )
+
+            # --- Path 2: MAS OAuth2 token endpoint ---------------------
+            return await self._try_mas_oauth_refresh(api, reason=reason)
+
+    def _apply_refresh_response(self, api, resp) -> bool:
+        """Apply an access-token refresh response (dict or mautrix object)."""
+        new_access = None
+        new_refresh = None
+        if isinstance(resp, dict):
+            new_access = resp.get("access_token")
+            new_refresh = resp.get("refresh_token")
+        else:
+            new_access = getattr(resp, "access_token", None)
+            # mautrix LoginResponse stores unknown fields in unrecognized_
+            new_refresh = getattr(resp, "refresh_token", None)
+            if not new_refresh:
+                unrec = getattr(resp, "unrecognized_", None)
+                if isinstance(unrec, dict):
+                    new_refresh = unrec.get("refresh_token")
+        if not new_access:
+            return False
+        self._access_token = new_access
+        # A successful refresh proves the chain is valid: reset the
+        # consecutive-failure counter so the cap measures a BROKEN chain,
+        # not the process lifetime. MAS rotates tokens every ~4h — a
+        # lifetime cap would exhaust in ~32h and permanently kill a
+        # healthy refresh chain (live 32h repro in #94096 review).
+        self._refresh_attempts = 0
+        try:
+            api.token = new_access
+        except Exception:
+            pass
+        if new_refresh and new_refresh != self._refresh_token:
+            self._refresh_token = new_refresh
+        return True
+
+    async def _try_mas_oauth_refresh(self, api, reason: str = "") -> bool:
+        """MAS/OAuth2 refresh via OIDC discovery (matrix.org et al).
+
+        Three resolution modes, tried in order:
+
+        1. **Direct token-endpoint override** (``MATRIX_OAUTH_TOKEN_ENDPOINT``,
+           ``config.extra.oauth_token_endpoint``): skip discovery entirely.
+        2. **Issuer override** (``MATRIX_OIDC_ISSUER``): discover at
+           ``<issuer>/.well-known/openid-configuration`` (matrix.org: the
+           homeserver ``matrix-client.matrix.org`` has no well-known, the
+           issuer ``account.matrix.org`` does).
+        3. **Default discovery** at ``<homeserver>/.well-known/openid-configuration``,
+           falling back to ``<homeserver>/.well-known/matrix/client`` for the
+           MSC2965 ``m.oauth_metadata.issuer`` pointer when the OIDC doc
+           itself 404s or is not JSON.
+
+        Then POSTs ``grant_type=refresh_token`` with the public client id
+        from ``MATRIX_OIDC_CLIENT_ID``. Rotates the refresh token per
+        response. Honors ``MATRIX_PROXY`` via a temporary ProxyHandler
+        (SOCKS is not supported here; use an HTTP(S) proxy URL).
+        """
+        import json as _json
+        import urllib.parse
+        import urllib.request
+
+        client_id = (
+            getattr(self, "_oidc_client_id", "")
+            or _get_scoped_secret("MATRIX_OIDC_CLIENT_ID", "")
+            or os.getenv("MATRIX_OIDC_CLIENT_ID", "")
+        ).strip()
+        if not client_id:
+            self._log_oauth_hint(
+                "Matrix: MAS OAuth2 refresh needs MATRIX_OIDC_CLIENT_ID "
+                "(public client id) to be set - cannot refresh."
+            )
+            return False
+
+        token_endpoint, discovery_probed = self._resolve_oauth_token_endpoint()
+        if not token_endpoint:
+            self._log_oauth_hint(
+                "Matrix: could not resolve the MAS OAuth2 token_endpoint - "
+                "set MATRIX_OAUTH_TOKEN_ENDPOINT (e.g. "
+                "https://account.matrix.org/oauth2/token) or MATRIX_OIDC_ISSUER, "
+                "and ensure MATRIX_HOMESERVER is correct."
+            )
+            return False
+
+        token_endpoint = token_endpoint.rstrip("/")
+        self._oidc_token_endpoint = token_endpoint
+        logger.debug(
+            "Matrix: resolved MAS OAuth2 token_endpoint=%s "
+            "(discovery_probed=%s)", token_endpoint, discovery_probed,
+        )
+
+        def _post_token_request():
+            data = urllib.parse.urlencode({
+                "grant_type": "refresh_token",
+                "refresh_token": self._refresh_token,
+                "client_id": client_id,
+            }).encode()
+            return self._mas_urlopen(
+                token_endpoint,
+                timeout=15,
+                data=data,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                method="POST",
+            )
+
+        try:
+            doc = await asyncio.to_thread(_post_token_request)
+        except Exception as exc:
+            body = str(exc)
+            if "invalid_grant" in body.lower() or _is_m_unknown_token_error(exc):
+                logger.error("Matrix: MAS refresh token rejected: %s", exc)
+            else:
+                logger.warning("Matrix: MAS OAuth2 refresh failed: %s", exc)
+            return False
+        try:
+            payload = _json.loads(doc.read().decode("utf-8", errors="replace"))
+        except Exception as exc:
+            logger.warning("Matrix: MAS token response was not JSON: %s", exc)
+            return False
+
+        if self._apply_refresh_response(api, payload):
+            logger.info(
+                "Matrix: refreshed access token via MAS OAuth2 endpoint "
+                "%s (reason=%s)", token_endpoint, reason or "unknown",
+            )
+            return True
+        return False
+
+    def _mas_urlopen(self, url, *, timeout, data=None, headers=None, method=None):
+        """urllib fetch used by the whole MAS refresh path (discovery +
+        token POST), honoring ``MATRIX_PROXY`` (HTTP/HTTPS) uniformly.
+
+        SOCKS proxies are logged-and-ignored here (the aiohttp transport
+        owns SOCKS for adapter traffic; this helper covers only the
+        one-shot OAuth2 requests).
+        """
+        import urllib.request
+
+        proxy_url = (_get_scoped_secret("MATRIX_PROXY", "") or os.getenv("MATRIX_PROXY", "")).strip()
+        req = urllib.request.Request(
+            url, data=data, headers=headers or {}, method=method
+        )
+        if proxy_url:
+            if proxy_url.startswith(("socks4://", "socks5://", "socks://")):
+                logger.debug(
+                    "Matrix: MATRIX_PROXY scheme %r not supported for the "
+                    "MAS refresh path (HTTP(S) only); going direct.",
+                    proxy_url.split("://", 1)[0],
+                )
+                return urllib.request.urlopen(req, timeout=timeout)
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
+            )
+            return opener.open(req, timeout=timeout)
+        return urllib.request.urlopen(req, timeout=timeout)
+
+    def _resolve_oauth_token_endpoint(self):
+        """Return ``(token_endpoint, discovery_was_attempted)``.
+
+        1. ``MATRIX_OAUTH_TOKEN_ENDPOINT`` / ``config.extra.oauth_token_endpoint`` - direct.
+        2. ``MATRIX_OIDC_ISSUER`` / ``config.extra.oidc_issuer`` - discover at issuer.
+        3. Default discovery at ``<homeserver>/.well-known/openid-configuration``,
+           falling back to the MSC2965 homeserver pointer for the issuer.
+        """
+        import json as _json
+
+        override = (
+            getattr(self, "_oidc_token_endpoint_override", "")
+            or _get_scoped_secret("MATRIX_OAUTH_TOKEN_ENDPOINT", "")
+            or os.getenv("MATRIX_OAUTH_TOKEN_ENDPOINT", "")
+        ).strip()
+        if override:
+            return override, False
+
+        issuer_override = (
+            getattr(self, "_oidc_issuer_override", "")
+            or _get_scoped_secret("MATRIX_OIDC_ISSUER", "")
+            or os.getenv("MATRIX_OIDC_ISSUER", "")
+        ).strip()
+
+        def _fetch_well_known(base):
+            url = base.rstrip("/") + "/.well-known/openid-configuration"
+            with self._mas_urlopen(url, timeout=10) as r:
+                return url, _json.loads(r.read().decode("utf-8", errors="replace"))
+
+        def _try_discover(base):
+            try:
+                return _fetch_well_known(base)
+            except Exception as exc:
+                logger.debug("Matrix: OIDC discovery failed at %s: %s", base, exc)
+                return None
+
+        # Issuer override - discover at the issuer directly.
+        if issuer_override:
+            result = _try_discover(issuer_override)
+            if result:
+                _, doc = result
+                ep = str(doc.get("token_endpoint") or "").strip()
+                if ep:
+                    return ep, True
+                logger.debug(
+                    "Matrix: OIDC doc at issuer %s has no token_endpoint",
+                    issuer_override,
+                )
+            # Fall through to homeserver discovery.
+
+        # Default: homeserver discovery, with MSC2965 fallback.
+        homeserver = self._homeserver.rstrip("/") if self._homeserver else ""
+        if not homeserver:
+            return "", True  # caller treats empty as "could not resolve"
+
+        # First try: homeserver's own OIDC doc.
+        result = _try_discover(homeserver)
+        if result:
+            _, doc = result
+            ep = str(doc.get("token_endpoint") or "").strip()
+            if ep:
+                return ep, True
+            logger.debug(
+                "Matrix: OIDC doc at %s has no token_endpoint; trying MSC2965 "
+                "homeserver pointer.", homeserver,
+            )
+
+        # Second try: MSC2965 homeserver pointer to the issuer.
+        try:
+            with self._mas_urlopen(
+                homeserver + "/.well-known/matrix/client", timeout=10
+            ) as r:
+                client_doc = _json.loads(r.read().decode("utf-8", errors="replace"))
+        except Exception as exc:
+            logger.debug(
+                "Matrix: MSC2965 homeserver pointer missing at %s (%s); "
+                "discovery chain exhausted.", homeserver, exc,
+            )
+            return "", True
+
+        issuer = (
+            str(client_doc.get("m.oauth_metadata", {}).get("issuer") or "")
+            if isinstance(client_doc, dict)
+            else ""
+        )
+        if not issuer:
+            logger.debug(
+                "Matrix: MSC2965 pointer at %s has no m.oauth_metadata.issuer",
+                homeserver,
+            )
+            return "", True
+
+        result = _try_discover(issuer)
+        if result:
+            _, doc = result
+            ep = str(doc.get("token_endpoint") or "").strip()
+            if ep:
+                return ep, True
+        return "", True
+
+    def _log_oauth_hint(self, message: str) -> None:
+        """Log the OIDC configuration hint once per adapter instance."""
+        if getattr(self, "_oidc_hint_logged", False):
+            return
+        self._oidc_hint_logged = True
+        logger.warning(message)
+
     async def _connect_authenticate(self, client: Any, api: Any) -> bool:
         """Authenticate via access token (whoami) or password login; resolve user/device IDs."""
         if self._access_token:
@@ -1154,9 +1523,60 @@ class MatrixAdapter(BasePlatformAdapter):
                     "Matrix: using access token for %s%s", self._user_id or "(unknown user)",
                     f" (device {effective_device_id})" if effective_device_id else "")
             except Exception as exc:
-                logger.error(
-                    "Matrix: whoami failed — check MATRIX_ACCESS_TOKEN and MATRIX_HOMESERVER: %s", exc, exc_info=True)
-                return await self._abort_connect(api)
+                if _is_m_unknown_token_error(exc):
+                    logger.warning(
+                        "Matrix: whoami failed with M_UNKNOWN_TOKEN, attempting refresh: %s", exc
+                    )
+                    if await self._refresh_access_token(api, reason="whoami M_UNKNOWN_TOKEN"):
+                        try:
+                            resp = await client.whoami()
+                            resolved_user_id = getattr(resp, "user_id", "") or self._user_id
+                            resolved_device_id = str(getattr(resp, "device_id", "") or "")
+                            if resolved_user_id:
+                                self._user_id = str(resolved_user_id)
+                                client.mxid = UserID(self._user_id)
+                            if (
+                                resolved_device_id
+                                and self._device_id
+                                and resolved_device_id != self._device_id
+                            ):
+                                logger.error(
+                                    "Matrix: MATRIX_DEVICE_ID=%s does not match the device "
+                                    "this access token belongs to (%s).",
+                                    self._device_id,
+                                    resolved_device_id,
+                                )
+                                effective_device_id = resolved_device_id
+                            else:
+                                effective_device_id = self._device_id or resolved_device_id
+                            if effective_device_id:
+                                client.device_id = effective_device_id
+                            logger.info(
+                                "Matrix: using access token for %s%s (refreshed)",
+                                self._user_id or "(unknown user)",
+                                f" (device {effective_device_id})" if effective_device_id else "",
+                            )
+                        except Exception as exc2:
+                            logger.error(
+                                "Matrix: whoami failed after refresh — check MATRIX_ACCESS_TOKEN and MATRIX_HOMESERVER: %s",
+                                exc2,
+                                exc_info=True,
+                            )
+                            return await self._abort_connect(api)
+                    else:
+                        logger.error(
+                            "Matrix: whoami failed — check MATRIX_ACCESS_TOKEN and MATRIX_HOMESERVER: %s",
+                            exc,
+                            exc_info=True,
+                        )
+                        return await self._abort_connect(api)
+                else:
+                    logger.error(
+                        "Matrix: whoami failed — check MATRIX_ACCESS_TOKEN and MATRIX_HOMESERVER: %s",
+                        exc,
+                        exc_info=True,
+                    )
+                    return await self._abort_connect(api)
         elif self._password and self._user_id:
             try:
                 resp = await client.login(
@@ -1164,6 +1584,22 @@ class MatrixAdapter(BasePlatformAdapter):
                     device_id=self._device_id or None)
                 if resp and hasattr(resp, "device_id"):
                     client.device_id = resp.device_id
+                # Capture refresh token if homeserver returned one (MAS, matrix.org)
+                try:
+                    raw_refresh = None
+                    if isinstance(resp, dict):
+                        raw_refresh = resp.get("refresh_token")
+                    else:
+                        raw_refresh = getattr(resp, "refresh_token", None)
+                        if not raw_refresh:
+                            unrec = getattr(resp, "unrecognized_", None)
+                            if isinstance(unrec, dict):
+                                raw_refresh = unrec.get("refresh_token")
+                    if raw_refresh:
+                        self._refresh_token = str(raw_refresh)
+                        logger.debug("Matrix: captured refresh token from login")
+                except Exception:
+                    pass
                 logger.info("Matrix: logged in as %s", self._user_id)
             except Exception as exc:
                 logger.error("Matrix: login failed — %s", exc)
@@ -1172,6 +1608,7 @@ class MatrixAdapter(BasePlatformAdapter):
             logger.error("Matrix: need MATRIX_ACCESS_TOKEN or MATRIX_USER_ID + MATRIX_PASSWORD")
             return await self._abort_connect(api)
         return True
+
 
     async def _connect_setup_e2ee(self, client: Any, api: Any, state_store: Any) -> bool:
         """Set up the Olm machine + crypto store. Returns False when connect must abort."""
@@ -1869,7 +2306,15 @@ class MatrixAdapter(BasePlatformAdapter):
             except Exception as exc:
                 if self._closing:
                     return
-                # Detect permanent auth/permission failures. Transient 5xx outages must retry.
+                # Detect auth failures and attempt refresh before stopping.
+                if _is_m_unknown_token_error(exc):
+                    if await self._refresh_access_token(
+                        client.api, reason=f"sync exception {exc}"
+                    ):
+                        logger.info(
+                            "Matrix: refreshed token after sync exception, retrying"
+                        )
+                        continue
                 if _is_permanent_matrix_auth_error(exc):
                     logger.error("Matrix: permanent auth error, stopping sync: %s", exc)
                     return

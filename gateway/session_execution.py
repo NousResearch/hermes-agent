@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.interrupt_compat import _accepts_keyword
 from agent.replay_cleanup import strip_stale_dangerous_confirmations
+from agent.codex_lifecycle import codex_retirements
+from gateway.agent_cache_claim import claim_cached_agent, unclaim_cached_agent
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
@@ -90,9 +92,14 @@ class GatewaySessionAgentMixin:
         socket teardown while the idle sweeper waits on this lock). The turn rebuilds a fresh agent, so
         the caller does a SOFT release that keeps sandbox / browser / bg processes."""
         from gateway.run import _AGENT_PENDING_SENTINEL
-        evicted = self._runner._agent_cache.pop(self._ctx.session_key, None)
-        agent = evicted[0] if isinstance(evicted, tuple) and evicted else None
-        return agent if agent and agent is not _AGENT_PENDING_SENTINEL else None
+        cached = self._runner._agent_cache.get(self._ctx.session_key)
+        agent = cached[0] if isinstance(cached, tuple) and cached else None
+        if agent is not None and agent is not _AGENT_PENDING_SENTINEL:
+            unclaim_cached_agent(self, agent)
+            codex_retirements(self._runner).track(agent)
+            self._runner._agent_cache.pop(self._ctx.session_key, None)
+            return agent
+        return None
 
     def _lookup_cached_agent(self, sig, cache_lock, cache, max_iterations, peek_sid, dead, msg_count):
         ctx = self._ctx
@@ -101,7 +108,10 @@ class GatewaySessionAgentMixin:
             return out
         with cache_lock:
             cached = cache.get(ctx.session_key)
-            if not (cached and cached[1] == sig):
+            if not cached:
+                return out
+            if cached[1] != sig:
+                out.evicted = self._pop_cached_agent_for_eviction()
                 return out
             # cached[2] = message_count at cache time (stale when a second process appended rows);
             # cached[3] = the session_id the snapshot was taken for.
@@ -128,6 +138,7 @@ class GatewaySessionAgentMixin:
                 )
             else:
                 out.agent = cached[0]
+                claim_cached_agent(self, out.agent)
                 # Refresh LRU order so cap enforcement evicts truly-oldest entries.
                 if hasattr(cache, "move_to_end"):
                     with suppress(KeyError):
@@ -145,7 +156,7 @@ class GatewaySessionAgentMixin:
         """Off-lock soft release on a daemon thread so teardown never blocks the gateway loop."""
         self._runner._spawn_release_thread(
             self._runner._release_evicted_agent_soft, (agent,), f"agent-xproc-evict-{str(self._ctx.session_key)[:24]}",
-            inline_fallback=True,
+            inline_fallback=True, session_key=self._ctx.session_key,
         )
 
     def _build_fresh_agent(self, turn_route, platform_key, combined_ephemeral, max_iterations,
@@ -215,20 +226,36 @@ class GatewaySessionAgentMixin:
             # A cached agent already moved onto a fallback provider cannot serve a confirmed lock.
             found.evicted, found.reused, agent = agent, False, None
             with cache_lock:
-                cache.pop(ctx.session_key, None)
+                self._pop_cached_agent_for_eviction()
         if found.reused and agent is not None:
             self._runner._apply_fallback_chain_to_agent(agent, None if locked else runner._refresh_fallback_model())
         if found.evicted is not None:
             self._release_evicted_agent(found.evicted)
         if agent is None:
+            build_generation = runner._current_session_run_generation(ctx.session_key)
             agent = self._build_fresh_agent(
                 turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr, skip_context_files,
             )
+            agent._codex_retirements = codex_retirements(runner)
             if cache_lock and cache is not None:
                 with cache_lock:
                     # Record the snapshot's session_id with message_count so the cross-process guard
                     # can skip the meaningless count comparison if the active session_id switches.
-                    cache[ctx.session_key] = (agent, sig, msg_count, ctx.session_id)
-                    runner._enforce_agent_cache_cap()
+                    turn_generation = getattr(ctx, "run_generation", None)
+                    stale = not runner._is_session_run_current(ctx.session_key, build_generation)
+                    if build_generation and turn_generation is not None:
+                        stale = stale or turn_generation != build_generation
+                    rejected = stale or cache.get(ctx.session_key) is not None
+                    if rejected:
+                        # A stopped constructor must never overwrite its successor. Keep any
+                        # writer reachable before disposing of this unpublished instance.
+                        codex_retirements(runner).track(agent)
+                    else:
+                        claim_cached_agent(self, agent)
+                        cache[ctx.session_key] = (agent, sig, msg_count, ctx.session_id)
+                        runner._enforce_agent_cache_cap()
+                if rejected:
+                    runner._release_evicted_agent_soft(agent)
+                    raise RuntimeError("agent construction was superseded by another turn")
             logger.debug("Created new agent for session %s (sig=%s)", ctx.session_key, sig)
         return agent, found.reused

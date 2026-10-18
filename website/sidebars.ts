@@ -477,6 +477,15 @@ const sidebars: SidebarsConfig = {
                 },
                 {
                   type: 'category',
+                  label: 'hermes',
+                  key: 'skills-optional-hermes',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/optional/hermes/hermes-memory-hygiene',
+                  ],
+                },
+                {
+                  type: 'category',
                   label: 'mcp',
                   key: 'skills-optional-mcp',
                   collapsed: true,
@@ -634,6 +643,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/software-development/software-development-grill-me',
                     'user-guide/skills/optional/software-development/software-development-pr-lens',
                     'user-guide/skills/optional/software-development/software-development-rest-graphql-debug',
+                    'user-guide/skills/optional/software-development/software-development-retrospective-bug-pattern-audit',
                     'user-guide/skills/optional/software-development/software-development-subagent-driven-development',
                   ],
                 },

@@ -146,6 +146,12 @@ hermes skills uninstall <skill-name>
 | [**fitness-nutrition**](../user-guide/skills/optional/health/health-fitness-nutrition.md) | Workout planning, macros, and body metrics via wger/USDA. |
 | [**neuroskill-bci**](../user-guide/skills/optional/health/health-neuroskill-bci.md) | Use live BCI cognitive and mood state from NeuroSkill. |
 
+## hermes
+
+| Skill | Description |
+|-------|-------------|
+| [**memory-hygiene**](../user-guide/skills/optional/hermes/hermes-memory-hygiene.md) | Memory hygiene across MEMORY.md, Mnemosyne, LCM, skills. |
+
 ## mcp
 
 | Skill | Description |
@@ -276,6 +282,7 @@ hermes skills uninstall <skill-name>
 | [**grill-me**](../user-guide/skills/optional/software-development/software-development-grill-me.md) | Adversarial plan interview before implementation. |
 | [**pr-lens**](../user-guide/skills/optional/software-development/software-development-pr-lens.md) | Draw code changes as animated architecture/data-flow SVGs. |
 | [**rest-graphql-debug**](../user-guide/skills/optional/software-development/software-development-rest-graphql-debug.md) | Debug REST/GraphQL APIs: status codes, auth, schemas, repro. |
+| [**retrospective-bug-pattern-audit**](../user-guide/skills/optional/software-development/software-development-retrospective-bug-pattern-audit.md) | Mine git history for recurring bugs, codify as rules. |
 | [**subagent-driven-development**](../user-guide/skills/optional/software-development/software-development-subagent-driven-development.md) | Execute plans via delegate_task subagents (2-stage review). |
 
 ## web-development

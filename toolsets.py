@@ -33,8 +33,8 @@ _HERMES_CORE_TOOLS = [
     "kanban_comment", "kanban_create", "kanban_link",
     "kanban_unblock",
     "kanban_attach", "kanban_attach_url", "kanban_attachments",
-    "mission_list", "mission_show", "mission_progress", "mission_update",
-    "mission_handoff", "mission_complete",
+    "mission_list", "mission_show", "mission_progress", "mission_update", "mission_validate",
+    "mission_handoff", "mission_resume", "mission_complete",
     "computer_use",
     # Service-gated connector account status and authorization links.
     "manage_connections",

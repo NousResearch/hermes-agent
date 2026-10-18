@@ -872,6 +872,12 @@ def _admit_fred_mission(agent: Any, user_message: Any) -> str:
             mission = missions.ensure_turn_mission(
                 conn, session_id=str(getattr(agent, "session_id", "") or ""), text=text,
                 task_id=str(os.environ.get("HERMES_KANBAN_TASK", "")),
+                ingress_id=missions.ingress_key(
+                    session_id=str(getattr(agent, "session_id", "") or ""),
+                    platform=str(getattr(agent, "platform", "") or "unknown"),
+                    delivery_id=getattr(agent, "_persist_user_message_platform_id", None),
+                    turn_id=str(getattr(agent, "_current_turn_id", "") or ""),
+                ),
             )
         if mission is None:
             return ""

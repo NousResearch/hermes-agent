@@ -10,10 +10,14 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import os
 import re
 import secrets
 import sqlite3
+import threading
 import time
+import uuid
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +32,9 @@ class StaleOwnerError(MissionError):
 
 class ContractError(MissionError):
     """The proposed completion evidence does not meet the current contract."""
+
+
+_ACTIVE_EXECUTION_LEASE: ContextVar[str | None] = ContextVar("fred_mission_execution_lease", default=None)
 
 
 @contextlib.contextmanager
@@ -56,8 +63,8 @@ def _write_txn(conn: sqlite3.Connection):
 def ensure_schema(conn: sqlite3.Connection) -> None:
     if conn.execute(
         "SELECT count(*) FROM sqlite_master WHERE type='table' "
-        "AND name IN ('missions','mission_history','mission_owner_history')"
-    ).fetchone()[0] == 3:
+        "AND name IN ('missions','mission_history','mission_owner_history','mission_execution_leases','mission_validations')"
+    ).fetchone()[0] == 5:
         return
     conn.executescript("""
     CREATE TABLE IF NOT EXISTS missions (
@@ -100,7 +107,140 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_mission_one_current_owner
         ON mission_owner_history(mission_id) WHERE ended_at IS NULL;
+    CREATE TABLE IF NOT EXISTS mission_execution_leases (
+        id TEXT PRIMARY KEY,
+        mission_id TEXT NOT NULL REFERENCES missions(id),
+        actor_kind TEXT NOT NULL,
+        actor_id TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        tool_name TEXT NOT NULL,
+        pid INTEGER NOT NULL,
+        thread_id INTEGER,
+        started_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_mission_execution_leases_mission
+        ON mission_execution_leases(mission_id);
+    CREATE TABLE IF NOT EXISTS mission_validations (
+        id TEXT PRIMARY KEY,
+        mission_id TEXT NOT NULL REFERENCES missions(id),
+        generation INTEGER NOT NULL,
+        contract_version INTEGER NOT NULL,
+        contract_sha256 TEXT NOT NULL,
+        actor_id TEXT NOT NULL,
+        reviewer_identity TEXT NOT NULL,
+        verifier_id TEXT NOT NULL,
+        repository_root TEXT NOT NULL,
+        head_sha TEXT NOT NULL,
+        artifacts_json TEXT NOT NULL,
+        checks_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+    );
     """)
+
+
+def current_execution_lease(mission_id: str) -> str | None:
+    """Return this tool invocation's lease for a mission, if it has one."""
+    return (_ACTIVE_EXECUTION_LEASE.get() or {}).get(str(mission_id))
+
+
+@contextlib.contextmanager
+def execution_scope(*, session_id: str = "", task_id: str = "", tool_name: str = "tool"):
+    """Hold durable leases for all active missions owned by this execution.
+
+    The lease starts before any tool hooks or effectful dispatch and is deleted
+    in ``finally``. A hard process death leaves the row behind; handoff then
+    fails closed until a separately reviewed recovery clears it.
+    """
+    actor_kind, actor_id = ("task", str(task_id).strip()) if str(task_id).strip() else (
+        "session", str(session_id).strip(),
+    )
+    if not actor_id:
+        raise MissionError("mission execution identity is missing")
+    token = _ACTIVE_EXECUTION_LEASE.get()
+    if token is not None:
+        yield token
+        return
+
+    from hermes_cli.kanban_db_connect import connect_closing
+
+    leases: dict[str, str] = {}
+    with connect_closing() as conn:
+        ensure_schema(conn)
+        with _write_txn(conn):
+            if not authorize_actor(
+                conn, task_id=actor_id if actor_kind == "task" else "",
+                session_id=actor_id if actor_kind == "session" else "",
+            ):
+                raise StaleOwnerError("tool execution identity has been fenced by mission ownership")
+            rows = conn.execute("SELECT id,owner_kind,owner_id,owner_generation,children_json FROM missions WHERE status='active'").fetchall()
+            for row in rows:
+                owned = (row["owner_kind"], row["owner_id"]) == (actor_kind, actor_id)
+                child = actor_kind == "task" and actor_id in json.loads(row["children_json"])
+                if not (owned or child):
+                    continue
+                lease_id = "x_" + secrets.token_hex(12)
+                now = int(time.time())
+                conn.execute(
+                    "INSERT INTO mission_execution_leases VALUES (?,?,?,?,?,?,?,?,?)",
+                    (lease_id, row["id"], actor_kind, actor_id, row["owner_generation"],
+                     str(tool_name)[:100], os.getpid(), threading.get_ident(), now),
+                )
+                leases[str(row["id"])] = lease_id
+    context_token = _ACTIVE_EXECUTION_LEASE.set(leases)
+    try:
+        yield leases
+    finally:
+        _ACTIVE_EXECUTION_LEASE.reset(context_token)
+        if leases:
+            with connect_closing() as conn:
+                with _write_txn(conn):
+                    conn.executemany(
+                        "DELETE FROM mission_execution_leases WHERE id=?",
+                        [(lease_id,) for lease_id in leases.values()],
+                    )
+
+
+def _assert_quiescent(conn: sqlite3.Connection, mission_id: str) -> None:
+    """Reject lifecycle transitions while any other tool call holds a lease."""
+    current = current_execution_lease(mission_id)
+    rows = conn.execute(
+        "SELECT id,tool_name,pid FROM mission_execution_leases WHERE mission_id=?",
+        (mission_id,),
+    ).fetchall()
+    competing = [row for row in rows if row["id"] != current]
+    if competing:
+        details = ", ".join(f"{row['tool_name']} (pid {row['pid']})" for row in competing[:4])
+        raise MissionError(
+            f"mission {mission_id} is not quiescent; active or abandoned execution lease(s): {details}. "
+            "Handoff, recovery, and completion are refused until they are reconciled."
+        )
+    mission = conn.execute("SELECT children_json FROM missions WHERE id=?", (mission_id,)).fetchone()
+    child_ids = json.loads(mission["children_json"]) if mission else []
+    if child_ids:
+        placeholders = ",".join("?" for _ in child_ids)
+        running = conn.execute(
+            f"SELECT id,status FROM tasks WHERE id IN ({placeholders}) AND status='running'",
+            child_ids,
+        ).fetchall()
+        if running:
+            raise MissionError(
+                "mission has running native Kanban child task(s): " + ", ".join(row["id"] for row in running)
+            )
+
+
+def _validate_child_ids(conn: sqlite3.Connection, mission_id: str, child_ids: list[str] | None) -> None:
+    values = list(dict.fromkeys(str(value).strip() for value in (child_ids or []) if str(value).strip()))
+    if not values:
+        return
+    if mission_id in values:
+        raise MissionError("mission id cannot be recorded as a Kanban child task")
+    placeholders = ",".join("?" for _ in values)
+    found = {str(row[0]) for row in conn.execute(
+        f"SELECT id FROM tasks WHERE id IN ({placeholders})", values,
+    )}
+    missing = [value for value in values if value not in found]
+    if missing:
+        raise MissionError("mission child ids must refer to native Kanban tasks: " + ", ".join(missing))
 
 
 def _json(value: Any) -> str:
@@ -137,8 +277,10 @@ def admit(
     now = int(time.time())
     try:
         with _write_txn(conn):
-            row = conn.execute("SELECT id FROM missions WHERE ingress_key=?", (ingress_key,)).fetchone()
+            row = conn.execute("SELECT id,original_request FROM missions WHERE ingress_key=?", (ingress_key,)).fetchone()
             if row:
+                if str(row["original_request"]) != request:
+                    raise MissionError("transport delivery identifier was reused for different request content")
                 return str(row[0]), False
             mission_id = "m_" + secrets.token_hex(12)
             conn.execute(
@@ -188,24 +330,48 @@ def is_substantial_objective(text: str) -> bool:
     return bool(clean and not clean.startswith(("/", "!")) and _ACTION.search(clean) and _SCOPE.search(clean))
 
 
-def objective_key(text: str) -> str:
-    """Stable cross-interface identity for exact normalized objective replay."""
-    normalized = " ".join(str(text or "").split()).casefold()
-    return "objective:" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+def ingress_key(*, session_id: str, platform: str, delivery_id: str | None,
+                turn_id: str | None = None) -> str:
+    """Identity by delivery when available; otherwise isolate this exact turn.
+
+    Content is deliberately excluded: two identical requests are independent
+    unless transport proves they are the same delivery.
+    """
+    if delivery_id:
+        source = f"delivery:{platform.casefold()}:{session_id}:{delivery_id}"
+    else:
+        source = f"turn:{session_id}:{turn_id or uuid.uuid4().hex}"
+    return "ingress:" + hashlib.sha256(source.encode("utf-8")).hexdigest()
 
 
 def ensure_turn_mission(
     conn: sqlite3.Connection, *, session_id: str, text: str, task_id: str = "",
+    ingress_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Core turn-admission path; plugin hooks are optional observers, not authority.
 
-    The first exact objective owns its mission. A later session gets a conflict
-    and cannot silently take over. Short follow-up messages are preserved as
-    corrections on the session's sole active mission.
+    A transport delivery ID, or otherwise this turn's ID, deduplicates admission.
+    Similarity never attaches a new session to an existing mission. Short user
+    steering in the current owner session is recorded as a correction.
     """
     session_id, text = str(session_id).strip(), str(text or "")
     if not session_id or not text.strip():
         return None
+    ensure_schema(conn)
+    if ingress_id:
+        delivered = conn.execute(
+            "SELECT id,original_request,owner_kind,owner_id FROM missions WHERE ingress_key=?",
+            (str(ingress_id),),
+        ).fetchone()
+        if delivered is not None:
+            if str(delivered["original_request"]) != text:
+                raise MissionError("transport delivery identifier was reused for different request content")
+            if (delivered["owner_kind"], delivered["owner_id"]) != ("session", session_id):
+                raise MissionError(
+                    f"this delivery already belongs to mission {delivered['id']} in another owner; "
+                    "explicitly resume it rather than starting a duplicate turn"
+                )
+            return get(conn, delivered["id"])
     owner_kind, owner_id = ("task", str(task_id).strip()) if str(task_id).strip() else ("session", session_id)
     owned = list_for_owner(conn, owner_kind, owner_id)
     if task_id and len(owned) == 1:
@@ -236,7 +402,9 @@ def ensure_turn_mission(
             "user_updates": [],
         }
         mission_id, _created = admit(
-            conn, ingress_key=objective_key(text), request=text, contract=contract,
+            conn, ingress_key=ingress_id or ingress_key(
+                session_id=session_id, platform="unknown", delivery_id=None,
+            ), request=text, contract=contract,
             owner_kind="session", owner_id=session_id,
         )
         mission = get(conn, mission_id)
@@ -356,6 +524,7 @@ def record_progress(
     with _write_txn(conn):
         row = conn.execute("SELECT * FROM missions WHERE id=?", (mission_id,)).fetchone()
         _assert_owner(row, owner_kind, owner_id, generation)
+        _validate_child_ids(conn, mission_id, child_ids)
         children = list(dict.fromkeys([*json.loads(row["children_json"]), *(child_ids or [])]))
         conn.execute(
             "UPDATE missions SET progress_json=?,children_json=?,recovery_json=?,updated_at=?,owner_expires=? WHERE id=?",
@@ -386,6 +555,8 @@ def handoff(
     with _write_txn(conn):
         row = conn.execute("SELECT * FROM missions WHERE id=?", (mission_id,)).fetchone()
         _assert_owner(row, expected_owner_kind, expected_owner_id, expected_generation)
+        _assert_quiescent(conn, mission_id)
+        _validate_child_ids(conn, mission_id, child_ids)
         if (row["owner_kind"], row["owner_id"]) == (new_kind, new_id):
             raise ValueError("handoff target must differ from current owner")
         if new_kind == "task":
@@ -499,6 +670,7 @@ def recover(
             raise StaleOwnerError("mission ownership changed before recovery")
         if int(row["owner_expires"]) > timestamp:
             raise MissionError("mission owner lease has not expired; takeover is not allowed")
+        _assert_quiescent(conn, mission_id)
         if row["owner_kind"] == "task":
             task = conn.execute(
                 "SELECT status,current_run_id FROM tasks WHERE id=?", (row["owner_id"],),
@@ -558,48 +730,50 @@ def recover(
 
 def complete(
     conn: sqlite3.Connection, *, mission_id: str, owner_kind: str, owner_id: str,
-    generation: int, contract_version: int, evidence: dict[str, Any],
+    generation: int, contract_version: int, validation_id: str,
 ) -> None:
-    """Close only against the current contract and a minimally verifiable receipt.
-
-    For implementation missions, a non-Markdown artifact must exist and at
-    least one reported check must have exit code zero. This is a narrow
-    doc-only regression guard, not independent semantic verification.
-    """
+    """Close only against a current receipt written by the trusted validator."""
     ensure_schema(conn)
     now = int(time.time())
     with _write_txn(conn):
         row = conn.execute("SELECT * FROM missions WHERE id=?", (mission_id,)).fetchone()
         _assert_owner(row, owner_kind, owner_id, generation)
+        _assert_quiescent(conn, mission_id)
         if int(row["contract_version"]) != int(contract_version):
             raise ContractError("completion receipt targets a stale contract version")
         contract = json.loads(row["contract_json"])
-        if evidence.get("contract_version") != contract_version:
-            raise ContractError("completion evidence must name the current contract version")
-        if evidence.get("accepted_criteria") != contract.get("acceptance"):
-            raise ContractError("completion evidence must cover every current acceptance criterion")
-        if contract.get("kind") == "implementation":
-            artifacts = evidence.get("artifacts")
-            checks = evidence.get("checks")
-            if not isinstance(artifacts, list) or not artifacts:
-                raise ContractError("implementation completion requires at least one artifact receipt")
-            code_artifacts = [a for a in artifacts if isinstance(a, dict)
-                              and isinstance(a.get("path"), str)
-                              and Path(a["path"]).suffix.lower() not in {".md", ".rst", ".txt"}]
-            if not code_artifacts:
-                raise ContractError("documentation-only artifacts cannot complete an implementation mission")
-            if not any(isinstance(c, dict) and c.get("exit_code") == 0 and c.get("command") for c in (checks or [])):
-                raise ContractError("implementation completion requires a successful check receipt")
-            for artifact in code_artifacts:
-                path = Path(artifact["path"])
-                if not path.is_file():
-                    raise ContractError("artifact receipt points to missing file: " + str(path))
-                actual_hash = hashlib.sha256(path.read_bytes()).hexdigest()
-                if artifact.get("sha256") != actual_hash:
-                    raise ContractError("artifact hash is missing or stale for: " + str(path))
-                before_hash = artifact.get("before_sha256")
-                if not artifact.get("created") and (not before_hash or before_hash == actual_hash):
-                    raise ContractError("implementation artifact must be new or have a changed before/after hash")
+        contract_sha = hashlib.sha256(_json(contract).encode()).hexdigest()
+        receipt = conn.execute("SELECT * FROM mission_validations WHERE id=?", (str(validation_id),)).fetchone()
+        if receipt is None:
+            raise ContractError("completion requires a trusted validation receipt; model-supplied evidence is not accepted")
+        if (receipt["mission_id"], int(receipt["generation"]), int(receipt["contract_version"]),
+            receipt["actor_id"], receipt["contract_sha256"]) != (
+            mission_id, int(generation), int(contract_version), str(owner_id), contract_sha,
+        ):
+            raise ContractError("validation receipt is stale or belongs to a different mission, owner, or contract")
+        artifacts = json.loads(receipt["artifacts_json"])
+        checks = json.loads(receipt["checks_json"])
+        check_ids = {item.get("check_id") for item in checks if isinstance(item, dict) and item.get("exit_code") == 0}
+        if not {"python-syntax", "ruff"}.issubset(check_ids):
+            raise ContractError("validation receipt is missing successful trusted checks")
+        root = Path(receipt["repository_root"]).resolve()
+        for artifact in artifacts:
+            path = (root / artifact["path"]).resolve()
+            try:
+                path.relative_to(root)
+            except ValueError as exc:
+                raise ContractError("validation receipt artifact escapes its repository root") from exc
+            if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != artifact.get("sha256"):
+                raise ContractError("validation artifact is missing or stale: " + str(artifact.get("path")))
+        child_ids = json.loads(row["children_json"])
+        if child_ids:
+            placeholders = ",".join("?" for _ in child_ids)
+            child_rows = conn.execute(
+                f"SELECT id,status FROM tasks WHERE id IN ({placeholders})", child_ids,
+            ).fetchall()
+            statuses = {str(child["id"]): str(child["status"]) for child in child_rows}
+            if set(statuses) != set(child_ids) or any(status not in {"done", "archived"} for status in statuses.values()):
+                raise ContractError("every recorded Kanban child task must exist and be done or archived")
         changed = conn.execute(
             "UPDATE missions SET status='completed',completed_at=?,updated_at=? WHERE id=? AND owner_generation=? AND status='active'",
             (now, now, mission_id, generation),
@@ -609,7 +783,9 @@ def complete(
         conn.execute(
             "INSERT INTO mission_history(mission_id,kind,actor_kind,actor_id,payload_json,created_at) "
             "VALUES (?,?,?,?,?,?)",
-            (mission_id, "completed", owner_kind, owner_id, _json(evidence), now),
+            (mission_id, "completed", owner_kind, owner_id,
+             _json({"validation_id": validation_id, "reviewer_identity": receipt["reviewer_identity"],
+                    "verifier_id": receipt["verifier_id"], "artifacts": artifacts, "checks": checks}), now),
         )
 
 

@@ -15,7 +15,13 @@ def _admit_message(*, session_key: str = "", platform: str = "", message_id: str
         return None
     try:
         with connect_closing() as conn:
-            mission = missions.ensure_turn_mission(conn, session_id=session_key, text=text)
+            mission = missions.ensure_turn_mission(
+                conn, session_id=session_key, text=text,
+                ingress_id=missions.ingress_key(
+                    session_id=session_key, platform=platform,
+                    delivery_id=message_id or None,
+                ),
+            )
         if mission is None:
             return None
         return None

@@ -823,14 +823,29 @@ def _run_agent_tool_execution_middleware(
             state.dispatched = True
             state.blocked = False
             state.args = final_args
+        ref = _ToolCallRef(function_name, final_args, effective_task_id, tool_call_id, trace)
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+            if str(get_active_profile_name() or "").casefold() == "fred":
+                from hermes_cli import mission_ownership
+                with mission_ownership.execution_scope(
+                    session_id=str(getattr(agent, "session_id", "") or ""),
+                    task_id=str(os.environ.get("HERMES_KANBAN_TASK", "") or ""),
+                    tool_name=function_name,
+                ):
+                    return _dispatch_authorized_once(
+                        agent, state, ref, execute=execute, scope_block=scope_block,
+                        display_index=display_index, begin_execution=begin_execution,
+                        authorization_gate=authorization_gate,
+                    )
+        except Exception:
+            # The execution lease is an authority gate: failure must prevent
+            # the tool from reaching any inline or registry executor.
+            state.blocked = True
+            raise
         return _dispatch_authorized_once(
-            agent,
-            state,
-            _ToolCallRef(function_name, final_args, effective_task_id, tool_call_id, trace),
-            execute=execute,
-            scope_block=scope_block,
-            display_index=display_index,
-            begin_execution=begin_execution,
+            agent, state, ref, execute=execute, scope_block=scope_block,
+            display_index=display_index, begin_execution=begin_execution,
             authorization_gate=authorization_gate,
         )
 

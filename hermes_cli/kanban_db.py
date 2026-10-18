@@ -2662,6 +2662,7 @@ def complete_task(
     summary: Optional[str] = None, metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
     fire_lifecycle_hook: bool = True, force: bool = False,
+    mission_completion: Optional[dict] = None,
 ) -> bool:
     """``running|ready|blocked|review -> done``; records ``result``.
 
@@ -2691,11 +2692,14 @@ def complete_task(
             "SELECT id FROM missions WHERE owner_kind='task' AND owner_id=? AND status='active' LIMIT 1",
             (task_id,),
         ).fetchone()
-        if active_mission:
+        if active_mission and (not isinstance(mission_completion, dict)
+                               or mission_completion.get("mission_id") != active_mission["id"]):
             raise mission_ownership.MissionError(
                 f"task {task_id} owns active Fred mission {active_mission['id']}; "
-                "complete the mission against its current contract first"
+                "complete the mission through its trusted validation receipt first"
             )
+        if mission_completion and (not active_mission or mission_completion.get("mission_id") != active_mission["id"]):
+            raise mission_ownership.MissionError("mission completion does not match this task's active root mission")
     except ImportError:
         # A source install missing the mandatory mission module must not claim
         # this new guard is available. The application startup gate blocks Fred.
@@ -2772,6 +2776,15 @@ def complete_task(
             _completed_event_payload(result, event_summary, verified_cards, metadata),
             run_id=run_id,
         )
+        if mission_completion:
+            from hermes_cli import mission_ownership
+            mission_ownership.complete(
+                conn, mission_id=str(mission_completion["mission_id"]),
+                owner_kind="task", owner_id=task_id,
+                generation=int(mission_completion["generation"]),
+                contract_version=int(mission_completion["contract_version"]),
+                validation_id=str(mission_completion["validation_id"]),
+            )
     _flag_phantom_prose_refs(conn, task_id, run_id, summary, result, verified_cards)
     # Success wipes the breaker counter (history stays on the event log).
     _clear_failure_counter(conn, task_id)

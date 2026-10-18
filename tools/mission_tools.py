@@ -76,41 +76,46 @@ def _update(args: dict, **kwargs):
 
 def _handoff(args: dict, **kwargs):
     kind, oid = _actor(kwargs)
+    from hermes_cli import kanban_db as kb
     with connect_closing() as conn:
-        new_owner_id = str(args.get("new_owner_id") or "").strip()
-        if args["new_owner_kind"] == "task" and not new_owner_id:
-            title = str(args.get("target_title") or "").strip()
-            body = str(args.get("target_body") or "").strip()
-            assignee = str(args.get("target_assignee") or "").strip()
-            if not title or not body or not assignee:
-                raise missions.MissionError(
-                    "task handoff needs new_owner_id for an existing triage card, or target_title, target_body, and target_assignee to create one"
+        # Keep root-card creation, mission ownership transfer, and dispatcher
+        # promotion in one SQLite transaction. A failed transfer leaves no
+        # orphan triage card for a retry to mistake as authoritative.
+        with kb.write_txn(conn):
+            new_owner_id = str(args.get("new_owner_id") or "").strip()
+            if args["new_owner_kind"] == "task" and not new_owner_id:
+                title = str(args.get("target_title") or "").strip()
+                body = str(args.get("target_body") or "").strip()
+                assignee = str(args.get("target_assignee") or "").strip()
+                if not title or not body or not assignee:
+                    raise missions.MissionError(
+                        "task handoff needs new_owner_id for an existing triage card, or target_title, target_body, and target_assignee to create one"
+                    )
+                if assignee.casefold() != "fred":
+                    raise missions.MissionError(
+                        "a root-ownership task must run as Fred; create specialist work as a child task and keep the current mission owner"
+                    )
+                mission = missions.get(conn, str(args["mission_id"]))
+                if mission is None or (mission["owner_kind"], mission["owner_id"], mission["owner_generation"]) != (kind, oid, int(args["generation"])):
+                    raise missions.StaleOwnerError("caller is not the current mission owner")
+                packet = {
+                    "mission_id": mission["id"], "original_request": mission["original_request"],
+                    "contract": mission["contract"], "contract_version": mission["contract_version"],
+                    "progress": mission["progress"], "children": mission["children"],
+                    "recovery": mission["recovery"],
+                }
+                body = "Authoritative root mission handoff packet:\n" + json.dumps(packet, ensure_ascii=False, indent=2) + "\n\n" + body
+                new_owner_id = kb.create_task(
+                    conn, title=title, body=body, assignee=assignee,
+                    created_by="fred:mission_handoff", triage=True,
+                    idempotency_key=f"fred-mission:{mission['id']}:generation:{mission['owner_generation']}",
                 )
-            if assignee.casefold() != "fred":
-                raise missions.MissionError(
-                    "a root-ownership task must run as Fred; create specialist work as a child task and keep the current mission owner"
-                )
-            mission = missions.get(conn, str(args["mission_id"]))
-            if mission is None or (mission["owner_kind"], mission["owner_id"], mission["owner_generation"]) != (kind, oid, int(args["generation"])):
-                raise missions.StaleOwnerError("caller is not the current mission owner")
-            packet = {
-                "mission_id": mission["id"], "original_request": mission["original_request"],
-                "contract": mission["contract"], "contract_version": mission["contract_version"],
-                "progress": mission["progress"], "children": mission["children"],
-                "recovery": mission["recovery"],
-            }
-            body = "Authoritative root mission handoff packet:\n" + json.dumps(packet, ensure_ascii=False, indent=2) + "\n\n" + body
-            from hermes_cli import kanban_db as kb
-            new_owner_id = kb.create_task(
-                conn, title=title, body=body, assignee=assignee,
-                created_by="fred:mission_handoff", triage=True,
+            generation = missions.handoff(
+                conn, mission_id=str(args["mission_id"]), expected_owner_kind=kind,
+                expected_owner_id=oid, expected_generation=int(args["generation"]),
+                new_owner_kind=str(args["new_owner_kind"]), new_owner_id=new_owner_id,
+                progress=args["progress"], child_ids=args.get("child_ids"), recovery=args.get("recovery"),
             )
-        generation = missions.handoff(
-            conn, mission_id=str(args["mission_id"]), expected_owner_kind=kind,
-            expected_owner_id=oid, expected_generation=int(args["generation"]),
-            new_owner_kind=str(args["new_owner_kind"]), new_owner_id=new_owner_id,
-            progress=args["progress"], child_ids=args.get("child_ids"), recovery=args.get("recovery"),
-        )
     return {"ok": True, "generation": generation,
             "owner": [args["new_owner_kind"], new_owner_id]}
 
@@ -118,12 +123,60 @@ def _handoff(args: dict, **kwargs):
 def _complete(args: dict, **kwargs):
     kind, oid = _actor(kwargs)
     with connect_closing() as conn:
-        missions.complete(
+        if kind == "task":
+            from hermes_cli import kanban_db as kb
+            raw_run_id = str(os.environ.get("HERMES_KANBAN_RUN_ID", "")).strip()
+            try:
+                expected_run_id = int(raw_run_id) if raw_run_id else None
+            except ValueError:
+                expected_run_id = None
+            closed = kb.complete_task(
+                conn, oid, result="Fred mission completed with a trusted validation receipt.",
+                summary="Mission completion committed with its Kanban root task.",
+                expected_run_id=expected_run_id,
+                mission_completion={
+                    "mission_id": str(args["mission_id"]),
+                    "generation": int(args["generation"]),
+                    "contract_version": int(args["contract_version"]),
+                    "validation_id": str(args["validation_id"]),
+                },
+            )
+            if not closed:
+                raise missions.MissionError("native Kanban task could not be completed; mission remains active")
+        else:
+            missions.complete(
+                conn, mission_id=str(args["mission_id"]), owner_kind=kind, owner_id=oid,
+                generation=int(args["generation"]), contract_version=int(args["contract_version"]),
+                validation_id=str(args["validation_id"]),
+            )
+    return {"ok": True, "mission_id": args["mission_id"], "status": "completed"}
+
+
+def _validate(args: dict, **kwargs):
+    kind, oid = _actor(kwargs)
+    if not oid:
+        raise missions.MissionError("validation caller identity is missing")
+    from hermes_cli import mission_validation
+    with connect_closing() as conn:
+        return mission_validation.validate(
             conn, mission_id=str(args["mission_id"]), owner_kind=kind, owner_id=oid,
             generation=int(args["generation"]), contract_version=int(args["contract_version"]),
-            evidence=args["evidence"],
+            artifact_paths=args["artifact_paths"], reviewer_identity=f"{kind}:{oid}",
         )
-    return {"ok": True, "mission_id": args["mission_id"], "status": "completed"}
+
+
+def _resume(args: dict, **kwargs):
+    kind, oid = _actor(kwargs)
+    if kind != "session" or not oid:
+        raise missions.MissionError("only an interactive session can explicitly resume a mission")
+    with connect_closing() as conn:
+        generation = missions.recover(
+            conn, mission_id=str(args["mission_id"]),
+            expected_generation=int(args["generation"]), new_owner_kind="session",
+            new_owner_id=oid, recovery_actor=oid,
+        )
+        mission = missions.get(conn, str(args["mission_id"]))
+    return {"ok": True, "generation": generation, "mission": mission}
 
 
 _TOOLS = (
@@ -146,10 +199,17 @@ _TOOLS = (
          "progress": {"type": "object"},
          "child_ids": {"type": "array", "items": {"type": "string"}}, "recovery": {"type": "object"}},
         ["mission_id", "generation", "new_owner_kind", "progress"]), _call(_handoff), "🧭"),
-    ("mission_complete", _schema("mission_complete", "Complete the current mission against its current version. Implementation missions require a current code artifact hash and a successful check receipt.",
+    ("mission_resume", _schema("mission_resume", "Explicitly resume a named mission from this session. Use only after the user asks to resume it and supplies its mission ID; expired ownership and quiescence checks still apply.",
+        {"mission_id": {"type": "string"}, "generation": {"type": "integer"}},
+        ["mission_id", "generation"]), _call(_resume), "🧭"),
+    ("mission_validate", _schema("mission_validate", "Run the fixed trusted Phase 1 Python syntax and Ruff checks against changed files in the active Git checkout, then store a contract-bound validation receipt.",
         {"mission_id": {"type": "string"}, "generation": {"type": "integer"},
-         "contract_version": {"type": "integer"}, "evidence": {"type": "object"}},
-        ["mission_id", "generation", "contract_version", "evidence"]), _call(_complete), "✅"),
+         "contract_version": {"type": "integer"}, "artifact_paths": {"type": "array", "items": {"type": "string"}}},
+        ["mission_id", "generation", "contract_version", "artifact_paths"]), _call(_validate), "🧪"),
+    ("mission_complete", _schema("mission_complete", "Complete only with a current trusted validation receipt produced by mission_validate. Model-supplied command/status evidence is rejected.",
+        {"mission_id": {"type": "string"}, "generation": {"type": "integer"},
+         "contract_version": {"type": "integer"}, "validation_id": {"type": "string"}},
+        ["mission_id", "generation", "contract_version", "validation_id"]), _call(_complete), "✅"),
 )
 
 for _name, _schema_obj, _handler, _emoji in _TOOLS:

@@ -195,10 +195,10 @@ VALID_HOOKS: set[str] = {
     # returns IGNORED in v1. Deliberately NOT fired for the gateway's running-agent intercept path
     # (/stop, /approve, busy_policy) — a slow/hostile plugin must not touch the operator's escape
     # hatches. Kwargs: surface, command (canonical), alias_used, args_raw, session_key, platform.
-    # Slash-command dispatch observer (#64204, observer-first per #64182 ground rule 3). Return values are
-    # IGNORED in v1 — a plugin returning a directive-shaped dict gets a debug log so future block/rewrite
-    # adopters are discoverable once the middleware variant ships against the #64231 taxonomy.
+    # Observer-first (#64204, #64182 rule 3); a directive-shaped return gets a debug log so future
+    # block/rewrite adopters are discoverable once the middleware variant ships (#64231 taxonomy).
     "pre_command",
+    "post_compaction",  # once per committed compaction on every path; observer (hooks.md, #118382)
 }
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as
@@ -459,12 +459,7 @@ class PluginContext:
         """Register a tool in the global registry and track it as plugin-provided. ``override=True``
         replaces a same-named built-in (without it a name claimed by another toolset is rejected) and
         needs operator opt-in via ``plugins.entries.<plugin_id>.allow_tool_override: true`` — otherwise
-        any enabled plugin could silently replace a privileged built-in like ``write_file``.
-
-        ``override=True`` against a built-in tool requires the operator to opt in via
-        ``plugins.entries.<plugin_id>.allow_tool_override: true`` in config.yaml — mirrors the trust gate
-        pattern used for ``ctx.llm`` provider/model overrides (#23194).
-        """
+        any enabled plugin could silently replace a privileged built-in like ``write_file`` (#23194)."""
         if override and not self._tool_override_allowed(name):
             raise PluginToolOverrideError(
                 f"Plugin {self.manifest.name!r} cannot override built-in tool {name!r}. Set "
@@ -573,16 +568,8 @@ class PluginContext:
     def _tool_override_allowed(self, tool_name: str) -> bool:
         """Whether this plugin may override built-in tools: bundled plugins are trusted (a maintainer
         choice, not privilege escalation); others need ``tools.override`` via
-        :func:`plugin_capability_granted` (granted_capabilities OR legacy ``allow_tool_override: true``).
-
-        Bundled plugins (shipped with Hermes core) are trusted by default — an override there is a
-        deliberate maintainer choice, not a third-party plugin trying to elevate privilege. For every other
-        source, the canonical check is :func:`plugin_capability_granted` with the ``tools.override``
-        capability — satisfied by EITHER the consent-flow grant
-        (``plugins.entries.<plugin_id>.granted_capabilities``) OR the deprecated legacy key
-        ``allow_tool_override: true`` (still honored for backward compatibility; #64228 reference
-        migration).
-        """
+        :func:`plugin_capability_granted` (granted_capabilities OR legacy ``allow_tool_override: true``,
+        still honored for backward compatibility; #64228)."""
         if self.manifest.source == "bundled":
             return True
         try:
@@ -616,6 +603,17 @@ class PluginContext:
         """The calling session's client (``cli``/``tui``/``desktop``/``acp``) or messaging platform."""
         from hermes_cli.plugin_session import context_surface
         return context_surface(self._manager)
+
+    def post_message(self, text: str) -> Any:
+        """Post *text* into the session bound to this call; the handle's ``edit(text)`` updates it in
+        place. Never raises (``ok=False`` + ``error`` with no conversation): ``plugin_messages.py``."""
+        from hermes_cli.plugin_messages import post
+        return post(self, text)
+
+    async def apost_message(self, text: str) -> Any:
+        """``post_message`` for async code on the gateway loop (edit with ``await handle.aedit``)."""
+        from hermes_cli.plugin_messages import apost
+        return await apost(self, text)
 
     def _gateway_injection_allowed(self) -> bool:
         """Return whether this plugin may trigger gateway session turns (read from the plugin's

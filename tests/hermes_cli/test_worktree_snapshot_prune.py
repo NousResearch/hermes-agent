@@ -206,11 +206,13 @@ def test_a_tree_resumed_mid_sweep_is_never_removed(repo, monkeypatch, capsys):
                                "archived, kept (changed during the sweep) → refs/hermes/archive/lane-staged"]
 
 
-def test_dirty_submodule_work_is_never_archived_away(repo, tmp_path):
-    """C1: a snapshot records a submodule only as its gitlink, so a tree whose initialized
-    submodule holds uncommitted edits survives the real sweep byte-for-byte, and the shared
-    snapshot entry point (exit-time Archive, subagent finalization) refuses it too. A tree whose
-    submodule is clean at the recorded commit is still archived and removed."""
+def test_dirty_submodule_work_is_never_archived_away(repo, tmp_path, monkeypatch):
+    """C1: a snapshot records a submodule only as its gitlink, and removing a tree deletes its
+    ``modules/`` repositories. So the real sweep keeps, byte-for-byte: a tree with a dirty
+    submodule; a deinitialized one whose retained module repository holds an unpushed private
+    commit; and one whose submodule file is edited right after the snapshot step. The shared
+    snapshot entry point (exit-time Archive, subagent finalization) refuses them too."""
+    from hermes_cli import worktree_archive, worktree_sweep
     from hermes_cli.worktree_archive import ArchiveError, snapshot_worktree
 
     sub_origin, sub_work = tmp_path / "sub.git", tmp_path / "subwork"
@@ -223,24 +225,45 @@ def test_dirty_submodule_work_is_never_archived_away(repo, tmp_path):
     _git(["-c", "protocol.file.allow=always", "submodule", "add", "-q", str(sub_origin), "sub"], repo)
     _git(["commit", "-qm", "add submodule"], repo)
     trees = {}
-    for name in ("lane-subdirty", "lane-subclean"):
+    for name in ("lane-subdirty", "lane-deinit", "lane-late"):
         trees[name] = _tree(repo, name, dirty=True)
         _git(["-c", "protocol.file.allow=always", "submodule", "update", "-q", "--init"], trees[name])
     dirty_file = trees["lane-subdirty"] / "sub" / "file.txt"
     dirty_file.write_bytes(b"base\nUNCOMMITTED SUBMODULE EDIT\r\n")
+    deinit_sub = trees["lane-deinit"] / "sub"
+    module_repo = Path(_git(["rev-parse", "--absolute-git-dir"], deinit_sub))
+    _git(["switch", "-qc", "private-work"], deinit_sub)
+    (deinit_sub / "file.txt").write_text("UNPUSHED\n", encoding="utf-8")
+    _git(["commit", "-qam", "private"], deinit_sub)
+    private = _git(["rev-parse", "HEAD"], deinit_sub)
+    _git(["checkout", "-q", "--detach", "origin/main"], deinit_sub)
+    _git(["submodule", "deinit", "-q", "sub"], trees["lane-deinit"])
     for tree in trees.values():
         _idle(tree)
-    from hermes_cli import worktree_sweep
+    late_file, late_bytes = trees["lane-late"] / "sub" / "file.txt", [b"base\n"]
+    real_snapshot = worktree_archive.snapshot_worktree
+
+    def snapshot_then_submodule_edit(repo_root, wt_path, **kw):
+        try:
+            return real_snapshot(repo_root, wt_path, **kw)
+        finally:
+            if Path(wt_path).name == "lane-late":
+                late_bytes.append(b"LATE SUBMODULE EDIT\n")
+                late_file.write_bytes(late_bytes[-1])
+
+    monkeypatch.setattr(worktree_archive, "snapshot_worktree", snapshot_then_submodule_edit)
     plan = {d.name: d.action for d in worktree_sweep.plan_sweep(str(repo), settings=worktree_sweep.sweep_settings())}
-    assert plan == {"lane-subdirty": "keep-submodule-work", "lane-subclean": "archive-remove"}
+    assert set(plan.values()) == {"keep-submodule-work"}
 
     worktree_ops._prune_stale_worktrees(str(repo))
 
     assert dirty_file.read_bytes() == b"base\nUNCOMMITTED SUBMODULE EDIT\r\n"
-    assert not trees["lane-subclean"].exists(), "a clean submodule at the recorded commit is archivable"
-    assert [ref.rsplit("/", 1)[-1] for ref in _archives(repo)] == ["lane-subclean"]
-    with pytest.raises(ArchiveError, match="submodule sub"):
-        snapshot_worktree(str(repo), trees["lane-subdirty"], reason="session exit")
+    assert _git(["--git-dir", str(module_repo), "rev-parse", "private-work"], repo) == private
+    assert late_file.read_bytes() == late_bytes[-1]
+    assert _archives(repo) == []
+    for tree in trees.values():
+        with pytest.raises(ArchiveError, match="submodule"):
+            snapshot_worktree(str(repo), tree, reason="session exit")
 
 
 def test_prune_older_than_bounds_what_the_sweep_removes(repo, capsys):

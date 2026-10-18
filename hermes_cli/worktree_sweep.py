@@ -6,8 +6,8 @@ tiers and classifier, then removes an idle dirty/unpushed tree only after archiv
 working state to ``refs/hermes/archive/<tree>`` (``worktree_archive``); a failed archive keeps
 the tree. Never touched, at any age or budget: Kanban ``t_<hex>`` trees, trees whose ``hermes``
 lock owner still runs, trees any live process sits in (cwd or open file), and trees with file or
-ref activity younger than their tier, and trees whose initialized submodules hold work
-(``keep-submodule-work``: an archive records only the gitlink). With ``archive_dirty: false`` and no size budget the
+ref activity younger than their tier, and trees with a submodule (``keep-submodule-work``: an
+archive records only the gitlink; see ``worktree_archive.submodule_work``). With ``archive_dirty: false`` and no size budget the
 classic pruner runs unchanged.
 
 ``plan_sweep`` is read-only (``hermes worktree prune --dry-run`` prints it); ``execute_plan``
@@ -197,8 +197,7 @@ def _tier_hours(name: str, max_age_hours: float) -> float:
 
 
 def _unarchivable_action(why: str) -> str:
-    """``keep-submodule-work`` for submodule edits/commits a gitlink cannot carry, else
-    ``keep-unarchivable``."""
+    """``keep-submodule-work`` for a submodule a gitlink cannot carry, else ``keep-unarchivable``."""
     from hermes_cli.worktree_archive import SUBMODULE_REASON
     return "keep-submodule-work" if why.startswith(SUBMODULE_REASON) else "keep-unarchivable"
 
@@ -295,6 +294,8 @@ def plan_sweep(repo_root: str, max_age_hours: int = 24, settings: Optional[dict]
                 repo_root, entry, verdict, lock_state, settings, tier, now)
             if active:
                 d.age_hours = min(d.age_hours, round((now - active) / 3600, 1))
+        elif why := ops.submodule_blocks_removal(str(entry)):
+            d.action, d.reason = "keep-submodule-work", why
         else:
             d.action = "remove-keep-branch" if verdict == "reap-keep-branch" else "remove"
             d.reason = "pushed to origin; branch kept" if verdict == "reap-keep-branch" else "clean and merged/pushed"
@@ -359,16 +360,18 @@ def archive_then_remove(repo_root: str, path: str, *, reason: str, max_untracked
 
     Raises ``ArchiveError`` (tree untouched) when the snapshot fails. Right after the snapshot the
     tree is checked again: a process (other than *exclude_pids*) now working in it, any edit
-    made while the snapshot ran, or staged entries that differ from the captured index keep the tree (``removed`` False; the archive stays). The branch
+    made while the snapshot ran, staged entries that differ from the captured index, or a submodule
+    that appeared meanwhile keep the tree (``removed`` False; the archive stays). The branch
     survives when it is protected or published on a remote (an open PR may still need it);
     otherwise the archive ref anchors its commits and the local branch is deleted.
     """
     from hermes_cli.worktree_archive import snapshot_worktree
-    from hermes_cli.worktree_ops import _git, _git_quiet, release_lsp_clients
+    from hermes_cli.worktree_ops import _git, _git_quiet, release_lsp_clients, submodule_blocks_removal
     from hermes_cli._subprocess_compat import noninteractive_git_env
     started = time.time()
     arc = snapshot_worktree(repo_root, path, reason=reason, max_untracked_mb=max_untracked_mb)
-    busy = _in_use_since(path, started, exclude=exclude_pids) or _index_moved(path, arc.staged)
+    busy = (_in_use_since(path, started, exclude=exclude_pids) or _index_moved(path, arc.staged)
+            or submodule_blocks_removal(path, gitlinks=True))  # a submodule set up during capture
     if busy:
         logger.warning("Archived %s to %s but keeping it: %s", path, arc.ref, busy)
         return arc.ref, None, False

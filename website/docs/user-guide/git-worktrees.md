@@ -213,7 +213,7 @@ repositories' `.worktrees/`:
 | A live hermes lock owner, or any live process whose cwd (Linux: or an open file) is inside | never touched |
 | File, `HEAD` or reflog activity younger than its tier (a deleted file counts through its folder) | never touched |
 | Kanban task trees (`t_<hex>`) | never touched (the Kanban GC owns them) |
-| An initialized submodule with uncommitted edits, a different commit than recorded, or commits on no remote | kept (`keep-submodule-work`: an archive records only the submodule pointer) |
+| Any submodule: a gitlink in the index, or a submodule repository kept under the tree's `modules/` (even after `git submodule deinit`) | kept (`keep-submodule-work`: an archive records only the submodule pointer). A clean merged tree is removed only if its submodules were never initialized |
 
 An archive is a commit stored at `refs/hermes/archive/<tree>` holding the
 tree's `HEAD`, staged changes, unstaged changes and untracked files (files your

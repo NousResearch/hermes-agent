@@ -1013,6 +1013,16 @@ def _classify_prune_candidates(repo_root: str, candidates: list) -> list:
 _PRESERVE_REASONS = {"dirty": "uncommitted changes", "unpushed": "unpushed commits"}
 
 
+def submodule_blocks_removal(path: str, gitlinks: bool = False) -> Optional[str]:
+    """Why a submodule keeps the tree at *path* (``worktree_archive.submodule_work``); an
+    unreadable tree counts as blocked."""
+    from hermes_cli.worktree_archive import ArchiveError, submodule_work
+    try:
+        return submodule_work(path, gitlinks=gitlinks)
+    except (ArchiveError, OSError, subprocess.SubprocessError) as exc:
+        return f"submodule check failed: {exc}"
+
+
 def _reap_prune_verdicts(repo_root: str, verdicts: list, stale_work_cutoff: float) -> tuple[list, set]:
     """Phase 3, serial unlock / remove / branch -D -> ``(preserved_stale, kept_branches)``.
 
@@ -1029,6 +1039,10 @@ def _reap_prune_verdicts(repo_root: str, verdicts: list, stale_work_cutoff: floa
             continue
         if verdict == "locked-live":
             logger.debug("Skipping live-locked worktree: %s", entry.name)
+            continue
+        why = submodule_blocks_removal(str(entry))
+        if why:
+            preserved_stale.append(f"{entry.name} ({why})")
             continue
 
         if lock_state == "dead":

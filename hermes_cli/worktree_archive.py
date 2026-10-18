@@ -177,43 +177,24 @@ def _untracked(wt: Path, env) -> list[str]:
 SUBMODULE_REASON = "submodule "
 
 
-def submodule_work(wt_path, _depth: int = 0) -> Optional[str]:
-    """Why an initialized submodule of *wt_path* holds work a snapshot cannot carry, or None.
+def submodule_work(wt_path, *, gitlinks: bool = True) -> Optional[str]:
+    """Why a submodule keeps *wt_path*, or None. Read-only.
 
-    A snapshot records a submodule only as its ``160000`` gitlink, and removing the worktree
-    deletes the submodule checkout and its per-worktree ``modules/`` repository. So a populated
-    submodule that is dirty (tracked or untracked), checked out at another commit than recorded,
-    or holding any commit/stash no remote-tracking ref has, keeps the tree. Uninitialized
-    submodules, and clean ones whose commits all exist on a remote, are safe. Read-only.
+    An archive records a submodule only as its ``160000`` gitlink, and removing the tree deletes
+    its per-worktree ``modules/`` repositories (kept by ``git submodule deinit``, private branches
+    included). Until submodules are archived recursively: no tree with a gitlink is archived
+    (*gitlinks*), and no tree whose ``modules/`` holds a repository or whose gitlink is checked out
+    is removed at all.
     """
     wt = Path(wt_path)
-    env = _env(wt)
-    env["GIT_OPTIONAL_LOCKS"] = "0"
+    env = {**_env(wt), "GIT_OPTIONAL_LOCKS": "0"}
+    modules = Path(_ok(["rev-parse", "--absolute-git-dir"], wt, env).strip()) / "modules"
+    if modules.is_dir() and any(modules.iterdir()):
+        return f"{SUBMODULE_REASON}repository in {modules} would be deleted with the tree"
     staged = _ok(["ls-files", "--stage", "-z"], wt, env)
     links = [e.split("\t", 1)[1] for e in staged.split("\0") if e.startswith("160000 ") and "\t" in e]
-    populated = [p for p in dict.fromkeys(links) if (wt / p / ".git").exists()]
-    if not populated:
-        return None
-    # --ignore-submodules=none overrides diff.ignoreSubmodules/.gitmodules ignore=all; the S flags
-    # (C = new commit, M = tracked changes, U = untracked files) recurse into nested submodules.
-    status = _ok(["status", "--porcelain=v2", "-z", "-uno", "--no-renames", "--ignore-submodules=none"], wt, env)
-    for entry in status.split("\0"):
-        fields = entry.split(" ")
-        if entry[:2] in ("1 ", "2 ", "u ") and len(fields) > 2 and fields[2].startswith("S") \
-                and fields[2] != "S...":
-            path = entry.split(" ", 10 if entry[0] == "u" else (9 if entry[0] == "2" else 8))[-1]
-            return f"{SUBMODULE_REASON}{path.split(chr(9))[0]} has uncommitted work or a new commit"
-    for rel in populated:
-        sub = wt / rel
-        senv = _env(sub)
-        local_only = _ok(["rev-list", "-n1", "--all", "--not", "--remotes"], sub, senv).strip()
-        if local_only:
-            return f"{SUBMODULE_REASON}{rel} has commits or stashes on no remote"
-        if _depth < 8:
-            nested = submodule_work(sub, _depth + 1)
-            if nested:
-                return nested.replace(SUBMODULE_REASON, f"{SUBMODULE_REASON}{rel}/", 1)
-    return None
+    kept = [p for p in links if gitlinks or (wt / p / ".git").exists()]
+    return f"{SUBMODULE_REASON}{kept[0]} cannot be archived (gitlink only)" if kept else None
 
 
 def staged_state(wt_path) -> str:
@@ -276,8 +257,7 @@ def snapshot_worktree(repo_root: str, wt_path, *, reason: str, max_untracked_mb:
     """
     wt = Path(wt_path)
     env = _env(wt)
-    # Shared refusal point (sweep, exit-time Archive, subagent finalization): a gitlink records
-    # no submodule work, and removing the tree would delete it.
+    # Shared refusal point (sweep, exit-time Archive, subagent finalization).
     unsafe = submodule_work(wt)
     if unsafe:
         raise ArchiveError(unsafe)

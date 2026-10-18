@@ -228,6 +228,38 @@ async def test_a_streamed_continuation_that_races_a_reclaim_gets_a_retryable_503
     assert owner.db.get_session(successor) is None, 'the chain split across the root and its successor'
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('stream', [False, True], ids=['plain', 'streamed'])
+async def test_a_storage_error_in_a_moved_chains_pre_bind_is_a_retryable_503(api, owner, served, stream, monkeypatch):
+    """A chained request without an Idempotency-Key binds the successor its chain moved to before
+    any response starts. A failure there that is not a store refusal (a busy SQLite writer) is
+    ``storage_unavailable``, the JSON 503 with ``Retry-After`` every other store error before the
+    response gets, not aiohttp's bare 500."""
+    import sqlite3
+    from gateway import session_api
+    app = web.Application()
+    app.router.add_post('/v1/responses', api._handle_responses)
+    auth = {'Authorization': 'Bearer ' + chat._API_KEY}
+    store = api._current_response_store()
+    async with TestClient(TestServer(app)) as client:
+        opened = await client.post('/v1/responses', json={'input': 'remember 42'}, headers=auth)
+        assert opened.status == 200, await opened.text()
+        first = (await opened.json())['id']
+        _sweep(owner, store.get(first)['session_id'])
+        bind = session_api.bind_api_steps
+
+        def locked(authority, session_id, **kwargs):
+            if kwargs.get('walked_from') is None:
+                return (yield from bind(authority, session_id, **kwargs))
+            raise sqlite3.OperationalError('database is locked')
+        monkeypatch.setattr(session_api, 'bind_api_steps', locked)
+        body = {'input': 'and then?', 'previous_response_id': first, 'stream': stream}
+        raced = await client.post('/v1/responses', json=body, headers=auth)
+        assert raced.status == 503, await raced.text()
+        assert (await raced.json())['error']['code'] == 'storage_unavailable'
+        assert raced.headers.get('Retry-After') == '1'
+
+
 def test_keep_passed_fences_reports_a_walk_it_could_not_pin(owner):
     """``keep_passed_fences`` pins every fence a walk passed and says whether the walk still holds:
     a passed generation without a marker means the walk would now stop there."""

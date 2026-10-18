@@ -1,6 +1,7 @@
 """Responses retries observe their original admission before resolving mutable conversation names."""
 from functools import partial
 import hashlib
+import logging
 import uuid
 
 from hermes_state_runtime import RuntimeStoreError
@@ -127,8 +128,17 @@ async def _bind_successor(adapter, session_id, run_kwargs):
     from gateway.session_authorities import active_authority
     authority = active_authority(adapter.gateway_runner)
     if authority is not None:
-        await run_steps_off_loop(authority, bind_api_steps(authority, session_id, walked_from=run_kwargs['walked_from'],
-                                                           caller_key=run_kwargs['gateway_session_key']))
+        try:
+            await run_steps_off_loop(authority, bind_api_steps(
+                authority, session_id, walked_from=run_kwargs['walked_from'],
+                caller_key=run_kwargs['gateway_session_key']))
+        except RuntimeStoreError:
+            raise
+        except Exception as exc:
+            # A busy writer or I/O error: the caller maps store refusals only, and anything else
+            # would reach the client as aiohttp's bare 500 instead of the retryable 503.
+            logging.getLogger(__name__).warning('pre-stream bind of %s failed', session_id, exc_info=True)
+            raise RuntimeStoreError('storage_unavailable') from exc
 
 
 async def prepare_context(adapter, request, body, gateway_session_key, durable_key, scope, key):

@@ -66,7 +66,7 @@ The install also ships `hermes-agent`, a minimal runner that sends one query and
 | `hermes migrate` | Diagnose and (optionally) rewrite `config.yaml` to replace references to retired models or deprecated settings (e.g. `migrate xai`). |
 | `hermes codex-runtime` | Noninteractive counterpart of `/codex-runtime`: `migrate [--dry-run] [--json]` regenerates the Hermes-managed block in `~/.codex/config.toml` for the selected profile. See [Codex app-server runtime](../user-guide/features/codex-app-server-runtime.md#running-the-migration-from-a-script). |
 | `hermes status` | Show agent, auth, and platform status. |
-| `hermes usage` | Show the configured account's rate-limit windows (the `/usage` block) without a session; `--json` for scripts. |
+| `hermes usage` | Show the configured account's rate-limit windows (the `/usage` block) without a session, a credential pool account by account; `--json` for scripts. |
 | `hermes cron` | Inspect and tick the cron scheduler. |
 | `hermes pause` / `hermes resume` | Global emergency stop: no new cron fires (built-in ticker, managed-cron webhook, misfire catch-up), kanban dispatch or gateway turns start until resumed; in-flight work is never killed. |
 | `hermes kanban` | Multi-profile collaboration board (tasks, links, dispatcher). |
@@ -704,16 +704,28 @@ jobs can read it.
 ```bash
 hermes usage                          # configured model provider, human-readable block
 hermes usage --provider openai-codex  # a specific provider
+hermes usage --all                    # every pooled provider too
+hermes usage --refresh                # first refresh pooled accounts' expired access tokens
 hermes usage --json                   # one JSON document on stdout
+hermes usage --all --json             # {"providers": [one document per provider]}
 ```
+
+A provider with two or more pooled credentials is shown account by account: a summary line
+(`3 of 5 accounts ready · 2 unknown`), then each account's state, every window (5-hour session, week,
+per-model weeks) and how long its access token lives. An account no session has used for a while has an
+expired access token, the provider refuses its usage read, and it shows as `unknown` with `token
+expired`. `--refresh` first refreshes those tokens the way a session does before a request.
 
 | Option | Description |
 |--------|-------------|
 | `--provider NAME` | Provider to query (default: the configured `model.provider`). Supported: `openai-codex`, `anthropic`, `openrouter`. |
 | `--json` | Print one JSON document instead of the human-readable block. |
+| `--all` | Also show every other pooled provider that reports usage. With `--json`, prints `{"providers": [...]}`, one document per provider. |
+| `--refresh` | Refresh the expired access tokens of pooled accounts before fetching their usage. |
 
 Credentials resolve exactly as they do for `/usage` in a session with no live agent (the auth store, then
-the credential pool); the command never adds or refreshes a credential it would not use for chat. Exit code
+the credential pool); the command never adds or refreshes a credential it would not use for chat. Pooled
+accounts are read with their own tokens and are refreshed only with `--refresh`. Exit code
 `0` on success; `1` with a single stderr line when no credential is configured for the provider, the provider
 has no usage endpoint, or the fetch fails (stdout stays empty).
 
@@ -737,6 +749,11 @@ has no usage endpoint, or the fetch fails (stdout stays empty).
 
 `used_percent` is `null` when the provider did not report the window; `resets_at` is ISO-8601 UTC or `null`
 (some windows carry a free-text `detail` instead); `plan` is `null` when unknown.
+
+For a credential pool, `source` is `credential_pool`, the provider-wide `windows` stay empty (one login's
+quota says nothing about its siblings), and two keys are added: `accounts` (one row per account, the same
+rows the model picker gets: `id`, `label`, `state` (`ready` / `limited` / `unknown` / `unavailable`),
+`windows`, `resets_at`, `token_expires_at`) and `pool` (counts per state plus `total`).
 
 ## `hermes status`
 

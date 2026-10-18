@@ -507,13 +507,18 @@ class ProviderUsageAccount(Result):
 
     ``resets_at``: for a limited account, the LATEST of its exhausted account-scoped windows (or a
     live cooldown when later); ``None`` when unknown (the frontend renders its own advisory, e.g.
-    the earliest limited sibling)."""
+    the earliest limited sibling).
+
+    ``token_expires_at``: when the account's access token expires (ISO), if known. A past value
+    explains ``unknown``: the provider refuses a usage read with an expired token, and the token is
+    refreshed only when a session next draws from the pool (or by ``hermes usage --refresh``)."""
 
     id: str
     label: str = ""
     windows: list[ProviderUsageWindow] = Field(default_factory=list)
     state: Literal["ready", "limited", "unknown", "unavailable"]
     resets_at: str | None = None
+    token_expires_at: str | None = None
 
 
 class ProviderUsage(Result):

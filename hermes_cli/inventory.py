@@ -382,6 +382,7 @@ def pool_usage_accounts(slug: str, entry_requests: list[dict]) -> Optional[list[
 
     from agent.account_usage_cache import _identity_id_for, cached_account_usage, has_account_usage, snapshot_is_stale
     from agent.credential_pool import STATUS_DEAD, _exhausted_until, load_pool
+    from agent.credential_pool_timestamps import token_expires_at
 
     try:
         pool = load_pool(slug)
@@ -423,9 +424,12 @@ def pool_usage_accounts(slug: str, entry_requests: list[dict]) -> Optional[list[
             state = "unknown"
         else:
             state = "ready"
+        expires = token_expires_at(entry)
         account_row = {
             "id": identity_id, "label": str(entry.label or ""), "windows": windows,
             "state": state, "resets_at": account_resets_at(snapshot, live_cooldown),
+            # A past expiry explains an unknown account: its usage read was refused for a stale token.
+            "token_expires_at": _iso_from_epoch(expires) if expires else None,
         }
         if dedupe_key in seen:
             # Same account under a second credential: keep the row that says more (state rank
@@ -438,7 +442,9 @@ def pool_usage_accounts(slug: str, entry_requests: list[dict]) -> Optional[list[
             continue
         seen[dedupe_key] = account_row
         accounts.append(account_row)
-        if supports_usage and not is_dead:
+        # A row with no token (an unhydrated borrowed credential) has nothing of its own to read
+        # with; a fetch without a key would read the ambient credential's usage instead.
+        if supports_usage and not is_dead and entry.runtime_api_key:
             entry_requests.append({
                 "provider": slug, "identity_id": identity_id,
                 "base_url": _pool_entry_route_base_url(slug, entry), "api_key": entry.runtime_api_key,

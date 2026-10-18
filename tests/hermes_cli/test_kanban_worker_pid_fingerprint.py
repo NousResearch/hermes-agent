@@ -139,6 +139,72 @@ def test_reboot_invalidates_the_epoch_witness_for_a_drift_ceiling_pid_reuser(boa
     assert task.status == "ready" and task.worker_pid is None
 
 
+def _legacy_witnessless_row() -> str:
+    """The fingerprint a spawn recorded before the Darwin boot-time witness existed: an empty
+    epoch half, the same start half this reader reads today (``"|<start>"``). Such rows are in
+    flight at the moment of an upgrade."""
+    live = kbd._process_fingerprint(os.getpid())
+    assert live is not None
+    epoch, _, start = live.partition("|")
+    assert epoch, "this reader must carry a witness for the migration case to exist"
+    return f"|{start}"
+
+
+def test_legacy_witnessless_row_keeps_the_live_worker_after_upgrade(board):
+    """PR #118353 review (thedavidmurray): a row written before the boot-time witness carries an
+    empty epoch half. Once the reader has one, the halves can never be equal — and that is a
+    MISSING witness, not a reboot. The live worker under the row keeps its claim (extended), is
+    never released beside, and is never signalled."""
+    conn = board
+    killed = []
+    legacy = _legacy_witnessless_row()
+    tid = _claimed_running(conn, pid=os.getpid(), started_at=legacy)
+
+    assert kbd._worker_alive(os.getpid(), legacy) is True
+    assert kb.release_stale_claims(conn, signal_fn=lambda pid, sig: killed.append((pid, sig))) == 0
+    assert killed == []
+    task = kb.get_task(conn, tid)
+    assert task.status == "running" and task.worker_pid == os.getpid()
+    assert "claim_extended" in [e.kind for e in kb.list_events(conn, tid)]
+
+
+def test_legacy_witnessless_row_on_a_stale_heartbeat_defers_without_a_signal(board):
+    """An uncomparable epoch is refusal to conclude, not permission: on a stale heartbeat the
+    legacy row is neither released beside the live worker nor signalled — the reclaim defers,
+    exactly like a drift-rescued near-match (#99558's unverified-identity safety survives the
+    migration)."""
+    conn = board
+    killed = []
+    legacy = _legacy_witnessless_row()
+    tid = _claimed_running(conn, pid=os.getpid(), started_at=legacy)
+    with kb.write_txn(conn):
+        conn.execute("UPDATE tasks SET last_heartbeat_at = ? WHERE id = ?",
+                     (int(time.time()) - 2 * 3600, tid))
+
+    assert kb.release_stale_claims(conn, signal_fn=lambda pid, sig: killed.append((pid, sig))) == 0
+    assert killed == []
+    task = kb.get_task(conn, tid)
+    assert task.status == "running" and task.worker_pid == os.getpid()
+    assert "reclaim_deferred" in [e.kind for e in kb.list_events(conn, tid)]
+
+
+def test_witnessless_reader_keeps_a_witnessed_live_row(board, monkeypatch):
+    """The symmetric half: a reader that cannot read ANY witness (``""`` disables the epoch check
+    by contract) must not read a witnessed row as a reboot either. Only two readable witnesses
+    that disagree prove one."""
+    from gateway import drain_control
+
+    conn = board
+    witnessed = kbd._process_fingerprint(os.getpid())
+    assert witnessed is not None and witnessed.partition("|")[0]
+    monkeypatch.setattr(drain_control, "current_instantiation_epoch", lambda: "")
+    tid = _claimed_running(conn, pid=os.getpid(), started_at=witnessed)
+
+    assert kbd._worker_alive(os.getpid(), witnessed) is True
+    assert kb.release_stale_claims(conn) == 0
+    assert kb.get_task(conn, tid).status == "running"
+
+
 def test_unverified_fingerprint_capture_never_authorizes_a_signal(board, monkeypatch):
     """Fingerprint capture fails for a new spawn: the row is NOT a legacy NULL row. A live PID under
     it is never SIGTERM/SIGKILLed by any reclaim/timeout path, and the claim is held (not released

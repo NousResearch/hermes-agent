@@ -398,7 +398,7 @@ def _worker_alive(pid: Optional[int], started_at) -> bool:
     (a claim is never released beside a possibly-live worker) but ``_terminate_reclaimed_worker``
     refuses to signal it. A start-time reading that drifted within ``_SAME_WORKER_START_DRIFT_CEILING``
     under a macOS sleep/wake (forward) or within the shared read-disagreement tolerance (either
-    direction) is still our worker (#118326) — the epoch half must still match."""
+    direction) is still our worker (#118326) — unless two readable epoch witnesses disagree."""
     if not _kb._pid_alive(pid):
         return False
     if started_at == UNVERIFIED_WORKER_FINGERPRINT:
@@ -407,7 +407,7 @@ def _worker_alive(pid: Optional[int], started_at) -> bool:
 
 
 def _drifted_spawn_still_matches(pid: int, started_at) -> bool:
-    """Same incarnation despite a start-time reading drift: identical instantiation epoch and either
+    """Same incarnation despite a start-time reading drift: no readable-epoch disagreement and either
     a forward delta within ``_SAME_WORKER_START_DRIFT_CEILING`` (accumulated macOS sleep/wake) or a
     near-match within the read-disagreement tolerance every other liveness surface already shares
     (``gateway.status.start_time_fingerprints_match``) — the reaper can read the same live worker's
@@ -422,7 +422,12 @@ def _drifted_spawn_still_matches(pid: int, started_at) -> bool:
         return False
     recorded_epoch, _, recorded_start = started_at.partition("|")
     current_epoch, _, current_start = current.partition("|")
-    if recorded_epoch != current_epoch:
+    # Two readable witnesses that disagree prove a reboot. An EMPTY half on either side is a
+    # missing witness, not a differing one — a row written before this host had one (the
+    # ``"|<start>"`` rows in flight across an upgrade) or a reader that cannot read any today
+    # (``""`` disables the epoch check by contract, never fail-closed). Neither releases a claim
+    # beside a live worker; neither authorizes a signal, which ``_pid_recycled`` decides exactly.
+    if recorded_epoch and current_epoch and recorded_epoch != current_epoch:
         return False
     try:
         delta = int(current_start) - int(recorded_start)

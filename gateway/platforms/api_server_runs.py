@@ -835,6 +835,7 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
     # Under session authority the same call admits the turn to the Bot Chat's own FIFO, which is
     # why it is decided BEFORE ``admit_api_turn`` would bind the chat as an API conversation.
     admitted = await self._admit_to_live_bot_chat(session_id, user_message, turn_author) if selected_session_id else None
+    _retarget_to_delivered_chat(self, launch, admitted)
     if admitted is None and getattr(self.gateway_runner, 'session_authority', None) is not None:
         refused = await _admit_run_to_authority(
             self, launch, run_id, session_history_delivery, _declared_selected,
@@ -852,6 +853,15 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
     if hasattr(task, "add_done_callback"):
         task.add_done_callback(self._background_tasks.discard)
     return _accepted_response(run_id, "started", gateway_session_key, replayed=False)
+
+
+def _retarget_to_delivered_chat(self, launch: _RunLaunch, admitted) -> None:
+    """The owner moved an API-held "Bot Chat" title aside and the turn landed in the local chat it
+    minted (MSG-21): the run record (and its idempotency replay) names that chat, not the old row."""
+    delivered = admitted[1].get("session_id") if admitted is not None else None
+    if delivered and delivered != launch.session_id:
+        launch.session_id = delivered
+        self._set_run_status(launch.run_id, "queued", session_id=delivered)
 
 
 def _run_usage(agent) -> dict[str, int]:

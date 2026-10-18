@@ -690,3 +690,24 @@ def test_reconnect_keeps_a_provider_whose_authority_is_only_unavailable(local):
     _pool_sidecar(Path(HermesTokenStorage("srv", hermes_home=home).pool_path), ".epoch").write_text("{")
     assert manager.get_or_build_provider("srv", SERVER["url"], None) is old
     assert grant.exists()
+
+
+def test_stale_reconnect_never_presents_a_newer_endpoints_grant(local):
+    """Another process authorizes endpoint B and publishes it (config + grant, no epoch change).
+    A runtime still holding endpoint A's parameters reconnects. Its cached provider is revoked
+    (the saved entry changed), but it must NOT be rebuilt for A on the current authority: that
+    would send the grant minted for B to A. It stays fenced until the caller reloads config."""
+    from tools.mcp_oauth import OAuthStorageDetachedError
+    from tools.mcp_oauth_manager import get_manager
+
+    home, _grant_path = local
+    manager = get_manager()
+    old = manager.get_or_build_provider("srv", SERVER["url"], None)
+    _write_config(home, {"srv": dict(CHANGED)})
+    minted = _seed_tokens(home, "srv", "MINTED_FOR_B")
+
+    stale = manager.get_or_build_provider("srv", SERVER["url"], None)
+    assert stale is old and stale._hermes_detached, "a stale reconnect must stay fenced"
+    with pytest.raises(OAuthStorageDetachedError):
+        stale._hermes_assert_authority()
+    assert json.loads(minted.read_text())["access_token"] == "MINTED_FOR_B", "B's grant survives"

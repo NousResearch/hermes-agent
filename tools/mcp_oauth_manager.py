@@ -383,9 +383,16 @@ class MCPOAuthManager:
                 entry = None
             if entry is not None and entry.provider is not None and self._provider_revoked(entry.provider):
                 # Fenced by a revocation (seen or not yet seen) that another process made; the pool
-                # may already hold a new grant for this same identity. Rebuild on current authority.
-                logger.info("MCP OAuth '%s': cached provider lost its pool authority, rebuilding", server_name)
+                # may already hold a new grant for this same identity.
                 self._detach_provider(entry.provider)
+                if not self._saved_entry_unchanged(entry.provider, server_name, key[0]):
+                    # This home's saved entry changed after the provider was built, so the caller's
+                    # parameters may predate it. Renewing authority now would bind them to a grant
+                    # minted for the new entry. Stay fenced until the caller reloads config.
+                    logger.info("MCP OAuth '%s': reconnect predates a saved entry change, staying fenced",
+                                server_name)
+                    return entry.provider
+                logger.info("MCP OAuth '%s': cached provider lost its pool authority, rebuilding", server_name)
                 entry.provider = None
             if entry is None:
                 entry = self._entries[key] = _ProviderEntry(
@@ -423,6 +430,16 @@ class MCPOAuthManager:
         authority = getattr(provider, "_hermes_authority", None)
         verdict = authority.revocation() if authority is not None else None
         return verdict is not None and verdict[1]
+
+    @staticmethod
+    def _saved_entry_unchanged(provider: Any, server_name: str, home: str) -> bool:
+        """True when this home's saved entry is the one *provider* was built against (compared
+        disk to disk, so ``${VAR}`` references compare as written)."""
+        from tools.mcp_oauth import _load_mcp_server_config, _storage_fingerprint
+        authority = getattr(provider, "_hermes_authority", None)
+        if authority is None:
+            return False
+        return _storage_fingerprint(_load_mcp_server_config(Path(home), server_name)) == authority.saved_fingerprint
 
     @staticmethod
     def _detach_provider(provider: Any) -> None:

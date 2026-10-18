@@ -575,14 +575,14 @@ import {
   defaultTranslucencyState,
   glassActive,
   glassSupportedOn,
+  linuxTransparentWindows,
   normalizeState as normalizeTranslucency,
   opacityNeedsSetting,
   translucencySupportedOn,
+  chatWindowSurfaceOptions as translucentSurfaceOptions,
   vibrancyFor as vibrancyForTranslucency,
-  windowBackgroundMaterialOptions,
-  windowBackingOptions,
-  windowOpacityFor,
-  windowOpacityOptions
+  windowBackingColor,
+  windowOpacityFor
 } from './translucency'
 import {
   UPDATE_HANDOFF_DWELL_MS,
@@ -727,6 +727,7 @@ const DEV_SERVER = process.env.HERMES_DESKTOP_DEV_SERVER
 const IS_PACKAGED = app.isPackaged || Boolean(process.env.HERMES_DESKTOP_IS_PACKAGED)
 const IS_MAC = process.platform === 'darwin'
 const IS_WINDOWS = process.platform === 'win32'
+const LINUX_TRANSPARENT_WINDOWS = linuxTransparentWindows(process.platform, process.env)
 const IS_WSL = isWslEnvironment()
 // Truthful macOS kernel major (Tahoe = 25). Product version lies (16 vs 26) per
 // build SDK, so gate Tahoe workarounds on Darwin instead.
@@ -1575,7 +1576,7 @@ function applyWindowTranslucency(win, changed = { backing: true, material: true,
     // translucencyBackedWindows above).
     if (translucencyBackedWindows.has(win)) {
       if (changed.backing && typeof win.setBackgroundColor === 'function') {
-        win.setBackgroundColor(glassActive(translucencyState) ? '#00000000' : getWindowBackgroundColor())
+        win.setBackgroundColor(windowBackingColor(translucencyState, getWindowBackgroundColor(), LINUX_TRANSPARENT_WINDOWS))
       }
 
       if (changed.material) {
@@ -1601,46 +1602,15 @@ function applyWindowTranslucency(win, changed = { backing: true, material: true,
   }
 }
 
-// Constructor options every chat window shares for its translucency surface:
-// the platform material, the webContents backing, and a native opacity only if
-// the state actually fades — all under the CURRENT state. Glass omits
-// backgroundColor so the material shows from the first frame (Electron hands a
-// translucent window a transparent default backing, and runtime swaps are lost
-// early in a window's life — see applyWindowTranslucency); otherwise the opaque
-// themed anti-flash backing.
-//
-// Call sites also register the window in translucencyBackedWindows so a live
-// toggle can re-apply. The HUD, pet overlay, quick entry and wake indicator
-// are `transparent: true` windows that own their backgrounds and are
-// deliberately not chat windows.
+// See chatWindowSurfaceOptions in translucency.ts.
 function chatWindowSurfaceOptions() {
-  return {
-    vibrancy: IS_MAC ? vibrancyForTranslucency(translucencyState) : undefined,
-    // Pin the material to its ACTIVE appearance: several NSVisualEffectView
-    // materials collapse to a shared inactive look when the window blurs
-    // (measured on macOS 26: sidebar, popover and under-window composited
-    // pixel-identically once unfocused), which would quietly erase the
-    // user's frost choice whenever they click elsewhere. Only observable
-    // under glass — everywhere else the page buries the material.
-    visualEffectState: IS_MAC ? ('active' as const) : undefined,
-    // NOT `transparent: true` on Windows. The backdrop material already makes
-    // the window translucent on its own: `IsTranslucent` answers yes off
-    // `background_material_` alone, which is what gives the page its transparent
-    // default backing, and `SetBackgroundMaterial` flips widget translucency
-    // live, so a Clear→Glass toggle needs no recreate either way. Its one gate
-    // is a frameless window, and `titleBarStyle: 'hidden'` already makes
-    // `has_frame()` false here.
-    //
-    // What `transparent` adds on top is permanent and unwanted: it pins the
-    // widget to kTranslucent for the window's whole life, so even glass-OFF
-    // windows pay a DirectComposition redraw per frame (electron#39895), and it
-    // opts into the documented transparent-window limits — including that a
-    // RESIZABLE transparent window is unsupported and breaks (electron#48421).
-    // Every chat window is resizable.
-    ...windowBackgroundMaterialOptions(translucencyState, IS_WINDOWS, GLASS_SUPPORTED),
-    ...windowOpacityOptions(translucencyState),
-    ...windowBackingOptions(translucencyState, getWindowBackgroundColor())
-  }
+  return translucentSurfaceOptions(translucencyState, {
+    isMac: IS_MAC,
+    isWindows: IS_WINDOWS,
+    glassSupported: GLASS_SUPPORTED,
+    linuxTransparent: LINUX_TRANSPARENT_WINDOWS,
+    themedColor: getWindowBackgroundColor()
+  })
 }
 
 function isHexColor(value) {

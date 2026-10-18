@@ -102,11 +102,14 @@ def _cleanup_env(env: Any, *, force_remove: Optional[bool] = None) -> None:
         env.terminate()
 
 
-def _teardown_env(env: Any, task_id: str, *, force_remove: Optional[bool] = None, done_msg: str = "Cleaned up inactive environment for task: %s") -> None:
-    """``_cleanup_env`` plus outcome logging. A 404/"not found" error means the
-    sandbox is already gone — logged at info."""
+def _teardown_env(env: Any, task_id: str, *, force_remove: Optional[bool] = None, done_msg: str = "Cleaned up inactive environment for task: %s", stop_idle: bool = False) -> None:
+    """``_cleanup_env`` (or, with *stop_idle*, the backend's ``stop_idle``) plus outcome logging.
+    A 404/"not found" error means the sandbox is already gone — logged at info."""
     try:
-        _cleanup_env(env, force_remove=force_remove)
+        if stop_idle:
+            env.stop_idle()
+        else:
+            _cleanup_env(env, force_remove=force_remove)
         logger.info(done_msg, task_id)
     except Exception as e:
         error_str = str(e)
@@ -154,7 +157,11 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     try:
         from tools.process_registry import process_registry
         for task_id in list(_last_activity.keys()):
-            if process_registry.has_active_processes(task_id):
+            # A workspace container is keyed by its digest, not the spawning task id: also keep it
+            # while any process it hosts is still running (stopping it would kill that process).
+            if process_registry.has_active_processes(task_id) or (
+                    _is_workspace_key(task_id)
+                    and process_registry._any_running(lambda s, key=task_id: s.task_id == key)):
                 _last_activity[task_id] = current_time
     except ImportError:
         pass
@@ -172,7 +179,17 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     for task_id, env in envs_to_stop:
         if env is not None:
             _clear_file_ops_cache(task_id)
-            _teardown_env(env, task_id)
+            if _is_workspace_key(task_id) and callable(getattr(env, "stop_idle", None)):
+                # Persistent per-workspace container: stop it (state kept, restarted on next use)
+                # instead of leaving it running forever like the one profile container.
+                _teardown_env(env, task_id, stop_idle=True)
+            else:
+                _teardown_env(env, task_id)
+
+
+def _is_workspace_key(key: str) -> bool:
+    """A persistent Docker key bound to one session workspace (``<base>:ws:<digest>``)."""
+    return ":ws:" in str(key or "")
 
 
 def get_active_env(task_id: str):

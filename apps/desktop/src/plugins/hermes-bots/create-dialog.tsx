@@ -46,6 +46,7 @@ import { $selectedBot } from './bot-state'
 import { createCanonicalChat } from './canonical-chat'
 import { groupCreationSource, groupExecutionMode } from './canonical-group-capabilities'
 import { registerCanonicalGroup } from './canonical-group-registry'
+import type { CanonicalGroupOrigin } from './canonical-group-registry'
 import { canonicalGroupRequest, captureCanonicalGroupRoute, createCanonicalGroup } from './canonical-groups'
 import { $botMeta, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
 import { labeled, ResizableFrame } from './dialog-parts'
@@ -1174,7 +1175,7 @@ export function GroupDialog({ bot, onClose }: GroupDialogProps) {
 
 interface CreateGroupChatDialogProps {
   onClose: () => void
-  onCreated?: (group: string) => void
+  onCreated?: (group: string, origin: CanonicalGroupOrigin) => void
   open: boolean
   roster: RosterRow[]
 }
@@ -1245,7 +1246,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       if (!sourceCurrent()) {return}
       const key = registerCanonicalGroup(route, created.room)
       onClose()
-      onCreated?.(key)
+      onCreated?.(key, 'key')
 
       return
     }
@@ -1292,7 +1293,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       message: `“${groupName}” created with ${selected.length} bots`
     })
     onClose()
-    onCreated?.(groupName)
+    onCreated?.(groupName, 'name')
     } catch (error) {
       host.notify({ kind: 'error', message: error instanceof Error ? error.message : String(error) })
     } finally { creating.current = false }

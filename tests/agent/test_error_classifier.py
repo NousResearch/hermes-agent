@@ -10,6 +10,7 @@ from agent.error_classifier import (
     PROVIDER_STREAM_NON_JSON_ERROR_CODE,
     classify_api_error,
     is_reasoning_field_rejection,
+    is_reasoning_required_rejection,
     _extract_status_code,
     _extract_error_body,
     _extract_error_code,
@@ -993,6 +994,52 @@ class TestClassifyApiError:
         result = classify_api_error(MockAPIError(msg, status_code=400, body=body), provider="openai-api", model="o4-mini")
         assert result.reason == FailoverReason.reasoning_mandatory
         assert result.retryable is True and result.should_fallback is False
+
+    def test_pydantic_literal_error_on_reasoning_effort_is_floor_required(self):
+        """vLLM behind an OpenAI-compatible proxy rejects the ``reasoning_effort: none`` disable as a
+        pydantic literal validation error naming the field only in ``loc`` — no ``param``, no
+        "unsupported", no "mandatory" (#125279). Both wording rules missed it, the 400 fell to
+        format_error and the reasoning floor never fired. It is a required-rejection (the enum
+        contains ``low``), and the main-loop verdict is reasoning_mandatory, not format_error."""
+        body = {"detail": {"error": {"message": "1 validation error:\n {'type': 'literal_error', "
+                                                "'loc': ('body', 'reasoning_effort'), "
+                                                "'msg': \"Input should be 'low', 'medium' or 'high'\", "
+                                                "'input': 'none'}"}}}
+        msg = f"Title generation failed: ... {body}"
+        assert is_reasoning_required_rejection(msg)
+        result = classify_api_error(MockAPIError(msg, status_code=400, body=body), provider="custom", model="m")
+        assert result.reason == FailoverReason.reasoning_mandatory
+        assert result.retryable is True and result.should_fallback is False and result.should_compress is False
+
+    def test_pydantic_literal_error_on_other_fields_is_not_reasoning(self):
+        """The loc rule is guarded on the reasoning field name: literal errors naming temperature,
+        max_tokens or model stay off the reasoning path (they are ordinary param rejections)."""
+        for field in ("temperature", "max_tokens", "model"):
+            inner = ("1 validation error:\n {'type': 'literal_error', "
+                     f"'loc': ('body', '{field}'), 'msg': 'Input should be valid'}}")
+            body = {"detail": {"error": {"message": inner}}}
+            msg = f"Error code: 400 - {body}"
+            assert not is_reasoning_required_rejection(msg), field
+            assert not is_reasoning_field_rejection(msg), field
+
+    def test_pydantic_literal_error_requires_disabled_input_and_low_acceptance(self):
+        """A reasoning loc alone is insufficient: only a refused disable with the floor accepted
+        takes the mandatory-reasoning recovery path."""
+        cases = (
+            ("none", "low", True),
+            ("off", "low", True),
+            ("ultra", "low", False),
+            ("none", "minimal", False),
+        )
+        for input_value, accepted, expected in cases:
+            body = {"detail": {"error": {"message": (
+                "1 validation error: {'type': 'literal_error', "
+                "'loc': ('body', 'reasoning_effort'), "
+                f"'msg': \"Input should be '{accepted}' or 'high'\", "
+                f"'input': '{input_value}'}}"
+            )}}}
+            msg = f"Error code: 400 - {body}"
+            assert is_reasoning_required_rejection(msg) is expected, (input_value, accepted)
 
     # ── Provider-specific: llama.cpp grammar-parse ──
 

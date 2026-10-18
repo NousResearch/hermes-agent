@@ -11,7 +11,7 @@ import contextlib
 import os
 import sqlite3
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
@@ -42,7 +42,7 @@ class _DispatcherSettings:
     reconcile_orphans: bool
     default_assignee: Optional[str]
     max_in_progress_per_profile: Optional[int]
-    max_in_progress_per_profile_overrides: dict[str, int]
+    max_in_progress_per_profile_overrides: dict[str, int] = field(default_factory=dict)
 
 
 def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettings:

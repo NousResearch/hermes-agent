@@ -2043,6 +2043,24 @@ def normalize_profile_cap_overrides(raw: Any) -> dict[str, int]:
     return normalized
 
 
+def configured_per_profile_caps() -> tuple[Optional[int], dict[str, int]]:
+    """Read ``(max_in_progress_per_profile, max_in_progress_per_profile_overrides)``
+    from ``kanban.*`` config, so standalone daemon and dashboard dispatch nudges
+    enforce the same per-profile limits as the gateway and CLI."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        kcfg = (load_config_readonly() or {}).get("kanban", {})
+        if not isinstance(kcfg, Mapping):
+            return None, {}
+    except Exception:
+        return None, {}
+    cap = _positive_int(kcfg.get("max_in_progress_per_profile"), None)
+    overrides = normalize_profile_cap_overrides(
+        kcfg.get("max_in_progress_per_profile_overrides")
+    )
+    return cap, overrides
+
+
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
@@ -3089,11 +3107,14 @@ def run_daemon(
             # Re-resolved every tick (config load is mtime-cached) so operator
             # edits apply without a restart.
             max_in_progress = resolve_max_in_progress(configured_max_in_progress())
+            per_profile_cap, per_profile_overrides = configured_per_profile_caps()
             with contextlib.closing(_kbc.connect()) as conn:
                 res = dispatch_once(
                     conn,
                     max_spawn=max_spawn,
                     max_in_progress=max_in_progress,
+                    max_in_progress_per_profile=per_profile_cap,
+                    max_in_progress_per_profile_overrides=per_profile_overrides,
                     failure_limit=failure_limit,
                 )
             if on_tick is not None:

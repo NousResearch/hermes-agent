@@ -404,3 +404,58 @@ def test_parser_is_a_module_level_symbol():
     """The gateway imports it late-bound through ``_kbd()``; keep it importable."""
     assert callable(kbd.normalize_profile_cap_overrides)
     assert "hermes_cli.kanban_db_dispatch" in sys.modules
+
+
+def test_dispatcher_settings_default_factory_and_daemon_dashboard_parity(monkeypatch):
+    """_DispatcherSettings defaults max_in_progress_per_profile_overrides={}, and
+    both run_daemon and dashboard POST /dispatch honour configured per-profile caps."""
+    import threading
+    from gateway.kanban_watchers_dispatcher import _DispatcherSettings
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    # 1. Direct _DispatcherSettings construction without max_in_progress_per_profile_overrides works
+    s = _DispatcherSettings(
+        interval=60.0,
+        max_spawn=None,
+        max_in_progress=8,
+        failure_limit=3,
+        stale_timeout_seconds=0,
+        reconcile_orphans=True,
+        default_assignee=None,
+        max_in_progress_per_profile=2,
+    )
+    assert s.max_in_progress_per_profile_overrides == {}
+
+    # 2. configured_per_profile_caps reads both uniform cap and overrides
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {
+            "kanban": {
+                "max_in_progress": 6,
+                "max_in_progress_per_profile": 2,
+                "max_in_progress_per_profile_overrides": {"vx-design": 1, "bad": True},
+            }
+        },
+    )
+    cap, overrides = kbd.configured_per_profile_caps()
+    assert cap == 2
+    assert overrides == {"vx-design": 1}
+
+    # 3. run_daemon forwards max_in_progress_per_profile and overrides to dispatch_once
+    captured_daemon = {}
+    stop_ev = threading.Event()
+
+    class _DummyConn:
+        def close(self):
+            pass
+
+    def _fake_dispatch_once(conn, **kwargs):
+        captured_daemon.update(kwargs)
+        stop_ev.set()
+        return kbd.DispatchResult()
+
+    monkeypatch.setattr(kbd, "dispatch_once", _fake_dispatch_once)
+    monkeypatch.setattr(kbd._kbc, "connect", lambda *a, **kw: _DummyConn())
+    kbd.run_daemon(interval=0.01, stop_event=stop_ev)
+    assert captured_daemon["max_in_progress_per_profile"] == 2
+    assert captured_daemon["max_in_progress_per_profile_overrides"] == {"vx-design": 1}

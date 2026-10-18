@@ -1,11 +1,11 @@
 name: surp-hermes-x402-llm
 repo: https://github.com/ivcained/surp-hermes-x402-llm
-sha: fa5aa69fb22b50965189153bfadf660ff74faf7d
+sha: 3ad7c3c822bcbfa18702c4790000d875acc19502
 description: Marketplace-aware LLM routing for Surp — live prices for all models, provider TPS and trusted flags, mid-chat seller switching, secret masking, and guarded paid chat.
 maintainer: ivcained
 tier: community
 category: models
-version: "0.4.0"
+version: "0.4.1"
 requires_env:
   - SURP_API_KEY
 readme: true

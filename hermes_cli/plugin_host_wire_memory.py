@@ -50,12 +50,9 @@ def _encode_memory_observation(
     def bounded_text(field: Any) -> Any:
         if not isinstance(field, str):
             return _opaque_wire_value(field)
-        text = str.__str__(field)
-        return (
-            text
-            if str.__len__(text) <= MAX_MEMORY_OBSERVATION_FIELD_CHARS
-            else _opaque_wire_value(field)
-        )
+        if str.__len__(field) > MAX_MEMORY_OBSERVATION_FIELD_CHARS:
+            return _opaque_wire_value(field)
+        return str.__str__(field)
 
     try:
         frozen_payload, _ = _freeze_memory_observation_payload(

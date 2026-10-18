@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import time
+import tracemalloc
 from pathlib import Path
 from typing import Any
 
@@ -492,6 +493,40 @@ def test_plugin_host_wire_preserves_full_manager_accepted_observation_tuple():
     assert len(json.dumps(unicode_wire, separators=(",", ":")).encode("utf-8")) <= (
         MAX_MEMORY_OBSERVATION_BATCH_BYTES * 3 + MAX_MEMORY_OBSERVATIONS * 1024
     )
+
+
+def test_plugin_host_wire_oversized_string_subclass_is_opaque_before_copy():
+    from agent.memory_provider import MAX_MEMORY_OBSERVATION_FIELD_CHARS, MemoryObservation
+    from hermes_cli.plugin_host_wire import Opaque, decode, encode
+
+    calls = []
+
+    class HostileString(str):
+        def __str__(self):
+            calls.append("str")
+            raise AssertionError("provider __str__ must not run")
+
+        def __len__(self):
+            return 1
+
+    oversized = HostileString("x" * (MAX_MEMORY_OBSERVATION_FIELD_CHARS + 2_000_000))
+    observation = MemoryObservation(
+        source_kind=oversized,
+        schema="fixture.context",
+        version=1,
+        payload={},
+    )
+
+    tracemalloc.start()
+    try:
+        wire = encode(observation)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+    assert isinstance(decode(wire).source_kind, Opaque)
+    assert calls == []
+    assert peak < 512_000, peak
 
 
 def test_plugin_host_wire_bounds_raw_dict_prefetch_before_generic_encoding():

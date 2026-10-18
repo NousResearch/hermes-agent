@@ -35,9 +35,10 @@ class _NormalizedPrefetchResult:
 def _builtin_dict_fields(value: dict, names: tuple[str, ...]) -> dict[str, Any]:
     """Read selected fields without hashing or comparing provider-controlled keys."""
     wanted = set(names)
+    max_name_chars = max(map(len, names))
     fields = {}
     for index, (key, child) in enumerate(dict.items(value)):
-        if isinstance(key, str):
+        if isinstance(key, str) and str.__len__(key) <= max_name_chars:
             key = str.__str__(key)
             if key in wanted:
                 fields[key] = child
@@ -117,15 +118,14 @@ def _normalize_observation(
         raw_provider = candidate.provider
         if not isinstance(source_kind, str) or not isinstance(schema, str):
             raise ValueError("observation source_kind or schema is invalid")
+        source_kind_len = str.__len__(source_kind)
+        if not source_kind_len or source_kind_len > MAX_MEMORY_OBSERVATION_FIELD_CHARS:
+            raise ValueError("observation source_kind is invalid")
+        schema_len = str.__len__(schema)
+        if not schema_len or schema_len > MAX_MEMORY_OBSERVATION_FIELD_CHARS:
+            raise ValueError("observation schema is invalid")
         source_kind = str.__str__(source_kind)
         schema = str.__str__(schema)
-        if (
-            not source_kind
-            or str.__len__(source_kind) > MAX_MEMORY_OBSERVATION_FIELD_CHARS
-        ):
-            raise ValueError("observation source_kind is invalid")
-        if not schema or str.__len__(schema) > MAX_MEMORY_OBSERVATION_FIELD_CHARS:
-            raise ValueError("observation schema is invalid")
         if (
             isinstance(raw_version, bool)
             or not isinstance(raw_version, int)
@@ -138,13 +138,18 @@ def _normalize_observation(
         if _encoded_json_scalar_size(version) > MAX_MEMORY_OBSERVATION_BYTES:
             raise ValueError("observation version is too large")
         provider_name = provider.name
-        if not isinstance(provider_name, str) or not provider_name:
+        if not isinstance(provider_name, str):
             raise ValueError("provider name is invalid")
-        provider_name = str.__str__(provider_name)
-        if str.__len__(provider_name) > MAX_MEMORY_OBSERVATION_FIELD_CHARS:
+        provider_name_len = str.__len__(provider_name)
+        if not provider_name_len:
+            raise ValueError("provider name is invalid")
+        if provider_name_len > MAX_MEMORY_OBSERVATION_FIELD_CHARS:
             raise ValueError("provider name is too long")
         if not isinstance(raw_provider, str):
             raise ValueError("observation provider is invalid")
+        if str.__len__(raw_provider) > MAX_MEMORY_OBSERVATION_FIELD_CHARS:
+            raise ValueError("observation provider is invalid")
+        provider_name = str.__str__(provider_name)
         observation_provider = str.__str__(raw_provider)
         if observation_provider not in ("", provider_name):
             raise ValueError("observation provider does not match its source provider")

@@ -93,8 +93,18 @@ _CONTROL_ARGUMENTS = {
 }
 
 
+# The setting forms a local session cannot deliver: `/voice tts` asks the owner to voice every reply,
+# and a local session's audio plays only in its client. Read like the handler reads it (no shlex): an
+# unbalanced quote in any other `/voice` argument still reaches the handler.
+_REFUSED_ARGUMENTS = {
+    'voice': lambda arg: arg.strip().lower() == 'tts',
+}
+
+
 def command_verdict(name, arg=''):
     """``read`` / ``control`` / ``refused`` for a canonical registry command on a local session."""
+    if _REFUSED_ARGUMENTS.get(name, lambda _a: False)(arg):
+        return 'refused'
     if (name in _CONTROL_COMMANDS or name in _HANDLER_CONTROLS or name in _PROMPT_COMMANDS
             or name in _SETTING_COMMANDS or name in _APPROVAL_COMMANDS
             or _CONTROL_ARGUMENTS.get(name, lambda _a: False)(arg)):
@@ -454,6 +464,11 @@ async def execute_command(connection, ref, params, *, dispatch=False):
                 prompt = event.text
         else:
             await before()
+            if canonical == 'reasoning':
+                from gateway.run_config_loaders import GatewayConfigLoadersMixin
+                from gateway.session_setting_commands import commit_reasoning_command
+                await commit_reasoning_command(authority, actor, ref,
+                                               *GatewayConfigLoadersMixin._parse_reasoning_command_args(arg))
             handler = runner._command_handler_table((canonical,))[canonical]
             output = await handler(event)
     if canonical in _APPROVAL_COMMANDS:

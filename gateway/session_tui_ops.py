@@ -249,8 +249,8 @@ async def _rewind_last_turn(connection, ref):
     from agent.context_compressor import user_originated_turn_view
     from gateway.session_local_recovery import local_history
     rows = await asyncio.to_thread(local_history, authority, ref)
-    target = next((row['row_id'] for row in reversed(rows)
-                   if isinstance(row.get('row_id'), int) and user_originated_turn_view(row) is not None), None)
+    target = next((row['row_id'] for row in reversed(rows) if isinstance(row.get('row_id'), int)
+                   and not row.get('archived') and user_originated_turn_view(row) is not None), None)
     if target is None:
         return 0
     from gateway.session_mutations import mutate_session

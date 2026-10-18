@@ -137,3 +137,63 @@ async def test_context_breakdown_verb_serves_the_owner_agents_categories(owner, 
     monkeypatch.setattr(context_file_sources, 'context_file_sources_for_agent', lambda a: [])
     live = await owner.call('session.context_breakdown', session_id=sid)
     assert live['categories'][0]['tokens'] == 3000 and live['model'] == 'fake-model', live
+
+
+@pytest.mark.asyncio
+async def test_context_breakdown_is_reused_until_the_transcript_moves(owner, monkeypatch):
+    """#140667: Desktop re-polls ``session.context_breakdown`` on every idle mount and reconnect,
+    and each poll rebuilt the prompt over the whole stored transcript (seconds on a 9,501-row
+    session). The owner reuses the payload while the transcript revision is unchanged and
+    recomputes once a row lands."""
+    sid = (await owner.call('session.create', request_id='r', source='cli', cwd=str(owner.workdir)))['session_id']
+    from agent import context_breakdown, context_file_sources
+    agent = SimpleNamespace(model='fake-model', provider='custom')
+    owner.authority.runner._cached_agent_for = lambda route: agent
+    computed = []
+
+    def compute(a, messages):
+        computed.append(len(messages))
+        return {'categories': [{'id': 'conversation', 'label': 'Conversation', 'tokens': len(messages),
+                                'color': '#fff'}], 'context_max': 128000, 'context_used': 1,
+                'context_percent': 0, 'estimated_total': len(messages), 'context_estimated': True,
+                'context_source': 'local_estimate', 'model': 'fake-model'}
+    monkeypatch.setattr(context_breakdown, 'compute_session_context_breakdown', compute)
+    monkeypatch.setattr(context_file_sources, 'context_file_sources_for_agent', lambda a: [])
+    first = await owner.call('session.context_breakdown', session_id=sid)
+    again = await owner.call('session.context_breakdown', session_id=sid)
+    assert computed == [0] and again == first
+    from gateway.session_tui_reads import _stored_id
+    stored = _stored_id(owner.authority, SimpleNamespace(session_id=sid))
+    owner.authority.db.append_message(stored, 'user', 'hello')
+    moved = await owner.call('session.context_breakdown', session_id=sid)
+    assert computed == [0, 1] and moved['estimated_total'] == 1
+    await owner.call('session.context_breakdown', session_id=sid)
+    assert computed == [0, 1]
+
+
+@pytest.mark.asyncio
+async def test_context_breakdown_follows_an_in_place_row_rewrite(owner, monkeypatch):
+    """The turn prologue rewrites an already-written user row in place (``set_user_message_content``:
+    an @-file expansion, multimodal context), which moves neither the row count nor the highest id.
+    A breakdown cached before the rewrite must not keep the old size (probe by @dokterdok)."""
+    sid = (await owner.call('session.create', request_id='r', source='cli', cwd=str(owner.workdir)))['session_id']
+    from agent import context_breakdown, context_file_sources
+    agent = SimpleNamespace(model='fake-model', provider='custom')
+    owner.authority.runner._cached_agent_for = lambda route: agent
+
+    def compute(a, messages):
+        chars = sum(len(str(m.get('content') or '')) for m in messages)
+        return {'categories': [], 'context_max': 128000, 'context_used': chars, 'context_percent': 0,
+                'estimated_total': chars, 'context_estimated': True, 'context_source': 'local_estimate',
+                'model': 'fake-model'}
+    monkeypatch.setattr(context_breakdown, 'compute_session_context_breakdown', compute)
+    monkeypatch.setattr(context_file_sources, 'context_file_sources_for_agent', lambda a: [])
+    from gateway.session_tui_reads import _stored_id
+    stored = _stored_id(owner.authority, SimpleNamespace(session_id=sid))
+    db = owner.authority.db
+    row_id = db.append_message(stored, 'user', 'explain @file:big.py')
+    before = await owner.call('session.context_breakdown', session_id=sid)
+    expanded = 'explain @file:big.py\n' + 'x' * 20000
+    assert db.set_user_message_content(stored, row_id, expanded) == 1
+    after = await owner.call('session.context_breakdown', session_id=sid)
+    assert after['estimated_total'] == len(expanded) > before['estimated_total']

@@ -455,15 +455,12 @@ class PluginContext:
         self, name: str, toolset: str, schema: dict, handler: Callable,
         check_fn: Callable | None = None, requires_env: list | None = None, is_async: bool = False,
         description: str = "", emoji: str = "", override: bool = False,
+        *, max_result_size_chars: float | None = None,
+        dynamic_schema_overrides: Callable | None = None,
     ) -> Optional[PluginRegistration]:
-        """Register a tool in the global registry and track it as plugin-provided. ``override=True``
-        replaces a same-named built-in (without it a name claimed by another toolset is rejected) and
-        needs operator opt-in via ``plugins.entries.<plugin_id>.allow_tool_override: true`` — otherwise
-        any enabled plugin could silently replace a privileged built-in like ``write_file``.
-
-        ``override=True`` against a built-in tool requires the operator to opt in via
-        ``plugins.entries.<plugin_id>.allow_tool_override: true`` in config.yaml — mirrors the trust gate
-        pattern used for ``ctx.llm`` provider/model overrides (#23194).
+        """Register and track a plugin tool. Replacing a built-in requires ``override=True``
+        and operator opt-in via ``plugins.entries.<plugin_id>.allow_tool_override: true``.
+        Result caps and dynamic schema overrides pass through to the registry unchanged.
         """
         if override and not self._tool_override_allowed(name):
             raise PluginToolOverrideError(
@@ -481,6 +478,8 @@ class PluginContext:
         registry.register(
             name=name, toolset=toolset, schema=schema, handler=handler, check_fn=check_fn,
             requires_env=requires_env, is_async=is_async, description=description, emoji=emoji,
+            max_result_size_chars=max_result_size_chars,
+            dynamic_schema_overrides=dynamic_schema_overrides,
             override=override, scope=scope,
         )
         registered = registry.snapshot_registration(name, scope=scope)

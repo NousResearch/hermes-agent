@@ -76,7 +76,7 @@ logger = logging.getLogger(__name__)
 # Community GitHub mirrors used as fallbacks. Each is a prefix wrapper:
 # https://ghfast.top/https://github.com/…  (also works for
 # https://raw.githubusercontent.com/… and release-assets URLs).
-_DEFAULT_MIRRORS: Tuple[str, ...] = (
+_DEFAULT_MIRRORS: tuple[str, ...] = (
     "https://ghfast.top/",
     "https://gh-proxy.com/",
 )
@@ -93,13 +93,13 @@ _DOH_ACCEPT_HEADER = "accept: application/dns-json"
 # Hosts whose A records are commonly poisoned on CN networks. A failed
 # fetch for one of these always triggers the DoH fallback, without
 # needing to pattern-match the error text.
-_POLLUTED_HOSTS: Tuple[str, ...] = ("huggingface.co", "hf-mirror.com")
+_POLLUTED_HOSTS: tuple[str, ...] = ("huggingface.co", "hf-mirror.com")
 
 # Substrings in curl's stderr that indicate a DNS/connect-layer failure —
 # the only failure classes the DoH fallback can plausibly fix. HTTP-level
 # errors (404, 403, …) never trigger it, so a real server error is not
 # masked by an extra resolution round-trip.
-_DNS_ERROR_MARKERS: Tuple[str, ...] = (
+_DNS_ERROR_MARKERS: tuple[str, ...] = (
     "could not resolve host",
     "failed to connect",
     "connection refused",
@@ -112,11 +112,11 @@ _DNS_ERROR_MARKERS: Tuple[str, ...] = (
 _MAX_DOH_IPS = 4
 
 
-def _env_value(env: Dict[str, str], key: str) -> str:
+def _env_value(env: dict[str, str], key: str) -> str:
     return env.get(key, "").strip()
 
 
-def explicit_proxy(env: Optional[Dict[str, str]] = None) -> Optional[str]:
+def explicit_proxy(env: Optional[dict[str, str]] = None) -> Optional[str]:
     """Return the caller's explicit proxy URL, or ``None``.
 
     ``HTTPS_PROXY`` (case-insensitive) wins over ``HTTP_PROXY``; either is
@@ -153,7 +153,7 @@ def _macos_system_proxy() -> Optional[str]:
     # Collect key → value pairs first, then assemble host+port. The key
     # order in `scutil --proxy` output is not guaranteed, so a port may
     # precede its host line.
-    values: Dict[str, str] = {}
+    values: dict[str, str] = {}
     for line in result.stdout.splitlines():
         line = line.strip()
         if ":" not in line:
@@ -177,7 +177,7 @@ def _normalize_proxy_url(raw: str) -> str:
     return f"http://{raw}"
 
 
-def detect_proxy(env: Optional[Dict[str, str]] = None) -> Optional[str]:
+def detect_proxy(env: Optional[dict[str, str]] = None) -> Optional[str]:
     """Resolve the effective proxy for a fetch.
 
     Priority: explicit env var → macOS system proxy → ``None``.
@@ -189,7 +189,7 @@ def detect_proxy(env: Optional[Dict[str, str]] = None) -> Optional[str]:
     return _macos_system_proxy()
 
 
-def proxy_env_for(env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+def proxy_env_for(env: Optional[dict[str, str]] = None) -> dict[str, str]:
     """Return a copy of ``env`` with the detected proxy injected.
 
     Never mutates the caller's dict. When no proxy is found the copy is
@@ -204,7 +204,7 @@ def proxy_env_for(env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     return base
 
 
-def mirror_candidates(url: str, mirrors: Sequence[str] = _DEFAULT_MIRRORS) -> List[str]:
+def mirror_candidates(url: str, mirrors: Sequence[str] = _DEFAULT_MIRRORS) -> list[str]:
     """Return mirror-wrapped copies of a GitHub URL.
 
     ``ghfast.top``/``gh-proxy.com`` prefix-wrap any github.com /
@@ -275,9 +275,9 @@ def resolve_dns_doh(
     host: str,
     *,
     timeout: int = 5,
-    env: Optional[Dict[str, str]] = None,
+    env: Optional[dict[str, str]] = None,
     curl_cmd: Optional[str] = None,
-) -> List[str]:
+) -> list[str]:
     """Resolve ``host`` A records via DNSPod DNS-over-HTTPS.
 
     Returns a list of IPv4 addresses (``[]`` on any failure — curl missing,
@@ -303,6 +303,7 @@ def resolve_dns_doh(
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=timeout + 5,
             env=child_env,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return []
@@ -312,7 +313,7 @@ def resolve_dns_doh(
         payload = json.loads(result.stdout or "{}")
     except ValueError:
         return []
-    ips: List[str] = []
+    ips: list[str] = []
     for answer in payload.get("Answer", []) or []:
         data = answer.get("data", "") if isinstance(answer, dict) else ""
         # Only valid IPv4 A records; ignore AAAA / CNAME / malformed
@@ -327,10 +328,10 @@ def _retry_with_doh_resolve(
     dest: str,
     *,
     timeout: int,
-    env: Dict[str, str],
+    env: dict[str, str],
     curl: str,
     extra_args: Sequence[str],
-) -> Tuple[bool, str]:
+) -> tuple[bool, str]:
     """Retry ``url`` through ``--resolve`` with DoH-obtained real IPs.
 
     Returns ``(True, '')`` when one of the IPs connects and the download
@@ -362,6 +363,7 @@ def _retry_with_doh_resolve(
                 capture_output=True, text=True, encoding="utf-8", errors="replace",
                 timeout=timeout + 10,
                 env=env,
+                check=False,
             )
         except (OSError, subprocess.TimeoutExpired):
             continue
@@ -378,11 +380,11 @@ def curl_download(
     dest: str,
     *,
     timeout: int = 120,
-    env: Optional[Dict[str, str]] = None,
+    env: Optional[dict[str, str]] = None,
     curl_cmd: Optional[str] = None,
     extra_args: Sequence[str] = (),
     dns_fallback: bool = True,
-) -> Tuple[bool, str]:
+) -> tuple[bool, str]:
     """Download ``url`` to ``dest`` with curl.
 
     Returns ``(ok, detail)`` where ``detail`` is the error text on failure.
@@ -413,6 +415,7 @@ def curl_download(
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=timeout + 10,
             env=child_env,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return False, f"{exc}"
@@ -438,12 +441,12 @@ def fetch_with_fallback(
     dest: str,
     *,
     timeout: int = 120,
-    env: Optional[Dict[str, str]] = None,
+    env: Optional[dict[str, str]] = None,
     content_class: str = "executed",
     allow_mirrors: Optional[bool] = None,
     curl_cmd: Optional[str] = None,
     dns_fallback: bool = True,
-) -> Tuple[bool, str]:
+) -> tuple[bool, str]:
     """Download with the proxy-aware official-then-mirror strategy.
 
     ``content_class`` is the security contract (see module docstring):
@@ -468,7 +471,7 @@ def fetch_with_fallback(
     if allow_mirrors is None:
         allow_mirrors = False
 
-    attempts: List[Tuple[str, str]] = []
+    attempts: list[tuple[str, str]] = []
     ok, detail = curl_download(url, dest, timeout=timeout, env=env, curl_cmd=curl_cmd,
                                dns_fallback=dns_fallback)
     if ok:

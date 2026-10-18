@@ -205,7 +205,7 @@ class TestFetchWithFallback:
         # Mirrors are opt-in: the mirror path only runs when the caller
         # explicitly passes allow_mirrors=True (and only for non-executed
         # data-class content — executed content can never use mirrors).
-        ok, detail = fetch_with_fallback(
+        ok, _detail = fetch_with_fallback(
             url, str(dest), curl_cmd=curl,
             content_class="data", allow_mirrors=True,
         )
@@ -280,7 +280,7 @@ class TestFetchWithFallback:
         curl = TestCurlDownload()._fake_curl_script(
             tmp_path, fail_urls=(url,), output="data-bytes"
         )
-        ok, detail = fetch_with_fallback(
+        ok, _detail = fetch_with_fallback(
             url, str(dest), curl_cmd=curl,
             content_class="data", allow_mirrors=True,
         )
@@ -424,7 +424,7 @@ class TestCurlDownloadDnsFallback:
         real IP, and the retry with --resolve lands the file."""
         dest = tmp_path / "out.sh"
         url = "https://huggingface.co/api/models"  # known-polluted host
-        ok, detail = curl_download(url, str(dest), curl_cmd=self._fake_curl_dns(tmp_path))
+        ok, _detail = curl_download(url, str(dest), curl_cmd=self._fake_curl_dns(tmp_path))
         assert ok is True
         assert dest.read_text() == "dns-content"
 
@@ -466,7 +466,7 @@ class TestCurlDownloadDnsFallback:
             "exit 1\n"
         )
         script.chmod(0o755)
-        ok, detail = curl_download(url, str(dest), curl_cmd=str(script))
+        ok, _detail = curl_download(url, str(dest), curl_cmd=str(script))
         assert ok is True
         assert dest.read_text() == "second-ip-wins"
 
@@ -494,7 +494,7 @@ class TestCurlDownloadDnsFallback:
         )
         script.chmod(0o755)
         dest = tmp_path / "out.sh"
-        ok, detail = curl_download(
+        ok, _detail = curl_download(
             "https://raw.githubusercontent.com/x/y/main/z.sh",
             str(dest), curl_cmd=str(script),
         )
@@ -556,7 +556,7 @@ class TestCurlDownloadDnsFallback:
         )
         script.chmod(0o755)
         dest = tmp_path / "out.sh"
-        ok, detail = curl_download(
+        ok, _detail = curl_download(
             "https://huggingface.co/api/models", str(dest),
             curl_cmd=str(script), dns_fallback=False,
         )
@@ -573,7 +573,7 @@ class TestFetchWithFallbackDns:
         dest = tmp_path / "out.sh"
         url = "https://huggingface.co/api/models"
         curl = TestCurlDownloadDnsFallback()._fake_curl_dns(tmp_path)
-        ok, detail = fetch_with_fallback(
+        ok, _detail = fetch_with_fallback(
             url, str(dest), curl_cmd=curl,
             content_class="data", allow_mirrors=True,
         )
@@ -584,11 +584,11 @@ class TestFetchWithFallbackDns:
         """dns_fallback=False + data/mirror opt-in → mirror still rescues."""
         dest = tmp_path / "out.bin"
         url = "https://raw.githubusercontent.com/x/y/main/weights.bin"
-        mirror1 = f"https://ghfast.top/{url}"
+        _mirror1 = f"https://ghfast.top/{url}"
         curl = TestCurlDownload()._fake_curl_script(
             tmp_path, fail_urls=(url,), output="mirror-bytes"
         )
-        ok, detail = fetch_with_fallback(
+        ok, _detail = fetch_with_fallback(
             url, str(dest), curl_cmd=curl,
             content_class="data", allow_mirrors=True, dns_fallback=False,
         )

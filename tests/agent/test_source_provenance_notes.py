@@ -6,8 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from tests.agent.test_run_agent import agent, _mock_tool_call, _mock_assistant_msg
-from tests.gateway.test_managed_source_context import inert_runtime
+from tests.agent.test_run_agent import agent as _agent_fixture, _mock_tool_call, _mock_assistant_msg
+from tests.gateway.test_managed_source_context import inert_runtime as _inert_runtime_fixture
+
+agent = _agent_fixture
+inert_runtime = _inert_runtime_fixture
 
 
 @pytest.fixture(autouse=True)

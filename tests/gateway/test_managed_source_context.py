@@ -103,23 +103,17 @@ async def _value(value):
     return value
 
 
-@pytest.mark.parametrize('bad', ['extra', 'grant', 'relative', 'bool', 'range', 'bytes', 'count', 'aggregate'])
-def test_private_bootstrap_rejects_invalid_source_facts(tmp_path, monkeypatch, bad):
+@pytest.mark.parametrize(('override', 'copies'), [
+    ({'unexpected': True}, 1), ({'session_id': 'forged-consumer'}, 1),
+    ({'path': 'source.py'}, 1), ({'line_start': True}, 1), ({'line_end': 2001}, 1),
+    ({'content': 'x' * 262_145}, 1), ({}, 65), ({'content': 'x' * 140_000}, 2),
+], ids=['extra', 'grant', 'relative', 'bool', 'range', 'bytes', 'count', 'aggregate'])
+def test_private_bootstrap_rejects_invalid_source_facts(tmp_path, monkeypatch, override, copies):
     from agent.managed_worker import validate_bootstrap
     from tests.gateway.test_managed_turn_contract import assignment
     frame, _ = assignment(tmp_path, monkeypatch)
     fact = dict(path=str(tmp_path / 'source.py'), line_start=1, line_end=1, content='value = 1\n')
-    facts = [fact]
-    if bad == 'extra': fact['unexpected'] = True
-    elif bad == 'grant': fact['session_id'] = 'forged-consumer'
-    elif bad == 'relative': fact['path'] = 'source.py'
-    elif bad == 'bool': fact['line_start'] = True
-    elif bad == 'range': fact['line_end'] = 2001
-    elif bad == 'bytes': fact['content'] = 'x' * 262_145
-    elif bad == 'count': facts *= 65
-    elif bad == 'aggregate':
-        fact['content'] = 'x' * 140_000
-        facts *= 2
+    facts = [{**fact, **override}] * copies
     with pytest.raises(ValueError, match='invalid_managed_source_slices'):
         validate_bootstrap({**frame, 'source_slices_v1': facts})
 

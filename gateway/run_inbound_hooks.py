@@ -117,6 +117,21 @@ class GatewayInboundHooksMixin:
         qc = (cfg.get("quick_commands") if isinstance(cfg, dict) else getattr(cfg, "quick_commands", None)) or {}
         return qc if isinstance(qc, dict) else {}
 
+    def _hm_command_key(self, command: str) -> tuple[str, str]:
+        from hermes_cli.commands import (
+            GATEWAY_KNOWN_COMMANDS, _iter_plugin_command_entries, resolve_command,
+        )
+
+        builtin = resolve_command(command)
+        if builtin is not None and builtin.name in GATEWAY_KNOWN_COMMANDS:
+            return "builtin", builtin.name
+        if command in self._hm_quick_commands():
+            return "quick", command
+        plugin_name = command.replace("_", "-")
+        if any(name == plugin_name for name, _description, _hint in _iter_plugin_command_entries()):
+            return "plugin", plugin_name
+        return "unknown", command
+
     @staticmethod
     def _hm_expand_alias_quick_command(event: MessageEvent, qcmd: dict) -> Optional[str]:
         """Rewrite ``event.text`` to an alias quick command's target; returns the new command name."""
@@ -254,6 +269,9 @@ class GatewayInboundHooksMixin:
                 from hermes_cli.plugins import get_plugin_command_handler
                 plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
                 if plugin_handler:
+                    denied = self._check_slash_access(source, ("plugin", command.replace("_", "-")))
+                    if denied is not None:
+                        return True, denied, command
                     return True, await self._hm_run_plugin_handler(plugin_handler, event, source), command
             except Exception as e:
                 logger.warning("Plugin command dispatch failed: %s", e, exc_info=True)

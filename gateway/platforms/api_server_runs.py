@@ -121,8 +121,16 @@ _TOOL_COMPLETED_RESULT_MAX_CHARS = 100_000
 def _tool_completed_result(result: Any, redact_sensitive_text: Callable[..., str]) -> str | None:
     if result is None:
         return None
-    text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
-    text = redact_sensitive_text(text, force=True)
+    if isinstance(result, str):
+        with suppress(ValueError):
+            parsed = json.loads(result)
+            if isinstance(parsed, (dict, list)):
+                result = parsed
+    # Redact leaves before serialising so a secret ending a JSON string cannot eat its closing quote.
+    if isinstance(result, str):
+        text = redact_sensitive_text(result, force=True)
+    else:
+        text = json.dumps(_redacted_tool_args(result, redact_sensitive_text), ensure_ascii=False)
     limit = _TOOL_COMPLETED_RESULT_MAX_CHARS
     return text if len(text) <= limit else text[: limit - 3] + "..."
 
@@ -1101,7 +1109,8 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             def _tool_complete(call_id, name, args, result):
                 from agent.display import _detect_tool_failure
                 is_error, _ = _detect_tool_failure(name, result)
-                tool_cb("tool.completed", name, None, args, tool_call_id=call_id, is_error=bool(is_error))
+                tool_cb("tool.completed", name, None, args, tool_call_id=call_id, is_error=bool(is_error),
+                        result=result)
 
             with observe_api_controls(run.admission, _control_cb):
                 result, usage = await observe_api_turn(

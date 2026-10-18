@@ -23,6 +23,9 @@ class LocalSessionAdapter(BasePlatformAdapter):
     def __init__(self, authority):
         super().__init__(PlatformConfig(enabled=True), Platform.LOCAL)
         self.authority = authority
+        # Local session recovery builds this adapter, not ``_create_adapter``, which binds every other
+        # adapter's runner; ``deliver_wake`` needs it to commit a Kanban wake to the authority FIFO.
+        self.gateway_runner = getattr(authority, 'runner', None)
         self.sources = {}
         self.policies = {}
 

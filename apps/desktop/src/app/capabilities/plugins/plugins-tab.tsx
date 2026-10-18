@@ -14,6 +14,13 @@ import { getToolsets, setToolsetEnabled } from '@/api/toolsets'
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  dropdownMenuRow,
+  DropdownMenuTrigger
+} from '@/components/ui/dropdown-menu'
 import { Switch } from '@/components/ui/switch'
 import { Tip } from '@/components/ui/tooltip'
 import { type PluginSettingsScope, PluginSettingsSlot } from '@/contrib/plugin-settings'
@@ -25,7 +32,7 @@ import type { ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { DESKTOP_PLUGIN_TOOLSETS } from '@/lib/desktop-toolsets'
 import { triggerHaptic } from '@/lib/haptics'
-import { CheckCircle2, FolderOpen, Loader2, Monitor, Package, RefreshCw, Trash2 } from '@/lib/icons'
+import { CheckCircle2, ChevronDown, FolderOpen, Loader2, Monitor, Package, RefreshCw, Trash2 } from '@/lib/icons'
 import { CATALOG_ORIGIN, CATALOG_PICKER_URL } from '@/lib/plugin-catalog'
 import { queryClient } from '@/lib/query-client'
 import { cn } from '@/lib/utils'
@@ -47,6 +54,7 @@ import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import { $paneHeightOverride, setPaneHeightOverride } from '@/store/panes'
 import { openCatalogPluginInstall } from '@/store/plugin-catalog-install'
+import { $pluginFleetByPlugin, fleetPluginKey, openFleetUpdate, scanPluginFleet } from '@/store/plugin-fleet-updates'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $connection } from '@/store/session'
@@ -57,6 +65,7 @@ import { useDeepLinkHighlight } from '../../settings/use-deep-link-highlight'
 import { TOOLSETS_QUERY_KEY } from '../toolsets/toolsets-data'
 
 import { AgentPluginToggle } from './agent-plugin-toggle'
+import { FleetUpdateAllButton, FleetUpdateHost } from './fleet-update-dialog'
 import { mergePluginPackages, type PackageKind, type PluginPackage } from './plugin-packages'
 
 // The REAL Plugin Catalog page (docs site) embedded as a one-click picker —
@@ -134,6 +143,7 @@ async function rescanAll(requestGateway: GatewayRequest, scope: null | string) {
   await window.hermesDesktop?.reconcileDesktopPlugins?.().catch(() => undefined)
   await discoverRuntimePlugins()
   await loadAgentPlugins(requestGateway, scope)
+  void scanPluginFleet({ force: true })
 }
 
 /** Open the dual-target install modal pre-filled to install ONLY the agent
@@ -244,6 +254,71 @@ function Dash() {
   return (
     <span aria-hidden className="w-9 text-center text-(--ui-text-quaternary)">
       —
+    </span>
+  )
+}
+
+/** The row's "Update to x" button. When the same plugin is also out of date in
+ *  other profiles or on other gateways, a caret beside it offers the fleet-wide
+ *  update; otherwise it is the plain single-profile button it always was. */
+function UpdateButton({
+  agent,
+  busy,
+  label,
+  onUpdate,
+  scopeLabel
+}: {
+  agent: AgentPluginRow
+  busy: boolean
+  label: string
+  onUpdate: () => void
+  scopeLabel: string
+}) {
+  const { t } = useI18n()
+  const f = t.skills.plugins.fleet
+  const fleetInstalls = useStore($pluginFleetByPlugin).get(fleetPluginKey(agent)) ?? []
+  const elsewhere = fleetInstalls.length > 1
+  const onUpdateEverywhere = () => openFleetUpdate(fleetInstalls, f.titleOne(agent.name))
+
+  const main = (
+    <Button
+      className={cn('h-5 px-1.5 text-[0.65rem]', elsewhere && 'rounded-r-none')}
+      disabled={busy}
+      onClick={onUpdate}
+      size="xs"
+      variant="outline"
+    >
+      {label}
+    </Button>
+  )
+
+  if (!elsewhere) {
+    return main
+  }
+
+  return (
+    <span className="inline-flex" data-testid="plugin-update-split">
+      {main}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild disabled={busy}>
+          <Button
+            aria-label={f.updateEverywhere(fleetInstalls.length)}
+            className="-ml-px h-5 w-3.5 rounded-l-none px-0"
+            size="xs"
+            variant="outline"
+          >
+            <ChevronDown className="size-3" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem className={dropdownMenuRow} onSelect={onUpdateEverywhere}>
+            {f.updateEverywhere(fleetInstalls.length)}
+          </DropdownMenuItem>
+          <DropdownMenuItem className={dropdownMenuRow} onSelect={onUpdate}>
+            {f.updateHereOnly(scopeLabel)}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
     </span>
   )
 }
@@ -492,15 +567,13 @@ function PackageRow({
           {agent ? (
             <>
               {agent.update_available && (
-                <Button
-                  className="h-5 px-1.5 text-[0.65rem]"
-                  disabled={actionsBusy}
-                  onClick={() => onAgentUpdate(agent)}
-                  size="xs"
-                  variant="outline"
-                >
-                  {p.updateToPin(agent.catalog_version ?? agent.catalog_sha?.slice(0, 8) ?? '')}
-                </Button>
+                <UpdateButton
+                  agent={agent}
+                  busy={actionsBusy}
+                  label={p.updateToPin(agent.catalog_version ?? agent.catalog_sha?.slice(0, 8) ?? '')}
+                  onUpdate={() => onAgentUpdate(agent)}
+                  scopeLabel={scopeLabel}
+                />
               )}
               {busy && <Loader2 className="size-3.5 animate-spin text-(--ui-text-tertiary)" />}
               {agentToggleable ? (
@@ -594,6 +667,11 @@ export const PluginsTab = memo(function PluginsTab({
   useEffect(() => {
     void loadAgentPlugins(requestGateway, scope)
   }, [requestGateway, scope])
+
+  // Fleet-wide view of the same update signal: every gateway, every profile.
+  useEffect(() => {
+    void scanPluginFleet()
+  }, [])
 
   const packages = useMemo(
     () => mergePluginPackages(Object.values(desktopRecords), agentRows.filter(isDesktopRelevantPlugin)),
@@ -689,6 +767,7 @@ export const PluginsTab = memo(function PluginsTab({
             {p.pageBlurb}
           </p>
           <div className="flex shrink-0 items-center gap-1">
+            <FleetUpdateAllButton />
             <Button
               onClick={() => openPluginInstallRequest({ profile: scope, repo: '' })}
               size="sm"
@@ -904,6 +983,13 @@ export const PluginsTab = memo(function PluginsTab({
           </div>
         )}
       </section>
+
+      <FleetUpdateHost
+        onApplied={applied => {
+          notify({ kind: 'success', message: p.fleet.finished(applied) })
+          void loadAgentPlugins(requestGateway, scope)
+        }}
+      />
     </div>
   )
 })

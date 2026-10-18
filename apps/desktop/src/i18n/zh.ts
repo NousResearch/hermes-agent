@@ -10,6 +10,7 @@ import { zhLocalModels } from './zh_local_models'
 import { zhModelMenu } from './zh_model_menu'
 import { zhNotices } from './zh_notices'
 import { zhOnboarding } from './zh_onboarding'
+import { zhPluginsTab } from './zh_plugins_tab'
 import { zhProjects } from './zh_projects'
 import { zhSharedMetrics } from './zh_shared_metrics'
 import { zhSidebarRow } from './zh_sidebar_row'
@@ -2149,6 +2150,7 @@ export const zhOverrides = {
     skillArchivedMessage: '可通过 hermes curator restore 恢复。',
     tabPlugins: '插件',
     plugins: {
+      ...zhPluginsTab,
       agentTitle: 'Agent 插件',
       agentBlurb: '为所选配置扩展 agent — 工具、钩子、模型提供方。重启网关后生效。',
       pageBlurb: '插件可以扩展本应用、agent，或两者 — 每一半都有自己的开关。',
@@ -2165,11 +2167,6 @@ export const zhOverrides = {
         `桌面部分已加载到本应用，但 agent 部分尚未安装到 ${profile}。在那里安装它。`,
       installAgentHereNoOrigin:
         '此配置未安装 agent 部分，且该包是手动复制的（无目录条目或 git 远程），无法从此处安装。请将其文件夹复制到该配置或从 Git 重新安装。',
-      desktopHalfPending: '复制中…',
-      desktopHalfPendingTip: '此包附带的桌面部分尚未复制到应用中。请重新扫描或重启应用。',
-      desktopHalfRemote: '不可用（远程后端）',
-      desktopHalfRemoteTip:
-        '此包的桌面部分位于远程后端的磁盘上，本应用无法读取。要在此使用，请通过“从 Git 安装”输入该包的仓库地址并勾选桌面目标，即可将桌面部分克隆到本机。',
       emptyAll: '还没有插件。',
       empty: '此配置尚未安装任何 agent 插件。',
       emptyHint: '在下方目录中浏览，一键安装经过审核的插件。',

@@ -595,72 +595,98 @@ class SessionMessagesMixin(SessionDetachedResultsMixin):
         Search indexed, bounded pages rather than loading a potentially long transcript. A branch owns its
         copied history; compression continuations also show their ancestors' archived rows. Invalid results
         are skipped just as the model's Todo hydration does, and explicit empty results are retained.
+
+        A branch child whose own copied history yields nothing (the visible projection drops tool rows)
+        falls back to the branch parent's newest Todo result written before the branch point, so a
+        cold-resumed branch keeps the seeded list (#136606); the parent's later writes never leak in.
         """
         if not session_id:
             return None
         if max_chars is None:
             from tools.todo_tool import MAX_TODO_RESULT_CHARS
             max_chars = MAX_TODO_RESULT_CHARS
-        session_ids = self._resume_lineage_ids(session_id)
         with self._read_ctx() as conn:
-            for sid in reversed(session_ids):
-                before_id = 2**63 - 1
-                while True:
-                    rows = conn.execute(
-                        "SELECT id, content, tool_call_id FROM messages INDEXED BY idx_messages_session_id "
-                        "WHERE session_id = ? AND id < ? AND role = 'tool' "
-                        "AND tool_name IN ('todo_list', 'todo') AND (active = 1 OR compacted = 1) "
-                        "AND length(content) <= ? ORDER BY id DESC LIMIT 100",
-                        (sid, before_id, max_chars),
-                    ).fetchall()
-                    if not rows:
-                        break
-                    for row in rows:
-                        call_id = row["tool_call_id"]
-                        if not call_id:
-                            continue
-                        prior = conn.execute(
-                            "SELECT role, tool_calls FROM messages INDEXED BY idx_messages_session_id "
-                            "WHERE session_id = ? AND id < ? AND role IN ('assistant', 'user', 'system') "
-                            "AND (active = 1 OR compacted = 1) ORDER BY id DESC LIMIT 1",
-                            (sid, row["id"]),
-                        ).fetchone()
-                        if prior is None or prior["role"] != "assistant":
-                            continue
-                        try:
-                            calls = json.loads(prior["tool_calls"]) if prior["tool_calls"] else []
-                            def is_todo_call(call):
-                                if not isinstance(call, dict) or call.get("id") != call_id:
-                                    return False
-                                function = call.get("function")
-                                if not isinstance(function, dict):
-                                    return False
-                                if function.get("name") in ("todo_list", "todo"):
-                                    return True
-                                if function.get("name") != "tool_call":
-                                    return False
-                                arguments = function.get("arguments")
-                                if isinstance(arguments, str):
-                                    arguments = json.loads(arguments)
-                                if not isinstance(arguments, dict):
-                                    return False
-                                inner_calls = arguments.get("calls")
-                                return isinstance(inner_calls, list) and any(
-                                    isinstance(inner, dict) and inner.get("name") in ("todo_list", "todo")
-                                    for inner in inner_calls)
+            for sid in reversed(self._resume_lineage_ids(session_id)):
+                found = self._scan_latest_todo_result(conn, sid, max_chars)
+                if found is not None:
+                    return found
+        session = self.get_session(session_id)
+        if not session or not self._is_explicit_fork_child_row(session):
+            return None
+        parent_id = session.get("parent_session_id")
+        branch_point = session.get("started_at")
+        if not parent_id or branch_point is None:
+            return None
+        try:
+            branch_point = float(branch_point)
+        except (TypeError, ValueError):
+            return None
+        with self._read_ctx() as conn:
+            return self._scan_latest_todo_result(conn, parent_id, max_chars, before_ts=branch_point)
 
-                            paired = isinstance(calls, list) and any(is_todo_call(call) for call in calls)
-                            if not paired:
-                                continue
-                            data = json.loads(row["content"])
-                            if not isinstance(data, dict) or not isinstance(data.get("todos"), list):
-                                continue
-                            int(data.get("revision") or 0)
-                        except (ValueError, TypeError):
-                            continue
-                        return row["content"]
-                    before_id = rows[-1]["id"]
-        return None
+    def _scan_latest_todo_result(self, conn, session_id: str, max_chars: int, *,
+                                 before_ts: Optional[float] = None) -> Optional[str]:
+        """One session's scan for :meth:`get_latest_todo_result`; ``before_ts`` bounds the scan to rows
+        written at or before a branch point so a parent session's later writes stay the parent's."""
+        before_id = 2**63 - 1
+        time_filter = "AND timestamp <= ? " if before_ts is not None else ""
+        while True:
+            params = (session_id, before_id, max_chars, before_ts) if before_ts is not None \
+                else (session_id, before_id, max_chars)
+            rows = conn.execute(
+                "SELECT id, content, tool_call_id FROM messages INDEXED BY idx_messages_session_id "
+                "WHERE session_id = ? AND id < ? AND role = 'tool' "
+                "AND tool_name IN ('todo_list', 'todo') AND (active = 1 OR compacted = 1) "
+                f"AND length(content) <= ? {time_filter}ORDER BY id DESC LIMIT 100",
+                params,
+            ).fetchall()
+            if not rows:
+                return None
+            for row in rows:
+                call_id = row["tool_call_id"]
+                if not call_id:
+                    continue
+                prior = conn.execute(
+                    "SELECT role, tool_calls FROM messages INDEXED BY idx_messages_session_id "
+                    "WHERE session_id = ? AND id < ? AND role IN ('assistant', 'user', 'system') "
+                    "AND (active = 1 OR compacted = 1) ORDER BY id DESC LIMIT 1",
+                    (session_id, row["id"]),
+                ).fetchone()
+                if prior is None or prior["role"] != "assistant":
+                    continue
+                try:
+                    calls = json.loads(prior["tool_calls"]) if prior["tool_calls"] else []
+                    def is_todo_call(call):
+                        if not isinstance(call, dict) or call.get("id") != call_id:
+                            return False
+                        function = call.get("function")
+                        if not isinstance(function, dict):
+                            return False
+                        if function.get("name") in ("todo_list", "todo"):
+                            return True
+                        if function.get("name") != "tool_call":
+                            return False
+                        arguments = function.get("arguments")
+                        if isinstance(arguments, str):
+                            arguments = json.loads(arguments)
+                        if not isinstance(arguments, dict):
+                            return False
+                        inner_calls = arguments.get("calls")
+                        return isinstance(inner_calls, list) and any(
+                            isinstance(inner, dict) and inner.get("name") in ("todo_list", "todo")
+                            for inner in inner_calls)
+
+                    paired = isinstance(calls, list) and any(is_todo_call(call) for call in calls)
+                    if not paired:
+                        continue
+                    data = json.loads(row["content"])
+                    if not isinstance(data, dict) or not isinstance(data.get("todos"), list):
+                        continue
+                    int(data.get("revision") or 0)
+                except (ValueError, TypeError):
+                    continue
+                return row["content"]
+            before_id = rows[-1]["id"]
 
     def latest_message_row_id(self, session_id: str, *, role: str = "user", offset: int = 0,
                               require_text: bool = True) -> Optional[int]:

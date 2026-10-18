@@ -6975,3 +6975,32 @@ class TestMemoryContextSanitization:
         assert "memory-context" not in result.lower()
         assert "stale observation" not in result
         assert "how is the honcho working" in result
+
+
+class TestHydrateTodoStoreFromDb:
+    """A branch's copied history has no tool rows; the store falls back to the persisted
+    latest todo result (which itself falls back to the branch parent, #136606)."""
+
+    def test_hydrate_falls_back_to_persisted_snapshot(self, agent, tmp_path):
+        from hermes_state import SessionDB
+
+        todos = [{"id": "t", "content": "Seeded task", "status": "pending"}]
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session("br", source="desktop")
+        db.append_message("br", "assistant", "", tool_calls=[
+            {"id": "c1", "type": "function", "function": {"name": "todo_list", "arguments": "{}"}},
+        ])
+        db.append_message("br", "tool", json.dumps({"todos": todos, "revision": 7}),
+                          tool_call_id="c1", tool_name="todo_list")
+        agent.session_id = "br"
+        agent._session_db = db
+        history = [
+            {"role": "user", "content": "branch visible row"},
+            {"role": "assistant", "content": "branch reply"},
+        ]
+        try:
+            with patch("run_agent._set_interrupt"), patch("agent.interrupt_control._set_interrupt"):
+                agent._hydrate_todo_store(history)
+            assert agent._todo_store.snapshot() == {"todos": todos, "revision": 7}
+        finally:
+            db.close()

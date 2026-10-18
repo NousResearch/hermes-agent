@@ -51,12 +51,14 @@ def refreshed_policy(policy, live, terminal, *, picked=(), mcp_only=False):
 
 def _settings(policy, config, live, picked):
     """Follow the config-derived settings into *config*; the toolsets they select."""
-    from gateway.session_policy import _resolve_toolsets
+    from gateway.session_policy import _resolve_toolsets, session_pinned
     request = json.loads(policy.request_json)
     live_agent = live.get('agent') or {}
     agent = dict(config.get('agent') or {})
     keys = [] if 'max_turns' in request else ['max_turns']
-    keys += [] if 'reasoning' in request or 'reasoning' in picked else ['reasoning_effort', 'reasoning_overrides']
+    # The session's own record (a pick, or a reset back to the profile) wins over the receipt history.
+    chosen = session_pinned(config, 'reasoning', 'reasoning' in request or 'reasoning' in picked)
+    keys += [] if chosen else ['reasoning_effort', 'reasoning_overrides']
     toolsets = policy.toolsets
     if 'toolsets' not in request and policy.editor_mcp_json is None:
         keys.append('disabled_toolsets')
@@ -237,9 +239,12 @@ def _drop_terminal(authority, ref):
     from tools.terminal_tool_lifecycle import cleanup_vm
     ids = {ref.session_id, local_receipt(authority.db, ref.session_id)['entry']['session_id']}
     route = authority.sessions[ref.session_id].route
+    from gateway.session_policy import unbind_turn_workspace
     with owner_scope(authority):
         keys = {_qualify_task_key(key) for key in (f'session:{route}', *ids)}
         for key in (route, *ids):
+            # The turn's workspace binding goes with them: it wins over the new binding's cwd too.
+            unbind_turn_workspace(key)
             clear_session_cwd(key)
     for key in keys:
         cleanup_vm(key)

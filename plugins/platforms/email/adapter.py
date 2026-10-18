@@ -700,7 +700,7 @@ class EmailAdapter(BasePlatformAdapter):
                     if not accepted:
                         self._mark_uid_consumed(imap, uid)
                         continue
-                    status, msg_data = imap.uid("fetch", uid, "(RFC822)")
+                    status, msg_data = imap.uid("fetch", uid, "(BODY.PEEK[])")  # PEEK: never mark as read
                     if status != "OK":
                         continue  # transient per-UID refusal: leave unseen so the next poll retries
                     # Mark seen once a response arrived (even malformed) so garbage is skipped once, not retried forever —

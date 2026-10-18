@@ -126,9 +126,9 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
 
 
 def _stop_cdp_supervisor(task_id: str) -> None:
-    """Stop the CDP supervisor for ``task_id`` if one exists. No-op otherwise."""
+    """Stop supervisors owned by this backend session before closing its endpoint."""
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
-        SUPERVISOR_REGISTRY.stop(task_id)
+        SUPERVISOR_REGISTRY.stop_session(task_id)
     except Exception as exc:
         _origin().logger.debug("CDP supervisor stop for task=%s failed (non-fatal): %s", task_id, exc)

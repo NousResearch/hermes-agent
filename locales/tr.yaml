@@ -724,6 +724,7 @@ gateway:
     interrupting_head: "⚡ Mevcut görev kesiliyor"
     interrupting_tail: ". Mesajınızı kısa süre içinde yanıtlayacağım."
     slash_rejected: "⏳ Ajan çalışıyor — `/{command}` tur ortasında çalıştırılamaz. Mevcut yanıtı bekleyin veya önce `/stop` kullanın."
+    plugin_command_rejected: "⏳ Ajan çalışıyor — `/{command}` bir eklenti komutu ve tur ortasında çalıştırılamaz. Metniniz modele gönderilmedi. Mevcut yanıtı bekleyin veya önce `/stop` kullanın."
     reject_goal: "Ajan çalışıyor — çalışma sırasında /goal status / pause / clear / wait kullanın ya da yeni bir hedef belirlemeden önce /stop kullanın."
     reject_loop: "Ajan çalışıyor — çalışma sırasında /loop status / pause / stop kullanın ya da yeni bir döngü başlatmadan önce /stop kullanın."
     draining_maintenance: "⏳ Bu ajan bir bakım işlemi için boşaltılıyor ve şu anda yeni tur kabul etmiyor. Kısa süre içinde geri dönecek — lütfen biraz sonra yeniden gönderin."

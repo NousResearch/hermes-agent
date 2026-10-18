@@ -57,6 +57,16 @@ def diagnostic_event(ev) -> bool:
     if ev.kind in {"blocked", "block_loop_detected"}:
         return (ev.payload or {}).get("kind") != "needs_input"
     return ev.kind == "status" and (ev.payload or {}).get("status") in {"blocked", "triage"}
+
+
+def self_retrying_event(ev) -> bool:
+    """A crash/timeout the dispatcher already re-queued (``retry_status`` ready/review).
+
+    Nobody has to act: the next run starts on its own, and a repeat failure escalates as
+    ``gave_up`` (failure limit), which still notifies. Pinging or waking the subscriber for
+    the retry itself is noise; the event stays on the board and in the task log.
+    """
+    return ev.kind in {"crashed", "timed_out"} and (ev.payload or {}).get("retry_status") in {"ready", "review"}
 # Consecutive send failures (adapter raised OR reported SendResult(success=False))
 # before a sub is dropped as a dead chat. 12 ≈ 60s at the 5s cadence: a transient
 # API outage must not permanently unsubscribe a live review-gate channel.
@@ -562,7 +572,7 @@ class _KanbanNotification:
     def format_event(self, ev: Any) -> Optional[str]:
         """Render one event; accumulates wake handoff/review detail. None → silent kind."""
         formatter = _EVENT_FORMATTERS.get(ev.kind)
-        if formatter is None:
+        if formatter is None or self_retrying_event(ev):
             return None
         msg, handoff, review_detail = formatter(ev, self)
         if handoff is not None:
@@ -574,8 +584,10 @@ class _KanbanNotification:
     def build_wake_text(self) -> None:
         """Set ``wake_kinds`` / ``session_key`` / ``synth`` for the wake paths."""
         task, sub = self.task, self.sub
-        self.wake_kinds = {ev.kind for ev in self.d["events"] if ev.kind in _WAKE_KINDS} if self.wake_agent else set()
-        self.wake_diagnostic = all(diagnostic_event(ev) for ev in self.d["events"] if ev.kind in self.wake_kinds)
+        self.wake_kinds = {ev.kind for ev in self.d["events"]
+                           if ev.kind in _WAKE_KINDS and not self_retrying_event(ev)} if self.wake_agent else set()
+        self.wake_diagnostic = all(diagnostic_event(ev) for ev in self.d["events"]
+                                   if ev.kind in self.wake_kinds and not self_retrying_event(ev))
         if not self.wake_kinds:
             return
         if self.is_push_adapter:

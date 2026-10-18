@@ -699,8 +699,10 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
                 return {**message, "content": _coerce_message_text(message["content"], image_urls=False)}
             return message
 
+    from gateway.response_filters import project_silent_machinery_turns
+
     projected_messages = []
-    for message in messages:
+    for message in project_silent_machinery_turns(messages):
         message = _with_tool_call_labels(message)
         if coerce is not None:
             message = coerce(message)

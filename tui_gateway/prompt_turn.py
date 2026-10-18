@@ -745,7 +745,9 @@ def _invoke_agent(
     # Bot Chat mirrors gateway.stream_consumer: deltas are withheld while the streamed buffer
     # could still resolve to a silence marker ("NO"->"NO_REPLY"), so a bare marker is never
     # shown and then retracted (the client keeps streamed text when message.complete is "").
-    hold = {"buf": "", "held": ""} if _is_bot_mode_session(session) else None
+    from gateway.response_filters import is_machinery_display_kind
+    # A wake turn (Kanban status, internal notification) may answer with a bare marker too.
+    hold = {"buf": "", "held": ""} if _is_bot_mode_session(session) or is_machinery_display_kind(display_kind) else None
 
     def _stream(delta):
         if getattr(agent, "_mute_notification_reply", False):
@@ -1156,6 +1158,12 @@ def _run_prompt_submit(
             status_note = _absorb_turn_result(
                 sid, session, st, text, display_kind, display_metadata)
             payload, raw, status = _complete_turn_payload(session, st, status_note, cols)
+            from gateway.response_filters import is_intentional_silence_response, is_machinery_display_kind
+            if status == "complete" and is_machinery_display_kind(display_kind) and \
+                    is_intentional_silence_response(raw):
+                # A wake turn the agent chose to leave silent: a non-event, not a reply and not a failure.
+                payload["text"], payload["silent"], raw = "", True, ""
+                payload.pop("rendered", None)
             if status == "complete":
                 # Before message.complete: the desktop re-reads the sign-in offer on that event.
                 from tui_gateway.free_tier_task_done import note_task_done

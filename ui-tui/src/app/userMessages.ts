@@ -327,3 +327,8 @@ export const describeCredentialWarning = (warning: string): string => {
 // ── Empty states ──────────────────────────────────────────────────────────
 
 export const noSkillsInstalled = (): string => t('userMessages.skills.noneInstalled')
+
+/** The reply a terminal frame with no streamed segments adds: none for a wake turn the agent
+ *  deliberately left silent (``payload.silent`` from ``tui_gateway/prompt_turn.py``). */
+export const completionReplyMessages = (payload: object, finalText: string): { role: 'assistant'; text: string }[] =>
+  (payload as { silent?: unknown }).silent === true && !finalText.trim() ? [] : [{ role: 'assistant', text: finalText }]

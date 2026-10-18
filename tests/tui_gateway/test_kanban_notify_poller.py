@@ -268,8 +268,10 @@ class TestNotificationPollerLoopKanbanWiring:
         monkeypatch.setattr(
             server, "_emit", lambda event, sid, payload=None: emits.append((event, payload))
         )
-        def accept(rid, sid, sess, text):
+        def accept(rid, sid, sess, text, **kwargs):
             # Model execution is replaced, including its concrete admission receipt.
+            # A Kanban wake is machinery: typed so no surface paints it as the user's words.
+            assert kwargs.get("display_kind") == "internal_notification"
             server._emit("message.start", sid)
             submits.append(text)
             return True

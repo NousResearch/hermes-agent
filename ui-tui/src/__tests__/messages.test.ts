@@ -282,3 +282,17 @@ describe('display.timestamps (#41531)', () => {
     expect(kept?.createdAt).toBe(123)
   })
 })
+
+describe('toTranscriptMessages backend-projected plumbing', () => {
+  it('drops rows the backend typed hidden (a silent Kanban wake turn) and keeps the real decision', () => {
+    const rows = [
+      { role: 'user', text: '[kanban] Task t_abc124 completed.', display_kind: 'hidden' },
+      { role: 'assistant', text: 'NO_REPLY', display_kind: 'hidden' },
+      { role: 'assistant', text: 'Needs you: pick a key.' }
+    ]
+
+    expect(toTranscriptMessages(rows).map(msg => [msg.role, msg.text])).toEqual([
+      ['assistant', 'Needs you: pick a key.']
+    ])
+  })
+})

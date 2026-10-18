@@ -6,6 +6,7 @@ not what should be persisted in conversation history.
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from typing import Any, Optional
 
@@ -162,6 +163,110 @@ def reply_expected_metadata(reply_expected: Optional[bool]) -> dict:
     """The persisted user row's ``reply_expected`` key, only when the adapter knew; crash recovery
     reads it back to judge a silence marker as the live turn did."""
     return {} if reply_expected is None else {"reply_expected": reply_expected}
+
+
+# Kanban wake rows persisted before gateway turns were typed ``internal_notification`` (Oct 2026).
+# Matched on the WHOLE ``gateway.kanban.wake.message`` template (every shipped locale): the
+# ``[kanban] <word> t_<hex> ...`` head, then title / ``@assignee`` / board lines, then the guidance
+# paragraph. A human pasting or quoting a one-line ping ("[kanban] Task t_x is stuck?") never matches.
+_LEGACY_KANBAN_WAKE_HEAD_RE = re.compile(r"\[kanban\] .{0,40}?\bt_[0-9a-f]{6,64}\b")
+_FIELD_LINE_RE = re.compile(r"[^:：]{1,24}[:：](.*)")
+
+
+def _is_legacy_kanban_wake(text: str) -> bool:
+    """Line-based (no backtracking over the whole body): head, three ``Label: value`` lines with an
+    ``@assignee`` second, then a blank line and the guidance paragraph."""
+    lines = text.lstrip()[:4000].split("\n", 6)
+    if len(lines) < 6 or not _LEGACY_KANBAN_WAKE_HEAD_RE.match(lines[0]):
+        return False
+    title, assignee, board = (_FIELD_LINE_RE.fullmatch(line) for line in lines[1:4])
+    return bool(title and board and assignee and assignee.group(1).strip().startswith("@")
+                and lines[4] == "" and lines[5].strip())
+HIDDEN_DISPLAY_KIND = "hidden"
+
+
+def _display_row_text(message: dict) -> str:
+    content = message.get("content")
+    if isinstance(content, list):
+        return "".join(p if isinstance(p, str) else str(p.get("text") or "") for p in content
+                       if isinstance(p, (str, dict)))
+    return content if isinstance(content, str) else ""
+
+
+def is_machinery_prompt_row(message: Any) -> bool:
+    """A self-injected wake row (Kanban status, internal notification): never words the user typed."""
+    if not isinstance(message, dict) or message.get("role") != "user":
+        return False
+    kind = message.get("display_kind")
+    if kind:
+        return kind == INTERNAL_NOTIFICATION_DISPLAY_KIND
+    return _is_legacy_kanban_wake(_display_row_text(message))
+
+
+def is_silence_display_row(message: Any) -> bool:
+    """A persisted assistant row that is exactly a silence marker (``NO_REPLY`` / ``[SILENT]``)."""
+    return (isinstance(message, dict) and message.get("role") == "assistant" and not message.get("tool_calls")
+            and is_intentional_silence_response(_display_row_text(message)))
+
+
+def project_silent_machinery_turns(messages: list) -> list:
+    """Display projection: plumbing stays in the store, out of the transcript.
+
+    * A bare silence-marker assistant row is the agent deliberately saying nothing: hidden.
+    * A machinery wake turn (Kanban status wake, internal notification) that produced no visible
+      reply is hidden whole: its prompt row, tool rows and silence row. Nothing reached anyone, so
+      the transcript shows nothing — not a user bubble and not a "no reply" error.
+    * A machinery turn that did reply keeps its prompt row typed ``internal_notification`` (legacy
+      untyped rows are typed here) so clients render it as a collapsible notice, never a user bubble.
+
+    Rows are re-typed ``hidden`` rather than dropped so paged readers keep their row offsets.
+    Persisted rows and model context are untouched. Returns a new list; input dicts are not mutated.
+    """
+    out = [({**m, "display_kind": HIDDEN_DISPLAY_KIND} if is_silence_display_row(m) else m) for m in messages]
+    index, total = 0, len(out)
+    while index < total:
+        row = out[index]
+        if not is_machinery_prompt_row(row):
+            index += 1
+            continue
+        end = index + 1
+        while end < total and not (isinstance(out[end], dict) and out[end].get("role") == "user"):
+            end += 1
+        replied = any(
+            isinstance(m, dict) and m.get("role") == "assistant" and m.get("display_kind") != HIDDEN_DISPLAY_KIND
+            and _display_row_text(m).strip()
+            for m in out[index + 1:end])
+        if not replied:
+            for position in range(index, end):
+                if isinstance(out[position], dict):
+                    out[position] = {**out[position], "display_kind": HIDDEN_DISPLAY_KIND}
+        else:
+            out[index] = _wake_notice_card(row)
+        index = end
+    return out
+
+
+_WAKE_HEAD_RE = re.compile(r"\A\[kanban\]\s*(?:\S+\s+)?(t_[0-9a-f]+)\s+(.+?)\.?\Z")
+
+
+def wake_notice_label(text: str) -> str:
+    """``[kanban] Task t_x completed.\\nTitle: Y`` -> ``Board update · t_x completed · Y``."""
+    lines = [line.strip() for line in text.strip().splitlines()]
+    head = _WAKE_HEAD_RE.match(lines[0]) if lines else None
+    if not head:
+        return "Background update" + (f" · {lines[0][:120]}" if lines and lines[0] else "")
+    title = next((line.split(":", 1)[1].strip() for line in lines[1:3] if ":" in line), "")
+    return " · ".join(part for part in ("Board update", f"{head[1]} {head[2]}", title[:120]) if part)
+
+
+def _wake_notice_card(row: dict) -> dict:
+    """A replied wake row as the collapsible async-result card every client already renders
+    (label = ``display_text``, full wake text one click away) instead of a user bubble."""
+    raw_metadata = row.get("display_metadata")
+    metadata: dict = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
+    return {**row, "display_kind": "async_delegation_complete",
+            "display_metadata": {**metadata, "display_text": wake_notice_label(_display_row_text(row)),
+                                 "wake_kind": INTERNAL_NOTIFICATION_DISPLAY_KIND}}
 
 
 def is_partial_silence_marker(text: Any) -> bool:

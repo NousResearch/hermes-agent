@@ -40,13 +40,20 @@ const CONTEXT_REF_RE = /@(file|folder|url|image|tool|terminal):(?:"[^"\n]+"|'[^'
 function persistedImageRefs(text: string) {
   const suffix = /\n\n((?:\[Image attached(?: at)?: [^\n]+\]\n)+)((?:\[screenshot\](?:\n|$))+)$/.exec(text)
 
-  if (!suffix) { return extractImageRefs(text) }
+  if (!suffix) {
+    return extractImageRefs(text)
+  }
   const paths = [...suffix[1].matchAll(/^\[Image attached(?: at)?: (.+)\]$/gm)].map(match => match[1])
 
-  if (paths.length !== suffix[2].split('[screenshot]').length - 1) { return extractImageRefs(text) }
+  if (paths.length !== suffix[2].split('[screenshot]').length - 1) {
+    return extractImageRefs(text)
+  }
   const extracted = extractImageRefs(text.slice(0, suffix.index))
 
-  return { cleanedText: extracted.cleanedText, refs: [...extracted.refs, ...paths.map(path => `@image:${formatRefValue(path)}`)] }
+  return {
+    cleanedText: extracted.cleanedText,
+    refs: [...extracted.refs, ...paths.map(path => `@image:${formatRefValue(path)}`)]
+  }
 }
 
 // Gateway routing note for Discord turns (gateway/run_inbound.py::discord_triggering_note).
@@ -182,7 +189,9 @@ const NOTICE_DISPLAY_KINDS = [
   'auto_continue',
   'personality_switch',
   // Hermes closing a failed turn, not the model speaking.
-  'failed_turn'
+  'failed_turn',
+  // A self-injected wake (Kanban status change, background notice): never the user's words.
+  'internal_notification'
 ] as const
 
 function isMachineNotice(displayKind: SessionMessage['display_kind']): boolean {
@@ -284,7 +293,31 @@ function asyncResultBody(content: string): string | undefined {
   )
 }
 
+const BOARD_UPDATE_LABEL = 'Board update'
+const BACKGROUND_UPDATE_LABEL = 'Background update'
+
+/** `[kanban] Task t_x completed.\nTitle: …` → `Board update · t_x completed · …`. The body stays one
+ *  click away (asyncResult); the label never shows the model-facing guidance. Used for the LIVE
+ *  inflight wake row; history arrives already projected by `gateway/response_filters.wake_notice_label`
+ *  (same wording). */
+export function internalNotificationLabel(content: string): string {
+  const lines = content.trim().split(/\r?\n/)
+  const head = lines[0]?.match(/^\[kanban\]\s*(?:\S+\s+)?(t_[0-9a-f]+)\s+(.+?)\.?$/)
+
+  if (!head) {
+    return lines[0] ? `${BACKGROUND_UPDATE_LABEL} · ${lines[0].slice(0, 120)}` : BACKGROUND_UPDATE_LABEL
+  }
+
+  const title = lines.find(line => /^[^:\s]+:\s/.test(line) && line !== lines[0])?.replace(/^[^:]+:\s*/, '')
+
+  return [BOARD_UPDATE_LABEL, `${head[1]} ${head[2]}`, title?.trim()].filter(Boolean).join(' · ')
+}
+
 function timelineDisplayContent(message: SessionMessage, content: string): string {
+  if (message.display_kind === 'internal_notification') {
+    return internalNotificationLabel(content)
+  }
+
   if (message.display_kind === 'model_switch') {
     return 'model changed'
   }
@@ -313,6 +346,45 @@ function timelineDisplayContent(message: SessionMessage, content: string): strin
   }
 
   return content
+}
+
+/** A backend-hidden assistant/tool row (a silent wake turn's tool rounds, a bare NO_REPLY) paints
+ *  nothing, not even tool cards or reasoning. It is still a backend row, so it is credited to the
+ *  message above to keep the older-page offset exact. */
+function creditHiddenPlumbingRow(message: SessionMessage, result: ChatMessage[]): boolean {
+  if (message.display_kind !== 'hidden' || (message.role !== 'tool' && message.role !== 'assistant')) {
+    return false
+  }
+
+  const previous = result.at(-1)
+
+  if (previous) {
+    previous.serverRowSpan = (previous.serverRowSpan ?? 1) + 1
+  }
+
+  return true
+}
+
+/** The collapsible body behind a system notice row: an async result's report, or a wake's full text. */
+function asyncResultFields(
+  message: SessionMessage,
+  content: unknown
+): Pick<ChatMessage, 'asyncResult' | 'asyncResultKind'> {
+  const body = () => displayContentForMessage(message.role, message.content || content)
+
+  switch (message.display_kind) {
+    case 'async_delegation_complete':
+      return { asyncResult: asyncResultBody(body()) }
+
+    case 'process_complete':
+      return { asyncResult: asyncResultBody(body()), asyncResultKind: 'process' }
+
+    case 'internal_notification':
+      return { asyncResult: body().trim() }
+
+    default:
+      return {}
+  }
 }
 
 export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
@@ -418,6 +490,12 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
   }
 
   messages.forEach((message, index) => {
+    // The backend typed this row display-only-hidden (a silent wake turn's tool rounds, a bare
+    // NO_REPLY): it carries no presentation, so it must not leak tool cards or reasoning either.
+    if (creditHiddenPlumbingRow(message, result)) {
+      return
+    }
+
     if (message.role === 'assistant') {
       nearestAssistant = message
     } else if (message.role === 'user' || message.role === 'system') {
@@ -474,7 +552,8 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     // optimistic composer already uses) and render them via the dedicated
     // attachments row below the bubble instead. The leading `@file:` block
     // (attached files, large pastes) moves there too, for the same parity.
-    const imageRefExtraction = displayRole === 'user' && rawDisplayContent ? persistedImageRefs(rawDisplayContent) : null
+    const imageRefExtraction =
+      displayRole === 'user' && rawDisplayContent ? persistedImageRefs(rawDisplayContent) : null
     const fileRefExtraction = imageRefExtraction ? splitLeadingAttachmentRefs(imageRefExtraction.cleanedText) : null
     const displayContent = fileRefExtraction ? fileRefExtraction.text : rawDisplayContent
     const liftedRefs = [...(fileRefExtraction?.refs ?? []), ...(imageRefExtraction?.refs ?? [])]
@@ -615,10 +694,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       role: displayRole,
       parts,
       ...(message.role === 'assistant' && durableComplete !== undefined ? { durableComplete } : {}),
-      ...(message.display_kind === 'async_delegation_complete' || message.display_kind === 'process_complete'
-        ? { asyncResult: asyncResultBody(displayContentForMessage(message.role, message.content || content)) }
-        : {}),
-      ...(message.display_kind === 'process_complete' ? { asyncResultKind: 'process' as const } : {}),
+      ...asyncResultFields(message, content),
       timestamp: earliestTimestamp(message.timestamp, ...parts.map(part => part.timestamp)),
       ...(rowId !== undefined ? { rowId } : {}),
       ...(pendingAbsorbedRows > 0 ? { serverRowSpan: pendingAbsorbedRows + 1 } : {}),

@@ -55,6 +55,10 @@ import {
   sourceBelongsToCategory,
   sourceLabel,
 } from "./SessionsPage_sources";
+import {
+  displayedSessionMessage,
+  splitCompactionContent,
+} from "./SessionsPage_messages";
 import { StructuredReasoning } from "@/components/StructuredReasoning";
 import { PlatformsCard } from "@/components/PlatformsCard";
 import { shouldRenderStructuredReasoning } from "@/lib/reasoning-markup";
@@ -156,60 +160,6 @@ function ToolCallBlock({
     </div>
   );
 }
-
-// Context-compaction handoff blocks are persisted as ``role="user"`` or
-// ``role="assistant"`` with content starting with one of these prefixes —
-// they're metadata inserted by ``agent/context_compressor.py``, NOT real
-// turns the user typed or the model replied with. Rendering them with
-// the same styling as regular messages confuses operators scrolling the
-// session timeline (#29824 — "WebUI can show context compaction block
-// instead of latest assistant response after compression"), so we
-// detect them here and downgrade them to a muted, clearly-labelled
-// "Context handoff" row.
-//
-// Keep these prefixes (and the END marker below) in sync with
-// ``SUMMARY_PREFIX`` / ``LEGACY_SUMMARY_PREFIX`` and the
-// merge-into-tail marker in ``agent/context_compressor.py``.
-const COMPACTION_PREFIXES = [
-  "[CONTEXT COMPACTION — REFERENCE ONLY]",
-  "[CONTEXT COMPACTION - REFERENCE ONLY]",
-  "[CONTEXT SUMMARY]:",
-] as const;
-
-// Marker the compressor inserts between a merged summary and the
-// original tail message content. When the summary role would collide
-// with both head and tail roles (e.g. head ends with ``user`` and tail
-// starts with ``assistant``), the compressor merges the summary as a
-// prefix on the first tail message instead of inserting a standalone
-// row. We split on this marker so the WebUI still shows the original
-// assistant reply as its own readable bubble — otherwise the merged
-// row reads as a single opaque "Context compaction" block and the
-// user can't see the reply (#29824).
-const COMPACTION_END_MARKER =
-  "--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---";
-
-interface CompactionSplit {
-  /** Summary text (header + body, without the end marker). */
-  summary: string;
-  /** Original message content that came after the end marker. */
-  remainder: string;
-}
-
-function splitCompactionContent(content: string): CompactionSplit | null {
-  const head = content.trimStart();
-  if (!COMPACTION_PREFIXES.some((p) => head.startsWith(p))) return null;
-  const markerIdx = content.indexOf(COMPACTION_END_MARKER);
-  if (markerIdx < 0) {
-    return { summary: content, remainder: "" };
-  }
-  return {
-    summary: content.slice(0, markerIdx),
-    remainder: content
-      .slice(markerIdx + COMPACTION_END_MARKER.length)
-      .replace(/^\s+/, ""),
-  };
-}
-
 
 function MessageBubble({
   msg,
@@ -380,9 +330,12 @@ function MessageList({
       ref={containerRef}
       className="flex flex-col gap-3 max-h-[600px] overflow-y-auto pr-2"
     >
-      {messages.map((msg, i) => (
-        <MessageBubble key={i} msg={msg} highlight={highlight} />
-      ))}
+      {messages.map((msg, i) => {
+        const shown = displayedSessionMessage(msg);
+        return shown ? (
+          <MessageBubble key={i} msg={shown} highlight={highlight} />
+        ) : null;
+      })}
     </div>
   );
 }

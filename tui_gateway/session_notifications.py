@@ -418,10 +418,10 @@ def _kb_poll_board(_kb, slug: str, session_key: str) -> list:
             if not events:
                 continue
             task = _kb.get_task(conn, sub["task_id"])
-            from gateway.kanban_watchers_notifier import diagnostic_event
+            from gateway.kanban_watchers_notifier import diagnostic_event, self_retrying_event
             from gateway.warning_notifications import DiagnosticText
             for ev in events:
-                text = _format_kanban_event_text(sub, task, ev, slug)
+                text = None if self_retrying_event(ev) else _format_kanban_event_text(sub, task, ev, slug)
                 if text:
                     texts.append(DiagnosticText(text) if diagnostic_event(ev) else text)
             # Unsubscribe only on archive: ``done`` is reversible in review/controller flows, so keeping the sub lets a
@@ -489,8 +489,9 @@ def _notif_poll_kanban_scoped(sid: str, session: dict) -> None:
         batch = [text for text in pending if not split or isinstance(text, DiagnosticText) == diagnostic]
         session["_kanban_pending"] = [text for text in pending if split and isinstance(text, DiagnosticText) != diagnostic]
     with contextlib.suppress(Exception):
+        from gateway.response_filters import INTERNAL_NOTIFICATION_DISPLAY_KIND
         _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, "\n".join(batch),
-                      "kanban notification dispatch failed",
+                      "kanban notification dispatch failed", display_kind=INTERNAL_NOTIFICATION_DISPLAY_KIND,
                       **({"display_metadata": {"notification_category": "diagnostic"}} if diagnostic else {}))
 
 

@@ -57,6 +57,7 @@ import { getTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
 import {
   backendReconnecting,
+  completionReplyMessages,
   describeRpcError,
   describeTurnFailure,
   isBareErrorText,
@@ -1759,7 +1760,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
               ]
             : finalMessages.length
               ? finalMessages
-              : [{ role: 'assistant', text: finalText }]
+              : completionReplyMessages(payload, finalText)
 
           msgs.forEach(appendMessage)
 

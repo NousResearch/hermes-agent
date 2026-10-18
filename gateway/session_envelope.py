@@ -178,7 +178,30 @@ async def prepare_native(runner, event):
     encoded_source = _validate_native(runner, frozen, provenance, fresh_roles)
     # Copy + SHA-256 + fsyncs of up to max_inbound_media_bytes stay off the owner loop; the
     # copied context carries the admission's capture lease.
-    media = await asyncio.to_thread(capture_native_media, frozen.media_urls) if frozen.media_urls else None
+    media = None
+    if frozen.media_urls:
+        from gateway.session_ingress_media import _lease_scope, abandon_capture, release_abandoned_capture
+        from gateway.session_runtime_workers import track_mutation
+        scope = _lease_scope.get()
+        work = asyncio.to_thread(capture_native_media, frozen.media_urls)
+        capture = (track_mutation(scope.authority, work) if scope is not None and scope.authority is not None
+                   else asyncio.create_task(work))
+        try:
+            # Cancelling this waiter must not cancel the thread's completion observer: the thread
+            # may publish a path after the caller's lease context has already exited.
+            media = await asyncio.shield(capture)
+        except asyncio.CancelledError:
+            if scope is not None and scope.authority is not None:
+                scope.abandoned = True
+                def finished(done):
+                    if not done.cancelled():
+                        done.exception()  # observe a failed copy too; partial publishes still collect
+                    track_mutation(scope.authority, release_abandoned_capture(scope))
+                capture.add_done_callback(finished)
+            raise
+        except BaseException:
+            await abandon_capture(scope)
+            raise
     return _snapshot_native(runner, frozen, provenance, fresh_roles, encoded_source, media)
 
 

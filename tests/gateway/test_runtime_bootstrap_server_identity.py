@@ -195,6 +195,18 @@ def test_a_served_secondary_keeps_ignoring_any_other_multiplexer_refusal(served_
     assert runtime.discover_gateway_endpoint(home, timeout=1).state == "absent"
 
 
+def test_a_standalone_secondary_is_not_refused_for_its_elevated_default_gateway(served_secondary):
+    """``gateway.standalone: true`` opts the profile out of the multiplexer, so the default gateway's
+    refusal is not its verdict: discovery stays its own ``absent`` and ensure starts its own gateway."""
+    from hermes_cli import gateway_runtime as runtime
+    home, starts = served_secondary(lambda: native._peer_subject(HANDLE, server=True))
+    (home / "config.yaml").write_text("gateway:\n  standalone: true\n", encoding="utf-8")
+    assert runtime.discover_gateway_endpoint(home, timeout=1).state == "absent"
+    ensured = runtime.ensure_gateway_runtime(home, timeout=5)
+    assert (ensured.state, ensured.reason_code) == ("starting", "deadline")
+    assert starts == [(home,)]
+
+
 # -- what must stay refused, never attached and never named -------------------------------------
 
 

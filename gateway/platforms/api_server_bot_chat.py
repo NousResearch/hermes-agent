@@ -77,7 +77,12 @@ def _refusal(authority, tip, exc):
             validate_legacy_row(authority.db, tip)
             reason, hint = 'bot_chat_unbound', 'open it once with `hermes chat -c "Bot Chat"` on that host'
         except RuntimeStoreError:
-            reason, hint = 'bot_chat_not_local', "it is an API conversation; rename or delete it there"
+            from gateway.session_bot import displaceable_bot_chat
+            reason = 'bot_chat_not_local'
+            if displaceable_bot_chat(authority, tip) is not None:
+                hint = "it is a conversation the gateway cannot own; it is moved aside as 'Bot Chat (<source> <id>)' on the next delivery"
+            else:  # local history a peer may not adopt (a served remote login's Desktop row, another profile's): never moved
+                hint = 'it is local history owned by another login or profile; open or rename it from the client that owns it'
         logger.warning('Peer DM into Bot Chat %s refused: %s (not_found: field=%s detail=%s)',
                        tip['id'], reason, exc.field, exc.detail)
         return reason, f"Bot Chat admission refused: {reason} (this profile's 'Bot Chat' is not a local chat; {hint})"
@@ -132,10 +137,17 @@ async def admit_peer_turn(runner, session_id, message, author):
     if tip is None:
         return None
     home = Path(authority.db.db_path).parent.resolve()
-    # The API key already authenticated the peer; the turn enters the chat as its owner's own
-    # input, the way owner recovery re-admits queued deliveries (``recover_bot_deliveries``).
-    actor = Principal(tip['user_id'], authority.profile_id,
-                      frozenset({'session:submit', 'session:read'}), 'api-peer-dm')
+    from gateway.session_bot import displaceable_bot_chat
+    if displaceable_bot_chat(authority, authority.db.get_session_by_title('Bot Chat') or tip) is not None:
+        # The title is held by an API conversation no FIFO can own (#140769, MSG-21): the owner
+        # moves it aside and mints the local Bot Chat for the peer, as ``create_peer_bot_chat`` does.
+        actor = Principal(_PEER_SUBJECT, authority.profile_id,
+                          frozenset({'session:create', 'session:read', 'session:submit'}), 'api-peer-dm')
+    else:
+        # The API key already authenticated the peer; the turn enters the chat as its owner's own
+        # input, the way owner recovery re-admits queued deliveries (``recover_bot_deliveries``).
+        actor = Principal(tip['user_id'], authority.profile_id,
+                          frozenset({'session:submit', 'session:read'}), 'api-peer-dm')
     key = uuid.uuid4().hex
     params = dict(id=key, profile=served_profile_name(home), message=message)
     if author is not None:

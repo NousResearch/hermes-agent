@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.context_engine import automatic_compaction_status_message
 from agent.conversation_compression import (
-    PRE_API_COMPRESSION_STATUS_TEMPLATE, _reset_read_dedup_caches, compression_blocked_transiently,
+    PRE_API_COMPRESSION_STATUS_TEMPLATE, compression_blocked_transiently,
     compression_skipped_due_to_lock, context_compression_timed_out,
     conversation_history_after_compression, ensure_compression_feasibility_checked,
 )
@@ -370,27 +370,8 @@ def compress_after_tool_results(
             agent._warn_context_overflow_blocked(
                 _block_reason, _real_tokens, int(getattr(_compressor, "threshold_tokens", 0) or 0)
             )
-        # Proactive tool-result prune (deterministic, no LLM, keeps tail): no-op unless
-        # proactive_prune_tokens is exceeded; commits only past
-        # proactive_prune_min_reclaim_tokens so cache breaks stay episodic.
-        _prune = getattr(_compressor, "prune_tool_results_only", None)
-        if callable(_prune):
-            try:
-                _pruned_msgs, _pruned_n = _prune(messages, current_tokens=_real_tokens)
-            except Exception:
-                logger.debug("proactive tool-result prune failed; skipping", exc_info=True)
-                _pruned_msgs, _pruned_n = messages, 0
-            # Standard no-op caller contract: only commit when the engine returned a
-            # NEW list object with a non-zero count. Do NOT rebuild
-            # conversation_history: rows already carry _DB_PERSISTED_MARKER, and on a
-            # stale in-place flag the helper could seed unpersisted rows.
-            if _pruned_n and _pruned_msgs is not messages:
-                from agent.compaction_events import publish_prune
+        # Proactive prune (no LLM, keeps tail; warm commits past min_reclaim so cache breaks stay episodic).
+        from agent.turn_proactive_prune import run_proactive_prune
 
-                publish_prune(agent, messages, _pruned_msgs, _pruned_n)
-                messages = _pruned_msgs
-                # A committed prune is a content-loss boundary like compaction: demoted skill_view /
-                # read_file bodies survive only as one-line markers, so the repeat-read dedup must
-                # stop answering "unchanged" for them or the reload the marker asks for is refused.
-                _reset_read_dedup_caches(effective_task_id, session_id=agent.session_id or "")
+        messages = run_proactive_prune(agent, messages, _real_tokens, effective_task_id)
     return _verdict(False)

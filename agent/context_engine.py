@@ -108,12 +108,14 @@ class ContextEngine(ABC):
         """
 
     def prune_tool_results_only(
-        self, messages: list[dict[str, Any]], current_tokens: int | None = None,
+        self, messages: list[dict[str, Any]], current_tokens: int | None = None, *, cold_cache: bool = False,
     ) -> tuple[list[dict[str, Any]], int]:
         """Deterministically trim old tool-result payloads without an LLM call.
 
         Runs on a low, cost-oriented trigger independent of ``should_compress`` so
         large-window engines reclaim re-sent tool output long before full compaction.
+        ``cold_cache`` says the provider prompt cache already expired, so a rewrite costs
+        no cache break; the host passes it only to engines whose signature accepts it.
         Returns ``(messages, n_pruned)``; the default no-op keeps older engines safe.
         """
         return messages, 0

@@ -322,7 +322,9 @@ _DB_PERSISTED_MARKER = "_db_persisted"
 # Carried-forward tail rows archive as rewind-style (active=0, compacted=0) so
 # they don't duplicate live copies in recall; never persisted (unknown column).
 _COMPACTION_TAIL_MARKER = "_compaction_tail"
-PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY = "_proactive_prune_rearm_tokens"
+PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY, PROACTIVE_PRUNE_COLD_CREDIT_MODEL_CONFIG_KEY = (
+    "_proactive_prune_rearm_tokens", "_proactive_prune_cold_credit")
+_COLD_CACHE_MIN_RECLAIM_TOKENS = 16_000  # reclaim gate on an already-expired provider cache (no break to amortize)
 
 _NO_USER_TASK_SENTINEL = "None. This session contains no user-authored turns."
 COMPRESSION_CONTINUATION_USER_CONTENT = (
@@ -2428,15 +2430,15 @@ class ContextCompressor(
         self._load_durable("_fallback_compression_streak", "get_compression_fallback_streak", "compression fallback streak", int, 0)
 
     def _load_proactive_prune_rearm_tokens(self) -> None:
-        """Restore the cache-boundary runway for a resumed durable session."""
-        self._load_durable(
-            "_proactive_prune_rearm_tokens", "get_session_model_config_value", "proactive prune runway",
-            int, 0, PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY, 0,
-        )
+        """Restore the cache-boundary runway and the cold-prune credit for a resumed durable session."""
+        for attr, key in (("_proactive_prune_rearm_tokens", PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY),
+                          ("_proactive_prune_cold_credit", PROACTIVE_PRUNE_COLD_CREDIT_MODEL_CONFIG_KEY)):
+            self._load_durable(attr, "get_session_model_config_value", "proactive prune runway", int, 0, key, 0)
 
     def _clear_durable_proactive_prune_rearm(self) -> None:
-        """Best-effort removal of the persisted prune-runway key; transcript untouched."""
-        self._durable_write("patch_session_model_config", "proactive prune runway clear", {PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None})
+        """Best-effort removal of the persisted prune-runway keys; transcript untouched."""
+        self._durable_write("patch_session_model_config", "proactive prune runway clear", {
+            PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None, PROACTIVE_PRUNE_COLD_CREDIT_MODEL_CONFIG_KEY: None})
 
     def _persist_fallback_compression_streak(self) -> None:
         self._durable_write("set_compression_fallback_streak", "compression fallback streak", self._fallback_compression_streak)
@@ -2812,8 +2814,8 @@ class ContextCompressor(
         base_url: str = "", api_key: str = "", config_context_length: int | None = None, provider: str = "",
         api_mode: str = "", abort_on_summary_failure: bool = False, max_tokens: int | None = None,
         model_thresholds: dict[str, float] | None = None, threshold_tokens_cap: Any = None,
-        proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
-        proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
+        proactive_prune_tokens: int = 64000, proactive_prune_min_result_chars: int = 1000,
+        proactive_prune_min_reclaim_tokens: int = 64000, min_tail_user_messages: int = 1, tail_mode: str = "lean",
         custom_providers: list | None = None,
     ):
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
@@ -2836,12 +2838,13 @@ class ContextCompressor(
         # Proactive prune runs independently of the full-compression trigger. 0 = disabled.
         self.proactive_prune_tokens = int(proactive_prune_tokens or 0)
         # Floor at 200 chars: below that a summary can exceed what it replaces and pass 2 re-summarizes
-        # its own output every turn. Configured 0 keeps the 8000 default via `or`.
-        self.proactive_prune_min_result_chars = max(_PRUNE_MIN_CHARS, int(proactive_prune_min_result_chars or 8000))
+        # its own output every turn. Configured 0 keeps the 1000 default via `or`.
+        self.proactive_prune_min_result_chars = max(_PRUNE_MIN_CHARS, int(proactive_prune_min_result_chars or 1000))
         # Every commit breaks the prompt-cache prefix; require a meaningful reclaim batch so fires are episodic.
         self.proactive_prune_min_reclaim_tokens = max(0, int(proactive_prune_min_reclaim_tokens or 0))
-        # A committed prune is a cache boundary: rearm only after the prompt regrows the reclaimed tokens.
+        # Rearm after a committed prune only once the prompt regrows; cold prunes credit the next warm gate.
         self._proactive_prune_rearm_tokens: int = 0
+        self._proactive_prune_cold_credit: int = 0
         # Dedup key for the over-threshold "reclamation no-oped" warning
         # (#101889) so a tool loop riding above the threshold warns once per
         # distinct reason + rearm snapshot instead of every iteration.
@@ -3329,7 +3332,7 @@ class ContextCompressor(
         otherwise an identical lockout after a full compaction (rearm back
         at 0) would be silent (#101889).
         """
-        self._proactive_prune_rearm_tokens = 0
+        self._proactive_prune_rearm_tokens = self._proactive_prune_cold_credit = 0
         self._last_reclaim_block_warn = None
 
     def _billed_basis_over_threshold(self, current_tokens: int | None) -> bool:
@@ -3391,25 +3394,19 @@ class ContextCompressor(
         )
 
     def prune_tool_results_only(
-        self, messages: list[dict[str, Any]], current_tokens: int | None = None,
+        self, messages: list[dict[str, Any]], current_tokens: int | None = None, *, cold_cache: bool = False,
     ) -> tuple[list[dict[str, Any]], int]:
-        """Deterministic, no-LLM tool-result prune gated on ``proactive_prune_tokens``.
-        Protects the tail by message COUNT only. A commit breaks the prompt cache, so it requires
-        ``proactive_prune_min_reclaim_tokens`` and a full regrowth runway; otherwise returns the INPUT
-        object as ``(messages, 0)``. The rearm gate is measured on message bodies only, so it is
-        bypassed (never the reclaim gate) when a provider-billed ``current_tokens`` reading already
-        puts the request over ``threshold_tokens`` (#101889); every no-op taken while over threshold
-        is logged once per distinct reason.
-
-        ``_prune_old_tool_results`` runs all deterministic passes: (1) dedup byte-identical tool results —
-        keeps the newest full copy and back-references older exact duplicates ANYWHERE in the list
-        (including the protected tail), so no unique content is ever lost; (2) summarize non-tail tool
-        results larger than ``min_prune_chars``; (3) truncate oversized tool_call arguments on non-tail
-        assistant messages; (3.5) retire image payloads on all but the newest ``_MAX_KEEP_TOOL_IMAGES``
-        image-bearing tool results, except a pending round that fits the hard share (#92699). Only pass (2)'s floor is
-        raised by ``proactive_prune_min_result_chars``; passes (1) and (3) keep their own fixed floors. The
-        recent-tail protection applies to passes (2) and (3); pass (1) is tail-agnostic by design because
-        dedup is lossless.
+        """Deterministic, no-LLM tool-result prune gated on ``proactive_prune_tokens``; protects the tail by
+        message COUNT and returns the INPUT object as ``(messages, 0)`` on every no-op.
+        A warm commit breaks the prompt cache, so it needs ``proactive_prune_min_reclaim_tokens`` (less what cold
+        prunes freed since the last warm one) and a full regrowth runway. ``cold_cache`` (the provider cache has
+        already expired) has nothing to break: the gate drops to ``_COLD_CACHE_MIN_RECLAIM_TOKENS`` and the runway
+        is neither checked nor moved. The runway counts message bodies only, so a billed ``current_tokens`` over
+        ``threshold_tokens`` bypasses it (#101889); over-threshold no-ops log once per distinct reason.
+        ``_prune_old_tool_results`` passes: (1) dedup byte-identical tool results anywhere, newest copy kept
+        (lossless, so tail-agnostic); (2) summarize non-tail results above ``proactive_prune_min_result_chars``;
+        (3) retire all but the newest ``_MAX_KEEP_TOOL_IMAGES`` image payloads, except a pending round that fits
+        the hard share (#92699). Tool-call arguments are never rewritten.
         """
         if self.proactive_prune_tokens <= 0 or (
             current_tokens is not None and current_tokens < self.proactive_prune_tokens
@@ -3420,12 +3417,11 @@ class ContextCompressor(
             return messages, 0
         before = sum(_estimate_msg_budget_tokens(m) for m in messages)
         # Under-threshold runway skip is ordinary hysteresis (silent); above it the lockout is the bug.
-        if before < self._proactive_prune_rearm_tokens and not self._billed_basis_over_threshold(current_tokens):
+        if not cold_cache and before < self._proactive_prune_rearm_tokens and not self._billed_basis_over_threshold(current_tokens):
             return messages, 0
-        # Capability gate first: a store without archive_and_compact makes every prune a no-op.
-        session_db = getattr(self, "_session_db", None)
-        session_id = getattr(self, "_session_id", "")
-        if session_db and session_id and not callable(getattr(session_db, "archive_and_compact", None)):
+        # Capability gate first: a store that cannot archive (no archive_and_compact, or no bound row) loses the originals.
+        session_db, session_id = getattr(self, "_session_db", None), getattr(self, "_session_id", "")
+        if session_db and not (session_id and callable(getattr(session_db, "archive_and_compact", None))):
             self._warn_reclamation_no_op("prune:store_cannot_persist", current_tokens)
             return messages, 0
         pruned_msgs, pruned_count = self._prune_old_tool_results(
@@ -3438,19 +3434,23 @@ class ContextCompressor(
         # Prompt-cache hysteresis: commit only when the reclaim is meaningful.
         after = sum(_estimate_msg_budget_tokens(m) for m in pruned_msgs)
         reclaimed = max(0, before - after)
-        if reclaimed < self.proactive_prune_min_reclaim_tokens:
+        gate = self.proactive_prune_min_reclaim_tokens
+        cold_gate = min(gate, _COLD_CACHE_MIN_RECLAIM_TOKENS)
+        if reclaimed < (cold_gate if cold_cache else max(cold_gate, gate - self._proactive_prune_cold_credit)):
             self._warn_reclamation_no_op("prune:reclaim_below_minimum", current_tokens, before=before)
             return messages, 0
-        # Require a full trigger-sized regrowth before the next cache-breaking rewrite.
-        runway = max(reclaimed, self.proactive_prune_tokens, self.proactive_prune_min_reclaim_tokens)
-        next_rearm_tokens = after + runway
+        if cold_cache:  # Nothing to protect: keep the warm runway and credit the reclaim to the next warm gate.
+            next_rearm_tokens, cold_credit = self._proactive_prune_rearm_tokens, self._proactive_prune_cold_credit + reclaimed
+        else:  # Require a full trigger-sized regrowth before the next cache-breaking rewrite.
+            next_rearm_tokens, cold_credit = after + max(reclaimed, self.proactive_prune_tokens, gate), 0
         if session_db and session_id:
             try:
                 from agent.conversation_compression_archive import coverage_for_commit
                 covered_ids, unresolved_held = coverage_for_commit(session_db, session_id, messages)
                 session_db.archive_and_compact(
                     session_id, pruned_msgs,
-                    model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: next_rearm_tokens},
+                    model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: next_rearm_tokens,
+                                        PROACTIVE_PRUNE_COLD_CREDIT_MODEL_CONFIG_KEY: cold_credit},
                     watermark=_archive_watermark_for(session_db, session_id, messages),
                     covered_ids=covered_ids, unresolved_held=unresolved_held,
                 )
@@ -3466,7 +3466,7 @@ class ContextCompressor(
             # Shared post-commit stamp site with the in-place commit and micro-compaction sync.
             # See #98450.
             stamp_db_persisted_markers(pruned_msgs)
-        self._proactive_prune_rearm_tokens = next_rearm_tokens
+        self._proactive_prune_rearm_tokens, self._proactive_prune_cold_credit = next_rearm_tokens, cold_credit
         # Reclamation just ran: let a future lockout warn again.
         self._last_reclaim_block_warn = None
         return pruned_msgs, pruned_count

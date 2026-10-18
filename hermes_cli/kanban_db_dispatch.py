@@ -81,6 +81,11 @@ _RESPAWN_BLOCKER_RE = re.compile(
 # um run de outra natureza a armadilha descrita no docstring abaixo se fechava.
 _RESPAWN_BLOCKER_SUPERSEDING_OUTCOMES = frozenset({
     "completed", "review_requested", "changes_requested", "blocked", "crashed",
+    # ``reclaimed`` é recuperação do dispatcher (worker sumiu, sem heartbeat), não
+    # diagnóstico de quota/auth: sem ele, um texto antigo de quota prende o card
+    # para sempre (medido em t_482df3f3, 17/10: last_failure_error de 12/10 com
+    # último run reclaimed).
+    "reclaimed",
 })
 
 # Within this window a completed run counts as "recent proof"; don't re-spawn.

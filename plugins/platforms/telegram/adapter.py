@@ -4885,8 +4885,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             from hermes_constants import get_hermes_home
             response_path = get_hermes_home() / ".update_response"
             tmp = response_path.with_suffix(".tmp")
-            tmp.write_text(answer, encoding="utf-8")
-            tmp.replace(response_path)
+            await asyncio.to_thread(tmp.write_text, answer, encoding="utf-8")
+            await asyncio.to_thread(tmp.replace, response_path)
             logger.info("Telegram update prompt answered '%s' by user %s", answer, getattr(query.from_user, "id", "unknown"))
         except Exception as exc:
             logger.error("Failed to write update response from callback: %s", exc)
@@ -4923,7 +4923,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         script_name, extra_args, success_key, is_state_verb = entry
         from hermes_constants import get_hermes_home
         script_path = get_hermes_home() / "scripts" / "gmail-triage" / script_name
-        if not script_path.exists():
+        if not await asyncio.to_thread(script_path.exists):
             await query.answer(text=_toast("platform.telegram.gmail_triage.script_missing", script=script_name))
             logger.error("[%s] gmail-triage script missing: %s", self.name, script_path)
             return
@@ -5178,7 +5178,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
         _transcoded_voice_path: Optional[str] = None
         try:
-            if not os.path.exists(audio_path):
+            if not await asyncio.to_thread(os.path.exists, audio_path):
                 return SendResult(success=False, error=self._missing_media_path_error("Audio", audio_path))
             # sendVoice only accepts Ogg/Opus: an explicit voice-bubble request (is_voice) transcodes via
             # ffmpeg; otherwise route by extension (.mp3/.m4a → sendAudio, others → document).
@@ -5193,7 +5193,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                         self.name, os.path.basename(audio_path))
             # Telegram drops duration for long clips (~5 min+, shows 0:00).
             _duration_secs = await asyncio.to_thread(_probe_voice_duration_seconds, audio_path)
-            with open(audio_path, "rb") as audio_file:  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
+            with await asyncio.to_thread(open, audio_path, "rb") as audio_file:  # streamed to the upload
                 ext = os.path.splitext(audio_path)[1].lower()
                 if ext in {".ogg", ".opus"}:  # round playable voice bubble
                     msg = await self._send_voice_bubble(audio_file, chat_id, reply_to, metadata, caption, _duration_secs)
@@ -5213,7 +5213,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         finally:
             if _transcoded_voice_path:
                 with contextlib.suppress(OSError):
-                    os.unlink(_transcoded_voice_path)
+                    await asyncio.to_thread(os.unlink, _transcoded_voice_path)
 
     async def send_multiple_images(
         self, chat_id: str, images: list[tuple], metadata: Optional[dict[str, Any]] = None, human_delay: float = 0.0) -> SendResult:
@@ -5251,16 +5251,16 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                     source: Any = image_url
                     if image_url.startswith("file://"):
                         local_path = _unquote(image_url[7:])
-                        if not os.path.exists(local_path):
+                        if not await asyncio.to_thread(os.path.exists, local_path):
                             logger.warning("[%s] Skipping missing image in media group: %s", self.name, local_path)
                             continue
                         # Pre-compress large raster images so the media-group upload stays under
                         # media_write_timeout; the temp JPEG is removed after the send.
-                        compressed = self._compress_image_to_jpeg(local_path)
+                        compressed = await asyncio.to_thread(self._compress_image_to_jpeg, local_path)
                         if compressed:
                             temp_paths.append(compressed)
                             local_path = compressed
-                        source = open(local_path, "rb")  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
+                        source = await asyncio.to_thread(open, local_path, "rb")  # streamed to the upload
                         opened_files.append(source)
                     media.append(InputMediaPhoto(media=source, caption=self._caption_1024(alt_text)))
                 if not media:
@@ -5289,7 +5289,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                         fh.close()
                 for tmp in temp_paths:
                     with contextlib.suppress(OSError):
-                        os.remove(tmp)
+                        await asyncio.to_thread(os.remove, tmp)
         return SendResult(success=delivered, error=None if delivered else "all images failed to send")
 
     async def send_image_file(
@@ -5298,7 +5298,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         """Send a local image file natively as a Telegram photo."""
         # Pre-compress large raster images to progressive JPEG once; the photo send and the document
         # fallback both reuse the compressed file so either upload stays under media_write_timeout.
-        compressed = self._compress_image_to_jpeg(image_path)
+        compressed = await asyncio.to_thread(self._compress_image_to_jpeg, image_path)
         actual_path = compressed or image_path
         doc_name = os.path.splitext(os.path.basename(image_path))[0] + ".jpg" if compressed else os.path.basename(image_path)
 
@@ -5329,7 +5329,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         finally:
             if compressed:
                 with contextlib.suppress(OSError):
-                    os.remove(compressed)
+                    await asyncio.to_thread(os.remove, compressed)
 
     async def _send_local_file(
         self, label: str, path: str, chat_id, reply_to, metadata, media_key: str, build_kwargs, on_error,
@@ -5339,9 +5339,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="Not connected")
         try:
-            if not os.path.exists(path):
+            if not await asyncio.to_thread(os.path.exists, path):
                 return SendResult(success=False, error=self._missing_media_path_error(label, path))
-            with open(path, "rb") as f:  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
+            with await asyncio.to_thread(open, path, "rb") as f:  # streamed to the upload
                 msg = await self._send_media(
                     getattr(self._bot, f"send_{media_key}"), chat_id, reply_to, metadata, media_key,
                     reset_media=lambda: f.seek(0), **build_kwargs(f))
@@ -5397,7 +5397,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         finally:
             if thumb_path:
                 with contextlib.suppress(OSError):
-                    os.remove(thumb_path)
+                    await asyncio.to_thread(os.remove, thumb_path)
 
     async def send_image(
         self, chat_id: str, image_url: str, caption: Optional[str] = None, reply_to: Optional[str] = None,

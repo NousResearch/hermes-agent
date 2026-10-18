@@ -3148,6 +3148,8 @@ export function useSessionActions({
         startFreshSessionDraft(true)
       }
 
+      let deleted = false
+
       try {
         if (closingRuntimeId) {
           // Deleting a session must END its turn, not just drop the row.
@@ -3193,26 +3195,20 @@ export function useSessionActions({
         }
 
         await deleteSession(storedSessionId, removedOwner)
+        deleted = true
 
         dropTranscriptTailEverywhere(storedSessionId)
-        // Only after the RPC lands — the optimistic eviction above can roll
-        // back, and a rolled-back row must keep its watermark/marker.
+        // A rolled-back row must keep its unread watermark/marker.
         forgetSessionUnread(removedIds, profile)
         clearQueuedPrompts(storedSessionId)
-        // The journaled in-flight tail holds this session's prompt and tool
-        // calls in localStorage; a deleted session must not leave that copy
-        // behind to age out on its own. Purge after the RPC lands (same
-        // rollback argument as the unread watermark above), passing every id
-        // the delete holds: the stored tip, the row id, the lineage root, and
-        // the closing runtime id — the journal keys on the stored id.
+        // Purge persisted prompts/tool calls only after deletion commits,
+        // across the stored tip, lineage root, row and closing runtime ids.
         purgeInFlightTurnJournals([...removedIds, closingRuntimeId])
 
         // Preview tabs are session-owned: drop them with the session (pinned
         // tabs survive — they belong to the workspace, not the session).
-        for (const id of removedIds) {
-          if (id) {
-            prunePreviewTabsForSession(id)
-          }
+        for (const id of removedIds.filter(Boolean) as string[]) {
+          prunePreviewTabsForSession(id)
         }
 
         if (closingRuntimeId) {
@@ -3232,11 +3228,8 @@ export function useSessionActions({
           dropSessionState(tiledRuntimeId)
         }
 
-        // Live per-session stores (the same four the stop paths clear) key on
-        // the gateway event's session_id, i.e. the runtime id. When the deleted
-        // row is selected, closingRuntimeId is the foreground runtime, which can
-        // differ from the stored→runtime mapping (cached/tiled runtime), so
-        // clear the stored id and both runtime ids — once per distinct id.
+        // Live stores key on runtime ids; clear both foreground and tiled
+        // runtimes as well as the stored id, once per distinct id.
         for (const sid of new Set([storedSessionId, closingRuntimeId, tiledRuntimeId].filter(Boolean) as string[])) {
           clearSessionSubagents(sid)
           clearSessionTodos(sid)
@@ -3244,6 +3237,13 @@ export function useSessionActions({
           resetSessionBackground(sid)
         }
       } catch (err) {
+        if (deleted) {
+          // Cleanup cannot undo an authoritative backend deletion.
+          console.warn('[session-delete] Post-delete cleanup failed', err)
+
+          return
+        }
+
         if (listed?.session) {
           restoreListedSession(listed.session, listed.slice)
         }
@@ -3275,9 +3275,7 @@ export function useSessionActions({
 
         notifyError(err, copy.deleteFailed)
       } finally {
-        // Release the tombstone to the normal projects.tree prune now the RPC has
-        // settled (kept on success — the backend has deleted it; cleared on the
-        // rollback above on failure).
+        // Unpin the tombstone; only failed deletions lift it above.
         endSessionMutation(removedIds)
       }
     },

@@ -115,6 +115,12 @@ def _matching_ids(platform: str, approved: dict, user_id: str) -> list:
     return [uid for uid in approved if _user_ids_match(platform, uid, user_id)]
 
 
+def _stored_id_keys(platform: str, user_id: str) -> set[str]:
+    """Disk-free identity keys for a stored ID (raw + normalized); used to build the approved-ID index."""
+    raw_user_id = str(user_id or "").strip()
+    return {raw_user_id, _normalize_user_id(platform, raw_user_id)} - {""}
+
+
 def _read_allowlist_env(env_var: str) -> str:
     """Read a platform allowlist env var through the profile secret scope.
 
@@ -343,6 +349,7 @@ class PairingStore:
         self._lock = threading.RLock()  # adapters run concurrently in threads sharing one store
         self._profile = profile  # for diagnostics / log lines
         self._approved_cache: dict = {}
+        self._approved_index: dict = {}  # platform -> (data object, frozenset of stored-ID keys)
 
     @property
     def profile(self) -> Optional[str]:
@@ -418,7 +425,14 @@ class PairingStore:
     def is_approved(self, platform: str, user_id: str) -> bool:
         """Check if a user is approved (paired) on a platform."""
         with self._lock:
-            return bool(_matching_ids(platform, self._load_approved(platform), user_id))
+            approved = self._load_approved(platform)
+            cached = self._approved_index.get(platform)
+            if cached is None or cached[0] is not approved:
+                # Rebuilt only when _load_approved returns a new dict (file changed).
+                cached = (approved, frozenset(k for uid in approved for k in _stored_id_keys(platform, uid)))
+                self._approved_index[platform] = cached
+            # Aliases (WhatsApp lid-mapping disk reads) are resolved once for the query, not per stored entry.
+            return not cached[1].isdisjoint(_user_id_aliases(platform, user_id))
 
     def list_approved(self, platform: str | None = None) -> list:
         """List approved users, optionally filtered by platform."""

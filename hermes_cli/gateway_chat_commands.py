@@ -40,12 +40,13 @@ def refusal(name):
 
 
 def _user_turns(snapshot):
-    """Human-authored user rows (``row_id`` = durable ``messages.id``), oldest first: no display-only
-    kind other than a typed /steer, never a compaction handoff carrier."""
+    """Human-authored live user rows (``row_id`` = durable ``messages.id``), oldest first: no display-only
+    kind other than a typed /steer, never a compaction handoff carrier, never a row a compression
+    archived (shown in the snapshot's history, not a turn to rewind to)."""
     from agent.context_compressor import is_user_originated_turn
     return [row for row in snapshot.get("messages", [])
             if type(row.get("row_id")) is int and row.get("display_kind") in (None, "", "steer")
-            and is_user_originated_turn(row)]
+            and not row.get("archived") and is_user_originated_turn(row)]
 
 
 def _rewind_to(turns_back, *, retry=False):

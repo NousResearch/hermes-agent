@@ -566,7 +566,9 @@ class LineAdapter(BasePlatformAdapter):
         else:
             text = f"[unsupported message type: {msg_type}]"
         if chat_type == "dm" and self._client:  # best-effort typing indicator (DM only)
-            asyncio.create_task(self._client.loading(chat_id))
+            task = asyncio.create_task(self._client.loading(chat_id))  # loading() swallows its own errors
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
         source_obj = self.build_source(
             chat_id=chat_id, chat_type=chat_type, user_id=user_id, user_name=user_id, chat_name=chat_id,
             message_id=message_id)
@@ -801,15 +803,15 @@ class LineAdapter(BasePlatformAdapter):
             self._media_tokens.pop(token, None)
             return web.Response(status=410, text="gone")
         path = Path(file_path)
-        if not path.is_file():
+        if not await asyncio.to_thread(path.is_file):
             return web.Response(status=404, text="not found")
         try:
             from hermes_constants import get_hermes_home
-            hermes_home = Path(get_hermes_home()).resolve()
+            hermes_home = await asyncio.to_thread(Path(get_hermes_home()).resolve)
         except Exception:
-            hermes_home = Path.home().joinpath(".hermes").resolve()
-        resolved = path.resolve()
-        if not any(resolved.is_relative_to(r) for r in (Path(tempfile.gettempdir()).resolve(), Path("/tmp").resolve(), hermes_home)):  # no-tmp: ok — macOS /private/tmp alias in the allowed-roots check, not a write target
+            hermes_home = await asyncio.to_thread(Path.home().joinpath(".hermes").resolve)
+        resolved, allowed = await asyncio.to_thread(_resolve_in_media_roots, path, hermes_home)
+        if not allowed:
             logger.warning("LINE: refusing to serve outside allowed roots: %s", resolved)
             return web.Response(status=403, text="forbidden")
         content_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
@@ -818,7 +820,7 @@ class LineAdapter(BasePlatformAdapter):
     async def send_image_file(
         self, chat_id: str, image_path: str, caption: Optional[str] = None, metadata: Optional[dict[str, Any]] = None
     ) -> SendResult:
-        path, err = self._check_media_file("image", image_path)
+        path, err = await asyncio.to_thread(self._check_media_file, "image", image_path)
         if err:
             return err
         url = self._serve_file(path)
@@ -831,7 +833,7 @@ class LineAdapter(BasePlatformAdapter):
         self, chat_id: str, audio_path: str, duration_ms: int = 1000, metadata: Optional[dict[str, Any]] = None,
         **kwargs: Any,
     ) -> SendResult:
-        path, err = self._check_media_file("audio", audio_path)
+        path, err = await asyncio.to_thread(self._check_media_file, "audio", audio_path)
         if err:
             return err
         msg = {"type": "audio", "originalContentUrl": self._serve_file(path), "duration": int(duration_ms)}
@@ -840,22 +842,19 @@ class LineAdapter(BasePlatformAdapter):
     async def send_video(
         self, chat_id: str, video_path: str, preview_path: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None) -> SendResult:
-        path, err = self._check_media_file("video", video_path)
+        path, err = await asyncio.to_thread(self._check_media_file, "video", video_path)
         if err:
             return err
         # LINE requires previewImageUrl: use the supplied preview, else a stdlib 1×1 PNG.
         # Use one if supplied, otherwise write a stdlib 1×1 PNG to /tmp and serve it. PR #8398.
-        if preview_path and Path(preview_path).is_file():
+        if preview_path and await asyncio.to_thread(Path(preview_path).is_file):
             preview_url = self._serve_file(Path(preview_path))
         else:
-            tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+            tmp_name = await asyncio.to_thread(_write_fallback_preview)
             try:
-                tmp.write(_FALLBACK_PNG_PREVIEW)
-                tmp.flush()
-                tmp.close()
-                preview_url = self._media_url(self._register_media(tmp.name, cleanup=True), "preview.png")
+                preview_url = self._media_url(self._register_media(tmp_name, cleanup=True), "preview.png")
             except Exception:
-                _unlink_quietly(tmp.name)
+                _unlink_quietly(tmp_name)
                 raise
         msg = {"type": "video", "originalContentUrl": self._serve_file(path), "previewImageUrl": preview_url}
         return await self._send_messages(chat_id, [msg])
@@ -896,6 +895,25 @@ class LineAdapter(BasePlatformAdapter):
 def _unlink_quietly(path: str) -> None:
     with contextlib.suppress(OSError):
         os.unlink(path)
+
+
+def _resolve_in_media_roots(path: Path, hermes_home: Path) -> tuple[Path, bool]:
+    """Blocking (run off-loop): ``path.resolve()`` and whether it sits under an allowed media root."""
+    resolved = path.resolve()
+    return resolved, any(resolved.is_relative_to(r) for r in (Path(tempfile.gettempdir()).resolve(), Path("/tmp").resolve(), hermes_home))  # no-tmp: ok — macOS /private/tmp alias in the allowed-roots check, not a write target
+
+
+def _write_fallback_preview() -> str:
+    """Blocking (run off-loop): write the 1×1 PNG video preview to a temp file; return its path."""
+    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+    try:
+        tmp.write(_FALLBACK_PNG_PREVIEW)
+        tmp.flush()
+        tmp.close()
+    except Exception:
+        _unlink_quietly(tmp.name)
+        raise
+    return tmp.name
 
 
 def _env_credentials_present() -> bool:

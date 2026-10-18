@@ -850,6 +850,8 @@ skills:
 
 When on, skill writes are staged under `~/.hermes/pending/skills/` and reviewed with `/skills pending`, `/skills diff <id>`, `/skills approve <id>`, `/skills reject <id>` — from the CLI or any messaging platform. Toggle at runtime with `/skills approval on|off`. Memory has the same gate (`memory.write_approval`, below). Full walkthrough: [Gating agent skill writes](./features/skills.md#gating-agent-skill-writes-skillswrite_approval).
 
+To require the agent to say *why* it is changing a skill, set `skills.require_reason: true` (default `false`); the reason lands in the audit ledger (`hermes curator ledger`). See [Audit ledger](./features/curator.md#audit-ledger-and-single-edit-rollback).
+
 ## Memory Configuration
 
 ```yaml

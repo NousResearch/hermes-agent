@@ -1500,6 +1500,9 @@ DEFAULT_CONFIG = {
         # curator ledger` / `rollback <entry-id>`. Never a gate — failures can't block.
         # See #79686.
         "ledger": True,
+        # Refuse skill_manage mutations that give no `reason` (the why, recorded in that ledger
+        # entry and shown by `hermes curator ledger`). An approved staged write is never refused.
+        "require_reason": False,
         # Size cap for that ledger: once the file grows past this, the next append rewrites it
         # through the unchanged-file dedup and, if still over, drops the oldest entries (0 = keep
         # the ledger append-only forever, the previous behaviour).

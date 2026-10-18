@@ -52,8 +52,12 @@ async def test_interrupt_text_is_not_a_second_turn_during_an_admission():
     assert pending is None
 
 
-async def _followup_while_running(monkeypatch, event, marker):
-    """Run one turn, deliver ``event`` while it is in progress, and return what ran next."""
+async def _followup_while_running(monkeypatch, event, marker, *, fail_admit=False):
+    """Run one turn, deliver ``event`` while it is in progress, and return the interrupt text.
+
+    The running turn stays inside its tool until the inbound handler returns, so a failed
+    admit is visible to the drain. ``fail_admit`` makes that admit raise ``invalid_params``.
+    """
     from gateway.session_authority import initialize_session_authority
     from plugins.platforms.discord.adapter import DiscordAdapter
     from tests.waiting import async_wait_until
@@ -78,7 +82,7 @@ async def _followup_while_running(monkeypatch, event, marker):
     source = adapter.build_source(chat_id="42", chat_type="dm", user_id="42")
     event.source = source
     seen = []
-    started = threading.Event()
+    release = threading.Event()
     agent_ready = threading.Event()
     first = {"open": True}
 
@@ -88,7 +92,6 @@ async def _followup_while_running(monkeypatch, event, marker):
 
         def interrupt(self, message=None, *args, **kwargs):
             self._interrupt_message = message
-            started.set()
 
     agent = Agent()
 
@@ -99,10 +102,10 @@ async def _followup_while_running(monkeypatch, event, marker):
             first["open"] = False
             self._runner._session_state(self._ctx.session_key).turn.agent = agent
             agent_ready.set()
-            got_it = started.wait(10)
+            held = release.wait(10)
             result = {
                 "final_response": "", "messages": [], "completed": False, "interrupted": True,
-                "interrupt_message": agent._interrupt_message if got_it else None,
+                "interrupt_message": agent._interrupt_message if held else None,
             }
         else:
             result = {"final_response": "ok", "messages": [], "completed": True}
@@ -114,7 +117,20 @@ async def _followup_while_running(monkeypatch, event, marker):
     opening = asyncio.create_task(adapter.handle_message(MessageEvent(text="A", source=source, message_id="A")))
     key = runner.session_store._generate_session_key(source)
     await async_wait_until(agent_ready.is_set, what="the running agent")
-    await adapter.handle_message(event)
+    if fail_admit:
+        async def deny(authority, event):
+            from hermes_state_runtime import RuntimeStoreError
+            raise RuntimeStoreError("invalid_params")
+
+        monkeypatch.setattr("gateway.session_ingress.admit_message", deny)
+    from hermes_state_runtime import RuntimeStoreError
+    try:
+        await adapter.handle_message(event)
+    except RuntimeStoreError:
+        if not fail_admit:
+            raise
+    finally:
+        release.set()
     await opening
     await async_wait_until(
         lambda: len(seen) >= 2 and not runner._is_session_running(key), what="the follow-up to finish")
@@ -144,3 +160,18 @@ async def test_voice_during_a_running_turn_is_admitted_once(monkeypatch, tmp_pat
         media_urls=[str(voice)], media_types=["audio/ogg"],
     ), "note.ogg")
     assert interrupt == "heard this"
+
+
+@pytest.mark.asyncio
+async def test_plain_text_during_a_running_turn_is_admitted_once(monkeypatch):
+    interrupt = await _followup_while_running(
+        monkeypatch, MessageEvent(text="later", message_id="T"), "later")
+    assert interrupt == "later"
+
+
+@pytest.mark.asyncio
+async def test_failed_admit_still_runs_the_interrupt_text_once(monkeypatch):
+    """A failed FIFO admit must not drop the send. The interrupt text runs once."""
+    interrupt = await _followup_while_running(
+        monkeypatch, MessageEvent(text="later", message_id="T"), "later", fail_admit=True)
+    assert interrupt == "later"

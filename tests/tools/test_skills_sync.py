@@ -264,6 +264,74 @@ class TestExternalDirsIndexing:
         assert "ascii-art" in result["copied"]
         assert result["shadowed_by_external"] == []
 
+    def _setup_stale_shadow(self, tmp_path, bundled_body, local_body):
+        """A bundled clair-qa whose installed copy differs from the current bundle: the manifest
+        records the OLD generation's hash, so the local tree holds an untouched older install."""
+        bundled = self._setup_bundled(tmp_path)
+        (bundled / "devops" / "clair-qa" / "SKILL.md").write_text(bundled_body)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        dest = skills_dir / "devops" / "clair-qa"
+        dest.mkdir(parents=True)
+        (dest / "SKILL.md").write_text(local_body)
+        manifest_file.parent.mkdir(parents=True, exist_ok=True)
+        manifest_file.write_text(f"clair-qa:{_dir_hash(dest)}")  # v2 line format, as _write_manifest
+        return bundled, skills_dir, manifest_file, dest
+
+    def test_stale_shadow_from_older_bundle_generation_removed(self, tmp_path):
+        """A local copy installed from an EARLIER bundle generation matches its recorded origin
+        hash, not the current bundle: the external dir now owns the name, so the untouched old
+        install must be healed away instead of shadowing it forever (#139445)."""
+        bundled, skills_dir, manifest_file, dest = self._setup_stale_shadow(
+            tmp_path, bundled_body="# bundled clair v2", local_body="# bundled clair v1 (older generation)")
+        ext_dir = self._setup_external(tmp_path)
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            with patch("agent.skill_utils.get_external_skills_dirs", return_value=[ext_dir]):
+                result = sync_skills(quiet=True)
+                manifest = _read_manifest()
+
+        assert "clair-qa" in result["shadowed_by_external"]
+        assert not dest.exists()  # the untouched old-generation install is gone
+        assert "clair-qa" not in manifest
+
+    def test_user_modified_shadow_kept(self, tmp_path):
+        """A local copy that differs from BOTH the current bundle and its recorded origin hash is
+        user-edited work: it must survive the defer and keep shadowing, not be deleted."""
+        bundled, skills_dir, manifest_file, dest = self._setup_stale_shadow(
+            tmp_path, bundled_body="# bundled clair v2", local_body="# my edited clair")
+        # Diverge the copy after the manifest baseline so origin no longer matches either.
+        (dest / "SKILL.md").write_text("# my edited clair (post-install tweak)")
+        ext_dir = self._setup_external(tmp_path)
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            with patch("agent.skill_utils.get_external_skills_dirs", return_value=[ext_dir]):
+                result = sync_skills(quiet=True)
+                manifest = _read_manifest()
+
+        assert "clair-qa" in result["shadowed_by_external"]
+        assert dest.exists()  # user-edited: kept
+        assert (dest / "SKILL.md").read_text().startswith("# my edited")
+        assert manifest.get("clair-qa")  # provenance kept for the surviving copy
+
+    def test_user_authored_shadow_without_manifest_entry_kept(self, tmp_path):
+        """A same-named local skill with no manifest provenance (the user's own) differs from the
+        bundle and stays put."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        dest = skills_dir / "devops" / "clair-qa"
+        dest.mkdir(parents=True)
+        (dest / "SKILL.md").write_text("# my own clair, never bundled")
+        ext_dir = self._setup_external(tmp_path)
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            with patch("agent.skill_utils.get_external_skills_dirs", return_value=[ext_dir]):
+                result = sync_skills(quiet=True)
+
+        assert "clair-qa" in result["shadowed_by_external"]
+        assert dest.exists()
+
 
 class TestRenamedBundledSkillRecovery:
     """Upstream renames/recategorizations must not strand the user's copy.

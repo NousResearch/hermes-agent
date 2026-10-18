@@ -695,6 +695,8 @@ def _run_cli_killing_process_group(cmd, code, env, timeout):
 # endpoint leaves later browser_exec calls in the old browser until these are stopped.
 _driven_daemons: set = set()
 _driven_daemons_lock = threading.Lock()
+_harness_reap_lock = threading.Lock()
+_harness_reaped_once = False
 # Route cache key -> whether its last browser_exec ran on the hybrid local sidecar.
 _exec_route_is_sidecar: dict[str, bool] = {}
 # Route cache key -> the note from its real-profile fallback; that route stays on the fallback browser.
@@ -702,19 +704,227 @@ _real_profile_fallback: dict[str, str] = {}
 _real_profile_note_delivered: set = set()
 
 
-def stop_harness_daemons() -> None:
-    """Stop every harness daemon this process drove, through the harness's own identity-checked
-    ``--reload``; the next browser_exec respawns one on the endpoint it resolves then."""
-    with _driven_daemons_lock:
-        names = sorted(_driven_daemons)
-        _driven_daemons.clear()
-    cmd = _find_cli() if names else None
+def _harness_ipc():
+    """The installed harness IPC module, resolved lazily for optional/old installs."""
+    try:
+        return importlib.import_module("browser_harness._ipc")
+    except (ImportError, OSError):
+        return None
+
+
+def _harness_owner_dir(ipc, name: str) -> Path:
+    """Hermes ownership leases next to the harness endpoint (shared across profiles)."""
+    return Path(ipc.pid_path(name)).parent / ".hermes-owners" / name
+
+
+def _harness_owner_record(ipc, name: str, pid: Optional[int] = None) -> Path:
+    return _harness_owner_dir(ipc, name) / f"{pid or os.getpid()}.json"
+
+
+def _process_generation(pid: int):
+    """Kernel process-start fingerprint, or None when this platform cannot provide one."""
+    try:
+        from gateway.status import get_process_start_time
+        return get_process_start_time(pid)
+    except (ImportError, OSError, ValueError):
+        return None
+
+
+def _owner_record_is_live(path: Path) -> bool:
+    """Whether an owner lease still names the same live process (PID reuse safe)."""
+    try:
+        record = json.loads(path.read_text(encoding="utf-8-sig"))
+        pid = record["pid"]
+        started = record.get("started")
+        if type(pid) is not int or not 0 < pid < (1 << 31):
+            return False
+        from gateway.status import _pid_exists
+        if not _pid_exists(pid):
+            return False
+        current = _process_generation(pid)
+        # On a platform without fingerprints, liveness is the safest available
+        # fallback. Records written with a fingerprint require an exact match.
+        return started is None or (current is not None and current == started)
+    except (OSError, ValueError, TypeError, KeyError):
+        return False
+
+
+def _prune_dead_harness_owners(owner_dir: Path) -> list[Path]:
+    """Remove dead/corrupt leases and return the remaining live owner records."""
+    live = []
+    try:
+        records = list(owner_dir.glob("*.json"))
+    except OSError:
+        return live
+    for path in records:
+        if _owner_record_is_live(path):
+            live.append(path)
+        else:
+            with contextlib.suppress(OSError):
+                path.unlink()
+    return live
+
+
+def _harness_owner_file_lock(ipc, name: str):
+    """Cross-process lock serializing owner registration against last-owner stop."""
+    from hermes_cli.active_sessions import _FileLock
+    root = Path(ipc.pid_path(name)).parent / ".hermes-owners"
+    return _FileLock(root / f".{name}.lock")
+
+
+def _register_harness_owner(name: str) -> None:
+    """Publish this Hermes process as a user of ``name`` before invoking the CLI."""
+    ipc = _harness_ipc()
+    if ipc is None:
+        return
+    try:
+        with _harness_owner_file_lock(ipc, name):
+            owner_dir = _harness_owner_dir(ipc, name)
+            owner_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            _prune_dead_harness_owners(owner_dir)
+            target = _harness_owner_record(ipc, name)
+            tmp = target.with_name(f".{target.name}.{threading.get_ident()}.tmp")
+            tmp.write_text(json.dumps({"pid": os.getpid(), "started": _process_generation(os.getpid())},
+                                      sort_keys=True, separators=(",", ":")), encoding="utf-8")
+            os.replace(tmp, target)
+    except Exception as exc:
+        # Ownership is defense in depth. If it cannot be recorded, clean-exit
+        # teardown retains the historical stop behavior rather than leaking.
+        logger.debug("Could not register browser-harness owner for %s: %s", name, exc, exc_info=True)
+
+
+def _stop_owned_harness_daemon(name: str) -> None:
+    """Atomically drop our lease and reload only when no live owner remains."""
+    ipc = _harness_ipc()
+    if ipc is None:
+        _run_harness_reload(name)  # preserve behavior for old/partial installs
+        return
+    try:
+        with _harness_owner_file_lock(ipc, name):
+            owner_dir = _harness_owner_dir(ipc, name)
+            own = _harness_owner_record(ipc, name)
+            with contextlib.suppress(OSError):
+                own.unlink()
+            live = _prune_dead_harness_owners(owner_dir)
+            if live:
+                return
+            # Hold the same lock registration takes until shutdown completes,
+            # otherwise a fresh owner can register in the check→reload gap and
+            # have its just-acquired shared daemon killed underneath it.
+            # No own record means registration failed or predates leases; retain
+            # historical clean-exit behavior rather than leak.
+            _run_harness_reload(name)
+            _cleanup_dead_harness_files(ipc, name)
+    except Exception as exc:
+        logger.debug("Could not stop owned browser-harness daemon %s: %s", name, exc, exc_info=True)
+
+
+def _run_harness_reload(name: str) -> None:
+    """Ask the harness to perform its strict shutdown (including cloud stop)."""
+    cmd = _find_cli()
     if not cmd:
         return
     env = _base_subprocess_env()
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        _run_cli_killing_process_group([*cmd, "--reload"], "", {**env, "BU_NAME": name}, 15)
+
+
+def _stale_harness_files(ipc, name: str) -> list[Path]:
+    paths = [Path(ipc.pid_path(name))]
+    with contextlib.suppress(Exception):
+        paths.append(Path(ipc._sock_path(name)))
+    with contextlib.suppress(Exception):
+        paths.append(Path(ipc.port_path(name)))
+    return paths
+
+
+def _harness_pid_alive(ipc, name: str) -> bool:
+    """Best-effort liveness for stale-file cleanup; never authorizes a signal."""
+    try:
+        raw = Path(ipc.pid_path(name)).read_text(encoding="utf-8-sig").strip()
+        try:
+            pid = json.loads(raw)["pid"]
+        except (ValueError, TypeError, KeyError):
+            pid = int(raw.split()[0])
+        from gateway.status import _pid_exists
+        return type(pid) is int and pid > 0 and _pid_exists(pid)
+    except (OSError, ValueError, TypeError, IndexError):
+        return False
+
+
+def _cleanup_dead_harness_files(ipc, name: str) -> None:
+    """Remove pid/socket/port artifacts only when no harness daemon answers or lives."""
+    try:
+        live_pid = ipc.identify(name, timeout=0.2)
+    except (OSError, ValueError):
+        live_pid = None
+    if live_pid is not None or _harness_pid_alive(ipc, name):
+        return
+    for path in _stale_harness_files(ipc, name):
+        with contextlib.suppress(OSError):
+            path.unlink()
+
+
+def reap_orphaned_harness_daemons() -> None:
+    """On first browser use, stop daemons whose recorded Hermes owners all died.
+
+    The stop goes through ``--reload`` rather than a raw signal so Browser Use
+    cloud shutdown remains strict. Legacy live daemons without owner records are
+    left alone; dead legacy pid/socket/port artifacts are still removed.
+    """
+    ipc = _harness_ipc()
+    if ipc is None:
+        return
+    runtime = Path(ipc.pid_path("default")).parent
+    owners_root = runtime / ".hermes-owners"
+    names: set[str] = set()
+    with contextlib.suppress(OSError):
+        names.update(p.name for p in owners_root.iterdir() if p.is_dir() and _SESSION_RE.match(p.name))
+    # Discover legacy/stale shared-runtime files too. Isolated BH_RUNTIME_DIR
+    # uses bare ``bu``; Hermes does not configure it, but default covers it.
+    for suffix in (".pid", ".sock", ".port"):
+        with contextlib.suppress(OSError):
+            for path in runtime.glob(f"bu-*{suffix}"):
+                name = path.name[3:-len(suffix)]
+                if _SESSION_RE.match(name):
+                    names.add(name)
+    if any((runtime / f"bu{suffix}").exists() for suffix in (".pid", ".sock", ".port")):
+        names.add("default")
+
+    for name in sorted(names):
+        try:
+            with _harness_owner_file_lock(ipc, name):
+                owner_dir = _harness_owner_dir(ipc, name)
+                had_records = any(owner_dir.glob("*.json"))
+                live = _prune_dead_harness_owners(owner_dir)
+                orphaned = had_records and not live
+                # Registration uses this same lock, so an owner cannot appear
+                # between the final liveness check and daemon shutdown.
+                if orphaned:
+                    _run_harness_reload(name)
+                _cleanup_dead_harness_files(ipc, name)
+        except Exception as exc:
+            logger.debug("browser-harness orphan reap failed for %s: %s", name, exc, exc_info=True)
+
+
+def _reap_harness_once() -> None:
+    global _harness_reaped_once
+    with _harness_reap_lock:
+        if _harness_reaped_once:
+            return
+        _harness_reaped_once = True
+    reap_orphaned_harness_daemons()
+
+
+def stop_harness_daemons() -> None:
+    """Stop every harness daemon this process drove, through the harness's own identity-checked
+    ``--reload`` when this is its last live Hermes owner; the next browser_exec
+    respawns one on the endpoint it resolves then."""
+    with _driven_daemons_lock:
+        names = sorted(_driven_daemons)
+        _driven_daemons.clear()
     for name in names:
-        with contextlib.suppress(OSError, subprocess.SubprocessError):
-            _run_cli_killing_process_group([*cmd, "--reload"], "", {**env, "BU_NAME": name}, 15)
+        _stop_owned_harness_daemon(name)
 
 
 def _route_exec(env: dict, session: str, task_id: Optional[str], local: bool, local_sidecar: bool,
@@ -795,8 +1005,11 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
 
     def dispatch() -> dict[str, Any]:
         _attach_vault_supervisor(env, task_id)
+        _reap_harness_once()
+        daemon_name = env.get("BU_NAME", "default")
+        _register_harness_owner(daemon_name)
         with _driven_daemons_lock:
-            _driven_daemons.add(env.get("BU_NAME", "default"))
+            _driven_daemons.add(daemon_name)
         try:
             return {"proc": _run_cli_killing_process_group(cmd, code, env, timeout)}
         except subprocess.TimeoutExpired:

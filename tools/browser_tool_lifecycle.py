@@ -98,6 +98,14 @@ def _emergency_cleanup_all_sessions():
                 _bt._session_owner_homes.clear()
                 _bt._cleanup_failures.clear()
                 _bt._recording_sessions.clear()
+    # Browser Use daemons are tracked independently from ``_active_sessions``:
+    # direct cloud mode and a failed/partial backend resolution can leave that
+    # dict empty after a successful browser_exec. Always stop our driven names;
+    # this is idempotent when cleanup_all_browsers() already did it above.
+    def _stop_harness():
+        from tools.browser_use_cli import stop_harness_daemons
+        stop_harness_daemons()
+    _best_effort("Browser Use harness daemon stop on exit", _stop_harness)
     # Lightpanda servers we spawned that fell out of ``_active_sessions``.
     _best_effort("Lightpanda cleanup on exit", _stop_all_lightpanda)
     # Safe even if we never used the browser — owner_pid liveness protects daemons

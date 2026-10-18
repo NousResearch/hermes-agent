@@ -631,23 +631,27 @@ def cleanup_browser(task_id: Optional[str] = None, *, strict: bool = False) -> N
     _drop_last_active_binding(task_id)
 
 
-def _kill_verified_daemon(socket_dir: str, session_name: str) -> bool:
-    """Tree-kill the daemon in ``<socket_dir>/<session>.pid`` if verifiably ours; True when
-    a kill was issued. Never raises."""
+def _kill_verified_daemon(socket_dir: str, session_name: str, *, strict: bool = False) -> bool:
+    """Reap only a verified daemon. Strict callers require it to be gone before untracking."""
     pid_file = os.path.join(socket_dir, f"{session_name}.pid")
-    if not os.path.isfile(pid_file):
-        return False
     try:
         daemon_pid = int(Path(pid_file).read_text(encoding="utf-8-sig").strip())
-        if not _verify_reapable_browser_daemon(daemon_pid, socket_dir, session_name):
+        killed = False
+        if _verify_reapable_browser_daemon(daemon_pid, socket_dir, session_name):
+            killed = _terminate_verified_daemon(daemon_pid, session_name, lambda *_a: _bt.logger.debug(
+                "Skipped daemon kill for %s: no start-time fingerprint for pid %s", session_name, daemon_pid))
+        else:
             _bt.logger.debug("Skipped daemon kill for %s: pid %s failed identity verification", session_name, daemon_pid)
-            return False
-        if not _terminate_verified_daemon(daemon_pid, session_name, lambda *_a: _bt.logger.debug(
-                "Skipped daemon kill for %s: no start-time fingerprint for pid %s", session_name, daemon_pid)):
-            return False
-        _bt.logger.debug("Killed daemon pid %s for %s", daemon_pid, session_name)
-        return True
-    except (ProcessLookupError, ValueError, PermissionError, OSError):
+        if strict and _pid_exists(daemon_pid):
+            raise RuntimeError(f"Browser daemon for {session_name} is still alive; cleanup has not settled")
+        if killed:
+            _bt.logger.debug("Killed daemon pid %s for %s", daemon_pid, session_name)
+        return killed
+    except (FileNotFoundError, ProcessLookupError):
+        return False
+    except (ValueError, PermissionError, OSError):
+        if strict:
+            raise
         _bt.logger.debug("Could not kill daemon pid for %s (already dead or inaccessible)", session_name)
         return False
 
@@ -678,7 +682,7 @@ def _release_session_resources(task_id: str, session_info: dict[str, Any], *, st
     if session_name:
         socket_dir = os.path.join(_bt._socket_safe_tmpdir(), f"agent-browser-{session_name}")
         if os.path.exists(socket_dir):
-            _kill_verified_daemon(socket_dir, session_name)
+            _kill_verified_daemon(socket_dir, session_name, strict=strict)
             shutil.rmtree(socket_dir, ignore_errors=True)
     if strict:
         _forget_session_tracking(task_id, session=True)

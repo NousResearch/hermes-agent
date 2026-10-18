@@ -85,6 +85,42 @@ class TestBrowserCleanup:
         assert browser_tool._recording_sessions == set()
         assert browser_tool._cleanup_done is True
 
+    def test_strict_cleanup_retains_live_daemon_after_failed_termination(self, tmp_path, monkeypatch):
+        import subprocess
+        import sys
+        import pytest
+
+        task_id, session_name = "strict-daemon-task", "strict-daemon-session"
+        socket_dir = tmp_path / f"agent-browser-{session_name}"
+        socket_dir.mkdir()
+        process = subprocess.Popen([
+            sys.executable, "-c", "import threading; threading.Event().wait()",
+            "agent-browser", str(socket_dir),
+        ])
+        (socket_dir / f"{session_name}.pid").write_text(str(process.pid))
+        monkeypatch.setattr(self.browser_tool, "_socket_safe_tmpdir", lambda: str(tmp_path))
+        self.browser_tool._active_sessions[task_id] = {
+            "session_name": session_name, "bb_session_id": None,
+        }
+        self.browser_tool._session_last_activity[task_id] = 123.0
+        try:
+            with patch("tools.browser_tool_session._run_browser_command", return_value={"success": True}):
+                with patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
+                           side_effect=PermissionError("termination denied")):
+                    with pytest.raises(PermissionError):
+                        bt_lifecycle.cleanup_browser(task_id, strict=True)
+                assert process.poll() is None
+                assert task_id in self.browser_tool._active_sessions
+                assert socket_dir.exists()
+                bt_lifecycle.cleanup_browser(task_id, strict=True)
+            process.wait(timeout=10)
+            assert task_id not in self.browser_tool._active_sessions
+            assert not socket_dir.exists()
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=10)
+
 
 class TestInactivityJanitorMultiplex:
     """#86402 / #100738: the process-global janitor thread has no profile scope."""

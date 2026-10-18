@@ -702,6 +702,8 @@ The commit ends the predecessor with `session_reset`, creates a fresh child with
 does not copy the prior transcript. Recovery of a committed, not-yet-started
 bootstrap uses the **same successor**. Interrupted authoring, bootstrap or
 continuation is visibly blocked for reconciliation, never blindly replayed.
+Missing or changed committed packets also block that successor before bootstrap;
+the triggering input is not repeatedly requeued against a failing packet check.
 A lane's recovery-dispatch failure is logged without skipping subsequent receipts.
 
 After compulsory bootstrap, native busy-input policy still applies. With the

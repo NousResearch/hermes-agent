@@ -575,3 +575,45 @@ async def test_changed_packet_blocks_same_successor_before_continuation(lane, ch
         assert not any(phase == "admitting" for phase, *_ in lane.calls)
     finally:
         lane.runner._release_turn_lease(lane.key, lane.generation)
+
+
+@pytest.mark.asyncio
+async def test_recovery_with_changed_packet_blocks_without_requeue_loop(lane):
+    class CrashBeforeBootstrap(BaseException):
+        pass
+
+    bootstrap = lane.runner._rollover_bootstrap
+
+    async def crash_before_bootstrap(*_args):
+        raise CrashBeforeBootstrap
+
+    lane.runner._rollover_bootstrap = crash_before_bootstrap
+    await _claim(lane)
+    try:
+        with pytest.raises(CrashBeforeBootstrap):
+            await _rotate(lane)
+        receipt = lane.store.get_rollover(lane.key)
+        assert receipt["phase"] == "committed"
+        lane.runner._release_turn_lease(lane.key, lane.generation)
+        lane.generation = lane.runner._begin_session_run_generation(lane.key)
+        lane.runner._session_state(lane.key).persistent.rollover = None
+        lane.runner._rollover_bootstrap = bootstrap
+        Path(receipt["packet_path"]).write_text("The bound packet was replaced.")
+        entry = lane.store.lookup_by_session_key(lane.key)
+        arrival = MessageEvent(text="accepted after restart", source=lane.source)
+        handled, _ = await lane.runner._rollover_recover_before_turn(
+            arrival, lane.source, entry, lane.key, lane.generation,
+        )
+        assert handled is True
+        assert lane.store.get_rollover(lane.key)["phase"] == "blocked"
+        assert lane.store.peek_session_id(lane.key) == receipt["new_session_id"]
+        pending = lane.adapter.get_pending_message(lane.key)
+        assert pending is arrival
+        calls = list(lane.calls)
+        handled, _ = await lane.runner._rollover_recover_before_turn(
+            pending, lane.source, entry, lane.key, lane.generation,
+        )
+        assert handled is True and lane.calls == calls
+        assert lane.key not in lane.adapter._pending_messages
+    finally:
+        lane.runner._release_turn_lease(lane.key, lane.generation)

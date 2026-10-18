@@ -413,7 +413,7 @@ class GatewayRolloverMixin:
     async def _rollover_block_successor(self, key, entry, receipt, reason):
         current = await self.async_session_store.get_rollover(key)
         if (current and current["new_session_id"] == receipt["new_session_id"]
-                and current["phase"] in {"bootstrapping", "admitting"}):
+                and current["phase"] in {"committed", "bootstrapping", "admitting"}):
             await self.async_session_store.set_rollover_phase(
                 key, entry.session_id, current["phase"], "blocked", reason,
             )
@@ -462,20 +462,20 @@ class GatewayRolloverMixin:
     async def _rollover_bootstrap(self, source, entry, key, generation, receipt, delivery_event):
         from gateway.platforms.event import MessageEvent
 
-        await asyncio.to_thread(verify_packet_binding, receipt)
-        lane = lane_rollover(self, key)
-        if lane is None:
-            lane = LaneRollover(None, entry.session_id)
-            self._session_state(key).persistent.rollover = lane
-        lane.phase = "bootstrapping"
-        lane.session_id = entry.session_id
-        # The normal cutover still holds its rebound lease. Recovery acquires it once.
-        if self._held_turn_lease(key, generation) is None:
-            await self._hmwa_acquire_turn_lease(key, generation, entry, ())
-        await self.async_session_store.set_rollover_phase(key, entry.session_id, "committed", "bootstrapping")
         event = MessageEvent(text=receipt["bootstrap_prompt"], source=source, internal=True,
                              allow_gateway_control=False)
         try:
+            await asyncio.to_thread(verify_packet_binding, receipt)
+            lane = lane_rollover(self, key)
+            if lane is None:
+                lane = LaneRollover(None, entry.session_id)
+                self._session_state(key).persistent.rollover = lane
+            lane.phase = "bootstrapping"
+            lane.session_id = entry.session_id
+            # The normal cutover still holds its rebound lease. Recovery acquires it once.
+            if self._held_turn_lease(key, generation) is None:
+                await self._hmwa_acquire_turn_lease(key, generation, entry, ())
+            await self.async_session_store.set_rollover_phase(key, entry.session_id, "committed", "bootstrapping")
             await self._rehydrate_prompt_pins(key, entry.session_id)
             await self._hmwa_open_session(entry, key, source)
             await self._mark_durable_active_turn(event, key)

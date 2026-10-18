@@ -6,6 +6,7 @@ the parent never learns the child finished. Nothing appeared in the log, which m
 indistinguishable from a child that never ran.
 """
 
+import asyncio
 import logging
 
 from gateway.run_notifications import GatewayNotificationsMixin
@@ -34,3 +35,34 @@ def test_an_event_without_a_delegation_id_does_not_warn(caplog):
     GatewayNotificationsMixin._note_undeliverable({"type": "completion"}, "retry")
 
     assert not [r for r in caplog.records if "cannot be routed" in r.getMessage()]
+
+
+class _Routing(GatewayNotificationsMixin):
+    """A host with just the classifier. Neither non-deliver verdict reaches the adapter path."""
+
+    def __init__(self, verdict):
+        self.verdict = verdict
+
+    async def _classify_completion_target(self, parent_session_id, session_key=""):
+        return self.verdict
+
+
+def test_a_terminal_target_is_not_described_as_retrying(caplog):
+    """terminal is dropped on this same pass by the pre-flight, which logs its own line. Saying
+    "deferring and retrying" there asserted the opposite of what the code does."""
+    caplog.set_level(logging.WARNING, logger="gateway.run")
+
+    assert asyncio.run(_Routing("terminal")._completion_delivery_ready(_event("deleg-terminal"))) is True
+    assert not [r for r in caplog.records if "deferring and retrying" in r.getMessage()]
+
+
+def test_a_retryable_target_still_defers_and_warns_once(caplog):
+    caplog.set_level(logging.WARNING, logger="gateway.run")
+    host = _Routing("retry")
+
+    assert asyncio.run(host._completion_delivery_ready(_event("deleg-retry"))) is False
+    assert asyncio.run(host._completion_delivery_ready(_event("deleg-retry"))) is False
+
+    warnings = [r for r in caplog.records if "cannot be routed" in r.getMessage()]
+    assert len(warnings) == 1, "one line per delegation, not one per sweep"
+    assert "deferring and retrying" in warnings[0].getMessage()

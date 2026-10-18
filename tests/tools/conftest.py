@@ -97,6 +97,7 @@ def register_all_web_providers():
     from agent.web_search_registry import register_provider, _reset_for_tests
     from plugins.web.brave_free.provider import BraveFreeWebSearchProvider
     from plugins.web.ddgs.provider import DDGSWebSearchProvider
+    from plugins.web.deepseek.provider import DeepSeekWebSearchProvider
     from plugins.web.exa.provider import ExaWebSearchProvider
     from plugins.web.firecrawl.provider import FirecrawlWebSearchProvider
     from plugins.web.parallel.provider import ParallelWebSearchProvider
@@ -110,6 +111,7 @@ def register_all_web_providers():
     for cls in (
         BraveFreeWebSearchProvider,
         DDGSWebSearchProvider,
+        DeepSeekWebSearchProvider,
         ExaWebSearchProvider,
         FirecrawlWebSearchProvider,
         ParallelWebSearchProvider,

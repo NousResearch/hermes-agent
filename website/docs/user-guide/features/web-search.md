@@ -31,6 +31,7 @@ Both are configured through a single backend selection. Providers are chosen via
 | **Tavily** | `TAVILY_API_KEY` (optional) | ✔ | ✔ | ✔ Opt-in keyless when selected |
 | **Perplexity** | `PERPLEXITY_API_KEY` | ✔ | ✔ (query-relevant snippets) | Paid (per-request Search API pricing) |
 | **Keenable** | `KEENABLE_API_KEY` (optional) | ✔ | ✔ | ✔ Keyless ring member · paid with key |
+| **DeepSeek Search** | `DEEPSEEK_API_KEY` | ✔ | ✔ | Paid (¥5 / 1 000 successful requests) |
 | **xAI (Grok)** | `XAI_API_KEY` or `hermes auth add xai-oauth` | ✔ | — | Paid (SuperGrok or per-token) |
 | **OpenAI Native (Codex)** | `hermes auth add openai-codex` | ✔ | — | Requires a ChatGPT/Codex subscription |
 
@@ -332,6 +333,19 @@ PARALLEL_API_KEY=your-parallel-key-here
 ```
 
 Get access at [parallel.ai](https://parallel.ai).
+
+---
+
+### DeepSeek Search
+
+DeepSeek's own web search engine and page fetcher, exposed as raw JSON endpoints (`POST /v1/tools/search`, `POST /v1/tools/fetch`) under the same Bearer auth as its chat API. `search` returns DeepSeek's index-backed results — each one carries a model-oriented long summary, publication date, and an authority tier — and `fetch` returns page markdown. Both are billed **per successful request** (¥5 / 1 000 as of October 2026), independent of model tokens, so one `web_extract` call costs one request per URL.
+
+```bash
+# ~/.hermes/.env
+DEEPSEEK_API_KEY=sk-your-key-here
+```
+
+Uses the same key as the DeepSeek chat provider. Set `web.search_backend: deepseek` / `web.extract_backend: deepseek` (or pick **DeepSeek Search** in `hermes tools`). Override the endpoint with `DEEPSEEK_SEARCH_BASE_URL` when routing through a proxy. Keyed only — there is no keyless tier, so a missing key surfaces a credential error instead of silently switching backends.
 
 ---
 

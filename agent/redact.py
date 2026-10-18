@@ -81,6 +81,57 @@ def redact_registered_vault_values(text: str) -> str:
             text = text.replace(value, "«redacted-vault-secret»")
     return text
 
+
+# --- Stored-credential values (/creds, execute_code credentials=) -----------
+# Exact values the credential store handed to a trusted execution path. Same
+# hard-boundary treatment as vault fills: memory only, profile-keyed, bounded,
+# and scrubbed on EVERY redaction path (not just one tool's results), because a
+# resolved credential can surface in terminal output, an exception message, a
+# traceback, or a printed variable — none of them shape-matched regexes catch.
+_REGISTERED_SECRET_MAX_PER_PROFILE = 128
+_REGISTERED_SECRET_VALUES: dict = {}  # profile home → ordered {value: None}
+_REGISTERED_SECRET_LOCK = threading.Lock()
+REGISTERED_SECRET_MASK = "«redacted-credential»"
+# A value this short ("test", "true", "1234567") would mask innocent text
+# everywhere it occurs; short secrets are left to the pattern redactor.
+_MIN_REGISTERED_SECRET_LEN = 8
+
+
+def register_secret(value) -> None:
+    """Register an exact credential value for model-facing redaction.
+
+    Called where a value LEAVES the store (``/creds set``, ``/creds inject``,
+    execute_code's ``credentials=`` injection) so any later output containing
+    those exact bytes is scrubbed before it can reach the model.
+    """
+    if not isinstance(value, str) or len(value) < _MIN_REGISTERED_SECRET_LEN:
+        return
+    with _REGISTERED_SECRET_LOCK:
+        bucket = _REGISTERED_SECRET_VALUES.setdefault(_vault_scope(), {})
+        bucket.pop(value, None)  # re-registering refreshes recency
+        bucket[value] = None
+        while len(bucket) > _REGISTERED_SECRET_MAX_PER_PROFILE:
+            del bucket[next(iter(bucket))]
+
+
+def clear_registered_secrets() -> None:
+    """Drop the current profile's registered credential values (profile teardown / lock)."""
+    with _REGISTERED_SECRET_LOCK:
+        _REGISTERED_SECRET_VALUES.pop(_vault_scope(), None)
+
+
+def redact_registered_secrets(text: str) -> str:
+    """Exact-substring scrub of every registered credential value for this profile."""
+    if not isinstance(text, str) or not text:
+        return text
+    with _REGISTERED_SECRET_LOCK:
+        bucket = _REGISTERED_SECRET_VALUES.get(_vault_scope())
+        values = sorted(bucket, key=len, reverse=True) if bucket else ()  # longest first
+    for value in values:
+        if value in text:
+            text = text.replace(value, REGISTERED_SECRET_MASK)
+    return text
+
 # Sensitive query-string param names (case-insensitive): opaque tokens / OAuth
 # codes / pre-signed signatures with no vendor prefix.
 # Ported from nearai/ironclaw#2529 — catches tokens whose values don't match any known vendor prefix regex
@@ -937,6 +988,10 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         return text
     # Vault secrets are a hard model-egress boundary: scrubbed regardless of the redact_secrets preference.
     text = redact_registered_vault_values(text)
+    # Stored credentials are the same hard boundary: an exact value the store handed to a
+    # trusted execution path is scrubbed wherever it resurfaces (terminal output, traceback,
+    # printed variable), regardless of the preference.
+    text = redact_registered_secrets(text)
     if not (force or _redact_enabled()):
         return text
     # ``secret_file`` is authoritative: a caller that classified the source as secret-bearing must not

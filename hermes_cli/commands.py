@@ -305,6 +305,15 @@ COMMAND_REGISTRY: list[CommandDef] = [
                subcommands=("connect", "disconnect", "status", "use")),
     CommandDef("plugins", "List installed plugins and their status",
                "Tools & Skills", cli_only=True, desktop="terminal"),
+    # cli_only: `show` prints a plaintext secret, which must never reach a chat
+    # surface (and from there model context). Agent-side access is the
+    # `credentials` tool + execute_code's `credentials=` parameter.
+    CommandDef("creds", "Manage task/project credentials: set, list, show, delete, status",
+               "Tools & Skills", aliases=("credentials",), cli_only=True,
+               args_hint="[set|list|show|delete|clear|inject|unset|status] [name] [value]",
+               subcommands=("set", "list", "show", "delete", "clear", "inject",
+                            "unset", "status"),
+               argument_mode="mixed", execute="creds"),
 
     # Info
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",

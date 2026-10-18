@@ -706,12 +706,14 @@ def execute_code(
     task_id: Optional[str] = None,
     enabled_tools: Optional[list[str]] = None,
     reset: bool = False,
+    credentials: Optional[list[str]] = None,
 ) -> str:
     """Run Python in the session's persistent kernel (local) or on the remote terminal backend,
     with RPC access to a subset of Hermes tools; returns the JSON result string. "Sandbox" means
     the security envelope (env scrubbing, tool whitelist + call budget, output redaction), not an
     isolation jail: default `project` mode runs in the session's cwd with the project venv.
-    ``enabled_tools`` ∩ SANDBOX_ALLOWED_TOOLS; ``reset`` kills the existing kernel first."""
+    ``enabled_tools`` ∩ SANDBOX_ALLOWED_TOOLS; ``reset`` kills the existing kernel first.
+    ``credentials`` names stored credentials to bind as top-level variables for this cell."""
     if not SANDBOX_AVAILABLE:
         return tool_error("execute_code sandbox is unavailable in this environment. "
                           "Use normal tool calls (terminal, read_file, write_file, ...) instead.")
@@ -780,6 +782,13 @@ def execute_code(
     if _guard.get("user_approved"):
         from tools.interrupt import clear_current_thread_interrupt
         clear_current_thread_interrupt()
+    # Bind requested stored credentials BEFORE either dispatch path, after the approval
+    # guard (the guard judges the model's own source; the injected preamble never
+    # widens what was approved). Values are registered with the redactor here, so a
+    # print() of one comes back masked instead of reaching model context.
+    code, credential_error = _inject_credentials(code, credentials)
+    if credential_error:
+        return tool_error(credential_error)
     from hermes_cli.observability.shared_metrics_loop import record_execution_backend
     if env_type != "local":
         return record_execution_backend("code", "remote", _execute_remote(code, task_id, enabled_tools, reset=bool(reset)))
@@ -797,6 +806,57 @@ def execute_code(
         max_tool_calls=_cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS),
         reset=bool(reset), is_interrupted=_is_interrupted,
     ))
+
+
+_CREDENTIAL_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _inject_credentials(code: str, credentials) -> tuple[str, Optional[str]]:
+    """Bind each requested stored credential as a top-level variable for this cell.
+
+    ``credentials`` is unvalidated model input (hence untyped): anything that is
+    not a list of names is rejected below rather than coerced.
+
+    Returns ``(code, error)``; ``error`` is set instead of running anything when a
+    name is not bindable or not stored, so a missing secret fails loudly rather
+    than half-working. Every bound value is registered with the redactor first:
+    printing it returns a masked form, and tracebacks/logs scrub it too. The
+    preamble shifts reported line numbers by its own length — acceptable for a
+    failure path, and the values never appear in model-facing output.
+
+    Plaintext does reach the kernel process (it has to, to be usable), but only
+    there: the file tools refuse ``~/.hermes/credentials/`` outright
+    (agent/file_safety.py), so key + ciphertext can never be read and decrypted
+    from a cell.
+    """
+    if credentials and isinstance(credentials, str):
+        return code, ("`credentials` takes an array of credential names, not a single "
+                      f"string (got {credentials!r}) — pass credentials=[{credentials!r}]")
+    names = [str(name) for name in (credentials or [])]
+    if not names:
+        return code, None
+    unbindable = [name for name in names if not _CREDENTIAL_NAME_RE.match(name)]
+    if unbindable:
+        return code, ("credential name(s) must be valid Python identifiers to bind as "
+                      f"variables: {', '.join(unbindable)}")
+    from agent.credential_backends import BackendError
+    from agent.credential_store import CredentialStoreError, get_store
+    from agent.redact import register_secret
+
+    try:
+        values = {name: get_store().resolve_value(name) for name in names}
+    except CredentialStoreError as exc:
+        return code, f"Credential store unavailable: {exc}"
+    except BackendError as exc:
+        return code, f"Credential unavailable: {exc}"
+    missing = [name for name, value in values.items() if value is None]
+    if missing:
+        return code, (f"Credential(s) not stored: {', '.join(missing)}. Store them with "
+                      f"/creds set <name> in the CLI, or credentials(action='request').")
+    for value in values.values():
+        register_secret(value)
+    bindings = "\n".join(f"{name} = {value!r}" for name, value in values.items())
+    return f"# Stored credentials bound for this cell (registered with the redactor).\n{bindings}\n{code}", None
 
 
 def _kill_process_group(proc, escalate: bool = False):
@@ -922,7 +982,10 @@ def build_execute_code_schema(enabled_sandbox_tools: set | None = None,
         "Helpers require imports: `from hermes_tools import json_parse, shell_quote, retry`. "
         "json_parse(text) — tolerant "
         "json.loads for terminal() output; shell_quote(s) — shlex.quote for "
-        "dynamic shell args; retry(fn, max_attempts=3, delay=2) — exponential backoff."
+        "dynamic shell args; retry(fn, max_attempts=3, delay=2) — exponential backoff.\n\n"
+        "Stored secrets: pass credential names in the `credentials` parameter to bind them "
+        "as top-level variables for the call — the decrypted value never appears in context, "
+        "and printed values come back masked."
     )
     return {
         "name": "execute_code",
@@ -936,6 +999,13 @@ def build_execute_code_schema(enabled_sandbox_tools: set | None = None,
                     "and print your final result to stdout.")},
                 "reset": {"type": "boolean", "description": (
                     "Discard the kernel's persistent state and start fresh before running this code.")},
+                "credentials": {"type": "array", "items": {"type": "string"}, "description": (
+                    "Names of stored credentials (the encrypted store behind /creds and the "
+                    "credentials tool) to bind as top-level variables for this call: each name "
+                    "becomes a variable holding its decrypted value, registered with the "
+                    "redactor so printing it returns a masked form. Names must be valid Python "
+                    "identifiers; an unstored name fails the call before any code runs. Values "
+                    "persist in the kernel until `reset` — pass the names again after a reset.")},
             },
             "required": ["code"],
         },
@@ -959,7 +1029,8 @@ def _execute_code_handler(args: dict, **kwargs) -> str:
         return tool_error(f"execute_code received a {type(code).__name__} in 'code', but it "
                           "requires Python source as a string. Retry as execute_code(code=\"...\").")
     return execute_code(code=code or "", task_id=kwargs.get("task_id"),
-                        enabled_tools=kwargs.get("enabled_tools"), reset=bool(args.get("reset", False)))
+                        enabled_tools=kwargs.get("enabled_tools"), reset=bool(args.get("reset", False)),
+                        credentials=args.get("credentials"))
 
 
 registry.register(

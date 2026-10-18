@@ -100,7 +100,7 @@ def _event_clause(runner, event, provenance, fresh_roles):
     if not isinstance(event.message_type, MessageType):
         return 'message_type'
     # The ingress router's own classifier: ``/tmp/x is broken`` is text, not a command.
-    if event.message_type == MessageType.COMMAND or event.get_command():
+    if event.get_command():
         return 'command'
     if event.internal:
         return 'internal'
@@ -233,7 +233,8 @@ def _snapshot_native(runner, event, provenance, fresh_roles=False, encoded_sourc
         envelope['event']['inherit_channel_pin'] = True
     if metadata := _native_metadata(event):
         envelope['event']['metadata'] = metadata
-    if event.message_type != MessageType.TEXT:
+    # COMMAND that passed admission is path text (``/Users/x is broken``): replay it as text.
+    if event.message_type not in (MessageType.TEXT, MessageType.COMMAND):
         envelope['message_type'] = event.message_type.value
     if event.media_urls:
         envelope['media'] = media if media is not None else capture_native_media(event.media_urls)

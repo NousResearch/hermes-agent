@@ -33,6 +33,7 @@ import {
 
 import { avatarColor, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
+import { PrivateToggleItem } from './bot-row-private'
 import {
   $botChatFocused,
   $focusedBotOwner,
@@ -380,24 +381,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
         >
           {pinned ? b.bot.unpin : b.bot.pinToTop}
         </ContextMenuItem>
-        <ContextMenuItem
-          onSelect={() => {
-            void ensureBotMetadata(bot)
-              .then(current => {
-                const wasPrivate = Boolean(current.private)
-                void saveBotMeta(bot, {
-                  private: !wasPrivate
-                })
-                host.notify({
-                  kind: 'info',
-                  message: `${displayName(bot, current)} ${wasPrivate ? b.roster.madePublic : b.roster.madePrivate}`
-                })
-              })
-              .catch(error => host.notifyError?.(error, b.bot.metadataLoadFailed))
-          }}
-        >
-          {isPrivate ? b.roster.makePublic : b.roster.makePrivate}
-        </ContextMenuItem>
+        <PrivateToggleItem bot={bot} isPrivate={isPrivate} />
         <ContextMenuItem
           onSelect={() => {
             void ensureBotMetadata(bot)

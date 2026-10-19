@@ -2386,6 +2386,14 @@ cli:
     move_out_of_range: "Verschiebung außerhalb der Warteschlange. Aktuelle Größe: {size}"
     moved: "Warteschlangeneintrag {source} nach {destination} verschoben."
     usage_add: "Verwendung: /queue add <prompt>"
+    gateway_refused: "Das Gateway hat es nicht eingereiht: {error}. Nichts wurde eingereiht; sende es erneut, wenn der Zug endet."
+    submit_unknown: "Das Gateway hat nicht geantwortet ({error}), der Prompt ist also vielleicht schon eingereiht. Prüfe /queue list, bevor du ihn erneut sendest."
+    move_gateway_fifo: "Das Gateway führt eingereihte Prompts in Sendereihenfolge aus; bearbeite oder entferne stattdessen einen."
+    remove_refused: "Warteschlangeneintrag {index} konnte nicht entfernt werden: {error}"
+    edit_refused: "Warteschlangeneintrag {index} konnte nicht bearbeitet werden: {error}"
+    already_started: "Warteschlangeneintrag {index} hat bereits begonnen; er läuft wie gesendet."
+    started_stopped: "Warteschlangeneintrag {index} hatte bereits begonnen; das Gateway hat ihn gestoppt."
+    change_unknown: "Das Gateway hat zu Warteschlangeneintrag {index} nicht geantwortet ({error}); prüfe /queue list, bevor du es erneut versuchst."
   reload:
     env_reloaded: ".env neu geladen ({count} Variable(n) aktualisiert)"
   steer:

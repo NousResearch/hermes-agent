@@ -99,7 +99,7 @@ def _publish_completion(authority, live, ref, row, settled, response, captured):
     except Exception:
         logger.exception('Terminal control cleanup failed for admission %s', row['admission_id'])
     complete = completion_payload(row, settled, response, captured)
-    notice = owner_stop_notice(captured, settled['outcome'])
+    notice = owner_stop_notice(captured, settled['outcome'], row)
     if notice and not complete.get('warning'):
         # ``warning`` is the slot every surface already renders on message.complete (Ink activity
         # line, Desktop toast), so a turn the owner's stop cut short says why (#134889 F1).
@@ -113,17 +113,25 @@ SHUTDOWN_INTERRUPT_NOTICE = ('Gateway shutting down: this turn was interrupted a
                              'Send your message again once Hermes is back.')
 
 
-def owner_stop_notice(captured, outcome):
+def owner_stop_notice(captured, outcome, row=None):
     """The named notice for a turn the owner's restart/stop interrupted, or None. With the default
     ``agent.restart_drain_timeout: 0`` a restart interrupts in-flight turns at once; the admission
-    settles ``interrupted`` and is never replayed, so the viewer is told the restart did it."""
+    settles ``interrupted`` and is never replayed, so the viewer is told the restart did it.
+    An unattended ``row`` (cron, automation, webhook) has nobody to resend it, so it gets the
+    neutral automation copy instead of resend advice (#134889 GW-20, GW-10's rule)."""
     # The cause is the one the turn recorded when it was interrupted (stop() interrupts with these
     # reasons), never the runner's flags at publication: a user Stop whose settlement was delayed
     # until after shutdown began is still the user's Stop.
     from gateway.run import _INTERRUPT_REASON_GATEWAY_RESTART, _INTERRUPT_REASON_GATEWAY_SHUTDOWN
     cause = ((captured or {}).get('result') or {}).get('interrupt_message') if outcome == 'interrupted' else None
-    return {_INTERRUPT_REASON_GATEWAY_RESTART: RESTART_INTERRUPT_NOTICE,
-            _INTERRUPT_REASON_GATEWAY_SHUTDOWN: SHUTDOWN_INTERRUPT_NOTICE}.get(cause)
+    notice = {_INTERRUPT_REASON_GATEWAY_RESTART: RESTART_INTERRUPT_NOTICE,
+              _INTERRUPT_REASON_GATEWAY_SHUTDOWN: SHUTDOWN_INTERRUPT_NOTICE}.get(cause)
+    if notice is not None and row is not None:
+        from gateway.session_unattended_unknown import is_unattended
+        if is_unattended(row):
+            from agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE
+            return AUTOMATION_INTERRUPTED_NOTICE
+    return notice
 
 
 def _release_media(authority, row):

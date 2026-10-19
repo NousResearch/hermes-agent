@@ -660,15 +660,20 @@ def _release_session_resources(task_id: str, session_info: dict[str, Any]) -> No
     force-reap path (#100738), which skips the polite agent-browser/Camofox ``close`` that kept failing but
     must still release the cloud session and the local Chromium.
     """
-    bb_session_id = session_info.get("bb_session_id", "unknown")
     _forget_session_tracking(task_id, session=True)
+    _release_session_backend(task_id, session_info)
 
+
+def _release_session_backend(task_id: str, session_info: dict[str, Any]) -> None:
+    """Close ``session_info``'s cloud provider session and kill its daemon, by object: no shared
+    session map is read or written (an unpublished session releases through this alone)."""
+    bb_session_id = session_info.get("bb_session_id", "unknown")
     if bb_session_id:  # cloud only — local sidecars have bb_session_id=None
         provider = _cloud._get_cloud_provider()
         if provider is not None:
             try:
                 provider.close_session(bb_session_id)
-            except Exception as e:
+            except Exception as e:  # health: allow BLE001 -- teardown boundary moved unchanged from _release_session_resources; a provider error must never abort the daemon kill below
                 _bt.logger.warning("Could not close cloud browser session: %s", e)
 
     session_name = session_info.get("session_name", "")

@@ -330,7 +330,7 @@ Credentials resolve exactly like a `delegation.provider` pin (full runtime-provi
 
 ### The agent can start a review itself
 
-The `review` tool gives the agent the same reviewer: the same briefing (recent conversation plus loaded skills), the same `auxiliary.review` model and the same background completion. The agent passes an optional `focus`, and the reviewer is told the request came from the primary agent, not from you. Use it to let the agent get its own PR reviewed by a different model without waiting for you to type `/review`. Subagents never get the tool, at any depth: a review completes into the requesting conversation, and a subagent has none to receive it. Turn it off like any toolset (`hermes tools`, toolset `review`).
+The `review` tool gives the agent the same reviewer: the same briefing (recent conversation plus loaded skills), the same `auxiliary.review` model and the same background completion. The agent passes an optional `focus`, and the reviewer is told the request came from the primary agent, not from you. Use it to let the agent get its own PR reviewed by a different model without waiting for you to type `/review`. Subagents never get the tool, at any depth: a review completes into the requesting conversation, and a subagent has none to receive it. It comes with the Task Delegation toolset; to keep delegation but drop `review`, add `review` to `agent.disabled_toolsets`.
 
 ## Inherited Tool Access
 

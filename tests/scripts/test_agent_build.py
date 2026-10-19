@@ -174,13 +174,17 @@ def test_fixed_layout_manifest_makes_the_tree_a_resolvable_payload(tmp_path):
     """
     out, data = inputs_fixture(tmp_path)
     shutil.copytree(data["code"], out, dirs_exist_ok=True)
-    data.update(placement="fixed", repo=".", code=str(out), project=str(out / "pyproject.toml"), bin_dir="libexec", python=sys.executable)
+    project = out / "pyproject.toml"
+    project.write_text(project.read_text(encoding="utf-8") + 'hermes="entry:main"\n', encoding="utf-8")
+    data.update(placement="fixed", repo=".", code=str(out), project=str(project), bin_dir="libexec")
     assert build_cli(data, out, tmp_path).returncode == 0
-    from pm.environments import committed_venv, payload_venv, store_root
+    from pm.environments import committed_venv, payload_command_dir, payload_venv, store_root, venv_command
 
     assert payload_venv(out) == out / "venv"
     assert committed_venv(out) == out / "venv"
     assert store_root(out, honor_runtime_override=False) == out / "tools"
+    assert payload_command_dir(out) == out / "libexec"
+    assert venv_command(out, out / "venv")[0] == str((out / "tools/python/bin/python3").resolve())
     # A manifest naming another tree never claims this one.
     manifest = json.loads((out / "manifest.json").read_text())
     manifest["repo"] = "elsewhere"

@@ -171,6 +171,8 @@ def credentialed_provider_request(
         request = client.build_request(method, url, json=json, headers=dict(headers or {}))  # no credential yet
         try:
             auth_headers, credential_base = resolve(url)
+        except httpx.HTTPError as exc:  # a resolver's own refresh POST failed: its request holds the refresh token
+            refusal = type(exc)(str(exc))
         except (RuntimeError, OSError, ValueError, LookupError, TypeError) as exc:
             refusal = _detached(exc)
         else:

@@ -79,16 +79,17 @@ def _url_problems(where: str, url: Any) -> list[str]:
 
 
 def _hermes_owned_env(name: str) -> bool:
-    """A variable Hermes itself reads (a provider key, a platform token): never a plugin's client variable,
+    """A variable Hermes itself reads (a provider key, a platform secret): never a plugin's client variable,
     or a manifest could have Hermes POST that secret to the token URL it names."""
     from hermes_cli.auth import PROVIDER_REGISTRY
-    from hermes_cli.config_defaults import OPTIONAL_ENV_VARS
+    from hermes_cli.config_env_routing import is_registered_env_name
 
-    return name in OPTIONAL_ENV_VARS or any(name in p.api_key_env_vars for p in PROVIDER_REGISTRY.values())
+    return is_registered_env_name(name) or any(name in p.api_key_env_vars for p in PROVIDER_REGISTRY.values())
 
 
 def _entry_problems(entry: dict, where: str) -> list[str]:
-    problems = [] if _ID_RE.match(str(entry.get("id") or "")) else [
+    oauth_id = entry.get("id")
+    problems = [] if isinstance(oauth_id, str) and _ID_RE.match(oauth_id) else [
         f"{where}.id: {entry.get('id')!r} must be lowercase letters, digits and dashes"]
     for field in ("authorize_url", "token_url"):
         problems += _url_problems(f"{where}.{field}", entry.get(field))
@@ -208,7 +209,10 @@ def oauth_admission_problems(manifest: Mapping[str, Any], plugin_dir: Path) -> l
 
 
 def _parent(host: str) -> str:
-    return ".".join(host.split(".")[-2:])
+    """Registered domain, roughly: ``vendor.co.uk`` keeps three labels (no public-suffix list in core)."""
+    labels = host.split(".")
+    keep = 3 if len(labels) > 2 and len(labels[-1]) == 2 and len(labels[-2]) <= 3 else 2
+    return ".".join(labels[-keep:])
 
 
 def oauth_admission_warnings(manifest: Mapping[str, Any], plugin_dir: Path) -> list[str]:
@@ -521,6 +525,15 @@ def _cli_logout(args: Any, client: OAuthClient, key: str) -> bool:
     return True
 
 
+def _logout_key(plugin: str, oauth_id: str) -> Optional[str]:
+    """The stored grant key ``hermes auth logout <plugin>:<id>`` means, without parsing the manifest."""
+    from hermes_cli.plugins_cmd import _find_plugin_entry
+
+    entry = _find_plugin_entry(plugin)
+    names = [f"{plugin_key(Path(str(entry[4])))}:{oauth_id}"] if entry is not None and entry[4] else []
+    return next((key for key in (*names, f"{plugin}:{oauth_id}") if _read_grant(key) is not None), None)
+
+
 _CLI_ACTIONS = {"add": _cli_add, "status": _cli_status, "refresh": _cli_refresh, "logout": _cli_logout}
 
 
@@ -531,14 +544,14 @@ def handle_auth_action(action: str, args: Any, provider: str) -> Optional[bool]:
     handler = _CLI_ACTIONS.get(action)
     if handler is None or not (sep and plugin and oauth_id) or plugin == "custom":
         return None
+    if action == "logout" and (key := _logout_key(plugin, oauth_id)) is not None:
+        _write_grant(key, None)  # needs no valid oauth: entry: the plugin may be gone or its manifest broken
+        print(f"Signed out of {key}; the grant was removed from this profile.")
+        return True
     try:
         found = _installed_client(plugin, oauth_id)
     except ValueError as exc:
         raise SystemExit(str(exc)) from None
-    if found is None and action == "logout" and _read_grant(provider) is not None:
-        _write_grant(provider, None)  # the plugin is gone; its grant still goes
-        print(f"Signed out of {provider}; the grant was removed from this profile.")
-        return True
     if found is None:
         return None
     plugin_dir, client = found

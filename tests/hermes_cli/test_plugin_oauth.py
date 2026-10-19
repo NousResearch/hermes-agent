@@ -511,6 +511,23 @@ def test_errors_raised_to_the_plugin_carry_no_token_refresh_token_or_secret(idp,
     text = _reachable_text(exc)
     assert refresh not in text and SECRET not in text
 
+    import httpx  # a core resolver (Codex) whose own refresh POST fails raises httpx with that request attached
+
+    def resolver(url):
+        httpx.post(f"http://127.0.0.1:{allowed.origin[2]}/token", data={"refresh_token": "rt-core-canary"}, timeout=2)
+
+    _ppr_providers = dict(ppr._PROVIDERS)
+    ppr._PROVIDERS["core-x"] = (frozenset({allowed.origin}), resolver)
+    try:
+        bare = _plugin("bare-core")
+        (_home() / "plugins" / "bare-core" / "plugin.yaml").write_text(json.dumps(
+            {"name": "bare-core", "version": "1", "requires_auth": ["core-x"]}), encoding="utf-8")
+        exc = _caught(lambda: bare.call("core-x", allowed.url + "/v1"))
+    finally:
+        ppr._PROVIDERS.clear()
+        ppr._PROVIDERS.update(_ppr_providers)
+    assert type(exc).__name__ == "ConnectError" and "rt-core-canary" not in _reachable_text(exc)
+
 
 def _caught(fn) -> BaseException:
     try:
@@ -531,9 +548,19 @@ def test_revoked_grant_keeps_no_tokens_and_uninstall_drops_the_grant(idp, api):
 
     from hermes_cli.plugins_cmd_remove import _remove_user_plugin
 
+    # Broken manifest after sign-in: logout still removes the grant.
     assert _auth("add") is True and _grant()["access_token"]
-    _remove_user_plugin(_home() / "plugins", "voice", _home() / "plugins" / "voice")
-    assert _grant() is None  # a later plugin installed as "voice" does not inherit the sign-in
+    manifest = _home() / "plugins" / "voice" / "plugin.yaml"
+    good = manifest.read_text(encoding="utf-8-sig")
+    manifest.write_text(good.replace('"hosts": ["api.example.com"]', '"hosts": ["http://bad"]'), encoding="utf-8")
+    assert _auth("logout") is True and _grant() is None
+    manifest.write_text(good, encoding="utf-8")
+
+    # Uninstall drops the grant, also when the manifest name differs from the directory it is stored under.
+    _plugin("voice-dir", oauth=[_entry(idp)], display="gemini-voice")
+    assert _auth("add", "gemini-voice:google") is True and _grant("voice-dir:google")
+    _remove_user_plugin(_home() / "plugins", "gemini-voice", _home() / "plugins" / "voice-dir")
+    assert _grant("voice-dir:google") is None  # a later plugin under that key does not inherit the sign-in
 
 
 def test_sign_in_is_refused_where_nobody_can_answer_the_browser(idp, monkeypatch):

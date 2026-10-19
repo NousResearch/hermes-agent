@@ -133,10 +133,11 @@ def _remove_user_plugin(plugins_dir: Path, name: str, target: Path) -> dict[str,
     entry = next((e for e in _pc()._discover_all_plugins() if Path(str(e[4])) == target), None)
     key = entry[5] if entry else target.name
     aliases = _pc()._plugin_aliases(key) | {target.name}
+    from hermes_cli.plugin_oauth import forget_plugin_grants, plugin_key
+    grant_key = plugin_key(target)  # grants are stored by directory key, which the manifest name may not match
     _pc()._toggle_plugin_toolset(key, enable=False)
     _remove_plugin_core(target)
-    from hermes_cli.plugin_oauth import forget_plugin_grants
-    forget_plugin_grants(key)  # a later plugin installed under the same key must not inherit the sign-in
+    forget_plugin_grants(grant_key)  # a later plugin installed under the same key must not inherit the sign-in
     return {"ok": True, "name": name, **_pc()._forget_plugin_config(aliases)}
 
 

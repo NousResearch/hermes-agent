@@ -186,6 +186,13 @@ describe('withInlineChrome × page Content-Security-Policy', () => {
     expect(policyOf(framed)).toBe("script-src 'unsafe-inline' 'sha256-aaa' 'nonce-tok'")
   })
 
+  it("adds our nonce beside a page's own nonce source", () => {
+    const framed = withInlineChrome(withPolicy("script-src 'nonce-page-nonce'"), 'tok', prelude)
+
+    expect(policyOf(framed)).toBe("script-src 'nonce-page-nonce' 'nonce-tok'")
+    expect(framed.match(/<script nonce="tok">/g)).toHaveLength(2)
+  })
+
   it('pairs the nonce source with the same nonce on both injected script tags', () => {
     const framed = withInlineChrome(withPolicy("script-src 'none'"), 'tok', prelude)
     const nonces = [...framed.matchAll(/<script nonce="([^"]+)">/g)].map(match => match[1])

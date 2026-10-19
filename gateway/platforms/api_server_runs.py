@@ -541,6 +541,7 @@ class _RunLaunch:
     turn_author: Optional[dict[str, Any]] = None  # memory-attribution label only; grants nothing
     admission: Any = None
     walked_from: Optional[str] = None  # the swept stored session the chain moved past (``bind_api_steps``)
+    workspace_cwd: str = ""  # client-supplied absolute dir (body cwd / X-Hermes-Workspace)
 
     @property
     def approval_session_key(self) -> str:
@@ -657,12 +658,20 @@ async def run_internal_session_turn(self, *, session_id: str, text: str, profile
             _api_server._api_request_profile.reset(token)
 
 
-def _run_idempotency_identity(self, request, body, gateway_session_key, idempotency_key) -> tuple:
+def _run_idempotency_identity(
+    self, request, body, gateway_session_key, idempotency_key, *, workspace_cwd: str = "",
+) -> tuple:
     """``(principal scope, request fingerprint)`` for a keyed POST /v1/runs; ``("", "")`` unkeyed."""
     if not idempotency_key:
         return "", ""
+    # Include resolved workspace so the same Idempotency-Key cannot replay
+    # across different working directories.
     return self._run_idempotency_scope(request), hashlib.sha256(json.dumps(
-        {"body": body, "gateway_session_key": gateway_session_key or ""},
+        {
+            "body": body,
+            "gateway_session_key": gateway_session_key or "",
+            "workspace_cwd": workspace_cwd or "",
+        },
         sort_keys=True, separators=(",", ":"), ensure_ascii=False,
     ).encode()).hexdigest()
 
@@ -731,6 +740,10 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
     body, room_error = await self._normalize_room_dispatch(request, body)
     if room_error is not None:
         return room_error
+    workspace_cwd, workspace_err = self._resolve_run_workspace(
+        request, body if isinstance(body, dict) else {})
+    if workspace_err is not None:
+        return workspace_err
     room_dispatch, room_execution_policy = (
         v if isinstance(v, dict) else None for v in (
             (body.get("hosted_room_dispatch"), body.get("_room_execution_policy"))
@@ -741,7 +754,8 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
             _openai_error, "Idempotency-Key must be 1-255 visible ASCII characters",
             code="invalid_idempotency_key", status=400)
     idempotency_scope, idempotency_fingerprint = _run_idempotency_identity(
-        self, request, body, gateway_session_key, idempotency_key)
+        self, request, body, gateway_session_key, idempotency_key,
+        workspace_cwd=workspace_cwd or "")
     raw_input = body.get("input")
     user_message, input_err = _run_user_message(raw_input, _openai_error)
     if input_err is not None:
@@ -828,7 +842,8 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
         request_profile=_api_server._api_request_profile.get(),
         browser_control_principal=_api_server._api_request_browser_control_principal.get(),
         browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
-        turn_author=turn_author, walked_from=walked_from if session_id == stored_session_id else None)
+        turn_author=turn_author, walked_from=walked_from if session_id == stored_session_id else None,
+        workspace_cwd=workspace_cwd or "")
     # A canonical Bot Chat that a Desktop holds live is that Desktop's to run: executing here would
     # be a second writer beside its lease (#114959). The owner's mailbox takes the turn and its
     # receipt drives this run's status, so `peer run` keeps its run_id and `peer status` still works.
@@ -923,9 +938,23 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
                 # so it stays default-denied until a merge contract exists for that chain;
                 # likewise a caller-supplied conversation_history is authoritative for the
                 # turn and never reads the delivery row, so it is denied the same way.
-                session_history_delivery="1" if run.session_history_delivery else "")
+                session_history_delivery="1" if run.session_history_delivery else "",
+                cwd=run.workspace_cwd or "")
             if session_tokens:
                 resets.append((session_tokens, clear_session_vars))
+            # Mechanical terminal/file cwd: register under both keys the tool chain
+            # consults (session task id for later commands; run_id for the first).
+            if run.workspace_cwd:
+                try:
+                    from tools.terminal_tool import register_task_env_overrides
+                    override = {"cwd": run.workspace_cwd}
+                    register_task_env_overrides(effective_task_id, override)
+                    if run.run_id and run.run_id != effective_task_id:
+                        register_task_env_overrides(run.run_id, override)
+                except Exception:
+                    logger.debug(
+                        "[api_server] failed to register run task cwd for %s",
+                        run.run_id, exc_info=True)
             if run.agent_kwargs["room_dispatch"] is not None:
                 policy = RoomExecutionPolicy.from_mapping(run.agent_kwargs["room_execution_policy"] or {})
                 resets.append((bind_room_execution_policy(policy), reset_room_execution_policy))
@@ -1094,9 +1123,26 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
                 result.get("runtime") if isinstance(result, dict) else None) or {}
         else:
             with self._profile_scope(run.request_profile):
-                agent = self._create_agent(
-                    stream_delta_callback=_text_cb, tool_progress_callback=self._make_run_event_callback(run_id, loop),
-                    interim_assistant_callback=_interim_cb, **run.agent_kwargs)
+                # /v1/runs builds the agent before _run_agent_sync binds session
+                # context. Pin the logical cwd around construction so the system
+                # prompt / context discovery advertise this workspace.
+                pinned_cwd_token = None
+                if run.workspace_cwd:
+                    try:
+                        from agent.runtime_cwd import set_session_cwd
+                        pinned_cwd_token = set_session_cwd(run.workspace_cwd)
+                    except Exception:
+                        logger.debug("[api_server] failed to pin run cwd", exc_info=True)
+                try:
+                    agent = self._create_agent(
+                        stream_delta_callback=_text_cb,
+                        tool_progress_callback=self._make_run_event_callback(run_id, loop),
+                        interim_assistant_callback=_interim_cb, **run.agent_kwargs)
+                finally:
+                    if pinned_cwd_token is not None:
+                        with suppress(Exception):
+                            from agent.runtime_cwd import reset_session_cwd
+                            reset_session_cwd(pinned_cwd_token)
             self._active_run_agents[run_id] = agent
             approval_notify = _make_approval_notify(self, run, _api_server=_api_server)
             result, usage, served_runtime = await _submit_api_worker(

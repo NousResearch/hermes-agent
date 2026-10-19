@@ -16,6 +16,20 @@ User-facing behaviour (receipts, `--plan`, snapshot modes) is in
 Fleet-update campaign #91277 (Aug 2026). A PR that weakens a stage must answer for the failure class
 it guards. `plan → snapshot → apply → restart-per-kind → verify → report`
 
+Windows legacy SYSTEM Scheduled Tasks use `update_windows_tasks.py` after strict
+profile PID/lock discovery. A matching interpreter or SYSTEM account never
+establishes gateway identity. The registered task must have one SYSTEM action
+targeting that profile home's generated gateway launcher. Task Scheduler queries
+and control operations request UAC only on Access Denied and wait for completion.
+Cancellation, a changed registration, or a gateway that remains alive refuses
+the pause before the source or dependency environment is changed.
+
+The exact task name and definition fingerprint travel with the durable pause
+record. Resume refreshes that task's launcher scripts without re-registering its
+principal, runs the recorded task instead of replaying argv as the current user,
+and retains the obligation until the gateway is verified ready. Custom SYSTEM
+launchers without a matching generated task are refused rather than guessed.
+
 - **Plan** (`update_inventory.py`, `hermes update --plan`): read-only inventory — install kind, all
   profiles, every live gateway with supervisor + running code version. Deployment kinds are
   first-class: `git` updates in place; `docker`/`nix`/`apt` are NOT in-place-updatable and the

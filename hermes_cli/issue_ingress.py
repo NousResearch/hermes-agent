@@ -4,8 +4,10 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import os
 import re
 import sqlite3
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -28,6 +30,7 @@ MAX_DB_BUSY_TIMEOUT_MS = 200
 MAX_RECEIPTS_PER_ISSUE = 100
 MAX_PENDING_INTAKES_PER_ISSUE = 100
 _ISSUE_SEAL = object()
+_TASK_RESULT_PUBLISH_LOCK = threading.Lock()
 
 
 class AdmissionRefused(RuntimeError):
@@ -466,9 +469,12 @@ def admit_intent(
                     "nonce TEXT NOT NULL, body_sha256 TEXT NOT NULL, comment_id INTEGER NOT NULL, "
                     "actor_id INTEGER NOT NULL, received_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, "
                     "state TEXT NOT NULL CHECK(state='awaiting_binding'), "
-                    "result_comment_id INTEGER, "
+                    "result_comment_id INTEGER, dispatch_state TEXT NOT NULL DEFAULT 'awaiting_binding', "
+                    "task_id TEXT, session_id TEXT, executor_profile TEXT, bound_at INTEGER, "
+                    "task_result_comment_id INTEGER, "
                     "PRIMARY KEY(repository_id, issue_number, nonce))"
                 )
+                _ensure_pending_intake_columns(conn)
                 prior = conn.execute(
                     "SELECT body_sha256 FROM issue22_pending_intakes "
                     "WHERE repository_id=? AND issue_number=? AND nonce=?",
@@ -585,7 +591,149 @@ def read_pending_intake_task(
     return intent.task_text
 
 
-def publish_control_result(config_path: Path, *, comment_id: int, kind: str) -> int:
+def _ensure_pending_intake_columns(conn: sqlite3.Connection) -> None:
+    """Add dispatch/outbox fields to legacy pending rows without rewriting them."""
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS issue22_pending_intakes ("
+        "repository_id INTEGER NOT NULL, issue_number INTEGER NOT NULL, "
+        "nonce TEXT NOT NULL, body_sha256 TEXT NOT NULL, comment_id INTEGER NOT NULL, "
+        "actor_id INTEGER NOT NULL, received_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, "
+        "state TEXT NOT NULL CHECK(state='awaiting_binding'), result_comment_id INTEGER, "
+        "dispatch_state TEXT NOT NULL DEFAULT 'awaiting_binding', task_id TEXT, "
+        "session_id TEXT, executor_profile TEXT, bound_at INTEGER, task_result_comment_id INTEGER, "
+        "PRIMARY KEY(repository_id, issue_number, nonce))"
+    )
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(issue22_pending_intakes)")}
+    additions = {
+        "dispatch_state": "TEXT NOT NULL DEFAULT 'awaiting_binding'",
+        "task_id": "TEXT",
+        "session_id": "TEXT",
+        "executor_profile": "TEXT",
+        "bound_at": "INTEGER",
+        "task_result_comment_id": "INTEGER",
+    }
+    for name, declaration in additions.items():
+        if name not in columns:
+            conn.execute(f"ALTER TABLE issue22_pending_intakes ADD COLUMN {name} {declaration}")
+
+
+def _issue22_executor() -> tuple[str, str]:
+    """Require one configured Hermes profile and its currently live session."""
+    profile = os.environ.get("HERMES_ISSUE22_EXECUTOR_PROFILE", "").strip()
+    active_profile = os.environ.get("HERMES_PROFILE", "").strip()
+    session_id = os.environ.get("HERMES_ISSUE22_SESSION_ID", "").strip()
+    if (not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", profile)
+            or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", session_id)):
+        raise AdmissionRefused("TASK_EXECUTOR_NOT_CONFIGURED")
+    if active_profile.casefold() != profile.casefold():
+        raise AdmissionRefused("TASK_EXECUTOR_PROFILE_MISMATCH")
+    try:
+        from hermes_cli.profiles import resolve_profile_env
+        if not Path(resolve_profile_env(profile)).is_dir():
+            raise FileNotFoundError(profile)
+    except Exception as exc:
+        raise AdmissionRefused("TASK_EXECUTOR_PROFILE_UNAVAILABLE") from exc
+    return profile, session_id
+
+
+def issue22_task_is_active(conn: sqlite3.Connection) -> bool:
+    """Fail closed while a bound Issue 22 card is not terminal."""
+    _ensure_pending_intake_columns(conn)
+    rows = conn.execute(
+        "SELECT task_id FROM issue22_pending_intakes "
+        "WHERE dispatch_state IN ('queued','running')"
+    )
+    for row in rows:
+        task = conn.execute("SELECT status FROM tasks WHERE id=?", (row["task_id"],)).fetchone()
+        if not task or task["status"] in {"ready", "todo", "running", "review", "scheduled"}:
+            return True
+    return False
+
+
+def bind_next_pending_task(
+    conn: sqlite3.Connection, *, config_path: Path, now: int | None = None,
+) -> dict | None:
+    """Atomically turn one fresh pending pointer into one assigned Kanban task."""
+    current = int(time.time()) if now is None else int(now)
+    profile, session_id = _issue22_executor()
+    _ensure_pending_intake_columns(conn)
+    pins = validate_ingress_config(Path(config_path))
+    pending = conn.execute(
+        "SELECT comment_id,nonce,body_sha256,received_at,expires_at,task_id,dispatch_state "
+        "FROM issue22_pending_intakes WHERE repository_id=? AND issue_number=? "
+        "AND expires_at>? AND dispatch_state='awaiting_binding' "
+        "ORDER BY received_at,comment_id LIMIT 1",
+        (pins.repository_id, ISSUE_NUMBER, current),
+    ).fetchone()
+    if pending is None:
+        return None
+    intent = read_authenticated_intent(
+        Path(config_path), comment_id=pending["comment_id"], now=current,
+    )
+    if (intent.kind != "TASK" or intent.nonce != pending["nonce"]
+            or intent.body_sha256 != pending["body_sha256"] or not intent.task_text):
+        raise AdmissionRefused("PENDING_COMMENT_CHANGED")
+    title = next((line.strip(" #\t") for line in intent.task_text.splitlines() if line.strip()), "")
+    title = title[:160] or f"Issue 22 task {intent.nonce[:12]}"
+    try:
+        with _session_owner_fence(session_id) as session_fence:
+            with _owner_write_txn(conn):
+                row = conn.execute(
+                    "SELECT dispatch_state,task_id,expires_at,body_sha256 FROM issue22_pending_intakes "
+                    "WHERE repository_id=? AND issue_number=? AND nonce=?",
+                    (pins.repository_id, ISSUE_NUMBER, intent.nonce),
+                ).fetchone()
+                if not row:
+                    raise AdmissionRefused("PENDING_INTAKE_NOT_FOUND")
+                if row["dispatch_state"] != "awaiting_binding":
+                    if row["task_id"]:
+                        return {"verdict": "ACK", "state": "queued", "task_id": row["task_id"]}
+                    raise AdmissionRefused("PENDING_INTAKE_STATE_INVALID")
+                if int(row["expires_at"]) <= current:
+                    raise AdmissionRefused("INTENT_EXPIRED_BEFORE_BINDING")
+                if row["body_sha256"] != intent.body_sha256:
+                    raise AdmissionRefused("PENDING_COMMENT_CHANGED")
+                if issue22_task_is_active(conn):
+                    return {"verdict": "BUSY", "reason": "TASK_EXECUTOR_OCCUPIED"}
+                task_id = kanban_db.create_task(
+                    conn, title=title, body=intent.task_text,
+                    created_by="github:ISVGitHub/autonomous-entity#22",
+                    assignee=profile, workspace_kind="scratch", project_id="",
+                    initial_status="running", session_id=session_id, board="missions",
+                    idempotency_key=f"github-issue22:{pins.repository_id}:22:{intent.nonce}",
+                    max_runtime_seconds=900, max_retries=1,
+                )
+                binding = {
+                    "repository": pins.repository, "repository_id": pins.repository_id,
+                    "issue_number": ISSUE_NUMBER, "comment_id": intent.comment_id,
+                    "nonce": intent.nonce, "executor_profile": profile,
+                    "session_id": session_id, "recorded_at": current,
+                }
+                conn.execute(
+                    "INSERT INTO task_events(task_id,run_id,kind,payload,created_at) "
+                    "VALUES (?,NULL,'github_task_binding',?,?)",
+                    (task_id, json.dumps(binding, sort_keys=True, separators=(",", ":")), current),
+                )
+                updated = conn.execute(
+                    "UPDATE issue22_pending_intakes SET dispatch_state='queued',task_id=?, "
+                    "session_id=?,executor_profile=?,bound_at=? WHERE repository_id=? "
+                    "AND issue_number=? AND nonce=? AND dispatch_state='awaiting_binding'",
+                    (task_id, session_id, profile, current, pins.repository_id, ISSUE_NUMBER, intent.nonce),
+                )
+                if updated.rowcount != 1:
+                    raise AdmissionRefused("PENDING_INTAKE_RACE")
+                session_fence.assert_current()
+                return {"verdict": "ACK", "state": "queued", "task_id": task_id}
+    except ActiveSessionRegistryError as exc:
+        raise AdmissionRefused("SESSION_FENCE_REFUSED") from exc
+    except sqlite3.Error as exc:
+        raise AdmissionRefused("TASK_BINDING_TRANSACTION_FAILED") from exc
+
+
+def publish_control_result(
+    config_path: Path, *, comment_id: int, kind: str,
+    state: str = "awaiting_binding",
+) -> int:
     """Publish/read back a deterministic, sanitized result for one accepted command."""
     if type(comment_id) is not int or comment_id <= 0 or kind not in {"PING", "STATUS", "TASK"}:
         raise AdmissionRefused("RESULT_REQUEST_INVALID")
@@ -603,11 +751,11 @@ def publish_control_result(config_path: Path, *, comment_id: int, kind: str) -> 
                     and type(row.get("id")) is int):
                 return row["id"]
     if kind == "TASK":
-        body = (
-            f"Hermes intake {comment_id}: request recorded as pending. "
-            "It is awaiting explicit local mission/session binding or approval; "
-            "no task was created or dispatched.\n\n" + marker
-        )
+        if state == "queued":
+            message = "Task is bound to the configured Hermes executor and queued in Kanban. Final RESULT follows after completion."
+        else:
+            message = "Task is recorded as pending and awaits a trusted local Hermes session binding."
+        body = f"Hermes intake {comment_id}: {message}\n\n{marker}"
     else:
         body = (
             f"Hermes control request {comment_id}: {kind} accepted. "
@@ -618,6 +766,122 @@ def publish_control_result(config_path: Path, *, comment_id: int, kind: str) -> 
     if type(result_id) is not int or result_id <= 0:
         raise AdmissionRefused("RESULT_COMMENT_ID_INVALID")
     return result_id
+
+
+def publish_pending_task_result(
+    conn: sqlite3.Connection, *, config_path: Path,
+) -> dict | None:
+    """Publish one terminal Kanban result with marker-based crash recovery."""
+    if not _TASK_RESULT_PUBLISH_LOCK.acquire(blocking=False):
+        raise AdmissionRefused("TASK_RESULT_PUBLISH_BUSY")
+    try:
+        return _publish_pending_task_result(conn, config_path=config_path)
+    finally:
+        _TASK_RESULT_PUBLISH_LOCK.release()
+
+
+def _publish_pending_task_result(
+    conn: sqlite3.Connection, *, config_path: Path,
+) -> dict | None:
+    _ensure_pending_intake_columns(conn)
+    pending = conn.execute(
+        "SELECT repository_id,issue_number,nonce,comment_id,task_id,session_id,executor_profile "
+        "FROM issue22_pending_intakes WHERE dispatch_state IN ('queued','running') "
+        "AND task_id IS NOT NULL AND task_result_comment_id IS NULL "
+        "ORDER BY bound_at,comment_id LIMIT 1"
+    ).fetchone()
+    if pending is None:
+        return None
+    task = conn.execute(
+        "SELECT status,result FROM tasks WHERE id=?", (pending["task_id"],)
+    ).fetchone()
+    if not task:
+        raise AdmissionRefused("BOUND_TASK_MISSING")
+    if task["status"] not in {"done", "blocked"}:
+        return None
+    run = conn.execute(
+        "SELECT status,outcome,summary FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1",
+        (pending["task_id"],),
+    ).fetchone()
+    if task["status"] == "done" and (not run or run["outcome"] != "completed"):
+        raise AdmissionRefused("TASK_COMPLETION_EVIDENCE_MISSING")
+
+    cfg, pins, _repository, _issue, auth = _fetch_issue(Path(config_path))
+    if pins.repository_id != pending["repository_id"]:
+        raise AdmissionRefused("RESULT_TRUST_PINS_CHANGED")
+    token = auth.get_token()
+    if token.permissions.get("issues") != "write":
+        raise AdmissionRefused("BRIDGE_ISSUES_WRITE_NOT_GRANTED")
+    installation = auth.verify_installation()
+    app_slug = installation.get("app_slug") if isinstance(installation, dict) else None
+    if (not isinstance(installation, dict) or installation.get("app_id") != pins.app_id
+            or not isinstance(app_slug, str) or not re.fullmatch(r"[A-Za-z0-9-]{1,100}", app_slug)):
+        raise AdmissionRefused("RESULT_APP_IDENTITY_UNVERIFIED")
+    app_bot_login = f"{app_slug}[bot]"
+    nonce = pending["nonce"]
+    marker = f"<!-- hermes-issue22-task-result:{pending['comment_id']}:{nonce} -->"
+    summary = str((run["summary"] if run else None) or task["result"] or "")[:3000]
+    body = "\n".join((
+        "## Hermes TASK RESULT",
+        f"issue_number: {ISSUE_NUMBER}",
+        f"task_id: {json.dumps(pending['task_id'], ensure_ascii=False)}",
+        f"status: {task['status']}",
+        f"outcome: {json.dumps((run['outcome'] if run else None) or 'no_run')}",
+        f"executor_profile: {json.dumps(pending['executor_profile'])}",
+        f"session_id: {json.dumps(pending['session_id'], ensure_ascii=False)}",
+        f"summary: {json.dumps(summary, ensure_ascii=False)}",
+        marker,
+    ))
+    comments = auth.list_issue_comments(
+        cfg.owner, cfg.repo, ISSUE_NUMBER, per_page=MAX_COMMENT_PAGE,
+    )
+    if not isinstance(comments, list) or len(comments) > MAX_COMMENT_PAGE:
+        raise AdmissionRefused("RESULT_COMMENT_PAGE_INVALID")
+    matching = [row for row in comments if isinstance(row, dict)
+                and marker in str(row.get("body") or "")]
+    if len(matching) > 1:
+        raise AdmissionRefused("RESULT_MARKER_AMBIGUOUS")
+    if matching:
+        result = matching[0]
+        user = result.get("user")
+        if (result.get("body") != body or type(result.get("id")) is not int
+                or not isinstance(user, dict) or user.get("type") != "Bot"
+                or str(user.get("login") or "").casefold() != app_bot_login.casefold()):
+            raise AdmissionRefused("RESULT_MARKER_UNTRUSTED")
+        result_id = result["id"]
+    else:
+        if len(comments) >= MAX_COMMENT_PAGE:
+            raise AdmissionRefused("RESULT_COMMENT_HISTORY_FULL")
+        posted = auth.post_issue_comment(cfg.owner, cfg.repo, ISSUE_NUMBER, body)
+        user = posted.get("user") if isinstance(posted, dict) else None
+        if (not isinstance(posted, dict) or type(posted.get("id")) is not int
+                or posted.get("body") != body or not isinstance(user, dict)
+                or user.get("type") != "Bot"
+                or str(user.get("login") or "").casefold() != app_bot_login.casefold()):
+            raise AdmissionRefused("RESULT_POST_UNVERIFIED")
+        result_id = posted["id"]
+
+    terminal_state = "done" if task["status"] == "done" else "blocked"
+    with _owner_write_txn(conn):
+        row = conn.execute(
+            "SELECT task_result_comment_id FROM issue22_pending_intakes "
+            "WHERE repository_id=? AND issue_number=? AND nonce=?",
+            (pending["repository_id"], ISSUE_NUMBER, nonce),
+        ).fetchone()
+        if not row:
+            raise AdmissionRefused("PENDING_INTAKE_NOT_FOUND")
+        prior = row["task_result_comment_id"]
+        if prior is not None and prior != result_id:
+            raise AdmissionRefused("RESULT_COMMENT_CONFLICT")
+        conn.execute(
+            "UPDATE issue22_pending_intakes SET task_result_comment_id=?,dispatch_state=? "
+            "WHERE repository_id=? AND issue_number=? AND nonce=?",
+            (result_id, terminal_state, pending["repository_id"], ISSUE_NUMBER, nonce),
+        )
+    return {
+        "verdict": "ACK", "kind": "TASK", "state": "result_published",
+        "issue_number": ISSUE_NUMBER, "comment_id": result_id,
+    }
 
 
 def record_control_result(
@@ -632,18 +896,24 @@ def record_control_result(
         raise AdmissionRefused("RESULT_BINDING_INVALID")
     try:
         with _owner_write_txn(conn):
-            table = "issue22_control_receipts"
-            if conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,),
-            ).fetchone() is None:
-                table = "issue22_pending_intakes"
-            row = conn.execute(
-                f"SELECT result_comment_id FROM {table} "
-                "WHERE repository_id=? AND issue_number=? AND nonce=?",
-                (repository_id, issue_number, nonce),
-            ).fetchone()
-            if row is None:
+            matches = []
+            for table in ("issue22_control_receipts", "issue22_pending_intakes"):
+                if conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,),
+                ).fetchone() is None:
+                    continue
+                row = conn.execute(
+                    f"SELECT result_comment_id FROM {table} "
+                    "WHERE repository_id=? AND issue_number=? AND nonce=?",
+                    (repository_id, issue_number, nonce),
+                ).fetchone()
+                if row is not None:
+                    matches.append((table, row))
+            if not matches:
                 raise AdmissionRefused("RESULT_RECEIPT_NOT_FOUND")
+            if len(matches) != 1:
+                raise AdmissionRefused("RESULT_RECEIPT_AMBIGUOUS")
+            table, row = matches[0]
             prior = row["result_comment_id"]
             if prior is not None and prior != result_comment_id:
                 raise AdmissionRefused("RESULT_COMMENT_CONFLICT")

@@ -15,8 +15,11 @@ from typing import Callable
 from hermes_cli.issue_ingress import (
     AdmissionRefused,
     admit_github_comment,
+    bind_next_pending_task,
     publish_control_result,
+    publish_pending_task_result,
     record_control_result,
+    issue22_task_is_active,
     validate_ingress_config,
 )
 from github_bridge.config import load_config
@@ -36,6 +39,7 @@ def build_issue22_admit_handler(
     admit: Callable[..., object] = admit_github_comment,
     validate_config: Callable[[Path], object] = validate_ingress_config,
     publish_result: Callable[..., int] = publish_control_result,
+    bind_task: Callable[..., dict | None] = bind_next_pending_task,
     record_result: Callable[..., None] = record_control_result,
     enabled: bool = False,
 ):
@@ -64,8 +68,18 @@ def build_issue22_admit_handler(
             receipt = admit(conn, config_path=pinned_config, comment_id=params["comment_id"])
             if getattr(receipt, "verdict", None) != "ACK" or getattr(receipt, "kind", None) not in {"PING", "STATUS", "TASK"}:
                 return {"verdict": "REJECT", "reason": "OWNER_RECEIPT_INVALID"}
+            state = None
+            if receipt.kind == "TASK":
+                try:
+                    dispatch = bind_task(conn, config_path=pinned_config)
+                    state = dispatch.get("state") if isinstance(dispatch, dict) else None
+                except AdmissionRefused as exc:
+                    logger.info("Issue 22 TASK remains pending: %s", exc)
+                if state not in {"queued", "awaiting_binding"}:
+                    state = "awaiting_binding"
             result_comment_id = publish_result(
                 pinned_config, comment_id=params["comment_id"], kind=receipt.kind,
+                **({"state": state} if state is not None else {}),
             )
             if type(result_comment_id) is not int or result_comment_id <= 0:
                 return {"verdict": "REJECT", "reason": "RESULT_UNCONFIRMED"}
@@ -76,7 +90,7 @@ def build_issue22_admit_handler(
             )
             response = {"verdict": "ACK", "kind": receipt.kind, "issue_number": 22}
             if receipt.kind == "TASK":
-                response["state"] = "awaiting_binding"
+                response["state"] = state
             return response
         except AdmissionRefused as exc:
             return {"verdict": "REJECT", "reason": str(exc)}
@@ -98,8 +112,11 @@ def build_issue22_admit_handler(
     return handle
 
 
-def build_issue22_poll_handler(*, config_path: Path, enabled: bool = False,
-                               admit_handler=None):
+def build_issue22_poll_handler(
+    *, config_path: Path, enabled: bool = False, admit_handler=None,
+    publish_task_result: Callable[[], dict | None] | None = None,
+    task_active: Callable[[], bool] | None = None,
+):
     """Find one fresh, exact-shape control or bounded task comment per poll.
 
     The comment body is parsed only as a bounded JSON selector. It never crosses
@@ -116,6 +133,12 @@ def build_issue22_poll_handler(*, config_path: Path, enabled: bool = False,
         if params not in (None, {}) or type(params) not in (dict, type(None)):
             return {"verdict": "REJECT", "reason": "REQUEST_SCHEMA"}
         try:
+            if publish_task_result is not None:
+                result = publish_task_result()
+                if result is not None:
+                    return result
+            if task_active is not None and task_active():
+                return {"verdict": "BUSY", "reason": "TASK_EXECUTOR_OCCUPIED", "issue_number": 22}
             cfg = load_config(pinned_config)
             cfg = dataclasses.replace(
                 cfg, request_timeout=min(cfg.request_timeout, 5),

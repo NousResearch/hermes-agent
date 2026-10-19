@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -10,7 +11,7 @@ from hermes_cli import issue_ingress as ingress
 
 
 def make_intent(*, nonce="abcdefghijklmnop", body_sha256="a" * 64,
-                comment_id=1, kind="PING", expires_at=1200):
+                comment_id=1, kind="PING", expires_at=1200, task_text=None):
     return ingress.AuthenticatedIntent(
         ingress._ISSUE_SEAL,
         repository="ISVGitHub/autonomous-entity",
@@ -27,6 +28,7 @@ def make_intent(*, nonce="abcdefghijklmnop", body_sha256="a" * 64,
         nonce=nonce,
         expires_at=expires_at,
         body_sha256=body_sha256,
+        task_text=task_text,
     )
 
 
@@ -166,5 +168,202 @@ def test_result_comment_link_is_durable_and_cannot_be_replaced():
         assert row["result_comment_id"] == 900
         with pytest.raises(ingress.AdmissionRefused, match="RESULT_COMMENT_CONFLICT"):
             ingress.record_control_result(conn, **{**kwargs, "result_comment_id": 901})
+    finally:
+        conn.close()
+
+
+def test_task_result_links_pending_row_when_control_receipts_also_exist():
+    conn = connect()
+    try:
+        ingress.admit_intent(conn, intent=make_intent(nonce="ping_nonce_123456"), now=1100)
+        ingress.admit_intent(
+            conn, intent=make_intent(nonce="task_nonce_123456", kind="TASK", comment_id=81),
+            now=1100,
+        )
+        ingress.record_control_result(
+            conn, repository_id=1165823465, issue_number=22,
+            nonce="task_nonce_123456", result_comment_id=900,
+        )
+        ingress.record_control_result(
+            conn, repository_id=1165823465, issue_number=22,
+            nonce="ping_nonce_123456", result_comment_id=901,
+        )
+        assert conn.execute(
+            "SELECT result_comment_id FROM issue22_pending_intakes WHERE nonce=?",
+            ("task_nonce_123456",),
+        ).fetchone()[0] == 900
+        assert conn.execute(
+            "SELECT result_comment_id FROM issue22_control_receipts WHERE nonce=?",
+            ("ping_nonce_123456",),
+        ).fetchone()[0] == 901
+    finally:
+        conn.close()
+
+
+def test_pending_task_binds_atomically_to_one_profile_and_live_session(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
+    conn = ingress.kanban_db_connect.connect()
+    pins = ingress.TrustPins(
+        "ISVGitHub/autonomous-entity", 1165823465, 5343540, 172036721, 548464,
+    )
+    now = int(ingress.time.time())
+    intent = make_intent(
+        nonce="task_nonce_123456", comment_id=81, kind="TASK",
+        expires_at=now + 300, task_text="Review the release\nCheck the release notes.",
+    )
+    ingress.admit_intent(conn, intent=intent, now=now)
+    monkeypatch.setattr(ingress, "validate_ingress_config", lambda _path: pins)
+    monkeypatch.setattr(ingress, "read_authenticated_intent", lambda *a, **kw: intent)
+    monkeypatch.setattr(ingress, "_issue22_executor", lambda: ("grandloop", "session-22"))
+
+    @contextmanager
+    def session_fence(_session_id):
+        class Fence:
+            def assert_current(self):
+                return None
+        yield Fence()
+
+    monkeypatch.setattr(ingress, "_session_owner_fence", session_fence)
+    try:
+        bound = ingress.bind_next_pending_task(
+            conn, config_path=Path("/tmp/pinned.json"), now=now,
+        )
+        row = conn.execute(
+            "SELECT dispatch_state,task_id,session_id,executor_profile "
+            "FROM issue22_pending_intakes WHERE nonce=?", (intent.nonce,),
+        ).fetchone()
+        task = conn.execute(
+            "SELECT status,assignee,session_id,max_runtime_seconds,max_retries "
+            "FROM tasks WHERE id=?", (row["task_id"],),
+        ).fetchone()
+        assert bound == {"verdict": "ACK", "state": "queued", "task_id": row["task_id"]}
+        assert tuple(row) == ("queued", bound["task_id"], "session-22", "grandloop")
+        assert tuple(task) == ("ready", "grandloop", "session-22", 900, 1)
+        assert ingress.issue22_task_is_active(conn)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_events WHERE kind='github_task_binding'",
+        ).fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_expired_pending_task_is_never_bound_or_dispatched(monkeypatch):
+    conn = connect()
+    pins = ingress.TrustPins(
+        "ISVGitHub/autonomous-entity", 1165823465, 5343540, 172036721, 548464,
+    )
+    intent = make_intent(
+        nonce="expired_task_nonce", kind="TASK", expires_at=1200,
+        task_text="must remain inert",
+    )
+    ingress.admit_intent(conn, intent=intent, now=1100)
+    monkeypatch.setattr(ingress, "validate_ingress_config", lambda _path: pins)
+    monkeypatch.setattr(ingress, "_issue22_executor", lambda: ("grandloop", "session-22"))
+    monkeypatch.setattr(
+        ingress, "read_authenticated_intent",
+        lambda *args, **kwargs: pytest.fail("expired task must not be re-fetched for dispatch"),
+    )
+    try:
+        assert ingress.bind_next_pending_task(
+            conn, config_path=Path("/tmp/pinned.json"), now=1200,
+        ) is None
+        row = conn.execute(
+            "SELECT dispatch_state,task_id FROM issue22_pending_intakes WHERE nonce=?",
+            (intent.nonce,),
+        ).fetchone()
+        assert tuple(row) == ("awaiting_binding", None)
+        assert conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='tasks'",
+        ).fetchone() is None
+    finally:
+        conn.close()
+
+
+def test_terminal_task_result_recovers_after_post_before_local_commit(monkeypatch, tmp_path):
+    conn = connect()
+    ingress._ensure_pending_intake_columns(conn)
+    conn.execute(
+        "INSERT INTO issue22_pending_intakes "
+        "(repository_id,issue_number,nonce,body_sha256,comment_id,actor_id,received_at,expires_at,state,"
+        "dispatch_state,task_id,session_id,executor_profile,bound_at) "
+        "VALUES (1165823465,22,'task_nonce_123456','a',81,548464,1000,1200,'awaiting_binding',"
+        "'queued','task-81','session-22','grandloop',1100)"
+    )
+    conn.executescript("""
+        CREATE TABLE tasks (id TEXT, status TEXT, result TEXT);
+        CREATE TABLE task_runs (id INTEGER, task_id TEXT, status TEXT, outcome TEXT, summary TEXT);
+    """)
+    conn.execute("INSERT INTO tasks VALUES ('task-81','done','Finished safely')")
+    conn.execute(
+        "INSERT INTO task_runs VALUES (1,'task-81','done','completed','Finished safely')",
+    )
+    conn.commit()
+    comments = []
+
+    class FakeAuth:
+        post_calls = 0
+
+        def get_token(self):
+            return type("Token", (), {"permissions": {"issues": "write"}})()
+
+        def verify_installation(self):
+            return {"app_id": 5343540, "app_slug": "hermes-bridge"}
+
+        def list_issue_comments(self, *_args, **_kwargs):
+            return list(comments)
+
+        def post_issue_comment(self, owner, repo, number, body):
+            self.post_calls += 1
+            comment = {
+                "id": 900, "body": body,
+                "user": {"login": "hermes-bridge[bot]", "type": "Bot"},
+            }
+            comments.append(comment)
+            return comment
+
+    auth = FakeAuth()
+    cfg = type("Cfg", (), {"owner": "ISVGitHub", "repo": "autonomous-entity"})()
+    monkeypatch.setattr(
+        ingress, "_fetch_issue",
+        lambda _path: (cfg, ingress.TrustPins(
+            "ISVGitHub/autonomous-entity", 1165823465, 5343540, 172036721, 548464,
+        ), {}, {"state": "open"}, auth),
+    )
+    original_txn = ingress._owner_write_txn
+    failed = {"once": False}
+
+    @contextmanager
+    def fail_first_commit(connection):
+        if failed["once"]:
+            with original_txn(connection):
+                yield
+            return
+        failed["once"] = True
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+            raise sqlite3.OperationalError("simulated local commit loss")
+        except BaseException:
+            connection.rollback()
+            raise
+
+    monkeypatch.setattr(ingress, "_owner_write_txn", fail_first_commit)
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="simulated local commit loss"):
+            ingress.publish_pending_task_result(conn, config_path=Path("/tmp/pinned.json"))
+        assert auth.post_calls == 1
+        assert conn.execute(
+            "SELECT task_result_comment_id FROM issue22_pending_intakes",
+        ).fetchone()[0] is None
+        result = ingress.publish_pending_task_result(
+            conn, config_path=Path("/tmp/pinned.json"),
+        )
+        assert result["state"] == "result_published"
+        assert result["comment_id"] == 900
+        assert auth.post_calls == 1
+        row = conn.execute(
+            "SELECT task_result_comment_id,dispatch_state FROM issue22_pending_intakes",
+        ).fetchone()
+        assert tuple(row) == (900, "done")
     finally:
         conn.close()

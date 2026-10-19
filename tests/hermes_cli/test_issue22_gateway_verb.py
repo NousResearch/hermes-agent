@@ -196,8 +196,28 @@ class Issue22VerbContract(unittest.TestCase):
             "verdict": "ACK", "kind": "TASK", "issue_number": 22,
             "state": "awaiting_binding",
         })
-        self.assertEqual(published, [{"comment_id": 81, "kind": "TASK"}])
+        self.assertEqual(published, [{
+            "comment_id": 81, "kind": "TASK", "state": "awaiting_binding",
+        }])
         self.assertEqual(self.admit_mock.call_args.kwargs["comment_id"], 81)
+
+    def test_task_ack_reports_queued_after_atomic_binding(self):
+        self.admit_mock.return_value = make_receipt(verdict="ACK", kind="TASK")
+        published = []
+        h = build_handler(
+            connect_owner_db=lambda: self.conn,
+            config_path=self.cfg_path, enabled=True,
+            validate_config=self.validate_mock, admit=self.admit_mock,
+            bind_task=lambda *_args, **_kwargs: {"verdict": "ACK", "state": "queued"},
+            publish_result=lambda *args, **kwargs: published.append(kwargs) or 999,
+            record_result=lambda *args, **kwargs: None,
+        )
+        self.assertEqual(h({"issue_number": 22, "comment_id": 81}), {
+            "verdict": "ACK", "kind": "TASK", "issue_number": 22, "state": "queued",
+        })
+        self.assertEqual(published, [{
+            "comment_id": 81, "kind": "TASK", "state": "queued",
+        }])
 
     def test_32_receipt_with_wrong_verdict(self):
         self.admit_mock.return_value = make_receipt(verdict="REJECT", kind="PING")

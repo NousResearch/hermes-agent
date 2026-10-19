@@ -1140,3 +1140,45 @@ class TestTeamsRequireMention:
         adapter = self._make_adapter(**extra)
         assert adapter._require_mention is expected
         assert adapter._extra.get("require_mention") == yaml_value  # extras stay readable on the instance
+
+
+# ---------------------------------------------------------------------------
+# Tests: send() reply threading for personal-chat conversations
+# ---------------------------------------------------------------------------
+
+class TestTeamsSendReplyThreading:
+    """Regression: a personal-chat conversation id (``a:…``) must be sent flat, never via the
+    SDK ``reply()`` path — Bot Framework accepts flat sends to those conversations but rejects
+    ``reply()`` as 403 on the ``<conversation>;messageid=<activity>/activities`` endpoint."""
+
+    def _make_adapter(self):
+        adapter = TeamsAdapter(_make_config(client_id="id", client_secret="secret", tenant_id="tenant"))
+        adapter._app = MagicMock()
+        adapter._app.send = AsyncMock(return_value=MagicMock(id="sent-1"))
+        adapter._app.reply = AsyncMock(return_value=MagicMock(id="sent-1"))
+        return adapter
+
+    @pytest.mark.anyio
+    async def test_personal_chat_reply_sends_flat(self):
+        adapter = self._make_adapter()
+        result = await adapter.send("a:1:personal-chat-id", "hello", reply_to="12345")
+        adapter._app.reply.assert_not_awaited()
+        adapter._app.send.assert_awaited_once()
+        assert result.success is True
+        assert result.message_id == "sent-1"
+
+    @pytest.mark.anyio
+    async def test_group_chat_reply_uses_threaded_reply(self):
+        adapter = self._make_adapter()
+        result = await adapter.send("19:abc@thread.v2", "hello", reply_to="12345")
+        adapter._app.reply.assert_awaited_once()
+        adapter._app.send.assert_not_awaited()
+        assert result.success is True
+
+    @pytest.mark.anyio
+    async def test_reply_without_reply_to_sends_flat(self):
+        adapter = self._make_adapter()
+        result = await adapter.send("19:abc@thread.v2", "hello")
+        adapter._app.reply.assert_not_awaited()
+        adapter._app.send.assert_awaited_once()
+        assert result.success is True

@@ -28,7 +28,7 @@ from hermes_constants import (
     get_hermes_home, get_hermes_home_override, get_process_hermes_home, profile_name_for_home,
     reset_hermes_home_override, set_hermes_home_override)
 from hermes_cli import config_backend as _config_backend
-from hermes_cli.config_backend import Changes, config_exists, supports_file_tooling
+from hermes_cli.config_backend import Changes, ConfigBackendUnavailable, config_exists, supports_file_tooling
 from hermes_cli.env_loader import load_hermes_dotenv
 from tui_gateway.pet_sheet import _clone_pet_payload, _pet_row_frame_counts, _pet_sheet_revision, _pet_state_rows
 from utils import is_truthy_value
@@ -676,10 +676,13 @@ def _profile_configured_cwd(profile_home: Path | None) -> str | None:
     """
     if profile_home is None:
         return None
-    with contextlib.suppress(Exception):
-        from hermes_cli.config_effective import load_user_config_effective
-        p = Path(profile_home) / "config.yaml"
-        return _configured_cwd_from_cfg(load_user_config_effective(p)) if config_exists(p) else None
+    try:
+        with contextlib.suppress(Exception):
+            from hermes_cli.config_effective import load_user_config_effective
+            p = Path(profile_home) / "config.yaml"
+            return _configured_cwd_from_cfg(load_user_config_effective(p)) if config_exists(p) else None
+    except ConfigBackendUnavailable as exc:  # a SystemExit: the agent build reports it; the cwd is a hint
+        logger.warning("terminal.cwd of %s unavailable: %s", profile_home, exc.code)
     return None
 
 
@@ -1013,7 +1016,7 @@ def _load_cfg_raw() -> dict:
             if _cfg_cache is not None and _cfg_sig == sig and _cfg_path == p:
                 return copy.deepcopy(_cfg_cache)
         data = read_user_config_raw(p) if config_exists(p) else {}
-    except Exception as exc:
+    except (Exception, ConfigBackendUnavailable) as exc:  # health: allow BLE001 -- served as a FailedConfigRead, refused by _save_cfg
         return FailedConfigRead(error=exc)  # readable as {}, refused by _save_cfg
     with _cfg_lock:  # cache the RAW config: _save_cfg writes _cfg_cache back to disk
         _cfg_cache, _cfg_sig, _cfg_path = copy.deepcopy(data), sig, p

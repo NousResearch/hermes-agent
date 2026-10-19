@@ -4577,8 +4577,8 @@ class BasePlatformAdapter(ABC):
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
             _thread_metadata = (await self._notify_turn_error(event, e)) or _thread_metadata
-            # SystemExit/KeyboardInterrupt propagate; other BaseExceptions are contained.
-            if isinstance(e, (SystemExit, KeyboardInterrupt)):
+            from hermes_cli.config_backend import ConfigBackendUnavailable as _outage  # this turn only
+            if isinstance(e, (SystemExit, KeyboardInterrupt)) and not isinstance(e, _outage):  # rest contained
                 raise
         finally:
             await self._release_turn_marker(event)

@@ -894,6 +894,13 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         if api is not None and api['history'] is not None:
             from gateway.run import _collect_history_media_paths
             history = api['history']
+            tail = history[-1] if history else None
+            if api.get('resume_unanswered') and isinstance(tail, dict) and tail.get('role') == 'user':
+                # The door's re-run continues the row its failed attempt persisted (#115325). Only a
+                # bare user tail: a tool suffix is completed work the re-run must still see.
+                from agent.session_persistence import adopt_unanswered_turn
+                history = list(history)
+                adopt_unanswered_turn(history, api['content'], agent)
             return history, None, _collect_history_media_paths(history)
         # Transcript rows ({role, content, timestamp}) lose timestamps; interrupt-path agent messages
         # (tool_calls/tool_call_id/reasoning) pass through intact so the API sees valid assistant→tool
@@ -1259,11 +1266,12 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         return final_response + "\n" + "\n".join(unique_tags)
 
     def run_sync(self):
-        from gateway.session_policy import policy_for_source, policy_scope
+        from gateway.session_policy import bind_turn_workspace, policy_for_source, policy_scope
         from gateway.session_api_turn import api_policy_scope
         from gateway.session_authorities import active_authority
-        with policy_scope(policy_for_source(self._runner, self._ctx.source),
-                          authority=active_authority(self._runner)), api_policy_scope():
+        policy = policy_for_source(self._runner, self._ctx.source)
+        with policy_scope(policy, authority=active_authority(self._runner)), api_policy_scope():
+            bind_turn_workspace(policy, self._ctx.session_id)
             result = self._run_sync_scoped()
             from gateway.session_results import execution_result
             captured = execution_result.get()
@@ -1350,6 +1358,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         pr = session_routing(active_authority(runner), policy) if policy else runner._provider_routing
         reasoning_config = (policy.current_reasoning_config(runner, ctx.session_key) if policy else
             runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model))
+        from gateway.session_cli_turn import one_turn_reasoning
+        reasoning_config = one_turn_reasoning(self, reasoning_config)  # `/model --once --reasoning X`
         runner._service_tier = (policy.current_service_tier(runner, ctx.session_key) if policy else
             runner._resolve_session_service_tier(source=ctx.source, session_key=ctx.session_key))
         from gateway.session_api_turn import api_execution

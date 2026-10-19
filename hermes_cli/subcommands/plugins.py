@@ -66,8 +66,12 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     add_json_flag(plugins_validate, "Print machine-readable JSON (for CI)")
 
     plugins_update = plugins_subparsers.add_parser(
-        "update", help="Pull latest changes for an installed plugin")
-    plugins_update.add_argument("name", help="Plugin name to update")
+        "update", help="Update an installed plugin, or with no name every plugin that has an update")
+    plugins_update.add_argument(
+        "name", nargs="?", help="Plugin name to update (default: list every plugin with an update and offer them all)")
+    plugins_update.add_argument(
+        "--yes", "-y", action="store_true",
+        help="With no name: update everything listed without the confirmation question (required without a terminal)")
 
     plugins_adopt = plugins_subparsers.add_parser(
         "adopt",

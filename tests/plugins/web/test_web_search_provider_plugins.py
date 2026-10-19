@@ -19,6 +19,7 @@ glue layer simultaneously.
 from __future__ import annotations
 
 import asyncio
+import threading
 
 import pytest
 
@@ -298,3 +299,49 @@ class TestFirecrawlScrapeTimeout:
         assert len(results) == 1
         assert results[0]["url"] == "https://example.com"
         assert results[0]["content"] == "content"
+
+
+# ---------------------------------------------------------------------------
+# Client construction must happen off the event-loop thread
+# ---------------------------------------------------------------------------
+
+
+class TestFirecrawlClientBuildOffLoop:
+    """``_get_firecrawl_client`` takes the auth-store lock and may refresh the Nous
+    tool-gateway token over the network. Written as an argument expression inside
+    ``asyncio.to_thread(...)`` it ran synchronously on the event-loop thread — outside
+    the surrounding ``asyncio.wait_for`` — so a stalled read there froze every other
+    task on the gateway loop (Telegram polling included) and the 60 s scrape deadline
+    could never fire.
+    """
+
+    def test_client_is_built_in_the_worker_thread(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from plugins.web.firecrawl import provider as firecrawl_provider
+
+        # Direct-credential mode: with no key, extract() routes to the keyless ring
+        # instead of the direct scrape path under test.
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "test-key")
+        loop_thread = threading.get_ident()
+        build_threads: list[int] = []
+
+        class _Client:
+            def scrape(self, **_kwargs):
+                return {"metadata": {"title": "Test", "sourceURL": "https://example.com"},
+                        "markdown": "content"}
+
+        def _get_firecrawl_client(capability=None):
+            build_threads.append(threading.get_ident())
+            return _Client()
+
+        monkeypatch.setattr(firecrawl_provider, "_get_firecrawl_client", _get_firecrawl_client)
+        monkeypatch.setattr(firecrawl_provider, "check_website_access", lambda url: None)
+
+        results = asyncio.run(
+            firecrawl_provider.FirecrawlWebSearchProvider().extract(["https://example.com"]))
+
+        assert build_threads, "the client was never built"
+        assert results[0]["content"] == "content"
+        assert build_threads[0] != loop_thread, (
+            "the Firecrawl client was built on the event-loop thread; a blocking "
+            "auth-store read there stalls the whole loop and dodges the scrape deadline"
+        )

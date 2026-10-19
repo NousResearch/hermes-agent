@@ -287,15 +287,15 @@ async def _scrape_one(url: str, formats: list[str], format: Optional[str]) -> di
             # matches our asyncio deadline. Without this the API uses its
             # 30 s default, causing SCRAPE_TIMEOUT before our 60 s
             # client-side wait expires. See #43272.
-            scrape_result = await asyncio.wait_for(
-                asyncio.to_thread(
-                    _get_firecrawl_client("extract").scrape,
-                    url=url,
-                    formats=formats,
-                    timeout=60_000,
-                ),
-                timeout=60,
-            )
+            # Resolve the client INSIDE the worker thread: ``_get_firecrawl_client`` takes the auth-store
+            # lock and can refresh the Nous token over the network, so evaluating it here (it is an
+            # argument expression, i.e. it runs in the event loop thread) put an unbounded synchronous
+            # call outside the deadline below — a wedged connect/timeout there stalled the whole
+            # web_extract call with no log line at all.
+            def _scrape() -> Any:
+                return _get_firecrawl_client("extract").scrape(url=url, formats=formats, timeout=60_000)
+
+            scrape_result = await asyncio.wait_for(asyncio.to_thread(_scrape), timeout=60)
         except TimeoutError:
             logger.warning("Firecrawl scrape timed out for %s", url)
             return _error_entry(url, _SCRAPE_TIMEOUT_MSG)

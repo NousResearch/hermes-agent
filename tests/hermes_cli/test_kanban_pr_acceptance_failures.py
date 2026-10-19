@@ -43,20 +43,10 @@ def test_stderr_classifies_without_persisting_stderr(monkeypatch, stderr, expect
     assert calls and "env" in calls[0][1]
 
 
-def test_graphql_not_found_repository_is_auth(monkeypatch):
-    """Real gh exits 1 for a repository the login cannot read: HTTP 200 + NOT_FOUND,
-    so stderr has no ``HTTP 404``. That is an identity problem, not provider_error."""
-    stderr = "gh: Could not resolve to a Repository with the name 'acme/repo'."
-    body = {"data": {"repository": None},
-            "errors": [{"type": "NOT_FOUND", "path": ["repository"], "message": stderr[4:]}]}
-    receipt, _calls = _receipt(monkeypatch, stdout=json.dumps(body), stderr=stderr)
-    assert receipt["classification"] == "auth"
-    assert "acme/repo" in receipt["detail"]
-    assert "the ambient gh login" in receipt["detail"]
-    assert "Could not resolve" not in json.dumps(receipt)
-
-
 @pytest.mark.parametrize("error_type,path,repository,expected", [
+    # Real gh exits 1 for a repository the login cannot read: HTTP 200 + NOT_FOUND, so
+    # stderr has no ``HTTP 404``. That is an identity problem, not provider_error.
+    ("NOT_FOUND", ["repository"], None, "auth"),
     ("NOT_FOUND", ["repository", "pullRequest"], {"pullRequest": None}, "missing"),
     ("FORBIDDEN", ["repository"], None, "auth"),
     ("BAD_CREDENTIALS", [], None, "auth"),

@@ -510,6 +510,14 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
     if not cli._claim_active_session("cli", stderr=bool(quiet)):
         exit_single_query(_active_session_refusal_exit_code())
     try:
+        if os.environ.get("HERMES_ISSUE22_TASK") == "1":
+            from hermes_cli import kanban_db_connect
+            from hermes_cli.issue_delivery import record_worker_delivery
+            conn = kanban_db_connect.connect(board=os.environ.get("HERMES_KANBAN_BOARD"))
+            try:
+                record_worker_delivery(conn, os.environ["HERMES_KANBAN_TASK"], cli.session_id)
+            finally:
+                conn.close()
         query, single_query_images = _collect_query_images(query, image)
         single_query_image_urls = _collect_kanban_task_images(single_query_images)
         from hermes_cli.observability.shared_metrics_startup import record_cli_one_shot_ready

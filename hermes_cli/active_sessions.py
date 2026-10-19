@@ -12,6 +12,7 @@ import logging
 import collections
 import math
 import os
+import stat
 import time
 import uuid
 from contextlib import contextmanager, suppress
@@ -201,20 +202,47 @@ def _flock(fh, *, lock: bool) -> None:
 
 
 class _FileLock:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, timeout: float | None = None):
         self.path = path
         self._fh = None
+        self.timeout = timeout
+        self._owner_pid = None
 
     def __enter__(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._fh = open(self.path, "a+b")
+        fd = os.open(self.path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        self._fh = os.fdopen(fd, "a+b")
         try:
-            _flock(self._fh, lock=True)
+            if self.timeout is None or os.name == "nt":
+                _flock(self._fh, lock=True)
+            else:
+                import fcntl
+                import threading
+                deadline = time.monotonic() + self.timeout
+                while True:
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        if time.monotonic() >= deadline:
+                            raise ActiveSessionRegistryError("session lock busy")
+                        threading.Event().wait(0.01)
+            self._owner_pid = os.getpid()
+            self.assert_current()
         except Exception as exc:
             self._fh.close()
             self._fh = None
             raise RuntimeError("active session file lock unavailable") from exc
         return self
+
+    def assert_current(self):
+        if self._fh is None or self._fh.closed or self._owner_pid != os.getpid():
+            raise ActiveSessionRegistryError("lock not owned by this process")
+        held = os.fstat(self._fh.fileno())
+        current = self.path.lstat()
+        if (not stat.S_ISREG(current.st_mode)
+                or (held.st_dev, held.st_ino) != (current.st_dev, current.st_ino)):
+            raise ActiveSessionRegistryError("session lock inode changed")
 
     def __exit__(self, exc_type, exc, tb):
         fh, self._fh = self._fh, None
@@ -740,6 +768,19 @@ def active_session_registry_snapshot(
             if len(kept_entries) != len(current_entries):
                 _write_entries(state_path, kept_entries)
     return entries
+
+
+@contextmanager
+def session_owner_fence(session_id: str, *, timeout: float = 1.0):
+    """Fence a live session through a short owner admission transaction."""
+    state_path, lock_path = _lease_paths()
+    with _FileLock(lock_path, timeout=timeout) as fence:
+        entries = _prune_dead(_read_entries(state_path, strict=True), strict=True,
+                              target_session_id=session_id)
+        if not _holds_session(entries, session_id):
+            raise ActiveSessionRegistryError("session has no live owner")
+        yield fence
+        fence.assert_current()
 
 
 @contextmanager

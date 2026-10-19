@@ -145,7 +145,7 @@ class Issue22VerbContract(unittest.TestCase):
     def test_poll_selects_pinned_typed_task_comment_without_forwarding_body(self):
         cfg = SimpleNamespace(
             owner="ISVGitHub", repo="autonomous-entity", issue_ingress_actor_id=548464,
-            request_timeout=30,
+            request_timeout=30, issue_ingress_issue_number=22, issue_ingress_max_body_bytes=1024,
         )
         fake_auth = MagicMock()
         fake_auth.fetch_installation_token.return_value = SimpleNamespace(
@@ -190,7 +190,8 @@ class Issue22VerbContract(unittest.TestCase):
                           config_path=self.cfg_path, enabled=True,
                           validate_config=self.validate_mock, admit=self.admit_mock,
                           publish_result=lambda *args, **kwargs: published.append(kwargs) or 999,
-                          record_result=lambda *args, **kwargs: None)
+                          record_result=lambda *args, **kwargs: None,
+                          bind_task=lambda *_a, **_kw: None)
         out = h({"issue_number": 22, "comment_id": 81})
         self.assertEqual(out, {
             "verdict": "ACK", "kind": "TASK", "issue_number": 22,

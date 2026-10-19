@@ -67,12 +67,19 @@ class BridgeConfig:
     issue_ingress_installation_id: Optional[int] = None
     issue_ingress_actor_id: Optional[int] = None
     trusted_commenters: frozenset[str] = field(default_factory=lambda: frozenset({"isvgithub"}))
+    issue_ingress_issue_number: int = 22
+    issue_ingress_max_body_bytes: int = 1024
+    issue_ingress_executor_profile: Optional[str] = None
+    issue_ingress_session_id: Optional[str] = None
+    issue_ingress_result_files: tuple[str, ...] = ()
+    issue_ingress_sources: dict[str, str] = field(default_factory=dict)
 
     def validate(self) -> None:
         """Validate config against the bridge's safety invariants.
 
         Runs on every load. Raises ConfigInvalid if any invariant fails.
         """
+        self._validate_ingress_policy()
         if not isinstance(self.app_id, int) or self.app_id <= 0:
             raise ConfigInvalid("app_id must be a positive integer")
         if not isinstance(self.installation_id, int) or self.installation_id <= 0:
@@ -125,6 +132,21 @@ class BridgeConfig:
         ):
             if value is not None and (type(value) is not int or value <= 0):
                 raise ConfigInvalid(f"{key} must be a positive integer when configured")
+
+    def _validate_ingress_policy(self) -> None:
+        if type(self.issue_ingress_issue_number) is not int or self.issue_ingress_issue_number not in {22, 27}:
+            raise ConfigInvalid("issue ingress requires one explicit Issue 22 or 27 source")
+        if (not isinstance(self.issue_ingress_sources, dict)
+                or any(key not in {"22", "27"} or not isinstance(value, str)
+                       or not Path(value).is_absolute() for key, value in self.issue_ingress_sources.items())):
+            raise ConfigInvalid("issue_ingress_sources requires explicit 22/27 absolute config paths")
+        if type(self.issue_ingress_max_body_bytes) is not int or not 1024 <= self.issue_ingress_max_body_bytes <= 8192:
+            raise ConfigInvalid("issue_ingress_max_body_bytes must be 1024..8192")
+        if (not isinstance(self.issue_ingress_result_files, tuple)
+                or len(self.issue_ingress_result_files) > 8
+                or any(not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_-]+\.(?:md|json|mmd)", name)
+                       for name in self.issue_ingress_result_files)):
+            raise ConfigInvalid("issue_ingress_result_files must contain bounded plain artifact names")
 
     def git_base(self, token: str) -> str:
         """Return the git base URL with the token substituted.
@@ -254,6 +276,12 @@ def load_config(explicit_path: Optional[Path] = None,
             issue_ingress_app_id=_optional_id("issue_ingress_app_id"),
             issue_ingress_installation_id=_optional_id("issue_ingress_installation_id"),
             issue_ingress_actor_id=_optional_id("issue_ingress_actor_id"),
+            issue_ingress_issue_number=raw.get("issue_ingress_issue_number", 22),
+            issue_ingress_max_body_bytes=raw.get("issue_ingress_max_body_bytes", 1024),
+            issue_ingress_executor_profile=raw.get("issue_ingress_executor_profile"),
+            issue_ingress_session_id=raw.get("issue_ingress_session_id"),
+            issue_ingress_result_files=tuple(raw.get("issue_ingress_result_files", ())),
+            issue_ingress_sources=raw.get("issue_ingress_sources", {}),
             trusted_commenters=frozenset(str(x).strip().lower() for x in (raw.get("trusted_commenters") or ["isvgithub"]) if str(x).strip()),
         )
     except (ValueError, TypeError) as e:

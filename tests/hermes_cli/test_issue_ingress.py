@@ -255,7 +255,7 @@ def test_pending_task_binds_without_live_lease_and_waits_ready_for_executor(monk
     monkeypatch.setattr(
         ingress, "read_authenticated_intent", lambda *a, **kw: active_intent["value"],
     )
-    monkeypatch.setattr(ingress, "_issue22_executor", lambda: ("grandloop", "session-22"))
+    monkeypatch.setattr(ingress, "_issue22_executor", lambda *_args: ("grandloop", "session-22"))
 
     monkeypatch.setattr(
         ingress, "_session_owner_fence",
@@ -320,7 +320,7 @@ def test_issue22_tasks_are_claimed_by_only_one_concurrent_gateway_dispatcher(mon
     ingress.admit_intent(conn, intent=intent, now=now)
     monkeypatch.setattr(ingress, "validate_ingress_config", lambda _path: pins)
     monkeypatch.setattr(ingress, "read_authenticated_intent", lambda *a, **kw: intent)
-    monkeypatch.setattr(ingress, "_issue22_executor", lambda: ("issue22-dispatch", "session-22"))
+    monkeypatch.setattr(ingress, "_issue22_executor", lambda *_args: ("issue22-dispatch", "session-22"))
     bound = ingress.bind_next_pending_task(conn, config_path=Path("/tmp/pinned.json"), now=now)
     task_id = bound["task_id"]
     conn.close()
@@ -365,7 +365,7 @@ def test_expired_pending_task_is_never_bound_or_dispatched(monkeypatch):
     )
     ingress.admit_intent(conn, intent=intent, now=1100)
     monkeypatch.setattr(ingress, "validate_ingress_config", lambda _path: pins)
-    monkeypatch.setattr(ingress, "_issue22_executor", lambda: ("grandloop", "session-22"))
+    monkeypatch.setattr(ingress, "_issue22_executor", lambda *_args: ("grandloop", "session-22"))
     monkeypatch.setattr(
         ingress, "read_authenticated_intent",
         lambda *args, **kwargs: pytest.fail("expired task must not be re-fetched for dispatch"),
@@ -398,11 +398,14 @@ def test_terminal_task_result_recovers_after_post_before_local_commit(monkeypatc
     )
     conn.executescript("""
         CREATE TABLE tasks (id TEXT, status TEXT, result TEXT);
-        CREATE TABLE task_runs (id INTEGER, task_id TEXT, status TEXT, outcome TEXT, summary TEXT);
+        CREATE TABLE task_runs (id INTEGER, task_id TEXT, status TEXT, outcome TEXT, summary TEXT, metadata TEXT);
+        CREATE TABLE task_events (task_id TEXT, kind TEXT, payload TEXT);
+        INSERT INTO task_events VALUES ('task-81','github_task_binding','{"repository_id":1165823465,"issue_number":22,"app_id":5343540,"installation_id":172036721,"actor_id":548464}');
     """)
     conn.execute("INSERT INTO tasks VALUES ('task-81','done','Finished safely')")
     conn.execute(
-        "INSERT INTO task_runs VALUES (1,'task-81','done','completed','Finished safely')",
+        "INSERT INTO task_runs VALUES (1,'task-81','done','completed','Finished safely',?)",
+        ('{"github_delivery":{"task_id":"task-81","session_id":"session-22","comment_id":81,"artifacts":{"result.json":"abc"}}}',),
     )
     conn.commit()
     comments = []
@@ -436,6 +439,7 @@ def test_terminal_task_result_recovers_after_post_before_local_commit(monkeypatc
             "ISVGitHub/autonomous-entity", 1165823465, 5343540, 172036721, 548464,
         ), {}, {"state": "open"}, auth),
     )
+    monkeypatch.setattr(ingress, "validate_ingress_config", lambda _path: ingress.TrustPins("ISVGitHub/autonomous-entity", 1165823465, 5343540, 172036721, 548464))
     original_txn = ingress._owner_write_txn
     failed = {"once": False}
 

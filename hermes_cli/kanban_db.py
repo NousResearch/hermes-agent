@@ -2682,6 +2682,8 @@ def complete_task(
         # reopened while this task waited.
         if not _parents_satisfied(conn, task_id):
             return False
+        from hermes_cli.issue_delivery import completion_evidence
+        metadata = completion_evidence(conn, task_id, expected_run_id, metadata)
         if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
             return False
         trow = conn.execute(
@@ -3921,6 +3923,15 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     _ctx_parent_results(lines, conn, task_id, now)
     _ctx_role_history(lines, conn, task, now)
     _ctx_comments(lines, list_comments(conn, task_id), now)
+    from hermes_cli.issue_delivery import is_github_task, _binding
+    if is_github_task(task):
+        binding = _binding(conn, task_id)
+        lines.extend(["## Required GitHub delivery evidence",
+            "Write the required artifacts inside this task workspace and pass their absolute paths as metadata.artifacts to kanban_complete.",
+            "Required files: " + json.dumps(binding.get("result_files", [])),
+            "Each JSON artifact must contain task_id=" + task_id + ", session_id=" + binding["session_id"] + ", source_comment_id=" + str(binding["comment_id"]) + ".",
+            "automation_evidence.json must contain a nonempty findings list; each finding needs source and status (VERIFIED_RUNNING, IMPLEMENTED_NOT_RUNNING, HISTORICAL_ONLY, UNVERIFIED, CONFLICT).",
+            "A diagnostic summary alone cannot complete this task. If useful work is blocked, use kanban_block with the exact blocker."])
     return "\n".join(lines).rstrip() + "\n"
 
 

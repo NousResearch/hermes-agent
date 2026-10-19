@@ -914,8 +914,8 @@ class GatewayBusySessionMixin:
         is_internal = bool(getattr(event, "internal", False))
         if not is_internal:
             try:
-                from hermes_cli.lifecycle import invoke_hook as _invoke_hook
-                _hook_results = _invoke_hook(
+                from hermes_cli.lifecycle import ainvoke_hook as _ainvoke_hook
+                _hook_results = await _ainvoke_hook(
                     "pre_gateway_dispatch",
                     event=event,
                     gateway=self,

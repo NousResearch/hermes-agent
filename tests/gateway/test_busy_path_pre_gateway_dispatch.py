@@ -145,7 +145,8 @@ class TestBusyPathPreGatewayDispatch:
         runner.adapters[event.source.platform] = adapter
 
         with patch(
-            "hermes_cli.lifecycle.invoke_hook",
+            "hermes_cli.lifecycle.ainvoke_hook",
+            new_callable=AsyncMock,
             return_value=[{"action": "skip", "reason": "handover_active"}],
         ) as mock_invoke, patch(
             "gateway.platforms.base.merge_pending_message_event"
@@ -159,7 +160,7 @@ class TestBusyPathPreGatewayDispatch:
         assert sk not in runner._busy_ack_ts, "skip should not stamp ack-cooldown"
 
         # Idle-path contract: signature must match exactly.
-        mock_invoke.assert_called_once()
+        mock_invoke.assert_awaited_once()
         args, kwargs = mock_invoke.call_args
         assert args[0] == "pre_gateway_dispatch"
         assert kwargs["event"] is event
@@ -183,7 +184,8 @@ class TestBusyPathPreGatewayDispatch:
         runner.adapters[event.source.platform] = adapter
 
         with patch(
-            "hermes_cli.lifecycle.invoke_hook",
+            "hermes_cli.lifecycle.ainvoke_hook",
+            new_callable=AsyncMock,
             return_value=[{"action": "skip", "reason": "handover_active"}],
         ) as mock_invoke, patch(
             "gateway.platforms.base.merge_pending_message_event"
@@ -191,7 +193,7 @@ class TestBusyPathPreGatewayDispatch:
             result = await runner._handle_active_session_busy_message(event, sk)
 
         assert result is True
-        mock_invoke.assert_called_once()
+        mock_invoke.assert_awaited_once()
         assert mock_invoke.call_args.args[0] == "pre_gateway_dispatch"
         adapter._send_with_retry.assert_not_called()
         mock_merge.assert_not_called()
@@ -210,7 +212,7 @@ class TestBusyPathPreGatewayDispatch:
         agent = _wire_running_agent(runner, sk, adapter)
         runner.adapters[event.source.platform] = adapter
 
-        with patch("hermes_cli.lifecycle.invoke_hook", return_value=[]):
+        with patch("hermes_cli.lifecycle.ainvoke_hook", new_callable=AsyncMock, return_value=[]):
             result = await runner._handle_active_session_busy_message(event, sk)
 
         assert result is True
@@ -233,7 +235,7 @@ class TestBusyPathPreGatewayDispatch:
             runner._busy_ack_ts.clear()
 
             with patch(
-                "hermes_cli.lifecycle.invoke_hook", return_value=hook_return
+                "hermes_cli.lifecycle.ainvoke_hook", new_callable=AsyncMock, return_value=hook_return
             ):
                 result = await runner._handle_active_session_busy_message(event, sk)
 
@@ -254,7 +256,8 @@ class TestBusyPathPreGatewayDispatch:
         runner.adapters[event.source.platform] = adapter
 
         with patch(
-            "hermes_cli.lifecycle.invoke_hook",
+            "hermes_cli.lifecycle.ainvoke_hook",
+            new_callable=AsyncMock,
             side_effect=RuntimeError("plugin crashed"),
         ):
             with caplog.at_level("WARNING", logger="gateway.run"):
@@ -289,7 +292,7 @@ class TestBusyPathPreGatewayDispatch:
             runner._busy_ack_ts.clear()
 
             with patch(
-                "hermes_cli.lifecycle.invoke_hook", return_value=hook_return
+                "hermes_cli.lifecycle.ainvoke_hook", new_callable=AsyncMock, return_value=hook_return
             ):
                 result = await runner._handle_active_session_busy_message(event, sk)
 
@@ -318,7 +321,8 @@ class TestBusyPathPreGatewayDispatch:
         runner.adapters[event.source.platform] = adapter
 
         with patch(
-            "hermes_cli.lifecycle.invoke_hook",
+            "hermes_cli.lifecycle.ainvoke_hook",
+            new_callable=AsyncMock,
             return_value=[{"action": "skip", "reason": "handover_active"}],
         ):
             result = await runner._handle_active_session_busy_message(event, sk)
@@ -346,7 +350,7 @@ class TestBusyPathPreGatewayDispatch:
         def _queue_mutating(_session_key, queued_event, *_args, **_kwargs):
             queued_event.text = f"{queued_event.text}\nmerged-followup"
 
-        with patch("hermes_cli.lifecycle.invoke_hook", return_value=[]), patch.object(
+        with patch("hermes_cli.lifecycle.ainvoke_hook", new_callable=AsyncMock, return_value=[]), patch.object(
             runner, "_queue_or_replace_pending_event", side_effect=_queue_mutating
         ):
             result = await runner._handle_active_session_busy_message(event, sk)
@@ -354,3 +358,77 @@ class TestBusyPathPreGatewayDispatch:
         assert result is True
         agent.interrupt.assert_called_once_with("inbound fragment")
         assert event.text == "inbound fragment\nmerged-followup"
+
+
+def _real_manager_with(monkeypatch, callback):
+    """A real PluginManager holding one ``pre_gateway_dispatch`` callback, used by both hook APIs."""
+    from hermes_cli import plugins, plugins_dispatch
+
+    manager = plugins.PluginManager()
+    manager._hooks["pre_gateway_dispatch"] = [callback]
+    monkeypatch.setattr(plugins, "_delivery_manager", lambda: manager)
+    # Bound the sync API's helper-thread bridge so a regression fails fast instead of after 30s.
+    monkeypatch.setattr(plugins_dispatch, "_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS", 0.2)
+
+
+class TestBusyPathHookOnGatewayLoop:
+    """Busy-path dispatch awaits the hook on the gateway loop (idle-path parity, #110241)."""
+
+    @pytest.mark.asyncio
+    async def test_async_hook_callback_is_awaited_on_the_gateway_loop(self, monkeypatch):
+        """An ``async def`` callback that waits on a sibling task of the gateway loop still skips.
+
+        Through the sync ``invoke_hook`` the callback runs on a helper thread while the loop blocks
+        in ``done.wait()``: the sibling task never runs, the bridge times out and the skip is lost,
+        so the busy ack goes out and the running agent is interrupted.
+        """
+        import asyncio
+
+        gate = asyncio.Event()
+
+        async def policy(**_kwargs):
+            await gate.wait()  # only a sibling task on THIS loop can release it
+            return {"action": "skip", "reason": "handover_active"}
+
+        async def release():
+            await asyncio.sleep(0)
+            gate.set()
+
+        _real_manager_with(monkeypatch, policy)
+        runner, _ = _make_runner()
+        adapter = _make_adapter()
+        event = _make_event(text="owner aside during handover")
+        sk = build_session_key(event.source)
+        agent = _wire_running_agent(runner, sk, adapter)
+        runner.adapters[event.source.platform] = adapter
+
+        asyncio.create_task(release())
+        result = await asyncio.wait_for(runner._handle_active_session_busy_message(event, sk), timeout=5)
+
+        assert result is True
+        adapter._send_with_retry.assert_not_called()
+        agent.interrupt.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_sync_hook_callback_still_skips(self, monkeypatch):
+        """Plain ``def`` callbacks (gateway-policy's shape) keep working through the async API."""
+        seen = {}
+
+        def policy(**kwargs):
+            seen.update(kwargs)
+            return {"action": "skip", "reason": "handover_active"}
+
+        _real_manager_with(monkeypatch, policy)
+        runner, _ = _make_runner()
+        adapter = _make_adapter()
+        event = _make_event(text="owner aside during handover")
+        sk = build_session_key(event.source)
+        agent = _wire_running_agent(runner, sk, adapter)
+        runner.adapters[event.source.platform] = adapter
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        assert seen["event"] is event and seen["gateway"] is runner
+        adapter._send_with_retry.assert_not_called()
+        agent.interrupt.assert_not_called()

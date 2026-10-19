@@ -11,6 +11,7 @@ from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from functools import partial
 import sqlite3
+from types import SimpleNamespace
 import uuid
 
 from gateway.session_contract import (
@@ -79,6 +80,9 @@ class LiveSession:
     # Mounted by that cold path (not published by its lane): the lane publishing ANOTHER conversation
     # on the same route later supersedes it too.
     history_mount: bool = False
+    # The background-review guard of a cold ``/refine`` (gateway/session_refine.py): its side agent is
+    # per call, so the run token lives here; a second /refine joins it and the next turn cancels it.
+    review: SimpleNamespace = field(default_factory=SimpleNamespace)
 
     def __post_init__(self):
         self.controls = PendingControls(self.event_stream)
@@ -789,9 +793,10 @@ class SessionAuthority:
         await self.receipt(actor, ref, admission_id)
         return await self.resolve_unknown_as_owner(ref, admission_id, generation)
 
-    async def resolve_unknown_as_owner(self, ref, admission_id, generation):
+    async def resolve_unknown_as_owner(self, ref, admission_id, generation, *, notice=None):
         """``resolve_unknown`` past authorization: also the owner's own call when the last viewer
-        closed a session whose turn recovered ``unknown`` (gateway/session_viewer_close)."""
+        closed a session whose turn recovered ``unknown`` (gateway/session_viewer_close), or when an
+        unattended automation turn settles itself (``notice``: its transcript copy, GW-10)."""
         captured = self.pending_results.get(admission_id)
         before = get_session_admission(self.db, admission_id=admission_id)
         prepared = None
@@ -807,7 +812,10 @@ class SessionAuthority:
         return await tracked_write(self, partial(
             resolve_unknown_session_input, self.db, epoch=self.epoch, admission_id=admission_id,
             generation=generation, _captured=prepared,
-            _terminal_write=lambda conn, lost: close_discarded_turn(self.db, conn, lost)),
+            # ``notice`` says the turn was interrupted: only when that is the outcome, never beside a
+            # captured result this resolution commits as the turn's own answer.
+            _terminal_write=lambda conn, lost: close_discarded_turn(self.db, conn, lost, None if (
+                prepared is not None and lost['owner_epoch'] == self.epoch) else notice)),
             then=partial(self._resolved_unknown, ref, admission_id, prepared, captured))
 
     async def _resolved_unknown(self, ref, admission_id, prepared, captured, row):
@@ -1084,6 +1092,12 @@ class SessionAuthority:
             try:
                 row, first = await self._claim_next(ref, live)
             except RuntimeStoreError as exc:
+                if exc.reason == 'unknown_execution':
+                    # An automation turn nobody is waiting on settles interrupted (GW-10); only a
+                    # person's lost turn keeps the FIFO paused for them to resolve.
+                    from gateway.session_unattended_unknown import settle_unattended_unknown
+                    if await settle_unattended_unknown(self, ref):
+                        continue
                 import logging
                 logging.getLogger(__name__).warning('Session %s paused: %s', ref.session_id, exc.reason)
                 self._pause(ref, exc.reason)
@@ -1110,9 +1124,16 @@ class SessionAuthority:
 
     async def _execute_claimed(self, ref, live, row):
         """Run the claimed admission: ``(response, outcome)``. The executing stamp clears the moment
-        execution returns; a lost managed worker pauses the FIFO and re-raises ManagedExecutionUnknown."""
+        execution returns; a lost managed worker settles an automation turn (``settled_unknown``) or pauses
+        the FIFO and re-raises ManagedExecutionUnknown."""
         from gateway.session_finite import execute_finite_admission
         from gateway.session_managed_worker import ManagedExecutionUnknown
+        review = getattr(live.review, '_background_review_run', None)
+        if review is not None and not review.request_done.is_set():
+            # A cold /refine's review shares the session id, as the resident agent's does: cancel it
+            # before the turn (its bounded wait runs off-loop).
+            from agent.background_review import cancel_background_review_for_live_turn
+            await asyncio.to_thread(cancel_background_review_for_live_turn, live.review)
         try:
             try:
                 return await execute_finite_admission(self, ref, row), 'completed'
@@ -1125,6 +1146,11 @@ class SessionAuthority:
             self.pending_stops.pop(ref.session_id, None)
             self.pending_steers.pop(ref.session_id, None)
             self.adopted.pop(ref.session_id, None)
+            # An automation turn nobody waits on settles here, at the exit that fenced it (GW-10),
+            # so the followers already queued run in this drain; a person's turn still pauses.
+            from gateway.session_unattended_unknown import settle_unattended_unknown
+            if await settle_unattended_unknown(self, ref):
+                return None, 'settled_unknown'
             self._pause(ref, 'unknown_execution')
             raise
         except Exception:
@@ -1165,6 +1191,9 @@ class SessionAuthority:
             admission_id = row['admission_id']
             try:
                 response, outcome = await self._execute_claimed(ref, live, row)
+                if outcome == 'settled_unknown':
+                    self.deferred_resets.pop(live.route, None)  # no settlement follows, as below
+                    continue
             except BaseException as exc:
                 # No settlement follows (a lost managed worker, a cancelled drain): the turn is never
                 # replayed, so its deferred reset is dropped (the next turn re-detects the overflow),
@@ -1320,6 +1349,9 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     epoch = await asyncio.to_thread(begin_runtime_epoch, db, instance_id=instance_id)
     # Hot-serve builds a profile while the loop serves the others: both writes stay off it.
     await asyncio.to_thread(recover_session_inputs, db, epoch=epoch)
+    # A lost automation turn has nobody to resolve it: it settles interrupted before any FIFO runs.
+    from gateway.session_unattended_unknown import settle_recovered_unattended
+    await asyncio.to_thread(settle_recovered_unattended, db, epoch)
     await asyncio.to_thread(backfill_legacy_session_owners, db)
     authority = SessionAuthority(runner, profile_id=profile_id, instance_id=instance_id, db=db, epoch=epoch)
     # A receipt's compression catch-up (#140060) writes: it commits off the loop too, before the

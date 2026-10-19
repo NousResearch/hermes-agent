@@ -504,6 +504,25 @@ it. Any run that reaches the model clears the hold. One-shot jobs are not held.
 
 ### Failure incidents: alert once, remind on a cooldown, acknowledge
 
+To send failures from **every job**, including `deliver: local` jobs, to one
+home channel without changing successful output, set a profile-wide failure
+route:
+
+```bash
+hermes config set cron.failure_deliver telegram
+```
+
+`cron.failure_deliver` uses the same routing grammar as `deliver` and takes
+precedence over each job's `failure_deliver` (including `local`). It is empty
+by default. With this route set, only the first successfully delivered failure
+alert **per job per failure streak** is sent: changes of error and the reminder
+cooldown do not send extra pings. A successful run re-arms the alert; successful
+output still follows each job's `deliver` setting. Set the option on each profile
+whose jobs should use it; profile configs are isolated. Acknowledged incident
+signatures remain silenced. If a delivery attempt fails, a later failing run
+can try again. Without the global route, the existing per-signature reminders
+and per-job routing below remain unchanged.
+
 A recurring job that keeps failing with the *same* error alerts you **once**,
 not on every run. Each failure is recorded as a durable **incident**, keyed by
 the job plus a normalized signature of the error text (case, whitespace and

@@ -284,6 +284,16 @@ def get_incident(incident_id: str) -> Optional[dict[str, Any]]:
     return dict(row) if row is not None else None
 
 
+def has_alerted_incident_for_job(job_id: str) -> bool:
+    """Whether this job already sent an alert in its current failure streak."""
+    with _transaction() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM cron_incidents WHERE job_id=? AND state='alerted' LIMIT 1",
+            (str(job_id or ""),),
+        ).fetchone()
+    return row is not None
+
+
 def count_incidents(state: Optional[str] = None) -> int:
     if state is not None and state not in INCIDENT_STATES:
         return 0

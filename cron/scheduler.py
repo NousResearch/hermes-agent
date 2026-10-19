@@ -361,13 +361,20 @@ def _upsert_incident_for_failure(
     already went out) -> suppress the per-run ping. Store errors log at debug; the caller delivers
     as if none existed."""
     try:
-        from cron.incidents import get_incident, upsert_incident
+        from cron.incidents import get_incident, has_alerted_incident_for_job, upsert_incident
 
         incident_id, _is_new = upsert_incident(
             job["id"], str(error or ""), job_name=job.get("name"), output_file=output_file)
         incident = get_incident(incident_id)
         state = incident.get("state") if incident else None
-        withheld = state == "closed" or (state == "alerted" and _repeat_alert_withheld(incident))
+        from cron.jobs import _cron_config_number
+        fleet_failure_deliver = _cron_config_number("failure_deliver", "", str).strip()
+        if fleet_failure_deliver:
+            # The fleet route promises one notice per job per failure streak, even if
+            # the error changes or the ordinary signature reminder window elapses.
+            withheld = state == "closed" or has_alerted_incident_for_job(job["id"])
+        else:
+            withheld = state == "closed" or (state == "alerted" and _repeat_alert_withheld(incident or {}))
         return withheld, incident_id
     except Exception as exc:
         logger.debug(

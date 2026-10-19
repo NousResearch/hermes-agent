@@ -858,10 +858,17 @@ def _expand_routing_tokens(part: str) -> list[str]:
 
 
 def _delivery_lane_value(job: dict, *, for_failure: bool = False):
-    """Raw deliver-lane value for a run outcome: the failure lane when ``for_failure`` and the job
-    overrides it, else ``deliver``. Bookkeeping (outcome classification, unresolved-origin, incident
-    'alerted' marking) must read the SAME lane the notice was routed through (NS-788)."""
+    """Raw delivery lane, shared by sends, preflight and outcome bookkeeping.
+
+    A configured fleet-wide failure target takes precedence over individual job targets;
+    otherwise the existing per-job override and deliver fallback remain unchanged.
+    """
     if for_failure:
+        from cron.jobs import _cron_config_number
+
+        global_failure_deliver = _cron_config_number("failure_deliver", "", str).strip()
+        if global_failure_deliver:
+            return global_failure_deliver
         failure_deliver = job.get("failure_deliver")
         if failure_deliver is not None and str(failure_deliver).strip():
             return failure_deliver
@@ -872,8 +879,8 @@ def _resolve_delivery_targets(job: dict, *, for_failure: bool = False) -> list[d
     """Resolve auto-delivery targets from comma-separated ``deliver``; ``all`` expands to every
     platform with a home channel and combines with explicit targets. Dedup by (platform, chat_id,
     thread_id). ``for_failure=True`` (failure summaries, interrupted-run notices, drift/preflight
-    alerts) resolves from ``failure_deliver`` INSTEAD when the job carries one —
-    ``failure_deliver: local`` is the structural opt-out; absent, failures follow ``deliver``."""
+    alerts) resolves from the global ``cron.failure_deliver`` when configured, then the job's
+    ``failure_deliver`` if set, otherwise ``deliver``. Success always uses ``deliver``."""
     deliver = _normalize_deliver_value(_delivery_lane_value(job, for_failure=for_failure))
     if deliver == "local":
         return []

@@ -1894,6 +1894,11 @@ DEFAULT_CONFIG = {
         # silences a signature for good. 0 = re-alert on every failing run. Keep in sync with
         # cron.scheduler.DEFAULT_FAILURE_REPEAT_ALERT_HOURS.
         "failure_repeat_alert_hours": 6,
+        # Empty = per-job failure_deliver, then deliver (legacy routing and incident
+        # reminders). Set e.g. "telegram" to send EVERY job's failures to that home
+        # channel, overriding job targets, once per job until a successful run.
+        # Success-path delivery is unchanged. Each profile has its own config/home.
+        "failure_deliver": "",
     },
     # Kanban multi-agent coordination. The dispatcher ticks every N seconds, reclaims stale claims,
     # promotes dependency-satisfied todos to ready, and fires `hermes -p <assignee> chat -q ...` per

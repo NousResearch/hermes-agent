@@ -476,8 +476,12 @@ export async function saveAgentPluginSettings(
       }
     }
 
+    // A secret-only save still makes the (empty) settings call: the backend's save is what tells a
+    // Desktop half `plugin.<id>.settings.changed`, and a new API key is the change it most needs.
+    const wroteSecret = Object.values(opts.secrets).some(Boolean)
+
     const result =
-      Object.keys(opts.values).length > 0
+      Object.keys(opts.values).length > 0 || wroteSecret
         ? await request<{ ok?: boolean; plugin?: AgentPluginRow | null }>(
             'plugins.manage',
             withProfile({ action: 'settings', key: opts.key, values: opts.values }, opts.profile)

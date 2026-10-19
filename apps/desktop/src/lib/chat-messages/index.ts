@@ -25,6 +25,7 @@ export {
   spliceOlderPreservedRows
 } from './reconciliation'
 export {
+  hasUnresolvedToolCall,
   QUESTION_CARD_TOOLS,
   restorePendingBlockingToolCall,
   restorePendingClarifyToolCall,

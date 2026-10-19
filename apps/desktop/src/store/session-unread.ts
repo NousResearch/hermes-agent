@@ -345,6 +345,7 @@ function projectTreeRow(storedSessionId: string, profile?: string): SessionInfo 
 /** Sources the live poll reported, by profile and stored id: a messaging turn can settle before its row
  *  loads, and another profile's same-id session is a different session. */
 const liveSources = new Map<string, string>()
+
 const liveSourceKey = (profile: null | string | undefined, storedSessionId: string) =>
   `${normalizeProfileKey(profile)}\n${storedSessionId}`
 

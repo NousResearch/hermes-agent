@@ -100,7 +100,7 @@ describe('publish-time eviction', () => {
           }
         ],
         sessionCount: 1
-      } as never
+      }
     ])
 
     publishSessionState('rt-tg', state('tg-old', { busy: true }))

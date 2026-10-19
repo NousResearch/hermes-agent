@@ -107,6 +107,8 @@ class TestRuntimeSelfPidKillGuard:
             "kill -9 > /dev/null {pid}",
             "bash -c 'kill {pid}'",
             "k'il'l {pid}",
+            # BSD kill(1) (macOS) skips any long option and sends TERM.
+            "/usr/bin/kill --signal=0 {pid}",
         ],
     )
     def test_kill_own_pid_with_signal_forms_requires_approval(self, template):
@@ -165,7 +167,6 @@ class TestRuntimeSelfPidKillGuard:
             "kill -0 -- {pid}",
             "kill -SIG0 {pid}",
             "/usr/bin/kill -s0 {pid}",
-            "/usr/bin/kill --signal=0 {pid}",
         ],
     )
     def test_kill_own_pid_with_signal_zero_is_not_flagged(self, template):
@@ -252,7 +253,7 @@ class TestApprovalClassificationTable:
             ("kill -TERM --help {pid}", "self-kill"),
             # External kill: option parsing stops at the first PID operand.
             ("/bin/kill {pid} -l", "self-kill"),
-            # External kill: a long option's separate value is not trusted as the signal.
+            # External kill: a long option may be skipped (BSD kill), so the default TERM counts.
             ("/bin/kill --signal 0 {pid}", "self-kill"),
             # `time` (keyword or binary) is read like every other exec'ing wrapper.
             ("FOO=1 time kill --signal TERM {pid}", "self-kill"),

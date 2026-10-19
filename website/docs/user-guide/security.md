@@ -676,6 +676,8 @@ auth:
 
 With the switch off Hermes never reads or refreshes those files: the `claude_code` credential-pool row disappears, `hermes auth list` prints one line saying so, and the log carries one INFO line per process. Only automatic adoption is affected — `hermes auth add openai-codex` still asks before importing an existing Codex CLI login. Automatic recovery also only repairs the credential Hermes already holds: a Codex CLI/Desktop login into a different ChatGPT workspace is refused with a warning (re-authenticate with `hermes auth add openai-codex`), and a login you complete while recovery is running is never overwritten. Add your own logins with `hermes auth add anthropic` / `hermes auth add openai-codex`.
 
+To stop borrowing only Claude Code's login — without switching off Codex CLI adoption — remove that single row instead: `hermes auth remove anthropic <claude_code row>` (the row `hermes auth list anthropic` shows) makes Hermes stop reading, refreshing, and re-seeding Claude Code's credentials, and `hermes auth add anthropic` re-enables borrowing.
+
 ### What Each Sandbox Filters
 
 | Sandbox | Default Filter | Passthrough Override |

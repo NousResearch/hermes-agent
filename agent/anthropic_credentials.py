@@ -355,7 +355,7 @@ def _claude_code_source_suppressed() -> bool:
     try:
         from hermes_cli.auth import is_source_suppressed
         return is_source_suppressed("anthropic", "claude_code")
-    except Exception:
+    except Exception:  # health: allow BLE001 -- unreadable store reads as "no marker", matching is_source_suppressed
         return False
 
 

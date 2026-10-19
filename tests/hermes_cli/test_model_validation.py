@@ -808,6 +808,7 @@ class TestValidateRequestedModelNousPortalRecommendations:
         }
         with patch("hermes_cli.models.fetch_api_models", return_value=["some/other-model"]), \
              patch("hermes_cli.models.probe_api_models", return_value=probe_payload), \
+             patch("hermes_cli.models.provider_model_ids", return_value=["some/other-model"]), \
              patch("hermes_cli.models.fetch_nous_recommended_models") as mock_portal, \
              patch("hermes_cli.models._model_in_provider_catalog", return_value=False):
             result = validate_requested_model("inclusionai/ling-3.0-flash:free", "openrouter")

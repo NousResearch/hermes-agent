@@ -957,6 +957,9 @@ def _pause_windows_gateways_for_update() -> dict | None:
     profile_processes, service_gateways, service_gateway_pids, running_pids = _discover_windows_gateways()
     if not running_pids:
         return _cold_start_pause_token(adopted, claims)
+    from hermes_cli.update_windows_tasks import discover_profile_tasks
+    profile_tasks = discover_profile_tasks(
+        {pid: proc for pid, proc in profile_processes.items() if pid in running_pids}, service_gateway_pids)
     unmapped_pids = [pid for pid in running_pids if pid not in profile_processes and pid not in service_gateway_pids]
     from gateway.status import get_process_start_time
     from hermes_cli.update_fleet_scope import gateway_pid_home
@@ -979,6 +982,7 @@ def _pause_windows_gateways_for_update() -> dict | None:
     ]
     intended = {
         "resume_needed": True, "unmapped_pids": unmapped_pids, "unmapped": unmapped,
+        "profile_tasks": profile_tasks,
         "profiles": {str(profile_processes[pid].profile): int(pid) for pid in running_pids
                      if pid in profile_processes and pid not in service_gateway_pids},
         "identities": {str(pid): pause_record.identity(pid)["ct"] for pid in running_pids},
@@ -995,7 +999,8 @@ def _pause_windows_gateways_for_update() -> dict | None:
         pause_record.mark_stop_requested(
             intended, running_pids, markers=_planned_stop_markers(running_pids, profile_processes, service_gateway_pids))
     profiles = _stop_windows_gateways(running_pids, profile_processes, service_gateway_pids, unmapped_pids, unmapped,
-                                      on_request=lambda pid: pause_record.mark_stop_sent(intended, pid), born=born)
+                                      on_request=lambda pid: pause_record.mark_stop_sent(intended, pid), born=born,
+                                      profile_tasks=profile_tasks)
     token = {"resume_needed": True, "profiles": profiles, "unmapped_pids": unmapped_pids, "unmapped": unmapped}
     # Every profile with ANY live gateway at discovery counts as running: service-supervised ones skip the
     # socket pause (absent from ``profiles``) but the SCM restart brings them back, not a cold-start.
@@ -1027,7 +1032,7 @@ def _cold_start_pause_token(adopted: dict | None, claims: list) -> dict | None:
 
 
 def _stop_windows_gateways(running_pids, profile_processes, service_gateway_pids, unmapped_pids, unmapped,
-                           on_request=None, born=None) -> dict:
+                            on_request=None, born=None, profile_tasks=None) -> dict:
     """Socket-pause the mapped gateways, drain, then tree-kill survivors; the paused ``profiles``.
     A force-killed process needs no stop record: dead, it is owed; alive, it was never stopped.
 
@@ -1049,6 +1054,13 @@ def _stop_windows_gateways(running_pids, profile_processes, service_gateway_pids
     print("→ Stopping Windows gateway process(es) before updating Hermes...")
     drain_timeout = _gateway_drain_timeout(socket_acks)
     survivors = _m()._wait_for_windows_update_gateway_exit(mapped_pids, timeout=drain_timeout)
+    if profile_tasks:
+        from hermes_cli.update_windows_tasks import stop_profile_tasks
+        stop_profile_tasks(profile_tasks, survivors, on_request=on_request)
+        survivors = _m()._wait_for_windows_update_gateway_exit(mapped_pids, timeout=5.0)
+        task_pids = {int(t["pid"]) for t in profile_tasks.values()}
+        if task_pids.intersection(survivors):
+            raise RuntimeError("Protected gateway task did not exit; update was not started")
     # Tree-kill survivors, unmapped gateways, and pre-request launchers; one already gone raises
     # ProcessLookupError, one whose birth differs (or was never read) is refused, and both are skipped.
     force_killed = []
@@ -1358,17 +1370,18 @@ def _resume_windows_services(token: dict) -> None:
         print("\n  ✓ Restarted Windows gateway service(s): " + ", ".join(restarted_services))
 
 
-def _relaunch_paused_gateways(profiles: dict, unmapped: list) -> tuple[dict, list]:
+def _relaunch_paused_gateways(profiles: dict, unmapped: list, profile_tasks: dict | None = None) -> tuple[dict, list]:
     """Spawn the restart watcher for each paused profile gateway and unmapped argv; ``(launched
     profiles, launched unmapped entries)``. Nothing leaves the token here: a watcher only proves a
     relaunch was scheduled, so every entry stays owed until ITS gateway is verified ready."""
     with _abort_on_error("Could not load Windows gateway restart helper"):
-        from hermes_cli.gateway import launch_detached_gateway_restart_by_cmdline, launch_detached_profile_gateway_restart
+        from hermes_cli.gateway import launch_detached_gateway_restart_by_cmdline
+        from hermes_cli.update_windows_tasks import relaunch_profile
 
     # An exception from a launch (incl. bad pid/argv coercion) logs at debug and reads as a failed relaunch.
     launched = {}
     for profile, old_pid in sorted(profiles.items()):
-        if _try_call(lambda p=profile, o=old_pid: launch_detached_profile_gateway_restart(str(p), int(o)),
+        if _try_call(lambda p=profile, o=old_pid: relaunch_profile(str(p), int(o), profile_tasks or {}),
                      "Could not restart Windows gateway profile %s after update: %s", profile):
             launched[str(profile)] = int(old_pid)
     launched_unmapped = []
@@ -1587,7 +1600,10 @@ def _resume_paused_set(token: dict) -> None:
         return resume_paused_set(token)
     # Regenerate launcher scripts before respawning so a legacy pythonw-era
     # autostart entry comes back on the current design at next login too.
-    _m()._refresh_windows_gateway_launchers()
+    # Refresh can re-register a legacy SYSTEM task as the current user. Its exact
+    # definition is part of the pause obligation and must survive this update.
+    if not token.get("profile_tasks"):
+        _m()._refresh_windows_gateway_launchers()
     failures: list[str] = []
 
     def attempt(step) -> None:
@@ -1600,7 +1616,10 @@ def _resume_paused_set(token: dict) -> None:
     profiles = dict(token.get("profiles") or {})
     unmapped = list(token.get("unmapped") or [])
     if profiles or any(u.get("argv") for u in unmapped):
-        launched, launched_unmapped = _relaunch_paused_gateways(profiles, unmapped)
+        if token.get("profile_tasks"):
+            launched, launched_unmapped = _relaunch_paused_gateways(profiles, unmapped, token["profile_tasks"])
+        else:
+            launched, launched_unmapped = _relaunch_paused_gateways(profiles, unmapped)
         if launched or launched_unmapped:
             attempt(lambda: _verify_relaunched_gateways_alive(token, launched, launched_unmapped))
         else:

@@ -757,7 +757,7 @@ def record_pause(token: dict, adopted: dict | None, claims: list[Path]) -> dict:
 
 
 _CARRIED = ("pause_id", "baselines", "identities", "stop_requested", "stop_sent", "stopper_pid",
-            "stop_markers", "absorbed")
+            "stop_markers", "absorbed", "profile_tasks")
 
 
 def finish_pause(token: dict, intended: dict, adopted: dict | None) -> dict:
@@ -880,6 +880,10 @@ def merge_into(token: dict | None, adopted: dict) -> dict:
     profiles = token.setdefault("profiles", {})
     for name, pid in (adopted.get("profiles") or {}).items():
         profiles.setdefault(name, pid)
+    tasks = token.setdefault("profile_tasks", {})
+    for name, task in (adopted.get("profile_tasks") or {}).items():
+        if profiles.get(name) == task["pid"]:
+            tasks.setdefault(name, task)
     unmapped = token.setdefault("unmapped", [])
     unmapped.extend(u for u in adopted.get("unmapped") or [] if u not in unmapped)
     identities = token.setdefault("identities", {})

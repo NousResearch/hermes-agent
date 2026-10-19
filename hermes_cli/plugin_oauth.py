@@ -33,7 +33,6 @@ _ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 _ENV_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 # Lowercase DNS name with at least one dot whose last label starts with a letter: no IP literal, port or scheme.
 _HOST_RE = re.compile(r"^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z](?:[a-z0-9-]*[a-z0-9])?$")
-_LOOPBACK_LITERALS = frozenset({"127.0.0.1", "::1"})
 
 
 @dataclass(frozen=True)
@@ -74,9 +73,18 @@ def _url_problems(where: str, url: Any) -> list[str]:
     if (parsed is None or not parsed.hostname or parsed.username is not None or parsed.password is not None
             or parsed.fragment):
         return [f"{where}: must be an absolute URL without user info or fragment"]
-    if parsed.scheme != "https" and not (parsed.scheme == "http" and parsed.hostname in _LOOPBACK_LITERALS):
-        return [f"{where}: must use https (plain http only for a loopback address)"]
+    if parsed.scheme != "https":  # no loopback exception: the code, refresh token and client secret travel here
+        return [f"{where}: must use https"]
     return []
+
+
+def _hermes_owned_env(name: str) -> bool:
+    """A variable Hermes itself reads (a provider key, a platform token): never a plugin's client variable,
+    or a manifest could have Hermes POST that secret to the token URL it names."""
+    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.config_defaults import OPTIONAL_ENV_VARS
+
+    return name in OPTIONAL_ENV_VARS or any(name in p.api_key_env_vars for p in PROVIDER_REGISTRY.values())
 
 
 def _entry_problems(entry: dict, where: str) -> list[str]:
@@ -91,6 +99,8 @@ def _entry_problems(entry: dict, where: str) -> list[str]:
         name = entry.get(field)
         if (required or name) and not (isinstance(name, str) and _ENV_RE.match(name)):
             problems.append(f"{where}.{field}: {name!r} must be an UPPER_SNAKE environment variable name")
+        elif name and _hermes_owned_env(name):
+            problems.append(f"{where}.{field}: {name} is a variable Hermes uses itself; declare the plugin's own")
     hosts = entry.get("hosts")
     if not (isinstance(hosts, list) and hosts and all(isinstance(h, str) and _HOST_RE.match(h) for h in hosts)):
         problems.append(f"{where}.hosts: must list lowercase DNS host names (no scheme, port, path or IP address)")
@@ -150,11 +160,15 @@ def plugin_key(plugin_dir: Path) -> str:
     return plugin_dir.name
 
 
+def _idp_hosts(client: OAuthClient) -> str:
+    return ", ".join(dict.fromkeys(urlparse(url).hostname for url in (client.authorize_url, client.token_url)))
+
+
 def oauth_notice(manifest: Mapping[str, Any]) -> str:
     """Install/show text for the declared clients; empty when the plugin declares none."""
     name = str((manifest or {}).get("name") or "<plugin>")
     return "; ".join(
-        f"Signs in to {c.id} for {', '.join(c.hosts)} with `hermes auth add {name}:{c.id}` "
+        f"Signs in to {c.id} at {_idp_hosts(c)} for {', '.join(c.hosts)} with `hermes auth add {name}:{c.id}` "
         "(Hermes stores and refreshes the token; the plugin never receives it)"
         for c in parse_oauth_clients(manifest)[0])
 
@@ -164,8 +178,7 @@ def oauth_surface(manifest: Mapping[str, Any]) -> set[str]:
     hosts or scopes, shows up as added. Any other change only alters the fingerprint, so the user signs in again."""
     lines: set[str] = set()
     for c in parse_oauth_clients(manifest)[0]:
-        idp_hosts = ", ".join(dict.fromkeys(urlparse(url).hostname for url in (c.authorize_url, c.token_url)))
-        lines.add(f"{c.id} ({idp_hosts} -> {', '.join(c.hosts)}; {' '.join(c.scopes)})")
+        lines.add(f"{c.id} ({_idp_hosts(c)} -> {', '.join(c.hosts)}; {' '.join(c.scopes)})")
     return lines
 
 
@@ -194,10 +207,18 @@ def oauth_admission_problems(manifest: Mapping[str, Any], plugin_dir: Path) -> l
     return problems
 
 
-def token_url_mentions(manifest: Mapping[str, Any], plugin_dir: Path) -> list[str]:
-    """Reviewer warnings for plugin code that names a declared token URL (Hermes refreshes the grant)."""
-    urls = sorted({c.token_url for c in parse_oauth_clients(manifest)[0]})
-    warnings: list[str] = []
+def _parent(host: str) -> str:
+    return ".".join(host.split(".")[-2:])
+
+
+def oauth_admission_warnings(manifest: Mapping[str, Any], plugin_dir: Path) -> list[str]:
+    """Reviewer warnings: a host outside the sign-in provider's domains (does the IdP own it?), and plugin
+    code that names a declared token URL (Hermes refreshes the grant)."""
+    clients = parse_oauth_clients(manifest)[0]
+    warnings = [f"oauth {c.id!r}: host {host} shares no domain with {_idp_hosts(c)}; check the provider owns it"
+                for c in clients for host in c.hosts
+                if _parent(host) not in {_parent(urlparse(u).hostname or "") for u in (c.authorize_url, c.token_url)}]
+    urls = sorted({c.token_url for c in clients})
     for path in sorted(plugin_dir.rglob("*.py")):
         try:
             text = path.read_text(encoding="utf-8-sig", errors="replace")
@@ -494,6 +515,6 @@ def handle_auth_action(action: str, args: Any, provider: str) -> Optional[bool]:
 
 
 __all__ = [
-    "OAuthClient", "handle_auth_action", "oauth_admission_problems", "oauth_notice", "oauth_surface",
-    "parse_oauth_clients", "plugin_key", "token_url_mentions",
+    "OAuthClient", "handle_auth_action", "oauth_admission_problems", "oauth_admission_warnings",
+    "oauth_notice", "oauth_surface", "parse_oauth_clients", "plugin_key",
 ]

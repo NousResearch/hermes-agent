@@ -149,7 +149,8 @@ the gallery. There is no separate listing to maintain.
    OAuth client for a third-party API (the user's own Google Cloud client, for
    example) is declared under `oauth:` in `plugin.yaml`, signed in with
    `hermes auth add <plugin>:<id>` and used through the same helper; Hermes
-   stores and refreshes that token too. A plugin never reads `.env` files, Hermes's `auth.json`, another tool's login (a
+   stores and refreshes that token too. Its `authorize_url`, `token_url` and
+   `hosts` are `https` only, and its `hosts` belong to the API the scopes are for. A plugin never reads `.env` files, Hermes's `auth.json`, another tool's login (a
    vendor CLI's token file, a browser profile, a keychain) or any other
    credential store directly, and never refreshes, rotates or writes OAuth tokens
    or presents itself as another vendor's client. If Hermes has no route for a

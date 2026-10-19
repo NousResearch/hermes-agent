@@ -186,16 +186,16 @@ def _check_requires_env(report: ValidationReport, manifest: dict) -> None:
 
 
 def _check_oauth(report: ValidationReport, manifest: dict, plugin_dir: Path) -> None:
-    """``oauth:`` clients (hermes_cli.plugin_oauth): shape and declared variables fail admission; plugin
-    code that names a token URL is a reviewer warning, since Hermes refreshes the grant itself."""
-    from hermes_cli.plugin_oauth import oauth_admission_problems, token_url_mentions
+    """``oauth:`` clients (hermes_cli.plugin_oauth): shape, https and declared variables fail admission; a
+    host outside the IdP's domains and plugin code that names a token URL are reviewer warnings."""
+    from hermes_cli.plugin_oauth import oauth_admission_problems, oauth_admission_warnings
 
     if manifest.get("oauth") in (None, []):
         report.add("oauth", True, "not declared")
         return
     problems = oauth_admission_problems(manifest, plugin_dir)
     report.add("oauth", not problems, "; ".join(problems) or "clients valid")
-    for warning in token_url_mentions(manifest, plugin_dir):
+    for warning in oauth_admission_warnings(manifest, plugin_dir):
         report.warn(warning)
 
 

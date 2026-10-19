@@ -1852,8 +1852,16 @@ def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) 
     updates = model_selection_config_updates(result, planned_from)
     if not supports_file_tooling():
         # No config file (Remote Config): one keyed write, so a lock on any key refuses the whole
-        # switch instead of a document save silently omitting the locked part.
-        write_config_keys(path, {f"model.{key}": value for key, value in updates.items()})
+        # switch instead of a document save silently omitting the locked part. The planned-from
+        # block is the EFFECTIVE one, so a key it holds may come from an upper level, where a
+        # profile-level unset cannot reach it (contract §5.4): an inherited old-endpoint api_key
+        # would stay active at the new endpoint. A key the switch clears and the effective block
+        # still holds is therefore masked with null ("no value"); an absent one is just unset.
+        from hermes_cli.config_backend import Changes, write_changes
+        held = planned_from if isinstance(planned_from, dict) else {}
+        write_changes(path, Changes(
+            set={f"model.{k}": v for k, v in updates.items() if v is not None or k in held},
+            unset=tuple(f"model.{k}" for k, v in updates.items() if v is None and k not in held)))
         return
     with _CONFIG_LOCK:
         config = read_user_config_raw(path)

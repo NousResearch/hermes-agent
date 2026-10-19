@@ -123,3 +123,16 @@ def test_remote_from_managed_dotenv_skips(home):
     (home.parent / "managed" / ".env").write_text("HERMES_CONFIG_BACKEND=remote\n")
     assert _runtime_selects(home, None) == "remote"
     assert "MIGRATE_RAN" not in _run(home, None)
+
+
+@pytest.mark.parametrize("encode", [
+    lambda t: t.encode("utf-16"),                      # Notepad "Unicode" (BOM)
+    lambda t: t.encode("utf-16-le"),                   # BOM-less UTF-16: NUL-padded ASCII
+], ids=["utf16-bom", "utf16-no-bom"])
+def test_stage2_decides_like_the_runtime_for_utf16_dotenv(home, encode):
+    """The runtime sanitizes a UTF-16 / NUL-padded .env before loading it; the early selection
+    (stage2, the first config read) parses it the same way, so both pick remote."""
+    (home / ".env").write_bytes(encode("OTHER=1\nHERMES_CONFIG_BACKEND=remote\n"))
+    from hermes_cli.env_loader import selected_config_backend_name
+    assert selected_config_backend_name(home) == "remote"
+    assert "MIGRATE_RAN" not in _run(home, None)

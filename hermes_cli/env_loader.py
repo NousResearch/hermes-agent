@@ -388,13 +388,24 @@ def _load_dotenv_with_fallback(
 def _dotenv_assignments(path: Path) -> list:
     """``(name, raw value)`` pairs of one dotenv file, parsed exactly as the loader parses it."""
     raw = path.read_bytes()
-    try:
-        # utf-8-sig strips a leading BOM (PowerShell 5.1 / Notepad); plain utf-8 would keep U+FEFF on the
-        # first key name and silently drop it from os.environ under its canonical name.
-        text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        raw = raw.removeprefix(codecs.BOM_UTF8)
-        text = raw.decode("latin-1")
+    if raw.startswith(codecs.BOM_UTF16_LE) or raw.startswith(codecs.BOM_UTF16_BE):
+        # Notepad "Unicode": ``_sanitize_env_file_if_needed`` rewrites it as UTF-8 before the loader
+        # reads it, so parse it as that rewrite will -- bootstrap / stage2 run before the sanitizer
+        # and must select the same backend the runtime then boots.
+        try:
+            with io.TextIOWrapper(io.BytesIO(raw), encoding="utf-16", newline=None) as f:
+                text = f.read()
+        except UnicodeDecodeError:
+            text = raw.decode("latin-1")
+    else:
+        try:
+            # utf-8-sig strips a leading BOM (PowerShell 5.1 / Notepad); plain utf-8 would keep U+FEFF on the
+            # first key name and silently drop it from os.environ under its canonical name.
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            raw = raw.removeprefix(codecs.BOM_UTF8)
+            text = raw.decode("latin-1")
+    text = text.replace("\x00", "")  # the sanitizer strips NULs too (BOM-less UTF-16 / NUL-padded ASCII)
     # Imported here, not at module level: gateway tests stub ``sys.modules["dotenv"]`` with a bare module
     # exposing only ``load_dotenv``, and ``gateway.run`` imports this module at import time.
     from dotenv.main import DotEnv

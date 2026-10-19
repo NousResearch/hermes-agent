@@ -312,3 +312,47 @@ def test_migration_recursion_still_sees_its_private_copy(plane, monkeypatch):
     assert seen == [latest - 1]
     assert doc["new_key"] == 2 and "old_key" not in doc
     assert plane.patches() == []
+
+
+def test_profile_editor_reports_a_locked_skills_edit_as_not_applied(plane, monkeypatch):
+    """``profiles.configure`` saves its sections through bulk ``save_config``, which omits a
+    Remote Config lock instead of raising. The editor must report that section unapplied, not
+    acknowledge an edit the plane never stored; unlocked, the same edit lands and is reported."""
+    import json
+    from hermes_cli.config import read_user_config_raw
+    plane.upper = {"skills": {"disabled": []}}
+    plane.upper_locks = [{"path": "skills.disabled", "level": "tenant"}]
+    server = _tui_server(monkeypatch, plane.home)
+
+    class Transport:
+        def __init__(self):
+            self.frames, self.done = [], threading.Event()
+
+        def write(self, obj):
+            self.frames.append(obj)
+            self.done.set()
+            return True
+
+        def close(self):
+            pass
+
+    def configure(rid):
+        t = Transport()
+        ret = server.dispatch({"jsonrpc": "2.0", "id": rid, "method": "profiles.configure",
+                               "params": {"name": "default", "disabled_skills": ["example-skill"]}}, t)
+        if ret is not None:
+            t.write(ret)
+        assert t.done.wait(10), "no terminal response"
+        return json.loads(json.dumps(t.frames[-1]))["result"]
+
+    locked = configure(1)
+    assert locked["applied"]["skills"] is False and locked["ok"] is False, locked
+    assert plane.patches() == []
+    assert read_user_config_raw()["skills"]["disabled"] == []
+
+    plane.upper_locks = []
+    backend = get_config_backend()
+    backend.poll_one(backend._state(plane.home))
+    unlocked = configure(2)
+    assert unlocked["applied"]["skills"] is True and unlocked["ok"] is True, unlocked
+    assert read_user_config_raw()["skills"]["disabled"] == ["example-skill"]

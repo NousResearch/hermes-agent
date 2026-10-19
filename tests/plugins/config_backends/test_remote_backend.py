@@ -1654,3 +1654,50 @@ def test_tui_shared_metrics_set_refuses_a_locked_consent(plane, monkeypatch):
 
     assert answer["error"]["code"] == 4002 and "locked" in answer["error"]["message"]
     assert plane.patches() == [] and recorded == []
+
+
+def test_poll_between_read_and_save_sends_only_the_callers_edit(plane, monkeypatch):
+    """A poll landing after ``set_config_value`` read the doc and before it saved must not turn
+    the keys that poll changed into edits of ours (sent with the current expectedVersion, so no
+    409 could catch them): only the requested key is sent; the poll's changes survive."""
+    from hermes_cli import config as cfg
+    prof = plane.profile("default")
+    prof.update(values={"display": {"personality": "concise", "compact": False}}, version=1)
+    backend = get_config_backend()
+    orig = cfg._write_user_config
+
+    def poll_before_save(path, doc):
+        p = plane.profile("default")
+        p["values"]["display"]["compact"] = True
+        p["values"]["terminal"] = {"timeout": 321}
+        p["version"] += 1
+        assert backend.poll_one(backend._state(plane.home))
+        return orig(path, doc)
+
+    monkeypatch.setattr(cfg, "_write_user_config", poll_before_save)
+    cfg.set_config_value("display.personality", "pirate")
+    bodies = [r["body"] for r in plane.patches()]
+    assert len(bodies) == 1, bodies
+    assert bodies[0]["set"] == {"display.personality": "pirate"} and not bodies[0].get("unset"), bodies
+    assert plane.profile("default")["values"] == {
+        "display": {"personality": "pirate", "compact": True}, "terminal": {"timeout": 321}}
+
+
+def test_model_switch_masks_inherited_endpoint_credentials(plane, monkeypatch):
+    """A switch to a new endpoint clears endpoint-bound keys. When an upper level supplies them,
+    a profile-level unset cannot reach them, so the switch stores null ("no value") instead: the
+    old endpoint's key never reaches the new endpoint."""
+    from hermes_cli.config import read_user_config_raw
+    from hermes_cli.model_switch import ModelSwitchResult, persist_model_selection
+    plane.upper = {"model": {"default": "old", "provider": "custom:old", "base_url": "https://old.example/v1",
+                             "api_key": "${OLD_KEY}", "key_env": "OLD_KEY", "api_key_env": "OLD_KEY",
+                             "context_length": 123456}}
+    persist_model_selection(ModelSwitchResult(
+        success=True, new_model="new", target_provider="custom", provider_changed=True,
+        base_url="https://new.example/v1", api_mode="chat_completions", is_global=True))
+    body = plane.patches()[-1]["body"]
+    for key in ("api_key", "key_env", "api_key_env", "context_length"):
+        assert body["set"].get(f"model.{key}", "absent") is None, body
+    model = read_user_config_raw()["model"]
+    assert model["base_url"] == "https://new.example/v1"
+    assert all(model.get(k) is None for k in ("api_key", "key_env", "api_key_env", "context_length")), model

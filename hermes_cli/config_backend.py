@@ -19,6 +19,7 @@ whatever user layer the backend returns.
 from __future__ import annotations
 
 import os
+import sys
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -355,6 +356,27 @@ def write_config_keys(config_path: PathLike, updates: Mapping[str, Any]) -> None
     backend, target, is_layer = _route(config_path)
     changes = Changes(set={k: v for k, v in updates.items() if v is not None},
                       unset=tuple(k for k, v in updates.items() if v is None))
+    backend.write_changes(target, changes) if is_layer else backend.write_path(target, changes)
+
+
+def keeping_read_base(read):
+    """Run ``read()`` (a pre-write guard read) without making it the read a later document save
+    is diffed against: the caller's document came from ITS earlier read (Remote Config). A
+    context that never read keeps the guard read. No-op unless the remote backend is loaded."""
+    mod = sys.modules.get("plugins.config_backends.remote.backend")
+    held = mod._READ_BASE.get() if mod is not None else None
+    try:
+        return read()
+    finally:
+        if held is not None:
+            mod._READ_BASE.set(held)
+
+
+def write_changes(config_path: PathLike, changes: Changes) -> None:
+    """One :class:`Changes` write. Unlike :func:`write_config_keys`, a ``None`` in ``set`` stores
+    an explicit null (Remote Config: "no value", masking an inherited scalar); the file backend
+    writes it as YAML null."""
+    backend, target, is_layer = _route(config_path)
     backend.write_changes(target, changes) if is_layer else backend.write_path(target, changes)
 
 

@@ -83,18 +83,19 @@ def bridge(tmp_path, monkeypatch):
     ("repo", "REST_REPOSITORY_ID_MISMATCH"), ("app", "APP_PIN_MISMATCH"),
 ])
 def test_authenticated_admission_rejects_changed_identity_or_replay(bridge, mutation, reason):
-    if mutation == "actor":
-        bridge.comment["user"]["id"] = 999
-    elif mutation == "edited":
-        bridge.comment["updated_at"] = "2026-01-01T00:00:00Z"
-    elif mutation == "expired":
-        body = json.loads(bridge.comment["body"]); body["expires_at"] = bridge.now
-        bridge.comment["body"] = json.dumps(body)
-    elif mutation == "duplicate":
-        bridge.comment["body"] = bridge.comment["body"].replace('"kind": "TASK"', '"kind":"TASK","kind":"PING"')
-    else:
-        cfg = json.loads(bridge.cfg.read_text())
-        cfg["issue_ingress_repository_id" if mutation == "repo" else "issue_ingress_app_id"] = 999
+    cfg = json.loads(bridge.cfg.read_text())
+    expired = {**json.loads(bridge.comment["body"]), "expires_at": bridge.now}
+    mutations = {
+        "actor": (bridge.comment["user"], "id", 999),
+        "edited": (bridge.comment, "updated_at", "2026-01-01T00:00:00Z"),
+        "expired": (bridge.comment, "body", json.dumps(expired)),
+        "duplicate": (bridge.comment, "body", bridge.comment["body"].replace('"kind": "TASK"', '"kind":"TASK","kind":"PING"')),
+        "repo": (cfg, "issue_ingress_repository_id", 999),
+        "app": (cfg, "issue_ingress_app_id", 999),
+    }
+    target, key, value = mutations[mutation]
+    target[key] = value
+    if mutation in {"repo", "app"}:
         bridge.cfg.write_text(json.dumps(cfg))
     with pytest.raises(ingress.AdmissionRefused, match=reason):
         ingress.read_authenticated_intent(bridge.cfg, comment_id=81, now=bridge.now)

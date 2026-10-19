@@ -145,7 +145,7 @@ def test_issue22_worker_resumes_bound_session_and_marks_busy_refusal(monkeypatch
     )
     assert kbd._default_spawn(task, str(workspace)) == 4245
     assert captured["cmd"][captured["cmd"].index("--resume") + 1] == "session-22"
-    assert captured["env"]["HERMES_ISSUE22_TASK"] == "1"
+    assert captured["env"]["HERMES_KANBAN_TASK"] == "t_spawn_tools"
     from hermes_cli._parser import build_top_level_parser
     parser, _subparsers, _chat_parser = build_top_level_parser()
     args = parser.parse_args(captured["cmd"][3:])

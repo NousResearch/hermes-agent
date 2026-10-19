@@ -627,22 +627,19 @@ def _ensure_pending_intake_columns(conn: sqlite3.Connection) -> None:
                 conn.execute(f"ALTER TABLE issue22_pending_intakes ADD COLUMN {name} {declaration}")
 
 
-def _issue22_executor(config_path: Path | None = None) -> tuple[str, str]:
+def _issue22_executor(config_path: Path) -> tuple[str, str]:
     """Require one configured Hermes profile and its trusted persistent session id.
 
     The active-session lease belongs to task execution, not durable admission. The
     Kanban worker resumes this session and acquires Hermes' normal lease before its
     first model turn.
     """
-    cfg = load_config(config_path) if config_path is not None else None
-    profile = ((cfg.issue_ingress_executor_profile if cfg else None) or os.environ.get("HERMES_ISSUE22_EXECUTOR_PROFILE", "")).strip()
-    active_profile = os.environ.get("HERMES_PROFILE", "").strip()
-    session_id = ((cfg.issue_ingress_session_id if cfg else None) or os.environ.get("HERMES_ISSUE22_SESSION_ID", "")).strip()
+    cfg = load_config(config_path)
+    profile = (cfg.issue_ingress_executor_profile or "").strip()
+    session_id = (cfg.issue_ingress_session_id or "").strip()
     if (not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", profile)
             or (session_id and not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", session_id))):
         raise AdmissionRefused("TASK_EXECUTOR_NOT_CONFIGURED")
-    if cfg is None and active_profile and active_profile.casefold() != profile.casefold():
-        raise AdmissionRefused("TASK_EXECUTOR_PROFILE_MISMATCH")
     try:
         from hermes_cli.profiles import resolve_profile_env
         profile_home = Path(resolve_profile_env(profile))
@@ -650,8 +647,8 @@ def _issue22_executor(config_path: Path | None = None) -> tuple[str, str]:
             raise FileNotFoundError(profile)
     except Exception as exc:
         raise AdmissionRefused("TASK_EXECUTOR_PROFILE_UNAVAILABLE") from exc
-    # An empty, durable session is a binding target; it must exist before a task
-    # can be queued. Do not create a session or registry record on this path.
+    # Use native durable session creation; the worker acquires its own live lease.
+    # An ended explicit resume target is never silently revived here.
     from hermes_state_registry import acquire as acquire_session_db
     state_db_path = profile_home / "state.db"
     if not state_db_path.is_file():
@@ -659,7 +656,7 @@ def _issue22_executor(config_path: Path | None = None) -> tuple[str, str]:
     session_db = None
     try:
         session_db = acquire_session_db(state_db_path)
-        if not session_id and cfg is not None:
+        if not session_id:
             from hermes_state_ids import new_session_id
             session_id = new_session_id()
             session_db.create_session(session_id, source="kanban")

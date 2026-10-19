@@ -35,8 +35,8 @@ def _int_or(value, default: int) -> int:
 
 def _active_session_refusal_exit_code() -> int:
     """Keep an Issue 22 TASK pending when its trusted session is already leased."""
-    task_id = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
-    if task_id and os.environ.get("HERMES_ISSUE22_TASK") == "1":
+    from hermes_cli.issue_delivery import current_github_worker
+    if current_github_worker():
         from hermes_cli.kanban_db import KANBAN_SESSION_BUSY_EXIT_CODE
         return KANBAN_SESSION_BUSY_EXIT_CODE
     return 1
@@ -510,14 +510,8 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
     if not cli._claim_active_session("cli", stderr=bool(quiet)):
         exit_single_query(_active_session_refusal_exit_code())
     try:
-        if os.environ.get("HERMES_ISSUE22_TASK") == "1":
-            from hermes_cli import kanban_db_connect
-            from hermes_cli.issue_delivery import record_worker_delivery
-            conn = kanban_db_connect.connect(board=os.environ.get("HERMES_KANBAN_BOARD"))
-            try:
-                record_worker_delivery(conn, os.environ["HERMES_KANBAN_TASK"], cli.session_id)
-            finally:
-                conn.close()
+        from hermes_cli.issue_delivery import record_current_worker_delivery
+        record_current_worker_delivery(cli.session_id)
         query, single_query_images = _collect_query_images(query, image)
         single_query_image_urls = _collect_kanban_task_images(single_query_images)
         from hermes_cli.observability.shared_metrics_startup import record_cli_one_shot_ready

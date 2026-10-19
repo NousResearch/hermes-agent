@@ -90,14 +90,13 @@ def test_fresh_process_sweep_books_the_logged_exit_code(kanban_home, rc, event, 
             assert "bound Hermes session lease" in run["error"]
 
 
-def test_issue22_active_session_refusal_uses_neutral_retry(monkeypatch):
+def test_issue22_active_session_refusal_uses_neutral_retry(monkeypatch, kanban_home):
     from hermes_cli.cli_single_query import _active_session_refusal_exit_code
-
-    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_issue22")
-    monkeypatch.setenv("HERMES_ISSUE22_TASK", "1")
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="bound task", created_by="github:ISVGitHub/autonomous-entity#22")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
     assert _active_session_refusal_exit_code() == kb.KANBAN_SESSION_BUSY_EXIT_CODE
-
-    monkeypatch.delenv("HERMES_ISSUE22_TASK")
+    monkeypatch.delenv("HERMES_KANBAN_TASK")
     assert _active_session_refusal_exit_code() == 1
 
 

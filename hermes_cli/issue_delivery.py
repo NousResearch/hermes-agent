@@ -12,6 +12,30 @@ def is_github_task(task) -> bool:
     return bool(re.fullmatch(r"github:ISVGitHub/autonomous-entity#(?:22|27)", task.created_by or ""))
 
 
+def current_github_worker() -> bool:
+    from hermes_cli import kanban_db as kb, kanban_db_connect as kbc
+    task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+    if not task_id:
+        return False
+    conn = kbc.connect(board=os.environ.get("HERMES_KANBAN_BOARD"))
+    try:
+        task = kb.get_task(conn, task_id)
+        return bool(task and is_github_task(task))
+    finally:
+        conn.close()
+
+
+def record_current_worker_delivery(session_id: str) -> None:
+    if not current_github_worker():
+        return
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect(board=os.environ.get("HERMES_KANBAN_BOARD"))
+    try:
+        record_worker_delivery(conn, os.environ["HERMES_KANBAN_TASK"], session_id)
+    finally:
+        conn.close()
+
+
 def _binding(conn, task_id):
     rows = conn.execute(
         "SELECT payload FROM task_events WHERE task_id=? AND kind='github_task_binding'",

@@ -134,9 +134,10 @@ def test_executor_binding_requires_existing_durable_session_but_not_live_lease(m
     profile = tmp_path / "profiles" / "issue22-dispatch"
     profile.mkdir(parents=True)
     (profile / "state.db").touch()
-    monkeypatch.setenv("HERMES_PROFILE", "issue22-dispatch")
-    monkeypatch.setenv("HERMES_ISSUE22_EXECUTOR_PROFILE", "issue22-dispatch")
-    monkeypatch.setenv("HERMES_ISSUE22_SESSION_ID", "session-22")
+    from types import SimpleNamespace
+    config_path = tmp_path / "source.json"
+    monkeypatch.setattr(ingress, "load_config", lambda _path: SimpleNamespace(
+        issue_ingress_executor_profile="issue22-dispatch", issue_ingress_session_id="session-22"))
     monkeypatch.setattr(
         "hermes_cli.profiles.resolve_profile_env", lambda _name: str(profile),
     )
@@ -156,14 +157,14 @@ def test_executor_binding_requires_existing_durable_session_but_not_live_lease(m
     monkeypatch.setattr(
         "hermes_state_registry.acquire", lambda _path: fake_db,
     )
-    assert ingress._issue22_executor() == ("issue22-dispatch", "session-22")
+    assert ingress._issue22_executor(config_path) == ("issue22-dispatch", "session-22")
     assert fake_db.closed
 
     monkeypatch.setattr(
         "hermes_state_registry.acquire", lambda _path: FakeSessionDB(session=False),
     )
     with pytest.raises(ingress.AdmissionRefused, match="TASK_EXECUTOR_SESSION_UNAVAILABLE"):
-        ingress._issue22_executor()
+        ingress._issue22_executor(config_path)
 
 
 def test_nonce_reuse_with_different_body_is_rejected():

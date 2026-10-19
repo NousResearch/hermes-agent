@@ -88,8 +88,77 @@ async def test_notice_pinned_to_a_reset_session_is_dropped_once(monkeypatch, cap
         warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
         assert len(warnings) == 1, warnings
         assert 'permanently gone' in warnings[0]
+        assert f'session {retired} was closed at a user boundary' in warnings[0]
         assert retired in warnings[0] and live in warnings[0] and 'admission_conflict' in warnings[0]
         assert not _queued_admissions(authority, live)
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('pin, cause', [
+    ('no-such-session', 'session no-such-session no longer exists'),
+    ('worker', 'session worker is a subagent transcript with no owning conversation'),
+])
+async def test_notice_pinned_to_a_non_owner_is_dropped_with_its_cause(monkeypatch, caplog, pin, cause):
+    """A pinned row the store no longer has, or a subagent transcript with no ``_delegate_from`` owner,
+    is as gone as a closed session; the warning names that cause instead of blaming a /new."""
+    runner, authority, entry = await _gateway(monkeypatch)
+    try:
+        if pin == 'worker':
+            runner.session_store._db_for_key(entry.session_key).create_session('worker', source='subagent')
+        pending = queue.Queue()
+        pending.put(_notice(entry, pin))
+
+        with caplog.at_level(logging.WARNING, logger='gateway.run'):
+            await runner._drain_watch_notifications(pending)
+
+        assert pending.empty()
+        warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        assert len(warnings) == 1, warnings
+        assert 'permanently gone' in warnings[0] and cause in warnings[0]
+        assert 'user boundary' not in warnings[0]
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('reason', ['new_session', 'tui_close'])
+async def test_watch_notice_pinned_to_a_viewer_closed_local_session_is_kept(tmp_path, monkeypatch, caplog, reason):
+    """A local conversation the viewer closed keeps its own work as a note on that session (LC-7): even a
+    user-boundary close is not gone for the watch drain, refused or admitted."""
+    from gateway import session_automation
+    from hermes_state_local import end_idle_local_session
+    from hermes_state_runtime import RuntimeStoreError
+    from tests.gateway.test_session_end_delegations import _local, _notes
+    runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
+    try:
+        route = authority.sessions[ref.session_id].route
+        target = runner.session_store.lookup_by_session_key(route).session_id
+        assert end_idle_local_session(authority.db, epoch=authority.epoch, session_id=ref.session_id,
+                                      target_id=target, reason=reason)
+        notice = {'type': 'watch_match', 'event_id': 'evt-1', 'session_id': 'proc_watch', 'started_at': 1.0,
+                  'session_key': route, 'parent_session_id': target, 'command': 'make',
+                  'pattern': 'READY', 'output': 'RESULT_proc_watch', 'suppressed': 0}
+        pending = queue.Queue()
+        pending.put(notice)
+        admit = session_automation.admit_process_notice
+
+        async def refuse(*_args):
+            raise RuntimeStoreError('admission_conflict')
+        monkeypatch.setattr(session_automation, 'admit_process_notice', refuse)
+
+        with caplog.at_level(logging.WARNING, logger='gateway.run'):
+            await runner._drain_watch_notifications(pending)
+            assert pending.get_nowait() is notice, 'a refused notice for a closed local session is retried'
+            monkeypatch.setattr(session_automation, 'admit_process_notice', admit)
+            pending.put({k: v for k, v in notice.items() if not k.startswith('_watch_')})
+            await runner._drain_watch_notifications(pending)
+
+        assert pending.empty()
+        assert not [r for r in caplog.records if 'permanently gone' in r.getMessage()]
+        await authority._drain(ref)
+        assert [m for m in _notes(authority, target) if 'RESULT_proc_watch' in str(m['content'])]
     finally:
         authority.db.close()
 

@@ -64,7 +64,8 @@ _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 # Storage causes that clear on their own (one session's lease/compression, not the store): the
 # home-channel notice appends the operator restart tail for every OTHER cause.
 _SELF_CLEARING_STORAGE_CAUSES = frozenset({"compression", "compression_closed", "turn_lease"})
-# Process-watcher retries of a refused completion: ~5 min at the default 5 s check interval.
+# Retries of a refused notice: the process watcher's completions (~5 min at the default 5 s check
+# interval) and the watch drain's events (~4 min from its 4 s base delay + 2 s cadence) share this budget.
 _MAX_COMPLETION_INJECTION_ATTEMPTS = 8
 _COMPLETION_INJECTION_RETRY_MAX_DELAY = 60
 # Drain retries of a refused watch event follow the same bounded-backoff policy, keyed to the
@@ -753,8 +754,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                         "Watch notification for %s chat=%s (type=%s session_id=%s) was refused "
                         "%d times; dropping the queued event (output remains available via "
                         "process(action='log'))",
-                        evt.get("platform") or "?", evt.get("chat_id") or "?",
-                        evt.get("type") or "?", evt.get("session_id", "unknown"), attempts,
+                        evt.get("platform") or "<unknown>", evt.get("chat_id") or "<unknown>",
+                        evt.get("type") or "<unknown>", evt.get("session_id") or "<unknown>", attempts,
                     )
 
     def _adapter_by_platform_value(self, platform_name: str):
@@ -874,7 +875,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 return False
             logger.warning(
                 "Dropping watch notification with no routing metadata for process %s",
-                evt.get("session_id", "unknown"),
+                evt.get("session_id") or "<unknown>",
             )
             return None
         platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)

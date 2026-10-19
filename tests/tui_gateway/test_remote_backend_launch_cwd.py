@@ -185,6 +185,33 @@ def test_sandbox_resume_drops_a_stored_hermes_home_cwd(launch_dir, monkeypatch):
     assert server._resumable_stored_cwd(str(hermes_home), None) == str(hermes_home)
 
 
+@pytest.mark.parametrize("launch", ["os-home", "root"])
+def test_sandbox_resume_drops_a_stored_desktop_launch_dir(launch_dir, monkeypatch, tmp_path, launch):
+    """Legacy rows holding a desktop launch dir (the OS home, ``/``) are not adopted as a sandbox workspace, by
+    hydration or ``session.resume`` (both go through ``_resumable_stored_cwd``); local still adopts them."""
+    from hermes_state import SessionDB
+
+    stored = str(server.Path.home()) if launch == "os-home" else "/"
+    _backend(monkeypatch, "modal")
+    assert server._resumable_stored_cwd(stored, None) == ""
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session("legacy", source="desktop", model="m", cwd=stored)
+        monkeypatch.setitem(server._sessions, "s-legacy", {"session_key": "legacy", "source": "desktop",
+                                                           "cwd": str(launch_dir), "profile_home": None})
+        monkeypatch.setattr(server, "_persist_session_cwd_and_schedule_git_meta", lambda *a, **k: None)
+        server._hydrate_session_cwd("s-legacy", "legacy", db, None)
+        session = server._sessions["s-legacy"]
+        assert not session.get("explicit_cwd")
+        assert server._terminal_task_cwd_with_source(session) == ("", "process")
+    finally:
+        db.close()
+
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    assert server._resumable_stored_cwd(stored, None) == stored
+
+
 def test_sandbox_resume_keeps_a_workspace_picked_under_the_hermes_root(launch_dir, monkeypatch):
     """A folder the user picked under the Hermes root is a workspace, not a launch dir: it persists and resumes."""
     picked = server.get_hermes_home() / "projects" / "chosen"
@@ -255,6 +282,34 @@ def test_compute_host_carries_workspace_provenance(launch_dir, monkeypatch, tmp_
 
     assert captured["explicit_cwd"] is True
     assert server._terminal_task_cwd_with_source(child) == (str(project), "session")
+
+
+def test_compute_host_minimal_record_keeps_workspace_provenance(launch_dir, monkeypatch, tmp_path):
+    """When ``_init_session`` fails, the compute host's minimal record still carries the picked workspace."""
+    import io
+    import types
+
+    from tui_gateway.compute_host import ComputeHost
+
+    project = tmp_path / "project"
+    project.mkdir()
+    _backend(monkeypatch, "modal")
+
+    def failing_init_session(*_a, **_k):
+        raise RuntimeError("side machinery unavailable")
+
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key, **kw: types.SimpleNamespace(session_id=key))
+    monkeypatch.setattr(server, "_transfer_db_to_agent", lambda agent, db: False)
+    monkeypatch.setattr(server, "_init_session", failing_init_session)
+    server._sessions.pop("child-min", None)
+    frame = {"sid": "child-min", "session_key": "picked-min", "cwd": str(project), "explicit_cwd": True,
+             "history": [], "source": "desktop"}
+    try:
+        child = ComputeHost(stdout=io.StringIO(), heartbeat_secs=0)._build_server_session(server, frame, "child-min")
+        assert child["explicit_cwd"] is True and child["source"] == "desktop"
+        assert server._terminal_task_cwd_with_source(child) == (str(project), "session")
+    finally:
+        server._sessions.pop("child-min", None)
 
 
 def test_sandbox_path_completion_lists_the_backend_cwd(launch_dir, monkeypatch):

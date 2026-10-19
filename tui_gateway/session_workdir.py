@@ -323,12 +323,13 @@ def _is_hermes_owned_cwd(cwd: str, profile_home) -> bool:
     return any(path == root or root in path.parents for root in roots) or _is_install_tree(path)
 
 
-def _is_hermes_launch_dir(cwd: str, profile_home) -> bool:
-    """Whether ``cwd`` IS a directory the Hermes process is launched from: the Hermes root (``/opt/data`` in the
-    Docker image), a subprocess home (``/opt/data/home``), the bound profile's home, or the install tree. Folders
-    below the root and the homes are not: a user may keep a workspace there."""
+def _is_launch_dir(cwd: str, profile_home) -> bool:
+    """Whether ``cwd`` IS a directory a Hermes process is launched from rather than a folder someone picked: the
+    Hermes root (``/opt/data`` in the Docker image), a subprocess home (``/opt/data/home``), the bound profile's
+    home, the install tree, the OS user's home or ``/`` (the desktop's launch dirs). Folders below them are not: a
+    user may keep a workspace there."""
     from agent.runtime_cwd import _is_install_tree
-    from hermes_constants import get_default_hermes_root
+    from hermes_constants import get_default_hermes_root, get_real_home
 
     if not os.path.isabs(cwd):
         return False
@@ -336,9 +337,11 @@ def _is_hermes_launch_dir(cwd: str, profile_home) -> bool:
         path = Path(cwd).resolve()
         home = Path(profile_home or get_hermes_home()).expanduser().resolve()
         root = get_default_hermes_root(home=home).resolve()
+        launch = {home, home / "home", root, root / "home", Path(path.anchor),
+                  Path(get_real_home()).resolve(), Path.home().resolve()}
     except (OSError, RuntimeError):
         return False
-    return path in {home, home / "home", root, root / "home"} or _is_install_tree(path)
+    return path in launch or _is_install_tree(path)
 
 
 def _is_other_profiles_cwd(cwd: str, profile_home) -> bool:
@@ -363,14 +366,15 @@ def _is_other_profiles_cwd(cwd: str, profile_home) -> bool:
 
 def _resumable_stored_cwd(cwd, profile_home) -> str:
     """A session row's stored cwd as a resume may adopt it: empty when an ssh session's row holds a path in Hermes's
-    own host tree (a host launch directory, never a remote workspace), when a sandbox session's row holds one of the
-    launch directories themselves (rows written before launch dirs stopped being persisted), or when a named
-    profile's row holds another profile's (the resume then lands in :func:`_profile_default_cwd` and re-persists
-    it). A folder a sandbox user picked under the Hermes root stays."""
+    own host tree (a host launch directory, never a remote workspace), when a sandbox session's row holds a launch
+    directory itself (:func:`_is_launch_dir`: rows written before launch dirs stopped being persisted), or when a
+    named profile's row holds another profile's (the resume then lands in :func:`_profile_default_cwd` and
+    re-persists it). Hydration and ``session.resume`` both adopt through here, then treat the result as the
+    session's workspace. A folder a sandbox user picked (even under the Hermes root or ``$HOME``) stays."""
     cwd = str(cwd or "")
     if cwd and _cwd_is_remote(profile_home) and _is_hermes_owned_cwd(cwd, profile_home):
         return ""
-    if cwd and not _host_cwd_is_terminal_cwd(profile_home) and _is_hermes_launch_dir(cwd, profile_home):
+    if cwd and not _host_cwd_is_terminal_cwd(profile_home) and _is_launch_dir(cwd, profile_home):
         return ""
     if cwd and _is_other_profiles_cwd(cwd, profile_home):
         return ""

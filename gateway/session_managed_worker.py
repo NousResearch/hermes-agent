@@ -158,6 +158,8 @@ class ManagedWorker:
         # Monotonic instant of the FIRST Stop: one acknowledgment budget runs from here, never
         # renewed by the child's later output or by a repeated Stop.
         self.stopped_at = None
+        # The gateway restart/shutdown reason when that stop (not a user's) signalled this worker.
+        self.stop_cause = None
         self.writer = threading.Thread(target=self._write_controls, name='managed-control-writer', daemon=True)
         # One dedicated reader thread per worker (never the loop's shared default executor, which
         # parked pipe reads would exhaust). It reads one frame per demand, so the pipe keeps its
@@ -445,10 +447,18 @@ def _launch_env_only_credentials(home, env):
     return {k: v for k, v in missing.items() if k not in plain}
 
 
-def _interrupted_before_bootstrap(authority, row):
+def _interrupted_before_bootstrap(authority, row, cause=None):
     authority.pending_results[row['admission_id']] = {
-        'result': {'final_response': '', 'interrupted': True}, 'usage': {}}
+        'result': {'final_response': '', 'interrupted': True, **({'interrupt_message': cause} if cause else {})},
+        'usage': {}}
     return ''
+
+
+def _with_stop_cause(accepted, worker):
+    """The wire result carries no interruption cause; the owner recorded which stop it sent."""
+    if accepted.get('interrupted') and worker.stop_cause:
+        return {**accepted, 'interrupt_message': worker.stop_cause}
+    return accepted
 
 
 def _settled_session_usage(authority, session_id, accepted, execution_id=None):
@@ -584,6 +594,7 @@ async def execute_managed(authority, ref, row, policy):
                 # A slow or non-zero interpreter exit after it is close()'s cleanup, not a loss.
                 with suppress(subprocess.TimeoutExpired):
                     await asyncio.to_thread(process.wait, 10)
+                accepted = _with_stop_cause(accepted, worker)
                 # Like in-process execution, settlement belongs to the drain's stream lock.
                 authority.pending_results[row['admission_id']] = {
                     'result': {**accepted, 'local_viewer': True}, 'usage': usage,
@@ -599,7 +610,7 @@ async def execute_managed(authority, ref, row, policy):
                     isinstance(exc, RuntimeStoreError) and exc.reason == 'managed_worker_stopped'):
                 # Stopped before the child ever received its bootstrap: nothing executed, so
                 # this settles like an ordinary interrupted turn (the finally kills the child).
-                return _interrupted_before_bootstrap(authority, row)
+                return _interrupted_before_bootstrap(authority, row, worker.stop_cause)
             raise
         from gateway.session_worker_reservation import lose_admission_worker
         from gateway.session_runtime_workers import tracked_write

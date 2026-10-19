@@ -34,8 +34,9 @@ def test_plugins_manage_install_failure():
     assert "error" in resp
     assert "Git clone failed" in resp["error"]["message"]
 
-def test_plugins_manage_update_requires_catalog_sidecar(tmp_path, monkeypatch):
-    """Non-catalog installs are refused — their update flows stay CLI-owned."""
+def test_plugins_manage_update_answers_for_a_non_catalog_install(tmp_path, monkeypatch):
+    """Non-catalog installs update through the same core as the CLI; a dir with no install record is
+    refused by that core, not by a catalog-only gate."""
     from hermes_cli import plugins_cmd
 
     plugins_root = tmp_path / "plugins"
@@ -50,7 +51,8 @@ def test_plugins_manage_update_requires_catalog_sidecar(tmp_path, monkeypatch):
         }
     )
 
-    assert "error" in resp
+    assert resp["error"]["code"] == 4021
+    assert "catalog" not in resp["error"]["message"]
 
 def test_plugins_manage_list_reports_desktop_half(tmp_path):
     """A unified package (plugin.yaml + desktop/plugin.js) is reported with ``has_desktop_half`` so the

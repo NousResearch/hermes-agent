@@ -424,6 +424,7 @@ hermes plugins install user/repo             # install from Git, then prompt Ena
 hermes plugins install user/repo --enable    # request enable; dependency consent still applies
 hermes plugins install user/repo --no-enable # install but leave disabled (no prompt)
 hermes plugins update my-plugin              # pull latest (local edits are autostashed and re-applied)
+hermes plugins update my-plugin --force      # accept the update's scan findings / new surfaces without asking
 hermes plugins remove my-plugin              # uninstall; also drops it from plugins.enabled/disabled/entries
                                              # and resets memory.provider when it was the live provider
 hermes plugins enable my-plugin              # add to allow-list
@@ -761,17 +762,20 @@ reading its **own** API key from the environment (the documented
 
 Three verdicts, matching Cowork's pass/warn/fail:
 
-| Verdict | Behavior |
-|---|---|
-| **safe** | Installs normally, no extra output |
-| **caution** | Findings are shown; you confirm `Install anyway? [y/N]` (or pass `--force`) |
-| **dangerous** | Blocked. `--force` does **not** override |
+| Verdict | Install | Update |
+|---|---|---|
+| **safe** | Installs normally, no extra output | Updates normally |
+| **caution** | Findings are shown; you confirm `Install anyway? [y/N]` (or pass `--force`) | Findings are shown; you confirm `Update anyway? [y/N]` (or pass `--force`) |
+| **dangerous** | Blocked. `--force` does **not** override | Same as caution: you see the findings and decide |
 
-On `hermes plugins update`, a dangerous verdict on the updated tree
-disables the plugin until you review the findings and re-enable it. A
-dangerous block names the critical findings that caused it (e.g.
-`1 critical of 42 findings (destructive_root_rm)`), so a single blocking
-line is not hidden behind the total.
+An update is code you already chose to run, so `hermes plugins update` lets you
+accept any verdict after seeing the findings. Nothing is published until you
+answer; without a terminal and without `--force`, the update is refused and the
+installed version stays. The Desktop app and the dashboard show the same
+findings in a confirm dialog before they retry. A dangerous install block names
+the critical findings that caused it (e.g.
+`1 critical of 42 findings (destructive_root_rm)`), so a single blocking line
+is not hidden behind the total.
 
 Text that cannot run on the host at install time is scored as **context**, not
 as the plugin's behaviour, so it can lower a finding but never delete it —

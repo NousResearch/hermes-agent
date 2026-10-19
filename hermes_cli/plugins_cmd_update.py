@@ -1,5 +1,5 @@
 """``hermes plugins update`` plus the provenance verbs around it: ``adopt``, ``trust-update-url`` and the
-read-only ``check-updates``; the dashboard update path shares the same pull/re-clone core.
+read-only ``check-updates``. :func:`update_installed_plugin` is the one update path every surface calls.
 
 Sibling of :mod:`hermes_cli.plugins_cmd` (the facade re-exports the names other modules use and is
 imported late here, never at module level).
@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import shutil
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -20,11 +21,13 @@ def _pc():
     return plugins_cmd
 
 
-def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None, *, interactive: bool = False) -> str:
+def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None, *, interactive: bool = False,
+                        force: bool = False, scan_decision_cb=None) -> str:
     """Shared ``update`` core: refuse pinned checkouts, ``git pull`` (or re-install from the
     recorded source when the tree carries no ``.git`` — subdirectory installs), record the new
     revision. Returns the pull output; raises :class:`PluginOperationError` on any refusal.
-    *pinned_msg(install_record)* / *not_git_msg()* build the caller-specific error text."""
+    *pinned_msg(install_record)* / *not_git_msg()* build the caller-specific error text.
+    *force* / *scan_decision_cb* answer the scan findings on the updated tree."""
     metadata = _pc()._read_install_metadata()
     install_record = metadata.get(target.name, {})
     if install_record.get("pinned") is True:
@@ -39,25 +42,31 @@ def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None,
             raise _pc().PluginOperationError(not_git_msg())
         if before_pull is not None:
             before_pull()
-        return _reclone_plugin_update(target, source, install_record.get("revision"))
+        return _reclone_plugin_update(target, source, install_record.get("revision"),
+                                      force=force, scan_decision_cb=scan_decision_cb)
     if before_pull is not None:
         before_pull()
     from hermes_cli.plugins_transaction import update_plugin
 
-    return update_plugin(target, interactive=interactive)
+    return update_plugin(target, interactive=interactive, force=force, scan_decision_cb=scan_decision_cb)
 
 
-def _reclone_plugin_update(target: Path, source: str, previous_revision: object) -> str:
+def _reclone_plugin_update(target: Path, source: str, previous_revision: object, *,
+                           force: bool = False, scan_decision_cb=None) -> str:
     """Update a subdirectory install by re-cloning its source and atomically replacing the tree.
 
     These installs carry no local ``.git``, so the staged replacement also carries user-owned
     config/data from *target* before publication instead of silently deleting it (#122006).
+    ``replace=True`` overwrites the tree; *force* stays the user's answer to the scan findings.
     """
     from hermes_cli.plugins_cmd_catalog import _carry_user_files
 
     new_target, _manifest, _name = _pc()._install_plugin_core(
         source,
-        force=True,
+        force=force,
+        replace=True,
+        scan_decision_cb=scan_decision_cb,
+        confirm_dangerous=True,
         before_swap=lambda _manifest, tree: _carry_user_files(target, tree, None),
     )
     revision = str(_pc()._read_install_metadata().get(new_target.name, {}).get("revision") or "")
@@ -67,52 +76,149 @@ def _reclone_plugin_update(target: Path, source: str, previous_revision: object)
     return f"Re-installed from {source}: {previous[:8]}..{revision[:8]}"
 
 
-def cmd_update(name: str, *, interactive: bool = True) -> None:
-    """Update an installed plugin by pulling latest from its git remote."""
-    from rich.markup import escape
+@dataclass
+class UpdateOutcome:
+    """What :func:`update_installed_plugin` did: *name*/*target* are the installed name and dir after the
+    update (a catalog re-pin can rename), *sha* the revision now installed."""
+
+    name: str
+    target: Path
+    changed: bool
+    sha: str
+    output: str
+    warnings: list[str] = field(default_factory=list)
+    catalog: bool = False
+
+
+def update_installed_plugin(target: Path, *, force: bool = False, interactive: bool = False,
+                            consent_cb=None, scan_decision_cb=None) -> UpdateOutcome:
+    """The one update path for every surface (CLI, TUI/Desktop RPC, dashboard REST, gateway auto-apply).
+
+    Catalog installs re-pin to the reviewed catalog sha (never ``git pull``); custom installs pull, or
+    re-clone a subdirectory install. *force* is the user's yes to what the update shows: a re-pin that
+    widens the plugin and the security scan findings on the updated tree, any verdict included.
+    Without it, *consent_cb(delta)* / *scan_decision_cb(scan_result)* may ask; otherwise the update
+    raises :class:`~hermes_cli.plugins_cmd_catalog.RepinConsentRequired` or
+    :class:`~hermes_cli.plugins_cmd.PluginScanBlocked` with nothing changed. *interactive*: a terminal
+    user can consent to newly declared Python dependencies.
+    """
     from hermes_cli import plugins_cmd_catalog as catalog
+    name = target.name
+    sidecar = catalog.catalog_install_record(target)
+    if sidecar:
+        result = catalog.repin_catalog_plugin(target, sidecar, interactive=interactive, consent_cb=consent_cb,
+                                              force=force, scan_decision_cb=scan_decision_cb)
+        output = (f"Updated to catalog pin {result.sha[:8]}" if result.changed
+                  else f"Already at catalog pin {result.sha[:8]}")
+        return UpdateOutcome(result.installed_name, target.parent / result.installed_name, result.changed,
+                             result.sha, output, list(result.warnings), catalog=True)
+    before = str(_pc()._read_install_metadata().get(name, {}).get("revision") or "")
+    output = _pull_plugin_update(
+        target,
+        lambda rec: (
+            f"Plugin '{name}' is pinned to {rec.get('revision')}. To move it, run "
+            f"`hermes plugins install {rec.get('source', '<source>')} --force "
+            "--ref <40-character commit SHA>`."),
+        lambda: f"Plugin '{name}' was not installed from git (no .git directory). Cannot update.",
+        interactive=interactive, force=force, scan_decision_cb=scan_decision_cb)
+    sha = str(_pc()._read_install_metadata().get(name, {}).get("revision") or "")
+    return UpdateOutcome(name, target, sha != before, sha, output.strip())
+
+
+def scan_finding_lines(scan_result, limit: int = 20) -> list[str]:
+    """Scan findings worst first, one line each, for a surface that shows them before a retry with consent."""
+    order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    findings = sorted(scan_result.findings if scan_result is not None else (),
+                      key=lambda f: order.get(f.severity, 4))
+    lines = [f"{f.severity.upper()} {f.category} {f.file}:{f.line} {f.description}" for f in findings[:limit]]
+    if len(findings) > limit:
+        lines.append(f"...and {len(findings) - limit} more")
+    return lines
+
+
+def update_consent_payload(name: str, exc: Exception) -> dict[str, Any] | None:
+    """The ``consent_required`` answer for an update that needs the user's yes, else None. Nothing
+    changed on disk; the surface shows ``delta_lines`` and retries with ``force``."""
+    from hermes_cli import plugins_cmd_catalog as catalog
+    if isinstance(exc, catalog.RepinConsentRequired):
+        return {"ok": False, "consent_required": True, "name": exc.name, "sha": exc.sha, "delta": exc.delta,
+                "delta_lines": catalog.surface_delta_lines(exc.delta) + exc.findings, "error": str(exc)}
+    if isinstance(exc, _pc().PluginScanBlocked):
+        result = exc.scan_result
+        verdict = getattr(result, "verdict", "")
+        count = len(result.findings) if result is not None else 0
+        return {"ok": False, "consent_required": True, "name": name, "delta_lines": scan_finding_lines(result),
+                "error": f"The update of '{name}' has {count} security scan finding(s) (verdict: {verdict}). "
+                         "Review them and confirm to continue."}
+    return None
+
+
+def cmd_update(name: str, *, interactive: bool = True, force: bool = False) -> None:
+    """``hermes plugins update <name> [--force]``: a terminal shows what the update brings and asks;
+    ``--force`` accepts it; without either the update is refused with nothing changed."""
+    from rich.markup import escape
     console = _pc()._console()
     target = _pc()._require_installed_plugin(name, _pc()._plugins_dir(), console)
-    sidecar = catalog.catalog_install_record(target)
-    if sidecar:  # catalog installs re-pin to the reviewed SHA — never `git pull`
-        catalog.cmd_update_catalog(name, target, sidecar, console, interactive=interactive)
-        return
+    ask = interactive and _pc()._is_tty()
+    refused = "[yellow]Not applied. Re-run in a terminal to review it, or pass --force to accept it.[/yellow]"
+
+    def _confirm_widening(delta: dict[str, list[str]]) -> bool:
+        from hermes_cli.plugins_cmd_catalog import surface_delta_lines
+        console.print(f"\n  [yellow]The new pin of [bold]{name}[/bold] adds:[/yellow]")
+        for line in surface_delta_lines(delta):
+            console.print(f"    {line}")
+        if not ask:
+            console.print(f"  {refused}")
+            return False
+        return _pc()._ask_yes("  Apply this update? [y/N]: ")
+
+    def _confirm_findings(scan_result) -> bool:
+        console.print(f"\n[yellow]⚠ Security scan flagged the update (verdict: {scan_result.verdict}):[/yellow]")
+        for line in scan_finding_lines(scan_result):
+            console.print(f"    {escape(line)}")
+        if not ask:
+            console.print(refused)
+            return False
+        return _pc()._ask_yes("  Update anyway? Only continue if you trust the source. [y/N]: ")
+
+    from hermes_cli.plugins_cmd_catalog import RepinConsentRequired
+    console.print(f"[dim]Updating {name}...[/dim]")
     try:
-        output = _pull_plugin_update(
-            target,
-            lambda rec: (
-                f"Plugin '{name}' is pinned to {rec.get('revision')}. To move it, run "
-                f"`hermes plugins install {escape(str(rec.get('source', '<source>')))} --force "
-                "--ref <40-character commit SHA>`."),
-            lambda: f"Plugin '{name}' was not installed from git (no .git directory). Cannot update.",
-            before_pull=lambda: console.print(f"[dim]Updating {name}...[/dim]"),
-            interactive=interactive)
+        outcome = update_installed_plugin(target, force=force, interactive=interactive,
+                                          consent_cb=_confirm_widening, scan_decision_cb=_confirm_findings)
+    except (RepinConsentRequired, _pc().PluginScanBlocked):
+        # The findings or the widening were already shown above, with the reason it was not applied.
+        _pc()._fail(console, f"[yellow]Update of {name} not applied.[/yellow]")
     except _pc().PluginOperationError as exc:
         _pc()._fail(console, f"[red]Error:[/red] {exc}")
-    _post_pull_housekeeping(target, console)
+    if outcome.changed:
+        _post_pull_housekeeping(outcome.target, console)
 
     # Update-time re-consent (#64228): if the new version declares
     # capabilities the granted set lacks, surface the diff and require
     # re-consent for the additions. The stored consent hash detects a
     # changed declaration; additions stay ungranted until the user says yes
     # (non-interactive updates leave them ungranted — fail closed).
-    updated_manifest = _pc()._read_manifest(target)
-    plugin_id = updated_manifest.get("name") or target.name
-    declared_caps = _pc()._declared_capabilities_from_manifest(updated_manifest, plugin_id)
-    if declared_caps:
-        from hermes_cli.plugin_capabilities import declared_set_changed, pending_capabilities
-        if pending_capabilities(plugin_id, declared_caps) or declared_set_changed(plugin_id, declared_caps):
-            if interactive:
-                _pc()._run_capability_consent(console, plugin_id, declared_caps, context="update")
-            else:
-                console.print(f"[yellow]Plugin {plugin_id} has new capabilities; review them with `hermes plugins capabilities {plugin_id}`.[/yellow]")
+    if outcome.changed or not outcome.catalog:
+        updated_manifest = _pc()._read_manifest(outcome.target)
+        plugin_id = updated_manifest.get("name") or outcome.name
+        declared_caps = _pc()._declared_capabilities_from_manifest(updated_manifest, plugin_id)
+        if declared_caps:
+            from hermes_cli.plugin_capabilities import declared_set_changed, pending_capabilities
+            if pending_capabilities(plugin_id, declared_caps) or declared_set_changed(plugin_id, declared_caps):
+                if interactive:
+                    _pc()._run_capability_consent(console, plugin_id, declared_caps, context="update")
+                else:
+                    console.print(f"[yellow]Plugin {plugin_id} has new capabilities; review them with "
+                                  f"`hermes plugins capabilities {plugin_id}`.[/yellow]")
 
-    out = output.strip()
-    if "Already up to date" in out:
-        console.print(f"[green]✓[/green] Plugin [bold]{name}[/bold] is already up to date.")
+    for warning in outcome.warnings:
+        console.print(f"[yellow]⚠ {warning}[/yellow]")
+    if not outcome.changed:
+        console.print(f"[green]✓[/green] Plugin [bold]{outcome.name}[/bold] is already up to date.")
     else:
-        console.print(f"[green]✓[/green] Plugin [bold]{name}[/bold] updated.")
-        console.print(f"[dim]{out}[/dim]")
+        console.print(f"[green]✓[/green] Plugin [bold]{outcome.name}[/bold] updated.")
+        console.print(f"[dim]{outcome.output}[/dim]")
 
 
 def _post_pull_housekeeping(target: Path, console) -> None:
@@ -272,40 +378,31 @@ def cmd_check_updates(args: Any | None = None) -> None:
     console.print("[dim]Check-only. Apply with: hermes plugins update <name>[/dim]")
 
 
-def dashboard_update_user_plugin(name: str, *, accept_capabilities: bool = False) -> dict[str, Any]:
-    """``git pull`` inside ``~/.hermes/plugins/<name>``; catalog installs re-pin instead. A re-pin that
-    widens the plugin returns ``{"ok": False, "consent_required": True, "delta": {...}}`` with nothing
-    changed — the surface shows the delta and retries with *accept_capabilities*."""
-    from hermes_cli import plugins_cmd_catalog as catalog
+def dashboard_update_user_plugin(name: str, *, accept_capabilities: bool = False,
+                                 force: bool = False) -> dict[str, Any]:
+    """Non-interactive :func:`update_installed_plugin` for the dashboard and the TUI/Desktop RPC.
+
+    An update that needs the user's yes (a widened catalog pin, or security scan findings on the
+    updated tree) returns :func:`update_consent_payload` with nothing changed; the surface shows
+    ``delta_lines`` and retries with *force* (*accept_capabilities* is the older name for it).
+    """
     target = _pc()._user_installed_plugin_dir(name)
     if target is None:
         return {"ok": False, "error": f"Plugin '{name}' was not found under {_pc()._plugins_dir()}."}
-    sidecar = catalog.catalog_install_record(target)
+    from hermes_cli.plugins_cmd_catalog import RepinConsentRequired
     try:
-        if sidecar:
-            result = catalog.repin_catalog_plugin(
-                target, sidecar, consent_cb=(lambda _delta: True) if accept_capabilities else None)
-            warnings = list(result.warnings)
-            new_target = target.parent / result.installed_name
-            deps = _pc()._python_dependency_summary(new_target, warnings) if result.changed else []
-            from hermes_cli.plugins_activation import activate_plugin_now
-            activated = activate_plugin_now(result.installed_name) if result.changed else {}
-            return {"ok": True, "name": result.installed_name, "sha": result.sha, "unchanged": not result.changed,
-                    "python_dependencies": deps, "warnings": warnings, **activated}
-        msg = _pull_plugin_update(
-            target,
-            lambda rec: (
-                f"Plugin '{name}' is pinned to {rec.get('revision')}; "
-                f"run `hermes plugins install {rec.get('source', '<source>')} --force "
-                "--ref <40-character commit SHA>` to move it."),
-            lambda: f"Plugin '{name}' is not a git checkout; cannot pull updates.")
-    except catalog.RepinConsentRequired as exc:
-        return {"ok": False, "consent_required": True, "error": str(exc), "name": exc.name, "sha": exc.sha,
-                "delta": exc.delta, "delta_lines": catalog.surface_delta_lines(exc.delta)}
-    except _pc().PluginOperationError as exc:
-        return {"ok": False, "error": str(exc)}
-    _post_pull_housekeeping(target, _pc()._console())
-    return {"ok": True, "name": name, "output": msg, "unchanged": "Already up to date" in msg}
+        outcome = update_installed_plugin(target, force=force or accept_capabilities)
+    except (RepinConsentRequired, _pc().PluginOperationError) as exc:
+        return update_consent_payload(target.name, exc) or {"ok": False, "error": str(exc)}
+    warnings = list(outcome.warnings)
+    if not outcome.changed:
+        return {"ok": True, "name": outcome.name, "sha": outcome.sha, "unchanged": True,
+                "python_dependencies": [], "warnings": warnings}
+    _post_pull_housekeeping(outcome.target, _pc()._console())
+    deps = _pc()._python_dependency_summary(outcome.target, warnings)
+    from hermes_cli.plugins_activation import activate_plugin_now
+    return {"ok": True, "name": outcome.name, "sha": outcome.sha, "unchanged": False,
+            "python_dependencies": deps, "warnings": warnings, **activate_plugin_now(outcome.name)}
 
 
 def _clear_plugin_bytecode(target: Path) -> int:

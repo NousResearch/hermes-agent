@@ -1760,33 +1760,23 @@ def _plugins_install(rid, params):
 
 
 def _plugins_update(rid, params):
-    """Catalog installs only: re-pin to the current catalog SHA (non-catalog installs update via the CLI).
-    A pin that widens the plugin (new tools/hooks/deps/capabilities/Desktop half) answers
-    ``{ok: false, consent_required: true, delta, delta_lines}`` with nothing changed; the client shows the
-    delta and retries with ``accept_capabilities: true``."""
+    """Update a user install through the same core as ``hermes plugins update`` (catalog re-pin, git pull
+    or subdirectory re-clone). An update that needs the user's yes (a pin that widens the plugin, or
+    security scan findings on the updated tree) answers ``{ok: false, consent_required: true,
+    delta_lines, ...}`` with nothing changed; the client shows it and retries with ``force: true``
+    (``accept_capabilities`` is the older name for the same yes)."""
     name = (params.get("name") or "").strip()
     if not name:
         return _err(rid, 4019, "plugins.update requires a 'name'")
-    pc, cat = _tools_mod("hermes_cli.plugins_cmd"), _tools_mod("hermes_cli.plugins_cmd_catalog")
-    target = pc._plugins_dir() / name
-    sidecar = cat.catalog_install_record(target) if target.is_dir() else None
-    if not sidecar:
-        return _err(rid, 4020, f"'{name}' is not a catalog install — update it via the CLI")
-    try:
-        result = cat.repin_catalog_plugin(
-            target, sidecar, consent_cb=(lambda _delta: True) if params.get("accept_capabilities") else None)
-    except cat.RepinConsentRequired as e:
-        return _ok(rid, {"ok": False, "consent_required": True, "name": e.name, "sha": e.sha, "delta": e.delta,
-                         "delta_lines": cat.surface_delta_lines(e.delta), "error": str(e)})
-    except pc.PluginOperationError as e:
-        return _err(rid, 4021, str(e))
-    payload = {"ok": True, "unchanged": not result.changed, "sha": result.sha, "name": result.installed_name,
-               "warnings": list(result.warnings)}
-    if result.changed:
+    result = _tools_mod("hermes_cli.plugins_cmd").dashboard_update_user_plugin(
+        name, force=bool(params.get("force") or params.get("accept_capabilities")))
+    if result.get("consent_required"):
+        return _ok(rid, result)
+    if not result.get("ok"):
+        return _err(rid, 4021, result.get("error") or "update failed")
+    if not result.get("unchanged"):
         _ensure_plugin_activation_listener()
-        activate = _tools_mod("hermes_cli.plugins_activation").activate_plugin_now
-        payload = _with_activation({**payload, **activate(result.installed_name)}, result.installed_name)
-    return _ok(rid, payload)
+    return _ok(rid, _with_activation(result, str(result.get("name") or name)))
 
 
 def _plugins_remove(rid, params):
@@ -1840,7 +1830,7 @@ def _(rid, params: dict) -> dict:
     """TUI Plugins Hub backend (shares primitives with ``hermes plugins`` / the dashboard):
     ``list`` → {plugins, user_count, bundled_count}; ``toggle`` flips ``key``/``name`` per ``enable``;
     ``install`` git-clones ``identifier``/``repo`` or a curated ``catalog_name`` (``force``, ``enable``
-    default True); ``update`` re-pins a catalog install to the current catalog SHA; ``remove`` deletes
+    default True); ``update`` updates a user install (catalog re-pin or git pull); ``remove`` deletes
     a user install by ``name``; ``settings`` writes manifest-declared ``values`` for ``key``."""
     return _run_action(rid, params, _PLUGINS_ACTIONS, "plugins")
 

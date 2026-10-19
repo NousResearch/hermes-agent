@@ -340,6 +340,8 @@ def _install_plugin_core(
     catalog: Optional[dict] = None,
     allow_removed: bool = False,
     before_swap=None,
+    replace: bool = False,
+    confirm_dangerous: bool = False,
 ) -> tuple[Path, dict, str]:
     """Clone a Git plugin and atomically record its source and exact revision.
 
@@ -356,7 +358,9 @@ def _install_plugin_core(
     *before_swap(manifest, tree)* runs on the manifest-checked clone BEFORE the security scan, so
     the single scan and portable-package check admit the merged tree (file-count/size limits
     included). It may return the relative paths it merged in, which a scan block then attributes,
-    and may raise :class:`PluginOperationError` to abort (re-pin consent)."""
+    and may raise :class:`PluginOperationError` to abort (re-pin consent).
+    *replace* lets an update overwrite the existing tree without *force*, which here means the user
+    accepted the scan findings; *confirm_dangerous* lets that answer cover a dangerous verdict."""
     requested_revision = _pc()._normalize_exact_revision(ref) if ref is not None else None
     try:
         git_url, subdir = _pc()._resolve_git_url(identifier)
@@ -416,7 +420,7 @@ def _install_plugin_core(
         merged = before_swap(manifest, tmp_target) if before_swap is not None else None
         # Scan BEFORE anything is moved into place; raises PluginScanBlocked when blocked.
         _pc()._scan_merged_tree(tmp_target, identifier, merged, force=force, scan_decision_cb=scan_decision_cb,
-                                reviewed_pin=at_reviewed_pin)
+                                reviewed_pin=at_reviewed_pin, confirm_dangerous=confirm_dangerous)
         if not python_deps:
             from pm.workspace import enabled_plugin_dirs
 
@@ -426,7 +430,7 @@ def _install_plugin_core(
                     "PM must prepare its dependencies before publication.", failure_class="already_installed")
         _refuse_unavailable_portable_plugin(plugin_name, tmp_target)
 
-        if target.exists() and not force:
+        if target.exists() and not (force or replace):
             from pm.environments import cli_command_name
             from pm.paths import repo_root
 

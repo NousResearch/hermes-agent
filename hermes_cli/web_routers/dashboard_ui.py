@@ -246,15 +246,15 @@ async def post_agent_plugin_disable(request: Request, name: str):
 @router.post("/api/dashboard/agent-plugins/{name:path}/update")
 async def post_agent_plugin_update(request: Request, name: str):
     from hermes_cli.plugins_cmd import dashboard_update_user_plugin
-    # Body is optional: ``{"accept_capabilities": true}`` applies a re-pin the user confirmed after a
-    # ``consent_required`` answer.
+    # Body is optional: ``{"force": true}`` (or the older ``{"accept_capabilities": true}``) applies an
+    # update the user confirmed after a ``consent_required`` answer.
     try:
         body = await request.json()
     except Exception:
         body = {}
-    accept = isinstance(body, dict) and body.get("accept_capabilities") is True
+    accept = isinstance(body, dict) and (body.get("force") is True or body.get("accept_capabilities") is True)
     return await _named_plugin_action(
-        request, name, lambda n: dashboard_update_user_plugin(n, accept_capabilities=accept), "Update failed.",
+        request, name, lambda n: dashboard_update_user_plugin(n, force=accept), "Update failed.",
         rescan=True)
 
 

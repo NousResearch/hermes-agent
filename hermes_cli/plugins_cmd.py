@@ -186,15 +186,18 @@ def _scan_on_install_enabled() -> bool:
 
 
 def _scan_plugin_tree(plugin_dir: Path, identifier: str, *, force: bool, scan_decision_cb=None,
-                      reviewed_pin: bool = False):
+                      reviewed_pin: bool = False, confirm_dangerous: bool = False):
     """Scan *plugin_dir* and enforce the install policy.
 
     Verdicts: safe → proceed; caution → needs confirmation (``force=True`` or a truthy
-    ``scan_decision_cb(result)``); dangerous → always blocked (:class:`PluginScanBlocked`).
+    ``scan_decision_cb(result)``); dangerous → blocked (:class:`PluginScanBlocked`).
     *reviewed_pin* marks a tree checked out at a curated-catalog sha: that exact tree passed
     the same scanner at admission with a human reading the caution findings, so caution is
-    accepted without a prompt (the Desktop has none). Dangerous still blocks — a signature
-    added after review is exactly the case the backstop exists for.
+    accepted without a prompt (the Desktop has none). Dangerous is never accepted by the pin: a
+    signature added after review is exactly the case the backstop exists for.
+    *confirm_dangerous* (updates) lets the user accept a dangerous verdict the same way as caution,
+    after seeing the findings. Install keeps the hard block: the Desktop install dialog sends
+    ``force`` without showing findings.
     Returns the ScanResult, or None when scanning is disabled.
     """
     if not _scan_on_install_enabled():
@@ -204,6 +207,9 @@ def _scan_plugin_tree(plugin_dir: Path, identifier: str, *, force: bool, scan_de
     allowed, reason = should_allow_plugin_install(result, force=force)
     if allowed is None and reviewed_pin:
         allowed, reason = True, "Caution verdict accepted: reviewed catalog pin"
+    if allowed is False and confirm_dangerous:
+        allowed, reason = ((True, "Dangerous verdict accepted with --force") if force
+                           else (None, "Requires confirmation (dangerous verdict)"))
 
     if allowed is None and scan_decision_cb is not None:
         try:
@@ -1083,7 +1089,7 @@ _PLUGIN_ACTIONS = {
     "browse": lambda args: _catalog().cmd_search(""),
     "validate": lambda args: _catalog().cmd_validate(
         args.path, as_json=getattr(args, "json", False), install_deps=getattr(args, "install_deps", False)),
-    "update": lambda args: cmd_update(args.name),
+    "update": lambda args: cmd_update(args.name, force=getattr(args, "force", False)),
     "adopt": lambda args: cmd_adopt(args.name),
     "trust-update-url": lambda args: cmd_trust_update_url(args.name),
     "check-updates": lambda args: cmd_check_updates(args),

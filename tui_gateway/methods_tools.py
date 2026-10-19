@@ -1817,7 +1817,26 @@ def _plugins_settings(rid, params):
     except (ValueError, PermissionError) as e:
         return _err(rid, 4021, str(e))
     row = next((r for r in _plugin_rows() if r["key"] == canonical), None)
+    # A Desktop half applies its own preferences (a status-bar chip on/off) without polling.
+    events = _tools_mod("hermes_cli.plugin_events")
+    if events._PLUGIN_ID_RE.match(canonical):  # category keys (``image_gen/fal``) form no event name
+        events.broadcast_plugin_event(canonical, "settings.changed", {"written": written})
+    # A secret the form just stored may feed the plugin's MCP server env (``${MESHY_API_KEY}``): bounce
+    # only servers whose resolved launch inputs changed, off the RPC thread (an npx start takes seconds).
+    if plugin_dir and pc._is_portable_plugin_dir(plugin_dir):
+        servers = _portable_server_names(Path(str(plugin_dir)), canonical)
+        if servers:
+            from agent.memory_provider import spawn_context_thread  # keeps this request's profile scope
+            discovery = _tools_mod("tools.mcp_tool_discovery")
+            spawn_context_thread(discovery.restart_mcp_servers_with_new_inputs, args=(servers,),
+                                 name=f"plugin-settings-mcp-{canonical}").start()
     return _ok(rid, {"ok": True, "name": canonical, "written": written, "plugin": row})
+
+
+def _portable_server_names(plugin_dir: Path, key: str) -> set[str]:
+    package = _tools_mod("hermes_cli.agent_plugins").load_agent_plugin(plugin_dir, plugin_dir)
+    name_for = _tools_mod("hermes_cli.plugins_manifest").portable_mcp_server_name
+    return {name_for(key, server) for server in package.mcp_servers}
 
 
 def _plugins_onboarding(rid, params):

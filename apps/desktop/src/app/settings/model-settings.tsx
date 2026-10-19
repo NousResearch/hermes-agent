@@ -65,15 +65,17 @@ export function ModelSettingsSkeleton({ subpage }: Pick<ModelSettingsProps, 'sub
       {(subpage === undefined || subpage === 'main') && (
         <section>
           <Skeleton className="mb-3 h-3 w-72 max-w-full" />
-          <div className="flex flex-wrap items-center gap-2">
-            <Skeleton className="h-8 w-40" />
-            <Skeleton className="h-8 w-60 max-w-full" />
+          <div className="grid gap-1">
+            <ListRowSkeleton />
+            <ListRowSkeleton />
+          </div>
+          <div className="flex justify-end pt-1">
             <Skeleton className="h-8 w-16" />
           </div>
-          <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-3">
-            <Skeleton className="h-3 w-16" />
-            <Skeleton className="h-8 w-28" />
-            <Skeleton className="h-6 w-20" />
+          <div className="mt-6 grid gap-1">
+            <Skeleton className="mb-1 h-3 w-16" />
+            <ListRowSkeleton />
+            <ListRowSkeleton />
           </div>
         </section>
       )}
@@ -293,6 +295,83 @@ interface ModelSettingsProps {
    *  Request-shaped on purpose — the API helpers treat `null` as "deliberately
    *  target the primary/default backend", so this prop never carries null. */
   scopeProfile?: string
+}
+
+function MainModelDefaults({
+  effortValue,
+  fastOn,
+  fastSupported,
+  onChange,
+  reasoningSupported,
+  speedValue,
+  ultrafastSupported
+}: {
+  effortValue: string
+  fastOn: boolean
+  fastSupported: boolean
+  onChange: (key: string, value: boolean | string) => Promise<void>
+  reasoningSupported: boolean
+  speedValue: SpeedTier
+  ultrafastSupported: boolean
+}) {
+  const { t } = useI18n()
+  const m = t.settings.model
+
+  return (
+    <div className="mt-6 grid gap-1">
+      <p className="mb-1 text-xs text-muted-foreground">{m.defaultsLabel}</p>
+      {reasoningSupported && (
+        <ListRow
+          action={
+            <Select onValueChange={value => void onChange('agent.reasoning_effort', value)} value={effortValue}>
+              <SelectTrigger aria-label={m.reasoning} className={cn('min-w-28', CONTROL_TEXT)}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {REASONING_EFFORT_VALUES.map(value => (
+                  <SelectItem key={value} value={value}>
+                    {value === 'none' ? m.reasoningOff : t.shell.modelOptions[value]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          }
+          title={m.reasoning}
+        />
+      )}
+      {ultrafastSupported ? (
+        <ListRow
+          action={
+            <Select onValueChange={value => void onChange('agent.service_tier', value)} value={speedValue}>
+              <SelectTrigger aria-label={m.speed} className={cn('min-w-28', CONTROL_TEXT)}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="normal">{m.speedStandard}</SelectItem>
+                {fastSupported && <SelectItem value="fast">{t.shell.modelOptions.fast}</SelectItem>}
+                <SelectItem value="ultrafast">{t.shell.modelOptions.ultrafast}</SelectItem>
+              </SelectContent>
+            </Select>
+          }
+          title={m.speed}
+        />
+      ) : (
+        fastSupported && (
+          <ListRow
+            action={
+              <Switch
+                aria-label={t.shell.modelOptions.fast}
+                checked={fastOn}
+                onCheckedChange={checked => void onChange('agent.service_tier', checked ? 'fast' : 'normal')}
+                size="xs"
+              />
+            }
+            title={t.shell.modelOptions.fast}
+          />
+        )
+      )}
+    </div>
+  )
 }
 
 export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: ModelSettingsProps) {
@@ -996,70 +1075,89 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
       {showMain && (
         <section>
           <p className="mb-3 text-xs text-muted-foreground">{m.appliesDesc}</p>
-          <div className="flex flex-wrap items-center gap-2">
-            <Select onValueChange={switchProvider} value={selectedProviderRow?.slug ?? selectedProvider}>
-              <SelectTrigger className={cn('min-w-40', CONTROL_TEXT)}>
-                <SelectValue placeholder={m.provider} />
-              </SelectTrigger>
-              <SelectContent>
-                {mainProviderOptions.map(provider => (
-                  <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
-                    {provider.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {needsSetup ? (
-              setupIsApiKey ? (
-                <>
-                  <Input
-                    autoComplete="off"
-                    className={cn('min-w-60 flex-1', CONTROL_TEXT)}
-                    onChange={event => setApiKeyDraft(event.target.value)}
-                    onKeyDown={event => {
-                      if (isSubmitEnter(event)) {
-                        void activateApiKeyProvider()
-                      }
-                    }}
-                    placeholder={`Paste ${selectedProviderRow?.key_env ?? 'API key'}`}
-                    type="password"
-                    value={apiKeyDraft}
-                  />
-                  <Button
-                    disabled={!apiKeyDraft.trim() || activating}
-                    onClick={() => void activateApiKeyProvider()}
-                    size="sm"
+          <div className="grid gap-1">
+            <ListRow
+              action={
+                <Select onValueChange={switchProvider} value={selectedProviderRow?.slug ?? selectedProvider}>
+                  <SelectTrigger
+                    aria-label={m.provider}
+                    className={cn(
+                      'w-full min-w-0 max-w-full @2xl:w-72 [&_[data-slot=select-value]]:truncate',
+                      CONTROL_TEXT
+                    )}
                   >
-                    {activating && <Loader2 className="size-3.5 animate-spin" />}
-                    {activating ? 'Activating...' : 'Activate'}
-                  </Button>
-                </>
-              ) : (
-                <Button onClick={startProviderSetup} size="sm" variant="textStrong">
-                  {m.setUpProvider(selectedProviderRow?.name ?? m.setupProviderFallback)}
-                </Button>
-              )
-            ) : (
-              <>
-                <ModelSelect
-                  className="min-w-60"
-                  models={selectedProviderModels}
-                  onValueChange={setSelectedModel}
-                  provider={selectedProviderRow}
-                  providerSlug={selectedProvider}
-                  value={selectedModel}
-                />
-                <Button
-                  disabled={!selectedProvider || !selectedModel || applying}
-                  onClick={() => void applyMainModel()}
-                  size="sm"
-                >
-                  {applying && <Loader2 className="size-3.5 animate-spin" />}
-                  {applying ? m.applying : t.common.apply}
-                </Button>
-              </>
-            )}
+                    <SelectValue placeholder={m.provider} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {mainProviderOptions.map(provider => (
+                      <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
+                        {provider.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              }
+              title={m.provider}
+            />
+            <ListRow
+              action={
+                needsSetup ? (
+                  setupIsApiKey ? (
+                    <div className="grid w-full min-w-0 max-w-full @2xl:w-72 justify-items-end gap-2">
+                      <Input
+                        autoComplete="off"
+                        className={cn('min-w-0', CONTROL_TEXT)}
+                        onChange={event => setApiKeyDraft(event.target.value)}
+                        onKeyDown={event => {
+                          if (isSubmitEnter(event)) {
+                            void activateApiKeyProvider()
+                          }
+                        }}
+                        placeholder={`Paste ${selectedProviderRow?.key_env ?? 'API key'}`}
+                        type="password"
+                        value={apiKeyDraft}
+                      />
+                      <Button
+                        disabled={!apiKeyDraft.trim() || activating}
+                        onClick={() => void activateApiKeyProvider()}
+                        size="sm"
+                      >
+                        {activating && <Loader2 className="size-3.5 animate-spin" />}
+                        {activating ? 'Activating...' : 'Activate'}
+                      </Button>
+                    </div>
+                  ) : (
+                    <Button onClick={startProviderSetup} size="sm" variant="textStrong">
+                      {m.setUpProvider(selectedProviderRow?.name ?? m.setupProviderFallback)}
+                    </Button>
+                  )
+                ) : (
+                  <ModelSelect
+                    aria-label={m.model}
+                    className="w-full min-w-0 max-w-full @2xl:w-72 [&_[data-slot=select-value]]:truncate"
+                    models={selectedProviderModels}
+                    onValueChange={setSelectedModel}
+                    provider={selectedProviderRow}
+                    providerSlug={selectedProvider}
+                    value={selectedModel}
+                  />
+                )
+              }
+              title={m.model}
+            />
           </div>
+          {!needsSetup && (
+            <div className="flex justify-end pt-1">
+              <Button
+                disabled={!selectedProvider || !selectedModel || applying}
+                onClick={() => void applyMainModel()}
+                size="sm"
+              >
+                {applying && <Loader2 className="size-3.5 animate-spin" />}
+                {applying ? m.applying : t.common.apply}
+              </Button>
+            </div>
+          )}
           {needsSetup && !setupIsApiKey && selectedProviderRow && (
             <p className="mt-2 text-xs text-muted-foreground">
               {selectedProviderRow?.auth_type === 'api_key'
@@ -1068,60 +1166,15 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
             </p>
           )}
           {config && mainModel && (reasoningSupported || fastSupported || ultrafastSupported) && (
-            <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-3">
-              <span className="text-xs text-muted-foreground">{m.defaultsLabel}</span>
-              {reasoningSupported && (
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="shrink-0 whitespace-nowrap">{m.reasoning}</span>
-                  <Select
-                    onValueChange={value => void writeAgentDefault('agent.reasoning_effort', value)}
-                    value={effortValue}
-                  >
-                    <SelectTrigger className={cn('min-w-28', CONTROL_TEXT)}>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {REASONING_EFFORT_VALUES.map(value => (
-                        <SelectItem key={value} value={value}>
-                          {value === 'none' ? m.reasoningOff : t.shell.modelOptions[value]}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
-              {ultrafastSupported ? (
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="shrink-0 whitespace-nowrap">{m.speed}</span>
-                  <Select
-                    onValueChange={value => void writeAgentDefault('agent.service_tier', value)}
-                    value={speedValue}
-                  >
-                    <SelectTrigger aria-label={m.speed} className={cn('min-w-28', CONTROL_TEXT)}>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="normal">{m.speedStandard}</SelectItem>
-                      {fastSupported && <SelectItem value="fast">{t.shell.modelOptions.fast}</SelectItem>}
-                      <SelectItem value="ultrafast">{t.shell.modelOptions.ultrafast}</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              ) : (
-                fastSupported && (
-                  <label className="flex items-center gap-2 text-xs">
-                    {t.shell.modelOptions.fast}
-                    <Switch
-                      checked={fastOn}
-                      onCheckedChange={checked =>
-                        void writeAgentDefault('agent.service_tier', checked ? 'fast' : 'normal')
-                      }
-                      size="xs"
-                    />
-                  </label>
-                )
-              )}
-            </div>
+            <MainModelDefaults
+              effortValue={effortValue}
+              fastOn={fastOn}
+              fastSupported={fastSupported}
+              onChange={writeAgentDefault}
+              reasoningSupported={reasoningSupported}
+              speedValue={speedValue}
+              ultrafastSupported={ultrafastSupported}
+            />
           )}
           {errorNotice}
           {switchStaleAux.length > 0 && (

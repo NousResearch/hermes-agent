@@ -5,6 +5,7 @@ import { AlternateScreen, Box, NoSelect, ScrollBox, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { Fragment, memo, type MutableRefObject, useEffect, useMemo, useRef } from 'react'
 
+import { $clipboardFeedback } from '../app/clipboardFeedbackStore.js'
 import { useGateway } from '../app/gatewayContext.js'
 import type { AppLayoutProps } from '../app/interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
@@ -480,6 +481,7 @@ const ComposerPane = memo(function ComposerPane({
                   // terminals lie about their background); anything blended
                   // toward the resolved surface inherits that wrong polarity.
                   placeholderColor={ui.theme.color.muted}
+                  selectionColor={ui.theme.color.selectionBg}
                   value={composer.input}
                   voiceRecordKey={composer.voiceRecordKey}
                 />
@@ -534,6 +536,7 @@ const StatusRulePane = memo(function StatusRulePane({
   status
 }: Pick<AppLayoutProps, 'composer' | 'status'> & { at: 'bottom' | 'top'; nativeMode: boolean }) {
   const ui = useStore($uiState)
+  const clipboardFeedback = useStore($clipboardFeedback)
 
   if (ui.statusBar === 'off' || (nativeMode ? at !== 'top' : ui.statusBar !== at)) {
     return null
@@ -545,6 +548,7 @@ const StatusRulePane = memo(function StatusRulePane({
         battery={ui.battery ? ui.batteryStatus : null}
         bgCount={ui.bgTasks.size}
         busy={ui.busy}
+        clipboardFeedback={clipboardFeedback?.text}
         cols={composer.cols}
         compacting={ui.compacting}
         cwdLabel={status.cwdLabel}

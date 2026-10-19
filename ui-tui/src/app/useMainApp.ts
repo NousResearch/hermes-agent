@@ -37,7 +37,7 @@ import { t } from '../i18n/runtime.js'
 import { useT } from '../i18n/useT.js'
 import { composerPromptWidth } from '../lib/inputMetrics.js'
 import { appendTranscriptMessage, capTranscriptHistory } from '../lib/messages.js'
-import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
+import { DEFAULT_VOICE_RECORD_KEY, type ParsedVoiceRecordKey } from '../lib/platform.js'
 import { createResizeCoalescer } from '../lib/resizeCoalescer.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
@@ -48,6 +48,7 @@ import type { Msg, PanelSection } from '../types.js'
 
 import { applyAgentSnapshot } from './agentRoster.js'
 import { clarifySettledRows } from './clarifyTranscript.js'
+import { reportClipboardCopy } from './clipboardFeedbackStore.js'
 import { createGatewayEventHandler } from './createGatewayEventHandler.js'
 import { createServerRequestHandler } from './createServerRequestHandler.js'
 import { createSlashHandler } from './createSlashHandler.js'
@@ -127,7 +128,9 @@ function deferExitForClose(gw: GatewayClient, state: ExitClose, again: () => voi
   }
 
   state.flight = true
-  void Promise.race([state.close().catch(() => undefined), new Promise(resolve => setTimeout(resolve, 1500))]).then(again)
+  void Promise.race([state.close().catch(() => undefined), new Promise(resolve => setTimeout(resolve, 1500))]).then(
+    again
+  )
 
   return true
 }
@@ -366,6 +369,8 @@ export function useMainApp(gw: GatewayClient) {
   const selection = useSelection()
   const lastCopiedVersionRef = useRef(-1)
 
+  useEffect(() => selection.subscribeCopy(reportClipboardCopy), [selection])
+
   useEffect(() => {
     selection.setSelectionBgColor(ui.theme.color.selectionBg)
   }, [selection, ui.theme.color.selectionBg])
@@ -378,16 +383,14 @@ export function useMainApp(gw: GatewayClient) {
     setDimFallbackColor(ui.theme.color.muted)
   }, [ui.theme.color.muted])
 
-  // macOS Terminal.app does not forward Cmd+C to fullscreen TUIs that enable
-  // mouse tracking, so the only reliable native-feeling path is iTerm-style
-  // copy-on-select: once a drag creates a stable TUI selection, write it to
-  // the system clipboard while keeping the highlight visible.
+  // The application owns mouse selection in fullscreen mode. Copy the finished
+  // drag on every platform so this does not depend on the terminal's settings.
   //
   // Subscribe directly via the ink selection bus (not useSyncExternalStore)
   // so React doesn't re-render MainApp on every drag-move tick. The version
   // ref de-dupes against re-entrant notifications.
   useEffect(() => {
-    if (!isMac) {
+    if (!ui.copyOnSelect) {
       return
     }
 
@@ -411,7 +414,7 @@ export function useMainApp(gw: GatewayClient) {
       lastCopiedVersionRef.current = version
       void selection.copySelectionNoClear()
     })
-  }, [selection])
+  }, [selection, ui.copyOnSelect])
 
   const clearSelection = useCallback(() => {
     selection.clearSelection()
@@ -689,7 +692,9 @@ export function useMainApp(gw: GatewayClient) {
 
     // Offline (sid kept across a socket close): each poll would re-dial through
     // ensureAttachedWebSocket and collapse GatewayClient's backoff (B2-20).
-    if (ui.gatewayConnected === false) { return }
+    if (ui.gatewayConnected === false) {
+      return
+    }
 
     let stopped = false
     applyAgentSnapshot(ui.sid)

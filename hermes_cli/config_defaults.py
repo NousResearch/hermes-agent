@@ -849,7 +849,7 @@ DEFAULT_CONFIG = {
         # Classic CLI multiline beyond Alt+Enter: Ctrl+J newline, trailing backslash+Enter
         # continues, Shift+Enter reported distinctly. False restores the c-j submit fallback for
         # POSIX PTYs whose plain Enter arrives as LF.
-        "cli_multiline_shortcuts": True,
+        "cli_multiline_shortcuts": True, "arrow_key_mode": "auto",
         # `hermes`/`hermes chat` launches "cli" (prompt_toolkit REPL) | "tui" (Ink); --cli, --tui, HERMES_TUI=1 win.
         # cli_layout = the REPL's look: "modern" (glyph rows, status under the composer) | "classic" (boxed panels).
         "interface": "cli", "cli_layout": "modern",
@@ -858,7 +858,7 @@ DEFAULT_CONFIG = {
         "tui_native": False,
         # `hermes --tui` auto-resumes the most recent human-facing session (like `hermes -c`).
         # HERMES_TUI_RESUME=<id> always wins.
-        "tui_auto_resume_recent": False,
+        "tui_auto_resume_recent": False, "tui_copy_on_select": True,
         # Desktop reopens the last chat/page on cold start (also in Settings → Appearance).
         "resume_last_session": True,
         # One-time TUI hint ("subagents working · /agents to watch live") on first delegation.

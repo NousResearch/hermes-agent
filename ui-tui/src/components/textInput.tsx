@@ -3,9 +3,11 @@ import * as Ink from '@hermes/ink'
 import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'react'
 
 import { setInputSelection } from '../app/inputSelectionStore.js'
+import { getUiState } from '../app/uiStore.js'
 import { highlightMask, highlightsStable } from '../domain/composerHighlights.js'
-import { readClipboardText, writeClipboardText } from '../lib/clipboard.js'
-import { cursorLayout, offsetFromPosition } from '../lib/inputMetrics.js'
+import { readClipboardText, writeClipboard, writeClipboardText } from '../lib/clipboard.js'
+import { cutSelection } from '../lib/inputClipboard.js'
+import { cursorLayout, offsetFromPosition, visualLineNav } from '../lib/inputMetrics.js'
 import {
   DEFAULT_VOICE_RECORD_KEY,
   isActionMod,
@@ -231,27 +233,6 @@ export function valueForReturnSubmit(
   }
 
   return applyPrintableInsert(value, cursor, beforeReturn, range) ?? { cursor, value }
-}
-
-/**
- * Transactional cut. Writes `text` to the clipboard and only invokes
- * `removeSelection` once the write actually succeeds. On failure (e.g. a
- * headless/SSH box with no clipboard backend) the selection is left untouched
- * so the text is never destroyed without a copy to paste back. Returns whether
- * the clipboard write succeeded.
- */
-export async function cutSelection(
-  text: string,
-  write: (text: string) => Promise<boolean>,
-  removeSelection: () => void
-): Promise<boolean> {
-  const ok = await write(text)
-
-  if (ok) {
-    removeSelection()
-  }
-
-  return ok
 }
 
 export function shouldPreserveCtrlJNewline(env: MinimalEnv = process.env): boolean {
@@ -732,7 +713,8 @@ function renderWithSelection(
   start: number,
   end: number,
   accentOpen = '',
-  mask: boolean[] | null = null
+  mask: boolean[] | null = null,
+  selectionColor?: string
 ) {
   if (start >= end) {
     return paintHighlights(value, accentOpen, mask)
@@ -740,7 +722,9 @@ function renderWithSelection(
 
   return (
     paintHighlights(value.slice(0, start), accentOpen, mask) +
-    invert(paintHighlights(value.slice(start, end), accentOpen, mask, start) || ' ') +
+    (selectionColor
+      ? colorize(paintHighlights(value.slice(start, end), accentOpen, mask, start) || ' ', selectionColor, 'background')
+      : invert(paintHighlights(value.slice(start, end), accentOpen, mask, start) || ' ')) +
     paintHighlights(value.slice(end), accentOpen, mask, end)
   )
 }
@@ -776,6 +760,7 @@ const isPasteResultPromise = (
 
 export function TextInput({
   columns = 80,
+  selectionColor,
   value,
   onChange,
   onPaste,
@@ -802,6 +787,7 @@ export function TextInput({
   const noteCursorAdvance = useCursorAdvance()
 
   const curRef = useRef(cur)
+  const verticalGoalRef = useRef<{ text: string; cursor: number; column: number } | null>(null)
   const selRef = useRef<null | { end: number; start: number }>(null)
   const vRef = useRef(value)
   const self = useRef(false)
@@ -919,13 +905,24 @@ export function TextInput({
     }
 
     if (selected) {
-      return renderWithSelection(display, selected.start, selected.end, accentOpen, highlights)
+      return renderWithSelection(display, selected.start, selected.end, accentOpen, highlights, selectionColor)
     }
 
     return nativeCursor
       ? paintHighlights(display, accentOpen, highlights) || ' '
       : renderWithCursor(display, cur, accentOpen, highlights)
-  }, [accentOpen, cur, display, focus, highlights, nativeCursor, placeholder, placeholderColor, selected])
+  }, [
+    accentOpen,
+    cur,
+    display,
+    focus,
+    highlights,
+    nativeCursor,
+    placeholder,
+    placeholderColor,
+    selected,
+    selectionColor
+  ])
 
   useEffect(() => {
     // `value === vRef.current` misses a deferred flush still in flight: the
@@ -986,6 +983,8 @@ export function TextInput({
     }
 
     setInputSelection({
+      canMoveUp: visualLineNav(vRef.current, curRef.current, -1, columns) !== null,
+      canMoveDown: visualLineNav(vRef.current, curRef.current, 1, columns) !== null,
       clear: dropSel,
       collapseToEnd: () => {
         dropSel()
@@ -1012,17 +1011,24 @@ export function TextInput({
         // copy to paste back. On failure the selection is left intact.
         const text = vRef.current.slice(range.start, range.end)
 
-        void cutSelection(text, writeClipboardText, () => {
+        void cutSelection(text, writeClipboard, () => {
           // Re-read the selection: the awaited clipboard write opens a window
           // in which the user could have moved/changed the selection. Only
           // remove when it still matches what we copied.
           const current = selRange()
 
-          if (!current || current.start !== range.start || current.end !== range.end) {
-            return
+          if (
+            !current ||
+            current.start !== range.start ||
+            current.end !== range.end ||
+            vRef.current.slice(current.start, current.end) !== text
+          ) {
+            return false
           }
 
           commit(vRef.current.slice(0, current.start) + vRef.current.slice(current.end), current.start)
+
+          return true
         })
       },
       end: selected?.end ?? curRef.current,
@@ -1031,7 +1037,7 @@ export function TextInput({
     })
 
     return () => setInputSelection(null)
-  }, [cur, focus, selected])
+  }, [columns, cur, focus, selected])
 
   useEffect(
     () => () => {
@@ -1317,6 +1323,28 @@ export function TextInput({
     commit(nextValue, nextCursor)
   }
 
+  const navigateVerticalArrow = (key: Key) => {
+    flushKeyBurst()
+
+    const previous = verticalGoalRef.current
+
+    const goal =
+      previous?.text === vRef.current && previous.cursor === curRef.current
+        ? previous.column
+        : cursorLayout(vRef.current, curRef.current, columns).column
+
+    const next = visualLineNav(vRef.current, curRef.current, key.upArrow ? -1 : 1, columns, goal)
+
+    if (next !== null) {
+      moveCursor(next, key.shift)
+      verticalGoalRef.current = { text: vRef.current, cursor: next, column: goal }
+
+      return
+    }
+
+    return
+  }
+
   const startMouseSelection = (next: number) => {
     const c = snapPos(vRef.current, next)
 
@@ -1354,7 +1382,7 @@ export function TextInput({
 
     const normalized = selRange()
 
-    if (isMac && normalized) {
+    if (getUiState().copyOnSelect && normalized) {
       void writeClipboardText(vRef.current.slice(normalized.start, normalized.end))
     }
   }
@@ -1431,15 +1459,7 @@ export function TextInput({
       }
 
       if ((k.upArrow || k.downArrow) && !ignoreVerticalArrows) {
-        flushKeyBurst()
-
-        const next = lineNav(vRef.current, curRef.current, k.upArrow ? -1 : 1)
-
-        if (next !== null) {
-          moveCursor(next, k.shift)
-
-          return
-        }
+        navigateVerticalArrow(k)
 
         return
       }
@@ -1827,6 +1847,7 @@ interface TextInputProps {
   /** Hex color for typed text (theme text); terminal default when omitted. */
   color?: string
   columns?: number
+  selectionColor?: string
   cursorSnapshotRef?: MutableRefObject<InputCursorSnapshot | null>
   focus?: boolean
   /** Leave ↑/↓ to the owner: a form that moves field focus with them owns the key, not the field. */

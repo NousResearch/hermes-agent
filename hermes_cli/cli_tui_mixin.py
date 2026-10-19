@@ -1128,19 +1128,6 @@ class CLITuiMixin:
             self._should_exit, self._detach_on_exit = True, bool(self._agent_running)
             event.app.exit()
 
-    def _tui_recall_without_recollapse(self, buf, move):
-        """Run a history move with paste-collapse suppressed.
-
-        Recalled history can hold the full text of a paste collapsed at submit time; loading it
-        back looks like a fresh large paste to ``_on_text_changed``. If the move didn't change the
-        text (plain cursor movement) the flag is cleared so a later real paste still collapses.
-        """
-        before = buf.text
-        self._skip_paste_collapse = True
-        move()
-        if buf.text == before:
-            self._skip_paste_collapse = False
-
     def _tui_handle_alt_v(self, event):
         """Alt+V pastes an image from the clipboard. Alt combos pass through every terminal
         (ESC + key), unlike Ctrl+V which terminals intercept — reliable on WSL2/VSCode/SSH.
@@ -1701,6 +1688,8 @@ class CLITuiMixin:
             pasted_text = _sanitize_surrogates(pasted_text)
             line_count = pasted_text.count('\n')
             buf = event.current_buffer
+            if buf.selection_state:
+                buf.cut_selection()
             if (
                 self._tui_paste_over_threshold(pasted_text, line_count, "paste_collapse_threshold")
                 and not buf.text.strip().startswith('/')):
@@ -1784,13 +1773,13 @@ class CLITuiMixin:
         event.app.invalidate()
 
     def _tui_history_up(self, event):
-        """Up: browse history when on the first line, else move the cursor up."""
-        buf = event.app.current_buffer
-        self._tui_recall_without_recollapse(buf, lambda: buf.auto_up(count=event.arg))
+        """Up moves through wrapped screen rows before recalling history."""
+        from hermes_cli.cli_cursor_navigation import navigate_prompt
+        navigate_prompt(self, event, -1)
 
     def _tui_history_down(self, event):
-        buf = event.app.current_buffer
-        self._tui_recall_without_recollapse(buf, lambda: buf.auto_down(count=event.arg))
+        from hermes_cli.cli_cursor_navigation import navigate_prompt
+        navigate_prompt(self, event, 1)
 
     def _tui_image_bar_fragments(self):
         from cli import _format_image_attachment_badges

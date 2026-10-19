@@ -432,6 +432,53 @@ Pasting multi-line text is supported — use any of the newline keys above, or s
 In terminals using the Kitty keyboard protocol, `Alt+Enter` on the numeric keypad also inserts a newline, including next to a collapsed paste. Modified keypad navigation keys follow their non-keypad equivalents.
 :::
 
+### Arrow keys and text selection
+
+In both the classic CLI and `hermes --tui`, **Up/Down move through visible rows of
+the draft**, including wrapped lines. History is reached at the first/last row.
+To keep arrows exclusively inside the draft:
+
+```yaml
+display:
+  arrow_key_mode: cursor   # auto (default): history at the edges; cursor: editing only
+```
+
+Pasting text over a prompt selection replaces that selection without submitting it.
+
+The modern TUI copies a finished mouse selection on all platforms and briefly shows
+`copied N characters` after the session count. Cutting selected prompt text with
+Ctrl+X removes it only after the clipboard write succeeds and shows `cut N characters`.
+Copying leaves the text in place. Both counts use visible characters, including emoji
+and combining accents. This is independent of the terminal's own copy-on-select
+preference. To require an explicit copy gesture instead:
+
+```yaml
+display:
+  tui_copy_on_select: false
+```
+
+In the classic CLI, selection of printed replies remains owned by the terminal;
+Hermes cannot observe that native selection or display a receipt for it.
+
+### Expanded or compact pasted text
+
+Large pastes can appear as a compact chip containing the first/last words and a line
+count. The modern TUI retains the full text and expands that chip for submission;
+the compact appearance does not mean newlines or intervening text were discarded.
+
+To display new pastes in full, disable all three existing collapse thresholds at the
+top level of your configuration (outside `display`):
+
+```yaml
+paste_collapse_threshold: 0
+paste_collapse_threshold_fallback: 0
+paste_collapse_char_threshold: 0
+```
+
+These settings apply to both terminal interfaces. They affect subsequent pastes;
+changing them does not expand a chip already present in the prompt. The defaults are
+5, 5 and 2000 respectively; each positive threshold can enable collapsing independently.
+
 ### Shift+Enter compatibility
 
 Most terminals send the same byte sequence for `Enter` and `Shift+Enter` by default, so applications cannot distinguish them. Hermes recognises `Shift+Enter` only when the terminal sends a distinct sequence via the [Kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) or xterm's `modifyOtherKeys` mode.

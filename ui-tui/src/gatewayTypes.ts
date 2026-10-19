@@ -114,6 +114,8 @@ export type {
 // ── Config ───────────────────────────────────────────────────────────
 
 export interface ConfigDisplayConfig {
+  arrow_key_mode?: 'auto' | 'cursor'
+  tui_copy_on_select?: boolean
   battery?: boolean
   bell_on_complete?: boolean
   bell_on_prompt?: boolean

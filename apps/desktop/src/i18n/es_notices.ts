@@ -1,4 +1,5 @@
 import type { TranslationOverrides } from './define-locale'
+import { esDesktopCommands } from './es_desktop_commands'
 import { esSessionCommands } from './es_session_commands'
 
 // Shell notices (remote-display toast, butterbar, keep-awake offer), spread into es.ts.
@@ -27,7 +28,8 @@ export const esNotices = {
     compactedTurnUnavailable:
       'Ese mensaje se resumió al comprimir el chat, así que ya no se puede restaurar ni editar.',
     staleTurnUnavailable: 'Ese mensaje ya no está en el historial de este chat.',
-    sessionCommands: esSessionCommands
+    sessionCommands: esSessionCommands,
+    desktopCommands: esDesktopCommands
   },
   keepAwakeOffer: {
     title: 'Tu equipo entró en suspensión mientras Hermes trabajaba',

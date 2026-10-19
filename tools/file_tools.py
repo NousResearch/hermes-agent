@@ -37,7 +37,8 @@ from tools.file_tools_write_guards import (
     _check_cross_profile_path, _check_protected_instruction_write, _check_sensitive_path,
     _is_internal_file_tool_content, _stale_overwrite_blocker, _stale_write_refusal)
 from tools.file_tools_read_tracking import (
-    _bump_consecutive, _cap_read_tracker_data, _check_file_staleness, _check_not_found_cache,
+    _bump_consecutive, _cap_read_tracker_data, _carry_full_write_baselines, _check_file_staleness,
+    _check_not_found_cache, _known_full_content_sha256,
     _file_metadata, _file_version,
     _mark_full_write_baseline, _mark_verification_stale, _note_read_coverage, _patch_failure_lock,
     _patch_failure_tracker, _read_tracker, _read_tracker_lock, _record_not_found,
@@ -329,7 +330,6 @@ def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
         config, env_type, image=_select_image(env_type, overrides, config), cwd=cwd,
         timeout=config["timeout"], task_id=task_id,
         host_cwd=host_cwd,
-        local_config={"persistent": config.get("local_persistent", False)} if env_type == "local" else None,
     )
     return env_type, terminal_env
 
@@ -399,7 +399,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     return file_ops
 
 
-def clear_file_ops_cache(task_id: str = None):
+def clear_file_ops_cache(task_id: str | None = None):
     """Clear file-operation state for a finished task, or all tasks."""
     with _file_ops_lock:
         if task_id:
@@ -599,6 +599,7 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
                 complete = complete and not redacted
             if complete:
                 baselines[resolved_str] = version
+                task_data.setdefault("blind_patches", {}).pop(resolved_str, None)
         if not complete:
             baselines.pop(resolved_str, None)
         if not stable or count >= 4:
@@ -712,6 +713,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         # Failed reads cannot establish whole-file knowledge.
         _err = result_dict.get("error") or ""
         if isinstance(_err, str) and _err.startswith("File not found:"):
+            from tools.tool_result_storage import expired_archive_fields
+            result_dict.update(expired_archive_fields(path))
             _record_not_found("read", resolved_str, task_id, json.dumps(result_dict, ensure_ascii=False))
         if _err or result_dict.get("is_binary"):
             return json.dumps(result_dict, ensure_ascii=False)
@@ -943,12 +946,8 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     """
     if not path:
         return tool_error("path required")
-    try:
-        initialized_file_ops = _initialize_mutation_backend_if_needed([path], task_id)
-        target = _capture_mutation_targets([path], task_id, initialized_file_ops)[path]
-    except Exception as exc:
-        logger.debug("write target resolution failed: %s", exc)
-        return tool_error("Unable to resolve file mutation target")
+    initialized_file_ops = _initialize_mutation_backend_if_needed([path], task_id)
+    target = _capture_mutation_targets([path], task_id, initialized_file_ops)[path]
     resolved_paths = {path: target.backend_path}
     err = _write_precheck_error(
         [path], [path], task_id, cross_profile, resolved_paths
@@ -984,7 +983,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             else:
                 result_dict["files_modified"] = [target.backend_path]
                 # Own write = current whole-file content: consecutive
-                # same-task writes stay unblocked. patch never does this.
+                # same-task writes stay unblocked (patch_tool carries it).
                 _mark_full_write_baseline(
                     target.backend_path, task_id, getattr(result, "_content_sha256", None)
                 )
@@ -1027,8 +1026,8 @@ def _collect_v4a_header_paths(patch: str) -> tuple[list[str], list[str], list[st
     return paths, content_paths, entry_paths
 
 
-def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
-               new_string: str = None, replace_all: bool = False, patch: str = None,
+def patch_tool(mode: str = "replace", path: str | None = None, old_string: str | None = None,
+               new_string: str | None = None, replace_all: bool = False, patch: str | None = None,
                task_id: str = "default", cross_profile: bool = False,
                session_id: str | None = None) -> str:
     """Patch a file using replace mode or V4A patch format.
@@ -1046,31 +1045,11 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         _paths_to_check += collected[0]
         _content_write_paths += collected[1]
         _entry_paths = collected[2]
-    try:
-        initialized_file_ops = _initialize_mutation_backend_if_needed(_paths_to_check, task_id)
-        targets = _capture_mutation_targets(
-            _paths_to_check, task_id, initialized_file_ops, _entry_paths
-        )
-    except Exception as exc:
-        logger.debug("patch target resolution failed: %s", exc)
-        return tool_error("Unable to resolve file mutation target")
-    if mode == "patch":
-        backend_owners: dict[str, str] = {}
-        for display_path, target in targets.items():
-            mutation_identities = set()
-            if display_path in _content_write_paths:
-                mutation_identities.add(target.backend_path)
-            if target.entry_path is not None:
-                mutation_identities.add(target.entry_path)
-            for identity in mutation_identities:
-                prior = backend_owners.setdefault(identity, display_path)
-                if prior == display_path:
-                    continue
-                return tool_error(
-                    "V4A patch resolves multiple display paths to the same backend target: "
-                    f"{prior!r} and {display_path!r} -> {identity!r}. "
-                    "Refusing before validation to preserve all-or-nothing patch semantics."
-                )
+    initialized_file_ops = _initialize_mutation_backend_if_needed(_paths_to_check, task_id)
+    targets = _capture_mutation_targets(_paths_to_check, task_id, initialized_file_ops, _entry_paths)
+    from tools.file_tools_mutation_results import mutation_alias_error, mapped_patch_result
+    if mode == "patch" and (alias_error := mutation_alias_error(targets, _content_write_paths)):
+        return tool_error(alias_error)
     resolved_paths = {display: target.backend_path for display, target in targets.items()}
     precheck_err = _write_precheck_error(
         _paths_to_check, _content_write_paths, task_id, cross_profile, resolved_paths
@@ -1086,6 +1065,9 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 _locks.enter_context(file_state.lock_path(_r))
             stale_warnings = _edit_warnings(_paths_to_check, resolved_paths, task_id)
             file_ops = initialized_file_ops or _get_file_ops(task_id)
+            # Whole-file knowledge held BEFORE the patch reads, under the same locks. Like
+            # every baseline check it stats the host path, so a sandbox path carries nothing.
+            _known = _known_full_content_sha256(resolved_paths.values(), task_id)
 
             # Hand the shell layer the RESOLVED targets so both layers agree on
             # which file is edited even when the shell's cwd differs.
@@ -1110,31 +1092,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             else:
                 return tool_error(f"Unknown mode: {mode}")
 
-            result_dict = result.to_dict()
-            if stale_warnings:
-                result_dict["_warning"] = " | ".join(stale_warnings)
-            def _map_result_path(label: str, *, entry: bool = False) -> str:
-                target = targets.get(label)
-                if target is not None:
-                    return (target.entry_path or target.backend_path) if entry else target.backend_path
-                if " -> " in label:
-                    src, dst = label.split(" -> ", 1)
-                    if src in targets and dst in targets:
-                        src_path = targets[src].entry_path or targets[src].backend_path
-                        dst_path = targets[dst].entry_path or targets[dst].backend_path
-                        return f"{src_path} -> {dst_path}"
-                return label
-            for result_key in ("files_modified", "files_created", "files_deleted"):
-                values = result_dict.get(result_key)
-                if isinstance(values, list):
-                    result_dict[result_key] = [
-                        _map_result_path(str(value), entry=result_key == "files_deleted")
-                        for value in values
-                    ]
-            if isinstance(result_dict.get("lint"), dict):
-                result_dict["lint"] = {
-                    _map_result_path(str(key)): value for key, value in result_dict["lint"].items()
-                }
+            result_dict = mapped_patch_result(result, targets, stale_warnings)
             if not result_dict.get("error"):
                 _resolved_touched = sorted({
                     target.entry_path or target.backend_path for target in targets.values()
@@ -1147,6 +1105,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 if len(_resolved_touched) == 1:
                     result_dict["resolved_path"] = _resolved_touched[0]
                 _note_edited(task_id, _paths_to_check, resolved_paths, session_id)
+                _carry_full_write_baselines(task_id, _known, getattr(result, "_writes", ()), resolved_paths)
                 # Clear failure counters so a future miss starts a fresh count.
                 _reset_patch_failures(task_id, _resolved_touched)
         # old_string-not-found hint. Failure escalation is tracked for replace
@@ -1162,9 +1121,9 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                     "Stop retrying with variations of the same old_string. "
                     "Either: (1) re-read the file fresh to verify current "
                     "content, (2) use a longer / more unique old_string with "
-                    "surrounding context lines, or (3) use write_file to "
-                    "replace the entire file if the targeted region is hard "
-                    "to anchor.")
+                    "surrounding context lines, or (3) re-read the file in "
+                    "full, then use write_file to replace it if the targeted "
+                    "region is hard to anchor.")
             elif "Did you mean one of these sections?" not in str(result_dict["error"]):
                 result_dict["_hint"] = (
                     "old_string not found. Use read_file to verify the current "
@@ -1175,7 +1134,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
 
 
 def search_tool(pattern: str, target: str = "content", path: str = ".",
-                file_glob: str = None, limit: int = 50, offset: int = 0,
+                file_glob: str | None = None, limit: int = 50, offset: int = 0,
                 output_mode: str = "content", context: int = 0,
                 order: str = "discovery",
                 task_id: str = "default") -> str:
@@ -1399,7 +1358,7 @@ def _is_openai_family_main() -> bool:
 
         provider = (_read_main_provider() or "").strip().lower()
         model = (_read_main_model() or "").strip().lower()
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
     if provider in {"openai", "openai-chat", "openai-codex", "azure-openai", "codex"}:
         return True
@@ -1458,11 +1417,19 @@ def _handle_write_file(args, **kw):
         )
     from hermes_cli.observability.shared_metrics_harness import record_file_edit
 
-    return record_file_edit("write_file", "whole_file", lambda: write_file_tool(
+    return record_file_edit("write_file", "whole_file", lambda: _owned(kw.get("session_id") or tid, write_file_tool,
         path=args["path"], content=args["content"], task_id=tid,
         cross_profile=bool(args.get("cross_profile", False)),
         session_id=kw.get("session_id"),
     ))
+
+
+def _owned(owner: str, fn, **call_kwargs):
+    """Run an edit tool with its late LSP verdicts attributed to ``owner``, the calling session
+    (``agent.lsp.deferred``): they ride that session's next tool result."""
+    from agent.lsp.deferred import bind_owner
+    with bind_owner(owner):
+        return fn(**call_kwargs)
 
 
 def _handle_patch(args, **kw):
@@ -1470,7 +1437,7 @@ def _handle_patch(args, **kw):
 
     tid = kw.get("task_id") or "default"
     mode = args.get("mode", "replace")
-    return record_file_edit("patch", mode, lambda: patch_tool(
+    return record_file_edit("patch", mode, lambda: _owned(kw.get("session_id") or tid, patch_tool,
         mode=mode, path=args.get("path"),
         old_string=args.get("old_string"), new_string=args.get("new_string"),
         replace_all=args.get("replace_all", False), patch=args.get("patch"), task_id=tid,
@@ -1512,7 +1479,7 @@ def _read_file_schema_overrides():
                     "PDF (text layer)", "PDF (scanned or text)"
                 )
             }
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     return {}
 
@@ -1537,7 +1504,7 @@ def _patch_schema_overrides():
             "required": ["mode"],
         }
         return {"description": _PATCH_V4A_DESCRIPTION, "parameters": params}
-    except Exception:  # noqa: BLE001
+    except Exception:
         return {}
 
 

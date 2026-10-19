@@ -100,7 +100,7 @@ class FakeCatalog:
         self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
 
-    def __enter__(self) -> "FakeCatalog":
+    def __enter__(self) -> FakeCatalog:
         self._thread.start()
         return self
 
@@ -116,10 +116,10 @@ class FakeCatalog:
         server = self
 
         class Handler(BaseHTTPRequestHandler):
-            def log_message(self, *_a: object) -> None:  # noqa: D401 - silence per-request logging
+            def log_message(self, *_a: object) -> None:
                 pass
 
-            def do_GET(self) -> None:  # noqa: N802
+            def do_GET(self) -> None:
                 server.requests.append((self.path, self.headers.get("Authorization", "")))
                 path = self.path.split("?")[0].rstrip("/")
                 if path == "/relay/v1/models":  # the decoy relay: plain OpenAI model list, no prices

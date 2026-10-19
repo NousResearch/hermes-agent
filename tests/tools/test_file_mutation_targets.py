@@ -95,7 +95,6 @@ def test_policy_and_mutation_share_one_resolver_result(
 
     def policy(path: str, task_id: str, resolved_path: str | None = None):
         policy_calls.append((path, resolved_path or ""))
-        return None
 
     monkeypatch.setattr(file_tools, "_resolve_path_for_task", resolve)
     monkeypatch.setattr(file_tools, "_check_sensitive_path", policy)
@@ -202,7 +201,6 @@ def test_local_symlink_retarget_after_policy_does_not_switch_mutation(
     def retarget_after_policy(path: str, task_id: str, resolved_path: str | None = None):
         link.unlink()
         link.symlink_to(second)
-        return None
 
     monkeypatch.setattr(file_tools, "_resolve_path_for_task", resolve)
     monkeypatch.setattr(file_tools, "_check_sensitive_path", retarget_after_policy)
@@ -564,7 +562,6 @@ def test_v4a_captured_entry_survives_parent_symlink_retarget(
             alias.unlink()
             alias.symlink_to(second, target_is_directory=True)
             changed = True
-        return None
 
     monkeypatch.setattr(file_tools, "_check_sensitive_path", policy)
     header = ("*** Delete File: alias/note.txt" if operation == "delete" else

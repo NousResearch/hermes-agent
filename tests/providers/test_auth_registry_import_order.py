@@ -64,6 +64,7 @@ def test_tui_import_exposes_auth_registry_to_provider_plugins(tmp_path):
         capture_output=True,
         text=True,
         timeout=30,
+        check=False,
     )
 
     assert probe.returncode == 0, probe.stdout + probe.stderr

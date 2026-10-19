@@ -43,11 +43,8 @@ def local_gateway(monkeypatch):
     monkeypatch.setenv("PERPLEXITY_GATEWAY_URL", base + "/perplexity")
     monkeypatch.setenv("FIRECRAWL_GATEWAY_URL", base)
     monkeypatch.setenv("PERPLEXITY_BASE_URL", base + "/direct")
-    # Only entitlement is stubbed: route and credential resolution remain real. Fast search carries
-    # its own (registered-identity) gate, stubbed here to match the entitled premise; the real tier
-    # resolution — including the anonymous exclusion — lives in test_web_free_fast_search.py.
+    # Only entitlement is stubbed: route and credential resolution remain real.
     monkeypatch.setattr(managed_tool_gateway, "managed_nous_tools_enabled", lambda **kw: True)
-    monkeypatch.setattr(managed_tool_gateway, "fast_search_entitled", lambda **kw: True)
 
     # CI omits the firecrawl extra; stand in for the SDK, still over real HTTP.
     class FirecrawlSDK:

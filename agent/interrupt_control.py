@@ -32,6 +32,19 @@ def interrupt_issuer(agent) -> Optional[str]:
     return str(reason).strip().replace(" ", "_")
 
 
+def interrupt_skip_wording(agent) -> str:
+    """Reason a tool call was skipped/cancelled, in words safe for tool output.
+
+    Derived from the RECORDED reason rather than the call site, so a system-initiated
+    abort reads as one instead of asserting a user message that never existed (#130207)."""
+    reason = getattr(agent, "_tool_interrupt_reason", None)
+    if not reason:
+        return "Turn interrupted"
+    if reason in USER_INTERRUPT_REASONS:
+        return reason.capitalize()
+    return f"Turn aborted — {str(reason).replace('_', ' ')}"
+
+
 def interrupted_during_api_call_reason(agent) -> str:
     """Turn exit reason for an API call cut short by an interrupt (``turn_explainers`` matches the prefix)."""
     issuer = interrupt_issuer(agent)
@@ -70,6 +83,39 @@ def _ic_slot(agent, lock_attr: str, slot: str):
     if getattr(agent, lock_attr, None) is None:
         return getattr(agent, slot, None)
     return getattr(agent, slot)
+
+
+def _steer_parts(agent) -> list:
+    """The buffered steers as ``(ticket, text)`` pairs; ``_pending_steer`` is their newline join. A ticket
+    names one submission (a gateway transfer). A buffer another writer set directly is one ticketless part."""
+    pending = _ic_slot(agent, "_pending_steer_lock", "_pending_steer")
+    parts = vars(agent).get("_pending_steer_parts") or []
+    if "\n".join(text for _, text in parts) != (pending or ""):
+        return [(None, pending)] if pending else []
+    return list(parts)
+
+
+def _set_steer_parts(agent, parts: list) -> None:
+    agent._pending_steer_parts = parts
+    agent._pending_steer = "\n".join(text for _, text in parts) or None
+
+
+def _steer_fates(agent) -> dict:
+    """``{ticket: consumed}`` for ticketed steers that left the buffer: True when a drain handed the text
+    to the turn, False when it was dropped unread. ``withdraw_steer`` reads each one once."""
+    return vars(agent).setdefault("_steer_ticket_fates", {})
+
+
+def requeue_drained_steer(agent, steer_text: str) -> None:
+    """Put drained steer text back (nothing took it). When it is the last drain's text, its parts go back
+    with their tickets, so a transfer in it reads unconsumed again."""
+    with _ic_lock(agent, "_pending_steer_lock"):
+        drained, parts = vars(agent).pop("_steer_last_drain", (None, None))
+        if drained != steer_text or not parts:
+            parts = [(None, steer_text)]
+        for ticket, _ in parts:
+            _steer_fates(agent).pop(ticket, None)
+        _set_steer_parts(agent, _steer_parts(agent) + parts)
 
 
 def _ic_codex_method(agent, name: str):
@@ -132,16 +178,20 @@ class InterruptControlMixin:
                 self._turn_liveness_abort_claim = require_generation
 
         # Tool cancellation attribution stays separate from _interrupt_message, which may carry the user's
-        # full next message.
+        # full next message. An explicit ``tool_reason`` wins on BOTH paths: a system producer that has to
+        # stop the turn SOFTLY (batch guards, watchdogs) previously had no way to label itself — passing a
+        # message made it look like "the user sent a new message", so the abort was attributed to the user
+        # and rendered as a user-stop placeholder (#130207).
         tool_interrupt_reason = (
             (tool_reason or _REASON_HARD_STOP) if hard_cancel
-            else (_REASON_NEW_MESSAGE if message else _REASON_USER_INTERRUPT)
+            else (tool_reason or (_REASON_NEW_MESSAGE if message else _REASON_USER_INTERRUPT))
         )
 
         def _publish_interrupt_state() -> None:
             self._interrupt_requested = True
             self._interrupt_message = message
             self._tool_interrupt_reason = tool_interrupt_reason
+            self._turn_user_intervened = True
             # The turn record and the log must agree on WHO asked for the stop (#112647).
             logger.info("Interrupt requested (%s): %s", "hard" if hard_cancel else "soft", tool_interrupt_reason)
             _hard_event = getattr(self, "_hard_interrupt_requested", None) if hard_cancel else None
@@ -244,18 +294,23 @@ class InterruptControlMixin:
             # claimed a hard interrupt supersedes the steer — but nothing gated this wipe on
             # hard_cancel, so a soft clear dropped a live user message with no trace.
             with _ic_lock(self, "_pending_steer_lock"):
-                self._pending_steer = None
+                for ticket, _ in _steer_parts(self):
+                    if ticket is not None:
+                        _steer_fates(self)[ticket] = False
+                _set_steer_parts(self, [])
         return True
 
-    def steer(self, text: str) -> bool:
+    def steer(self, text: str, *, ticket=None) -> bool:
         """Queue user text for delivery as its own user row after the current tool batch finishes (no
-        interrupt); multiple calls concatenate with newlines. Returns False for empty text."""
+        interrupt); multiple calls concatenate with newlines. Returns False for empty text. ``ticket``
+        names the submission, so ``withdraw_steer`` can settle exactly it, whatever text others carry."""
         if not text or not text.strip():
             return False
         cleaned = text.strip()
         with _ic_lock(self, "_pending_steer_lock"):
-            existing = _ic_slot(self, "_pending_steer_lock", "_pending_steer")
-            self._pending_steer = (existing + "\n" + cleaned) if existing else cleaned
+            _set_steer_parts(self, _steer_parts(self) + [(ticket, cleaned)])
+        # The turn no longer ran on its own (first-task-done detection reads this off the result).
+        self._turn_user_intervened = True
         return True
 
     def redirect(self, text: str) -> bool:
@@ -273,7 +328,10 @@ class InterruptControlMixin:
                 if self._interrupt_requested:
                     return False
             try:
-                return bool(_native_steer(cleaned))
+                accepted = bool(_native_steer(cleaned))
+                if accepted:
+                    self._turn_user_intervened = True
+                return accepted
             except Exception:
                 logger.debug("Codex app-server turn/steer failed", exc_info=True)
                 return False
@@ -306,6 +364,7 @@ class InterruptControlMixin:
             )
             self._interrupt_requested = True
             self._interrupt_message = None
+            self._turn_user_intervened = True
 
         # Interrupt only the model request — no fan-out to tool workers / child agents as interrupt() does.
         _execution_thread_id = getattr(self, "_execution_thread_id", None)
@@ -333,5 +392,34 @@ class InterruptControlMixin:
         """Return the pending steer text (if any) and clear the slot; None when nothing is pending."""
         with _ic_lock(self, "_pending_steer_lock"):
             text = _ic_slot(self, "_pending_steer_lock", "_pending_steer")
-            self._pending_steer = None
+            parts = _steer_parts(self)
+            _set_steer_parts(self, [])
+            for ticket, _ in parts:
+                if ticket is not None:
+                    _steer_fates(self)[ticket] = True
+            self._steer_last_drain = (text, parts)  # requeue_drained_steer restores its tickets
         return text
+
+    def _drain_leftover_steer(self) -> Optional[str]:
+        """The turn finalizer's drain: return and clear the ticketless steers (they become the next user
+        turn) and keep each ticketed one buffered. A transfer is never a follow-up a restart may discard:
+        settlement withdraws it and its admission goes back to its own queue place."""
+        with _ic_lock(self, "_pending_steer_lock"):
+            parts = _steer_parts(self)
+            _set_steer_parts(self, [part for part in parts if part[0] is not None])
+        return "\n".join(text for ticket, text in parts if ticket is None) or None
+
+    def withdraw_steer(self, ticket) -> bool:
+        """Settle one ``steer(text, ticket=...)`` by identity (the gateway's transfer of a queued prompt):
+        True when no drain handed it to the turn, either still buffered (taken out now; every other steer
+        stays, whatever its text) or dropped unread; False once a drain consumed it, or for an unknown one."""
+        if ticket is None:
+            return False
+        with _ic_lock(self, "_pending_steer_lock"):
+            parts = _steer_parts(self)
+            kept = [part for part in parts if part[0] != ticket]
+            consumed = _steer_fates(self).pop(ticket, True)
+            if len(kept) == len(parts):
+                return consumed is False
+            _set_steer_parts(self, kept)
+        return True

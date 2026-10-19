@@ -64,7 +64,6 @@ async def test_handlers_restore_unknown_sessions_off_the_loop(call):
 
     def slow_restore(session_id):
         time.sleep(BUILD_SECONDS)
-        return None
 
     manager._restore = slow_restore
     server = HermesACPAgent(session_manager=manager)

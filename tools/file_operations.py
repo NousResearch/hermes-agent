@@ -17,6 +17,7 @@ import hashlib
 import json
 import logging
 import secrets
+import time
 import unicodedata
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -31,6 +32,7 @@ from tools.file_operations_common import (
     _strip_terminal_fence_leaks, normalize_read_pagination, normalize_search_pagination)
 from tools.file_operations_lint import LINTERS_INPROC, LintMixin, _FAIL_CLOSED_INPROC_EXTS
 from tools.file_operations_search import SearchMixin
+from tools import file_operations_native as _native_io
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +92,7 @@ def identify_binary_bytes(sample: bytes) -> str:
     return "unknown binary"
 
 
-def describe_binary_file(sample: Optional[bytes], file_size: int) -> str:
+def describe_binary_file(sample: bytes | None, file_size: int) -> str:
     """One-line binary-file refusal naming the TYPE ("PNG image data, 4.1 KB"), so the
     model gets what-is-this in one read instead of hunting for tools it may lack."""
     kind = identify_binary_bytes(sample or b"")
@@ -115,7 +117,7 @@ class FileOperations(ABC):
         """Whole file as a plain string: no pagination, line numbers or clamping."""
 
     @abstractmethod
-    def write_file(self, path: str, content: str, pre_content: Optional[str] = None) -> WriteResult:
+    def write_file(self, path: str, content: str, pre_content: str | None = None) -> WriteResult:
         """Write content to a file, creating directories as needed."""
 
     @abstractmethod
@@ -137,7 +139,7 @@ class FileOperations(ABC):
 
     @abstractmethod
     def search(self, pattern: str, path: str = ".", target: str = "content",
-               file_glob: Optional[str] = None, limit: int = 50, offset: int = 0,
+               file_glob: str | None = None, limit: int = 50, offset: int = 0,
                output_mode: str = "content", context: int = 0,
                order: str = "discovery") -> SearchResult:
         """Search for content or files."""
@@ -181,7 +183,7 @@ def _split_segments(output: str, sentinel: str) -> list[str]:
 class _ResolvedTargetFileOperations:
     """Use captured backend identities while keeping V4A display paths."""
 
-    def __init__(self, delegate: "ShellFileOperations", resolved_targets: Dict[str, ResolvedMutationTarget]):
+    def __init__(self, delegate: "ShellFileOperations", resolved_targets: dict[str, ResolvedMutationTarget]):
         self._delegate = delegate
         self._resolved_targets = resolved_targets
 
@@ -198,7 +200,7 @@ class _ResolvedTargetFileOperations:
     def read_file_raw(self, path: str):
         return self._delegate.read_file_raw(self._path(path))
 
-    def write_file(self, path: str, content: str, pre_content: Optional[str] = None):
+    def write_file(self, path: str, content: str, pre_content: str | None = None):
         return self._delegate.write_file(self._path(path), content, pre_content=pre_content)
 
     def delete_file(self, path: str):
@@ -207,11 +209,11 @@ class _ResolvedTargetFileOperations:
     def move_file(self, src: str, dst: str):
         return self._delegate.move_file(self._path(src, entry=True), self._path(dst, entry=True))
 
-    def _check_lint(self, path: str, content: Optional[str] = None):
+    def _check_lint(self, path: str, content: str | None = None):
         return self._delegate._check_lint(self._path(path), content)
 
 
-def _json_nonstandard_constant(text: str) -> Optional[str]:
+def _json_nonstandard_constant(text: str) -> str | None:
     """First NaN/Infinity/-Infinity in ``text`` when it is otherwise valid JSON,
     else None. ``json.loads`` accepts these JavaScript extensions by default."""
     if "NaN" not in text and "Infinity" not in text:
@@ -230,7 +232,7 @@ def _json_nonstandard_constant(text: str) -> Optional[str]:
 
 
 def _refuse_introduced_json_constant(path: str, content: str,
-                                     pre_content: Optional[str]) -> Optional[WriteResult]:
+                                     pre_content: str | None) -> WriteResult | None:
     """Refuse a JSON write that INTRODUCES a nonstandard constant (strict JSON
     consumers reject them). A file that already holds one keeps accepting
     unrelated edits, which is why the lenient syntax gate can't do this check."""
@@ -255,7 +257,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
     patches "succeed" with a plausible diff while landing in the wrong directory).
     """
 
-    def __init__(self, terminal_env, cwd: str = None):
+    def __init__(self, terminal_env, cwd: str | None = None):
         self.env = terminal_env
         # Never os.getcwd(): that is the HOST path, absent inside container backends.
         self.cwd = cwd or getattr(terminal_env, 'cwd', None) or \
@@ -263,12 +265,12 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # Ordinary executables: bool cache (hits AND misses). rg is special — it has
         # an off-PATH resolver and may be installed mid-session — so only successful
         # rg resolutions are cached (see SearchMixin._resolve_command).
-        self._command_cache: Dict[str, bool] = {}
-        self._rg_resolution_cache: Dict[str, str] = {}
-        self._rg_modified_capability: Dict[str, Optional[str]] = {}
+        self._command_cache: dict[str, bool] = {}
+        self._rg_resolution_cache: dict[str, str] = {}
+        self._rg_modified_capability: dict[str, str | None] = {}
 
-    def _exec(self, command: str, cwd: str = None, timeout: int = None,
-              stdin_data: str = None) -> ExecuteResult:
+    def _exec(self, command: str, cwd: str | None = None, timeout: int | None = None,
+              stdin_data: str | None = None) -> ExecuteResult:
         """Run ``command`` on the backend. cwd: explicit arg → live ``env.cwd`` →
         init-time ``self.cwd``. ``stdin_data`` is piped (bypasses ARG_MAX)."""
         kwargs = {}
@@ -326,7 +328,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             result = self._exec(f"python -c {self._escape_shell_arg(snippet)}")
         return result
 
-    def _fenced_read(self, body: str, *more: str) -> "tuple[Optional[list[str]], Optional[int], ExecuteResult]":
+    def _fenced_read(self, body: str, *more: str) -> tuple[list[str] | None, int | None, ExecuteResult]:
         """Run BODY, then each of MORE, each in its own sentinel-delimited segment; return (those
         segments, BODY's exit status, reply).
 
@@ -380,7 +382,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             return None
         return self._decode_base64_sample(segments[0])
 
-    def _read_exact_bytes(self, path: str) -> "tuple[Optional[bytes], Optional[ExecuteResult]]":
+    def _read_exact_bytes(self, path: str) -> tuple[bytes | None, ExecuteResult | None]:
         """The file's bytes exactly, for the edit paths that write back every line they did not touch.
 
         The text transport cannot carry them: it decodes with errors="replace", so a byte UTF-8 cannot
@@ -438,7 +440,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         return ExecuteResult(stdout=_strip_terminal_fence_leaks(payload).strip() or f"{path}: exit {read_rc}",
                              exit_code=read_rc)
 
-    def _read_exact_bytes_hex(self, path: str) -> "tuple[Optional[bytes], Optional[ExecuteResult]]":
+    def _read_exact_bytes_hex(self, path: str) -> tuple[bytes | None, ExecuteResult | None]:
         """``od`` fallback for a backend without ``base64``, fenced the same way.
 
         ``read_file_raw`` is the edit paths' source read AND, through ``_apply_add``, their
@@ -468,7 +470,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         return data, None
 
     @staticmethod
-    def _decode_base64_sample(text: str) -> Optional[bytes]:
+    def _decode_base64_sample(text: str) -> bytes | None:
         """Decode one ``base64`` transport reply (a ``head -c N`` sample or a whole file). Whitespace-joins
         the whole text first (``base64`` wraps at 76 columns), so callers hand over exactly one
         segment; anything else fails validation → None."""
@@ -510,7 +512,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                     pass
             return True
 
-    def _is_likely_binary(self, path: str, content_sample: str = None) -> bool:
+    def _is_likely_binary(self, path: str, content_sample: str | None = None) -> bool:
         """Legacy text-layer binary check: extension, else >30% non-printable chars."""
         if has_binary_extension(path):
             return True
@@ -537,8 +539,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # gutter line on every newline-terminated file (`cat -n` semantics).
         # Exactly ONE terminator is dropped, so a genuinely selected trailing
         # blank line in a page keeps its own number.
-        if content.endswith('\n'):
-            content = content[:-1]
+        content = content.removesuffix('\n')
         return '\n'.join(
             f"{i}|{line if len(line) <= max_line_length else line[:max_line_length] + '... [truncated]'}"
             for i, line in enumerate(content.split('\n'), start=start_line))
@@ -608,7 +609,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             arg = _msys_to_windows_path(arg).replace("\\", "/")
         return "'" + arg.replace("'", "'\"'\"'") + "'"
 
-    def _atomic_write(self, path: str, content: str) -> "ExecuteResult":
+    def _atomic_write(self, path: str, content: str) -> ExecuteResult:
         """Write ``content`` atomically: stdin → temp file in the SAME directory →
         ``mv -f`` (same-FS rename; cross-device ``mv`` is copy+unlink, NOT atomic).
         ``mkdir -p`` folded in. Exit 0 = swap happened; non-zero = original intact.
@@ -620,7 +621,11 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         gives umask-default perms instead of mktemp's 0600 — not ``$(umask)``
         arithmetic (zsh parses leading-zero constants as decimal), quoted so zsh
         doesn't =word-expand. ``trap ... EXIT`` removes the temp on every failure.
+        The local POSIX backend does the same in-process (``tools.file_operations_native``).
         """
+        if self._native_read_enabled():
+            error = _native_io.atomic_write(self._native_path(path), content.encode("utf-8", "surrogateescape"))
+            return ExecuteResult(stdout=error or "", exit_code=1 if error else 0)
         q_path = self._escape_shell_arg(path)
         q_parent = self._escape_shell_arg(os.path.dirname(path) or ".")
         tmpl = self._escape_shell_arg(".hermes-tmp.XXXXXX")
@@ -664,7 +669,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             "trap - EXIT")
         return self._exec(script, stdin_data=content)
 
-    def _file_has_bom(self, path: str, pre_content: Optional[str] = None) -> bool:
+    def _file_has_bom(self, path: str, pre_content: str | None = None) -> bool:
         """Whether the on-disk file starts with a UTF-8 BOM. ALWAYS probes disk:
         ``pre_content`` usually comes from ``read_file_raw``, which strips BOMs, so
         trusting it would silently drop the marker on rewrite. Missing → False."""
@@ -721,7 +726,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         return ReadResult(error=(f"Terminal environment unavailable: could not stat {path} "
                                  "(the sandbox may still be starting or was removed). Retry shortly."))
 
-    def _detect_binary(self, path: str) -> tuple[bool, Optional[bytes]]:
+    def _detect_binary(self, path: str) -> tuple[bool, bytes | None]:
         """``(is_binary, sample_bytes)`` — byte-layer detection when the transport
         allows (base64 sample), else the legacy text heuristic (sample is None)."""
         sample_bytes = self._sample_file_bytes(path)
@@ -757,7 +762,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             return self._escape_shell_arg(sys.executable)
         return "python3"
 
-    def _exec_python_snippet(self, snippet: str, py: str = None) -> ExecuteResult:
+    def _exec_python_snippet(self, snippet: str, py: str | None = None) -> ExecuteResult:
         """Run a Python ``snippet`` in the terminal backend's interpreter.
 
         Base64-encodes the snippet so it survives every shell/quoting layer
@@ -775,7 +780,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         )
 
     def _try_read_utf16(self, path: str, offset: int, limit: int,
-                        file_size: int) -> "Optional[ReadResult]":
+                        file_size: int) -> ReadResult | None:
         """Read ``path`` as UTF-16 transcoded to UTF-8, or None (caller falls back
         to the binary-file error). Skips known-binary extensions and files over
         10 MiB. ``path`` must already be expanded."""
@@ -959,6 +964,10 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # microseconds and self.env is never rebound, so nothing to memoize.
         return sys.platform != "win32" and self._lsp_local_only()
 
+    def _native_path(self, path: str) -> str:
+        """``path`` resolved the way the shell resolves it: against the live backend cwd."""
+        return path if os.path.isabs(path) else os.path.join(getattr(self.env, "cwd", None) or self.cwd, path)
+
     def _read_file_native(self, path: str, offset: int, limit: int) -> ReadResult:
         """``read_file`` without a shell — same contract as the shell path, byte for
         byte. ``os.stat`` is the ``[ -f ]`` guard (a stat, never an open, so FIFOs and
@@ -1100,7 +1109,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         return self._suggest_similar_files(path)
 
     def _read_binary_file(self, path: str, offset: int, limit: int,
-                          file_size: int, sample_bytes: Optional[bytes]) -> ReadResult:
+                          file_size: int, sample_bytes: bytes | None) -> ReadResult:
         """Binary branch shared by every read path: UTF-16 text (Notepad, PowerShell
         ``>``) trips the binary guard; transcode it, else refuse with the type name.
 
@@ -1157,7 +1166,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
 
         # Only the page reaching the file's final line can carry the ``cut`` newline
         # artifact (see _assemble_read_result); probe the last byte just for that case.
-        file_ends_with_newline: Optional[bool] = None
+        file_ends_with_newline: bool | None = None
         if not total_lines > end_line and read_output.endswith('\n'):
             tail_result = self._exec(f"tail -c 1 {self._escape_shell_arg(path)} | wc -l")
             if tail_result.exit_code == 0:
@@ -1168,7 +1177,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
 
     def _assemble_read_result(self, read_output: str, *, offset: int, end_line: int,
                               total_lines: int, file_size: int,
-                              file_ends_with_newline: Optional[bool]) -> ReadResult:
+                              file_ends_with_newline: bool | None) -> ReadResult:
         """Turn a raw ``sed | cut`` page into the final ``ReadResult``. Shared by every
         read path so the BOM strip, pagination hint, ``cut`` newline-artifact fix and
         the ambiguous-silence guards never drift apart. ``file_ends_with_newline`` is
@@ -1217,7 +1226,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         ("\u2018", "'"),  # left single quotation mark
     )
 
-    def _unicode_variant_match(self, path: str) -> Optional[str]:
+    def _unicode_variant_match(self, path: str) -> str | None:
         """On-disk spelling of a file whose name is unicode-equivalent to ``path``
         (NFC/NFD, confusable spaces/quotes). Returns the entry only when EXACTLY one
         matches — several candidates = homoglyph collision, guessing would read the
@@ -1306,9 +1315,10 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # Strip a leading BOM (a phantom U+FEFF defeats an exact first-line match);
         # write_file re-probes disk and restores it.
         raw_content, _ = _strip_bom(data.decode("utf-8", "surrogateescape"))
-        return ReadResult(content=raw_content, file_size=file_size)
+        return ReadResult(content=raw_content, file_size=file_size,
+                          _content_sha256=hashlib.sha256(data).hexdigest())
 
-    def read_file_bytes(self, path: str, max_bytes: Optional[int] = None) -> ReadResult:
+    def read_file_bytes(self, path: str, max_bytes: int | None = None) -> ReadResult:
         """Read binary-safe bytes (as base64) from any shell-backed environment."""
         path = self._expand_path(path)
         file_size, status = self._probe_regular_file(path)
@@ -1393,7 +1403,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
     # through the pipe; anything else can't be encoded at all).
     _LONE_SURROGATE_RE = re.compile(r"[\ud800-\udc7f\udd00-\udfff]")
 
-    def _reject_unencodable(self, path: str, content: str) -> Optional[WriteResult]:
+    def _reject_unencodable(self, path: str, content: str) -> WriteResult | None:
         """Refuse content with a lone surrogate BEFORE any subprocess: letting it
         reach the pipe spawns a child that hangs or truncates the target via
         empty-stdin ``cat``. A regex scan needs no encode."""
@@ -1406,7 +1416,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         return None
 
     @staticmethod
-    def _fail_closed_syntax_error(path: str, ext: str, content: str) -> Optional[WriteResult]:
+    def _fail_closed_syntax_error(path: str, ext: str, content: str) -> WriteResult | None:
         """Fail-closed pre-write gate for ``_FAIL_CLOSED_INPROC_EXTS`` (JSON/YAML/TOML):
         a structured-format write that doesn't parse is a corrupt write, so refuse
         before any bytes touch disk. Checked against the RAW content, before the
@@ -1422,7 +1432,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             f"{ext} syntax validation ({err}). The file was "
             "NOT created or modified. Fix the content and retry."))
 
-    def _write_probe_cmd(self, path: str, sentinel: str, body: Optional[str]) -> str:
+    def _write_probe_cmd(self, path: str, sentinel: str, body: str | None) -> str:
         """One shell command for the on-disk questions ``write_file`` asks. Two
         segments closed by a ``sentinel`` line: base64 of the first three bytes (BOM
         detection at the byte layer, same on-disk truth as ``_file_has_bom``), then
@@ -1442,8 +1452,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             f"{body_cmd}; "
             f"else echo {MISSING_SENTINEL}; fi")
 
-    def _probe_write_target(self, path: str, pre_content: Optional[str], want_pre: bool,
-                            ) -> tuple[bool, Optional[str], Optional[str]]:
+    def _probe_write_target(self, path: str, pre_content: str | None, want_pre: bool,
+                            ) -> tuple[bool, str | None, str | None]:
         """``(has_bom, pre_content, original_line_ending)`` for ``path`` in ONE
         round-trip (replaces ``cat`` when pre-content is wanted, a ``head -c 4096``
         line-ending sample and a ``head -c 3`` BOM check). Semantics unchanged:
@@ -1451,11 +1461,21 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         from pre-content when there is any, else from the sample; the BOM always comes
         from disk. An unparseable reply falls back to the separate probes."""
         if want_pre and pre_content is None:
-            body_mode: Optional[str] = "cat"
+            body_mode: str | None = "cat"
         elif not pre_content:
             body_mode = "sample"
         else:
             body_mode = None
+
+        native = _native_io.probe(self._native_path(path), body_mode == "cat") if self._native_read_enabled() else None
+        if native is not None:
+            has_bom, raw = native
+            # Decoded as the shell transport decodes (errors="replace"): same pre_content either way.
+            body = raw.decode("utf-8", "replace") if raw else ""
+            if body_mode == "cat" and body:
+                pre_content = body
+            sample = pre_content or (body if body_mode == "sample" else "")
+            return has_bom, pre_content, _detect_line_ending(sample) if sample else None
 
         sentinel = _new_sentinel(_WRITE_SENTINEL_PREFIX)
         probe = self._exec(self._write_probe_cmd(path, sentinel, body_mode))
@@ -1499,8 +1519,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             ending = None
         return has_bom, pre_content, ending
 
-    def _probe_write_target_sequential(self, path: str, pre_content: Optional[str], want_pre: bool,
-                                       ) -> tuple[bool, Optional[str], Optional[str]]:
+    def _probe_write_target_sequential(self, path: str, pre_content: str | None, want_pre: bool,
+                                       ) -> tuple[bool, str | None, str | None]:
         """Pre-compound form of ``_probe_write_target``: one exec per question. A
         failed ``cat`` leaves pre_content None so the lint-delta and LSP consumers
         degrade gracefully."""
@@ -1515,14 +1535,16 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             ending = _detect_line_ending(head.stdout) if head.exit_code == 0 and head.stdout else None
         return self._file_has_bom(path, pre_content), pre_content, ending
 
-    def _verify_written_hash(self, path: str, content_bytes: bytes) -> tuple[Optional[bool], Optional[WriteResult]]:
+    def _verify_written_hash(self, path: str, content_bytes: bytes) -> tuple[bool | None, WriteResult | None]:
         """Compare the on-disk sha256 to the intended bytes: ``(verified, error)``.
         The explicit flag saves the model a confirming re-read; a mismatch is a hard
         error. ``verified`` is None when the hash could not be taken."""
         try:
-            hash_result = self._exec(f"sha256sum {self._escape_shell_arg(path)} 2>/dev/null")
-            if hash_result.exit_code == 0 and hash_result.stdout.strip():
+            disk_sha = _native_io.sha256_of(self._native_path(path)) if self._native_read_enabled() else None
+            hash_result = None if disk_sha else self._exec(f"sha256sum {self._escape_shell_arg(path)} 2>/dev/null")
+            if hash_result is not None and hash_result.exit_code == 0 and hash_result.stdout.strip():
                 disk_sha = hash_result.stdout.strip().split()[0]
+            if disk_sha:
                 if disk_sha != hashlib.sha256(content_bytes).hexdigest():
                     return False, WriteResult(error=(
                         f"Post-write verification failed for {path}: on-disk "
@@ -1534,18 +1556,19 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             pass
         return None, None
 
-    def write_file(self, path: str, content: str, pre_content: Optional[str] = None) -> WriteResult:
+    def write_file(self, path: str, content: str, pre_content: str | None = None) -> WriteResult:
         """Write content atomically, creating parent directories as needed.
 
         Order: deny list → lone-surrogate refusal → fail-closed syntax gate on the
         CANDIDATE content (JSON/YAML/TOML) → one compound on-disk probe
         (pre-content when wanted, CRLF, BOM; see ``_probe_write_target``) →
         JSON NaN/Infinity refusal when the write introduces one → CRLF/BOM
-        preservation → LSP baseline snapshot → atomic write (content rides
-        stdin: no ARG_MAX limit) → sha256 verification → lint delta → LSP
-        diagnostics when syntax is clean. ``pre_content``: pre-edit content the
+        preservation → atomic write (content rides stdin: no ARG_MAX limit) →
+        sha256 verification → lint delta → LSP check when syntax is clean
+        (non-blocking; the pre-edit content is its baseline, see ``_maybe_lsp_diagnostics``). ``pre_content``: pre-edit content the
         caller already has (skips the read); BOM detection always probes disk.
         """
+        started = time.monotonic()
         path = self._expand_path(path)
         denied = get_write_denied_error(path)
         if denied:
@@ -1572,8 +1595,6 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             content = _normalize_line_endings(content, "\r\n")
         if has_bom and not _has_bom(content):
             content = _UTF8_BOM + content
-        # Best-effort snapshot so the LSP tier reports only this edit's diagnostics.
-        self._snapshot_lsp_baseline(path)
         # ``dirs_created`` means "parent dirs ensured" (mkdir -p is folded into
         # _atomic_write; its failure surfaces as the atomic-write error below).
         dirs_created = bool(os.path.dirname(path))
@@ -1591,9 +1612,10 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         lint_result = self._check_lint_delta(path, pre_content=pre_content, post_content=content)
         # LSP diagnostics are a separate channel, fired only when the syntax tier is
         # clean (no point asking an LSP about a file that won't parse).
-        lsp_diagnostics: Optional[str] = None
+        lsp_diagnostics: str | None = None
         if lint_result.success or lint_result.skipped:
-            lsp_diagnostics = self._maybe_lsp_diagnostics(path, pre_content=pre_content, post_content=content) or None
+            lsp_diagnostics = self._maybe_lsp_diagnostics(
+                path, pre_content=pre_content, post_content=content, started=started) or None
         return WriteResult(
             bytes_written=len(content_bytes), dirs_created=dirs_created, verified=content_verified,
             _content_sha256=hashlib.sha256(content_bytes).hexdigest(),
@@ -1602,7 +1624,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
     # --- PATCH (replace mode) -----------------------------------------------
 
     def _no_match_result(self, path: str, content: str, old_string: str,
-                         new_string: str, match_count: int, error: Optional[str]) -> PatchResult:
+                         new_string: str, match_count: int, error: str | None) -> PatchResult:
         """PatchResult for a failed fuzzy match. Already-applied detection first: the
         most common production failure is a re-send of an edit that already landed,
         and a success-shaped no-op stops the model burning turns on re-reads.
@@ -1622,7 +1644,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             pass
         return PatchResult(error=err_msg)
 
-    def _verify_patch_persisted(self, path: str, new_content: str) -> Optional[PatchResult]:
+    def _verify_patch_persisted(self, path: str, new_content: str) -> PatchResult | None:
         """Re-read ``path`` and confirm the intended bytes landed; error result or None.
         Catches silent persistence failures (FS oddities, races, truncated pipe).
         Line endings are normalized first (Windows text-mode ``open()`` writes LF as
@@ -1661,9 +1683,10 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         raw_content = data.decode("utf-8", "surrogateescape")
         content, _ = _strip_bom(raw_content)
 
-        from tools.fuzzy_match import fuzzy_find_and_replace
-        new_content, match_count, _strategy, error = fuzzy_find_and_replace(
-            content, old_string, new_string, replace_all)
+        from tools.fuzzy_match import boundary_note, fuzzy_find_and_replace
+        correction_notes = []
+        new_content, match_count, strategy, error = fuzzy_find_and_replace(
+            content, old_string, new_string, replace_all, correction_notes=correction_notes)
         if error or match_count == 0:
             return self._no_match_result(path, content, old_string, new_string, match_count, error)
         # Models send bare-LF old/new strings; normalize the substituted region to
@@ -1677,12 +1700,14 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         verify_error = self._verify_patch_persisted(path, new_content)
         if verify_error is not None:
             return verify_error
-        lint_result = self._check_lint_delta(path, pre_content=content, post_content=new_content)
+        # write_file already ran the lint delta on these bytes (pre = the raw read).
         return PatchResult(
             success=True, diff=self._unified_diff(content, new_content, path), files_modified=[path],
-            lint=lint_result.to_dict() if lint_result else None,
+            lint=write_result.lint,
+            note="\n".join(n for n in (*correction_notes, boundary_note([strategy])) if n) or None,
             # From the internal write_file call, whose baseline was the pre-patch content.
-            lsp_diagnostics=write_result.lsp_diagnostics)
+            lsp_diagnostics=write_result.lsp_diagnostics,
+            _writes=[(path, hashlib.sha256(data).hexdigest(), write_result._content_sha256)])
 
     def patch_v4a(self, patch_content: str) -> PatchResult:
         """Apply V4A through the historical one-argument interface."""
@@ -1691,7 +1716,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
     def patch_v4a_resolved(
         self,
         patch_content: str,
-        resolved_targets: Optional[Dict[str, ResolvedMutationTarget]],
+        resolved_targets: dict[str, ResolvedMutationTarget] | None,
     ) -> PatchResult:
         """Apply a V4A patch using captured backend identities when supplied."""
         from tools.patch_parser import parse_v4a_patch, apply_v4a_operations
@@ -1713,7 +1738,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
     # --- SEARCH -------------------------------------------------------------
 
     def search(self, pattern: str, path: str = ".", target: str = "content",
-               file_glob: Optional[str] = None, limit: int = 50, offset: int = 0,
+               file_glob: str | None = None, limit: int = 50, offset: int = 0,
                output_mode: str = "content", context: int = 0,
                order: str = "discovery") -> SearchResult:
         """Search for content (regex, ``target="content"``) or files (glob,

@@ -1,6 +1,6 @@
 name: alans-way-computer
 repo: https://github.com/capthvnsen/alans-way-agents
-sha: b9dfb89a1acb564b0750c1c800210ca60fbe3bf5
+sha: f8dcdaf5a4d78573229e34b2c4962b43651e9cd7
 subdir: alans-way-computer
 version: "0.21.7"
 title: "Alan's Way Plugin: Computer Use"
@@ -9,7 +9,7 @@ maintainer: capthvnsen
 tier: community
 category: tools
 requires_hermes: ">=0.21.5"
-docs_url: https://github.com/capthvnsen/alans-way-agents/tree/b9dfb89a1acb564b0750c1c800210ca60fbe3bf5/alans-way-computer
+docs_url: https://github.com/capthvnsen/alans-way-agents/tree/f8dcdaf5a4d78573229e34b2c4962b43651e9cd7/alans-way-computer
 readme: true
 platforms: [linux, macos]
 known_issues:
@@ -20,7 +20,7 @@ known_issues:
   - "The VM desktop path needs xdotool, a screenshot tool (scrot, maim or ImageMagick import), the AT-SPI bus and python3-gi on the VM. Without them those calls fail and the agent reports it; setup.sh warns about what is missing."
   - "A default som capture may fetch the window screenshot even when it is omitted from the model after the 35% coverage check. Use mode vision to request it explicitly, or mode ax for an element-only capture. When a screenshot is omitted, coordinate= and element bounds are screen pixels."
   - "Mac and Windows action replies update the held element list without shifting surviving numbers. On Linux, capture again before acting by number after a tree change; cut replies do not prove an unseen control is gone. A timeout or hung app can leave the action's outcome uncertain: capture before retrying."
-  - "Between 0a61eb66894a00bf2e8a8091359ffb9bcf196a70 and b9dfb89a1acb564b0750c1c800210ca60fbe3bf5, alans-way-computer changes only its manifest version from 0.21.6 to 0.21.7; provider code and README are unchanged. It is pinned alongside alans-way because it uses the configured workspace router; remote end-to-end compatibility remains unverified."
+  - "Between 0a61eb66894a00bf2e8a8091359ffb9bcf196a70 and f8dcdaf5a4d78573229e34b2c4962b43651e9cd7, alans-way-computer changes only its manifest version from 0.21.6 to 0.21.7; provider code and README are unchanged. It is pinned alongside alans-way because it uses the configured workspace router; remote end-to-end compatibility remains unverified."
 capabilities:
   provides_tools: []
   provides_hooks: []

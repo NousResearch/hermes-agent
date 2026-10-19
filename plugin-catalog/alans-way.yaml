@@ -1,6 +1,6 @@
 name: alans-way
 repo: https://github.com/capthvnsen/alans-way-agents
-sha: b9dfb89a1acb564b0750c1c800210ca60fbe3bf5
+sha: f8dcdaf5a4d78573229e34b2c4962b43651e9cd7
 subdir: alans-way
 version: "0.21.7"
 title: "Alan's Way Plugin"
@@ -10,7 +10,7 @@ maintainer: capthvnsen
 tier: community
 category: automation
 requires_hermes: ">=0.21.5"
-docs_url: https://github.com/capthvnsen/alans-way-agents/tree/b9dfb89a1acb564b0750c1c800210ca60fbe3bf5/alans-way
+docs_url: https://github.com/capthvnsen/alans-way-agents/tree/f8dcdaf5a4d78573229e34b2c4962b43651e9cd7/alans-way
 readme: true
 platforms: [linux, macos]
 known_issues:

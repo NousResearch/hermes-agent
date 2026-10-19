@@ -4,6 +4,13 @@ from typing import Any
 VALID_THREAD_AUTO_ARCHIVE_MINUTES = frozenset({60, 1440, 4320, 10080})
 
 
+def thread_yaml_extra(config: dict) -> dict:
+    """Bridge only authored values; an adapter default must not overwrite nested config."""
+    if "thread_auto_archive_duration" in config:
+        return {"thread_auto_archive_duration": config["thread_auto_archive_duration"]}
+    return {}
+
+
 def is_thread_auto_archive_duration(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value in VALID_THREAD_AUTO_ARCHIVE_MINUTES
 

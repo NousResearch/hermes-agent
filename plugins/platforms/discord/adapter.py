@@ -82,7 +82,7 @@ class _Snowflake:
 
 
 from .thread_config import (
-    VALID_THREAD_AUTO_ARCHIVE_MINUTES, is_thread_auto_archive_duration, validate_thread_auto_archive_duration,
+    VALID_THREAD_AUTO_ARCHIVE_MINUTES, is_thread_auto_archive_duration, thread_yaml_extra, validate_thread_auto_archive_duration,
 )
 _DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}
 _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
@@ -7320,7 +7320,7 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     def _csv(value) -> str:
         return ",".join(str(v) for v in value) if isinstance(value, list) else str(value)
 
-    seeded_extra = {"thread_auto_archive_duration": discord_cfg.get("thread_auto_archive_duration", 1440)}
+    seeded_extra = thread_yaml_extra(discord_cfg)
     for key, env_key in _YAML_BOOL_ENV_KEYS:
         if key in discord_cfg:
             seeded_extra[key] = discord_cfg[key]  # original type: the shared-key loop seeds bools as bools

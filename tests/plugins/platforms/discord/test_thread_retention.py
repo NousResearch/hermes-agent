@@ -11,13 +11,20 @@ from plugins.platforms.discord.adapter import DiscordAdapter
 
 
 @pytest.mark.asyncio
-async def test_profile_duration_reaches_gateway_handoff_auto_and_model_tool(tmp_path, monkeypatch):
+@pytest.mark.parametrize("shape", ["top-level", "nested-with-root", "nested-and-root-conflict"])
+async def test_profile_duration_reaches_gateway_handoff_auto_and_model_tool(tmp_path, monkeypatch, shape):
     from tools import discord_tool
     homes=[tmp_path/"a",tmp_path/"b"]
     for home,value in zip(homes,[10080,"invalid"]):
         home.mkdir()
-        (home/"config.yaml").write_text(json.dumps({"platforms":{"discord":{"enabled":True}},
-            "discord":{"thread_auto_archive_duration":value}}),encoding="utf-8")
+        config = {"platforms": {"discord": {"enabled": True}},
+                  "discord": {"thread_auto_archive_duration": value}}
+        if shape != "top-level":
+            config["platforms"]["discord"]["extra"] = {"thread_auto_archive_duration": value}
+            config["discord"] = {"require_mention": False}
+            if shape == "nested-and-root-conflict":
+                config["discord"]["thread_auto_archive_duration"] = 60
+        (home/"config.yaml").write_text(json.dumps(config), encoding="utf-8")
     requests=[]
     def request(method,path,token,**kwargs):
         requests.append(kwargs["body"])

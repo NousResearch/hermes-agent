@@ -94,6 +94,7 @@ def test_listener_config_keeps_uvicorn_on_the_console_and_out_of_the_hermes_logs
     hermes_logging.flush_log_queue()
 
     out, err = capsys.readouterr()
+    assert logging.getLogger("uvicorn").level == logging.INFO  # LOGGING_CONFIG's, not the root's
     assert err.count("uvicorn-console-warning") == 1
     assert "/access-line" not in out + err
     agent_log = (root / "logs" / "agent.log").read_text(encoding="utf-8-sig")

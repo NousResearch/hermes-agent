@@ -542,6 +542,8 @@ def _uvicorn_console_logging() -> None:
             handler = logging.StreamHandler(stream)
             handler.setFormatter(formatter)
             logger.addHandler(handler)
+    # LOGGING_CONFIG's level for the parent; uvicorn.Config sets only the child loggers' levels.
+    logging.getLogger("uvicorn").setLevel(logging.INFO)
 
 
 def build_listener_server(served_app, host: str, port: int, *, auth_required: bool,

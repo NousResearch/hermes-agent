@@ -650,6 +650,81 @@ def test_an_untargeted_navigation_that_moves_the_one_tab_back_leaves_nothing_wit
     assert _call("browser_click", {"ref": "@e1"})["status"] == "clicked"
 
 
+# --- a new tab the controller reports on about:blank -------------------------------------------------------------
+
+
+def test_a_new_tab_reported_on_about_blank_is_read_back_until_it_has_landed(lane):
+    """Chromium can report a tab it just created on about:blank as well as with no address at all."""
+    on_blank = {"tab": {**REDIRECTING_TAB["tab"], "url": "about:blank"}}
+    broker = lane(on_blank, {"browser_tabs": _tab_list("about:blank", SECRET_PAGE["url"])})
+
+    out = _call("browser_tab_create", {"url": "https://example.test/redirect"})
+
+    _assert_withheld(out, "blocked.test")
+    assert [action for action, _ in broker.dispatched] == ["browser_tab_create"] + ["browser_tabs"] * 2
+
+
+def test_a_new_tab_reported_on_about_blank_that_lands_on_an_allowed_page_reports_that_page(lane):
+    on_blank = {"tab": {**REDIRECTING_TAB["tab"], "url": "about:blank"}}
+    lane(on_blank, {"browser_tabs": _tab_list("https://example.test/landed")})
+
+    assert _call("browser_tab_create", {"url": "https://example.test/start"})["tab"]["url"] == "https://example.test/landed"
+
+
+# --- a screenshot carries no address: the tab list says what it shows --------------------------------------------
+
+SCREENSHOT = {"status": "captured", "dataUrl": "data:image/png;base64,AAAA"}
+
+
+def _assert_image(out):
+    """The screenshot reached the model as an image (saved as a file; this test model takes no images)."""
+    assert out["success"] is True and out["screenshot_path"].endswith(".png"), out
+
+
+def test_a_screenshot_of_a_page_that_moved_to_a_blocked_address_on_its_own_is_withheld(lane):
+    """The last checked result was fine; the page then redirected by itself before the screenshot."""
+    broker = lane(SCREENSHOT, {"browser_tabs": _tabs((41, SECRET_PAGE["url"]))})
+
+    out = json.loads(_raw("browser_screenshot", {}))
+
+    _assert_withheld(out, "blocked.test")
+    assert "dataUrl" not in out and "base64" not in json.dumps(out)
+    assert _call("browser_snapshot", {"tab_id": 41})["code"] == "tab_withheld"
+    assert [action for action, _ in broker.dispatched][:2] == ["browser_screenshot", "browser_tabs"]
+
+
+def test_a_screenshot_of_a_named_tab_is_judged_by_that_tab_only(lane):
+    lane(SCREENSHOT, {"browser_tabs": _tabs((41, SECRET_PAGE["url"]), (57, "https://example.test/ok"))})
+
+    assert _call("browser_screenshot", {"tab_id": 41})["code"] == "redirect_blocked"
+    _assert_image(_call("browser_screenshot", {"tab_id": 57}))
+
+
+def test_an_untargeted_screenshot_with_several_tabs_is_withheld_while_any_of_them_is_blocked(lane):
+    lane(SCREENSHOT, {"browser_tabs": _tabs((57, "https://example.test/ok"), (41, SECRET_PAGE["url"]))})
+
+    assert _call("browser_screenshot", {})["code"] == "redirect_blocked"
+
+
+def test_a_screenshot_of_an_allowed_page_comes_back_as_the_controller_sent_it(lane):
+    lane(SCREENSHOT, {"browser_tabs": _tabs((41, "https://example.test/ok"), (57, "https://example.test/also-ok"))})
+
+    _assert_image(_call("browser_screenshot", {}))
+
+
+def test_a_screenshot_error_carries_no_image_and_costs_no_tab_list(lane):
+    broker = lane({"error": "tab_hidden"}, {"browser_tabs": _tabs((41, SECRET_PAGE["url"]))})
+
+    assert _call("browser_screenshot", {}) == {"error": "tab_hidden"}
+    assert [action for action, _ in broker.dispatched] == ["browser_screenshot"]
+
+
+def test_a_screenshot_from_a_controller_that_cannot_list_tabs_comes_back_unchanged(lane):
+    lane(SCREENSHOT, {"browser_tabs": RuntimeError("not offered")})
+
+    _assert_image(_call("browser_screenshot", {}))
+
+
 # --- the floor's DNS answer is reused per host --------------------------------------------------------------------
 
 

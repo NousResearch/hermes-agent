@@ -287,8 +287,9 @@ def _data_url(image=PNG):
     return "data:image/png;base64," + base64.b64encode(image).decode()
 
 
-def test_an_extension_screenshot_becomes_the_native_image_envelope_not_text(monkeypatch):
+def test_an_extension_screenshot_becomes_the_native_image_envelope_not_text(monkeypatch, tmp_path):
     monkeypatch.setattr("tools.vision_tools._should_use_native_vision_fast_path", lambda: True)
+    monkeypatch.setattr(browser_tool, "_screenshots_dir", lambda: tmp_path)
     raw = json.dumps({"status": "captured", "dataUrl": _data_url()})
 
     result = browser_tool._extension_screenshot_result(raw)
@@ -296,7 +297,8 @@ def test_an_extension_screenshot_becomes_the_native_image_envelope_not_text(monk
     assert isinstance(result, dict) and result["_multimodal"] is True
     assert [part["type"] for part in result["content"]] == ["text", "image_url"]
     assert "base64" not in json.dumps(result["content"][0]) and "base64" not in result["text_summary"]
-    assert (result["meta"]["image_url"]).endswith(".png")
+    # the file itself, not meta["image_url"], which vision_tools cuts at 200 characters (long temp paths)
+    assert [shot.read_bytes() for shot in tmp_path.glob("browser_screenshot_*.png")] == [PNG]
 
 
 def test_an_extension_screenshot_for_a_model_without_images_is_saved_and_named(monkeypatch):

@@ -3,7 +3,8 @@
 ``_extension_url_guard`` (in ``tools.browser_tool``) judges the URL that was asked for, before anything is
 sent. A redirect, a clicked link or a submitted form can end somewhere else, so the URL the controller reports
 back is judged too, by the same policy, for every result that carries a page address (navigate, back, click,
-press, type, fill, select, hover, scroll, snapshot, the page a batch ended on and each tab in a tab list).
+press, type, fill, select, hover, scroll, snapshot, the page a batch ended on, each tab in a tab list, and the
+page a screenshot shows, which the controller does not report and Hermes reads from the tab list).
 A page that fails is withheld whole, and the tab that is showing it is remembered: the extension cannot blank
 a tab the way the built-in browser does, so every later call on that tab is refused until it moves to an
 allowed page or is closed.
@@ -262,6 +263,23 @@ def _settle_new_tab(route: RouteContext, tab_id: int) -> str:
     return ""
 
 
+def _screenshot_page_url(route: RouteContext, tab: Optional[int]) -> str:
+    """The address of the page a screenshot shows. The controller answers a screenshot with the image alone,
+    and a page can change address on its own after the last result Hermes checked, so the tab list is read: the
+    named tab's address, or the only tab's. With several tabs and none named, the image could be of any of
+    them, so the address of a tab on a blocked one is returned when there is one (``""`` when there is none or
+    the list cannot be read)."""
+    payload = _read_tabs(route)
+    if payload is None:
+        return ""
+    tabs = [t for t in payload["tabs"] if isinstance(t, dict) and isinstance(t.get("url"), str)]
+    if tab is None and len(payload["tabs"]) == 1:
+        tab = _int_id(payload["tabs"][0].get("id")) if isinstance(payload["tabs"][0], dict) else None
+    if tab is not None:
+        return next((t["url"] for t in tabs if _int_id(t.get("id")) == tab), "")
+    return next((t["url"] for t in tabs if _policy_error(t["url"]) is not None), "")
+
+
 def _move_back(route: RouteContext, tab: Optional[int]) -> bool:
     """Take a tab off a withheld page with one browser_back, the nearest thing to the built-in lane's
     about:blank (the extension only navigates to http(s) pages). True when it landed on an allowed page."""
@@ -380,13 +398,15 @@ def extension_landing_guard(action: str, args: dict[str, Any], result: Any, rout
     if action == "browser_tab_create":
         new_tab = payload.get("tab") if isinstance(payload.get("tab"), dict) else {}
         tab = new_tab.get("id") if isinstance(new_tab.get("id"), int) and not isinstance(new_tab.get("id"), bool) else None
-        if not landed and tab is not None and route is not None:
+        if landed in _UNSETTLED_URLS and tab is not None and route is not None:
             landed = _settle_new_tab(route, tab)
+    elif action == "browser_screenshot" and not landed and route is not None and isinstance(payload.get("dataUrl"), str):
+        landed = _screenshot_page_url(route, tab)  # the image carries no address
     policy_error = _policy_error(landed)
     if policy_error is None:
         if landed:
             _withheld.discard(key, tab)
-            if action == "browser_tab_create" and not _landed_url(action, payload):
+            if action == "browser_tab_create" and _landed_url(action, payload) != landed:
                 return dump({**payload, "tab": {**payload["tab"], "url": landed}})
         return result
 

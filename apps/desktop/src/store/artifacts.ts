@@ -1,23 +1,24 @@
-import { atom, computed } from 'nanostores'
+import { atom } from 'nanostores'
 
 import { artifactContentHash, type ArtifactDetection, type ArtifactKind, artifactSlug } from '@/lib/artifact-detect'
-import { persistentAtom } from '@/lib/persisted'
 
-import { $rightRailActiveTabId, PREVIEW_PANE_ID, RIGHT_RAIL_PREVIEW_TAB_ID, selectRightRailTab } from './layout'
-import { setPaneOpen } from './panes'
-import { $activeSessionId, $selectedStoredSessionId } from './session'
+import { closeArtifactPreviewTabs, openPreview, type PreviewTarget } from './preview'
 
 /**
  * ARTIFACT REGISTRY — substantial generated content (HTML pages, large SVGs,
  * long code) produced in the transcript, promoted out of the message flow into
- * versioned, openable artifacts. The renderer owns this state: artifacts are a
- * presentation of message content the backend already persists, so the store
- * is a cache keyed by session with bounded history.
+ * versioned content the right rail can preview. The registry is authoritative
+ * for artifact content; a rail tab only ever holds a reference to it, so a new
+ * version shows up in an already-open tab.
  *
  * Identity: one artifact = one (session, slug) pair, where the slug derives
  * from kind + language + title. When the model regenerates "the dashboard"
  * three times in a session, that is ONE artifact with three versions, exactly
  * like a document the user keeps refining — not three cards.
+ *
+ * Memory-only: the transcript is the durable copy. Cards re-register as they
+ * render, so a reload rebuilds the registry (and its version history) for free
+ * instead of parking megabytes of generated HTML in localStorage.
  */
 
 export interface ArtifactVersion {
@@ -39,98 +40,45 @@ export interface ArtifactRecord {
   versions: ArtifactVersion[]
 }
 
-type ArtifactRegistry = Record<string, ArtifactRecord[]>
+export type ArtifactRegistry = Record<string, ArtifactRecord[]>
 
-const STORAGE_KEY = 'hermes.desktop.artifacts.v1'
+export const $artifactRegistry = atom<ArtifactRegistry>({})
+
+/** Per-artifact selected version index; absent = newest. */
+export const $artifactVersionSelection = atom<Record<string, number>>({})
+
 const MAX_ARTIFACTS_PER_SESSION = 24
 const MAX_VERSIONS_PER_ARTIFACT = 20
 const MAX_SESSIONS = 40
-// localStorage is ~5MB; artifacts carry full content, so cap the persisted
-// bytes per artifact aggressively. Oversized artifacts survive in memory for
-// the app's lifetime but persist only their newest version(s) that fit.
-const MAX_PERSISTED_CHARS_PER_ARTIFACT = 120_000
 
-export type ArtifactTabId = `artifact:${string}`
+/**
+ * Global retained-content budget in UTF-16 code units (the representation
+ * actually held by JS strings). Count caps alone still admit up to
+ * 40×24×20 = 19,200 unbounded content strings; this bounds the duplicate
+ * history the registry pins in memory (#108172). Content is never truncated:
+ * the transcript stays the durable copy, evicted cards re-register on render,
+ * and the single newest record is always retained even when oversized.
+ */
+const MAX_REGISTRY_CONTENT_UNITS = 4 * 1024 * 1024
 
-export function artifactTabId(artifactId: string): ArtifactTabId {
-  return `artifact:${artifactId}`
-}
+function recordContentUnits(record: ArtifactRecord): number {
+  let total = 0
 
-export function artifactIdFromTabId(tabId: string): string | null {
-  return tabId.startsWith('artifact:') ? tabId.slice('artifact:'.length) : null
-}
-
-function isArtifactVersion(value: unknown): value is ArtifactVersion {
-  if (!value || typeof value !== 'object') {
-    return false
+  for (const version of record.versions) {
+    total += version.content.length
   }
 
-  const r = value as Record<string, unknown>
-
-  return typeof r.content === 'string' && typeof r.createdAt === 'number' && typeof r.hash === 'string'
+  return total
 }
 
-function isArtifactRecord(value: unknown): value is ArtifactRecord {
-  if (!value || typeof value !== 'object') {
-    return false
+function registryContentUnits(records: readonly ArtifactRecord[]): number {
+  let total = 0
+
+  for (const record of records) {
+    total += recordContentUnits(record)
   }
 
-  const r = value as Record<string, unknown>
-
-  return (
-    typeof r.createdAt === 'number' &&
-    typeof r.id === 'string' &&
-    (r.kind === 'code' || r.kind === 'html' || r.kind === 'svg') &&
-    typeof r.language === 'string' &&
-    typeof r.sessionId === 'string' &&
-    typeof r.slug === 'string' &&
-    typeof r.title === 'string' &&
-    typeof r.updatedAt === 'number' &&
-    Array.isArray(r.versions) &&
-    r.versions.length > 0 &&
-    r.versions.every(isArtifactVersion)
-  )
-}
-
-function sanitizeRegistry(value: unknown): ArtifactRegistry {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return {}
-  }
-
-  const out: ArtifactRegistry = {}
-
-  for (const [sessionId, records] of Object.entries(value as Record<string, unknown>)) {
-    if (!Array.isArray(records)) {
-      continue
-    }
-
-    const valid = records.filter(isArtifactRecord)
-
-    if (valid.length > 0) {
-      out[sessionId] = valid
-    }
-  }
-
-  return out
-}
-
-function persistedVersions(record: ArtifactRecord): ArtifactVersion[] {
-  const kept: ArtifactVersion[] = []
-  let budget = MAX_PERSISTED_CHARS_PER_ARTIFACT
-
-  // Newest first; always keep at least the current version even if oversized.
-  for (let i = record.versions.length - 1; i >= 0; i -= 1) {
-    const version = record.versions[i]!
-
-    if (kept.length > 0 && version.content.length > budget) {
-      break
-    }
-
-    budget -= version.content.length
-    kept.unshift(version)
-  }
-
-  return kept
+  return total
 }
 
 function pruneRegistry(registry: ArtifactRegistry): ArtifactRegistry {
@@ -151,39 +99,142 @@ function pruneRegistry(registry: ArtifactRegistry): ArtifactRegistry {
     })
     .slice(0, MAX_SESSIONS)
 
-  return Object.fromEntries(entries)
+  return Object.fromEntries(enforceContentBudget(entries))
 }
 
-export const $artifactRegistry = persistentAtom<ArtifactRegistry>(
-  STORAGE_KEY,
-  {},
-  {
-    decode: raw => sanitizeRegistry(JSON.parse(raw) as unknown),
-    encode: registry =>
-      JSON.stringify(
-        Object.fromEntries(
-          Object.entries(pruneRegistry(registry)).map(([sessionId, records]) => [
-            sessionId,
-            records.map(record => ({ ...record, versions: persistedVersions(record) }))
-          ])
-        )
-      )
+/**
+ * Enforce {@link MAX_REGISTRY_CONTENT_UNITS} after the count caps.
+ *
+ * 1. Evict the globally-oldest HISTORICAL versions first — every record's
+ *    latest version survives this pass.
+ * 2. If the latest-only records still exceed the budget, evict the oldest
+ *    whole records; the registry's single newest record is always retained,
+ *    even when it alone is over budget. Content is never truncated or
+ *    rewritten — eviction removes whole version entries / whole records only.
+ * 3. Explicit version selections ($artifactVersionSelection pins by array
+ *    index) follow their hash: a selected surviving version keeps pointing at
+ *    the same content after index shifts, and a selection whose version was
+ *    evicted snaps back to newest.
+ */
+function enforceContentBudget(entries: readonly (readonly [string, ArtifactRecord[]])[]): [string, ArtifactRecord[]][] {
+  // Capture each explicitly selected version's hash BEFORE pruning: after the
+  // array shifts, the selection index no longer names the version the user
+  // pinned, so the hash is the only stable handle.
+  const selection = $artifactVersionSelection.get()
+  const selectedHashes = new Map<string, string>()
+
+  for (const [artifactId, index] of Object.entries(selection)) {
+    const hash = findArtifact(Object.fromEntries(entries), artifactId)?.versions[index]?.hash
+
+    if (hash) {
+      selectedHashes.set(artifactId, hash)
+    }
   }
-)
 
-/** Artifact tabs open in the right rail (ids into the registry). */
-export const $artifactTabs = atom<ArtifactTabId[]>([])
+  const working: [string, ArtifactRecord[]][] = entries.map(([sessionId, records]) => [
+    sessionId,
+    records.map(record => ({ ...record, versions: [...record.versions] }))
+  ])
 
-/** Per-tab selected version index; absent = newest. Ephemeral by design: a
- *  reopened artifact always lands on its current version. */
-export const $artifactVersionSelection = atom<Record<string, number>>({})
+  if (registryContentUnits(working.flatMap(([, records]) => records)) <= MAX_REGISTRY_CONTENT_UNITS) {
+    return working
+  }
 
-function currentArtifactSessionId(): string {
-  return $selectedStoredSessionId.get() || $activeSessionId.get() || ''
+  // Pass 1: drop globally-oldest historical versions until the registry fits.
+  const historical = working
+    .flatMap(([, records]) => records)
+    .flatMap(record => record.versions.slice(0, -1).map(version => ({ record, version })))
+    .sort((left, right) => left.version.createdAt - right.version.createdAt)
+
+  for (const { record, version } of historical) {
+    if (registryContentUnits(working.flatMap(([, records]) => records)) <= MAX_REGISTRY_CONTENT_UNITS) {
+      break
+    }
+
+    record.versions = record.versions.filter(candidate => candidate !== version)
+  }
+
+  // Pass 2: latest-only records still over budget — evict the oldest whole
+  // records until the registry fits. The registry's newest record is never
+  // evicted, even when it alone is oversized.
+  const byAge = working
+    .flatMap(([sessionId, records]) => records.map(record => ({ record, sessionId })))
+    .sort((left, right) => left.record.updatedAt - right.record.updatedAt)
+
+  for (const { record, sessionId } of byAge) {
+    if (registryContentUnits(working.flatMap(([, records]) => records)) <= MAX_REGISTRY_CONTENT_UNITS) {
+      break
+    }
+
+    const retained = working.flatMap(([, records]) => records)
+
+    if (retained.length <= 1) {
+      break
+    }
+
+    const sessionEntry = working.find(([id]) => id === sessionId)
+
+    if (sessionEntry) {
+      sessionEntry[1] = sessionEntry[1].filter(candidate => candidate !== record)
+    }
+  }
+
+  reconcileVersionSelection(working, selectedHashes)
+
+  return working.filter(([, records]) => records.length > 0)
 }
 
-export function getArtifact(artifactId: string): ArtifactRecord | null {
-  for (const records of Object.values($artifactRegistry.get())) {
+/**
+ * Re-point explicit version selections after pruning shifted version arrays.
+ * The hash of each selected version is captured against the pruned records:
+ * a selected surviving version keeps pointing at the same content (whatever
+ * its new index), and a selection whose version was evicted snaps back to
+ * newest (absent = newest).
+ */
+function reconcileVersionSelection(
+  entries: readonly (readonly [string, ArtifactRecord[]])[],
+  selectedHashes: ReadonlyMap<string, string>
+): void {
+  const selection = $artifactVersionSelection.get()
+  const prunedById = new Map<string, ArtifactRecord>()
+
+  for (const [, records] of entries) {
+    for (const record of records) {
+      prunedById.set(record.id, record)
+    }
+  }
+
+  let updated: Record<string, number> | null = null
+
+  for (const [artifactId, selectedHash] of selectedHashes) {
+    const record = prunedById.get(artifactId)
+    const next: Record<string, number> = updated ?? { ...selection }
+    const newIndex = record?.versions.findIndex(version => version.hash === selectedHash) ?? -1
+
+    if (newIndex < 0 || newIndex === record!.versions.length - 1) {
+      // Selected version was evicted (or the record went away, or pruning
+      // left it as the newest): absent = newest.
+      delete next[artifactId]
+      updated = next
+
+      continue
+    }
+
+    if (newIndex !== selection[artifactId]) {
+      next[artifactId] = newIndex
+      updated = next
+    }
+  }
+
+  if (updated) {
+    $artifactVersionSelection.set(updated)
+  }
+}
+
+/** Lookup against a registry value, for components that already subscribe to
+ *  the atom and need the record to change identity when it does. */
+export function findArtifact(registry: ArtifactRegistry, artifactId: string): ArtifactRecord | null {
+  for (const records of Object.values(registry)) {
     const found = records.find(record => record.id === artifactId)
 
     if (found) {
@@ -194,24 +245,9 @@ export function getArtifact(artifactId: string): ArtifactRecord | null {
   return null
 }
 
-export const $openArtifacts = computed([$artifactRegistry, $artifactTabs], (registry, tabs) => {
-  const byId = new Map<string, ArtifactRecord>()
-
-  for (const records of Object.values(registry)) {
-    for (const record of records) {
-      byId.set(record.id, record)
-    }
-  }
-
-  return tabs
-    .map(tabId => {
-      const id = artifactIdFromTabId(tabId)
-      const record = id ? byId.get(id) : undefined
-
-      return record ? { record, tabId } : null
-    })
-    .filter((entry): entry is { record: ArtifactRecord; tabId: ArtifactTabId } => entry !== null)
-})
+export function getArtifact(artifactId: string): ArtifactRecord | null {
+  return findArtifact($artifactRegistry.get(), artifactId)
+}
 
 export function artifactsForSession(sessionId: string | null | undefined): ArtifactRecord[] {
   const id = sessionId?.trim()
@@ -301,56 +337,24 @@ export function upsertArtifact(
   return { artifactId: record.id, record, versionAdded: true }
 }
 
-export function upsertCurrentSessionArtifact(detection: ArtifactDetection, content: string): UpsertResult | null {
-  return upsertArtifact(currentArtifactSessionId(), detection, content)
+/** A rail tab for an artifact references the registry by id rather than
+ *  carrying content, so an open tab follows the artifact as it gains versions. */
+export function artifactPreviewTarget(record: ArtifactRecord): PreviewTarget {
+  return { kind: 'artifact', label: record.title, source: record.id, url: record.id }
 }
 
-/** Open an artifact tab in the right rail and select it. User-initiated only
- *  (card click) — never called from streaming, per the no-hijack rule. */
-export function openArtifactTab(artifactId: string) {
-  const tabId = artifactTabId(artifactId)
-  const current = $artifactTabs.get()
+/** Open an artifact in the right rail at `versionIndex` (default: newest).
+ *  User-initiated only (card click) — never called from streaming, per the
+ *  no-hijack rule. */
+export function openArtifact(artifactId: string, versionIndex?: number) {
+  const record = getArtifact(artifactId)
 
-  if (!current.includes(tabId)) {
-    $artifactTabs.set([...current, tabId])
+  if (!record) {
+    return
   }
 
-  // Land on the newest version whenever (re)opened.
-  const selection = $artifactVersionSelection.get()
-
-  if (artifactId in selection) {
-    const { [artifactId]: _dropped, ...rest } = selection
-    $artifactVersionSelection.set(rest)
-  }
-
-  setPaneOpen(PREVIEW_PANE_ID, true)
-  selectRightRailTab(tabId)
-}
-
-export function closeArtifactTab(tabId: ArtifactTabId): boolean {
-  const current = $artifactTabs.get()
-  const index = current.indexOf(tabId)
-
-  if (index === -1) {
-    return false
-  }
-
-  const next = current.filter(id => id !== tabId)
-
-  $artifactTabs.set(next)
-
-  const artifactId = artifactIdFromTabId(tabId)
-
-  if (artifactId) {
-    const { [artifactId]: _dropped, ...rest } = $artifactVersionSelection.get()
-    $artifactVersionSelection.set(rest)
-  }
-
-  if ($rightRailActiveTabId.get() === tabId) {
-    selectRightRailTab(next[Math.min(index, next.length - 1)] ?? RIGHT_RAIL_PREVIEW_TAB_ID)
-  }
-
-  return true
+  selectArtifactVersion(artifactId, versionIndex ?? record.versions.length - 1)
+  openPreview(artifactPreviewTarget(record))
 }
 
 export function selectArtifactVersion(artifactId: string, versionIndex: number) {
@@ -375,12 +379,8 @@ export function selectArtifactVersion(artifactId: string, versionIndex: number) 
   $artifactVersionSelection.set({ ...selection, [artifactId]: clamped })
 }
 
-export function closeAllArtifactTabs() {
-  $artifactTabs.set([])
-  $artifactVersionSelection.set({})
-}
-
 export function clearArtifactRegistry() {
   $artifactRegistry.set({})
-  closeAllArtifactTabs()
+  $artifactVersionSelection.set({})
+  closeArtifactPreviewTabs()
 }

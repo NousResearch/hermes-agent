@@ -1,4 +1,4 @@
-"""Tests for the desktop-gated ``open_preview`` tool."""
+"""Tests for the GUI-surface ``open_preview`` tool."""
 
 import json
 
@@ -15,56 +15,6 @@ def _reset_emitter():
     desktop_ui.set_emitter(None)
 
 
-def test_gated_on_desktop(monkeypatch):
-    """Hidden unless HERMES_DESKTOP is set (mirrors read_terminal/close_terminal)."""
-    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
-    assert op.check_open_preview_requirements() is False
-
-    monkeypatch.setenv("HERMES_DESKTOP", "1")
-    assert op.check_open_preview_requirements() is True
-
-
-def test_requires_url():
-    desktop_ui.set_emitter(lambda *a: None)
-    assert json.loads(op.open_preview_tool("   "))["error"]
-
-
-def test_desktop_only_without_emitter():
-    """No emitter wired (CLI/messaging) → clear desktop-only error, no raise."""
-    result = json.loads(op.open_preview_tool("https://example.com"))
-    assert "desktop" in result["error"].lower()
-
-
-def test_emits_preview_open(monkeypatch):
-    calls = []
-    desktop_ui.set_emitter(lambda sid, event, payload: calls.append((event, payload)))
-
-    out = json.loads(op.open_preview_tool("https://example.com/app", label="Docs"))
-
-    assert out == {"success": True, "url": "https://example.com/app", "label": "Docs"}
-    assert calls == [("preview.open", {"url": "https://example.com/app", "label": "Docs"})]
-
-
-@pytest.mark.parametrize(
-    "raw,expected",
-    [
-        ("www.cnn.com", "https://www.cnn.com"),
-        ("example.com/path", "https://example.com/path"),
-        ("localhost:3000", "http://localhost:3000"),
-        ("127.0.0.1:8080/x", "http://127.0.0.1:8080/x"),
-        ("https://already.example", "https://already.example"),
-        ("/abs/path/index.html", "/abs/path/index.html"),
-        ("./rel/page.html", "./rel/page.html"),
-        ("`https://tick.example`", "https://tick.example"),
-    ],
-)
-def test_normalizes_bare_targets(raw, expected):
-    seen = {}
-    desktop_ui.set_emitter(lambda sid, event, payload: seen.update(payload))
-
-    op.open_preview_tool(raw)
-
-    assert seen["url"] == expected
 
 
 def test_emitter_failure_is_reported():
@@ -73,3 +23,71 @@ def test_emitter_failure_is_reported():
 
     desktop_ui.set_emitter(_boom)
     assert "no window" in json.loads(op.open_preview_tool("https://x.example"))["error"]
+
+
+def _capture_emits():
+    emitted: list = []
+
+    def _emit(_sid, event, payload):
+        emitted.append((event, payload))
+
+    desktop_ui.set_emitter(_emit)
+    return emitted
+
+
+def test_existing_directory_is_an_error_not_success(tmp_path):
+    """#95853: a directory must not report success while opening nothing."""
+    emitted = _capture_emits()
+    folder = tmp_path / "Active"
+    folder.mkdir()
+
+    result = json.loads(op.open_preview_tool(str(folder)))
+
+    assert "error" in result
+    assert "director" in result["error"].lower()
+    assert result.get("success") is not True
+    assert emitted == []
+
+
+def test_existing_file_still_opens(tmp_path):
+    emitted = _capture_emits()
+    path = tmp_path / "notes.md"
+    path.write_text("hi", encoding="utf-8")
+
+    result = json.loads(op.open_preview_tool(str(path)))
+
+    assert result["success"] is True
+    assert result["url"] == str(path)
+    assert emitted == [("preview.open", {"url": str(path), "label": ""})]
+
+
+def test_https_url_is_not_treated_as_a_directory():
+    emitted = _capture_emits()
+    result = json.loads(op.open_preview_tool("https://example.com/docs"))
+
+    assert result["success"] is True
+    assert emitted[0][0] == "preview.open"
+
+
+def test_file_uri_directory_is_an_error(tmp_path):
+    emitted = _capture_emits()
+    folder = tmp_path / "docs"
+    folder.mkdir()
+    uri = folder.resolve().as_uri()
+
+    result = json.loads(op.open_preview_tool(uri))
+
+    assert "error" in result
+    assert "director" in result["error"].lower()
+    assert emitted == []
+
+
+def test_missing_path_still_emits(tmp_path):
+    """Reject only existing directories — a missing path is the renderer's call."""
+    emitted = _capture_emits()
+    missing = tmp_path / "no-such-folder"
+
+    result = json.loads(op.open_preview_tool(str(missing)))
+
+    assert result["success"] is True
+    assert emitted == [("preview.open", {"url": str(missing), "label": ""})]

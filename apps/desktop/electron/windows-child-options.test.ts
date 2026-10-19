@@ -3,7 +3,35 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import { stopBackendChild } from './backend-child'
-import { hiddenWindowsChildOptions } from './windows-child-options'
+import { createLocalBackendLifecycle } from './local-backend-lifecycle'
+import { hiddenWindowsChildOptions, windowsShellCommand } from './windows-child-options'
+
+// #74064: cmd.exe truncates a shell:true command line at the first space in
+// the executable token, so a spaced install path (C:\Users\John Doe\...) must
+// be quoted before it reaches the shell. Direct execution (shell:false) and
+// non-Windows platforms are unchanged.
+test('windowsShellCommand quotes a spaced Windows shell command', () => {
+  const command = String.raw`C:\Users\First Last\AppData\Local\hermes\hermes.cmd`
+
+  assert.equal(windowsShellCommand(command, true, true), `"${command}"`)
+})
+
+test('windowsShellCommand leaves direct execution and non-Windows commands unchanged', () => {
+  const command = String.raw`C:\Users\First Last\AppData\Local\hermes\hermes.cmd`
+
+  assert.equal(windowsShellCommand(command, false, true), command)
+  assert.equal(windowsShellCommand(command, true, false), command)
+})
+
+test('windowsShellCommand never double-quotes an already-quoted command', () => {
+  const command = String.raw`"C:\Users\First Last\hermes.cmd"`
+
+  assert.equal(windowsShellCommand(command, true, true), command)
+})
+
+test('windowsShellCommand passes an empty command through untouched', () => {
+  assert.equal(windowsShellCommand('', true, true), '')
+})
 
 test('hiddenWindowsChildOptions adds windowsHide:true on Windows when unset', () => {
   assert.deepEqual(hiddenWindowsChildOptions({}, true), { windowsHide: true })
@@ -11,10 +39,6 @@ test('hiddenWindowsChildOptions adds windowsHide:true on Windows when unset', ()
 
 test('hiddenWindowsChildOptions preserves an existing windowsHide:false on Windows', () => {
   assert.deepEqual(hiddenWindowsChildOptions({ windowsHide: false }, true), { windowsHide: false })
-})
-
-test('hiddenWindowsChildOptions preserves an existing windowsHide:true on Windows', () => {
-  assert.deepEqual(hiddenWindowsChildOptions({ windowsHide: true }, true), { windowsHide: true })
 })
 
 test('hiddenWindowsChildOptions leaves options unchanged off Windows', () => {
@@ -28,13 +52,6 @@ test('hiddenWindowsChildOptions merges windowsHide alongside other options on Wi
     stdio: ['ignore', 'pipe', 'ignore'],
     windowsHide: true
   })
-})
-
-test('hiddenWindowsChildOptions defaults isWindows from process.platform when omitted', () => {
-  const result = hiddenWindowsChildOptions({})
-  const expectedHide = process.platform === 'win32'
-
-  assert.equal(Boolean(result.windowsHide), expectedHide)
 })
 
 function makeChild(overrides: Partial<{ pid: number | null; killed: boolean }> = {}) {
@@ -65,17 +82,34 @@ test('stopBackendChild tree-kills on Windows when the child has a pid', () => {
   assert.deepEqual(calls, [], 'SIGTERM must not be sent when the Windows tree-kill path is taken')
 })
 
-test('stopBackendChild sends SIGTERM on non-Windows platforms', () => {
+test('stopBackendChild group-SIGTERMs on POSIX (negative pgid) when the child has a pid', () => {
   const { child, calls } = makeChild({ pid: 4242 })
   const treeKillCalls: number[] = []
+  const groupKills: Array<[number, string]> = []
 
   stopBackendChild(child, {
     forceKillProcessTree: (pid: number) => treeKillCalls.push(pid),
-    isWindows: false
+    isWindows: false,
+    killGroup: (pgid, signal) => groupKills.push([pgid, signal])
   })
 
-  assert.deepEqual(calls, ['SIGTERM'])
+  assert.deepEqual(groupKills, [[-4242, 'SIGTERM']], 'must signal the whole process group')
+  assert.deepEqual(calls, [], 'direct child.kill must not run when the group send succeeds')
   assert.deepEqual(treeKillCalls, [], 'tree-kill must not run off Windows')
+})
+
+test('stopBackendChild falls back to direct SIGTERM on POSIX when the group send throws', () => {
+  const { child, calls } = makeChild({ pid: 4242 })
+
+  stopBackendChild(child, {
+    forceKillProcessTree: () => {},
+    isWindows: false,
+    killGroup: () => {
+      throw new Error('ESRCH: no such process group')
+    }
+  })
+
+  assert.deepEqual(calls, ['SIGTERM'], 'must fall back to signalling the direct child')
 })
 
 test('stopBackendChild falls back to SIGTERM on Windows when the pid is not an integer', () => {
@@ -129,4 +163,35 @@ test('stopBackendChild swallows errors thrown by the kill strategy', () => {
       isWindows: false
     })
   })
+})
+
+test('Windows shutdown tree-kills before waiting, and joins an overlapping stop', async (): Promise<void> => {
+  const primary = makeChild({ pid: 101 })
+  const events: string[] = []
+  let exit!: () => void
+
+  const lifecycle = createLocalBackendLifecycle<typeof primary.child>({
+    stopChild: (child: typeof primary.child): void =>
+      stopBackendChild(child, {
+        forceKillProcessTree: (pid: number): void => {
+          events.push(`tree:${pid}`)
+        },
+        isWindows: true
+      }),
+    waitForExit: (): Promise<void> =>
+      new Promise<void>((resolve: () => void): void => {
+        events.push('wait')
+        exit = resolve
+      }),
+    cancelSetup: (): void => {}
+  })
+
+  const child = lifecycle.spawn((): typeof primary.child => primary.child)
+  const stopped = lifecycle.stop(child)
+  assert.equal(lifecycle.stop(child), stopped)
+  const shutdown = lifecycle.shutdown()
+  assert.deepEqual(events, ['tree:101', 'wait'])
+  assert.deepEqual(primary.calls, [], 'taskkill must enumerate descendants before the root can exit')
+  exit()
+  await Promise.all([stopped, shutdown])
 })

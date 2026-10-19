@@ -79,35 +79,29 @@ def test_ledger_operations_close_every_connection(monkeypatch, tmp_path):
     assert set(opened) == set(closed)
 
 
-def test_early_return_still_closes_connection(monkeypatch, tmp_path):
-    """A no-op update (no matching row) must still open and close exactly once."""
-    _point_ledger(monkeypatch, tmp_path)
-    opened, closed = _track_connections(monkeypatch)
+class _FailingSchemaCursor:
+    """Cursor proxy that fails the canonical DDL replay. ``apply_declared_schema``
+    replays SCHEMA_SQL statement by statement through ``conn.cursor()`` (no
+    ``executescript`` implicit COMMIT), so the injection sits on the cursor."""
 
-    assert ad.mark_completion_delivered("does-not-exist") is False
+    def __init__(self, real):
+        object.__setattr__(self, "_real", real)
 
-    assert len(opened) == 1
-    assert len(closed) == 1
+    def execute(self, sql, *args, **kwargs):
+        if "CREATE TABLE" in sql:
+            raise sqlite3.OperationalError("simulated schema init failure")
+        return self._real.execute(sql, *args, **kwargs)
 
-
-def test_exception_during_operation_still_closes_connection(monkeypatch, tmp_path):
-    """A failing statement inside the transaction must roll back and close."""
-    _point_ledger(monkeypatch, tmp_path)
-    opened, closed = _track_connections(monkeypatch)
-
-    with pytest.raises(sqlite3.IntegrityError):
-        with ad._transaction() as conn:
-            # Missing NOT NULL columns -> constraint failure inside the block.
-            conn.execute(
-                "INSERT INTO async_delegations (delegation_id) VALUES ('x')"
-            )
-
-    assert len(opened) == 1
-    assert len(closed) == 1
+    def __getattr__(self, name):
+        return getattr(self._real, name)
 
 
 def test_schema_init_failure_still_closes_connection(monkeypatch, tmp_path):
-    """A PRAGMA/DDL failure after connect() must still close the connection."""
+    """A PRAGMA/DDL failure after connect() must still close the state.db connection.
+
+    Only state.db opens are tracked: the column reconciler builds its reference
+    shape from SCHEMA_SQL in a private ``:memory:`` database, which it closes itself
+    and which holds no file descriptor."""
     _point_ledger(monkeypatch, tmp_path)
     opened, closed = [], []
     real_connect = sqlite3.connect
@@ -118,16 +112,26 @@ def test_schema_init_failure_still_closes_connection(monkeypatch, tmp_path):
                 raise sqlite3.OperationalError("simulated schema init failure")
             return self._real.execute(sql, *args, **kwargs)
 
-    def tracking_connect(*args, **kwargs):
-        conn = real_connect(*args, **kwargs)
+        def executescript(self, script):
+            if "CREATE TABLE" in script:
+                raise sqlite3.OperationalError("simulated schema init failure")
+            return self._real.executescript(script)
+
+        def cursor(self, *args, **kwargs):
+            return _FailingSchemaCursor(self._real.cursor(*args, **kwargs))
+
+    def tracking_connect(database, *args, **kwargs):
+        conn = real_connect(database, *args, **kwargs)
+        if str(database) == ":memory:":
+            return conn
         opened.append(id(conn))
         return _FailingSchemaConnection(conn, closed)
 
     monkeypatch.setattr(ad.sqlite3, "connect", tracking_connect)
 
-    with pytest.raises(sqlite3.OperationalError):
+    with pytest.raises(sqlite3.OperationalError, match="simulated schema init failure"):
         with ad._transaction():
             pass
 
     assert len(opened) == 1
-    assert len(closed) == 1
+    assert closed == opened

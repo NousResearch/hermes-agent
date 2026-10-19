@@ -4,11 +4,9 @@ import {
   type AgentNoticePayload,
   clearAgentNotice,
   nativeNoticeInput,
-  noticeAccent,
   noticeToToast,
   showAgentNotice,
   splitMeta,
-  stripGlyph,
   usageFraction
 } from './agent-notices'
 import { $notifications, clearNotifications } from './notifications'
@@ -83,7 +81,17 @@ test('the leading severity glyph is stripped from the toast message', () => {
 })
 
 test('the trailing "· detail" is split off as a secondary meta line, not inlined', () => {
-  // grant_spent still carries a `· detail` tail.
+  // Detail-carrying notices split on the first ` · `.
+  const paused = noticeToToast({
+    key: 'credits.depleted',
+    level: 'error',
+    text: '✕ Credit access paused · run /topup to top up'
+  })
+
+  expect(paused?.message).toBe('Credit access paused')
+  expect(paused?.meta).toBe('run /topup to top up')
+
+  // grant_spent carries a `· detail` tail too.
   const grant = noticeToToast({ key: 'credits.grant_spent', level: 'info', text: '• Grant spent · $12.00 top-up left' })
   expect(grant?.message).toBe('Grant spent')
   expect(grant?.meta).toBe('$12.00 top-up left')
@@ -95,20 +103,14 @@ test('the trailing "· detail" is split off as a secondary meta line, not inline
 })
 
 test('splitMeta splits on the first space-middot-space only', () => {
+  expect(splitMeta('Credit access paused · run /topup to top up')).toEqual([
+    'Credit access paused',
+    'run /topup to top up'
+  ])
   expect(splitMeta('Grant spent · $12.00 top-up left')).toEqual(['Grant spent', '$12.00 top-up left'])
   expect(splitMeta('Credit access restored')).toEqual(['Credit access restored', undefined])
   // Interior middots after the first split stay in the meta.
   expect(splitMeta('a · b · c')).toEqual(['a', 'b · c'])
-})
-
-test('stripGlyph removes only a single leading severity glyph', () => {
-  expect(stripGlyph('• Credits 50% used')).toBe('Credits 50% used')
-  expect(stripGlyph('⚠ warn')).toBe('warn')
-  expect(stripGlyph('✕ paused')).toBe('paused')
-  expect(stripGlyph('✓ ok')).toBe('ok')
-  // No leading glyph → unchanged; interior glyphs are preserved.
-  expect(stripGlyph('Credits 50% used')).toBe('Credits 50% used')
-  expect(stripGlyph('spent · $12.00 • top-up left')).toBe('spent · $12.00 • top-up left')
 })
 
 // ── noticeAccent: severity color ramp keyed off $used / $cap ─────────────────
@@ -120,33 +122,6 @@ test('usageFraction derives $used / $cap from the notice text', () => {
   expect(usageFraction('Grant spent')).toBeNull()
   expect(usageFraction("You've used $5.00 of your $0.00 cap")).toBeNull()
   expect(usageFraction(undefined)).toBeNull()
-})
-
-test('usage accent stays muted below 75%, then ramps orange → red', () => {
-  expect(noticeAccent(usage({ text: "• You've used $10.00 of your $20.00 cap" }))).toBeUndefined() // 50%
-  expect(noticeAccent(usage({ text: "• You've used $14.80 of your $20.00 cap" }))).toBeUndefined() // 74%
-  expect(noticeAccent(usage({ level: 'warn', text: "⚠ You've used $15.00 of your $20.00 cap" }))).toBe(
-    'var(--ui-orange)'
-  ) // 75%
-  expect(noticeAccent(usage({ level: 'warn', text: "⚠ You've used $17.80 of your $20.00 cap" }))).toBe(
-    'var(--ui-orange)'
-  ) // 89%
-  expect(noticeAccent(usage({ level: 'warn', text: "⚠ You've used $18.00 of your $20.00 cap" }))).toBe('var(--ui-red)') // 90%
-  expect(noticeAccent(usage({ level: 'warn', text: "⚠ You've used $20.00 of your $20.00 cap" }))).toBe('var(--ui-red)') // 100%
-})
-
-test('terminal credit states carry their own accent; others stay default', () => {
-  expect(noticeAccent({ key: 'credits.depleted', text: '✕ paused' })).toBe('var(--ui-red)')
-  expect(noticeAccent({ key: 'credits.restored', text: '✓ restored' })).toBe('var(--ui-green)')
-  expect(noticeAccent({ key: 'credits.grant_spent', text: '• Grant spent' })).toBeUndefined()
-  expect(noticeAccent(undefined)).toBeUndefined()
-})
-
-test('noticeToToast attaches the band accent to the toast', () => {
-  expect(noticeToToast(usage({ level: 'warn', text: "⚠ You've used $15.00 of your $20.00 cap" }))?.accentColor).toBe(
-    'var(--ui-orange)'
-  )
-  expect(noticeToToast(usage({ text: "• You've used $10.00 of your $20.00 cap" }))?.accentColor).toBeUndefined()
 })
 
 // ── show / clear: rendered through the notifications store ────────────────────

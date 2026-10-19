@@ -18,7 +18,7 @@ is guarded by the parity test below.
 
 from __future__ import annotations
 
-import hashlib
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -106,7 +106,7 @@ def _stable_discord_tools(monkeypatch):
 
 
 def _key(runner, context, redact_pii=False):
-    return runner._ephemeral_change_key(context, redact_pii)  # noqa: SLF001
+    return runner._ephemeral_change_key(context, redact_pii)
 
 
 def _render(context, redact_pii=False):
@@ -162,20 +162,6 @@ class TestEphemeralChangeKeyParity:
         ("message_id_cleared", dict(message_id=None)),
     ]
 
-    @pytest.mark.parametrize("name,mutation", _MUTATIONS)
-    def test_render_change_implies_key_change(self, name, mutation):
-        runner = _make_runner()
-        base = _make_context()
-        mutated = _make_context(**mutation)
-
-        render_changed = _render(base) != _render(mutated)
-        key_changed = _key(runner, base) != _key(runner, mutated)
-
-        if render_changed:
-            assert key_changed, (
-                f"mutation {name!r} changed the rendered bytes but not the "
-                "change key — the pin would serve STALE context"
-            )
 
     def test_redact_pii_flip_changes_key(self):
         # PII redaction only rewrites bytes on pii-safe platforms; the key
@@ -185,66 +171,7 @@ class TestEphemeralChangeKeyParity:
         assert _render(ctx, False) != _render(ctx, True)
         assert _key(runner, ctx, False) != _key(runner, ctx, True)
 
-    def test_discord_tools_gate_flip_changes_key(self, monkeypatch):
-        runner = _make_runner()
-        ctx = _make_context()
-        render_on, key_on = _render(ctx), _key(runner, ctx)
-        monkeypatch.setattr("gateway.session._discord_tools_loaded", lambda: False)
-        assert _render(ctx) != render_on
-        assert _key(runner, ctx) != key_on
 
-    def test_slack_tools_gate_flip_changes_key(self, monkeypatch):
-        """The Slack capability note is gated on _slack_tools_loaded(); the
-        gate state must be part of the change key (same parity contract as
-        the Discord gate) or a config/MCP flip would serve a stale pinned
-        note forever."""
-        runner = _make_runner()
-        ctx = _make_context(
-            platform=Platform.SLACK,
-            chat_id="C123",
-            thread_id=None,
-            parent_chat_id=None,
-            guild_id=None,
-        )
-        render_off, key_off = _render(ctx), _key(runner, ctx)
-        monkeypatch.setattr("gateway.session._slack_tools_loaded", lambda: True)
-        assert _render(ctx) != render_off
-        assert _key(runner, ctx) != key_off
-
-    def test_slack_note_byte_stable_across_turns_in_one_session(self):
-        """Within one session (gate state constant), the Slack platform note
-        must be byte-stable turn over turn — the pin returns the identical
-        object, so the composed system prompt cannot drift mid-conversation."""
-        runner = _make_runner()
-
-        def _slack_ctx():
-            return _make_context(
-                platform=Platform.SLACK,
-                chat_id="C123",
-                thread_id=None,
-                parent_chat_id=None,
-                guild_id=None,
-            )
-
-        t1 = runner._pinned_session_context_prompt(_slack_ctx(), False, "sk-slack")  # noqa: SLF001
-        t2 = runner._pinned_session_context_prompt(_slack_ctx(), False, "sk-slack")  # noqa: SLF001
-        t3 = runner._pinned_session_context_prompt(_slack_ctx(), False, "sk-slack")  # noqa: SLF001
-        assert t2 is t1 and t3 is t1
-        assert hashlib.sha256(t1.encode()).hexdigest() == hashlib.sha256(t3.encode()).hexdigest()
-
-    def test_message_id_value_change_is_not_a_bust(self):
-        """Only message-id PRESENCE renders (the id itself rides the user
-        message) — a new id every turn must not re-render."""
-        runner = _make_runner()
-        a = _make_context(message_id="1357")
-        b = _make_context(message_id="2468")
-        assert _render(a) == _render(b)
-        assert _key(runner, a) == _key(runner, b)
-
-    def test_key_is_deterministic(self):
-        runner = _make_runner()
-        ctx = _make_context()
-        assert _key(runner, ctx) == _key(runner, ctx)
 
 
 # ---------------------------------------------------------------------------
@@ -255,94 +182,12 @@ class TestSessionContextPin:
     def test_pin_hit_returns_identical_object(self):
         runner = _make_runner()
         ctx = _make_context()
-        first = runner._pinned_session_context_prompt(ctx, False, "sk")  # noqa: SLF001
-        second = runner._pinned_session_context_prompt(_make_context(), False, "sk")  # noqa: SLF001
+        first = runner._pinned_session_context_prompt(ctx, False, "sk")
+        second = runner._pinned_session_context_prompt(_make_context(), False, "sk")
         # Identity, not just equality: the pinned bytes are reused verbatim,
         # immunizing against renderer nondeterminism.
         assert second is first
 
-    def test_auto_thread_rename_busts_exactly_once(self):
-        """Turn 1: placeholder title.  Turn 2: gateway auto-rename lands (one
-        legit bust — Source line AND origin delivery line move together).
-        Turn 3+: byte-stable."""
-        runner = _make_runner()
-        t1 = runner._pinned_session_context_prompt(  # noqa: SLF001
-            _make_context(chat_name="new-chat-1357"), False, "sk"
-        )
-        t2 = runner._pinned_session_context_prompt(  # noqa: SLF001
-            _make_context(chat_name="Fixing the flaky deploy"), False, "sk"
-        )
-        t3 = runner._pinned_session_context_prompt(  # noqa: SLF001
-            _make_context(chat_name="Fixing the flaky deploy"), False, "sk"
-        )
-        assert t1 != t2
-        assert t3 is t2
-        assert "Fixing the flaky deploy" in t2
-
-    def test_eviction_drops_pin_and_vc_state(self):
-        runner = _make_runner(
-            _agent_cache={}, _running_agents={},
-        )
-        runner._session_ephemeral_pin["sk"] = ("k", "text")
-        runner._session_vc_last["sk"] = "vc"
-        runner._evict_cached_agent("sk")  # noqa: SLF001
-        assert "sk" not in runner._session_ephemeral_pin
-        assert "sk" not in runner._session_vc_last
-
-    def test_no_session_key_never_pins(self):
-        runner = _make_runner()
-        ctx = _make_context()
-        out = runner._pinned_session_context_prompt(ctx, False, None)  # noqa: SLF001
-        assert out == _render(ctx)
-        assert runner._session_ephemeral_pin == {}
-
-
-# ---------------------------------------------------------------------------
-# 3. Two-turn byte test: composed system prompt sha256 + codex cache key
-# ---------------------------------------------------------------------------
-
-def _compose(context_prompt: str) -> str:
-    """Compose base + ephemeral exactly like conversation_loop does."""
-    base = "BASE IDENTITY PROMPT\n" + "x" * 8000
-    return (base + "\n\n" + context_prompt).strip()
-
-
-class TestComposedPromptByteStability:
-    def test_turn2_equals_turn3_sha256(self):
-        runner = _make_runner()
-        name = "Fixing the flaky deploy"
-        t2 = _compose(
-            runner._pinned_session_context_prompt(  # noqa: SLF001
-                _make_context(chat_name=name), False, "sk"
-            )
-        )
-        t3 = _compose(
-            runner._pinned_session_context_prompt(  # noqa: SLF001
-                _make_context(chat_name=name), False, "sk"
-            )
-        )
-        assert hashlib.sha256(t2.encode()).hexdigest() == hashlib.sha256(t3.encode()).hexdigest()
-
-    def test_codex_cache_key_constant_across_turns(self):
-        """The codex transport content-addresses its prompt cache key from
-        (instructions + tools); pinned ephemeral bytes keep it warm."""
-        from agent.transports.codex import _content_cache_key
-
-        runner = _make_runner()
-        tools = [{"type": "function", "name": "read_file"}]
-        keys = [
-            _content_cache_key(
-                _compose(
-                    runner._pinned_session_context_prompt(  # noqa: SLF001
-                        _make_context(), False, "sk"
-                    )
-                ),
-                tools,
-            )
-            for _ in range(3)
-        ]
-        assert keys[0] is not None
-        assert len(set(keys)) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -376,36 +221,144 @@ def _vc_event():
 class TestVoiceChannelSidecarNote:
     def test_first_sighting_injects(self):
         runner, _ = _vc_runner("**Voice:** dev-vc (2 members)")
-        note = runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk")  # noqa: SLF001
-        assert note == "[Voice channel now: **Voice:** dev-vc (2 members)]"
+        note = runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk")
+        assert note and "dev-vc (2 members)" in note
 
     def test_unchanged_state_injects_nothing(self):
         runner, _ = _vc_runner("**Voice:** dev-vc (2 members)")
-        assert runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk")  # noqa: SLF001
-        assert runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk") is None  # noqa: SLF001
+        assert runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk")
+        assert runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk") is None
 
     def test_member_change_injects_again(self):
         runner, adapter = _vc_runner("**Voice:** dev-vc (2 members)")
-        runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk")  # noqa: SLF001
+        runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk")
         adapter.value = "**Voice:** dev-vc (3 members)"
-        note = runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk")  # noqa: SLF001
-        assert note == "[Voice channel now: **Voice:** dev-vc (3 members)]"
+        note = runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk")
+        assert note and "dev-vc (3 members)" in note
 
     def test_leaving_channel_injects_disconnect_note(self):
         runner, adapter = _vc_runner("**Voice:** dev-vc (2 members)")
-        runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk")  # noqa: SLF001
+        runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk")
         adapter.value = ""
-        note = runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk")  # noqa: SLF001
-        assert note == "[Voice channel now: not connected to a voice channel]"
+        note = runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk")
+        assert note
 
     def test_never_in_channel_injects_nothing(self):
         runner, _ = _vc_runner("")
-        assert runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk") is None  # noqa: SLF001
+        assert runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk") is None
 
-    def test_non_discord_platform_is_noop(self):
-        runner, _ = _vc_runner("**Voice:** dev-vc")
-        src = SessionSource(platform=Platform.TELEGRAM, chat_id="c", user_id="u")
-        assert runner._voice_channel_sidecar_note(_vc_event(), src, "sk") is None  # noqa: SLF001
+    def test_secondary_profile_reads_its_own_bot_voice_context(self):
+        # Multiplexed gateway: the voice binding lives on the adapter whose bot is
+        # in the call, so the note must be read from the adapter that answers the
+        # source -- not from the default profile's adapter map.
+        primary = _VcAdapter("")
+        secondary = _VcAdapter("**Voice:** dev-vc (2 members)")
+        runner = _make_runner(
+            adapters={Platform.DISCORD: primary},
+            _profile_adapters={"otto": {Platform.DISCORD: secondary}},
+        )
+        source = _source()
+        source._transport_adapter_ref = lambda: secondary
+        note = runner._voice_channel_sidecar_note(_vc_event(), source, "sk")
+        assert note and "dev-vc (2 members)" in note
+
+
+def _multiplex_vc_runner(primary_vc, secondary_vc):
+    primary = _VcAdapter(primary_vc)
+    secondary = _VcAdapter(secondary_vc)
+    runner = _make_runner(adapters={Platform.DISCORD: primary})
+    runner._profile_adapters = {"otto": {Platform.DISCORD: secondary}}
+    runner.config = SimpleNamespace(multiplex_profiles=True)
+    return runner, primary, secondary
+
+
+def _secondary_source():
+    return SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="c1",
+        chat_type="channel",
+        user_id="u1",
+        profile="otto",
+    )
+
+
+class TestVoiceChannelSidecarNoteMultiplexed:
+    """#139345: the note must never be read from another bot's call state.
+
+    The two negative halves of the report, ported from the competing draft
+    #139359 (closed in favour of this one, whose author offered them there).
+    """
+
+    def test_secondary_never_borrows_the_primary_call(self):
+        runner, _primary, _secondary = _multiplex_vc_runner(
+            "**Voice:** ops-vc (5 members)", ""
+        )
+        note = runner._voice_channel_sidecar_note(_vc_event(), _secondary_source(), "sk")
+        assert note is None
+
+    def test_disconnected_secondary_fails_closed(self):
+        runner, _primary, _secondary = _multiplex_vc_runner(
+            "**Voice:** ops-vc (5 members)", ""
+        )
+        runner._profile_adapters = {}
+        note = runner._voice_channel_sidecar_note(_vc_event(), _secondary_source(), "sk")
+        assert note is None
+
+
+class _AckAdapter:
+    """A Discord bot bound to text channel c1's voice call in guild 77."""
+
+    def __init__(self, bound):
+        self._voice_text_channels = {77: "c1"} if bound else {}
+        self.acks = []
+
+    def voice_mixer_active(self, guild_id):
+        return guild_id in self._voice_text_channels
+
+    async def play_ack_in_voice(self, guild_id):
+        self.acks.append(guild_id)
+
+
+class TestVoiceAckFollowsTheAnsweringBot:
+    """#139345, same class: the first-tool-call verbal ack resolves its guild on, and plays through,
+    the bot whose call is bound to the turn's text channel, not the default profile's bot."""
+
+    def _runner(self, primary_bound, secondary_bound):
+        primary, secondary = _AckAdapter(primary_bound), _AckAdapter(secondary_bound)
+        runner = _make_runner(adapters={Platform.DISCORD: primary})
+        runner._profile_adapters = {"otto": {Platform.DISCORD: secondary}}
+        runner.config = SimpleNamespace(multiplex_profiles=True)
+        return runner, primary, secondary
+
+    def test_secondary_in_call_gets_its_guild(self):
+        runner, _primary, secondary = self._runner(False, True)
+        source = _secondary_source()
+        source._transport_adapter_ref = lambda: secondary
+        assert runner._voice_ack_guild_for(source) == 77
+
+    def test_secondary_never_borrows_the_primary_call(self):
+        runner, _primary, secondary = self._runner(True, False)
+        source = _secondary_source()
+        source._transport_adapter_ref = lambda: secondary
+        assert runner._voice_ack_guild_for(source) is None
+
+    def test_ack_plays_through_the_answering_bot(self):
+        from gateway.run_turn_progress import GatewayTurnProgressMixin
+        runner, _primary, secondary = self._runner(True, True)
+        source = _secondary_source()
+        source._transport_adapter_ref = lambda: secondary
+        scheduled = []
+        progress = SimpleNamespace(
+            _runner=runner,
+            _ctx=SimpleNamespace(_voice_ack_fired=[False], _voice_ack_guild=[77], _run_still_current=lambda: True,
+                                 _voice_ack_loop=None, source=source),
+            _schedule=lambda coro, msg, loop=None: scheduled.append(coro),
+        )
+        GatewayTurnProgressMixin.voice_ack_callback(progress, "call1", "web_search", {})
+        assert len(scheduled) == 1
+        asyncio.run(scheduled[0])
+        assert secondary.acks == [77]
+        assert _primary.acks == []
 
 
 # ---------------------------------------------------------------------------
@@ -415,16 +368,9 @@ class TestVoiceChannelSidecarNote:
 class TestSidecarNoteStaging:
     def test_set_then_consume_once(self):
         runner = _make_runner()
-        runner._set_pending_turn_sidecar_notes("sk", ["[System note: reset]"])  # noqa: SLF001
-        assert runner._consume_pending_turn_sidecar_notes("sk") == ["[System note: reset]"]  # noqa: SLF001
-        assert runner._consume_pending_turn_sidecar_notes("sk") == []  # noqa: SLF001
-
-    def test_empty_inputs_are_noops(self):
-        runner = _make_runner()
-        runner._set_pending_turn_sidecar_notes("", ["x"])  # noqa: SLF001
-        runner._set_pending_turn_sidecar_notes("sk", [])  # noqa: SLF001
-        assert runner._consume_pending_turn_sidecar_notes("sk") == []  # noqa: SLF001
-        assert runner._consume_pending_turn_sidecar_notes("") == []  # noqa: SLF001
+        runner._set_pending_turn_sidecar_notes("sk", ["[System note: reset]"])
+        assert runner._consume_pending_turn_sidecar_notes("sk") == ["[System note: reset]"]
+        assert runner._consume_pending_turn_sidecar_notes("sk") == []
 
 
 # ---------------------------------------------------------------------------

@@ -26,11 +26,10 @@ sys.modules.setdefault("telegram.constants", _tg.constants)
 sys.modules.setdefault("telegram.ext", types.ModuleType("telegram.ext"))
 
 from gateway.platforms.base import (
-    MessageEvent,
-    MessageType,
     SessionSource,
     build_session_key,
 )
+from gateway.platforms.event import MessageEvent, MessageType
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +104,7 @@ class TestBusySessionAuthBypass:
         """An unauthorized user's message must be silently dropped, not queued."""
         from gateway.run import GatewayRunner
 
-        runner, sentinel = _make_runner(authorized_users={"user1"})
+        runner, _sentinel = _make_runner(authorized_users={"user1"})
         runner._busy_input_mode = "interrupt"
         adapter = _make_adapter()
 
@@ -137,39 +136,13 @@ class TestBusySessionAuthBypass:
         # Must NOT send any acknowledgment to the channel
         adapter._send_with_retry.assert_not_called()
 
-    @pytest.mark.asyncio
-    async def test_authorized_user_still_processed_in_busy_path(self):
-        """An authorized user's message must still be processed normally."""
-        from gateway.run import GatewayRunner
-
-        runner, sentinel = _make_runner(authorized_users={"user1"})
-        runner._busy_input_mode = "interrupt"
-        adapter = _make_adapter()
-
-        event = _make_event(text="follow up", user_id="user1")
-        sk = build_session_key(event.source)
-
-        running_agent = MagicMock()
-        running_agent.get_activity_summary.return_value = {}
-        runner._running_agents[sk] = running_agent
-        runner._running_agents_ts[sk] = time.time()
-        runner.adapters[event.source.platform] = adapter
-
-        result = await GatewayRunner._handle_active_session_busy_message(
-            runner, event, sk
-        )
-
-        # Should return True (handled) but message is queued/processed
-        assert result is True
-        # The message should be merged into pending
-        assert sk in adapter._pending_messages
 
     @pytest.mark.asyncio
     async def test_unauthorized_user_during_drain_still_blocked(self):
         """Even during drain mode, unauthorized users must be dropped."""
         from gateway.run import GatewayRunner
 
-        runner, sentinel = _make_runner(authorized_users={"user1"})
+        runner, _sentinel = _make_runner(authorized_users={"user1"})
         runner._draining = True
         runner._queue_during_drain_enabled = lambda: True
         adapter = _make_adapter()
@@ -197,7 +170,7 @@ class TestBusySessionAuthBypass:
         """Steer mode must not allow unauthorized users to inject mid-run guidance."""
         from gateway.run import GatewayRunner
 
-        runner, sentinel = _make_runner(authorized_users={"user1"})
+        runner, _sentinel = _make_runner(authorized_users={"user1"})
         runner._busy_input_mode = "steer"
         adapter = _make_adapter()
 

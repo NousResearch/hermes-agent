@@ -1,0 +1,218 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+import type { ComposerSuggestion } from '@/store/composer-suggestions'
+
+import { buildMcpSuggestionIndex, matchSuggestions } from './mcp'
+
+type DraftProvider = (context: { sessionId: string | null; text: string }) => Promise<ComposerSuggestion[]>
+
+const mocks = vi.hoisted(() => ({
+  notify: vi.fn(),
+  notifyError: vi.fn(),
+  provider: null as DraftProvider | null,
+  removeMcpServer: vi.fn(async () => {}),
+  request: vi.fn()
+}))
+
+vi.mock('@/api/client', () => ({ capabilityScoped: () => undefined }))
+vi.mock('@/hermes', () => ({
+  addMcpServer: async () => {},
+  getMcpCatalog: async () => ({
+    entries: [
+      {
+        auth_type: 'oauth',
+        name: 'hosted',
+        suggest: { hosts: [], keywords: ['hosted'] },
+        transport: 'http',
+        url: 'https://mcp.example.test'
+      }
+    ]
+  }),
+  listMcpServers: async () => ({ servers: [] }),
+  removeMcpServer: mocks.removeMcpServer
+}))
+vi.mock('@/lib/mcp-dashboard-oauth', () => ({
+  completeMcpDesktopOAuth: async () => ({ tools: [] }),
+  McpOAuthCancelled: class extends Error {}
+}))
+vi.mock('@/store/composer-suggestions', () => ({
+  registerDraftProvider: (_name: string, provider: DraftProvider) => {
+    mocks.provider = provider
+  }
+}))
+vi.mock('@/store/gateway', () => ({ $gateway: { get: () => ({ request: mocks.request }) } }))
+vi.mock('@/store/notifications', () => ({ notify: mocks.notify, notifyError: mocks.notifyError }))
+
+describe('connect reads what reload.mcp did for the chat', () => {
+  const connect = async () => {
+    const [suggestion] = await mocks.provider!({ sessionId: 's1', text: 'use the hosted board ' })
+
+    return suggestion!.invoke({ cancelled: () => false, sessionId: 's1' })
+  }
+
+  beforeEach(() => {
+    mocks.notify.mockReset()
+    mocks.notifyError.mockReset()
+    mocks.request.mockReset()
+  })
+
+  it('claims success once the chat runs the new server', async () => {
+    mocks.request.mockResolvedValue({ session: 'applied', status: 'reloaded' })
+
+    await connect()
+
+    expect(mocks.request).toHaveBeenCalledWith('reload.mcp', { confirm: true, session_id: 's1' })
+    expect(mocks.notify).not.toHaveBeenCalled()
+    expect(mocks.notifyError).not.toHaveBeenCalled()
+  })
+
+  it('does not claim the chat has the server while its turn defers the change', async () => {
+    mocks.request.mockResolvedValue({ session: 'busy', status: 'reloaded' })
+
+    await expect(connect()).rejects.toThrow()
+
+    expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringMatching(/busy/i) }))
+    expect(mocks.notifyError).not.toHaveBeenCalled()
+  })
+
+  it('fails when the new server is among those that did not connect', async () => {
+    mocks.request.mockResolvedValue({ session: 'applied', status: 'reloaded', unavailable: ['hosted'] })
+
+    await expect(connect()).rejects.toThrow(/hosted/)
+
+    expect(mocks.notifyError).toHaveBeenCalled()
+  })
+
+  it('fails when the reload is refused', async () => {
+    mocks.request.mockRejectedValue(new Error('mcp_servers_unavailable: did not connect: hosted'))
+
+    await expect(connect()).rejects.toThrow()
+
+    expect(mocks.notifyError).toHaveBeenCalled()
+  })
+
+  it('succeeds beside another server that did not connect, and names it', async () => {
+    mocks.request.mockResolvedValue({ session: 'applied', status: 'reloaded', unavailable: ['linear'] })
+
+    await connect()
+
+    expect(mocks.notify).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'warning', message: expect.stringContaining('linear') })
+    )
+    expect(mocks.notifyError).not.toHaveBeenCalled()
+  })
+})
+
+it('does not send local-app or non-OAuth catalog suggestions through the hosted OAuth-only composer flow', () => {
+  const hosted = {
+    name: 'hosted',
+    url: 'https://mcp.example.test',
+    auth_type: 'oauth',
+    transport: 'http',
+    suggest: { keywords: ['hosted'], hosts: [] }
+  }
+
+  const editor = {
+    ...hosted,
+    name: 'editor',
+    url: 'http://127.0.0.1:8000/mcp',
+    auth_type: 'none',
+    suggest: { ...hosted.suggest, requires_app: true }
+  }
+
+  const key = { ...hosted, name: 'key', auth_type: 'api_key' }
+  const stdio = { ...hosted, name: 'stdio', url: null, transport: 'stdio' }
+  expect(buildMcpSuggestionIndex([hosted, editor, key, stdio]).map(row => row.server)).toEqual([hosted.name])
+})
+
+const INDEX = [
+  { keywords: ['linear', 'issue tracker', 'ticket'], server: 'linear' },
+  { keywords: ['figma', 'design'], server: 'figma' },
+  { keywords: ['unreal', 'ue5'], server: 'unreal-engine' }
+]
+
+describe('matchSuggestions', () => {
+  it('matches a whole word and reports the keyword that hit', () => {
+    expect(matchSuggestions('can you check the linear board', INDEX)).toEqual([{ keyword: 'linear', server: 'linear' }])
+  })
+
+  it('does not match inside other words', () => {
+    // "linearly" must not suggest Linear — the classic false positive.
+    expect(matchSuggestions('this scales linearly with input', INDEX)).toEqual([])
+  })
+
+  it('matches multi-word keywords as phrases', () => {
+    expect(matchSuggestions('our issue tracker is a mess', INDEX)).toEqual([
+      { keyword: 'issue tracker', server: 'linear' }
+    ])
+  })
+
+  it('is case-insensitive against the draft', () => {
+    expect(matchSuggestions('open FIGMA please', INDEX)).toEqual([{ keyword: 'figma', server: 'figma' }])
+  })
+
+  it('caps the number of suggestions', () => {
+    const matches = matchSuggestions('linear ticket for the figma design in unreal', INDEX)
+
+    expect(matches.length).toBeLessThanOrEqual(2)
+  })
+
+  it('one suggestion per server even when several keywords hit', () => {
+    expect(matchSuggestions('a linear ticket', INDEX)).toEqual([{ keyword: 'linear', server: 'linear' }])
+  })
+
+  it('handles regex metacharacters in keywords safely', () => {
+    const index = [{ keywords: ['c++'], server: 'cpp-tools' }]
+
+    expect(matchSuggestions('help with c++ code', index)).toEqual([{ keyword: 'c++', server: 'cpp-tools' }])
+  })
+
+  it('matches a pasted vendor URL by host suffix', () => {
+    const index = [{ hosts: ['atlassian.net'], keywords: ['jira'], server: 'atlassian' }]
+
+    expect(matchSuggestions('look at https://yourco.atlassian.net/browse/ENG-123 pls', index)).toEqual([
+      { keyword: 'atlassian.net', server: 'atlassian' }
+    ])
+  })
+
+  it('host hit wins over keyword hit as the reported trigger', () => {
+    const index = [{ hosts: ['linear.app'], keywords: ['linear'], server: 'linear' }]
+
+    expect(matchSuggestions('linear ticket: https://linear.app/team/issue/ABC-1', index)).toEqual([
+      { keyword: 'linear.app', server: 'linear' }
+    ])
+  })
+
+  it('does not match a host suffix embedded in another domain', () => {
+    const index = [{ hosts: ['linear.app'], keywords: [], server: 'linear' }]
+
+    // evil-linear.app.example.com must not fire; nor must notlinear.app.
+    expect(matchSuggestions('see https://linear.app.example.com/x', index)).toEqual([])
+    expect(matchSuggestions('see https://notlinear.app/x', index)).toEqual([])
+  })
+
+  it('strips port and credentials before host comparison', () => {
+    const index = [{ hosts: ['sentry.io'], keywords: [], server: 'sentry' }]
+
+    expect(matchSuggestions('logs at https://user@myorg.sentry.io:443/issues', index)).toEqual([
+      { keyword: 'sentry.io', server: 'sentry' }
+    ])
+  })
+
+  it('a keyword still under the caret does not fire yet', () => {
+    // The debounce elapses mid-thought; the word is only intent once
+    // something follows it.
+    expect(matchSuggestions('can you check linear', INDEX)).toEqual([])
+    expect(matchSuggestions('can you check linear ', INDEX)).toEqual([{ keyword: 'linear', server: 'linear' }])
+    expect(matchSuggestions('can you check linear?', INDEX)).toEqual([{ keyword: 'linear', server: 'linear' }])
+  })
+
+  it('a pasted URL fires even as the last thing in the draft', () => {
+    // Pasting is a deliberate act — the completed-word guard is keyword-only.
+    const index = [{ hosts: ['linear.app'], keywords: ['linear'], server: 'linear' }]
+
+    expect(matchSuggestions('look at https://linear.app/team/issue/ABC-1', index)).toEqual([
+      { keyword: 'linear.app', server: 'linear' }
+    ])
+  })
+})

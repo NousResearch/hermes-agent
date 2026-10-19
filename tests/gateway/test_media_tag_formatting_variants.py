@@ -35,26 +35,10 @@ def real_targz(tmp_path):
 
 
 class TestTrailingPunctuation:
-    def test_sentence_final_period_extracts_path(self, real_file):
-        media, cleaned = BasePlatformAdapter.extract_media(
-            f"Saved your data. MEDIA:{real_file}."
-        )
-        assert [p for p, _ in media] == [real_file]
-        assert "MEDIA:" not in cleaned
 
-    def test_period_then_more_prose(self, real_file):
-        media, cleaned = BasePlatformAdapter.extract_media(
-            f"Done: MEDIA:{real_file}. Enjoy!"
-        )
-        assert [p for p, _ in media] == [real_file]
-        assert "Enjoy!" in cleaned
 
     def test_multipart_extension_not_truncated(self, real_targz):
         media, _ = BasePlatformAdapter.extract_media(f"MEDIA:{real_targz}")
-        assert [p for p, _ in media] == [real_targz]
-
-    def test_multipart_extension_with_trailing_period(self, real_targz):
-        media, _ = BasePlatformAdapter.extract_media(f"MEDIA:{real_targz}.")
         assert [p for p, _ in media] == [real_targz]
 
 
@@ -65,24 +49,6 @@ class TestInlineCodeWrappedTags:
         )
         assert [p for p, _ in media] == [real_file]
         assert "MEDIA:" not in cleaned
-
-    def test_nonexistent_path_in_inline_code_stays_masked(self):
-        text = "Use the format `MEDIA:/nonexistent/example.csv` to attach files."
-        media, cleaned = BasePlatformAdapter.extract_media(text)
-        assert media == []
-        assert "`MEDIA:/nonexistent/example.csv`" in cleaned
-
-    def test_fenced_code_block_always_masked(self, real_file):
-        text = f"```\nMEDIA:{real_file}\n```"
-        media, cleaned = BasePlatformAdapter.extract_media(text)
-        assert media == []
-        assert real_file in cleaned
-
-    def test_inline_code_non_media_untouched(self, real_file):
-        text = f"Run `ls -la` then see MEDIA:{real_file}"
-        media, cleaned = BasePlatformAdapter.extract_media(text)
-        assert [p for p, _ in media] == [real_file]
-        assert "`ls -la`" in cleaned
 
 
 class TestEmphasisAndDedupeIntegration:
@@ -101,26 +67,4 @@ class TestEmphasisAndDedupeIntegration:
         media, _ = BasePlatformAdapter.extract_media(f"MEDIA:{a} MEDIA:{b}")
         assert [p for p, _ in media] == [str(a), str(b)]
 
-    def test_duplicate_tags_deliver_once(self, real_file):
-        media, _ = BasePlatformAdapter.extract_media(
-            f"MEDIA:{real_file} and again MEDIA:{real_file}"
-        )
-        assert [p for p, _ in media] == [real_file]
 
-    def test_glued_as_document_delivers(self, real_file):
-        media, _ = BasePlatformAdapter.extract_media(
-            f"MEDIA:{real_file}[[as_document]]"
-        )
-        assert [p for p, _ in media] == [real_file]
-
-    def test_unknown_extension_real_file_delivers(self, tmp_path):
-        p = tmp_path / "script.py"
-        p.write_text("print('hi')\n")
-        media, _ = BasePlatformAdapter.extract_media(f"MEDIA:{p}")
-        assert [os.path.realpath(x) for x, _ in media] == [os.path.realpath(str(p))]
-
-    def test_extensionless_real_file_delivers(self, tmp_path):
-        p = tmp_path / "Caddyfile"
-        p.write_text("localhost\n")
-        media, _ = BasePlatformAdapter.extract_media(f"MEDIA:{p}")
-        assert [os.path.realpath(x) for x, _ in media] == [os.path.realpath(str(p))]

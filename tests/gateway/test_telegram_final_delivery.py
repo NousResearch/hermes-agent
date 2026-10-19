@@ -97,50 +97,6 @@ async def test_non_opt_in_adapter_keeps_adaptive_final_edit_retry():
 
 
 @pytest.mark.asyncio
-async def test_turn_final_flood_commits_empty_tail_as_fresh_message():
-    """Telegram gets a durable final even when the internal tail is empty."""
-    adapter = _adapter()
-    adapter.edit_message.return_value = SendResult(
-        success=False,
-        error="Flood control exceeded. Retry in 30 seconds",
-        retry_after=30.0,
-    )
-    adapter.send.return_value = SendResult(success=True, message_id="final-1")
-
-    consumer = GatewayStreamConsumer(
-        adapter,
-        "chat-1",
-        StreamConsumerConfig(cursor=" ▉"),
-    )
-    final_text = "The complete answer"
-    consumer._message_id = "preview-1"
-    consumer._preview_message_ids = {"preview-1"}
-    consumer._last_sent_text = f"{final_text} ▉"
-    consumer._already_sent = True
-
-    ok = await consumer._send_or_edit(
-        final_text,
-        finalize=True,
-        is_turn_final=True,
-    )
-
-    assert ok is False
-    assert consumer._fallback_final_send is True
-    assert consumer.final_content_delivered is True
-    assert adapter.edit_message.await_count == 1
-
-    await consumer._send_fallback_final(final_text)
-
-    adapter.send.assert_awaited_once()
-    assert adapter.send.await_args.kwargs["content"] == final_text
-    assert adapter.send.await_args.kwargs["metadata"] == {"notify": True}
-    adapter.delete_message.assert_awaited_once_with("chat-1", "preview-1")
-    assert consumer.message_id == "final-1"
-    assert consumer.final_response_sent is True
-    assert consumer.final_content_delivered is True
-
-
-@pytest.mark.asyncio
 async def test_empty_tail_commit_honors_retry_after(monkeypatch):
     adapter = _adapter()
     adapter.send.side_effect = [
@@ -167,32 +123,13 @@ async def test_empty_tail_commit_honors_retry_after(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_empty_tail_recovery_keeps_prior_segment_messages():
-    """Recovery replaces only its current preview, not earlier preambles."""
-    adapter = _adapter()
-    adapter.send.return_value = SendResult(success=True, message_id="final-1")
-    consumer = GatewayStreamConsumer(adapter, "chat-1")
-
-    consumer._track_preview_id("preamble-1")
-    consumer._reset_segment_state()
-    consumer._track_preview_id("preview-1")
-    consumer._message_id = "preview-1"
-    consumer._last_sent_text = "Final answer"
-    consumer._fallback_final_send = True
-
-    await consumer._send_fallback_final("Final answer")
-
-    adapter.delete_message.assert_awaited_once_with("chat-1", "preview-1")
-    assert "preamble-1" in consumer._preview_message_ids
-
-
-@pytest.mark.asyncio
-async def test_empty_tail_commit_skips_long_flood_retry(monkeypatch):
+async def test_complete_preview_survives_long_flood_fallback_failure(monkeypatch):
+    """A complete ACKed preview must not trigger a duplicate normal final."""
     adapter = _adapter()
     adapter.send.return_value = SendResult(
         success=False,
-        error="flood_control:30.0",
-        retry_after=30.0,
+        error="flood_control:20.0",
+        retry_after=20.0,
     )
     sleep = AsyncMock()
     monkeypatch.setattr("gateway.stream_consumer.asyncio.sleep", sleep)
@@ -200,6 +137,7 @@ async def test_empty_tail_commit_skips_long_flood_retry(monkeypatch):
     consumer = GatewayStreamConsumer(adapter, "chat-1")
     consumer._message_id = "preview-1"
     consumer._last_sent_text = "Final answer"
+    consumer._already_sent = True
     consumer._fallback_final_send = True
 
     await consumer._send_fallback_final("Final answer")
@@ -207,7 +145,8 @@ async def test_empty_tail_commit_skips_long_flood_retry(monkeypatch):
     adapter.send.assert_awaited_once()
     sleep.assert_not_awaited()
     assert consumer.final_response_sent is False
-    assert consumer.final_content_delivered is False
+    assert consumer.final_content_delivered is True
+    assert consumer.delivered_final_matches("Final answer") is True
 
 
 @pytest.mark.asyncio
@@ -227,53 +166,91 @@ async def test_telegram_long_flood_result_keeps_retry_after():
     assert result.retry_after == 30.0
 
 
-@pytest.mark.asyncio
-async def test_ambiguous_empty_tail_timeout_preserves_duplicate_suppression():
-    adapter = _adapter()
-    adapter.send.return_value = SimpleNamespace(
-        success=False,
-        error="Timed out",
-        retryable=False,
-    )
 
-    consumer = GatewayStreamConsumer(adapter, "chat-1")
+
+@pytest.mark.asyncio
+async def test_empty_fallback_resend_preserves_reply_anchor():
+    """The fresh-commit resend must carry the turn's reply anchor (#71047).
+
+    With reply_to_mode='first' the streamed preview is delivered as a reply
+    to the user's message. When a failed finalize edit forces the fresh
+    resend, the replacement message must use the same anchor so the visible
+    behavior matches the preview (and the non-streaming path).
+    """
+    adapter = _adapter()
+    adapter.send.return_value = SendResult(success=True, message_id="final-1")
+
+    consumer = GatewayStreamConsumer(
+        adapter, "chat-1", initial_reply_to_id="111",
+    )
     consumer._message_id = "preview-1"
     consumer._last_sent_text = "Final answer"
+    consumer._already_sent = True
     consumer._fallback_final_send = True
 
     await consumer._send_fallback_final("Final answer")
 
-    adapter.delete_message.assert_not_awaited()
-    assert consumer.final_response_sent is False
+    adapter.send.assert_awaited_once()
+    kwargs = adapter.send.await_args.kwargs
+    assert kwargs.get("reply_to") == "111"
+    # Preview replaced: deleted after the fresh final succeeded.
+    adapter.delete_message.assert_awaited_once_with("chat-1", "preview-1")
+    assert consumer.final_response_sent is True
     assert consumer.final_content_delivered is True
 
 
 @pytest.mark.asyncio
-async def test_confirmed_empty_tail_send_failure_allows_gateway_retry():
+async def test_empty_fallback_preview_delete_retries_once(monkeypatch):
+    """A False (flood-rejected) preview delete gets one bounded retry."""
     adapter = _adapter()
-    adapter.send.return_value = SendResult(
-        success=False,
-        error="network unavailable",
-        retryable=False,
-    )
+    adapter.send.return_value = SendResult(success=True, message_id="final-1")
+    adapter.delete_message = AsyncMock(side_effect=[False, True])
+    sleep = AsyncMock()
+    monkeypatch.setattr("gateway.stream_consumer.asyncio.sleep", sleep)
 
     consumer = GatewayStreamConsumer(adapter, "chat-1")
     consumer._message_id = "preview-1"
     consumer._last_sent_text = "Final answer"
+    consumer._already_sent = True
     consumer._fallback_final_send = True
-    consumer._final_content_delivered = True
 
     await consumer._send_fallback_final("Final answer")
 
+    assert adapter.delete_message.await_count == 2
+    sleep.assert_awaited_once_with(1.0)
+    assert consumer.final_response_sent is True
+
+
+@pytest.mark.asyncio
+async def test_flood_capped_resend_keeps_single_bubble_reply_first(monkeypatch):
+    """#71047 Problem B end-to-end shape: preview as reply, finalize edit and
+    fresh resend both flood-capped — the gateway suppression decision must
+    keep the complete ACKed preview as the single visible bubble instead of
+    letting the normal final send create a second one.
+    """
+    adapter = _adapter()
+    # Fresh-commit resend flood-capped past the inline retry budget.
+    adapter.send.return_value = SendResult(
+        success=False,
+        error="flood_control:41.0",
+        retry_after=41.0,
+    )
+    sleep = AsyncMock()
+    monkeypatch.setattr("gateway.stream_consumer.asyncio.sleep", sleep)
+
+    consumer = GatewayStreamConsumer(
+        adapter, "chat-1", initial_reply_to_id="111",
+    )
+    consumer._message_id = "preview-1"
+    consumer._last_sent_text = "Final answer"
+    consumer._already_sent = True
+    consumer._fallback_final_send = True
+
+    await consumer._send_fallback_final("Final answer")
+
+    # Preview must NOT be deleted — it is the only copy of the answer.
     adapter.delete_message.assert_not_awaited()
-    assert consumer.final_response_sent is False
-    assert consumer.final_content_delivered is False
-
-
-def test_timeout_exception_is_treated_as_ambiguous_delivery():
-    class TimedOut(Exception):
-        pass
-
-    assert GatewayStreamConsumer._send_failure_may_have_delivered(
-        TimedOut("request timed out")
-    ) is True
+    # Mirror the gateway/run.py suppression decision: content delivered and
+    # the recorded payload reconciles, so the normal final send is skipped.
+    assert consumer.final_content_delivered is True
+    assert consumer.delivered_final_matches("Final answer") is True

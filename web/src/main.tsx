@@ -1,7 +1,8 @@
 import { createRoot } from "react-dom/client";
-import { BrowserRouter } from "react-router-dom";
+import { BrowserRouter } from "react-router";
 import "./index.css";
 import App from "./App";
+import { ProfileProvider } from "./contexts/ProfileProvider";
 import { SystemActionsProvider } from "./contexts/SystemActions";
 import { I18nProvider } from "./i18n";
 import { exposePluginSDK } from "./plugins";
@@ -17,7 +18,10 @@ createRoot(document.getElementById("root")!).render(
     <I18nProvider>
       <ThemeProvider>
         <SystemActionsProvider>
-          <App />
+          {/* Above App, so its plugin loader follows the selected profile. */}
+          <ProfileProvider>
+            <App />
+          </ProfileProvider>
         </SystemActionsProvider>
       </ThemeProvider>
     </I18nProvider>

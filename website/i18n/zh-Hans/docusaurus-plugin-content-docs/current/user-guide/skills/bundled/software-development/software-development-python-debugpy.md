@@ -112,26 +112,18 @@ python -m pdb path/to/script.py arg1 arg2
 
 ## 方案 3：调试 pytest 测试
 
-hermes 测试运行器和 pytest 均支持以下方式：
+通过 `terminal` 使用标准测试运行器进行非交互诊断：
 
 ```bash
-# 在失败时（或任何异常抛出时）进入 pdb：
-scripts/run_tests.sh tests/path/to/test_file.py::test_name --pdb
-
-# 在测试开始时进入 pdb：
-scripts/run_tests.sh tests/path/to/test_file.py::test_name --trace
-
 # 在 traceback 中显示局部变量，不使用 pdb：
 scripts/run_tests.sh tests/path/to/test_file.py --showlocals --tb=long
 ```
 
-注意：`scripts/run_tests.sh` 默认使用 xdist（`-n 4`），pdb 在 xdist 下**无法正常工作**。请添加 `-p no:xdist` 或使用 `-n 0` 运行单个测试：
+`scripts/run_tests.sh` 捕获每个文件的子进程输出，无法提供交互式 `--pdb` 或 `--trace`
+提示符。仅在交互调试时使用方案 5 准备的独立开发/测试解释器，不要使用生产环境：
 
 ```bash
-scripts/run_tests.sh tests/foo_test.py::test_bar --pdb -p no:xdist
-# 或
-source .venv/bin/activate
-python -m pytest tests/foo_test.py::test_bar --pdb
+.venv/bin/python -m pytest tests/foo_test.py::test_bar --pdb
 ```
 
 这会绕过封闭环境保证——调试时可以接受，但推送前请在 wrapper 下重新运行以确认。
@@ -168,10 +160,22 @@ sys.excepthook = excepthook
 
 ### 安装
 
+使用独立开发检出和数据目录，不要修改正在运行的生产环境。
+按照 [PM 开发流程](https://hermes-agent.nousresearch.com/docs/reference/package-management#developer-workflow)
+激活该检出——PowerShell 使用 `. .\activate.ps1`。`dev` extra 已包含 debugpy，
+但 PM 激活不会同步它（`all` 不含该 extra）。通过 `terminal`，用该检出准备好的
+Python 构建全新的调试/测试环境：
+
 ```bash
-source /home/bb/hermes-agent/.venv/bin/activate
-pip install debugpy
+source ./activate
+python -m pm.build_env --source . --out .venv --group dev --group test
+.venv/bin/python -c "import debugpy; print(debugpy.__file__)"
 ```
+
+输出目录必须不存在。重建前停止其进程，并明确删除仅用于调试的可丢弃环境。
+调试目标使用相同的独立 `HERMES_HOME`。`.venv/bin/python` 就是刚构建的独立环境，
+不是猜测的应用 venv，下面的模式都通过它运行。不要向正在运行的生产环境安装
+debugpy；请在准备好的调试目标复现，或安排在开发环境重启。
 
 ### 模式 A：修改源码——进程在启动时等待调试器
 
@@ -190,13 +194,13 @@ debugpy.breakpoint()       # 可选：附加后立即暂停
 ### 模式 B：无需修改源码——使用 `-m debugpy` 启动
 
 ```bash
-python -m debugpy --listen 127.0.0.1:5678 --wait-for-client your_script.py arg1
+.venv/bin/python -m debugpy --listen 127.0.0.1:5678 --wait-for-client your_script.py arg1
 ```
 
 模块入口的等效写法：
 
 ```bash
-python -m debugpy --listen 127.0.0.1:5678 --wait-for-client -m your.module
+.venv/bin/python -m debugpy --listen 127.0.0.1:5678 --wait-for-client -m your.module
 ```
 
 ### 模式 C：附加到已运行的进程
@@ -204,7 +208,7 @@ python -m debugpy --listen 127.0.0.1:5678 --wait-for-client -m your.module
 需要 PID 以及在目标环境中预装 debugpy：
 
 ```bash
-python -m debugpy --listen 127.0.0.1:5678 --pid <pid>
+.venv/bin/python -m debugpy --listen 127.0.0.1:5678 --pid <pid>
 # debugpy 注入到目标进程中，然后按以下方式连接客户端。
 ```
 
@@ -266,16 +270,17 @@ send({"type": "request", "command": "configurationDone"})
   "connect": { "host": "127.0.0.1", "port": 5678 },
   "justMyCode": false,
   "pathMappings": [
-    { "localRoot": "${workspaceFolder}", "remoteRoot": "/home/bb/hermes-agent" }
+    { "localRoot": "${workspaceFolder}", "remoteRoot": "<hermes-agent-repo>" }
   ]
 }
 ```
 
 **选项 3：放弃 DAP，使用 `remote-pdb`** — 通常这才是终端 agent 真正需要的：
 
-```bash
-pip install remote-pdb
-```
+独立 Python 项目可以在其开发依赖中声明 `remote-pdb`，再用该项目的包管理器
+准备调试环境。这不是 Hermes SDK 安装方法。Hermes 优先使用已声明的 debugpy；
+下面的 remote-pdb 示例需要另行声明并全新构建的调试环境，绝不能向选中的应用环境
+原地 pip 安装。
 
 在代码中：
 ```python
@@ -294,10 +299,11 @@ nc 127.0.0.1 4444
 ## 调试 Hermes 特定进程
 
 ### 测试
-参见方案 3。始终添加 `-p no:xdist` 或在不使用 xdist 的情况下运行单个测试。
+参见方案 3。wrapper 会捕获子进程输出，交互式 pdb 请直接运行 pytest。
 
 ### `run_agent.py` / CLI — 一次性运行
-最简单：在可疑行附近添加 `breakpoint()`，然后正常运行 `hermes`。控制权将在暂停点返回到你的终端。
+在准备好的调试检出中，在可疑行附近添加 `breakpoint()`，然后运行 `python hermes`。
+控制权将在暂停点返回到你的终端。
 
 ### `tui_gateway` 子进程（由 `hermes --tui` 启动）
 gateway 作为 Node TUI 的子进程运行。可选方案：
@@ -309,7 +315,9 @@ import debugpy
 debugpy.listen(("127.0.0.1", 5678))
 debugpy.wait_for_client()
 ```
-启动 `hermes --tui`。TUI 将显示为冻结状态（其后端正在等待）。附加客户端后，执行在你 `continue` 时恢复。
+从准备好的调试检出启动 `python hermes --tui`。TUI 将显示为冻结状态（其后端正在等待）。
+附加客户端后，执行在你 `continue` 时恢复。先检查子进程的解释器和导入路径，
+不要假定它继承了调试环境。
 
 **B. 在特定处理器中使用 `remote-pdb`：**
 ```python
@@ -326,7 +334,7 @@ set_trace(host="127.0.0.1", port=4444)   # 在你想捕获的 RPC 处理器中
 
 ## 常见陷阱
 
-1. **pdb 在 pytest-xdist 下静默失效。** 你不会看到提示符，测试只会挂起。始终使用 `-p no:xdist` 或 `-n 0`。
+1. **pdb 在并行/捕获输出的 runner 下静默失效。** 你不会看到提示符，测试只会挂起（pytest-xdist 与 `scripts/run_tests.sh` 的按文件捕获子进程均如此）。交互式调试请直接对单个文件运行 pytest。
 
 2. **`breakpoint()` 在 CI / 非 TTY 环境中会挂起进程。** 本地使用没问题；永远不要提交它。添加 pre-commit grep 作为安全网。
 
@@ -349,9 +357,9 @@ set_trace(host="127.0.0.1", port=4444)   # 在你想捕获的 RPC 处理器中
 
 ## 验证清单
 
-- [ ] `pip install debugpy` 后确认：`python -c "import debugpy; print(debugpy.__version__)"`
+- [ ] 在独立构建的调试环境中确认：`.venv/bin/python -c "import debugpy; print(debugpy.__version__); print(debugpy.__file__)"`
 - [ ] 对于远程调试，确认端口确实在监听：`ss -tlnp | grep 5678`
-- [ ] 第一个断点确实触发（如果没有，可能是 `PYTHONBREAKPOINT=0`、在 xdist 下运行，或执行在附加前已结束）
+- [ ] 第一个断点确实触发（如果没有，可能是 `PYTHONBREAKPOINT=0`、在并行/捕获输出的 runner 下运行，或执行在附加前已结束）
 - [ ] `where` / `w` 显示预期的调用栈
 - [ ] 调试后清理：已提交代码中无残留的 `breakpoint()` / `set_trace()` / `debugpy.listen`
   ```bash
@@ -372,10 +380,9 @@ breakpoint()
 
 **"这个测试单独运行通过，但在测试套件中失败。"**
 ```bash
-scripts/run_tests.sh tests/the_test.py --pdb -p no:xdist
-# 但如果只有与其他测试一起运行才失败：
-source .venv/bin/activate
-python -m pytest tests/ -x --pdb -p no:xdist
+scripts/run_tests.sh tests/the_test.py   # 先确认它在隔离 runner 下失败
+# 交互式调试，或只有与其他测试一起运行才失败时，使用 Recipe 5 准备的独立开发/测试解释器：
+.venv/bin/python -m pytest tests/ -x --pdb
 # 现在它会在状态积累后的确切失败测试处触发 pdb。
 ```
 

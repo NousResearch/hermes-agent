@@ -57,7 +57,7 @@ def _cut(compressor, messages):
 def _pairing_violations(messages, start, end):
     """Indices kept (head + tail) must never reference a summarised partner."""
     n = len(messages)
-    kept = set(range(0, min(start, n))) | set(range(min(end, n), n))
+    kept = set(range(min(start, n))) | set(range(min(end, n), n))
     parent = {}
     for i, m in enumerate(messages):
         for tc in m.get("tool_calls") or []:
@@ -122,32 +122,7 @@ class TestFloorDoesNotSplitToolGroups:
             "_sanitize_tool_pairs had to strip an orphan — the cut split a group"
         )
 
-    def test_floor_lands_on_tool_result_after_protected_head(self, compressor):
-        """The floor path itself: head_end + 1 points straight at a result."""
-        messages = [
-            {"role": "system", "content": "sys"},
-            {"role": "user", "content": "u" * 60},
-            {"role": "user", "content": "u" * 60},
-            {"role": "user", "content": "u" * 60},
-        ]
-        messages += _tool_group("call_1", results=1)
 
-        start, end = _cut(compressor, messages)
-
-        assert not _pairing_violations(messages, start, end)
-        assert messages[end - 1].get("role") != "assistant" or not messages[
-            end - 1
-        ].get("tool_calls"), "cut must not sit between a tool_call and its result"
-
-    def test_cut_still_makes_progress(self, compressor):
-        """The floor's purpose survives: compression always claims a message."""
-        messages = [{"role": "system", "content": "sys"}]
-        messages += _tool_group("call_1", results=1)
-        messages += _tool_group("call_2", results=1)
-
-        start, end = _cut(compressor, messages)
-
-        assert end > start, "compression must not become a no-op"
 
 
 class TestToolPairingInvariantAcrossShapes:

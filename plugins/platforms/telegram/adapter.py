@@ -2958,6 +2958,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramTo
             listen=webhook_host, port=webhook_port, url_path=webhook_path, webhook_url=webhook_url,
             secret_token=webhook_secret, allowed_updates=Update.ALL_TYPES,
             drop_pending_updates=self._cold_boot_drop_pending(is_reconnect=is_reconnect),
+            bootstrap_retries=1,  # one transient delete/set failure must not leave the webhook unset
        )
         self._webhook_mode = True
         self._polling_progress_accepting = False

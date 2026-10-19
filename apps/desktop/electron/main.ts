@@ -538,6 +538,7 @@ import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
 import { fetchRosterSourceData } from './roster-source-fetch'
 import { rosterSourceStatus } from './roster-source-status'
+import { registerSaveDialogIpc } from './save-text-file'
 import {
   classifyStoredSecret,
   readSecretStoragePolicy,
@@ -16635,20 +16636,10 @@ ipcMain.handle('hermes:writeClipboard', (_event, text) => {
   return true
 })
 
-// Native save-location picker (profile export etc.) — the write itself happens
-// elsewhere (the backend, for profile archives); this only picks the path.
-ipcMain.handle('hermes:selectSavePath', async (_event, options: any = {}) => {
-  const result = await dialog.showSaveDialog(mainWindow, {
-    title: options?.title || 'Save',
-    defaultPath: options?.defaultPath ? String(options.defaultPath) : undefined,
-    filters: Array.isArray(options?.filters) ? options.filters : undefined
-  })
-
-  if (result.canceled || !result.filePath) {
-    return null
-  }
-
-  return result.filePath
+// Save dialogs: the path picker (profile export) and /save's main-process write (save-text-file.ts).
+registerSaveDialogIpc(ipcMain, {
+  defaultDir: () => app.getPath('documents'),
+  showSaveDialog: options => dialog.showSaveDialog(mainWindow, options)
 })
 
 // Paired reader for the GUI terminal's paste chord: the renderer's

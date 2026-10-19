@@ -1298,7 +1298,7 @@ class TestExecHybridPrivateUrlRouting:
         monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: object())
         monkeypatch.setattr(bt_cloud, "_auto_local_for_private_urls", lambda: True)
         monkeypatch.setattr(bu_cli, "_exec_route_is_sidecar", {}, raising=False)
-        monkeypatch.setattr(bu_cli, "_driven_daemons", set())
+        monkeypatch.setattr(bu_cli, "_driven_daemons", {})
         self.cloud_keys = []
         monkeypatch.setattr(bt_session, "_get_session_info",
                             lambda key: self.cloud_keys.append(key) or {"cdp_url": "wss://cloud.example/x"})

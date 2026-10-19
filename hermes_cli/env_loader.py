@@ -502,8 +502,13 @@ def apply_config_bootstrap_env(remote_names, home: Path | None = None, project_e
     selected and authenticated from the same deployment either way. A file deployment gets only its
     selector (the file backend needs nothing else before boot); values the process env holds and
     no file defines are left alone; ``load_hermes_dotenv`` later publishes the same values."""
+    from agent.safe_worker_policy import worker_config_snapshot
     from hermes_cli.config_backend import BACKEND_ENV
 
+    # A frozen-policy worker reads no profile dotenv (``load_hermes_dotenv`` returns early there):
+    # its bootstrap supplied the process env explicitly, so nothing is published from the files.
+    if worker_config_snapshot() is not None:
+        return
     env = _bootstrap_env(home, project_env)
     if (env.get(BACKEND_ENV) or "").strip().lower() == "remote":
         names = remote_names()
@@ -681,9 +686,11 @@ def load_hermes_dotenv(
     from hermes_cli.config_backend import get_config_backend
 
     # The administrator-managed .env is part of the deployment the backend boots from (it may be
-    # where the selector, plane URL or instance id live), so it applies before the boot as well as
-    # last below, where it keeps its precedence over secret-source results.
-    _apply_managed_env(load_pass=load_pass)
+    # where the selector, plane URL or instance id live). The override=True loads above may have
+    # replaced those names with the home's values, so re-publish the deployment names (only those)
+    # with the bootstrap precedence -- managed last -- before the boot. The full managed overlay
+    # still applies once, last below, where it keeps its precedence over secret-source results.
+    bootstrap_deployment(home_path, project_env_path)
     get_config_backend().boot(home_path)
 
     # External sources are skipped for the updater (dotenv + managed env still load): ``update`` must not

@@ -9,6 +9,7 @@ import {
   intentAckMessage,
   intentScript,
   MAX_INTENT_LENGTH,
+  measurementScript,
   themePrelude,
   withInlineChrome
 } from './inline-preview-directive'
@@ -53,6 +54,144 @@ describe('withInlineChrome', () => {
 
     expect(framed).toContain('<h1>fragment</h1>')
     expect(framed).toContain('postMessage')
+  })
+})
+
+describe('withInlineChrome × page Content-Security-Policy', () => {
+  const prelude = themePrelude({}, '', 'light')
+
+  // The pre-CSP assembly: prelude + untouched doc + the two injected scripts.
+  // Used as the byte-identity reference for every case the rewrite must skip.
+  const frozen = (doc: string) => {
+    const bodyClose = /<\/body\s*>/i.exec(doc)
+    const script = measurementScript('tok') + intentScript('tok')
+
+    return prelude + (bodyClose ? doc.slice(0, bodyClose.index) + script + doc.slice(bodyClose.index) : doc + script)
+  }
+
+  const withPolicy = (csp: string) =>
+    `<html><head><meta http-equiv="Content-Security-Policy" content="${csp}"></head><body><h1>hi</h1></body></html>`
+
+  // Read the policy the way the browser sees it (attributes are HTML-decoded).
+  const policyOf = (html: string) => {
+    const host = document.createElement('div')
+
+    host.innerHTML = html
+
+    return host.querySelector('meta[http-equiv="Content-Security-Policy"]')?.getAttribute('content') ?? null
+  }
+
+  it('admits the injected scripts to a hash-only policy without dropping page sources', () => {
+    const framed = withInlineChrome(
+      withPolicy("default-src 'none'; script-src 'sha256-aaa' 'sha256-bbb'; style-src 'unsafe-inline'"),
+      'tok',
+      prelude
+    )
+
+    expect(policyOf(framed)).toBe(
+      "default-src 'none'; script-src 'sha256-aaa' 'sha256-bbb' 'nonce-tok'; style-src 'unsafe-inline'"
+    )
+    expect(framed.match(/'nonce-tok'/g)).toHaveLength(1)
+    expect(framed.match(/<script nonce="tok">/g)).toHaveLength(2)
+  })
+
+  it('leaves a doc with no CSP meta byte-identical', () => {
+    const doc = '<html><body><h1>hi</h1></body></html>'
+
+    expect(withInlineChrome(doc, 'tok', prelude)).toBe(frozen(doc))
+  })
+
+  it('appends a quoted source (an unquoted nonce is a URL source, not a nonce)', () => {
+    const framed = withInlineChrome(withPolicy("script-src 'sha256-aaa'"), 'tok', prelude)
+
+    expect(policyOf(framed)).toBe("script-src 'sha256-aaa' 'nonce-tok'")
+  })
+
+  it('does nothing for a CSP meta with no content, an empty policy, or a non-CSP meta', () => {
+    const noContent = '<html><head><meta http-equiv="Content-Security-Policy"></head><body>x</body></html>'
+
+    expect(withInlineChrome(noContent, 'tok', prelude)).toBe(frozen(noContent))
+
+    const empty = withPolicy(' ;; ')
+
+    expect(withInlineChrome(empty, 'tok', prelude)).toBe(frozen(empty))
+
+    const unrelated = `<html><head><meta name="description" content="script-src 'none'"></head><body>x</body></html>`
+
+    expect(withInlineChrome(unrelated, 'tok', prelude)).toBe(frozen(unrelated))
+  })
+
+  it('creates script-src from default-src when scripts fall back to it', () => {
+    const framed = withInlineChrome(withPolicy("default-src 'none'; img-src *"), 'tok', prelude)
+
+    expect(policyOf(framed)).toBe("default-src 'none'; img-src *; script-src 'nonce-tok'")
+  })
+
+  it("drops 'none' when the nonce is added ('none' must be the sole source)", () => {
+    const framed = withInlineChrome(withPolicy("script-src 'none'"), 'tok', prelude)
+
+    expect(policyOf(framed)).toBe("script-src 'nonce-tok'")
+  })
+
+  it('handles attribute order, attribute case, and directive-name case', () => {
+    const doc =
+      '<html><head><META CONTENT="IMG-SRC *; SCRIPT-SRC \'SHA256-AAA\'" HTTP-EQUIV="content-security-policy"></head><body>x</body></html>'
+
+    const framed = withInlineChrome(doc, 'tok', prelude)
+
+    expect(policyOf(framed)).toBe("IMG-SRC *; script-src 'SHA256-AAA' 'nonce-tok'")
+  })
+
+  it('honours script-src-elem precedence over script-src', () => {
+    const framed = withInlineChrome(withPolicy("script-src 'unsafe-inline'; script-src-elem 'none'"), 'tok', prelude)
+
+    expect(policyOf(framed)).toBe("script-src 'unsafe-inline'; script-src-elem 'nonce-tok'")
+  })
+
+  it('encodes the nonce source when the content attribute is single-quoted', () => {
+    const doc = `<html><head><meta http-equiv="Content-Security-Policy" content='default-src &#39;none&#39;; script-src &#39;sha256-aaa&#39;'></head><body>x</body></html>`
+    const framed = withInlineChrome(doc, 'tok', prelude)
+
+    expect(policyOf(framed)).toBe("default-src 'none'; script-src 'sha256-aaa' 'nonce-tok'")
+    expect(framed).toContain('&#39;nonce-tok&#39;')
+  })
+
+  it('amends every policy that would block the scripts (policies intersect)', () => {
+    const doc =
+      '<html><head><meta http-equiv="Content-Security-Policy" content="script-src \'sha256-aaa\'"><meta http-equiv="Content-Security-Policy" content="script-src \'none\'"></head><body>x</body></html>'
+
+    const framed = withInlineChrome(doc, 'tok', prelude)
+    const host = document.createElement('div')
+
+    host.innerHTML = framed
+
+    expect(
+      [...host.querySelectorAll('meta[http-equiv="Content-Security-Policy"]')].map(meta => meta.getAttribute('content'))
+    ).toEqual(["script-src 'sha256-aaa' 'nonce-tok'", "script-src 'nonce-tok'"])
+  })
+
+  // A nonce/hash source in the list disables 'unsafe-inline' (CSP); a blind
+  // append would block the page's OWN inline scripts. The rewrite must skip
+  // policies where inline scripts are already allowed.
+  it("leaves an effective 'unsafe-inline' policy untouched", () => {
+    const doc = withPolicy("default-src 'none'; script-src 'unsafe-inline'")
+
+    expect(withInlineChrome(doc, 'tok', prelude)).toBe(frozen(doc))
+    expect(policyOf(withInlineChrome(doc, 'tok', prelude))).toBe("default-src 'none'; script-src 'unsafe-inline'")
+  })
+
+  it("amends the policy when 'unsafe-inline' is already inert beside a hash", () => {
+    const framed = withInlineChrome(withPolicy("script-src 'unsafe-inline' 'sha256-aaa'"), 'tok', prelude)
+
+    expect(policyOf(framed)).toBe("script-src 'unsafe-inline' 'sha256-aaa' 'nonce-tok'")
+  })
+
+  it('pairs the nonce source with the same nonce on both injected script tags', () => {
+    const framed = withInlineChrome(withPolicy("script-src 'none'"), 'tok', prelude)
+    const nonces = [...framed.matchAll(/<script nonce="([^"]+)">/g)].map(match => match[1])
+
+    expect(nonces).toEqual(['tok', 'tok'])
+    expect(policyOf(framed)).toContain(`'nonce-${nonces[0]}'`)
   })
 })
 

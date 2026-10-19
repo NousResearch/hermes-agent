@@ -286,13 +286,263 @@ export function measurementScript(token: string): string {
   )
 }
 
+/** A page's own `Content-Security-Policy` meta cannot know about the two
+ *  scripts this component injects, so a strict `script-src` blocks them and
+ *  the frame never measures (#139520). The page keeps its policy byte for
+ *  byte; the fix only adds a nonce source that admits OUR two scripts, and
+ *  only when the policy would otherwise block them — a hash/nonce source
+ *  disables `'unsafe-inline'`, so appending to a policy that already allows
+ *  inline scripts would break the page's own inline scripts. */
+
+interface CspDirective {
+  name: string
+  value: string
+  start: number
+  end: number
+}
+
+interface CspAttribute {
+  name: string
+  value: string
+  quote: string
+  valueStart: number
+  valueEnd: number
+}
+
+/** The next `;` that separates directives. Semicolons inside HTML entity
+ *  references (`&#39;`) belong to the entity — splitting on them would shred
+ *  a single-quoted `content` attribute. */
+function cspSeparatorIndex(content: string, from: number): number {
+  for (let i = from; i < content.length; i += 1) {
+    if (content[i] !== ';') {
+      continue
+    }
+
+    const entityStart = content.lastIndexOf('&', i)
+
+    if (entityStart >= from && /^&(?:#\d+|#x[0-9a-f]+|[a-z][a-z0-9]*);$/i.test(content.slice(entityStart, i + 1))) {
+      continue
+    }
+
+    return i
+  }
+
+  return -1
+}
+
+/** Split a policy into directives, keeping each directive's offsets in the
+ *  raw content so a rewrite can splice one directive without reserializing
+ *  the rest (other directives and their spacing stay byte-identical). */
+function cspDirectives(content: string): CspDirective[] {
+  const directives: CspDirective[] = []
+  let start = 0
+
+  while (start <= content.length) {
+    const separator = cspSeparatorIndex(content, start)
+    const end = separator === -1 ? content.length : separator
+    const segment = content.slice(start, end)
+    const trimmed = segment.trim()
+
+    if (trimmed) {
+      const gap = trimmed.search(/\s/)
+
+      directives.push({
+        name: (gap === -1 ? trimmed : trimmed.slice(0, gap)).toLowerCase(),
+        value: gap === -1 ? '' : trimmed.slice(gap).trim(),
+        start: start + (segment.length - segment.trimStart().length),
+        end: start + segment.trimEnd().length
+      })
+    }
+
+    if (separator === -1) {
+      break
+    }
+
+    start = separator + 1
+  }
+
+  return directives
+}
+
+/** `script-src-elem` governs script ELEMENTS when present, then `script-src`,
+ *  then `default-src` — the same precedence the browser applies. */
+function cspScriptDirective(directives: CspDirective[]): CspDirective | null {
+  return (
+    directives.find(directive => directive.name === 'script-src-elem') ??
+    directives.find(directive => directive.name === 'script-src') ??
+    directives.find(directive => directive.name === 'default-src') ??
+    null
+  )
+}
+
+/** True when inline script elements are already allowed: `'unsafe-inline'`
+ *  with no hash/nonce source in the same list (either token kind would make
+ *  `'unsafe-inline'` inert, per CSP). */
+function cspAllowsInline(value: string): boolean {
+  const sources = value
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(source => source.toLowerCase())
+
+  return (
+    sources.includes("'unsafe-inline'") && !sources.some(source => /^'(?:nonce|sha256|sha384|sha512)-/.test(source))
+  )
+}
+
+/** Attribute values are HTML-decoded before CSP sees them; decode just the
+ *  quote entities so the "already allows inline" check reads the real policy
+ *  when a single-quoted `content` attribute entity-encodes its keywords. */
+function decodeCspEntities(value: string): string {
+  return value
+    .replace(/&#(?:0*39|x0*27);/gi, "'")
+    .replace(/&apos;/gi, "'")
+    .replace(/&quot;/gi, '"')
+    .replace(/&amp;/gi, '&')
+}
+
+/** Append the nonce source to the directive that governs injected script
+ *  elements, or create a `script-src` when only `default-src` exists (a
+ *  dedicated directive keeps the nonce out of the other directives that
+ *  fall back to `default-src`). Null = leave this policy untouched. */
+function addCspNonce(content: string, nonceSource: string): string | null {
+  // An entity-encoded directive separator (`&#59;`) decodes to `;` after the
+  // HTML parser but carries a `;` inside the raw attribute. Rewriting around
+  // it would misplace the split, so such a policy is left alone.
+  if (/&#(?:0*59|x0*3b);|&semi;/i.test(content)) {
+    return null
+  }
+
+  const directives = cspDirectives(content)
+  const target = cspScriptDirective(directives)
+
+  if (target === null || cspAllowsInline(decodeCspEntities(target.value))) {
+    return null
+  }
+
+  const sources = target.value
+    .split(/\s+/)
+    .filter(Boolean)
+    // 'none' is valid only as the sole source expression; leaving it beside
+    // the nonce makes the directive invalid (and the browser warns), so the
+    // no-sources keyword is dropped as the nonce is added.
+    .filter(source => decodeCspEntities(source).toLowerCase() !== "'none'")
+    .concat(nonceSource)
+    .join(' ')
+
+  if (target.name !== 'default-src') {
+    return content.slice(0, target.start) + `${target.name} ${sources}` + content.slice(target.end)
+  }
+
+  return `${content}${content.trimEnd().endsWith(';') ? ' ' : '; '}script-src ${sources}`
+}
+
+function cspAttributes(source: string): CspAttribute[] {
+  const attrs: CspAttribute[] = []
+  const attrRe = /([^\s"'<>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g
+  let match: RegExpExecArray | null
+
+  while ((match = attrRe.exec(source)) !== null) {
+    const quote = match[2] !== undefined ? '"' : match[3] !== undefined ? "'" : ''
+    const value = match[2] ?? match[3] ?? match[4] ?? ''
+    const valueEnd = match.index + match[0].length - (quote ? 1 : 0)
+
+    attrs.push({
+      name: match[1].toLowerCase(),
+      value,
+      valueStart: valueEnd - value.length,
+      valueEnd,
+      quote
+    })
+  }
+
+  return attrs
+}
+
+/** Locate every `<meta http-equiv="Content-Security-Policy">` content value
+ *  and its offsets. Multiple policies all apply (intersection), so each one
+ *  that would block the injected scripts must be amended. */
+function cspMetaContents(doc: string): CspAttribute[] {
+  const metas: CspAttribute[] = []
+  const tagRe = /<meta\b(?:"[^"]*"|'[^']*'|[^>"'])*>/gi
+  let tag: RegExpExecArray | null
+
+  while ((tag = tagRe.exec(doc)) !== null) {
+    const attrsStart = tag[0].search(/\s/)
+
+    if (attrsStart === -1) {
+      continue
+    }
+
+    const attrs = cspAttributes(tag[0].slice(attrsStart))
+    const httpEquiv = attrs.find(attr => attr.name === 'http-equiv')
+    const content = attrs.find(attr => attr.name === 'content')
+
+    if (httpEquiv?.value.trim().toLowerCase() !== 'content-security-policy' || !content) {
+      continue
+    }
+
+    metas.push({
+      ...content,
+      valueStart: tag.index + attrsStart + content.valueStart,
+      valueEnd: tag.index + attrsStart + content.valueEnd
+    })
+  }
+
+  return metas
+}
+
+/** Nonce sources accept base64-value characters; the per-mount token already
+ *  is base36, but keep this total for any other caller. */
+function cspNonceForToken(token: string): string {
+  return token.replace(/[^A-Za-z0-9+/_-]/g, '') || 'inline-preview'
+}
+
+function scriptWithNonce(script: string, nonce: string): string {
+  return script.replace(/^<script>/, `<script nonce="${nonce}">`)
+}
+
+/** Rewrite every meta policy that would block our scripts. Splicing right to
+ *  left keeps the offsets valid; an unquoted `content` attribute cannot hold
+ *  the quoted nonce source, so it is left alone. */
+function withCspNonce(doc: string, nonce: string): { applied: boolean; doc: string } {
+  let next = doc
+  let applied = false
+
+  for (const meta of cspMetaContents(doc).reverse()) {
+    if (!meta.quote) {
+      continue
+    }
+
+    const nonceSource = meta.quote === "'" ? `&#39;nonce-${nonce}&#39;` : `'nonce-${nonce}'`
+    const content = addCspNonce(meta.value, nonceSource)
+
+    if (content === null) {
+      continue
+    }
+
+    next = next.slice(0, meta.valueStart) + content + next.slice(meta.valueEnd)
+    applied = true
+  }
+
+  return { applied, doc: next }
+}
+
 /** Assemble the srcdoc: theme prelude first (so the page's own styles win),
  *  then the measuring + intent scripts before `</body>` when present so they
  *  run after the page's own markup, appended otherwise. */
 export function withInlineChrome(doc: string, token: string, prelude: string): string {
-  const script = measurementScript(token) + intentScript(token)
-  const bodyClose = /<\/body\s*>/i.exec(doc)
-  const framed = bodyClose ? doc.slice(0, bodyClose.index) + script + doc.slice(bodyClose.index) : doc + script
+  const nonce = cspNonceForToken(token)
+  const policy = withCspNonce(doc, nonce)
+
+  const script = policy.applied
+    ? scriptWithNonce(measurementScript(token), nonce) + scriptWithNonce(intentScript(token), nonce)
+    : measurementScript(token) + intentScript(token)
+
+  const bodyClose = /<\/body\s*>/i.exec(policy.doc)
+
+  const framed = bodyClose
+    ? policy.doc.slice(0, bodyClose.index) + script + policy.doc.slice(bodyClose.index)
+    : policy.doc + script
 
   return prelude + framed
 }

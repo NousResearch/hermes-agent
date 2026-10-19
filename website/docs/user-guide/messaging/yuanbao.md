@@ -274,6 +274,30 @@ platforms:
       group_allow_from: ""
 ```
 
+### Hand-typed `@` mentions in groups
+
+In a group chat the bot answers only when it is addressed: either through the mention picker
+(which Yuanbao attaches as a structured element) or with one of the owner commands listed above.
+
+Typing the bot's name by hand — or copy-pasting a previous request — produces ordinary text, not a
+picker element, so by default such a message is only recorded as group context and no reply is
+generated. Opt in with `text_mention_fallback` to also honour a hand-typed `@botname`:
+
+```yaml
+platforms:
+  yuanbao:
+    extra:
+      # default false: a hand-typed @mention is observed, not answered
+      text_mention_fallback: true
+```
+
+or with the environment variable `YUANBAO_TEXT_MENTION_FALLBACK=true`.
+
+When enabled, the message is answered only if the text carries a mention of a name the bot itself
+goes by in that group — its member nickname or the group-specific name card (群昵称), both read
+from the group member list. A mention of any other member never wakes the bot, and if that list is
+unavailable or stale the message stays observed-only (the bot never guesses its own name).
+
 ## Advanced Configuration
 
 ### Message Chunking

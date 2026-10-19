@@ -73,13 +73,6 @@ export type ChatMessage = {
   serverRowSpan?: number
   /** Emoji reactions on this message — one per author (see MessageReaction). */
   reactions?: MessageReaction[]
-  /** Backend-authored transcript notice rather than a message any view sent: a
-   *  model switch, an auto-continue, a background-process completion. It renders
-   *  on the timeline like any other system row but belongs to no view, so the
-   *  stale-transcript compare must not count it (see
-   *  `messagesIfTranscriptBehind`) — counting it made one model switch report a
-   *  second window ahead and refuse every send. */
-  systemNotice?: boolean
 }
 
 export type GatewayEventPayload = {
@@ -132,6 +125,19 @@ export type GatewayEventPayload = {
   install_warning?: string
   personality?: string
   usage?: Partial<UsageStats>
+  // Canonical session.usage ticks carry cumulative counters at the payload top level; older ticker frames nest the desktop Usage shape above.
+  api_calls?: number | null
+  cache_read_tokens?: number | null
+  completion_tokens?: number | null
+  compression_count?: number | null
+  context_length?: number | null
+  context_source?: string | null
+  input_tokens?: number | null
+  last_prompt_tokens?: number | null
+  output_tokens?: number | null
+  prompt_tokens?: number | null
+  tokens_per_s?: number | null
+  total_tokens?: number | null
   // agent.terminal.output — live chunk for a read-only agent terminal tab
   process_id?: string
   chunk?: string
@@ -151,7 +157,7 @@ export type GatewayEventPayload = {
   // approval server request (dangerous command / execute_code) — session-keyed
   command?: string
   description?: string
-  // False when a tirith content-security warning forbids a permanent allow.
+  // False when the backend forbids a permanent allow.
   allow_permanent?: boolean
   smart_denied?: boolean
   // secret.request (skill credential capture)
@@ -172,8 +178,6 @@ export type GatewayEventPayload = {
   kind?: string
   // pane.reveal (agent focusing a desktop pane via the focus_pane tool)
   pane?: string
-  // layout.apply (agent applying a layout preset via the apply_layout tool)
-  preset?: string
   // tour.request (tour tool — agent-guided driver.js walkthrough). `action`
   // and `steps` name the tour verb and step list; `surface` picks the app's
   // own DOM vs the preview pane's guest page. tip.show (tip tool — one accent
@@ -221,6 +225,8 @@ export type GatewayEventPayload = {
   // message.complete — a transform_llm_output hook rewrote the final text after streaming;
   // it authoritatively replaces the current turn's streamed text even without a prefix match.
   response_transformed?: MessageCompletePayload['response_transformed']
+  // message.complete — `text` is a response this turn already delivered: it adds no text.
+  response_reused?: MessageCompletePayload['response_reused']
   persisted_turn?: PersistedTurn | null
   // message.complete — history-commit note the gateway surfaced instead of dropping.
   warning?: string

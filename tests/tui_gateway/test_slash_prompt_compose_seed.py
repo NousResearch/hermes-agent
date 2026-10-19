@@ -43,7 +43,7 @@ def test_run_harvests_pending_agent_seed():
     assert cli._harvested_seed == "Composed in $EDITOR"
     # one-shot: the seed is consumed, a second command must not re-send it
     assert cli._pending_agent_seed is None
-    out2 = slash_worker._run(cli, "/status")
+    slash_worker._run(cli, "/status")
     assert cli._harvested_seed == ""
 
 

@@ -71,13 +71,13 @@ def _plugin_rows(name: str) -> list:
     try:
         provider = _get_plugin_provider(name)
         return list(provider.list_models() or []) if provider is not None else []
-    except Exception:  # noqa: BLE001 - a broken plugin must not empty the whole picker
+    except Exception:
         return []
 
 
 def managed_image_catalog(
     *, include_krea: bool = True, include_portal: bool = True,
-) -> Tuple[Dict[str, Dict[str, Any]], str]:
+) -> tuple[dict[str, dict[str, Any]], str]:
     """``({model_id: metadata}, default_model)`` for the managed row's model picker.
 
     FAL catalog first (minus the Krea-on-FAL entries), then native Krea, then Portal models
@@ -86,7 +86,7 @@ def managed_image_catalog(
     """
     from tools.image_generation_catalog import DEFAULT_MODEL, FAL_MODELS
 
-    catalog: Dict[str, Dict[str, Any]] = {
+    catalog: dict[str, dict[str, Any]] = {
         mid: {**meta, "backend": FAL} for mid, meta in FAL_MODELS.items()
         if not mid.startswith(_FAL_KREA_PREFIX)}
     if include_krea:

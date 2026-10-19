@@ -85,9 +85,12 @@ export const backendSlowStartStatus = (): string => t('userMessages.backend.slow
 // ── stderr noise ──────────────────────────────────────────────────────────
 
 // Only real failures: a traceback, a CRITICAL log line, an `XxxError:` / `XxxException:`
-// head, or the gateway's own turn/exit markers. Dependency `DeprecationWarning` /
+// head, the gateway's own turn/exit markers, or the canonical bootstrap's verdict lines
+// (`gateway incompatible: runtime_protocol`, `gateway inaccessible: …` and their remedy, see
+// ui-tui/scripts/gateway_bootstrap.py failure_message). Dependency `DeprecationWarning` /
 // `UserWarning` lines are noise and stay in /logs only.
-const STDERR_PROBLEM_RE = /Traceback|\b[A-Z][A-Za-z]*(?:Error|Exception)\b:|CRITICAL|\[gateway-turn\]|\[gateway-exit\]/
+const STDERR_PROBLEM_RE =
+  /Traceback|\b[A-Z][A-Za-z]*(?:Error|Exception)\b:|CRITICAL|\[gateway-turn\]|\[gateway-exit\]|^gateway (?:absent|conflict|draining|inaccessible|incompatible|starting|unavailable): /
 
 /** Only lines that look like a failure earn an activity row; the rest stay in /logs. */
 export const stderrLooksLikeProblem = (line: string): boolean => STDERR_PROBLEM_RE.test(line)
@@ -171,10 +174,19 @@ export const describeRpcError = (err: unknown): string => {
   return text
 }
 
+/** The shared owner's slash.exec refuses every command outside its reviewed reads with
+ *  `unsupported_command` (gateway/session_commands.py): name the command, as the classic CLI does. */
+export const isUnsupportedCommand = (err: unknown): boolean =>
+  (err as { data?: { reason?: string } } | null)?.data?.reason === 'unsupported_command'
+
 /** The slash worker (built-in command helper) failed; name the command, not the helper. */
 export const describeSlashExecError = (command: string, err: unknown): string => {
   const { message } = rpcShape(err)
   const text = message ?? ''
+
+  if (isUnsupportedCommand(err)) {
+    return t('canonical.controls.notAvailable', command)
+  }
 
   if (/slash worker timed out/.test(text)) {
     return t('userMessages.rpc.slashTimedOut', command)

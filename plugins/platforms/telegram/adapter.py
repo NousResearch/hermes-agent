@@ -4978,7 +4978,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             await query.answer(text="Invalid dreaming-engine data.")
             return
         verb, rec_id = parts[1], parts[2]
-        if not await self._callback_authorized(query, cb, _UNAUTHORIZED):
+        if not await self._callback_authorized(query, cb, _unauthorized()):
             return
         entry = self._DR_VERB_DISPATCH.get(verb)
         if not entry:

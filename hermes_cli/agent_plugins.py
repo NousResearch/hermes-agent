@@ -490,6 +490,15 @@ def load_agent_plugin(plugin_root: Path, data_root: Path) -> AgentPluginPackage:
     )
 
 
+def manifest_config_schema(manifest: Any) -> Any:
+    """Raw ``extensions.com.nousresearch.hermes.config_schema`` of a parsed ``plugin.json`` (Agent
+    Plugins v1 forbids unknown top-level fields), else ``None``. Unvalidated: the settings form
+    filters it, the loader and ``plugins validate`` report what is malformed."""
+    extensions = manifest.get("extensions") if isinstance(manifest, dict) else None
+    hermes = extensions.get(_HERMES_EXTENSION) if isinstance(extensions, dict) else None
+    return hermes.get("config_schema") if isinstance(hermes, dict) else None
+
+
 def read_agent_plugin_manifest(plugin_root: Path) -> tuple[dict, tuple[AgentPluginDiagnostic, ...]]:
     """Validate only root ``plugin.json`` without discovering components."""
     _root, manifest, diagnostics = _validate_root(plugin_root)

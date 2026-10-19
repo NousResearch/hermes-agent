@@ -774,6 +774,29 @@ Rules: max 256 chars, control characters (`\r`, `\n`, `\x00`) are rejected, and 
 
 Automatic recall follows the **transcript**: the memory provider is initialised once per session and kept across requests, so a continued session (`X-Hermes-Session-Id`, `previous_response_id`, or a declared `X-Hermes-Session-Key` conversation) receives the recall the provider prepared after the previous turn, exactly like a Telegram or Discord chat does. A request without any continuation starts a fresh session and, like the first turn of any new CLI session, has nothing queued yet. Idle sessions release their provider after the same idle TTL as the gateway agent cache (`agent.agent_cache.idle_ttl_secs`, default one hour).
 
+## Per-user memory scoping (`X-Hermes-User-Id`)
+
+When one Hermes API instance serves several end-users, pass an **opt-in** `X-Hermes-User-Id` so long-term memory providers can scope state **per person**, independent of the channel key and the transcript id:
+
+```http
+POST /v1/chat/completions HTTP/1.1
+Authorization: Bearer ***
+X-Hermes-User-Id: person-42
+X-Hermes-Session-Key: agent:main:webui:dm:person-42
+```
+
+Rules (same opt-in gate as `X-Hermes-Session-Key`):
+
+- Max 256 characters; control characters (`\r`, `\n`, `\x00`) are rejected (`400`).
+- Honored only when API key auth is configured. Without `API_SERVER_KEY` the header is `403` — an open listener cannot inject a memory scope.
+- A session that already has a real authenticated user id keeps that id. The header does not replace it. The listener placeholder `api` is not an end-user, so the header may still scope memory for those sessions.
+- Echoed on success for chat completions, responses, runs (`202`), and session-chat (including SSE) when the header was the id actually applied.
+- Advertised on `/v1/capabilities` as `"user_id_header": "X-Hermes-User-Id"`.
+- Browser CORS preflight allows the header when `API_SERVER_CORS_ORIGINS` permits the origin.
+- `Idempotency-Key` fingerprints include the validated user id (and session key, when sent) so identical bodies from different users do not share a cached completion.
+
+When the header is absent, `user_id` stays unset and behavior matches the historical default peer.
+
 ## System Prompt Handling
 
 When a frontend sends a `system` message (Chat Completions) or `instructions` field (Responses API), hermes-agent **layers it on top** of its core system prompt. Your agent keeps all its tools, memory, and skills — the frontend's system prompt adds extra instructions.

@@ -317,6 +317,13 @@ declare global {
         filters?: Array<{ extensions: string[]; name: string }>
         title?: string
       }) => Promise<null | string>
+      /** Save dialog + main-process write of renderer-supplied text (/save; the gateway may be remote). */
+      saveTextFileAs?: (request: {
+        content: string
+        defaultPath?: string
+        filters?: Array<{ extensions: string[]; name: string }>
+        title?: string
+      }) => Promise<{ canceled?: boolean; path?: string; saved: boolean }>
       writeClipboard: (text: string) => Promise<boolean>
       readClipboard: () => Promise<string>
       saveGatewayFile?: (payload: {

@@ -1998,6 +1998,65 @@ class TestV1SpecRegressionFixes:
         assert adapter._rpc_tasks_get(1, {"taskId": "t-local"})["result"]["status"]["state"] == protocol.STATE_SUBMITTED
         assert len(seen) == 3
 
+    def test_forwarded_task_survives_a_restart_through_its_persisted_identity(self, monkeypatch, tmp_path):
+        """tasks/get must answer after a restart for a forwarded task whose admission is still live.
+
+        The identity tuple is the only thing that addresses the owner's admission, and it lived only
+        in the in-memory TaskStore — so a restart turned a running job into "task not found".
+        """
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+        from gateway import session_a2a
+        from plugins.platforms.a2a import protocol as proto
+
+        monkeypatch.setattr(proto, "get_hermes_home", lambda: tmp_path)
+
+        async def owner(home, **params):
+            return {"status": "queued", "admission_id": "adm-1", "outcome": None, "result": None}
+
+        async def status(home, **params):
+            return {"status": "terminal", "outcome": "completed", "admission_id": "adm-1",
+                    "result": {"final_response": "finished after the restart"}}
+
+        monkeypatch.setattr(session_a2a, "forward_to_owner", owner)
+        monkeypatch.setattr(session_a2a, "status_from_owner", status)
+        monkeypatch.setattr("plugins.platforms.a2a.adapter._profile_home", lambda profile: str(tmp_path))
+        adapter = A2AAdapter(PlatformConfig(enabled=True, extra={"agents": {"dev": {"profile": "dev"}}}))
+        params = _send_body("long job", extra_params={"configuration": {"returnImmediately": True}})["params"]
+        task, _pending = adapter._prepare_task(params, "peer", adapter._agents["dev"])
+        task_id = task["id"]
+
+        # A restart: the process keeps nothing, the identity on disk is all that is left.
+        adapter.tasks = proto.TaskStore()
+        got = adapter._rpc_tasks_get(1, {"taskId": task_id})
+
+        assert "result" in got, got
+        assert got["result"]["status"]["state"] == protocol.STATE_COMPLETED
+        assert protocol.extract_text(got["result"]["status"]["message"]) == "finished after the restart"
+
+    def test_task_identity_persistence_is_idempotent_and_local_tasks_stay_unrestorable(self, monkeypatch, tmp_path):
+        """Writing an identity twice leaves one record, and a task with no owner admission stays not-found."""
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+        from plugins.platforms.a2a import protocol as proto
+
+        monkeypatch.setattr(proto, "get_hermes_home", lambda: tmp_path)
+        adapter = A2AAdapter(PlatformConfig(enabled=True, extra={"agents": {"dev": {"profile": "dev"}}}))
+        rec = {"task_id": "t-1", "context_id": "c", "peer": "p", "agent_slug": "dev", "tenant": "team",
+               "input_id": "i-1", "created_iso": "2026-01-01T00:00:00Z"}
+        proto.persist_task_identity(rec)
+        proto.persist_task_identity(dict(rec))  # an upsert, not a second record
+
+        assert [p.name for p in (tmp_path / "a2a_tasks").glob("*.json")] == ["t-1.json"]
+        assert proto.load_task_identity("t-1")["input_id"] == "i-1"
+        restored = adapter._restore_task("t-1", None)
+        assert (restored["input_id"], restored["peer"], restored["agent_slug"]) == ("i-1", "p", "dev")
+
+        # A task that was never forwarded carries no admission to read: it stays not-found, as before.
+        proto.persist_task_identity({**rec, "task_id": "t-local", "input_id": ""})
+        assert adapter._restore_task("t-local", None) is None
+        assert adapter._restore_task("never-written", None) is None
+
 
 
 class TestExclusivePort:

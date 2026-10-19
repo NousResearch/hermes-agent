@@ -720,6 +720,10 @@ class A2AAdapter(BasePlatformAdapter):
         self._register_inline_push(task_id, params, agent=agent)
         if forwarded:
             self._activate_task(task_id)
+            # The identity tuple that addresses the owner's admission must outlive this process: a
+            # restart otherwise answers tasks/get with "not found" for work that is still running.
+            # Written here, at the moment we forward, so a refused or rejected task leaves no identity.
+            protocol.persist_task_identity(rec)
             if self._return_immediately(params):
                 # Accept-then-poll on a forwarded route — the path in the #91687 field report. Take
                 # the first durable receipt and keep the task identity, so a job longer than the reply
@@ -1000,7 +1004,27 @@ class A2AAdapter(BasePlatformAdapter):
         """(task_id, record, None) for a visible task, else (task_id, None, jsonrpc_error)."""
         task_id = str(params.get("taskId") or params.get("id") or "")
         rec = self.tasks.get(task_id, *self._scope_for_agent(agent))
+        if rec is None:
+            rec = self._restore_task(task_id, agent)
         return task_id, rec, None if rec else _err(req_id, protocol.ERR_TASK_NOT_FOUND, f"task not found: {task_id}")
+
+    def _restore_task(self, task_id: str, agent: Optional[dict]) -> Optional[dict]:
+        """Rebuild a forwarded task a restart dropped, from the identity it persisted on disk.
+
+        The identity tuple is what addresses the owner's admission, so without it a tasks/get after a
+        restart answers "not found" for work that may still be running. The record comes back in
+        SUBMITTED state and tasks/get then refreshes it from the ledger, so the caller reads the real
+        state rather than a guess. A task with no persisted identity (a local task, or one we never
+        forwarded) stays not-found, exactly as before.
+        """
+        identity = protocol.load_task_identity(task_id)
+        if not identity or identity.get("task_id") != task_id or not identity.get("input_id"):
+            return None
+        if not protocol.TaskStore._in_scope(identity, *self._scope_for_agent(agent)):
+            return None
+        return self.tasks.create(task_id, identity.get("context_id") or "", identity.get("peer") or "",
+                                 identity.get("agent_slug") or "", identity.get("tenant") or "",
+                                 input_id=identity["input_id"])
 
     def _rpc_tasks_get(self, req_id: Any, params: dict, agent: Optional[dict] = None) -> dict:
         _task_id, rec, error = self._find_task(req_id, params, agent)

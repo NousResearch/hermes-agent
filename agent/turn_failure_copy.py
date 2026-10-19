@@ -43,6 +43,13 @@ PARTIAL_FAILED_TURN_NOTICE = (
     "This turn did not complete. Some actions may already have run; verify their effects "
     "before resending."
 )
+# A turn no person sent (a cron run, a process completion, a webhook delivery) lost across a gateway
+# restart, or fenced inside the running owner (a lost managed worker): it settles interrupted and is
+# never re-run, so nobody is asked to resend it (#134889 GW-10). Neutral: not every path restarted.
+AUTOMATION_INTERRUPTED_NOTICE = (
+    "An automated delivery was interrupted and was not run again. Some "
+    "actions may already have run; verify their effects."
+)
 # ``messages.display_kind`` of that row: display-only (stripped before every provider request),
 # so renderers show a Hermes notice and room pollers never read it as the model's reply.
 FAILED_TURN_DISPLAY_KIND = "failed_turn"
@@ -52,7 +59,7 @@ def untyped_failed_turn_display_kind(role: Any, content: Any) -> Optional[str]:
     """``FAILED_TURN_DISPLAY_KIND`` for a boundary row persisted before the closers typed it
     (exact notice text, so a real reply quoting it stays a reply); read-side only."""
     if role == "assistant" and isinstance(content, str) and content.strip() in (
-        FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE,
+        FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE, AUTOMATION_INTERRUPTED_NOTICE,
     ):
         return FAILED_TURN_DISPLAY_KIND
     return None

@@ -95,7 +95,9 @@ class CLIInitMixin:
         from cli import CLI_CONFIG, _configure_output_history, _int_or
         self.console = Console()
         self.config = CLI_CONFIG
-        display = CLI_CONFIG["display"]
+        # A local /reasoning show|hide or /footer saves the per-platform ``cli`` key: read it (T7).
+        from gateway.display_config import local_display_config
+        display = local_display_config(CLI_CONFIG["display"])
         self.compact = compact if compact is not None else display.get("compact", False)
         # tool_progress: "off" | "new" | "all" | "verbose"; YAML 1.1 parses bare `off` as False.
         _raw_tp = display.get("tool_progress", "all")

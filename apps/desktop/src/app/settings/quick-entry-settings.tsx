@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 
 import { Input } from '@/components/ui/input'
 import { useI18n } from '@/i18n'
+import { isSubmitEnter } from '@/lib/ime'
 import {
   $quickEntry,
   canUseQuickEntry,
@@ -12,6 +13,7 @@ import {
 } from '@/store/quick-entry'
 
 import { ListRow, ToggleRow } from './primitives'
+import { SETTING_IDS, settingElementId } from './settings-manifest'
 
 /**
  * Quick Entry — the global-hotkey mini composer's settings rows.
@@ -62,6 +64,7 @@ export function QuickEntrySettings() {
       <ToggleRow
         checked={state.enabled}
         description={q.enabledDesc}
+        id={settingElementId(SETTING_IDS.advanced.quickEntry)}
         label={q.enabledTitle}
         onChange={enabled => void saveQuickEntrySettings({ enabled })}
       />
@@ -73,7 +76,7 @@ export function QuickEntrySettings() {
             onBlur={commit}
             onChange={event => setDraft(event.target.value)}
             onKeyDown={event => {
-              if (event.key === 'Enter') {
+              if (isSubmitEnter(event)) {
                 event.preventDefault()
                 commit()
               }
@@ -96,6 +99,7 @@ export function QuickEntrySettings() {
           )
         }
         description={q.shortcutDesc}
+        id={settingElementId(SETTING_IDS.advanced.quickEntryShortcut)}
         title={q.shortcutTitle}
       />
     </>

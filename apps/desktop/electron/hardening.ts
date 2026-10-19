@@ -3,30 +3,22 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const DEFAULT_FETCH_TIMEOUT_MS = 15_000
-// Default / floor / ceiling for Desktop's data-URL file load (composer attach,
-// image preview, etc.). The whole file is base64-buffered in main, so this is
-// a memory guard — not a model limit. Settings → Chat takes a free-form MB
-// value; 16 MB ships as default. The ceiling is only a typo guard (very large
-// values can OOM / crash the app).
-const DATA_URL_READ_DEFAULT_MAX_MB = 16
-const DATA_URL_READ_MIN_MAX_MB = 1
-const DATA_URL_READ_MAX_MAX_MB = 4096
+// Relative, not `@hermes/shared`: the electron bundle is built by esbuild with
+// no tsconfig path resolution (see scripts/bundle-electron-main.mjs), so a bare
+// specifier would typecheck and then fail to bundle.
+import {
+  clampDataUrlReadMaxMb,
+  DATA_URL_READ_DEFAULT_MAX_MB,
+  DATA_URL_READ_MAX_MAX_MB,
+  DATA_URL_READ_MIN_MAX_MB
+} from '../../shared/src/data-url-read-max'
+
+const DEFAULT_FETCH_TIMEOUT_MS = 30_000
 // Remote file.attach sends one base64 JSON-RPC frame. Cap the dedicated attach
 // reader so the payload still fits uvicorn's raised ws_max_size (384 MiB)
 // after base64 + framing. Preview stays on the Settings-configurable path.
 const ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES = 256 * 1024 * 1024
 const TEXT_PREVIEW_SOURCE_MAX_BYTES = 64 * 1024 * 1024
-
-function clampDataUrlReadMaxMb(value) {
-  const parsed = Number(value)
-
-  if (!Number.isFinite(parsed)) {
-    return DATA_URL_READ_DEFAULT_MAX_MB
-  }
-
-  return Math.min(DATA_URL_READ_MAX_MAX_MB, Math.max(DATA_URL_READ_MIN_MAX_MB, Math.round(parsed)))
-}
 
 function dataUrlReadMaxBytesFromMb(maxMb) {
   return clampDataUrlReadMaxMb(maxMb) * 1024 * 1024
@@ -274,6 +266,22 @@ function resolvePersistedRemoteToken({
   return encryptSecret(incomingToken, { allowPlainText: allowPlainText === true })
 }
 
+// The renderer-facing "the saved token is in plain text" warning signal for the
+// connection-config IPC path. Plain text is the CHOSEN mode while keychain
+// encryption is opted out — probeSecureTokenStorage reports availability in
+// that mode on purpose — so the warning fires only for the genuinely degraded
+// state: the token is plain AND the machine cannot secure it (the keyring-less
+// opt-in path). The env override supplies its token from the environment, not
+// the saved block, so it never warns; `secureTokenStorage === false` is matched
+// strictly so an absent signal never manufactures a warning.
+function resolveRemoteTokenPlainText({ envOverride, token, secureTokenStorage }: any = {}) {
+  if (envOverride) {
+    return false
+  }
+
+  return token?.encoding === 'plain' && secureTokenStorage === false
+}
+
 function sensitiveFileBlockReason(filePath) {
   const normalized = String(filePath || '')
     .replace(/\\/g, '/')
@@ -362,6 +370,34 @@ function rejectUnsafePathSyntax(filePath, purpose = 'File read') {
   return raw
 }
 
+/**
+ * Stat a resolved path before handing an `open` to the OS. The OS gives the
+ * miss and the unclaimable file the SAME answer (macOS LaunchServices returns
+ * `kLSApplicationNotFoundErr` for a non-existent path, so a deleted file is
+ * reported as "No application found to open URL"; Electron's `shell.openPath`
+ * resolves with an error for a miss and the caller then "reveals in folder" a
+ * folder that isn't there). Only ENOENT/ENOTDIR count as missing — a path that
+ * stats-fails for any other reason (EACCES on an existing file, root-owned
+ * trees) must still reach the OS, so a stat failure here never fabricates a
+ * miss.
+ */
+function assertExistingPathForOpen(resolvedPath: string, purpose = 'Open file') {
+  try {
+    fs.statSync(resolvedPath)
+  } catch (error) {
+    const code = error && typeof error === 'object' && 'code' in error ? (error as { code?: string }).code : undefined
+
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      throw ipcPathError(
+        'missing-file',
+        `${purpose} failed: the file does not exist — it may have been deleted or moved, or it lives on another machine.`
+      )
+    }
+
+    throw error
+  }
+}
+
 function resolveRequestedPathForIpc(filePath, options: { purpose?: string; baseDir?: fs.PathOrFileDescriptor } = {}) {
   const purpose = String(options.purpose || 'File read')
   let raw = rejectUnsafePathSyntax(filePath, purpose)
@@ -401,6 +437,29 @@ function resolveRequestedPathForIpc(filePath, options: { purpose?: string; baseD
   rejectUnsafePathSyntax(resolvedPath, purpose)
 
   return resolvedPath
+}
+
+/**
+ * Candidate absolute paths to retry when a preview/download target could not
+ * be resolved against the agent's working directory. Attachment references
+ * stored in chat history are frequently HOME-relative (e.g.
+ * "AppData/Local/hermes/attachments/foo.xlsx" on Windows, or
+ * ".hermes/attachments/foo.xlsx" elsewhere) rather than relative to cwd
+ * (#115609). Pure and DI-testable: takes `home`/`hermesHome` as arguments
+ * instead of reaching for `app.getPath('home')` / a module-level constant.
+ * Returns an empty array for absolute paths, `file:` URLs, and empty input —
+ * those already had their one real resolution attempt upstream.
+ */
+function homeRelativeAttachmentCandidates(raw, home, hermesHome) {
+  const trimmed = String(raw || '').trim()
+
+  if (!trimmed || /^file:/i.test(trimmed) || path.isAbsolute(trimmed)) {
+    return []
+  }
+
+  const normalized = trimmed.replace(/\\/g, '/')
+
+  return [path.join(home, normalized), path.join(hermesHome, 'attachments', path.basename(normalized))]
 }
 
 async function statForIpc(fsImpl: { promises: { stat: typeof fs.promises.stat } }, resolvedPath, purpose, typeLabel) {
@@ -536,7 +595,39 @@ async function readFileDataUrlForIpc(
   return `data:${options.mimeType};base64,${data.toString('base64')}`
 }
 
+/** True when a read failed because the file (or its parent) is not on disk.
+ *  Preview reads routinely race a file's lifecycle — a restored preview tab or
+ *  a transcript reference can point at something that was deleted, moved, or
+ *  lived in a cleared /tmp. Those are expected outcomes, not crashes: IPC
+ *  handlers should answer them with a structured error result instead of
+ *  rejecting (Electron logs every rejected handler as a stack trace even when
+ *  the renderer handles the rejection gracefully). Everything else still
+ *  throws as before. */
+function isMissingFileError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false
+  }
+
+  const code = (error as { code?: unknown }).code
+
+  return code === 'ENOENT' || code === 'ENOTDIR'
+}
+
+/** The structured "file is not on disk" IPC answer built from a caught read
+ *  error. Shared by every handler that converts expected absence into data
+ *  (preview text/image reads, attachment reads, file watches) so all of them
+ *  answer with the same shape. */
+function missingFileResult(requestedPath: unknown, error: unknown) {
+  return {
+    ok: false as const,
+    error: (error as NodeJS.ErrnoException).code || 'ENOENT',
+    message: error instanceof Error ? error.message : 'File does not exist.',
+    path: String(requestedPath ?? '')
+  }
+}
+
 export {
+  assertExistingPathForOpen,
   ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
   clampDataUrlReadMaxMb,
   DATA_URL_READ_DEFAULT_MAX_MB,
@@ -546,11 +637,15 @@ export {
   DEFAULT_FETCH_TIMEOUT_MS,
   enableBasicPasswordStoreEncryption,
   encryptDesktopSecret,
+  homeRelativeAttachmentCandidates,
+  isMissingFileError,
+  missingFileResult,
   readFileDataUrlForIpc,
   rejectUnsafePathSyntax,
   resolveDirectoryForIpc,
   resolvePersistedRemoteToken,
   resolveReadableFileForIpc,
+  resolveRemoteTokenPlainText,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
   SAFE_STORAGE_ENCODING,

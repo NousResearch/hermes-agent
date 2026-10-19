@@ -196,5 +196,5 @@ provider_routing:
 未配置 `provider_routing` 部分时（默认情况），OpenRouter 使用其自身的默认路由逻辑，通常会自动在成本和可用性之间取得平衡。
 
 :::tip Provider Routing 与 Fallback Models
-Provider routing 控制 OpenRouter **内部的子 provider** 如何处理你的请求。若需要在主模型失败时自动故障转移到完全不同的 provider，请参阅 [Fallback Providers](/user-guide/features/fallback-providers)。
+Provider routing 控制 OpenRouter **内部的子 provider** 如何处理你的请求。若需要在主模型失败时自动故障转移到完全不同的 provider，请参阅 [Fallback Providers](./fallback-providers.md)。
 :::

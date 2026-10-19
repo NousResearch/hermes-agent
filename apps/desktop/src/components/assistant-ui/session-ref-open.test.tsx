@@ -60,7 +60,9 @@ describe('url refs open in the browser pane', () => {
 
     const chip = screen.getByTitle('https://example.com/docs')
 
-    expect(chip.tagName).toBe('BUTTON')
+    // A real anchor now — that is what gives the chip the link gestures
+    // (⌘-click escape, right-click link menu) that a button never had.
+    expect(chip.tagName).toBe('A')
     fireEvent.click(chip)
 
     expect(openExternal).not.toHaveBeenCalled()

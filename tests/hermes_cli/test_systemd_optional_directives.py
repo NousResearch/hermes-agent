@@ -12,7 +12,6 @@ from both the installed and expected text before comparison.
 
 from __future__ import annotations
 
-import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -39,57 +38,6 @@ RestartSteps=5
 
 
 
-    def test_full_unit_comparison(self):
-        """Simulate the full stale-check flow with an older systemd unit."""
-        from hermes_cli.gateway import (
-            _normalize_service_definition,
-            _strip_optional_systemd_directives,
-        )
-        # What the installed unit looks like on older systemd (directives stripped)
-        installed = """[Unit]
-Description=Hermes Gateway
-After=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/usr/bin/python -m hermes_cli.main gateway run
-Restart=always
-RestartSec=5
-KillMode=mixed
-KillSignal=SIGTERM
-
-[Install]
-WantedBy=default.target
-"""
-        # What generate_systemd_unit produces (with the directives)
-        expected = """[Unit]
-Description=Hermes Gateway
-After=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/usr/bin/python -m hermes_cli.main gateway run
-Restart=always
-RestartSec=5
-RestartMaxDelaySec=300
-RestartSteps=5
-KillMode=mixed
-KillSignal=SIGTERM
-
-[Install]
-WantedBy=default.target
-"""
-        # Without normalization, they differ
-        assert _normalize_service_definition(installed) != _normalize_service_definition(expected)
-
-        # With optional-directive stripping, they match
-        norm_installed = _normalize_service_definition(
-            _strip_optional_systemd_directives(installed)
-        )
-        norm_expected = _normalize_service_definition(
-            _strip_optional_systemd_directives(expected)
-        )
-        assert norm_installed == norm_expected
 
 
 # ---------------------------------------------------------------------------

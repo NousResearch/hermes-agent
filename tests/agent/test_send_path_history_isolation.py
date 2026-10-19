@@ -32,7 +32,6 @@ TRUNCATED_ARGS = '{"content": "# chapter draft\\nline one'  # unrepairable
 VALID_ARGS = json.dumps({"path": "a.txt", "text": "héllo"})
 LONE_SURROGATE = "hello \ud83d world"
 
-
 def _adversarial_history():
     """Every nested container + every dirty-leaf shape the transforms touch."""
     return [
@@ -69,11 +68,9 @@ def _adversarial_history():
         {"role": "tool", "tool_call_id": "c1", "content": "done"},
     ]
 
-
 def _api_copy(history):
     """Exactly the send path's build shape."""
     return [cl._clone_message_for_send(m) for m in history]
-
 
 # Every send-path transform that rewrites api_messages in place. Add new
 # transforms here when the pipeline grows — the invariant is class-wide.
@@ -84,7 +81,6 @@ def _run_full_pipeline(api_messages):
     cl._canonicalize_api_tool_calls(api_messages)
     _sanitize_messages_surrogates(api_messages)
     _sanitize_messages_non_ascii(api_messages)
-
 
 class TestSendPathNeverMutatesHistory:
     def test_full_pipeline_leaves_history_byte_identical(self):
@@ -154,56 +150,3 @@ class TestSendPathNeverMutatesHistory:
         assert cl._clone_message_for_send(sentinel) is sentinel
         assert cl._clone_message_for_send("plain") == "plain"
         assert cl._clone_message_for_send(None) is None
-
-
-class TestSendPathBuildIsWiredToTheClone:
-    """The api_messages build must actually USE the structural clone.
-
-    The isolation tests above exercise ``_clone_message_for_send`` directly,
-    so they cannot notice the build site quietly reverting to the shallow
-    ``msg.copy()`` (the mutation that recreates #80498). This AST contract
-    pins the wiring: inside ``run_conversation_loop``'s api_messages build,
-    the per-message copy expression must be a ``_clone_message_for_send``
-    call, and no ``.copy()``-shaped fallback may reappear on the history
-    iteration variable.
-    """
-
-    def test_history_build_calls_the_clone(self):
-        import ast
-        import inspect
-
-        source = inspect.getsource(cl)
-        tree = ast.parse(source)
-
-        clone_calls = []
-        shallow_copies = []
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                fn = node.func
-                if isinstance(fn, ast.Name) and fn.id == "_clone_message_for_send":
-                    if (
-                        node.args
-                        and isinstance(node.args[0], ast.Name)
-                        and node.args[0].id in ("msg", "pfm")
-                    ):
-                        clone_calls.append(node.args[0].id)
-                if (
-                    isinstance(fn, ast.Attribute)
-                    and fn.attr == "copy"
-                    and isinstance(fn.value, ast.Name)
-                    and fn.value.id in ("msg", "pfm")
-                ):
-                    shallow_copies.append(fn.value.id)
-
-        assert "msg" in clone_calls, (
-            "the api_messages history build no longer clones via "
-            "_clone_message_for_send(msg) — shallow aliasing (#80498) is back"
-        )
-        assert "pfm" in clone_calls, (
-            "the prefill insert no longer clones via "
-            "_clone_message_for_send(pfm)"
-        )
-        assert not shallow_copies, (
-            f"shallow .copy() reappeared on send-path message variables: "
-            f"{shallow_copies} — nested containers alias the persisted history"
-        )

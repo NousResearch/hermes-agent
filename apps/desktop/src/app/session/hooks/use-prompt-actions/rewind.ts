@@ -16,15 +16,18 @@ import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
 import {
   branchGroupForUser,
   type ChatMessage,
+  type ChatMessagePart,
   chatMessageText,
-  completeOpenTimelineParts,
+  finalizeInterruptedMessages,
   textPart
 } from '@/lib/chat-messages'
+import type { ConfirmRequest } from '@/store/confirm'
 
 import {
   appendText,
   isFailedUserTurn,
   isSessionBusyError,
+  isVisibleUserMessage,
   visibleUserIndexAtOrdinal,
   visibleUserMessageIndices,
   visibleUserOrdinal,
@@ -35,24 +38,41 @@ import {
 type RequestGateway = <T = unknown>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
 
 /**
- * Post-rewrite durable ids of the surviving visible user turns, in visible-user
- * ordinal order — the gateway's `survivor_user_row_ids` on a truncating
- * `prompt.submit`. A rewind's `replace_messages` re-inserts the kept prefix as
- * NEW SQLite rows, so every pre-rewind `ChatMessage.rowId` on a surviving
- * bubble is stale the moment the rewind lands; targeting one on the next
- * rewind/edit/regenerate gets a fail-closed 4018 from the gateway. `null`
- * means that turn has no durable id (drop the cached one, don't keep a stale
- * one). Absent entirely = the submit didn't truncate a durable session (or an
- * older gateway) — leave state untouched.
+ * Post-rewrite durable identity information from a truncating `prompt.submit`.
+ * New gateways return an old-to-new map for every surviving physical row;
+ * older gateways return visible-user ids in ordinal order. A rewind's
+ * `replace_messages` re-inserts the kept prefix as NEW SQLite rows, so every
+ * cached rowId is stale the moment the rewind lands.
  */
-export type SurvivorUserRowIds = readonly (null | number)[]
+export type SurvivorUserRowIds = readonly (null | number)[] | Map<number, null | number>
 
 interface PromptSubmitResult {
   status?: string
   survivor_user_row_ids?: unknown
+  survivor_row_id_map?: unknown
 }
 
 export function survivorRowIdsFrom(result: PromptSubmitResult | undefined): SurvivorUserRowIds | undefined {
+  const rawMap = result?.survivor_row_id_map
+
+  if (rawMap && typeof rawMap === 'object' && !Array.isArray(rawMap)) {
+    const parsed = new Map<number, null | number>()
+
+    for (const [oldId, newId] of Object.entries(rawMap)) {
+      const previous = Number(oldId)
+
+      if (Number.isInteger(previous)) {
+        if (newId === null) {
+          parsed.set(previous, null)
+        } else if (typeof newId === 'number' && Number.isInteger(newId)) {
+          parsed.set(previous, newId)
+        }
+      }
+    }
+
+    return parsed
+  }
+
   const raw = result?.survivor_user_row_ids
 
   if (!Array.isArray(raw)) {
@@ -71,6 +91,28 @@ export function survivorRowIdsFrom(result: PromptSubmitResult | undefined): Surv
  * stale id now addresses an archived row and would be refused with 4018.
  */
 export function rebindSurvivorRowIds(messages: ChatMessage[], survivorRowIds: SurvivorUserRowIds): ChatMessage[] {
+  if (survivorRowIds instanceof Map) {
+    return messages.map(message => {
+      if (message.rowId === undefined) {
+        return message
+      }
+
+      if (!survivorRowIds.has(message.rowId)) {
+        // Requested rows outside the active tip (compacted/ancestor history)
+        // were not rewritten and keep their durable identity.
+        return message
+      }
+
+      const next = survivorRowIds.get(message.rowId)
+
+      return next === null || next === undefined
+        ? { ...message, rowId: undefined }
+        : message.rowId === next
+          ? message
+          : { ...message, rowId: next }
+    })
+  }
+
   // Same ordinal space as the truncate math: visible AND persisted (failed
   // turns never reached the gateway, so they hold no survivor slot).
   const indices = new Set(visibleUserMessageIndices(messages))
@@ -92,9 +134,19 @@ export function rebindSurvivorRowIds(messages: ChatMessage[], survivorRowIds: Su
   })
 }
 
+export function durableRowIdsForRebind(messages: readonly ChatMessage[]): number[] {
+  return [
+    ...new Set(
+      messages.flatMap(message =>
+        typeof message.rowId === 'number' && Number.isInteger(message.rowId) ? [message.rowId] : []
+      )
+    )
+  ]
+}
+
 /**
  * Renderer-synthetic message ids (`${timestamp}-${index}-${role}` from
- * chat-messages.ts, plus older `user-…` / `assistant-…` shapes). Gateway
+ * chat-messages/hydration.ts, plus older `user-…` / `assistant-…` shapes). Gateway
  * history never carries them — only durable `row_id` / platform message_id.
  */
 export function isSyntheticRendererId(messageId: string | undefined): boolean {
@@ -113,12 +165,15 @@ export function isSyntheticRendererId(messageId: string | undefined): boolean {
  * a submit that says so, so a leftover ordinal riding along on an ordinary send
  * cannot delete the transcript. Ordinal 0 additionally truncates to an empty
  * transcript (restore/regenerate the first user turn), which the gateway gates
- * behind `confirm_empty_truncate` on top of that.
+ * behind `confirm_empty_truncate` on top of that. A cut that archives later
+ * user turns (restore/edit an older turn, confirmed deep regenerate) also
+ * needs `confirm_deep_truncate` (#133716).
  */
 export function truncateSubmitParams(
   truncateOrdinal: number | undefined,
   truncateMessageId?: string,
-  truncateRowId?: number
+  truncateRowId?: number,
+  confirmDeepTruncate = false
 ): Record<string, unknown> {
   const hasOrdinal = typeof truncateOrdinal === 'number' && Number.isInteger(truncateOrdinal) && truncateOrdinal >= 0
   const hasRowId = typeof truncateRowId === 'number' && Number.isInteger(truncateRowId)
@@ -135,7 +190,8 @@ export function truncateSubmitParams(
     ...(hasOrdinal ? { truncate_before_user_ordinal: truncateOrdinal } : {}),
     ...(hasMessageId ? { truncate_before_message_id: truncateMessageId } : {}),
     ...(hasRowId ? { truncate_before_row_id: truncateRowId } : {}),
-    ...(truncateOrdinal === 0 ? { confirm_empty_truncate: true } : {})
+    ...(truncateOrdinal === 0 ? { confirm_empty_truncate: true } : {}),
+    ...(confirmDeepTruncate ? { confirm_deep_truncate: true } : {})
   }
 }
 
@@ -223,7 +279,11 @@ export async function runRewindSubmit(
   interruptFirst: boolean,
   recovery?: { storedSessionId?: null | string; onSessionRecovered?: (sessionId: string) => void },
   truncateRowId?: number,
-  sourceText?: string
+  sourceText?: string,
+  rebindRowIds?: readonly number[],
+  // Omitted never means confirmed: restore/edit (explicit target) and a
+  // confirmed deep regenerate pass true; tail regenerate passes false (#133716).
+  confirmDeepTruncate?: boolean
 ): Promise<SurvivorUserRowIds | undefined> {
   // Recovery may rebind the live id mid-flight; interrupt/submit must both
   // follow it rather than pinning the dead one.
@@ -247,6 +307,18 @@ export async function runRewindSubmit(
   const hasDurableAddress =
     typeof truncateRowId === 'number' ||
     (typeof truncateMessageId === 'string' && truncateMessageId.length > 0 && !isSyntheticRendererId(truncateMessageId))
+
+  if (wantsTruncation && hasDurableAddress) {
+    // A durable row or platform-message id is globally stable, while the
+    // rendered ordinal can be relative to a paged transcript tail. Do not
+    // cross-check those different spaces; the gateway still validates the
+    // durable address against its full transcript.
+    resolvedOrdinal = undefined
+
+    if (typeof resolvedRowId === 'number' && Number.isInteger(resolvedRowId)) {
+      resolvedMessageId = undefined
+    }
+  }
 
   if (wantsTruncation && !hasDurableAddress) {
     resolvedRowId =
@@ -276,14 +348,18 @@ export async function runRewindSubmit(
       {
         session_id: targetId,
         text,
-        ...truncateSubmitParams(resolvedOrdinal, resolvedMessageId, resolvedRowId),
+        ...truncateSubmitParams(resolvedOrdinal, resolvedMessageId, resolvedRowId, confirmDeepTruncate),
         // A first-turn rewind resolves to an empty transcript, which the
         // gateway additionally gates behind confirm_empty_truncate. In
-        // resolved-row-id mode the ordinal was dropped (see above), so carry
-        // the flag from the caller's ordinal-0 belief: required when right,
-        // ignored by the gateway when the cut isn't actually empty.
-        ...(resolvedRowId !== undefined && resolvedOrdinal === undefined && truncateOrdinal === 0
+        // resolved-row-id mode the tail-local ordinal was dropped (see
+        // above). The durable target is authoritative, so explicitly allow a
+        // first-active-tip cut; the gateway ignores this when the prefix is
+        // non-empty.
+        ...(resolvedOrdinal === undefined && (resolvedRowId !== undefined || truncateOrdinal === 0)
           ? { confirm_empty_truncate: true }
+          : {}),
+        ...(rebindRowIds?.length
+          ? { rebind_survivor_row_ids: [...new Set(rebindRowIds.filter(Number.isInteger))] }
           : {})
       },
       PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
@@ -325,31 +401,44 @@ export async function runRewindSubmit(
   }
 }
 
-/** Cancel/stop finalize: drop empty pending/stream placeholders, un-pend the rest. */
-export function finalizeInterruptedMessages(
+const markInterruptedToolCall = (part: ChatMessagePart): ChatMessagePart =>
+  part.type === 'tool-call' && part.completedAt === undefined && part.result === undefined
+    ? { ...part, interrupted: true }
+    : part
+
+/**
+ * Stop/redirect finalize: like `finalizeInterruptedMessages`, but tool calls
+ * still waiting on a result are marked interrupted, so they read as cut short
+ * by the user rather than as a lost result (#116195). A result that still
+ * arrives later takes precedence over the marker.
+ */
+export function finalizeUserInterruptedMessages(
   messages: ChatMessage[],
   streamId?: null | string,
   occurredAt = Date.now() / 1000
 ): ChatMessage[] {
-  return messages
-    .filter(
-      message =>
-        !(
-          (message.pending || message.id === streamId) &&
-          message.parts.length === 0 &&
-          !chatMessageText(message).trim()
-        )
-    )
-    .map(message =>
-      message.pending || message.id === streamId
-        ? {
-            ...message,
-            completedAt: occurredAt,
-            parts: completeOpenTimelineParts(message.parts, occurredAt),
-            pending: false
-          }
-        : message
-    )
+  const marked = messages.map(message =>
+    message.pending || message.id === streamId
+      ? { ...message, parts: message.parts.map(markInterruptedToolCall) }
+      : message
+  )
+
+  return finalizeInterruptedMessages(marked, streamId, occurredAt)
+}
+
+/** Stop finalize: the live reply is also flagged `interrupted` so it reads as cut short. */
+export function finalizeStoppedMessages(
+  messages: ChatMessage[],
+  streamId?: null | string,
+  occurredAt = Date.now() / 1000
+): ChatMessage[] {
+  const flagged = messages.map(message =>
+    message.role === 'assistant' && (message.pending || message.id === streamId)
+      ? { ...message, interrupted: true }
+      : message
+  )
+
+  return finalizeUserInterruptedMessages(flagged, streamId, occurredAt)
 }
 
 /**
@@ -364,12 +453,23 @@ export function finalizeInterruptedMessages(
  * above it. Also retires the old insert-before-the-active-reply contract whose
  * `lastAssistantIndex` fallback could splice the bubble mid-thread when the
  * stream id was missing or stale (#83151).
+ *
+ * The correction also ends a regenerate's branch group. Output after it
+ * answers the correction, not the regenerated prompt, so it must not join the
+ * group: the runtime repository parents every group member to the group's
+ * user row, which made the post-correction reply a sibling of the sealed
+ * partial and dropped the partial and the correction from view (#119015).
  */
 export function appendMidTurnUserMessage<
-  State extends { interimBoundaryPending: boolean; messages: ChatMessage[]; streamId: null | string }
+  State extends {
+    interimBoundaryPending: boolean
+    messages: ChatMessage[]
+    pendingBranchGroup?: null | string
+    streamId: null | string
+  }
 >(state: State, message: ChatMessage): State {
   const liveId = state.streamId
-  const sealed = finalizeInterruptedMessages(state.messages, liveId)
+  const sealed = finalizeUserInterruptedMessages(state.messages, liveId)
   const sealedLiveKept = liveId !== null && sealed.some(row => row.id === liveId)
 
   const messages = [
@@ -380,6 +480,7 @@ export function appendMidTurnUserMessage<
   return {
     ...state,
     messages,
+    ...(state.pendingBranchGroup ? { pendingBranchGroup: null } : {}),
     streamId: null,
     interimBoundaryPending: state.interimBoundaryPending || sealedLiveKept
   }
@@ -391,6 +492,8 @@ export function appendMidTurnUserMessage<
 
 export interface ReloadPlan {
   branchGroupId: string
+  /** True only after the user confirmed a reload that archives later user turns. */
+  confirmDeepTruncate: boolean
   /** Original persisted text of the turn — the durable-row-id content key. */
   sourceText: string
   text: string
@@ -430,6 +533,7 @@ export function planReload(messages: ChatMessage[], parentId: null | string): nu
 
   return {
     branchGroupId: targetAssistant?.branchGroupId ?? branchGroupForUser(userMessage),
+    confirmDeepTruncate: false,
     sourceText: text,
     text,
     truncateOrdinal: isFailedTurn ? undefined : visibleUserOrdinal(messages, userIndex),
@@ -437,6 +541,52 @@ export function planReload(messages: ChatMessage[], parentId: null | string): nu
     truncateRowId: isFailedTurn ? undefined : userMessage.rowId,
     userIndex
   }
+}
+
+/** A deep cut (regenerate or edit of an older turn) reuses the restore checkpoint confirm copy. */
+export const deepCutConfirmRequest = (copy: {
+  restoreBody: string
+  restoreConfirm: string
+  restoreTitle: string
+}): ConfirmRequest => ({
+  confirmLabel: copy.restoreConfirm,
+  description: copy.restoreBody,
+  destructive: true,
+  title: copy.restoreTitle
+})
+
+/**
+ * Regenerate's target comes from the bound message scope, which can go stale
+ * and name a turn hours back — the planner trusted it and the submit silently
+ * archived every later turn (#133716). A reload that would drop later user
+ * turns goes through the same confirm restore uses; null when declined. The
+ * tail regenerate (nothing after the target) is returned unchanged.
+ */
+export async function planConfirmedReload(
+  messages: ChatMessage[],
+  parentId: null | string,
+  confirmDeep: () => Promise<boolean>
+): Promise<null | ReloadPlan> {
+  const plan = planReload(messages, parentId)
+
+  return plan && confirmIfDeepCut(messages, plan, plan.userIndex, confirmDeep)
+}
+
+/**
+ * A cut at *anchorIndex* that keeps a later user turn archives it: ask first and mark the plan
+ * confirmed, or null when declined. A plan with no truncation address (failed turn) cuts nothing.
+ */
+async function confirmIfDeepCut<P extends { truncateOrdinal: number | undefined }>(
+  messages: ChatMessage[],
+  plan: P,
+  anchorIndex: number,
+  confirmDeep: () => Promise<boolean>
+): Promise<null | (P & { confirmDeepTruncate: boolean })> {
+  if (plan.truncateOrdinal === undefined || !messages.some((m, i) => i > anchorIndex && isVisibleUserMessage(m))) {
+    return { ...plan, confirmDeepTruncate: false }
+  }
+
+  return (await confirmDeep()) ? { ...plan, confirmDeepTruncate: true } : null
 }
 
 /** Optimistic reload state: keep the user turn, hide the branch's assistants. */
@@ -573,6 +723,102 @@ export function planEdit(messages: ChatMessage[], edited: AppendMessage): EditPl
     truncateMessageId: isFailedTurn ? undefined : source.id,
     truncateRowId: isFailedTurn ? undefined : source.rowId
   }
+}
+
+/**
+ * Edit is a rewind too: an edit of an older turn archives every later turn, which used to bypass the
+ * server gate with an unconditional confirm flag (#133716 review). Ask first, exactly as regenerate
+ * does; a tail edit (nothing after the source) and a failed turn need no confirm. Null when declined.
+ */
+export async function planConfirmedEdit(
+  messages: ChatMessage[],
+  edited: AppendMessage,
+  confirmDeep: () => Promise<boolean>
+): Promise<null | (EditPlan & { confirmDeepTruncate: boolean })> {
+  const plan = planEdit(messages, edited)
+
+  return plan && confirmIfDeepCut(messages, plan, plan.sourceIndex, confirmDeep)
+}
+
+/** Visible user turns after *index*: what a cut there archives, and what a deep confirm covered. */
+export const laterVisibleUserTurns = (messages: ChatMessage[], index: number) =>
+  messages.filter((m, i) => i > index && isVisibleUserMessage(m)).length
+
+/**
+ * After an awaited confirm, an edit plan still holds when the same turn is the target in the
+ * current transcript. Streaming replaces the array on every delta, so identity is not the test:
+ * re-plan and compare the turn's address. The re-planned index is the one to apply.
+ */
+export function revalidateEditPlan<P extends EditPlan>(
+  plan: P,
+  planned: ChatMessage[],
+  current: ChatMessage[],
+  edited: AppendMessage
+): P | null {
+  const fresh = planEdit(current, edited)
+
+  // A new later user turn landed during the confirm: the user never answered for archiving it.
+  if (
+    !fresh ||
+    fresh.truncateMessageId !== plan.truncateMessageId ||
+    fresh.truncateRowId !== plan.truncateRowId ||
+    fresh.truncateOrdinal !== plan.truncateOrdinal ||
+    laterVisibleUserTurns(current, fresh.sourceIndex) !== laterVisibleUserTurns(planned, plan.sourceIndex)
+  ) {
+    return null
+  }
+
+  return { ...plan, ...fresh, confirmDeepTruncate: (plan as P & { confirmDeepTruncate?: boolean }).confirmDeepTruncate }
+}
+
+/**
+ * Edit's plan step around the deep-cut confirm. Returns the plan and the transcript it is aimed at,
+ * null when there is nothing to send (declined, nothing changed, or the confirm was answered after
+ * the session switched away), or 'moved' when the edited turn moved during the confirm.
+ * *answeredFor* is the transcript a 4033 confirm already covered: the re-run forces the deep cut
+ * only while the transcript is still exactly that one.
+ */
+export async function planEditAfterConfirm(opts: {
+  answeredFor?: ChatMessage[]
+  confirmDeep: () => Promise<boolean>
+  current: () => ChatMessage[]
+  edited: AppendMessage
+  planning: ChatMessage[]
+  stillOwned: () => boolean
+}): Promise<'moved' | null | { messages: ChatMessage[]; plan: EditPlan & { confirmDeepTruncate: boolean } }> {
+  const { answeredFor, confirmDeep, current, edited, planning, stillOwned } = opts
+  const forceDeep = answeredFor !== undefined && answeredFor === planning
+  const planned = await planConfirmedEdit(planning, edited, forceDeep ? async () => true : confirmDeep)
+  const forced = planned && forceDeep ? { ...planned, confirmDeepTruncate: true } : planned
+
+  if (!forced || !stillOwned()) {
+    return null
+  }
+
+  // Edit interrupts a live turn on purpose, so busy is fine; after a confirm wait the plan is
+  // re-aimed at the current transcript (a stream may have grown it).
+  const messages = forced.confirmDeepTruncate ? current() : planning
+  const plan = messages === planning ? forced : revalidateEditPlan(forced, planning, messages, edited)
+
+  return plan ? { messages, plan } : 'moved'
+}
+
+/**
+ * A stale-target retry re-addresses the same turn after a history refresh. The user's deep-cut
+ * answer covers the later turns they saw; if the refresh shows more, the retry goes unconfirmed and
+ * the server gate decides.
+ */
+export function retryKeepsDeepConfirm(
+  plan: EditPlan & { confirmDeepTruncate: boolean },
+  planned: ChatMessage[],
+  retryPlan: EditPlan | null,
+  refreshed: ChatMessage[]
+): boolean {
+  return (
+    plan.confirmDeepTruncate &&
+    retryPlan !== null &&
+    laterVisibleUserTurns(refreshed, retryPlan.sourceIndex) === laterVisibleUserTurns(planned, plan.sourceIndex)
+  )
 }
 
 /** Optimistic rewind-to state for restore/edit: drop everything after the

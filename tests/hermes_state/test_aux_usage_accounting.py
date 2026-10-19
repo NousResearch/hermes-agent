@@ -234,11 +234,7 @@ class TestAmbientAccountingContext:
 
 class TestAnalyticsAuxRows:
     def test_aux_usage_rows_and_merge(self, db):
-        from hermes_cli.web_server import (
-            _aux_task_summary,
-            _aux_usage_rows,
-            _merge_aux_into_by_model,
-        )
+        from hermes_cli.web_server_profiles import _aux_task_summary, _aux_usage_rows, _merge_aux_into_by_model
 
         db.create_session("s1", source="cli")
         db.update_token_counts(

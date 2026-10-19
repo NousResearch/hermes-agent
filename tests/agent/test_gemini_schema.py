@@ -1,6 +1,9 @@
 """Tests for agent.gemini_schema — OpenAI→Gemini tool parameter translation."""
 
+import copy
+
 from agent.gemini_schema import (
+    prepare_gemini_tool_parameters,
     sanitize_gemini_schema,
     sanitize_gemini_tool_parameters,
 )
@@ -167,3 +170,71 @@ class TestSanitizeGeminiToolParameters:
         assert "1440" in aad["description"]
         # And the string-enum sibling is untouched.
         assert cleaned["properties"]["action"]["enum"] == ["create_thread"]
+
+
+# ── parametersJsonSchema (full JSON Schema) path ─────────────────────────────
+
+class TestPrepareGeminiToolParameters:
+    def test_full_json_schema_survives_and_input_is_not_mutated(self):
+        params = {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+                "globs": {"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]},
+                "bare_array": {"type": "array"},
+                "opts": {"type": "object", "additionalProperties": {"type": "string"}},
+            },
+            "required": ["globs"],
+        }
+        original = copy.deepcopy(params)
+        out = prepare_gemini_tool_parameters(params)
+        assert params == original
+        assert "$schema" not in out
+        assert out["properties"]["globs"]["anyOf"][1] == {"type": "array", "items": {"type": "string"}}
+        assert out["properties"]["bare_array"] == {"type": "array"}
+        assert out["properties"]["opts"]["additionalProperties"] == {"type": "string"}
+        assert prepare_gemini_tool_parameters({}) == {"type": "object", "properties": {}}
+
+    def test_local_refs_inlined_with_sibling_override_and_defs_dropped(self):
+        params = {
+            "type": "object",
+            "properties": {"user": {"$ref": "#/$defs/User", "description": "who"}},
+            "$defs": {"User": {"type": "object", "description": "generic", "properties": {
+                "tags": {"type": "array", "items": {"$ref": "#/$defs/Tag"}}}},
+                      "Tag": {"type": "string"}},
+        }
+        out = prepare_gemini_tool_parameters(params)
+        assert "$defs" not in out
+        user = out["properties"]["user"]
+        assert user["description"] == "who"
+        assert user["properties"]["tags"]["items"] == {"type": "string"}
+
+    def test_unresolvable_or_circular_ref_passes_schema_through_untouched(self):
+        for defs in ({"Loop": {"type": "object", "properties": {"next": {"$ref": "#/$defs/Loop"}}}}, {}):
+            params = {"type": "object", "properties": {"p": {"$ref": "#/$defs/Loop"}}, "$defs": defs}
+            out = prepare_gemini_tool_parameters(params)
+            assert out["properties"]["p"] == {"$ref": "#/$defs/Loop"}
+            assert out["$defs"] == defs
+
+
+class TestAdapterWireShape:
+    _TOOLS = [{"type": "function", "function": {"name": "t", "parameters": {
+        "type": "object", "properties": {"g": {"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]}}}}}]
+
+    def test_v1beta_sends_parameters_json_schema_other_versions_send_legacy_subset(self):
+        from agent.gemini_native_adapter import GeminiNativeClient
+
+        def decl(base_url):
+            client = GeminiNativeClient(api_key="k", base_url=base_url)
+            captured = {}
+            client._http = type("H", (), {"post": lambda self, url, json, headers, timeout: captured.update(json) or
+                                  type("R", (), {"status_code": 200, "json": lambda self: {"candidates": []}})()})()
+            client._create_chat_completion(model="gemini-2.5-flash", messages=[{"role": "user", "content": "hi"}], tools=self._TOOLS)
+            return captured["tools"][0]["functionDeclarations"][0]
+
+        beta = decl("https://generativelanguage.googleapis.com/v1beta")
+        assert "parameters" not in beta
+        assert beta["parametersJsonSchema"]["properties"]["g"]["anyOf"][1]["items"] == {"type": "string"}
+        v1 = decl("https://generativelanguage.googleapis.com/v1")
+        assert "parametersJsonSchema" not in v1
+        assert v1["parameters"]["properties"]["g"]["anyOf"]  # legacy translator still applied

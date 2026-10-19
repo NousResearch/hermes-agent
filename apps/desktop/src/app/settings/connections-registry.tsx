@@ -1,8 +1,12 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useStore } from '@nanostores/react'
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
+import { RemoteSetupFields } from '@/components/remote-setup/fields'
+import { useRemoteSetup } from '@/components/remote-setup/use-remote-setup'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
+import { Loader } from '@/components/ui/loader'
 import type {
   DesktopConnectionKind,
   DesktopConnectionsRegistry,
@@ -10,11 +14,18 @@ import type {
   DesktopRegistryConnectionInput
 } from '@/global'
 import { useI18n } from '@/i18n'
+import {
+  CONNECTION_SEARCH_THRESHOLD,
+  connectionMatchesQuery,
+  sortConnectionsForDisplay
+} from '@/lib/connection-display'
 import { triggerHaptic } from '@/lib/haptics'
-import { Cloud, Globe, Loader2, Monitor, Pencil, Plus, RefreshCw, Terminal, Trash2 } from '@/lib/icons'
+import { Cloud, Globe, Loader2, Monitor, Pencil, Plus, RefreshCw, SearchIcon, Terminal, Trash2 } from '@/lib/icons'
+import { $activeConnectionId, setConnectionsRegistry } from '@/store/connections'
+import { refreshFleetRoster } from '@/store/fleet-roster'
 import { notify, notifyError } from '@/store/notifications'
 
-import { EmptyState, ListRow, Pill, SectionHeading } from './primitives'
+import { EmptyState, ListRow, Pill, SectionHeading, SettingsBreadcrumbContext, ToggleRow } from './primitives'
 
 const KIND_ICONS: Record<DesktopConnectionKind, typeof Globe> = {
   cloud: Cloud,
@@ -28,11 +39,9 @@ interface EditorState {
   id: null | string
   kind: DesktopConnectionKind
   label: string
-  url: string
-  authMode: 'oauth' | 'token'
-  token: string
   host: string
   keyPath: string
+  remoteHermesPath: string
   // ssh remote profile, hydrated on edit so the duplicate key matches the
   // main-process one (user@host:port + profile); the editor doesn't expose it.
   remoteProfile: string
@@ -49,9 +58,6 @@ function editorFromConnection(conn: DesktopRegistryConnection): EditorState {
     id: conn.id,
     kind: conn.kind,
     label: conn.label,
-    url: conn.url || '',
-    authMode: conn.authMode || 'token',
-    token: '',
     // Reconstruct the composite the single ssh host field displays. The save
     // payload sends ONLY this string (never separate user/port), because
     // normalizeSshConfig gives explicit user/port fields precedence over the
@@ -59,6 +65,7 @@ function editorFromConnection(conn: DesktopRegistryConnection): EditorState {
     // would silently resurrect the old values.
     host: conn.host ? `${conn.user ? `${conn.user}@` : ''}${conn.host}${conn.port ? `:${conn.port}` : ''}` : '',
     keyPath: conn.keyPath || '',
+    remoteHermesPath: conn.remoteHermesPath || '',
     remoteProfile: conn.remoteProfile || '',
     headers: (conn.headerNames || []).map(name => ({ name, stored: true, value: '' }))
   }
@@ -69,11 +76,9 @@ function emptyEditor(kind: DesktopConnectionKind): EditorState {
     id: null,
     kind,
     label: '',
-    url: '',
-    authMode: 'token',
-    token: '',
     host: '',
     keyPath: '',
+    remoteHermesPath: '',
     remoteProfile: '',
     headers: []
   }
@@ -119,7 +124,7 @@ export function sshCompositeKey(composite: string): string {
  * Returns the existing entry the candidate collides with, or null.
  */
 export function findDuplicateConnection(
-  editor: Pick<EditorState, 'host' | 'id' | 'kind' | 'remoteProfile' | 'url'>,
+  editor: Pick<EditorState, 'host' | 'id' | 'kind' | 'remoteProfile'> & { url: string },
   connections: DesktopRegistryConnection[]
 ): DesktopRegistryConnection | null {
   if (editor.kind === 'local') {
@@ -191,6 +196,20 @@ export function sameBackendPeerLabel(
   return null
 }
 
+function scrollableAncestor(element: HTMLElement): HTMLElement | null {
+  let parent = element.parentElement
+
+  while (parent) {
+    if (/(auto|scroll)/.test(window.getComputedStyle(parent).overflowY)) {
+      return parent
+    }
+
+    parent = parent.parentElement
+  }
+
+  return null
+}
+
 /**
  * The connections registry section of Settings → Gateways: manage the named
  * agent sources (local runtime + any number of remote gateways / Hermes Cloud
@@ -198,8 +217,10 @@ export function sameBackendPeerLabel(
  * switchover UX is the connection-mode controls above this section.
  */
 export function ConnectionsRegistrySection() {
+  const hasBreadcrumb = useContext(SettingsBreadcrumbContext)
   const { t } = useI18n()
   const s = t.settings.connections
+  const activeConnectionId = useStore($activeConnectionId)
   const [registry, setRegistry] = useState<DesktopConnectionsRegistry | null>(null)
   const [loading, setLoading] = useState(true)
   const [editor, setEditor] = useState<EditorState | null>(null)
@@ -208,14 +229,52 @@ export function ConnectionsRegistrySection() {
   const [testingId, setTestingId] = useState<null | string>(null)
   const [removeTarget, setRemoveTarget] = useState<DesktopRegistryConnection | null>(null)
   const [plainTextConfirm, setPlainTextConfirm] = useState(false)
+  const [launchModeBusy, setLaunchModeBusy] = useState(false)
   const [updatingAll, setUpdatingAll] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const searchInputRef = useRef<HTMLInputElement>(null)
+  const pendingSearchTopRef = useRef<null | number>(null)
   // Inline duplicate rejection from the save path (dedupe is also enforced in
   // the main process, so a crafted payload can't slip past the UI check).
   const [dupeError, setDupeError] = useState<null | string>(null)
 
+  // The draft's auth mode lives inside the remote-setup state below; the
+  // sign-in identity callback runs at login time (after that state exists),
+  // so it reads the mode through this ref rather than the render-time closure.
+  const remoteAuthModeRef = useRef<'oauth' | 'token'>('token')
+
+  const remote = useRemoteSetup({
+    host: 'registry',
+    enabled: editor?.kind === 'remote' || editor?.kind === 'cloud',
+    onNotice: notify,
+    // The registry draft can sign in BEFORE it is saved: the login carries
+    // the draft's identity so the main process settles the id the save will
+    // reuse and writes the session into the jar the saved connection reads.
+    // The kind/authMode gate in oauth-partition.ts decides WHICH jar that is:
+    // a cookie-auth remote draft gets its own; cloud and token drafts share
+    // the legacy jar, exactly what they resolve to after the save. Pin the
+    // settled id into the draft so Save reuses it.
+    oauthLoginIdentity: () => ({
+      connectionId: editor?.id ?? null,
+      label: editor?.label ?? '',
+      kind: editor?.kind,
+      authMode: editor?.kind === 'cloud' ? 'oauth' : remoteAuthModeRef.current
+    }),
+    onOAuthLoginSettled: settledId => {
+      setEditor(prev => (prev && !prev.id ? { ...prev, id: settledId } : prev))
+    }
+  })
+
+  remoteAuthModeRef.current = remote.credentials.authMode
+
   const bridge = window.hermesDesktop?.connections
 
   const hasLocal = Boolean(registry?.connections.some(c => c.kind === 'local'))
+
+  const publishRegistry = useCallback((next: DesktopConnectionsRegistry) => {
+    setRegistry(next)
+    setConnectionsRegistry(next)
+  }, [])
 
   const load = useCallback(async () => {
     if (!bridge) {
@@ -227,25 +286,31 @@ export function ConnectionsRegistrySection() {
     setLoading(true)
 
     try {
-      setRegistry(await bridge.list())
+      publishRegistry(await bridge.list())
     } catch (err) {
       notifyError(err, s.loadFailed)
     } finally {
       setLoading(false)
     }
-  }, [bridge, s.loadFailed])
+  }, [bridge, publishRegistry, s.loadFailed])
 
   useEffect(() => {
     void load()
   }, [load])
 
-  const openEditor = (next: EditorState | null) => {
+  const openEditor = (next: EditorState | null, saved?: DesktopRegistryConnection): void => {
     setDupeError(null)
+    remote.reset({
+      url: saved?.url || '',
+      authMode: next?.kind === 'cloud' ? 'oauth' : saved?.authMode || 'token',
+      tokenSet: saved?.tokenSet ?? false,
+      tokenPreview: saved?.tokenPreview ?? null
+    })
     setEditor(next)
   }
 
   const save = useCallback(
-    async (allowPlainTextToken = false) => {
+    async (allowPlainTextToken: boolean = false): Promise<void> => {
       if (!bridge || !editor) {
         return
       }
@@ -253,7 +318,7 @@ export function ConnectionsRegistrySection() {
       // Duplicate prevention lives in the save path (not just a disabled
       // button): reject a candidate that collides with an existing entry with
       // an inline error before anything crosses the IPC boundary.
-      const dupe = findDuplicateConnection(editor, registry?.connections ?? [])
+      const dupe = findDuplicateConnection({ ...editor, url: remote.credentials.url }, registry?.connections ?? [])
 
       if (dupe) {
         setDupeError(
@@ -281,11 +346,11 @@ export function ConnectionsRegistrySection() {
         }
 
         if (editor.kind === 'remote' || editor.kind === 'cloud') {
-          payload.url = editor.url
-          payload.authMode = editor.authMode
+          payload.url = remote.payload.remoteUrl
+          payload.authMode = editor.kind === 'cloud' ? 'oauth' : remote.credentials.authMode
 
-          if (editor.token.trim()) {
-            payload.token = editor.token.trim()
+          if (editor.kind === 'remote' && remote.payload.remoteToken) {
+            payload.token = remote.payload.remoteToken
           }
 
           if (allowPlainTextToken) {
@@ -309,10 +374,11 @@ export function ConnectionsRegistrySection() {
           // of truth — never send separate user/port (see editorFromConnection).
           payload.host = editor.host
           payload.keyPath = editor.keyPath || undefined
+          payload.remoteHermesPath = editor.remoteHermesPath.trim()
         }
 
         const result = await bridge.save(payload)
-        setRegistry(result.registry)
+        publishRegistry(result.registry)
         setEditor(null)
         setPlainTextConfirm(false)
       } catch (err) {
@@ -323,8 +389,8 @@ export function ConnectionsRegistrySection() {
           !allowPlainTextToken &&
           registry?.secureTokenStorage === false &&
           editor.kind === 'remote' &&
-          editor.authMode === 'token' &&
-          editor.token.trim()
+          remote.credentials.authMode === 'token' &&
+          remote.credentials.token.trim()
         ) {
           setPlainTextConfirm(true)
 
@@ -336,7 +402,16 @@ export function ConnectionsRegistrySection() {
         setSaving(false)
       }
     },
-    [bridge, editor, registry?.connections, registry?.secureTokenStorage, s]
+    [
+      bridge,
+      editor,
+      remote.credentials,
+      remote.payload,
+      publishRegistry,
+      registry?.connections,
+      registry?.secureTokenStorage,
+      s
+    ]
   )
 
   const remove = useCallback(async () => {
@@ -348,14 +423,14 @@ export function ConnectionsRegistrySection() {
 
     try {
       const result = await bridge.remove(removeTarget.id)
-      setRegistry(result.registry)
+      publishRegistry(result.registry)
     } catch (err) {
       notifyError(err, s.removeFailed)
     } finally {
       setBusyId(null)
       setRemoveTarget(null)
     }
-  }, [bridge, removeTarget, s.removeFailed])
+  }, [bridge, publishRegistry, removeTarget, s.removeFailed])
 
   const makePrimary = useCallback(
     async (id: string) => {
@@ -367,14 +442,34 @@ export function ConnectionsRegistrySection() {
 
       try {
         const result = await bridge.setPrimary(id)
-        setRegistry(result.registry)
+        publishRegistry(result.registry)
       } catch (err) {
         notifyError(err, s.saveFailed)
       } finally {
         setBusyId(null)
       }
     },
-    [bridge, s.saveFailed]
+    [bridge, publishRegistry, s.saveFailed]
+  )
+
+  const setLaunchMode = useCallback(
+    async (mode: 'last-used' | 'primary') => {
+      if (!bridge?.setLaunchMode) {
+        return
+      }
+
+      setLaunchModeBusy(true)
+
+      try {
+        const result = await bridge.setLaunchMode(mode)
+        publishRegistry(result.registry)
+      } catch (err) {
+        notifyError(err, s.saveFailed)
+      } finally {
+        setLaunchModeBusy(false)
+      }
+    },
+    [bridge, publishRegistry, s.saveFailed]
   )
 
   const test = useCallback(
@@ -391,6 +486,9 @@ export function ConnectionsRegistrySection() {
 
         if (reachable) {
           notify({ title: conn.label, message: s.testOk })
+          // A successful Test may have warmed a cold OAuth session that the
+          // roster missed; explicit recovery should bypass its cache window.
+          void refreshFleetRoster({ force: true })
         } else {
           notifyError(new Error(result.error || conn.label), s.testFailed)
         }
@@ -420,6 +518,10 @@ export function ConnectionsRegistrySection() {
           notify({ title: row.label, message: row.detail || s.updateAllDone })
         } else if (row.skipped && row.reason === 'cloud-managed') {
           notify({ title: row.label, message: s.updateSkippedCloud })
+        } else if (row.skipped && row.reason === 'darwin-drain-unsupported' && row.detail) {
+          // A deliberate per-row skip (e.g. a macOS SSH remote whose running
+          // serve Desktop cannot safely stop) — informational, not a failure.
+          notify({ title: row.label, message: row.detail })
         } else {
           notifyError(new Error(row.error || row.detail || row.reason || row.label), s.updateAllFailed)
         }
@@ -438,34 +540,89 @@ export function ConnectionsRegistrySection() {
     ssh: { desc: s.kindSshDesc, label: s.kindSsh }
   }
 
+  const sortedConnections = useMemo(
+    () => sortConnectionsForDisplay(registry?.connections ?? []),
+    [registry?.connections]
+  )
+
+  const showSearch = sortedConnections.length >= CONNECTION_SEARCH_THRESHOLD
+  const effectiveSearchQuery = showSearch ? searchQuery : ''
+
+  const displayedConnections = sortedConnections.filter(connection =>
+    connectionMatchesQuery(connection, effectiveSearchQuery, [kindMeta[connection.kind].label])
+  )
+
+  useLayoutEffect(() => {
+    const previousTop = pendingSearchTopRef.current
+    const input = searchInputRef.current
+
+    pendingSearchTopRef.current = null
+
+    if (previousTop == null || !input) {
+      return
+    }
+
+    const scroller = scrollableAncestor(input)
+
+    if (!scroller) {
+      return
+    }
+
+    const delta = input.getBoundingClientRect().top - previousTop
+
+    if (Math.abs(delta) > 0.5) {
+      scroller.scrollTop += delta
+    }
+  }, [displayedConnections.length, effectiveSearchQuery])
+
+  const updateSearchQuery = (nextQuery: string) => {
+    pendingSearchTopRef.current = searchInputRef.current?.getBoundingClientRect().top ?? null
+    setSearchQuery(nextQuery)
+  }
+
   if (!bridge) {
     return null
   }
 
   return (
-    <div className="mt-8 border-t border-border/60 pt-6">
-      <SectionHeading icon={Globe} title={s.title} />
+    <div className={hasBreadcrumb ? undefined : 'mt-8 border-t border-border/60 pt-6'}>
+      <SectionHeading icon={Globe} page title={s.title} />
       <p className="mb-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">{s.intro}</p>
-      {/* Storage-only slice: be explicit that routing consumption is staged so
-          "Make primary" isn't read as an immediate connection switch. */}
+      {/* Source selection lives in Sessions. Primary is the registry fallback,
+          not an immediate workspace switch. */}
       <p className="mb-4 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
         {s.stagedNote}
       </p>
 
+      {!loading && showSearch && (
+        <Input
+          aria-label={s.searchPlaceholder}
+          containerClassName="mt-3 mb-0 w-full max-w-sm"
+          onChange={event => updateSearchQuery(event.target.value)}
+          placeholder={s.searchPlaceholder}
+          prefix={<SearchIcon className="size-3.5" />}
+          ref={searchInputRef}
+          size="sm"
+          type="search"
+          value={searchQuery}
+        />
+      )}
+
       {loading ? (
-        <div className="flex items-center gap-2 py-3 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-          <Loader2 className="size-4 animate-spin" />
-        </div>
+        <Loader className="mx-auto my-2 size-6 text-(--ui-text-tertiary)" label={t.common.loading} type="rose-curve" />
       ) : !registry || registry.connections.length === 0 ? (
         <EmptyState title={s.empty} />
+      ) : displayedConnections.length === 0 ? (
+        <EmptyState title={s.noSearchResults} />
       ) : (
-        registry.connections.map(conn => {
+        displayedConnections.map(conn => {
           const Icon = KIND_ICONS[conn.kind]
+          const isCurrent = activeConnectionId === conn.id
           const isPrimary = registry.primary === conn.id
           const busy = busyId === conn.id
           // Display-only: this connection is a second address for a backend
           // already registered under another entry (same install_id).
-          const sameBackendPeer = sameBackendPeerLabel(conn, registry.connections)
+          const sameBackendPeer = sameBackendPeerLabel(conn, sortedConnections)
 
           const baseDescription =
             conn.kind === 'ssh'
@@ -487,7 +644,7 @@ export function ConnectionsRegistrySection() {
                     size="sm"
                     variant="outline"
                   >
-                    {testingId === conn.id ? <Loader2 className="size-3.5 animate-spin" /> : s.testConnection}
+                    {testingId === conn.id ? <Loader2 className="animate-spin" /> : s.testConnection}
                   </Button>
                   {!isPrimary && (
                     <Button disabled={busy} onClick={() => void makePrimary(conn.id)} size="sm" variant="outline">
@@ -498,7 +655,7 @@ export function ConnectionsRegistrySection() {
                     <>
                       <Button
                         aria-label={s.editConnection}
-                        onClick={() => openEditor(editorFromConnection(conn))}
+                        onClick={() => openEditor(editorFromConnection(conn), conn)}
                         size="icon-sm"
                         variant="ghost"
                       >
@@ -511,7 +668,7 @@ export function ConnectionsRegistrySection() {
                         size="icon-sm"
                         variant="ghost"
                       >
-                        {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
+                        {busy ? <Loader2 className="animate-spin" /> : <Trash2 />}
                       </Button>
                     </>
                   )}
@@ -525,7 +682,8 @@ export function ConnectionsRegistrySection() {
                 <span className="flex items-center gap-2">
                   <Icon className="size-4 shrink-0 text-muted-foreground" />
                   <span className="truncate">{conn.label}</span>
-                  {isPrimary && <Pill tone="primary">{s.primaryPill}</Pill>}
+                  {isCurrent && <Pill tone="primary">{s.currentPill}</Pill>}
+                  {isPrimary && <Pill>{s.primaryPill}</Pill>}
                   {conn.kind === 'local' && <Pill>{s.managedPill}</Pill>}
                 </span>
               }
@@ -546,6 +704,12 @@ export function ConnectionsRegistrySection() {
                 key={kind}
                 onClick={() => {
                   setDupeError(null)
+
+                  // Cloud uses browser sign-in even after a token-auth remote edit.
+                  if (kind === 'cloud') {
+                    remote.setAuthMode('oauth')
+                  }
+
                   setEditor({ ...editor, kind })
                 }}
                 size="sm"
@@ -574,55 +738,43 @@ export function ConnectionsRegistrySection() {
           />
 
           {(editor.kind === 'remote' || editor.kind === 'cloud') && (
-            <ListRow
-              action={
-                <Input
-                  onChange={e => {
-                    setDupeError(null)
-                    setEditor({ ...editor, url: e.target.value })
-                  }}
-                  placeholder="http://homelab.lan:9119"
-                  value={editor.url}
-                />
-              }
-              title={s.urlTitle}
+            <RemoteSetupFields
+              disabled={saving}
+              onUrlChange={() => setDupeError(null)}
+              setup={remote}
+              urlOnly={editor.kind === 'cloud'}
             />
           )}
 
-          {editor.kind === 'remote' && (
-            <>
-              <ListRow
-                action={
-                  <div className="flex gap-2">
-                    {(['token', 'oauth'] as const).map(mode => (
-                      <Button
-                        key={mode}
-                        onClick={() => setEditor({ ...editor, authMode: mode })}
-                        size="sm"
-                        variant={editor.authMode === mode ? 'default' : 'outline'}
-                      >
-                        {mode === 'token' ? t.settings.gateway.tokenTitle : 'OAuth'}
-                      </Button>
-                    ))}
-                  </div>
-                }
-                title={t.settings.gateway.authTitle}
-              />
-              {editor.authMode === 'token' && (
-                <ListRow
-                  action={
-                    <Input
-                      onChange={e => setEditor({ ...editor, token: e.target.value })}
-                      placeholder={t.settings.gateway.pasteSessionToken}
-                      type="password"
-                      value={editor.token}
-                    />
-                  }
-                  description={t.settings.gateway.tokenDesc}
-                  title={t.settings.gateway.tokenTitle}
-                />
-              )}
-            </>
+          {editor.kind === 'cloud' && (
+            <ListRow
+              action={
+                remote.credentials.oauthConnected ? (
+                  <Pill tone="primary">{t.settings.gateway.signedIn}</Pill>
+                ) : (
+                  <Button
+                    disabled={saving || remote.signingIn || !remote.payload.remoteUrl}
+                    onClick={() => void remote.signIn()}
+                    size="sm"
+                  >
+                    {remote.signingIn ? <Loader2 className="animate-spin" /> : null}
+                    {remote.isPassword
+                      ? t.settings.gateway.signIn
+                      : t.settings.gateway.signInWith(remote.providerLabel)}
+                  </Button>
+                )
+              }
+              description={
+                remote.credentials.oauthConnected
+                  ? remote.isPassword
+                    ? t.settings.gateway.authSignedInPassword
+                    : t.settings.gateway.authSignedInOauth
+                  : remote.isPassword
+                    ? t.settings.gateway.authNeedsPassword
+                    : t.settings.gateway.authNeedsOauth(remote.providerLabel)
+              }
+              title={t.settings.gateway.authTitle}
+            />
           )}
 
           {(editor.kind === 'remote' || editor.kind === 'cloud') && (
@@ -680,19 +832,32 @@ export function ConnectionsRegistrySection() {
           )}
 
           {editor.kind === 'ssh' && (
-            <ListRow
-              action={
-                <Input
-                  onChange={e => {
-                    setDupeError(null)
-                    setEditor({ ...editor, host: e.target.value })
-                  }}
-                  placeholder="user@host:22"
-                  value={editor.host}
-                />
-              }
-              title={s.sshHostTitle}
-            />
+            <>
+              <ListRow
+                action={
+                  <Input
+                    onChange={e => {
+                      setDupeError(null)
+                      setEditor({ ...editor, host: e.target.value })
+                    }}
+                    placeholder="user@host:22"
+                    value={editor.host}
+                  />
+                }
+                title={s.sshHostTitle}
+              />
+              <ListRow
+                action={
+                  <Input
+                    onChange={e => setEditor({ ...editor, remoteHermesPath: e.target.value })}
+                    placeholder={t.settings.gateway.sshHermesPathPlaceholder}
+                    value={editor.remoteHermesPath}
+                  />
+                }
+                description={t.settings.gateway.sshHermesPathDesc}
+                title={t.settings.gateway.sshHermesPathTitle}
+              />
+            </>
           )}
 
           {dupeError ? <p className="text-xs text-destructive">{dupeError}</p> : null}
@@ -730,15 +895,31 @@ export function ConnectionsRegistrySection() {
             >
               {updatingAll ? (
                 <>
-                  <Loader2 className="size-3.5 animate-spin" /> {s.updateAllRunning}
+                  <Loader2 className="animate-spin" /> {s.updateAllRunning}
                 </>
               ) : (
                 <>
-                  <RefreshCw className="size-3.5" /> {s.updateAll}
+                  <RefreshCw /> {s.updateAll}
                 </>
               )}
             </Button>
           )}
+        </div>
+      )}
+
+      {/* Not gated on connections.length > 1: a registry that drifted down to
+          local-only is exactly the state where a user needs to see and change
+          the launch behavior, and hiding the control there left hand-editing
+          connections.json as the only recourse (#90174). */}
+      {!loading && registry && (
+        <div className="mt-6 border-t border-border/60 pt-4">
+          <ToggleRow
+            checked={registry.launchMode === 'last-used'}
+            description={s.launchModeDesc}
+            disabled={launchModeBusy || !bridge?.setLaunchMode}
+            label={s.launchModeTitle}
+            onChange={enabled => void setLaunchMode(enabled ? 'last-used' : 'primary')}
+          />
         </div>
       )}
 

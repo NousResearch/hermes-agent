@@ -1,92 +1,76 @@
-"""
-Hermes CLI - Unified command-line interface for Hermes Agent.
+"""Hermes CLI - Unified command-line interface for Hermes Agent."""
 
-Provides subcommands for:
-- hermes chat          - Interactive chat (same as ./hermes)
-- hermes gateway       - Run gateway in foreground
-- hermes gateway start - Start gateway service
-- hermes gateway stop  - Stop gateway service
-- hermes setup         - Interactive setup wizard
-- hermes status        - Show status of all components
-- hermes cron          - Manage cron jobs
-"""
-
-import os
 import sys
 
-__version__ = "0.20.4"
-__release_date__ = "2026.8.18"
+__release_date__ = "2026.9.24"
+# Declared for type checkers and the old-updater surface audit; served lazily by __getattr__.
+__version__: str
 
 
-def _ensure_utf8():
-    """Force UTF-8 stdout/stderr to prevent UnicodeEncodeError crashes.
+def __getattr__(name: str) -> str:
+    """Old-updater compat: shipped updaters import ``__version__`` after the checkout swap.
 
-    Several environments select a legacy, non-UTF-8 encoding for the standard
-    streams:
+    tests/compat/old_updater_surface.json freezes that import. In-tree code resolves
+    identity through hermes_cli.version_info.get_version_info(); this reads only the
+    install stamp -- never git -- and keeps the pre-stamp placeholder when a checkout
+    has no stamp.
 
-    - Windows services and terminals default to cp1252.
-    - Linux hosts with a latin-1 / C / POSIX locale (common on minimal Debian
-      installs and Raspberry Pi) select latin-1 or ASCII.
+    Lazy because ``pm`` is not importable when this package loads: a venv
+    editable-installed from a pre-PM tree maps only the top-level packages it knew
+    at install time, and the repo root reaches ``sys.path`` only once
+    ``hermes_bootstrap`` runs -- after this ``__init__``, from ``hermes_cli.main``.
+    """
+    if name != "__version__":
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from hermes_cli.steward import read_install_stamp
+    try:
+        from pm.paths import repo_root
+    except ModuleNotFoundError as exc:
+        if exc.name != "pm" and not (exc.name or "").startswith("pm."):
+            raise
+        # The old editable finder may not know the new pm package yet.
+        import json
+        from pathlib import Path
+        try:
+            stamp = json.loads((Path(__file__).resolve().parents[1] / "install-stamp.json").read_text(encoding="utf-8-sig"))
+            return str(stamp.get("baseVersion") or "0.0.0")
+        except (OSError, ValueError, AttributeError):
+            return "0.0.0"
+    return str(read_install_stamp(repo_root()).get("baseVersion") or "0.0.0")
 
-    The CLI prints box-drawing characters (┌│├└─) and the ⚕ glyph in the setup
-    wizard, doctor, and status banners. Encoding those under a non-UTF-8 codec
-    raises an unhandled UnicodeEncodeError that crashes the command before it
-    can even start — e.g. `hermes setup` on a fresh Pi.
 
-    This runs at import time so it protects every CLI subcommand, on any
-    platform. It re-wraps stdout/stderr as UTF-8 when their encoding is not
-    already UTF-8, preferring TextIOWrapper.reconfigure() so the existing
-    stream object is fixed in place (cached `sys.stdout` references keep
-    working) and falling back to reopening the file descriptor with
-    closefd=False (the CPython-recommended safe variant).
+def _ensure_utf8() -> bool:
+    """Force UTF-8 stdout/stderr to prevent UnicodeEncodeError crashes; True when a stream was repaired.
 
-    No-op when the streams are already UTF-8: a healthy UTF-8 system sees no
-    stream change and no environment mutation.
-
-    Note: this is intentionally the earliest, platform-agnostic guard.
-    hermes_cli/stdio.py::configure_windows_stdio() runs later from the entry
-    points and layers on the Windows-only extras (console code-page flip,
-    EDITOR default, PATH augmentation); its stream reconfiguration is a
-    harmless idempotent no-op once we have already repaired the streams here.
+    The CLI prints box-drawing characters and the ☤ glyph in the setup wizard, doctor, and status
+    banners; under a non-UTF-8 codec that raises before the command can even start (e.g.
+    `hermes setup` on a fresh Pi).
     """
     repaired = False
-
     for stream_name in ("stdout", "stderr"):
         stream = getattr(sys, stream_name, None)
         if stream is None:
             continue
         try:
-            encoding = (getattr(stream, "encoding", "") or "").lower().replace("-", "")
-            if encoding == "utf8":
+            if (getattr(stream, "encoding", "") or "").lower().replace("-", "") == "utf8":
                 continue
-
-            # Preferred: reconfigure the existing TextIOWrapper in place. This
-            # preserves object identity so any code already holding a reference
-            # to the old sys.stdout benefits from the repair too.
+            # Preferred: reconfigure in place, preserving object identity so code already holding
+            # a reference to the old sys.stdout benefits from the repair too.
             reconfigure = getattr(stream, "reconfigure", None)
             if callable(reconfigure):
                 reconfigure(encoding="utf-8", errors="replace")
-                repaired = True
-                continue
-
-            # Fallback: reopen the underlying file descriptor as UTF-8. Used
-            # for streams that don't expose reconfigure() (e.g. some wrapped
-            # or replaced streams). closefd=False keeps the original fd open.
-            new_stream = open(
-                stream.fileno(), "w", encoding="utf-8",
-                errors="replace", buffering=1, closefd=False,
-            )
-            setattr(sys, stream_name, new_stream)
+            else:
+                # No reconfigure(): reopen the fd as UTF-8 (closefd=False keeps the original fd open).
+                new_stream = open(stream.fileno(), "w", encoding="utf-8", errors="replace",  # windows-footgun: ok (stdout re-open for write, not a read)
+                                  buffering=1, closefd=False)
+                setattr(sys, stream_name, new_stream)
             repaired = True
         except (AttributeError, OSError, ValueError):
             pass
-
-    # Only nudge child processes toward UTF-8 when we actually detected a
-    # non-UTF-8 locale. On a healthy UTF-8 host children inherit UTF-8 from the
-    # locale already, so leave the environment untouched (minimal footprint).
-    if repaired:
-        os.environ.setdefault("PYTHONUTF8", "1")
-        os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    return repaired
 
 
-_ensure_utf8()
+# Import repairs only this process's streams. Gateway, compute host, and test code import this
+# package as a library; rewriting their os.environ would leak into every child they spawn, so the
+# child-process UTF-8 hint is applied by the CLI entry point (hermes_cli.main.main) instead.
+_stdio_repaired = _ensure_utf8()

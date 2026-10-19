@@ -113,17 +113,19 @@ def _strip_resume_name(parts: list[str]) -> str:
 
 
 def rehome_review_delivery_completion(nested_event: MessageEvent, carrier: MessageEvent) -> None:
-    """Move the completion a nested turn parked on its own synthetic event onto ``carrier``.
+    """Move the completion a nested turn carries on its own synthetic event onto ``carrier``.
 
+    A handler that nests a turn through an event it built itself (``/retry``) leaves that
+    turn's review-ownership completion on the synthetic event: in-process,
     ``gateway.run_turn_review.begin_gateway_review_admission`` parks a direct-call ingress's
-    review-ownership completion on the event it was dispatched with
-    (``_gateway_review_completes_on_event``); a handler that nests a turn through an event it
-    built itself (``/retry``) dispatches it that way, and no delivery path reads that event, so
-    the token would stay live for the process lifetime. ``carrier`` is the event the handler
-    was dispatched with, which both the inline dispatch and a background task read once the
-    handler returns (``_take_review_delivery_callback``) and complete with the send that
-    delivers the reply; a command event never carries a completion of its own, so nothing is
-    overwritten.
+    completion on the event it was dispatched with (``_gateway_review_completes_on_event``);
+    under a session authority the drain executes the turn and ``admit_message`` adopts the
+    completion onto the event it waited with (``gateway.session_ingress_review``). No delivery
+    path reads that event, so the token would stay live for the process lifetime. ``carrier``
+    is the event the handler was dispatched with, which both the inline dispatch and a
+    background task read once the handler returns (``_take_review_delivery_callback``) and
+    complete with the send that delivers the reply; a command event never carries a completion
+    of its own, so nothing is overwritten.
     """
     completion = getattr(nested_event, "_gateway_review_delivery_complete", None)
     if nested_event is carrier or not callable(completion):
@@ -542,6 +544,14 @@ class GatewaySessionCommandsMixin:
             text=resend_text, message_type=MessageType.TEXT, source=event.source,
             raw_message=event.raw_message, channel_prompt=event.channel_prompt)
         carry_callback(event, turn)
+        # A direct-call ingress of this handler, like the rewrite-then-send path's: the re-sent
+        # turn's review-ownership completion ends up on this synthetic event (parked there by
+        # ``begin_gateway_review_admission`` in-process; under the authority the drain executes
+        # the turn and ``admit_message`` adopts it onto the event it waited with), which no
+        # delivery path reads. It is re-homed onto the command event, whose dispatch -- inline
+        # while a turn is live, the background task when idle -- completes it with the send that
+        # delivers the reply; otherwise the token outlives the turn for the process lifetime.
+        turn._gateway_review_completes_on_event = True
         token = retry_admission.bind(rewrite)
         try:
             return await self._handle_message(turn)
@@ -554,6 +564,7 @@ class GatewaySessionCommandsMixin:
                 return t("gateway.busy.drain_rejected", action=self._status_action_gerund())
             raise
         finally:
+            rehome_review_delivery_completion(turn, event)
             retry_admission.unbind(token)
 
     def _retry_readmission_reply(self, source: SessionSource, resend_text: str) -> Optional[str]:

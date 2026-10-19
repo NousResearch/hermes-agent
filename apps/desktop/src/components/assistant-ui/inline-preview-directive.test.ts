@@ -101,6 +101,39 @@ describe('withInlineChrome × page Content-Security-Policy', () => {
     expect(withInlineChrome(doc, 'tok', prelude)).toBe(frozen(doc))
   })
 
+  // A `<meta>` sample the page SHOWS is not a response policy: inside raw text
+  // or RCDATA element content, inert template content, or a comment the parser
+  // never produces a meta element. The rewrite must leave every byte alone.
+  const metaText = '<meta http-equiv="Content-Security-Policy" content="script-src \'none\'">'
+
+  const samples: Array<[string, string]> = [
+    ['textarea', `<html><body><textarea>${metaText}</textarea></body></html>`],
+    ['script', `<html><body><script>const sample = \`${metaText}\`</script></body></html>`],
+    ['comment', `<html><body><!-- ${metaText} --></body></html>`],
+    ['template', `<html><body><template>${metaText}</template></body></html>`],
+    ['noscript', `<html><body><noscript>${metaText}</noscript></body></html>`],
+    ['style', `<html><head><style>/* ${metaText} */</style></head><body>x</body></html>`],
+    ['title', `<html><head><title>${metaText}</title></head><body>x</body></html>`]
+  ]
+
+  it.each(samples)('leaves a CSP-looking sample inside %s byte-identical', (_name, doc) => {
+    const framed = withInlineChrome(doc, 'tok', prelude)
+
+    expect(framed).toBe(frozen(doc))
+    expect(framed).not.toContain("'nonce-tok'")
+  })
+
+  it('amends the real head meta while text-context samples stay untouched', () => {
+    const doc = `<html><head><!-- ${metaText} --><meta http-equiv="Content-Security-Policy" content="script-src 'none'"></head><body><textarea>${metaText}</textarea></body></html>`
+    const framed = withInlineChrome(doc, 'tok', prelude)
+
+    expect(policyOf(framed)).toBe("script-src 'nonce-tok'")
+    expect(framed).toContain(`<!-- ${metaText} -->`)
+    expect(framed).toContain(`<textarea>${metaText}</textarea>`)
+    expect(framed.match(/'nonce-tok'/g)).toHaveLength(1)
+    expect(framed.match(/<script nonce="tok">/g)).toHaveLength(2)
+  })
+
   it('appends a quoted source (an unquoted nonce is a URL source, not a nonce)', () => {
     const framed = withInlineChrome(withPolicy("script-src 'sha256-aaa'"), 'tok', prelude)
 

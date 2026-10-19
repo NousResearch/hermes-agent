@@ -458,15 +458,61 @@ function cspAttributes(source: string): CspAttribute[] {
   return attrs
 }
 
-/** Locate every `<meta http-equiv="Content-Security-Policy">` content value
- *  and its offsets. Multiple policies all apply (intersection), so each one
- *  that would block the injected scripts must be amended. */
+/** Elements whose content the HTML parser treats as text instead of markup
+ *  (`script`/`style`/`title`/`textarea` are raw text or RCDATA; the legacy
+ *  `xmp`/`iframe`/`noembed`/`noframes`/`plaintext` behave the same), plus
+ *  `<template>`, whose content is inert for the document. A `<meta>` sample
+ *  inside them is text, never a policy. */
+const TEXT_CONTEXT_TAG = /^(?:script|style|textarea|title|template|noscript|xmp|iframe|noembed|noframes|plaintext)$/i
+
+/** Locate every real `<meta http-equiv="Content-Security-Policy">` content
+ *  value and its offsets. Multiple policies all apply (intersection), so each
+ *  one that would block the injected scripts must be amended. Comments and
+ *  text-context elements are stepped over in source order: a `<meta>` inside
+ *  them is a sample the page displays, not a response policy. */
 function cspMetaContents(doc: string): CspAttribute[] {
   const metas: CspAttribute[] = []
-  const tagRe = /<meta\b(?:"[^"]*"|'[^']*'|[^>"'])*>/gi
-  let tag: RegExpExecArray | null
+  const tagAt = /<([a-zA-Z][^\s/>]*)(?:"[^"]*"|'[^']*'|[^>"'])*>/y
+  let index = 0
 
-  while ((tag = tagRe.exec(doc)) !== null) {
+  while (index < doc.length) {
+    const open = doc.indexOf('<', index)
+
+    if (open === -1) {
+      break
+    }
+
+    if (doc.startsWith('<!--', open)) {
+      const close = doc.indexOf('-->', open + 4)
+
+      index = close === -1 ? doc.length : close + 3
+
+      continue
+    }
+
+    tagAt.lastIndex = open
+    const tag = tagAt.exec(doc)
+
+    if (tag === null) {
+      index = open + 1
+
+      continue
+    }
+
+    index = open + tag[0].length
+
+    if (TEXT_CONTEXT_TAG.test(tag[1])) {
+      const close = new RegExp(`</${tag[1]}\\b[^>]*>`, 'i').exec(doc.slice(index))
+
+      index = close === null ? doc.length : index + close.index + close[0].length
+
+      continue
+    }
+
+    if (tag[1].toLowerCase() !== 'meta') {
+      continue
+    }
+
     const attrsStart = tag[0].search(/\s/)
 
     if (attrsStart === -1) {
@@ -483,8 +529,8 @@ function cspMetaContents(doc: string): CspAttribute[] {
 
     metas.push({
       ...content,
-      valueStart: tag.index + attrsStart + content.valueStart,
-      valueEnd: tag.index + attrsStart + content.valueEnd
+      valueStart: open + attrsStart + content.valueStart,
+      valueEnd: open + attrsStart + content.valueEnd
     })
   }
 

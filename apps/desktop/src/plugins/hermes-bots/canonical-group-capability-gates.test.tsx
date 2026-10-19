@@ -14,7 +14,12 @@ import type * as GroupChatParts from './group-chat-parts'
 import { GroupChatWorkspace } from './group-chat-view'
 import { translateBots } from './i18n-test-helper'
 
-const { request, notify, openWorkspace, activation } = vi.hoisted(() => ({ request: vi.fn(), notify: vi.fn(), openWorkspace: vi.fn(), activation: { epoch: 1 } }))
+const { request, notify, openWorkspace, activation } = vi.hoisted(() => ({
+  request: vi.fn(),
+  notify: vi.fn(),
+  openWorkspace: vi.fn(),
+  activation: { epoch: 1 }
+}))
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
   const sdk = await importOriginal<typeof HermesSdk>()
   const { en } = await import('@/i18n/en')
@@ -23,7 +28,10 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
     ...sdk,
     gatewayActivationEpoch: () => activation.epoch,
     host: {
-      ...sdk.host, requestProfile: request, notify, openWorkspace,
+      ...sdk.host,
+      requestProfile: request,
+      notify,
+      openWorkspace,
       request: (method: string, params?: Record<string, unknown>) => request(null, method, params),
       connections: vi.fn(async () => []),
       state: {
@@ -47,7 +55,7 @@ vi.mock('./group-chat', async importOriginal => {
   }
 })
 vi.mock('./group-chat-parts', async importOriginal => ({
-  ...await importOriginal<typeof GroupChatParts>(),
+  ...(await importOriginal<typeof GroupChatParts>()),
   // Avatar generation is unrelated to the capability decision; never request a model.
   GroupImageControls: () => null
 }))
@@ -58,18 +66,25 @@ const state = {
   gateway: host.state.gateway as WritableAtom<string>
 }
 
-const roster = [{ name: 'alpha', connectionId: 'local' }, { name: 'beta', connectionId: 'local' }]
+const roster = [
+  { name: 'alpha', connectionId: 'local' },
+  { name: 'beta', connectionId: 'local' }
+]
 const unavailable = CANONICAL_GROUP_LOCALES.en.driverUnavailable
 
 // Decision-relevant fields emitted by the actual canonical capabilities producer.
 const canonicalUnavailable = {
-  driver: false, persistent_process: true, features: ['room_identity', 'monotonic_log', 'replayable_disband']
+  driver: false,
+  persistent_process: true,
+  features: ['room_identity', 'monotonic_log', 'replayable_disband']
 }
 
 // App-managed hosted capabilities keep their protocol/authority when the driver stops.
 // Their RoomLink catalog deliberately reports persistent_process:false.
 const appManagedUnavailable = {
-  driver: false, persistent_process: false, protocol_version: 2,
+  driver: false,
+  persistent_process: false,
+  protocol_version: 2,
   authority_gateway_id: 'installation:app-managed',
   features: ['authority_epoch', 'coordinator_fencing', 'room_identity', 'monotonic_log'],
   methods: ['groups.capabilities', 'groups.create', 'groups.state', 'groups.send']
@@ -77,7 +92,13 @@ const appManagedUnavailable = {
 
 const legacy = { driver: false, persistent_process: false }
 
-const refused = [canonicalUnavailable, appManagedUnavailable, { ...legacy, methods: ['groups.create'] }, { driver: 'true', persistent_process: false }, null]
+const refused = [
+  canonicalUnavailable,
+  appManagedUnavailable,
+  { ...legacy, methods: ['groups.create'] },
+  { driver: 'true', persistent_process: false },
+  null
+]
 
 beforeEach(() => {
   activation.epoch = 1
@@ -105,11 +126,17 @@ afterEach(() => {
 
 function answer(capabilities: unknown) {
   request.mockImplementation(async (_route, method, params) => {
-    if (method === 'groups.capabilities') {return capabilities}
+    if (method === 'groups.capabilities') {
+      return capabilities
+    }
 
-    if (method === 'groups.create') {return { room: { room_id: params.room_id, name: params.name, members: params.members } }}
+    if (method === 'groups.create') {
+      return { room: { room_id: params.room_id, name: params.name, members: params.members } }
+    }
 
-    if (method === 'profiles.configure') {return {}}
+    if (method === 'profiles.configure') {
+      return {}
+    }
     throw new Error(`Unexpected RPC: ${method}`)
   })
 }
@@ -119,8 +146,12 @@ async function submitDialog() {
   const onClose = vi.fn()
   render(<CreateGroupChatDialog onClose={onClose} onCreated={onCreated} open roster={roster} />)
 
-  for (const checkbox of screen.getAllByRole('checkbox')) {fireEvent.click(checkbox)}
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Create Group (2)' })) })
+  for (const checkbox of screen.getAllByRole('checkbox')) {
+    fireEvent.click(checkbox)
+  }
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: 'Create Group (2)' }))
+  })
 
   return { onCreated, onClose }
 }
@@ -129,16 +160,22 @@ function pendingCreation() {
   let finish!: () => void
   const serverRooms = new Map<string, unknown>()
   request.mockImplementation(async (_route, method, params) => {
-    if (method === 'groups.capabilities') {return { driver: true, persistent_process: true }}
+    if (method === 'groups.capabilities') {
+      return { driver: true, persistent_process: true }
+    }
 
     // A legacy room with no gateway room of its name yet (#140805 lookup answers empty).
-    if (method === 'groups.list') {return { rooms: [], next_offset: null }}
+    if (method === 'groups.list') {
+      return { rooms: [], next_offset: null }
+    }
 
     if (method === 'groups.create') {
       const room = { room_id: params.room_id, name: params.name, members: params.members }
       serverRooms.set(room.room_id, room)
 
-      return new Promise(resolve => { finish = () => resolve({ room }) })
+      return new Promise(resolve => {
+        finish = () => resolve({ room })
+      })
     }
 
     throw new Error(`Unexpected RPC: ${method}`)
@@ -147,26 +184,33 @@ function pendingCreation() {
   return { serverRooms, finish: () => finish() }
 }
 
-it.each(refused)('classifies %j as unavailable on both surfaces: no legacy renderer, no legacy creation', async value => {
-  answer(value)
-  await act(async () => { render(<GroupChatWorkspace group="Existing" members={roster} />) })
-  expect(screen.getByText(unavailable)).toBeTruthy()
-  expect(screen.queryByRole('textbox')).toBeNull()
-  expect((screen.getByRole('button', { name: 'Start gateway group' }) as HTMLButtonElement).disabled).toBe(true)
-  cleanup()
+it.each(refused)(
+  'classifies %j as unavailable on both surfaces: no legacy renderer, no legacy creation',
+  async value => {
+    answer(value)
+    await act(async () => {
+      render(<GroupChatWorkspace group="Existing" members={roster} />)
+    })
+    expect(screen.getByText(unavailable)).toBeTruthy()
+    expect(screen.queryByRole('textbox')).toBeNull()
+    expect((screen.getByRole('button', { name: 'Start gateway group' }) as HTMLButtonElement).disabled).toBe(true)
+    cleanup()
 
-  const { onCreated, onClose } = await submitDialog()
-  expect(notify).toHaveBeenCalledWith({ kind: 'error', message: unavailable })
-  expect(onCreated).not.toHaveBeenCalled()
-  expect(onClose).not.toHaveBeenCalled()
-  expect(updateGroupChat).not.toHaveBeenCalled()
-  expect($groupChats.get()).toEqual({})
-  expect(request.mock.calls.map(call => call[1])).toEqual(['groups.capabilities', 'groups.capabilities'])
-})
+    const { onCreated, onClose } = await submitDialog()
+    expect(notify).toHaveBeenCalledWith({ kind: 'error', message: unavailable })
+    expect(onCreated).not.toHaveBeenCalled()
+    expect(onClose).not.toHaveBeenCalled()
+    expect(updateGroupChat).not.toHaveBeenCalled()
+    expect($groupChats.get()).toEqual({})
+    expect(request.mock.calls.map(call => call[1])).toEqual(['groups.capabilities', 'groups.capabilities'])
+  }
+)
 
 it('keeps positive classifications working: legacy renders and creates locally, canonical creates a gateway room', async () => {
   answer(legacy)
-  await act(async () => { render(<GroupChatWorkspace group="Existing" members={roster} />) })
+  await act(async () => {
+    render(<GroupChatWorkspace group="Existing" members={roster} />)
+  })
   expect(screen.getByRole('textbox')).toBeTruthy()
   cleanup()
   expect((await submitDialog()).onCreated).toHaveBeenCalledOnce()
@@ -182,9 +226,13 @@ it('keeps positive classifications working: legacy renders and creates locally, 
 })
 
 function moveSource(kind: 'profile' | 'gateway' | 'same-route-activation') {
-  if (kind === 'profile') {state.profile.set('other')}
+  if (kind === 'profile') {
+    state.profile.set('other')
+  }
 
-  if (kind === 'gateway') {state.gateway.set('closed')}
+  if (kind === 'gateway') {
+    state.gateway.set('closed')
+  }
 
   if (kind === 'same-route-activation') {
     activation.epoch++
@@ -192,26 +240,40 @@ function moveSource(kind: 'profile' | 'gateway' | 'same-route-activation') {
   }
 }
 
-it.each(['profile', 'gateway', 'same-route-activation'] as const)('dialog: a creation approved before the %s moved is kept on its owner and never published', async kind => {
-  const pending = pendingCreation()
-  const { onCreated, onClose } = await submitDialog()
-  expect(pending.serverRooms.size).toBe(1)
-  await act(async () => { moveSource(kind); pending.finish() })
-  expect($canonicalGroupBindings.get()).toEqual({})
-  expect(onCreated).not.toHaveBeenCalled()
-  expect(onClose).not.toHaveBeenCalled()
-  expect(pending.serverRooms.size).toBe(1)
-  expect(request.mock.calls[1][0]).toMatchObject({ connectionId: 'local', profile: 'default' })
-})
+it.each(['profile', 'gateway', 'same-route-activation'] as const)(
+  'dialog: a creation approved before the %s moved is kept on its owner and never published',
+  async kind => {
+    const pending = pendingCreation()
+    const { onCreated, onClose } = await submitDialog()
+    expect(pending.serverRooms.size).toBe(1)
+    await act(async () => {
+      moveSource(kind)
+      pending.finish()
+    })
+    expect($canonicalGroupBindings.get()).toEqual({})
+    expect(onCreated).not.toHaveBeenCalled()
+    expect(onClose).not.toHaveBeenCalled()
+    expect(pending.serverRooms.size).toBe(1)
+    expect(request.mock.calls[1][0]).toMatchObject({ connectionId: 'local', profile: 'default' })
+  }
+)
 
-it.each(['profile', 'gateway', 'same-route-activation'] as const)('workspace: a capability read before the %s moved neither creates nor opens a room', async kind => {
-  const pending = pendingCreation()
-  await act(async () => { render(<GroupChatWorkspace group="Existing" members={roster} />) })
-  const button = screen.getByRole('button', { name: 'Start gateway group' })
-  expect((button as HTMLButtonElement).disabled).toBe(false)
-  // Click after the source moved but before React re-renders: the stale capability must not create.
-  await act(async () => { moveSource(kind); fireEvent.click(button) })
-  expect(request.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(0)
-  expect(pending.serverRooms.size).toBe(0)
-  expect(openWorkspace).not.toHaveBeenCalled()
-})
+it.each(['profile', 'gateway', 'same-route-activation'] as const)(
+  'workspace: a capability read before the %s moved neither creates nor opens a room',
+  async kind => {
+    const pending = pendingCreation()
+    await act(async () => {
+      render(<GroupChatWorkspace group="Existing" members={roster} />)
+    })
+    const button = screen.getByRole('button', { name: 'Start gateway group' })
+    expect((button as HTMLButtonElement).disabled).toBe(false)
+    // Click after the source moved but before React re-renders: the stale capability must not create.
+    await act(async () => {
+      moveSource(kind)
+      fireEvent.click(button)
+    })
+    expect(request.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(0)
+    expect(pending.serverRooms.size).toBe(0)
+    expect(openWorkspace).not.toHaveBeenCalled()
+  }
+)

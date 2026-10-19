@@ -114,7 +114,8 @@ async def _do(runner, adapter, source, action: str, home: str = "") -> dict:
             adapter, "get_voice_channel_info") else None
         bound = (getattr(adapter, "_voice_text_channels", None) or {}).get(guild_id) if guild_id else None
         mode = runner._voice_mode.get(runner._voice_key_for_source(source), "off")
-        return {"connected": bool(info), "guild_id": str(guild_id) if guild_id else None,
+        connected = bool(guild_id) and bool(adapter.is_in_voice_channel(guild_id))
+        return {"connected": connected, "guild_id": str(guild_id) if guild_id else None,
                 "channel": (info or {}).get("channel_name"), "member_count": (info or {}).get("member_count"),
                 "members": [m.get("display_name") for m in (info or {}).get("members", [])],
                 "bound_text_channel_id": str(bound) if bound else None, "voice_mode_this_chat": mode}

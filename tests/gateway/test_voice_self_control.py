@@ -150,6 +150,30 @@ def test_status_reports_connection(runner):
     assert out["bound_text_channel_id"] == TEXT
 
 
+def test_status_connected_follows_connection_not_channel_info(runner):
+    # In voice, but channel info is unavailable: still connected.
+    adapter = _adapter(connected=True)
+    runner.adapters[Platform.DISCORD] = adapter
+    tokens = _bind()
+    try:
+        out = _call(runner, "status")
+    finally:
+        clear_session_vars(tokens)
+    assert out["connected"] is True and out["channel"] is None
+
+    # Channel info present, but the voice client is not connected: not connected.
+    adapter = _adapter(connected=False)
+    adapter.get_voice_channel_info = MagicMock(return_value={
+        "channel_name": "Lounge", "member_count": 0, "members": []})
+    runner.adapters[Platform.DISCORD] = adapter
+    tokens = _bind()
+    try:
+        out = _call(runner, "status")
+    finally:
+        clear_session_vars(tokens)
+    assert out["connected"] is False
+
+
 def test_leave_from_dm_finds_connected_guild(runner):
     adapter = _adapter(connected=True)
     vc = MagicMock()

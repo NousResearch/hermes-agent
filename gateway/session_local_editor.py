@@ -52,11 +52,31 @@ def request_editor_edit(proposal):
     return decision.get('resolved') and decision.get('choice') == 'once'
 
 
+def request_editor_command(command):
+    from tools import approval
+    from tools.approval_context import get_current_session_key
+    from tools.approval_gateway_wait import _await_gateway_decision
+    route = get_current_session_key()
+    with approval._lock:
+        notify = approval._gateway_notify_cbs.get(route)
+    if notify is None:
+        return False
+    key = 'editor-command-' + uuid.uuid4().hex
+    decision = _await_gateway_decision(route, notify, {
+        'command': command, 'description': 'Approve terminal command',
+        'pattern_key': key, 'pattern_keys': [key], 'allow_session': False, 'allow_permanent': False,
+    }, surface='acp')
+    return decision.get('resolved') and decision.get('choice') == 'once'
+
+
 @contextmanager
 def editor_scope(policy):
     from acp_adapter.edit_approval import set_edit_approval_requester, reset_edit_approval_requester
+    from tools.command_permissions import set_command_permission_requester, reset_command_permission_requester
+    command_token = set_command_permission_requester(request_editor_command if policy.source == 'acp' else None)
     token = set_edit_approval_requester(request_editor_edit if policy.source == 'acp' else None)
     try:
         yield
     finally:
         reset_edit_approval_requester(token)
+        reset_command_permission_requester(command_token)

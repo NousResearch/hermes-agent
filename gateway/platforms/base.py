@@ -1932,6 +1932,7 @@ class BasePlatformAdapter(ABC):
         self._requeue_counts: dict[str, int] = {}
         self._pending_text_batches: dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: dict[str, asyncio.Task] = {}
+        self._inflight_text_batch_tasks: set[asyncio.Task] = set()
         self._session_tasks: dict[str, asyncio.Task] = {}
         # Busy-text policy is a per-profile config decision the runner installs after construction
         # (``_wire_adapter_handlers``); a constructor-time process-env read would freeze the launch
@@ -2526,6 +2527,7 @@ class BasePlatformAdapter(ABC):
             return
         key = self._text_batch_key(event)
         existing = self._pending_text_batches.get(key)
+        has_pending_batch = existing is not None
         if existing is None:
             existing = self._pending_text_batches[key] = event
         else:
@@ -2537,7 +2539,10 @@ class BasePlatformAdapter(ABC):
             existing.absorb_reply_expected(event)
         existing._last_chunk_len = len(event.text or "")  # type: ignore[attr-defined]
         prior_task = self._pending_text_batch_tasks.get(key)
-        if prior_task and not prior_task.done():
+        # Once a flush has popped its batch, a later message cannot merge into
+        # it.  Cancelling that in-flight dispatch makes Telegram re-hold and
+        # replay an event the gateway has already started handling.
+        if has_pending_batch and prior_task and not prior_task.done():
             prior_task.cancel()
         self._pending_text_batch_tasks[key] = asyncio.create_task(self._flush_text_batch(key))
 

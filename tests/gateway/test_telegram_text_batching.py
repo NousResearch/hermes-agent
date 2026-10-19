@@ -31,6 +31,7 @@ def _make_adapter():
     adapter._drop_delayed_deliveries = False
     adapter._pending_text_batches = {}
     adapter._pending_text_batch_tasks = {}
+    adapter._inflight_text_batch_tasks = set()
     adapter._pending_photo_batches = {}
     adapter._pending_photo_batch_tasks = {}
     adapter._media_group_events = {}
@@ -62,6 +63,35 @@ def _make_event(text: str, chat_id: str = "12345") -> MessageEvent:
 
 
 class TestTextBatching:
+    @pytest.mark.asyncio
+    async def test_followup_does_not_cancel_a_popped_text_flush(self):
+        """Regression for #137545: a second message must not replay a command already dispatching."""
+        adapter = _make_adapter()
+        TestHoldInboundAcrossReconnect._zero_batch_delays(adapter)
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        delivered: list[str] = []
+
+        async def _handle(event):
+            delivered.append(event.text or "")
+            if event.text == "/stop":
+                entered.set()
+                await release.wait()
+
+        adapter.handle_message = _handle
+        adapter._enqueue_text_event(_make_event("/stop"))
+        first_flush = adapter._pending_text_batch_tasks["agent:main:telegram:dm:12345"]
+        await entered.wait()
+
+        adapter._enqueue_text_event(_make_event("follow-up"))
+        second_flush = adapter._pending_text_batch_tasks["agent:main:telegram:dm:12345"]
+        release.set()
+        await first_flush
+        await second_flush
+
+        assert delivered == ["/stop", "follow-up"]
+        assert adapter._held_inbound_events == []
+
     @pytest.mark.asyncio
     async def test_single_message_dispatched_after_delay(self):
         adapter = _make_adapter()

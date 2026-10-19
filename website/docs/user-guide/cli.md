@@ -63,9 +63,20 @@ hermes -w -z "Fix issue #123"     # Single query in worktree
 
 `hermes -w` sessions create disposable worktrees under `<repo>/.worktrees/`.
 With `hermes --tui -w`, closing the terminal detaches from the gateway-owned
-session. Its worktree is retained even when clean: the turn may still be running
-there, and resuming the session uses the same working directory. Review and prune
-it after the session's work is finished.
+session. A clean worktree is removed with its branch on quit unless something
+still needs it. It is retained when it has uncommitted changes or unpushed
+commits, when the gateway still has a turn queued or running there, when a
+session in it has an active `/loop`, `/heartbeat` or `/goal`, when an enabled
+cron job runs in it or is bound to such a session, or when another viewer (a
+Desktop window, say) still holds that session. Resuming a session uses its
+working directory: if quit removed the worktree, `hermes --tui --resume <id>`,
+`hermes --tui -c` and the classic `hermes --resume`/`-c` recreate it at the same
+path before attaching (on its branch if that still exists, else on a new branch
+of the same name from the repo's current `HEAD`). Only worktrees that
+`hermes --tui -w` itself created are recreated. The quit-time check reads the
+session store and then removes the tree; a viewer that attaches and submits in
+the moment between the two is not seen, so that turn can find its directory
+gone.
 A sweep runs automatically at `hermes -w` startup and every 6 hours from the
 cron ticker: idle clean+merged trees are removed, and idle trees with
 uncommitted changes or unpushed commits are **archived, then removed**
@@ -180,8 +191,8 @@ acknowledge it before continuing. Do not resend the queued input.
 ```
 ❯ add a multiply function and run the tests
 ∴ Thought for 3s · Planning the change
-● Read calc.py
-● Patch  0.2s
+📖 Read calc.py
+🔧 Patch  0.2s
 │ calc.py
 │ @@ -1,2 +1,6 @@
 │ +def multiply(a, b):
@@ -196,7 +207,7 @@ Added multiply; pytest isn't installed here, so I ran the tests directly: 2 pass
  gpt-5-mini · ctx [░░░░░░░░] 4% · ~/project (main)     enter interrupt · tab queue · ctrl+c stop
 ```
 
-- A 40-column bar opens each user message and answer (accent) and each reasoning block (dim); reasoning streams live as in classic and ends with a `∴ Thought for 3s · <title>` line. `❯` your message, `●` a finished tool call (`✗` in red when it failed, with its exit code), `│` an edit's diff under its row, `☤` the answer, and `─` the turn's summary line.
+- A 40-column bar opens each user message and answer (accent) and each reasoning block (dim); reasoning streams live as in classic and ends with a `∴ Thought for 3s · <title>` line. `❯` your message, a finished tool call led by its emoji (`📖 Read`, `💻 $`; `✗` in red when it failed, with its exit code), `│` an edit's diff under its row, `☤` the answer, and `─` the turn's summary line.
 - The composer's top rule carries the live activity (spinner, what's running, elapsed time, streamed tokens) on the left and the session title on the right; no spinner row is printed into the scrollback.
 - The status line sits under the composer: the same fields as the classic status bar (model, context, cache hit, latency, tokens/s, background work, goal, duration, YOLO…) plus the working directory (with git branch) on the left; the keys that do something right now on the right.
 - The welcome banner is the same in both layouts.
@@ -475,6 +486,8 @@ display:
 `"steer"` has two automatic fallbacks: if the agent hasn't started yet, or if images are attached, the message falls back to `"queue"` behavior so nothing is lost.
 
 Whatever the mode, `/queue <prompt>` queues a follow-up turn explicitly, and `/queue list`, `/queue rm N`, `/queue edit N …` and `/queue move A B` act on the pending queue immediately, even mid-run. The live work dock lists what is waiting.
+
+When the CLI runs on the gateway's session (the default local setup), a prompt queued while a turn runs, by `/queue` or by queue-mode Enter, goes into the gateway's own queue for the session. It survives a gateway restart and runs once, in the order you entered it. Image follow-ups still wait in the CLI. That queue is shared: `/queue list`, `rm`, `edit` and `clear` show and change every prompt queued on the session, including ones another window or an automation queued. The gateway runs its queue in order and cannot reorder it, so `/queue move` refuses to move a prompt the gateway holds. A slash command typed while busy after your own `/queue` prompt runs after that prompt's turn starts; it waits at most a couple of seconds, so a paused queue never blocks typing.
 
 You can also change it inside the CLI:
 

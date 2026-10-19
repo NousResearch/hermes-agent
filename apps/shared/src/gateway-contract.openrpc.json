@@ -8483,6 +8483,40 @@
         "title": "CanonicalControlParams",
         "type": "object"
       },
+      "CanonicalCorrectionAck": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "enum": [
+              "queued",
+              "redirected",
+              "rejected"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "execution_generation": {
+            "title": "Execution Generation",
+            "type": "integer"
+          },
+          "authority_epoch": {
+            "title": "Authority Epoch",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status",
+          "text",
+          "execution_generation",
+          "authority_epoch"
+        ],
+        "title": "CanonicalCorrectionAck",
+        "type": "object"
+      },
       "CanonicalCorrectionParams": {
         "additionalProperties": false,
         "properties": {
@@ -8520,38 +8554,16 @@
         "type": "object"
       },
       "CanonicalCorrectionResult": {
-        "additionalProperties": false,
-        "properties": {
-          "status": {
-            "enum": [
-              "queued",
-              "redirected",
-              "rejected"
-            ],
-            "title": "Status",
-            "type": "string"
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/CanonicalCorrectionAck"
           },
-          "text": {
-            "title": "Text",
-            "type": "string"
-          },
-          "execution_generation": {
-            "title": "Execution Generation",
-            "type": "integer"
-          },
-          "authority_epoch": {
-            "title": "Authority Epoch",
-            "type": "integer"
+          {
+            "$ref": "#/components/schemas/CanonicalVoiceStopped"
           }
-        },
-        "required": [
-          "status",
-          "text",
-          "execution_generation",
-          "authority_epoch"
         ],
-        "title": "CanonicalCorrectionResult",
-        "type": "object"
+        "description": "``session.steer`` / ``session.redirect``: the correction verdict, or ``{voice_stopped: true}``\nwhen the busy-time text was a bare stop phrase that ended the LOCAL voice chat.",
+        "title": "CanonicalCorrectionResult"
       },
       "CanonicalCreateParams": {
         "additionalProperties": false,
@@ -11357,6 +11369,18 @@
         "title": "CanonicalSubmitParams",
         "type": "object"
       },
+      "CanonicalSubmitResult": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/AdmissionStatus"
+          },
+          {
+            "$ref": "#/components/schemas/CanonicalVoiceStopped"
+          }
+        ],
+        "description": "``prompt.submit``: the admission receipt, or ``{voice_stopped: true}``.",
+        "title": "CanonicalSubmitResult"
+      },
       "CanonicalTurnAuthor": {
         "additionalProperties": false,
         "properties": {
@@ -11403,6 +11427,22 @@
           }
         },
         "title": "CanonicalTurnAuthor",
+        "type": "object"
+      },
+      "CanonicalVoiceStopped": {
+        "additionalProperties": false,
+        "description": "A bare stop phrase typed while the session's voice chat is on: the chat ended, nothing was\nadmitted (TUI-26).",
+        "properties": {
+          "voice_stopped": {
+            "const": true,
+            "title": "Voice Stopped",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "voice_stopped"
+        ],
+        "title": "CanonicalVoiceStopped",
         "type": "object"
       },
       "CapabilityEntry": {
@@ -34635,6 +34675,18 @@
             "title": "Session Key",
             "type": "string"
           },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source"
+          },
           "started_at": {
             "title": "Started At",
             "type": "number"
@@ -47478,7 +47530,7 @@
       "result": {
         "name": "result",
         "schema": {
-          "$ref": "#/components/schemas/AdmissionStatus"
+          "$ref": "#/components/schemas/CanonicalSubmitResult"
         }
       }
     },

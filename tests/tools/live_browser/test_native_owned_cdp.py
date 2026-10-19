@@ -210,3 +210,42 @@ def test_real_profile_shutdown_preserves_the_other_profile_supervisor(owned_brow
         assert first_task not in browser._active_sessions and second_task in browser._active_sessions
         cleanup_profile_browsers(second_home)
         assert SUPERVISOR_REGISTRY.get(second_task) is None and not second_capture.is_valid()
+
+
+def test_real_endpoint_publish_during_discovery_recreates_only_the_candidate(owned_browser, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from contextvars import copy_context
+
+    from tests.tools.live_browser.cdp_discovery_proxy import HoldingDiscoveryProxy
+    from tests.tools.live_browser.chrome_runtime import OwnedChrome
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+    from tools.browser_tool_cdp import set_live_cdp_override
+    from tools.browser_tool_lifecycle import cleanup_browser
+
+    first, url, tasks = owned_browser
+    task = 'live-rebind-' + uuid4().hex
+    tasks.append(task)
+    original = set(first.targets())
+    with ExitStack() as resources:
+        second = OwnedChrome(tmp_path / 'replacement-chrome')
+        resources.callback(second.stop)
+        proxy = HoldingDiscoveryProxy(first.root)
+        resources.callback(proxy.close)
+        resources.callback(set_live_cdp_override, None)
+        resources.callback(cleanup_browser, task)
+        set_live_cdp_override(proxy.root)
+        context = copy_context()
+        with ThreadPoolExecutor(max_workers=1) as workers:
+            future = workers.submit(context.run, navigate, task, url)
+            try:
+                assert proxy.discovered.wait(timeout=30), 'Observe actual Chrome discovery'
+                set_live_cdp_override(second.root)
+            finally:
+                proxy.release.set()
+            target = future.result(timeout=60)
+        assert target in second.targets()
+        assert set(first.targets()) == original
+        supervisor = SUPERVISOR_REGISTRY.get(task)
+        assert supervisor is not None and supervisor.evaluate_runtime('location.href')['result'] == url
+        assert cleanup_browser(task)
+        assert target not in second.targets() and set(first.targets()) == original

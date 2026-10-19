@@ -312,6 +312,10 @@ def _dispose_unpublished_session(
     """Dispose provider resources created by a stale or losing creator."""
     if not isinstance(session_info, dict):
         return True
+    if (session_info.get("features") or {}).get("lightpanda"):
+        from tools.browser_lightpanda import stop_lightpanda
+
+        stop_lightpanda(session_info.get("session_name", ""))
     session_id = session_info.get("bb_session_id")
     if not session_id:
         # Local/shared-CDP candidates are metadata-only until first command.
@@ -1277,9 +1281,13 @@ def _release_session_resources(
     force-reap path (#100738), which skips the polite agent-browser/Camofox ``close`` that kept failing but
     must still release the cloud session and the local Chromium.
     """
-    bb_session_id = session_info.get("bb_session_id")
     _forget_session_tracking(task_id, session=True)
+    return _release_session_backend(task_id, session_info)
 
+
+def _release_session_backend(task_id: str, session_info: dict[str, Any]) -> bool:
+    """Release only this session object's provider and daemon ownership."""
+    bb_session_id = session_info.get("bb_session_id")
     provider_closed = True
     if bb_session_id:
         provider_closed = _attempt_provider_session_close(

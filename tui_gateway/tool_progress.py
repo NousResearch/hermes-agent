@@ -364,6 +364,10 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
     # every client reconcile without parsing tool args.
     if todo_state is not None:
         _emit("todo.updated", sid, todo_state)
+    # A tool (a plugin adding goal criteria, parking the goal) can move automation state mid-turn: repaint
+    # the cards now, not at turn end. Revision-gated, so an ordinary tool emits nothing.
+    if session is not None:
+        _publish_session_control_snapshot(sid, session, only_if_changed=True)
 
 
 # ── _on_tool_progress dispatch: each handler takes (sid, name, preview, kw) ─────────────────────

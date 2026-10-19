@@ -57,7 +57,11 @@ class OwnedChrome:
     def new_page(self, url):
         response = self.http.put(self.root + '/json/new?' + quote(url, safe=''), timeout=10)
         response.raise_for_status()
-        return response.json()['id']
+        target = response.json()['id']
+        # Chrome creates the target before its first navigation commits.
+        wait_until(lambda: self.targets().get(target, {}).get('url') == url,
+                   timeout=10, what='the owned page navigation to commit')
+        return target
 
     def stop(self):
         if self.process.poll() is None:

@@ -25,6 +25,9 @@ logger = logging.getLogger(__name__)
 # How long a turn waits for its settlement after an interrupt (main: cli_chat_turn_mixin 10 s).
 INTERRUPT_SETTLE_SECONDS = 10.0
 _POLL = 0.1
+# ``steer()`` / ``redirect()``'s reply when the owner consumed the text as a typed voice stop (TUI-26):
+# truthy, so a caller that only asks "taken?" never re-queues it.
+VOICE_STOPPED = "voice_stopped"
 
 _RESULT_DEFAULTS = {
     "final_response": "", "failed": False, "partial": False, "error": None, "failure_reason": None,
@@ -137,6 +140,9 @@ class GatewayAgent:
         # (``request.cancel``: another viewer answered, the turn ended); called off the agent thread.
         self.modal_withdraw_callback = modal_withdraw_callback
         self._open_request = None  # (request id, method) of the server request a modal is answering
+        # Set by the CLI after construction: a ``session.control.update`` mid-turn (a tool moved the goal
+        # or loop) marks its mirrored managers stale; the dock re-reads them off this thread.
+        self.control_update_callback = None
         self.suppress_status_output = False
         self._print_fn = None
         # Inert private attributes main's CLI writes (CALLMAP §3.2).
@@ -556,6 +562,9 @@ class GatewayAgent:
         self.interrupt(message)
 
     def _correct(self, verb, text):
+        """-> ``True`` (accepted), ``False`` (not taken: the caller queues the text), or
+        ``"voice_stopped"`` (TUI-26: the owner took a bare stop phrase as the end of this LOCAL
+        session's voice chat; the text is consumed and reaches no turn, so it is never re-queued)."""
         generation = self._generation
         if generation is None:
             return False
@@ -564,6 +573,10 @@ class GatewayAgent:
                                           execution_generation=generation)
         except GatewayClientError:
             return False
+        if (result or {}).get("voice_stopped") is True:
+            from agent.i18n import t
+            self._emit_print(t("cli.voice.stop_phrase_typed"))
+            return VOICE_STOPPED
         return (result or {}).get("status") in {"queued", "redirected"}
 
     def _compress_context(self, messages, system_message=None, *, approx_tokens=None, focus_topic=None,
@@ -602,7 +615,7 @@ class GatewayAgent:
 
     def redirect(self, text):
         accepted = self._correct("redirect", text)
-        if accepted:
+        if accepted is True:
             # Main's turn then answers the redirect row first (the interrupted call has no usage), so
             # its anchor is priced through that row: it, not the original ask, is the turn's ask.
             self._turn_ask_index = None
@@ -699,8 +712,10 @@ class GatewayAgent:
         adopted = take_admitted_turn(self, persist_user_message if isinstance(persist_user_message, str)
                                      else user_message)
         if adopted is not None:
-            # A notification turn the gateway already admitted and is running (its frames are queued).
+            # A turn the gateway already admitted and is running (its frames are queued). A recovered
+            # ``/queue`` turn missed some frames: its reply is completed from the receipt.
             receipt = adopted
+            turn.gapped = bool(adopted.get("recovered"))
         else:
             self._drain_stale()
             self._taken_turn_route = None
@@ -728,13 +743,16 @@ class GatewayAgent:
                                     failure_reason="session_busy" if busy else None, retryable=busy)
             except GatewayClientError as exc:
                 return self._failed(history, user_message, str(exc), failure_reason="gateway_connection")
+            if (receipt or {}).get("voice_stopped") is True:
+                return self._voice_stopped(history)
         self._epoch = getattr(self.connection, "epoch", None)
         turn.admission = self._admission = (receipt or {}).get("admission_id")
         if receipt and receipt.get("execution_generation") is not None:
             self._generation = receipt["execution_generation"]
         starts: dict = {}
         try:
-            outcome = self._pump(stream_callback, starts, turn)
+            settled = (adopted or {}).get("receipt")
+            outcome = {"_receipt": settled} if settled else self._pump(stream_callback, starts, turn)
         finally:
             if self._owns(turn):
                 self._generation_done()
@@ -749,7 +767,9 @@ class GatewayAgent:
         return result
 
     def _drain_stale(self):
-        """Frames left from an earlier turn of this viewer (a late settlement) are not this turn's."""
+        """Frames left from an earlier turn of this viewer (a late settlement) are not this turn's. A
+        ``/queue`` admission's start among them is remembered: that turn is painted after this one."""
+        from hermes_cli.gateway_tools_notify import missed_start
         while True:
             try:
                 frame = self.connection.events.get_nowait()
@@ -760,6 +780,9 @@ class GatewayAgent:
                     continue  # a connection a reconnect already replaced
                 self.connection.events.put(frame)
                 return
+            params = frame.get("params") if isinstance(frame, dict) else None
+            if isinstance(params, dict) and params.get("session_id") == self.session_id:
+                missed_start(self._state(), params)
 
     def _generation_done(self):
         self._generation = None
@@ -807,6 +830,8 @@ class GatewayAgent:
             kind, payload = params.get("type"), params.get("payload") or {}
             admission = params.get("admission_id") or (payload.get("admission_id") if isinstance(payload, dict) else None)
             if self._admission and admission and admission != self._admission:
+                from hermes_cli.gateway_tools_notify import missed_start
+                missed_start(self._state(), params)  # a /queue turn run ahead of this one: painted after it
                 continue
             if params.get("execution_generation") is not None:
                 self._generation = params["execution_generation"]
@@ -951,6 +976,10 @@ class GatewayAgent:
     def _on_todo(self, payload, stream_callback, starts):
         if isinstance(payload.get("todos"), list):
             self._todo_store.items = list(payload["todos"])
+
+    def _on_control_update(self, payload, stream_callback, starts):
+        if self.control_update_callback is not None:
+            self.control_update_callback()
 
     def _on_thinking(self, payload, stream_callback, starts):
         if self.thinking_callback is not None:
@@ -1108,6 +1137,15 @@ class GatewayAgent:
         if isinstance(staged, dict):
             return staged
         return {"role": "user", "content": user_message}
+
+    def _voice_stopped(self, history):
+        """TUI-26: the owner took a bare stop phrase typed into this LOCAL session's voice chat (turned
+        on by another viewer) as the end of that chat and admitted nothing, so no ``message.complete``
+        will come. The turn ends at once with main's typed-stop notice; the history is unchanged."""
+        from agent.i18n import t
+        self._give_back_turn_route()  # nothing was admitted: a ``/model --once`` pick is still owed
+        self._emit_print(t("cli.voice.stop_phrase_typed"))
+        return {**_RESULT_DEFAULTS, "messages": list(history), "voice_stopped": True, "session_id": self.session_id}
 
     def _failed(self, history, user_message, error, *, failure_reason=None, retryable=False):
         """``failure_reason="gateway_connection"``: the CLI shows ``error`` as written instead of
@@ -1310,6 +1348,7 @@ _HANDLERS = {
     "tool.start": GatewayAgent._on_tool_start,
     "tool.complete": GatewayAgent._on_tool_complete,
     "todo.updated": GatewayAgent._on_todo,
+    "session.control.update": GatewayAgent._on_control_update,
     "thinking.delta": GatewayAgent._on_thinking,
     "reasoning.delta": GatewayAgent._on_reasoning,
     "reasoning.available": GatewayAgent._on_reasoning_available,

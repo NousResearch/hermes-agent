@@ -16,6 +16,9 @@ GATEWAY_WS_TICKET_PREFIX = "hermes-gateway-ticket."
 # Per-request answer budget. Owner verbs are admissions/reads that answer promptly; the one that
 # legitimately runs long passes its own budget (``rpc(..., _timeout=...)``).
 DEFAULT_RPC_TIMEOUT = 30
+# A typed ``--api-key`` on a resume that the owner does not bind (``rebind_launch_key``): every CLI says this.
+RESUME_KEY_MISMATCH = ("--api-key on resume must be the key this session was launched with "
+                       "(a session launched without --api-key keeps its profile credentials).")
 # Canonical ``/compress`` answers only after the summary call(s) and the commit: a long session's
 # summary routinely takes more than 30 s (``auxiliary.compression.timeout`` defaults to 120 s per
 # request, ``compression.context_total_ceiling_seconds`` to 600 s). Same budget as Desktop's

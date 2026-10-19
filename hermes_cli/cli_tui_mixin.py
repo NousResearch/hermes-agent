@@ -40,6 +40,7 @@ from typing import Optional
 
 from hermes_cli.cli_footer_split import FooterSplit
 from hermes_cli.cli_panel import _Panel
+from hermes_cli.cli_tui_wrap import _prefix_wrapped_rows, _wrap_rows
 
 # Rows below an overlay panel taken by spinner/tool-progress, status bar, input, separators and
 # prompt symbol (measured ~6 during live PTY approval prompts) — shared by every panel budget.
@@ -85,23 +86,6 @@ def _term_rows() -> int:
     return shutil.get_terminal_size((100, 24)).lines
 
 
-def _wrap_rows(wrap, items, width, indent) -> list[tuple[int, str]]:
-    """``(index, wrapped_line)`` pairs so selected styling can be re-applied per row."""
-    return [(i, w) for i, label in enumerate(items) for w in wrap(label, width, subsequent_indent=indent)]
-
-
-def _prefix_wrapped_rows(wrap, label, width, first_prefix, indent) -> list[str]:
-    """Wrap ``label``, then prefix the rows with ``first_prefix`` / ``indent``.
-
-    The prefix is applied *after* wrapping on purpose. Folding it into the
-    string handed to the wrapper charges those columns against the label's own
-    width budget — so a selected row wraps one line early and strands the ``❯``
-    cursor on a row of its own — and whitespace-trimming wrappers drop the
-    leading indent entirely, leaving long unselected labels flush against the
-    panel border, out of alignment with every other row.
-    """
-    rows = wrap(label, width)
-    return [(first_prefix if i == 0 else indent) + row for i, row in enumerate(rows)]
 
 
 class CLITuiMixin:
@@ -1483,11 +1467,9 @@ class CLITuiMixin:
     def _tui_enter_while_busy(self, text: str, images: list, payload, mode: str | None = None) -> None:
         """Route a submission typed while the agent runs, per ``busy_input_mode``.
 
-        steer → agent.steer(text) mid-run (images can't ride along and a missing/rejecting
-        steer() falls back to queue so nothing is lost). interrupt → agent.redirect() when the
-        agent supports active-turn redirect, else the legacy interrupt queue (older agents,
-        multimodal follow-ups, or a turn that finished in the race). queue → next turn.
-        """
+        steer → agent.steer(text) mid-run (images can't ride along; a missing/rejecting steer() falls back
+        to queue). interrupt → agent.redirect() when supported, else the legacy interrupt queue. queue →
+        next turn: text-only on the gateway's session is a ``/queue`` FIFO admission (#134889 N5)."""
         from cli import CLI_CONFIG, _ACCENT, _DIM, _RST, _cprint, _hermes_home
         _effective_mode = mode or self.busy_input_mode
         redirected = False
@@ -1498,16 +1480,20 @@ class CLITuiMixin:
                 accepted = False
                 try:
                     if self.agent is not None and hasattr(self.agent, "steer"):
-                        accepted = bool(self.agent.steer(text))
+                        accepted = self.agent.steer(text)
                 except Exception as exc:
                     _cprint(f"  {_DIM}{t('cli.tui.steer_failed_queued', error=exc)}{_RST}")
                     accepted = False
+                if accepted == "voice_stopped":  # TUI-26: consumed as a voice stop; nothing to queue
+                    return
                 if accepted:
                     preview = text[:80] + ("..." if len(text) > 80 else "")
                     _cprint(f"  {_ACCENT}{t('cli.tui.steered', preview=preview)}{_RST}")
                 else:
                     _effective_mode = "queue"
-        if _effective_mode == "queue":
+        if _effective_mode == "queue" and text and not images and self._gateway_queue_store() is not None:
+            self._queue_enqueue(text)
+        elif _effective_mode == "queue":
             self._pending_input.put(payload)
             preview = text if text else _tn("cli.tui.images_attached_preview", len(images))
             preview = preview[:80] + ('...' if len(preview) > 80 else '')
@@ -1519,9 +1505,11 @@ class CLITuiMixin:
                         self.agent is not None
                         and getattr(self.agent, "_supports_active_turn_redirect", False) is True
                         and hasattr(self.agent, "redirect")):
-                        redirected = bool(self.agent.redirect(text))
+                        redirected = self.agent.redirect(text)
                 except Exception:
                     redirected = False
+            if redirected == "voice_stopped":  # TUI-26: consumed as a voice stop; nothing to queue
+                return
             if redirected:
                 preview = text[:80] + ("..." if len(text) > 80 else "")
                 _cprint(f"  {_ACCENT}{t('cli.tui.redirected_turn', preview=preview)}{_RST}")

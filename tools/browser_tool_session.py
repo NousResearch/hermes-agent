@@ -387,6 +387,9 @@ def _create_session_for_key(task_id: str, force_local: bool) -> dict[str, Any]:
     return _create_cloud_session_or_fallback(task_id, provider)
 
 
+_STALE_ENDPOINT_RETRIES = 2
+
+
 def _abandon_session_creation(bare_task_id: str, generation: int) -> None:
     """Return a failed current creator's STARTING state to ACTIVE."""
     with _bt._cleanup_lock:
@@ -476,11 +479,28 @@ def _get_session_info(
             )
 
     force_local = _bt._is_local_sidecar_key(task_id)
-    try:
-        session_info = _create_session_for_key(task_id, force_local)
-    except BaseException:
-        _abandon_session_creation(bare_task_id, creation_generation)
-        raise
+    session_info = _create_and_publish_session(task_id, force_local, creation_generation)
+
+    if not force_local and not (session_info.get("features") or {}).get("lightpanda"):
+        if session_info.get("cdp_url"):
+            _cdp._ensure_cdp_supervisor(
+                task_id, expected_generation=creation_generation
+            )
+        else:
+            _cdp._ensure_cdp_supervisor(task_id)
+
+    return session_info
+
+
+def _publish_session_candidate(
+    task_id: str,
+    session_info: dict[str, Any],
+    creation_generation: int,
+    endpoint_generation: int,
+) -> tuple[str, Optional[dict[str, Any]]]:
+    """Publish only while both the task and its profile endpoint remain current."""
+    bare_task_id = _bt._bare_task_id_for_session_key(task_id)
+    home_key = hermes_home_key()
 
     with _bt._cleanup_lock:
         current_state = _lifecycle._task_state_locked(bare_task_id)
@@ -493,36 +513,56 @@ def _get_session_info(
             }
         )
         winner = _bt._active_sessions.get(task_id)
-        if not stale_creator and winner is None:
-            session_info = dict(session_info)
-            session_info.setdefault("session_key", task_id)
-            session_info.setdefault("owner_task_id", bare_task_id)
-            session_info.setdefault("home_key", hermes_home_key())
-            session_info["_lifecycle_generation"] = creation_generation
-            _bt._active_sessions[task_id] = session_info
-            _bt._suspect_browser_sessions.pop(task_id, None)
-            _lifecycle._set_task_state_locked(
-                bare_task_id, _lifecycle.BrowserTaskState.ACTIVE
-            )
-            published = True
-        else:
-            published = False
-
-    if not published:
-        _lifecycle._dispose_unpublished_session(task_id, session_info)
         if stale_creator:
-            raise _lifecycle._BrowserSessionRetiredError(task_id)
-        return winner
+            return "retired", None
+        if winner is not None:
+            return "existing", winner
+        if _cdp.live_cdp_generation(home_key) != endpoint_generation:
+            return "retry", None
+        session_info = dict(session_info)
+        session_info.setdefault("session_key", task_id)
+        session_info.setdefault("owner_task_id", bare_task_id)
+        session_info.setdefault("home_key", home_key)
+        session_info["_lifecycle_generation"] = creation_generation
+        _bt._active_sessions[task_id] = session_info
+        _bt._suspect_browser_sessions.pop(task_id, None)
+        _lifecycle._set_task_state_locked(bare_task_id, _lifecycle.BrowserTaskState.ACTIVE)
+        return "published", session_info
 
-    if not force_local and not (session_info.get("features") or {}).get("lightpanda"):
-        if session_info.get("cdp_url"):
-            _cdp._ensure_cdp_supervisor(
-                task_id, expected_generation=creation_generation
+
+def _create_and_publish_session(
+    task_id: str, force_local: bool, creation_generation: int
+) -> dict[str, Any]:
+    """Bound endpoint retries without letting a retired creator publish a session."""
+    bare_task_id = _bt._bare_task_id_for_session_key(task_id)
+    home_key = hermes_home_key()
+    try:
+        for _attempt in range(_STALE_ENDPOINT_RETRIES + 1):
+            endpoint_generation = _cdp.live_cdp_generation(home_key)
+            session_info = _create_session_for_key(task_id, force_local)
+            state, published = _publish_session_candidate(
+                task_id, session_info, creation_generation, endpoint_generation
             )
-        else:
-            _cdp._ensure_cdp_supervisor(task_id)
+            if state == "published":
+                assert published is not None
+                return published
+            _close_unpublished_session(task_id, session_info)
+            if state == "retired":
+                raise _lifecycle._BrowserSessionRetiredError(task_id)
+            if state == "existing":
+                assert published is not None
+                return published
+            assert state == "retry"
+            _bt.logger.info("Browser endpoint changed during session creation for %s; recreating", task_id)
+        raise RuntimeError("Browser endpoint kept changing during session creation; retry the browser command")
+    except BaseException:
+        _abandon_session_creation(bare_task_id, creation_generation)
+        raise
 
-    return session_info
+
+def _close_unpublished_session(task_id: str, session_info: dict[str, Any]) -> None:
+    """Dispose only resources already owned by an unpublished candidate."""
+    _lifecycle._dispose_unpublished_session(task_id, session_info)
 
 
 def _discard_timed_out_browser_session(task_id: str, session_info: dict[str, Any], task_socket_dir: str) -> None:

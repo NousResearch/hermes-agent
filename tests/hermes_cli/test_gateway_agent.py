@@ -899,3 +899,26 @@ def test_a_withdrawal_for_another_request_leaves_the_panel_open(make_agent):
     assert closed == []
     agent._on_request_withdrawn({"id": "srq-mine", "method": "clarify", "reason": "resolved"})
     assert closed == ["clarify"]
+
+
+def test_ctrl_c_during_the_first_api_call_keeps_mains_estimate_marker(make_agent):
+    """T4: Ctrl+C while the turn's first request is in flight. The gateway agent counted the attempt
+    (``api_calls: 1`` in the turn result) but no response priced the ask, so main's in-process bar kept
+    the previous turn's anchor and estimated the ask (``~``). The stand-in must not anchor after the ask."""
+    from agent.usage_anchor import anchored_context_tokens
+    usage = dict(SESSION_USAGE, context_tokens=700, api_calls=2)  # no response: cumulative calls unchanged
+    agent, client = make_agent([frame("message.complete", {"text": "", "outcome": "cancelled", "status": "interrupted"})],
+                               result={"final_response": "", "api_calls": 1, "interrupted": True, "messages": []})
+    original = client.rpc
+
+    async def rpc(method, *, _timeout=None, **params):
+        if method == "session.stats":
+            return usage
+        return await original(method, _timeout=_timeout, **params)
+    client.rpc = rpc
+    agent.session_api_calls = 2
+    agent.run_conversation("story", conversation_history=[{"role": "user", "content": "a"},
+                                                          {"role": "assistant", "content": "b"}])
+    anchor = agent._turn_base_usage_anchor
+    assert anchor["base_count"] == 2  # the unanswered ask is the estimated delta: main's `~`
+    assert anchored_context_tokens(agent._session_messages, anchor, charge_stale_thinking=False) == 700

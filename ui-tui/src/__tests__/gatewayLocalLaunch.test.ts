@@ -4,11 +4,19 @@ import { join } from 'node:path'
 
 import { afterEach, expect, it, vi } from 'vitest'
 
-vi.mock('node:child_process', () => ({ execFile: vi.fn(), spawn: vi.fn(() => { throw new Error('independent owner forbidden') }) }))
+vi.mock('node:child_process', () => ({
+  execFile: vi.fn(),
+  spawn: vi.fn(() => {
+    throw new Error('independent owner forbidden')
+  })
+}))
 import { GatewayClient } from '../gatewayClient.js'
 
 const home = mkdtempSync(join(tmpdir(), 'ink-bootstrap-test-'))
-afterEach(() => { vi.unstubAllEnvs(); rmSync(home, { recursive: true, force: true }) })
+afterEach(() => {
+  vi.unstubAllEnvs()
+  rmSync(home, { recursive: true, force: true })
+})
 
 it('reports failed canonical bootstrap without creating an independent owner or retrying ensure', async () => {
   vi.stubEnv('HERMES_HOME', home)
@@ -19,7 +27,11 @@ it('reports failed canonical bootstrap without creating an independent owner or 
   gw.on('event', e => events.push(e))
   gw.start()
   gw.drain()
-  await vi.waitFor(() => expect(events.some(e => e.type === 'gateway.start_timeout' && e.payload.stderr_tail.includes('update_paused'))).toBe(true))
+  await vi.waitFor(() =>
+    expect(
+      events.some(e => e.type === 'gateway.start_timeout' && e.payload.stderr_tail.includes('update_paused'))
+    ).toBe(true)
+  )
   await expect(gw.request('session.create')).rejects.toThrow('update_paused')
   expect(bootstrap).toHaveBeenCalledTimes(1)
   gw.kill()

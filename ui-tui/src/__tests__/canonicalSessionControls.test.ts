@@ -164,7 +164,12 @@ it('a guarded canonical model switch asks; yes re-sends once with the owner toke
 
       return params.payload.confirm === 'tok-1'
         ? { model: 'pricey', execution_generation: 5 }
-        : { status: 'confirmation_required', confirm: 'tok-1', confirm_message: 'pricey IS EXPENSIVE', target_model: 'pricey' }
+        : {
+            status: 'confirmation_required',
+            confirm: 'tok-1',
+            confirm_message: 'pricey IS EXPENSIVE',
+            target_model: 'pricey'
+          }
     })
     slash('/model pricey')
     await flush()
@@ -178,7 +183,9 @@ it('a guarded canonical model switch asks; yes re-sends once with the owner toke
       await flush()
     }
 
-    const sends = request.mock.calls.filter(([method]) => method === 'session.mutate').map(([, params]) => params.payload)
+    const sends = request.mock.calls
+      .filter(([method]) => method === 'session.mutate')
+      .map(([, params]) => params.payload)
     expect(sends).toEqual(accept ? [{ model: 'pricey' }, { model: 'pricey', confirm: 'tok-1' }] : [{ model: 'pricey' }])
     expect(getUiState().info?.model).toBe(accept ? 'pricey' : 'old')
   }
@@ -218,9 +225,14 @@ it('a /compress that removes nothing prints main\'s "No changes" report without 
     }
 
     return {
-      session_id: 'owner', operation: 'compress', status: 'noop',
-      summary: { headline: 'No changes from compression: 2 messages', noop: true,
-                 token_line: 'Approx request size: ~6,547 tokens (unchanged)' }
+      session_id: 'owner',
+      operation: 'compress',
+      status: 'noop',
+      summary: {
+        headline: 'No changes from compression: 2 messages',
+        noop: true,
+        token_line: 'Approx request size: ~6,547 tokens (unchanged)'
+      }
     } as any
   })
 

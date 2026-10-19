@@ -4288,6 +4288,47 @@ def test_status_callback_emits_kind_and_text():
     )
 
 
+def test_context_pressure_status_persists_one_authoritative_notice(monkeypatch):
+    persisted = []
+
+    class FakeDB:
+        def append_message(self, *args, **kwargs):
+            persisted.append((args, kwargs))
+
+    sid = "context-pressure-session"
+    agent = types.SimpleNamespace(_session_db=FakeDB(), session_id="durable-session")
+    monkeypatch.setitem(server._sessions, sid, {"agent": agent, "session_key": sid})
+
+    with patch("tui_gateway.server._emit"):
+        callback = server._agent_cbs(sid)["status_callback"]
+        callback("context_pressure", "Compress now, Start new session, or Continue knowingly.")
+        callback("context_pressure", "Compress now, Start new session, or Continue knowingly.")
+
+    assert persisted == [
+        (("durable-session", "assistant", "Compress now, Start new session, or Continue knowingly."),
+         {"display_kind": "context_pressure"})
+    ]
+
+
+def test_context_pressure_status_reports_failed_authoritative_persistence(monkeypatch):
+    class FailingDB:
+        def append_message(self, *_args, **_kwargs):
+            raise OSError("state store unavailable")
+
+    sid = "context-pressure-persistence-failure"
+    agent = types.SimpleNamespace(_session_db=FailingDB(), session_id="durable-session")
+    monkeypatch.setitem(server._sessions, sid, {"agent": agent, "session_key": sid})
+
+    with patch("tui_gateway.server._emit") as emit:
+        callback = server._agent_cbs(sid)["status_callback"]
+        assert callback("context_pressure", "Compress now, Start new session, or Continue knowingly.") is False
+
+    emit.assert_called_once_with(
+        "status.update", sid,
+        {"kind": "context_pressure", "text": "Compress now, Start new session, or Continue knowingly."},
+    )
+
+
 def test_status_callback_accepts_single_message_argument():
     with patch("tui_gateway.server._emit") as emit:
         cb = server._agent_cbs("sid")["status_callback"]

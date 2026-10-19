@@ -107,11 +107,42 @@ def _agent_presentation_enabled(sid: str, *, diagnostic: bool) -> bool:
         return warning_notifications_enabled("tui", getattr((session or {}).get("agent"), "_notification_config", None))
 
 
-def _agent_status_update(sid: str, kind: str, text: str | None = None) -> None:
+def _agent_status_update(sid: str, kind: str, text: str | None = None) -> bool | None:
     from gateway.warning_notifications import is_warning_status
     if not _agent_presentation_enabled(sid, diagnostic=is_warning_status(kind, text if text is not None else kind)):
         return
+    if kind == "context_pressure" and text:
+        persisted = _persist_context_pressure_notice(sid, text)
+        _status_update(sid, str(kind), str(text))
+        return persisted
     _status_update(sid, str(kind), None if text is None else str(text))
+
+
+def _persist_context_pressure_notice(sid: str, text: str) -> bool:
+    """File the one-shot capacity intervention as a display-only transcript row.
+
+    The status rail is transient, while Desktop reopens from the authoritative
+    transcript. Keep the provider history untouched: ``display_kind`` rows are
+    stripped before provider requests and hydrate as machine notices.
+    """
+    with _sessions_lock:
+        session = _sessions.get(sid)
+    if not session:
+        return False
+    if session.get("_context_pressure_notice_persisted"):
+        return True
+    agent = session.get("agent")
+    db = getattr(agent, "_session_db", None)
+    target = _submit_row_target_key(session)
+    if db is None or not target:
+        return False
+    try:
+        db.append_message(target, "assistant", text, display_kind="context_pressure")
+    except Exception:
+        logger.warning("failed to persist context-pressure notice", exc_info=True)
+        return False
+    session["_context_pressure_notice_persisted"] = True
+    return True
 
 
 def _agent_thinking_update(sid: str, text: str) -> None:

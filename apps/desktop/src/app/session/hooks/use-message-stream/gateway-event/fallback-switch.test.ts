@@ -58,6 +58,29 @@ describe('desktop fallback switch', () => {
     expect(systemText(updateSessionState)).toMatch(/fallback/i)
   })
 
+  it('shows a context-pressure intervention in the transcript', () => {
+    const notice = '⚠️ Context capacity is 60% full. Compress now, Start new session, or Continue knowingly.'
+    const { ctx, updateSessionState } = statusContext(notice, 'context_pressure')
+
+    expect(handleStatusEvent(ctx)).toBe(true)
+    expect(systemText(updateSessionState)).toContain('Compress now')
+    expect(systemText(updateSessionState)).toContain('Start new session')
+    expect(systemText(updateSessionState)).toContain('Continue knowingly')
+  })
+
+  it('deduplicates replayed context-pressure status events', () => {
+    const notice = '⚠️ Context capacity is 60% full. Compress now, Start new session, or Continue knowingly.'
+    const { ctx, updateSessionState } = statusContext(notice, 'context_pressure')
+
+    handleStatusEvent(ctx)
+    handleStatusEvent(ctx)
+
+    const first = updateSessionState.mock.calls[0]?.[1]({ messages: [] }) as { messages: unknown[] }
+    const second = updateSessionState.mock.calls[1]?.[1](first) as { messages: unknown[] }
+
+    expect(second.messages).toHaveLength(1)
+  })
+
   it('does not turn unrelated lifecycle status into a transcript line', () => {
     const { ctx, updateSessionState } = statusContext('⚠️ Rate limited — retrying')
 

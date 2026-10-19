@@ -119,6 +119,30 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
       void refreshBackgroundProcesses(sessionId)
     } else if (sessionId && payload?.kind === 'goal') {
       applyGoalStatusText(sessionId, coerceGatewayText(payload?.text))
+    } else if (sessionId && payload?.kind === 'context_pressure') {
+      const text = coerceGatewayText(payload?.text).trim()
+
+      if (text) {
+        flushQueuedDeltas(sessionId)
+        updateSessionState(sessionId, state => {
+          if (state.messages.some(message => message.id.startsWith('context-pressure-'))) {
+            return state
+          }
+
+          return {
+            ...state,
+            messages: [
+              ...state.messages,
+              {
+                id: `context-pressure-${occurredAt}`,
+                role: 'system',
+                parts: [textPart(text, occurredAt)],
+                timestamp: occurredAt
+              }
+            ]
+          }
+        })
+      }
     } else if (sessionId && isFallbackSwitchStatus(payload?.kind, coerceGatewayText(payload?.text))) {
       // A provider/model switch is durable: the TUI paints it on the status rail, but Desktop
       // used to swallow every non-compaction status.update, so the reply came from a different

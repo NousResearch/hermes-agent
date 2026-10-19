@@ -21,6 +21,52 @@ from agent.usage_pricing import estimate_usage_cost, normalize_usage, with_serve
 
 logger = logging.getLogger("agent.conversation_loop")
 
+_CONTEXT_PRESSURE_INTERVENTION_RATIO = 0.60
+_CONTEXT_PRESSURE_INTERVENTION_TEXT = (
+    "⚠️ Context capacity is {percent:.0f}% full ({used:,}/{window:,} tokens). "
+    "Compress now, Start new session, or Continue knowingly."
+)
+
+
+def _maybe_emit_context_pressure_intervention(agent: Any, prompt_tokens: Any) -> None:
+    """Warn once when provider-confirmed occupancy first reaches 60% in a session."""
+    if getattr(agent, "_context_pressure_intervention_emitted", False):
+        return
+    compressor = getattr(agent, "context_compressor", None)
+    window = getattr(compressor, "context_length", None)
+    if (
+        not isinstance(prompt_tokens, int) or isinstance(prompt_tokens, bool) or prompt_tokens <= 0
+        or not isinstance(window, int) or isinstance(window, bool) or window <= 0
+    ):
+        return
+    occupancy = prompt_tokens / window
+    if occupancy < _CONTEXT_PRESSURE_INTERVENTION_RATIO:
+        return
+    text = _CONTEXT_PRESSURE_INTERVENTION_TEXT.format(
+        percent=occupancy * 100, used=prompt_tokens, window=window,
+    )
+    callback = getattr(agent, "status_callback", None)
+    if callable(callback):
+        try:
+            # Gateway-backed callbacks return False when their authoritative
+            # transcript write failed. A status rail update alone is transient,
+            # so it must not consume this session's one-shot intervention.
+            if callback("context_pressure", text) is not False:
+                agent._context_pressure_intervention_emitted = True
+                return
+            logger.debug("status_callback could not durably deliver context-pressure intervention")
+        except Exception:
+            # Driver callbacks are observational: match StatusOutputMixin's
+            # fail-open convention and retain the CLI delivery fallback.
+            logger.debug("status_callback error in context-pressure intervention", exc_info=True)
+    printer = getattr(agent, "_safe_print", None)
+    if callable(printer):
+        try:
+            printer(text)
+            agent._context_pressure_intervention_emitted = True
+        except Exception:
+            logger.debug("context-pressure CLI fallback failed", exc_info=True)
+
 
 def _agent_session_source(agent: Any) -> str:
     """The surface the agent's own row create would stamp (``_ensure_db_session``), so an
@@ -114,7 +160,22 @@ def record_response_usage(
     # The canonical buckets follow the same split, so engines reading them never see cache_read > prompt.
     _initial_cached = getattr(response.usage, "initial_cached_tokens", 0) if context_prompt_tokens else None
     context_cache_read = _initial_cached if isinstance(_initial_cached, int) else None
-    # Canonical token + cache buckets for context engines; legacy keys stay for back-compat.
+    # The compressor owns current occupancy, not lifetime/whole-turn usage. MoA advisor
+    # prompts never enter the aggregator context, so they must not move compression,
+    # rearm, or capacity warnings even though they remain in the reported totals below.
+    occupancy_prompt_tokens = context_prompt_tokens or aggregator_usage.prompt_tokens
+    occupancy_usage_dict = {
+        "prompt_tokens": occupancy_prompt_tokens,
+        "completion_tokens": aggregator_usage.output_tokens,
+        "total_tokens": occupancy_prompt_tokens + aggregator_usage.output_tokens,
+        "input_tokens": (context_prompt_tokens - context_cache_read)
+        if context_cache_read is not None else aggregator_usage.input_tokens,
+        "output_tokens": aggregator_usage.output_tokens,
+        "cache_read_tokens": aggregator_usage.cache_read_tokens if context_cache_read is None else context_cache_read,
+        "cache_write_tokens": aggregator_usage.cache_write_tokens,
+        "reasoning_tokens": aggregator_usage.reasoning_tokens,
+    }
+    # Keep folded MoA advisor usage in the user-visible/session totals.
     usage_dict = {
         "prompt_tokens": context_prompt_tokens or prompt_tokens,
         "completion_tokens": completion_tokens,
@@ -130,7 +191,8 @@ def record_response_usage(
     _completed_compaction_pending = bool(
         getattr(compressor, "_verify_compaction_cleared_threshold", False)
     )
-    compressor.update_from_response(usage_dict)
+    compressor.update_from_response(occupancy_usage_dict)
+    _maybe_emit_context_pressure_intervention(agent, occupancy_prompt_tokens)
     # Usage-anchored accounting: snapshot exact provider usage against the durable
     # transcript (main-loop ONLY; MoA uses pre-fold aggregator usage). The display meter
     # anchors on the turn's FIRST response: later same-turn responses inflate
@@ -146,7 +208,7 @@ def record_response_usage(
     _compression_threshold = int(getattr(compressor, "threshold_tokens", 0) or 0)
     if _loop_mod()._should_rearm_compression_budget(
         compression_attempts, completed_compaction_pending=_completed_compaction_pending,
-        prompt_tokens=usage_dict["prompt_tokens"], threshold_tokens=_compression_threshold,
+        prompt_tokens=occupancy_prompt_tokens, threshold_tokens=_compression_threshold,
     ):
         logger.info(
             "Compression budget rearmed after provider-confirmed "

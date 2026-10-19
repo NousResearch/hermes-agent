@@ -529,7 +529,7 @@ def wire_api_observers(agent, owner, want_interim):
     def status_callback(kind, message=None):
         publish('status_callback', kind, message)
         if status is not None:
-            status(kind, message)
+            return status(kind, message)
 
     def interim_assistant_callback(text, *, already_streamed=False):
         publish('interim_assistant_callback', text, already_streamed=already_streamed)

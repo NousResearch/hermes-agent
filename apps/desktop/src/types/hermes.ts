@@ -713,6 +713,7 @@ export interface SessionMessage {
   display_kind?:
     | 'async_delegation_complete'
     | 'auto_continue'
+    | 'context_pressure'
     | 'failed_turn'
     | 'hidden'
     | 'model_switch'

@@ -404,6 +404,9 @@ class AIAgent(
         self._user_turn_count = 0
         # The drifted-prompt compaction INFO is once per session, so a /new or /resume re-arms it.
         self._compaction_prompt_drift_logged = False
+        # Provider-confirmed capacity intervention is once per session; lower occupancy and
+        # compaction do not re-arm it, but a real /new session boundary must.
+        self._context_pressure_intervention_emitted = False
         # Who wrote the current turn. build_turn_context() sets it at the start of every turn.
         self._turn_author = None
         # Copilot x-initiator: True for the first API call of a user turn, False for tool-loop follow-ups.

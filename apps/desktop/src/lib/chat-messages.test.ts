@@ -555,6 +555,24 @@ describe('toChatMessages', () => {
     ])
   })
 
+  it('rehydrates a durable context-pressure intervention as a system notice', () => {
+    const messages = toChatMessages([
+      { role: 'user', content: 'keep working', timestamp: 1 },
+      { role: 'assistant', content: 'Working.', timestamp: 2 },
+      {
+        role: 'assistant',
+        content: '⚠️ Context capacity is 60% full. Compress now, Start new session, or Continue knowingly.',
+        display_kind: 'context_pressure',
+        timestamp: 3
+      }
+    ])
+
+    expect(messages.at(-1)?.role).toBe('system')
+    expect(chatMessageText(messages.at(-1)!)).toContain('Compress now')
+    expect(chatMessageText(messages.at(-1)!)).toContain('Start new session')
+    expect(chatMessageText(messages.at(-1)!)).toContain('Continue knowingly')
+  })
+
   it('never paints a background-process heartbeat wake as a user bubble', () => {
     // Current backends type the wake `display_kind: 'hidden'`; a row persisted by an older
     // backend arrives untyped and must disappear the same way — the user never wrote it.

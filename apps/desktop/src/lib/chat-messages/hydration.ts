@@ -181,6 +181,7 @@ const NOTICE_DISPLAY_KINDS = [
   'process_complete',
   'auto_continue',
   'personality_switch',
+  'context_pressure',
   // Hermes closing a failed turn, not the model speaking.
   'failed_turn'
 ] as const

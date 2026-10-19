@@ -8,6 +8,13 @@ A page that fails is withheld whole, and the tab that is showing it is remembere
 a tab the way the built-in browser does, so every later call on that tab is refused until it moves to an
 allowed page or is closed.
 
+A tab is remembered by its id, however a call named it. The controller's results do not say which tab a call
+ran in (only ``tab_id`` in the command does), so for a call that named none Hermes reads the tab list and finds
+the tab that is showing the withheld page; when that is not one tab, the record stays "the current tab,
+unknown" and every call that could be on it is refused: one that names no tab, and one that names any tab.
+Asking about the current tab is the same: when the connection controls one tab that is it, and when it controls
+several Hermes cannot tell which a call without ``tab_id`` would use, so it refuses while any tab is withheld.
+
 Facade-owned helpers are read through ``_bt`` (``tools.browser_tool``, resolved per call) — no import cycle.
 """
 
@@ -42,11 +49,14 @@ _UNSETTLED_URLS = frozenset({"", "about:blank"})
 # Bounds on what is remembered: lanes, and withheld tabs per lane.
 _MAX_LANES = 256
 _MAX_TABS = 64
+# The extension lists at most this many tabs, so a shorter list is the whole set and a longer one may not be.
+_LISTING_CAP = 100
 
 
 class _Withheld:
     """The tabs, per lane, that last showed a page the policy withheld: ``{lane key: {tab id or None: host}}``.
-    ``None`` is the current tab, which a call that names no tab acts on."""
+    ``None`` is the current tab when Hermes could not tell which tab id that is; a tab Hermes could identify is
+    recorded under its id, whether the call named it or not."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -72,8 +82,18 @@ class _Withheld:
                     del self._lanes[key]
 
     def host(self, key: tuple, tab: Optional[int]) -> Optional[str]:
+        """The host a call that names ``tab`` (``None``: names none) would be refused for, from what is
+        recorded for the tab itself or for an unidentified current tab. A call that names a tab cannot be told
+        apart from that unidentified tab, so it is refused too; whether a call that names none is on a
+        recorded tab by id is for the caller to resolve."""
         with self._lock:
-            return (self._lanes.get(key) or {}).get(tab)
+            tabs = self._lanes.get(key) or {}
+            return tabs.get(tab) or tabs.get(None)
+
+    def tabs(self, key: tuple) -> dict[int, str]:
+        """The tabs recorded by id, ``{tab id: host}``."""
+        with self._lock:
+            return {tab: host for tab, host in (self._lanes.get(key) or {}).items() if tab is not None}
 
     def any(self, key: tuple) -> bool:
         with self._lock:
@@ -171,6 +191,10 @@ def redirect_blocked_result(action: str, payload: dict[str, Any], landed: str, p
     return result
 
 
+def _int_id(value: Any) -> Optional[int]:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
 def _tab_listing_url(listing: Any, tab_id: int) -> str:
     payload = _decode(listing) or {}
     for tab in payload.get("tabs") if isinstance(payload.get("tabs"), list) else []:
@@ -244,6 +268,50 @@ def _guard_tab_list(key: tuple, payload: dict[str, Any]) -> Optional[dict[str, A
     return {**payload, "tabs": listed} if changed else None
 
 
+def _read_tabs(route: RouteContext) -> Optional[dict[str, Any]]:
+    """The controller's tab list (``{"tabs": [...]}``), or ``None`` when it cannot be read."""
+    try:
+        payload = _decode(route.send("browser_tabs", {}))
+    except Exception:
+        logger.debug("could not read the tab list", exc_info=True)
+        return None
+    return payload if payload is not None and isinstance(payload.get("tabs"), list) else None
+
+
+def _sync_record(key: tuple, payload: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Bring the withheld record in line with a tab list, which says what each tab shows right now: a tab on a
+    blocked address is recorded by id, one that moved on or was closed is lifted, and an unidentified current
+    tab is lifted once no listed tab is on a blocked address. Returns the list with blocked tabs reduced to
+    their id and host (``None`` when there are none), as :func:`_guard_tab_list` does."""
+    redacted = _guard_tab_list(key, payload)
+    tabs = payload["tabs"]
+    if len(tabs) < _LISTING_CAP:
+        listed = {_int_id(tab.get("id")) for tab in tabs if isinstance(tab, dict)}
+        for gone in set(_withheld.tabs(key)) - listed:
+            _withheld.discard(key, gone)
+        if not set(_withheld.tabs(key)) & listed:
+            _withheld.discard(key, None)
+    return redacted
+
+
+def _identify_withheld_tab(route: RouteContext, blocked_host: str) -> Optional[int]:
+    """The id of the tab a call that named none just withheld. The controller's results do not carry it, so the
+    tab list is read: the tab on a blocked address at ``blocked_host``, when exactly one is. Every tab on a
+    blocked address is recorded by id while the list is at hand. ``None`` when the list cannot be read or does
+    not point at one tab."""
+    payload = _read_tabs(route)
+    if payload is None:
+        return None
+    _sync_record(route.key, payload)
+    candidates = []
+    for tab in payload["tabs"]:
+        url = tab.get("url") if isinstance(tab, dict) and isinstance(tab.get("url"), str) else ""
+        error = _policy_error(url)
+        if error is not None and _int_id(tab.get("id")) and _blocked_host(url, error) == blocked_host:
+            candidates.append(tab["id"])
+    return candidates[0] if len(candidates) == 1 else None
+
+
 def extension_landing_guard(action: str, args: dict[str, Any], result: Any, route: Optional[RouteContext] = None) -> Any:
     """Router result guard for the extension lane. Any address the controller reports (the page a navigation,
     click, key press or read ended on, a new tab's, each tab in a tab list) goes through the policy the
@@ -263,7 +331,7 @@ def extension_landing_guard(action: str, args: dict[str, Any], result: Any, rout
         _withheld.discard(key, _tab_arg(args))
         return result
     if action == "browser_tabs":
-        listed = _guard_tab_list(key, payload)
+        listed = _sync_record(key, payload) if isinstance(payload.get("tabs"), list) else None
         return result if listed is None else dump(listed)
 
     landed = _landed_url(action, payload)
@@ -281,6 +349,8 @@ def extension_landing_guard(action: str, args: dict[str, Any], result: Any, rout
         return result
 
     blocked_host = _blocked_host(landed, policy_error)
+    if tab is None and route is not None and action != "browser_tab_create":
+        tab = _identify_withheld_tab(route, blocked_host)  # stays None when it cannot be told
     _withheld.add(key, tab, blocked_host)
     moved_back = False
     if route is not None and action != "browser_tab_create" and _moves_the_page(action, args, payload):
@@ -303,12 +373,30 @@ def extension_withheld_guard(action: str, args: dict[str, Any], route: Optional[
         steps = args.get("actions") if isinstance(args.get("actions"), list) else []
         if steps and _args.step_action(steps[0]) in _LEAVING_STEPS:
             return None
-    host = _withheld.host(route.key, _tab_arg(args))
+    tab = _tab_arg(args)
+    host = _withheld_host(route, tab)
     if host is None:
         return None
     _bt = _origin()
     named = f" ({host})" if host else ""
+    pick = " Pass tab_id to act on a different tab." if tab is None else ""
     return _bt._dumps(_bt._err(
         f"Blocked: this tab is still on a page Hermes withheld{named}, so {action} was not sent. Go to another "
-        "page with browser_navigate or browser_back, or close the tab with browser_tab_close.",
+        f"page with browser_navigate or browser_back, or close the tab with browser_tab_close.{pick}",
         code="tab_withheld", blocked_host=host))
+
+
+def _withheld_host(route: RouteContext, tab: Optional[int]) -> Optional[str]:
+    """The host a call is refused for, or ``None`` when it may go ahead. A call that names a tab is refused
+    when that tab is recorded, or when the current tab is recorded but unidentified. A call that names none
+    acts on the current tab, whose id is not known here: with one tab under control that is it, and with
+    several the call is refused while any of them is withheld, because it could be on that one."""
+    host = _withheld.host(route.key, tab)
+    if host is not None or tab is not None:
+        return host
+    payload = _read_tabs(route)
+    if payload is not None:
+        _sync_record(route.key, payload)
+        if len(payload["tabs"]) == 1:
+            return _withheld.tabs(route.key).get(_int_id(payload["tabs"][0].get("id")))
+    return next(iter(_withheld.tabs(route.key).values()), None)

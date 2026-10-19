@@ -147,6 +147,12 @@ def test_a_tab_that_opens_on_a_blocked_host_is_reported_without_its_url(lane):
 REDIRECTING_TAB = {"tab": {"id": 31, "windowId": 2, "active": False, "url": ""}}
 
 
+def _tabs(*tabs):
+    """A tab list as the controller reports it: ``(id, url)`` per tab, the first one active."""
+    return {"tabs": [{"id": tab_id, "active": index == 0, "title": "t", "url": url}
+                     for index, (tab_id, url) in enumerate(tabs)]}
+
+
 def _tab_list(*urls):
     return [{"tabs": [{"id": 31, "active": False, "title": "t", "url": url}]} for url in urls]
 
@@ -183,12 +189,13 @@ def test_a_controller_that_cannot_list_tabs_leaves_a_new_tab_as_reported(lane):
     assert _call("browser_tab_create", {"url": "https://example.test/start"}) == REDIRECTING_TAB
 
 
-def test_a_blocked_new_tab_is_refused_for_reads_only_on_that_tab_never_the_current_one(lane):
-    lane(REDIRECTING_TAB, {"browser_tabs": _tab_list(SECRET_PAGE["url"]),
+def test_a_blocked_new_tab_is_refused_by_id_and_a_call_naming_another_tab_still_works(lane):
+    lane(REDIRECTING_TAB, {"browser_tabs": _tabs((31, SECRET_PAGE["url"]), (8, "https://example.test/ok")),
                            "browser_snapshot": {"url": "https://example.test/ok", "text": "fine", "refs": []}})
     _assert_withheld(_call("browser_tab_create", {"url": "https://example.test/redirect"}), "blocked.test")
 
-    assert _call("browser_snapshot", {})["text"] == "fine"
+    assert _call("browser_snapshot", {"tab_id": 8})["text"] == "fine"
+    assert _call("browser_snapshot", {"tab_id": 31})["code"] == "tab_withheld"
 
 
 def test_a_batch_that_ends_on_a_blocked_host_keeps_its_progress_and_drops_the_page(lane):
@@ -293,7 +300,7 @@ def test_a_snapshot_of_a_blocked_page_is_withheld_and_the_tab_is_not_moved(lane)
     out = _call("browser_snapshot", {})
 
     _assert_withheld(out, "blocked.test")
-    assert [action for action, _ in broker.dispatched] == ["browser_snapshot"]
+    assert "browser_back" not in [action for action, _ in broker.dispatched]
 
 
 def test_an_allowed_action_result_is_untouched(lane):
@@ -311,7 +318,7 @@ def test_a_navigation_that_lands_on_a_blocked_page_is_taken_back_when_it_can_be(
 
     _assert_withheld(out, "blocked.test")
     assert "taken back to the previous page" in out["error"] and "still on that page" not in out["error"]
-    assert [action for action, _ in broker.dispatched] == ["browser_navigate", "browser_back"]
+    assert [action for action, _ in broker.dispatched] == ["browser_navigate", "browser_tabs", "browser_back"]
     # The tab is off the page, so it works again.
     broker.replies["browser_snapshot"] = {"url": PREVIOUS_PAGE["url"], "text": "fine", "refs": []}
     assert _call("browser_snapshot", {})["text"] == "fine"
@@ -324,7 +331,7 @@ def test_a_click_that_did_not_navigate_is_not_taken_back(lane):
 
     _assert_withheld(_call("browser_click", {"ref": "@e1"}), "blocked.test")
 
-    assert [action for action, _ in broker.dispatched] == ["browser_click"]
+    assert "browser_back" not in [action for action, _ in broker.dispatched]
 
 
 @pytest.mark.parametrize("back", [
@@ -456,7 +463,6 @@ def test_only_the_tab_that_landed_on_a_blocked_page_is_refused(stuck_tab):
     assert stuck_tab.dispatched == []
 
     stuck_tab.replies["browser_snapshot"] = {"url": "https://example.test/ok", "text": "fine", "refs": []}
-    assert _call("browser_snapshot", {})["text"] == "fine"  # the current tab
     assert _call("browser_snapshot", {"tab_id": 8})["text"] == "fine"  # another tab
 
 
@@ -500,3 +506,145 @@ def test_a_tab_list_that_shows_a_tab_on_a_blocked_page_refuses_it(lane):
 
     assert _call("browser_snapshot", {"tab_id": 9})["code"] == "tab_withheld"
     assert [action for action, _ in broker.dispatched] == ["browser_tabs"]
+
+
+# --- a withheld tab is the same tab however a call names it ---------------------------------------------------------
+# The controller's results do not say which tab a call ran in, so a withheld page is recorded under the tab's real
+# id (found in the tab list) and every call is judged by that id, whether it passed tab_id or not.
+
+OK_URL = "https://example.test/ok"
+AFTER_BLOCK = ["browser_click", "browser_snapshot", "browser_type", "browser_press", "browser_scroll"]
+_ARGS = {"browser_click": {"ref": "@e1"}, "browser_snapshot": {}, "browser_type": {"ref": "@e1", "text": "x"},
+         "browser_press": {"key": "Enter"}, "browser_scroll": {"direction": "down"}}
+
+
+def _navigate_to_the_metadata_address(lane, tabs, **named):
+    """The one tab (41) is sent to a blocked address by a navigation that names it, or does not."""
+    broker = lane({"status": "navigated", "navigated": True, **BLOCKED_PAGE},
+                  {"browser_tabs": tabs, "browser_back": RuntimeError("no history")})
+    out = _call("browser_navigate", {"url": "https://example.test/start", **named})
+    assert out["code"] == "redirect_blocked" and "still on that page" in out["error"]
+    broker.dispatched.clear()
+    return broker
+
+
+@pytest.mark.parametrize("name", AFTER_BLOCK)
+def test_a_tab_withheld_by_an_untargeted_call_is_refused_when_a_later_call_names_its_id(lane, name):
+    broker = _navigate_to_the_metadata_address(lane, _tabs((41, SECRET_PAGE["url"])))
+
+    refused = _call(name, {**_ARGS[name], "tab_id": 41})
+
+    assert refused["code"] == "tab_withheld" and refused["blocked_host"] == "blocked.test"
+    assert broker.dispatched == []  # never reached the browser
+
+
+@pytest.mark.parametrize("name", AFTER_BLOCK)
+def test_a_tab_withheld_by_a_call_that_names_it_is_refused_when_a_later_call_names_none(lane, name):
+    broker = _navigate_to_the_metadata_address(lane, _tabs((41, SECRET_PAGE["url"])), tab_id=41)
+
+    refused = _call(name, _ARGS[name])
+
+    assert refused["code"] == "tab_withheld" and refused["blocked_host"] == "blocked.test"
+    assert [action for action, _ in broker.dispatched] == ["browser_tabs"]  # only the look at the tab list
+
+
+def test_the_withheld_tab_is_recorded_under_the_id_the_tab_list_gives(lane):
+    broker = _navigate_to_the_metadata_address(lane, _tabs((41, SECRET_PAGE["url"]), (8, OK_URL)))
+
+    assert _call("browser_snapshot", {"tab_id": 41})["code"] == "tab_withheld"
+    broker.replies["browser_snapshot"] = {"url": OK_URL, "text": "fine", "refs": []}
+    assert _call("browser_snapshot", {"tab_id": 8})["text"] == "fine"  # told apart from the withheld tab
+
+
+def test_a_withheld_tab_is_found_by_the_blocked_host_among_several_tabs(lane):
+    broker = lane({"status": "navigated", "navigated": True, **BLOCKED_PAGE},
+                  {"browser_tabs": _tabs((7, "https://other.test/page"), (41, SECRET_PAGE["url"])),
+                   "browser_back": RuntimeError("no history")})
+    _call("browser_navigate", {"url": "https://example.test/start"})
+    broker.dispatched.clear()
+    broker.replies["browser_snapshot"] = {"url": OK_URL, "text": "fine", "refs": []}
+
+    assert _call("browser_snapshot", {"tab_id": 41})["code"] == "tab_withheld"
+    assert _call("browser_snapshot", {"tab_id": 7})["text"] == "fine"
+
+
+def test_a_call_that_names_no_tab_is_refused_while_the_connection_controls_several_and_one_is_withheld(lane):
+    """The controller picks the current tab (not necessarily the active one), so with several tabs Hermes cannot
+    tell whether a call without tab_id would land on the withheld one."""
+    broker = _navigate_to_the_metadata_address(lane, _tabs((8, OK_URL), (41, SECRET_PAGE["url"])), tab_id=41)
+
+    refused = _call("browser_click", {"ref": "@e1"})
+
+    assert refused["code"] == "tab_withheld" and "Pass tab_id" in refused["error"]
+    assert "browser_click" not in [action for action, _ in broker.dispatched]
+
+
+def test_a_call_that_names_no_tab_works_again_once_the_withheld_tab_has_left_the_page(lane):
+    broker = _navigate_to_the_metadata_address(lane, _tabs((8, OK_URL), (41, SECRET_PAGE["url"])), tab_id=41)
+    broker.replies["browser_click"] = {"status": "clicked", "url": OK_URL}
+
+    broker.replies["browser_tabs"] = _tabs((8, OK_URL), (41, OK_URL))
+
+    assert _call("browser_click", {"ref": "@e1"})["status"] == "clicked"
+    assert _call("browser_click", {"ref": "@e1", "tab_id": 41})["status"] == "clicked"
+
+
+def test_a_call_that_names_no_tab_works_again_once_the_withheld_tab_was_closed(lane):
+    broker = _navigate_to_the_metadata_address(lane, _tabs((8, OK_URL), (41, SECRET_PAGE["url"])), tab_id=41)
+    broker.replies["browser_click"] = {"status": "clicked", "url": OK_URL}
+
+    broker.replies["browser_tabs"] = _tabs((8, OK_URL))  # the person closed it
+
+    assert _call("browser_click", {"ref": "@e1"})["status"] == "clicked"
+
+
+def test_a_tab_that_cannot_be_identified_refuses_every_call_that_could_be_on_it(lane):
+    """The tab list cannot be read, so the withheld tab is "the current tab, unknown": a call that names a tab
+    cannot be told apart from it, and neither can one that names none."""
+    broker = lane({"status": "navigated", "navigated": True, **BLOCKED_PAGE},
+                  {"browser_tabs": RuntimeError("not offered"), "browser_back": RuntimeError("no history")})
+    _call("browser_navigate", {"url": "https://example.test/start"})
+    broker.dispatched.clear()
+
+    for args in ({"ref": "@e1"}, {"ref": "@e1", "tab_id": 41}, {"ref": "@e1", "tab_id": 8}):
+        refused = _call("browser_click", args)
+        assert refused["code"] == "tab_withheld" and refused["blocked_host"] == "blocked.test", args
+    assert broker.dispatched == []
+
+
+def test_a_tab_that_cannot_be_identified_leaves_the_record_when_the_current_tab_navigates_away(lane):
+    broker = lane({"status": "navigated", "navigated": True, **BLOCKED_PAGE},
+                  {"browser_tabs": RuntimeError("not offered"), "browser_back": RuntimeError("no history")})
+    _call("browser_navigate", {"url": "https://example.test/start"})
+    broker.replies["browser_navigate"] = {"status": "navigated", "url": OK_URL, "title": "Ok"}
+    broker.replies["browser_click"] = {"status": "clicked", "url": OK_URL}
+
+    assert _call("browser_navigate", {"url": OK_URL})["status"] == "navigated"
+
+    assert _call("browser_click", {"ref": "@e1", "tab_id": 8})["status"] == "clicked"
+
+
+def test_a_tab_list_without_a_blocked_tab_lifts_an_unidentified_current_tab(lane):
+    broker = lane({"status": "navigated", "navigated": True, **BLOCKED_PAGE},
+                  {"browser_tabs": RuntimeError("not offered"), "browser_back": RuntimeError("no history")})
+    _call("browser_navigate", {"url": "https://example.test/start"})
+    assert _call("browser_click", {"ref": "@e1", "tab_id": 8})["code"] == "tab_withheld"
+
+    broker.replies["browser_tabs"] = _tabs((8, OK_URL), (41, "https://example.test/elsewhere"))
+    broker.replies["browser_click"] = {"status": "clicked", "url": OK_URL}
+    _call("browser_tabs", {})
+
+    assert _call("browser_click", {"ref": "@e1", "tab_id": 8})["status"] == "clicked"
+
+
+def test_an_untargeted_navigation_that_moves_the_one_tab_back_leaves_nothing_withheld(lane):
+    broker = lane({"status": "navigated", "navigated": True, **BLOCKED_PAGE},
+                  {"browser_tabs": _tabs((41, SECRET_PAGE["url"])), "browser_back": PREVIOUS_PAGE})
+
+    out = _call("browser_navigate", {"url": "https://example.test/start"})
+
+    assert "taken back to the previous page" in out["error"]
+    assert broker.dispatched[-1] == ("browser_back", {"tab_id": 41})
+    broker.replies["browser_click"] = {"status": "clicked", "url": PREVIOUS_PAGE["url"]}
+    assert _call("browser_click", {"ref": "@e1", "tab_id": 41})["status"] == "clicked"
+    assert _call("browser_click", {"ref": "@e1"})["status"] == "clicked"

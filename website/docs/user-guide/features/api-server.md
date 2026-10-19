@@ -455,7 +455,10 @@ says the page landed on a blocked address and names the host, and the page's sna
 title and text never reach the model. The extension cannot blank a tab, so the tab stays on
 that page: Hermes takes it back one step when the call moved it there, and otherwise
 refuses every later call on that tab (`tab_withheld`) until it goes to another page or is
-closed. A `browser_batch` is checked once, on the page it ends on, not after each step.
+closed. The tab is remembered by its id however the call named it (results do not carry the
+tab, so Hermes reads the tab list to find it), so `tab_id` and a call without one are judged
+the same; a call without `tab_id` is also refused while it could be acting on a withheld
+tab, which with several tabs under control is whenever one is withheld. A `browser_batch` is checked once, on the page it ends on, not after each step.
 This check does not apply the private-address rule, which the extension lane skips on
 purpose.
 

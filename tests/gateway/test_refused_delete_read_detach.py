@@ -98,3 +98,28 @@ async def test_the_release_detaches_by_the_id_the_read_resolved_to(tmp_path, mon
     by_resolved = await _call(picker, 'session.detach', session_id=read['session_id'],
                               subscription_id=read['subscription_id'])
     assert by_resolved['detached'] is True, by_resolved
+
+
+@pytest.mark.asyncio
+async def test_releasing_a_refused_deletes_read_leaves_a_live_messaging_chat_unfenced(tmp_path, monkeypatch):
+    """The release is a plain detach: an ``end_reason`` from the last viewer runs the viewer close,
+    which fences the chat's route against new async delegations until a viewer attaches again."""
+    from gateway.session_controls import AuthorityConnection
+    from tests.gateway.test_authority_cold_route_recovery import _cold, _seed, _source
+    from tools import async_delegation
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    route = _seed(tmp_path, 'lane', _source())
+    cold = await _cold(tmp_path)
+    picker = AuthorityConnection(cold.authority, SimpleNamespace(write=lambda frame: None), {
+        'provider': 'local', 'user_id': 'viewer', 'profile_id': 'fixture', 'instance_id': 'cold',
+        'capabilities': ['session:read', 'session:control']})
+    read = await _call(picker, 'session.resume', session_id='lane')
+    refused = await picker.dispatch({'id': 2, 'method': 'session.mutate', 'params': {
+        'session_id': 'lane', 'request_id': 'req-1', 'expected_revision': read['revision'] + 1,
+        'expected_generation': read['execution_generation'], 'operation': 'delete', 'payload': {}}})
+    assert refused['error']['data']['reason'] == 'revision_conflict', refused
+    try:
+        await _call(picker, 'session.detach', session_id=read['session_id'], subscription_id=read['subscription_id'])
+        assert ('session_key', route) not in async_delegation._refused_by
+    finally:
+        async_delegation._reset_for_tests()

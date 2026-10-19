@@ -1236,7 +1236,10 @@ export async function requestGatewayForProfile<T>(
   params: Record<string, unknown> = {},
   timeoutMs?: number,
   signal?: AbortSignal,
-  { spawnPriority = 'background' }: { spawnPriority?: SpawnPriority } = {}
+  {
+    beforeRequest,
+    spawnPriority = 'background'
+  }: { beforeRequest?: () => Promise<void>; spawnPriority?: SpawnPriority } = {}
 ): Promise<T> {
   const route = await gatewayForProfile(profile, true, spawnPriority)
 
@@ -1244,6 +1247,8 @@ export async function requestGatewayForProfile<T>(
     if (!route.gateway) {
       throw new Error(`Hermes gateway unavailable for profile "${route.key}"`)
     }
+
+    await beforeRequest?.()
 
     const routedParams = route.scopeProfile ? { ...params, profile: route.key } : params
 
@@ -1287,10 +1292,6 @@ export async function requestGatewayForAgent<T>(
   const key = normKey(profile)
   const scope = registryBackendScopeKey(connectionId, key)
 
-  if (scope === key) {
-    return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal, { spawnPriority })
-  }
-
   const assertExpectedOwner = async () => {
     if (!expectedOwner) {
       return
@@ -1309,6 +1310,13 @@ export async function requestGatewayForAgent<T>(
     })
   }
 
+  if (scope === key) {
+    return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal, {
+      beforeRequest: assertExpectedOwner,
+      spawnPriority
+    })
+  }
+
   // A primary remote selected from the connection registry carries its source
   // id in the active connection descriptor. Requests for that exact
   // (connection, profile) already have an owning socket: the window primary.
@@ -1318,10 +1326,12 @@ export async function requestGatewayForAgent<T>(
   // Require both owner identities to agree before collapsing the route; a
   // different source or profile must retain its isolated secondary.
   if (isPrimaryRegistryRoute(connectionId, key)) {
-    await assertExpectedOwner()
     traceAgentRoute(scope, 'primary')
 
-    return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal, { spawnPriority })
+    return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal, {
+      beforeRequest: assertExpectedOwner,
+      spawnPriority
+    })
   }
 
   if (await ridesPrimaryBackend(connectionId, key)) {

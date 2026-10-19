@@ -2059,20 +2059,6 @@ class TestV1SpecRegressionFixes:
 
 
 
-class TestExclusivePort:
-    """Two gateways (profiles) must not share one A2A port: on Windows stdlib SO_REUSEADDR let a second
-    server bind the same listening port and requests split between them."""
-
-    def test_a_second_server_on_the_same_port_fails_to_bind(self):
-        from plugins.platforms.a2a.adapter import A2ARequestHandler, _ExclusiveHTTPServer
-        first = _ExclusiveHTTPServer(("127.0.0.1", 0), A2ARequestHandler)
-        try:
-            with pytest.raises(OSError):
-                _ExclusiveHTTPServer(("127.0.0.1", first.server_address[1]), A2ARequestHandler).server_close()
-        finally:
-            first.server_close()
-
-
 # --------------------------------------------------------------------------
 # Multiplex secondary-profile scope (construction-time config leak)
 # --------------------------------------------------------------------------

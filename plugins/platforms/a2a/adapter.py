@@ -164,19 +164,6 @@ def _profile_home(profile: str) -> Optional[str]:
     return None
 
 
-class _ExclusiveHTTPServer(ThreadingHTTPServer):
-    """A port belongs to one gateway. stdlib sets SO_REUSEADDR, which on Windows lets a second profile bind the
-    same listening port, and requests then split between them; there the second bind must fail instead
-    (SO_EXCLUSIVEADDRUSE). Elsewhere SO_REUSEADDR only lets a restart reuse a TIME_WAIT port, so it stays."""
-
-    allow_reuse_address = os.name != "nt"
-
-    def server_bind(self):
-        if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
-            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-        super().server_bind()
-
-
 def _daemon_thread(target, name: str) -> threading.Thread:
     t = threading.Thread(target=target, name=name, daemon=True)
     t.start()
@@ -362,7 +349,7 @@ class A2AAdapter(BasePlatformAdapter):
         # Capture the gateway loop so the HTTP thread can marshal events via run_coroutine_threadsafe.
         self._loop = asyncio.get_running_loop()
         try:
-            self._httpd = _ExclusiveHTTPServer((self.host, self.port), A2ARequestHandler)
+            self._httpd = ThreadingHTTPServer((self.host, self.port), A2ARequestHandler)
         except OSError as e:
             logger.error("A2A: could not bind %s:%s — %s", self.host, self.port, e)
             self._set_fatal_error("bind_failed", f"A2A bind failed: {e}", retryable=True)

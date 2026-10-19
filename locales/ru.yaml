@@ -1689,6 +1689,21 @@ slash:
   quit:
     description: "Выйти из CLI (с --delete также удаляется история сеанса)"
 cli:
+  modern:
+    thought_for: "Размышлял {seconds} с"
+    thought: "Размышлял"
+    working: "Работаю…"
+    preparing: "Готовлю {what}…"
+    hint_steer: "направить"
+    hint_queue: "в очередь"
+    hint_interrupt: "прервать"
+    hint_stop: "стоп"
+    hint_commands: "команды"
+    hint_files: "файлы"
+    hint_shell: "shell"
+    placeholder_busy_steer: "пишите, чтобы направить этот ход · Tab ставит в очередь на потом"
+    placeholder_busy_interrupt: "пишите, чтобы перенаправить этот ход · Tab ставит в очередь на потом"
+    placeholder_busy_queue: "пишите, чтобы поставить сообщение в очередь после этого хода"
   billing:
     load_failed: "{label}: {error}"
     load_failed_label: "Не удалось загрузить данные биллинга"
@@ -2232,6 +2247,7 @@ cli:
     queue_heading: "Очередь · в очереди: {count} · /queue list{controls}"
     more_queued: "+{count} ещё"
     transcript_unavailable: "Живой транскрипт пока недоступен."
+    control_pending: "Отправка…"
     steer_prompt: "Корректировка: "
     roster_empty: "Нет активных подагентов или фоновых процессов. Результаты появятся в разговоре."
     entry_gone: "Эта запись больше не активна."

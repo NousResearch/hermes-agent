@@ -1188,7 +1188,7 @@ def _plan_execution(
         # would start a tracked shell that exits at once while its payload runs untracked.
         # Exception: a lone TRAILING `&` is unambiguous (the caller asked for exactly what
         # background=true does), so run it that way instead of spending a model turn on a resend.
-        auto_bg = trailing_amp_background_command(command)
+        auto_bg = trailing_amp_background_command(command, env_type)
         if auto_bg is None:
             guidance = _foreground_background_guidance(command)
             if guidance:

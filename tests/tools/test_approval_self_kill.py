@@ -92,6 +92,9 @@ class TestRuntimeSelfPidKillGuard:
             "nohup time kill --signal TERM {pid}",
             "setsid time kill --signal TERM {pid}",
             "nice -n 5 time kill --signal TERM {pid}",
+            # `time` is read as time(1) even where bash would take the keyword.
+            "builtin time kill --signal TERM {pid}",
+            "time time kill --signal TERM {pid}",
             "/usr/bin/nohup /bin/kill {pid}",
             "env -u UNUSED /bin/kill {pid}",
             "env -u UNUSED -- /bin/kill {pid}",
@@ -115,8 +118,6 @@ class TestRuntimeSelfPidKillGuard:
             "kill --signal TERM {pid}",
             "kill --queue 7 {pid}",
             "kill --timeout 100 TERM {pid}",
-            "builtin time kill --signal TERM {pid}",
-            "time time kill --signal TERM {pid}",
         ],
     )
     def test_bash_kill_unsupported_long_options_are_not_flagged(self, template):
@@ -234,6 +235,43 @@ class TestRuntimeSelfPidKillGuard:
         _assert_self_kill(f"{prefix} kill {os.getpid()}")
 
 
+class TestApprovalClassificationTable:
+    """The agreed approval outcome for each reviewed command shape (``{pid}`` = this process)."""
+
+    @pytest.mark.parametrize(
+        "template, expected",
+        [
+            # A bundled `-vS` still runs the next word as the program, as on main.
+            ("env -vS python3 -c pass", "approval"),
+            ("env -vS bash -c 'kill {pid}'", "approval"),
+            # `sudo -l` (bundled too) lists permissions; the command after it is not run.
+            ("sudo -l -U root /usr/bin/python3 -c pass", None),
+            # `&>` / `&>>` redirect both streams; they do not end the kill command.
+            ("kill &>/dev/null {pid}", "self-kill"),
+            # Bash's builtin takes one signal; later words, `--help` included, are operands.
+            ("kill -TERM --help {pid}", "self-kill"),
+            # External kill: option parsing stops at the first PID operand.
+            ("/bin/kill {pid} -l", "self-kill"),
+            # External kill: a long option's separate value is not trusted as the signal.
+            ("/bin/kill --signal 0 {pid}", "self-kill"),
+            # `time` (keyword or binary) is read like every other exec'ing wrapper.
+            ("FOO=1 time kill --signal TERM {pid}", "self-kill"),
+            ("kill {pid}", "self-kill"),
+            ("env -S 'printf ok'", None),
+            ("kill -0 {pid}", None),
+        ],
+    )
+    def test_command_classification(self, template, expected):
+        dangerous, key, desc = detect_dangerous_command(template.format(pid=os.getpid()))
+
+        if expected is None:
+            assert (dangerous, key, desc) == (False, None, None)
+        else:
+            assert dangerous is True and key == desc
+            if expected == "self-kill":
+                assert "self-termination" in desc
+
+
 class TestSelfPidGuardBackendScope:
     """Only the local backend shares this process's PID namespace."""
 
@@ -263,3 +301,10 @@ class TestSelfPidGuardBackendScope:
 
         assert result["approved"] is True
         assert observed == [("true", protected)]
+
+    @pytest.mark.parametrize("env_type, protected", [("local", True), ("ssh", False), ("docker", False)])
+    def test_background_conversion_scopes_local_pid_protection(self, observed, env_type, protected):
+        from tools.terminal_tool_guards import trailing_amp_background_command
+
+        assert trailing_amp_background_command("sleep 1 &", env_type) == "sleep 1"
+        assert observed == [("sleep 1 &", protected), ("sleep 1", protected)]

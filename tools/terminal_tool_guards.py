@@ -167,16 +167,18 @@ def _strip_trailing_amp(command: str) -> str:
     return body[:end]
 
 
-def _approval_identity(command: str) -> tuple:
-    """Everything the approval path keys a decision on for *command*: hardline verdict, the
-    dangerous pattern key/description (what session/permanent approvals are stored under), the
-    sudo-stdin floor, runtime self-delete, the user's deny rules and the permanent allowlist."""
+def _approval_identity(command: str, env_type: str) -> tuple:
+    """Everything the approval path keys a decision on for *command* on backend *env_type*: hardline
+    verdict, the dangerous pattern key/description (what session/permanent approvals are stored under),
+    the sudo-stdin floor, runtime self-delete, the user's deny rules and the permanent allowlist."""
     from agent.runtime_self_protection import command_deletes_runtime
-    from tools.approval import _command_matches_permanent_allowlist, _match_user_deny_rule
-    from tools.approval_detection import _check_sudo_stdin_guard, detect_dangerous_command, detect_hardline_command
+    from tools.approval import (
+        _command_matches_permanent_allowlist, _detect_dangerous_command_for_env, _match_user_deny_rule,
+    )
+    from tools.approval_detection import _check_sudo_stdin_guard, detect_hardline_command
     return (
         tuple(detect_hardline_command(command)),
-        tuple(detect_dangerous_command(command)),
+        tuple(_detect_dangerous_command_for_env(command, env_type)),
         tuple(_check_sudo_stdin_guard(command)),
         command_deletes_runtime(command),
         _match_user_deny_rule(command),
@@ -184,7 +186,7 @@ def _approval_identity(command: str) -> tuple:
     )
 
 
-def trailing_amp_background_command(command: str) -> str | None:
+def trailing_amp_background_command(command: str, env_type: str = "local") -> str | None:
     """The command without its trailing `&` when that `&` is its ONLY backgrounding, else None.
 
     Only the unambiguous shape converts: one line, one and-or list or pipeline (`a && b | c &`
@@ -193,7 +195,7 @@ def trailing_amp_background_command(command: str) -> str | None:
     executable substitution (`$(...)`, backticks, `<(...)`/`>(...)`) keep the refusal: the tool
     cannot prove there is no other background job or that later commands don't depend on a
     readiness check. Quoted `&` (and inert heredoc bodies) never count. Conversion must leave
-    the approval identity untouched, otherwise the refusal stands.
+    the approval identity on backend *env_type* untouched, otherwise the refusal stands.
     """
     if not isinstance(command, str) or _looks_like_help_or_version_command(command):
         return None
@@ -213,7 +215,7 @@ def trailing_amp_background_command(command: str) -> str | None:
     # Approval runs on what executes (the stripped command). Some patterns key on the `&` itself
     # (`hermes gateway run &` = gateway outside its service manager), and approvals are stored per
     # pattern key, so a different key would let a pre-approval for another category pass.
-    if _approval_identity(command) != _approval_identity(stripped):
+    if _approval_identity(command, env_type) != _approval_identity(stripped, env_type):
         return None
     return stripped
 

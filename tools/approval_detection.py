@@ -627,11 +627,15 @@ _COMMAND_WRAPPER_OPTIONS_WITH_ARG = {
 }
 _COMMAND_WRAPPER_NON_EXECUTING_OPTIONS = {
     "command": {"-v", "-V"}, "chrt": {"-p", "--pid"},
-    "ionice": {"-p", "--pid", "--pgid", "--uid"}, "taskset": {"-p", "--pid"},
+    "ionice": {"-p", "--pid", "--pgid", "--uid"}, "taskset": {"-p", "--pid"}, "sudo": {"-l", "--list"},
 }
+# Wrappers whose query option still applies inside a short bundle (`command -pv`, `sudo -nlU root`).
+_COMMAND_WRAPPER_BUNDLED_QUERIES = {"command", "sudo"}
 _COMMAND_WRAPPER_POSITIONAL_ARGS = {"chroot": 1, "chrt": 1, "taskset": 1, "timeout": 1}
 _SHELL_COMMAND_TRANSITIONS = {"if", "then", "else", "elif", "do", "while", "until", "!"}
 _SHELL_REDIRECTION_RE = re.compile(r"(?:[0-9]+)?(?:>>|<<|<>|>&|<&|>\||[<>])")
+# Inside one command's argv, bash's `&>file` / `&>>file` (stdout and stderr) are redirections too.
+_ARGV_REDIRECTION_RE = re.compile(rf"&>>?|{_SHELL_REDIRECTION_RE.pattern}")
 
 _INTERPRETER_NAME_RES = tuple((family, re.compile(pattern)) for family, pattern in (
     ("python", r"py(?:\.exe)?|python[23]?(?:\.\d+)*(?:\.exe)?"), ("node", r"node(?:js)?(?:\.exe)?"),
@@ -1263,6 +1267,13 @@ def _owning_short_option(token: str, with_arg) -> str:
     return token if owner is None else "-" + token[owner:]
 
 
+def _short_bundle_flags(token: str, with_arg) -> set[str]:
+    """The options a short bundle sets, through the first argument-taking one (whose argument is
+    the rest of the word): ``sudo -nlU root`` sets ``-n``, ``-l`` and ``-U``."""
+    owner = next((k for k, char in enumerate(token[1:], 1) if "-" + char in with_arg), len(token) - 1)
+    return {"-" + char for char in token[1:owner + 1]}
+
+
 def _iter_shell_command_word_spans(command: str, *, wrappers: bool = False):
     """Yield command-position words that may be executable names. With *wrappers*, each span
     also carries the deobfuscated wrapper words before it in its command (``sudo``, ``env``)."""
@@ -1288,15 +1299,17 @@ def _iter_shell_command_word_spans(command: str, *, wrappers: bool = False):
                 continue
             if wrapper and options and deobfuscated.startswith("-"):
                 with_arg = _COMMAND_WRAPPER_OPTIONS_WITH_ARG.get(wrapper, set())
-                owned = _owning_short_option(deobfuscated, with_arg)
+                # A bundled `env -vS` does not own the next word here: the split string's first word
+                # is the program env runs (`env -vS python3 -c pass`), so it stays a command position.
+                owned = _owning_short_option(deobfuscated, with_arg - {"-S"} if wrapper == "env" else with_arg)
                 option = owned.split("=", 1)[0]
-                if wrapper == "env" and (option == "--split-string" or owned.startswith("-S")):
+                if wrapper == "env" and (option == "--split-string" or deobfuscated.startswith("-S")):
                     # The split string and remaining argv form ONE command, handled
                     # by _env_split_payload; the suffix is not a new executable.
                     break
                 queries = _COMMAND_WRAPPER_NON_EXECUTING_OPTIONS.get(wrapper, set())
-                if option in queries or (wrapper == "command" and not option.startswith("--")
-                                         and set(option[1:]) & {"v", "V"}):
+                if option in queries or (wrapper in _COMMAND_WRAPPER_BUNDLED_QUERIES and not option.startswith("--")
+                                         and _short_bundle_flags(deobfuscated, with_arg) & queries):
                     break
                 skip_arg = "=" not in owned and option in with_arg
                 continue
@@ -1569,7 +1582,7 @@ def _command_argv(command: str, pos: int) -> list[str]:
     separator or comment. Redirections and their targets are not arguments."""
     argv = []
     while True:
-        redirect = _SHELL_REDIRECTION_RE.match(command, _skip_shell_whitespace(command, pos))
+        redirect = _ARGV_REDIRECTION_RE.match(command, _skip_shell_whitespace(command, pos))
         if redirect:
             _, pos, _ = _read_shell_word(command, redirect.end())
             continue

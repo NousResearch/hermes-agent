@@ -13,7 +13,7 @@ import re
 _PID_RE = re.compile(r"\+?(\d+)")
 _LIST_MODE_PREFIXES = ("-l", "-L", "--list=")
 _NON_SENDING_OPTIONS = frozenset({"-l", "--list", "-L", "--table", "-h", "--help", "-V", "--version"})
-_SIGNAL_OPTIONS = frozenset({"-s", "--signal", "-n"})
+_SIGNAL_OPTIONS = frozenset({"-s", "-n"})
 # procps-ng options whose operands are values, not PIDs: `--queue <value>`, `--timeout <ms> <signal>`.
 _OPTION_OPERAND_COUNTS = {"-q": 1, "--queue": 1, "--timeout": 2}
 
@@ -21,18 +21,13 @@ _OPTION_OPERAND_COUNTS = {"-q": 1, "--queue": 1, "--timeout": 2}
 def kill_runs_shell_builtin(executable: str, wrappers) -> bool:
     """Whether bash runs this ``kill`` as its builtin rather than exec'ing kill(1).
 
-    *wrappers* are the deobfuscated wrapper words before it in its command. ``command``,
-    ``builtin`` and bash's ``time`` keyword keep the builtin; every other wrapper (sudo, env,
-    exec, nohup, nice, ...) execs a program. ``time`` is the keyword first or right after
-    keyword ``time``; as a path or after an exec'ing wrapper it is the external binary.
-    ``builtin time`` fails before running anything, so it keeps the builtin grammar too.
+    *wrappers* are the deobfuscated wrapper words before it in its command. A ``command`` or
+    ``builtin`` right before it keeps the builtin; every other wrapper (sudo, env, exec, nohup,
+    nice, time, ...) execs a program. Bash's ``time`` keyword would keep the builtin too, but
+    ``time`` is the keyword only in some positions (``FOO=1 time`` is time(1)), so it is read
+    like the other wrappers.
     """
-    keyword = builtin = True
-    for wrapper in wrappers:
-        name = os.path.basename(wrapper).lower()
-        keyword = (keyword and name == "time" and "/" not in wrapper) or name == "builtin"
-        builtin = keyword or name == "command"
-    return builtin and "/" not in executable
+    return "/" not in executable and (not wrappers or os.path.basename(wrappers[-1]).lower() in ("command", "builtin"))
 
 
 def _literal_pid(word: str) -> str | None:
@@ -53,6 +48,10 @@ def _kill_option(arg: str, following: list[str], shell_builtin: bool) -> tuple[s
         return None
     if arg in _SIGNAL_OPTIONS:
         return (following[0].strip(), 2) if following else None
+    if arg == "--signal":
+        # A separate value is not trusted as the signal: a kill(1) without long options skips the
+        # option and sends TERM, so the option counts as an unknown signal and VALUE as an operand.
+        return arg, 1
     if arg.startswith("--signal="):
         return arg.split("=", 1)[1], 1
     if re.fullmatch(r"-[sn].+", arg):
@@ -78,15 +77,16 @@ def kill_argv_signals_pid(argv: list[str], pid: str, *, shell_builtin: bool) -> 
             if parsed is None:
                 return False
             if parsed[0] is not None:
-                signal = parsed[0]
+                # Bash's builtin takes one signal: later words (`--help`, `-0`) are operands.
+                signal, options = parsed[0], not shell_builtin
             index += parsed[1]
             continue
         literal = _literal_pid(arg)
         if literal is not None:
             pids.add(literal)
-            # Bash's builtin does not permute later options across PIDs: `kill PID -0` has already
-            # sent TERM to PID, so a trailing probe spelling cannot make it look harmless.
-            options = options and not shell_builtin
+            # Options end at the first PID (bash's builtin and kill(1) builds that do not permute):
+            # `kill PID -0` or `/bin/kill PID -l` has already signalled PID.
+            options = False
         index += 1
     number = (signal or "TERM").strip().upper().removeprefix("SIG").removeprefix("+")
     return pid in pids and not (number and not number.strip("0"))

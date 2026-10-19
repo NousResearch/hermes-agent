@@ -23,11 +23,6 @@ export const PagerOverlay = memo(function PagerOverlay({ cols }: { cols: number 
   const theme = useStore($uiTheme)
   const { stdout } = useStdout()
 
-  require('fs').appendFileSync(
-    '/tmp/pager-debug.log',
-    `render ${pager ? pager.lines.length : 'null'} rows=${stdout?.rows}\n`
-  )
-
   if (!pager) {
     return null
   }

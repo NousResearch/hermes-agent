@@ -517,7 +517,6 @@ export function useMainApp(gw: GatewayClient) {
         .split('\n')
         .flatMap(line => (line ? wrapAnsi(line, width, { trim: false, hard: true }).split('\n') : ['']))
 
-      require('fs').appendFileSync('/tmp/pager-debug.log', `set ${lines.length} cols=${cols}\n`)
       patchOverlayState({ pager: { lines, offset: 0, title } })
     },
     [cols]

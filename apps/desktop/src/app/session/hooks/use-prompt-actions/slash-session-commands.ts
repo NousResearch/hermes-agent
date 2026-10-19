@@ -7,9 +7,17 @@ import { setComposerDraft } from '@/store/composer'
 import { enqueueQueuedPrompt, getQueuedPrompts, serverOwnsComposerQueue } from '@/store/composer-queue'
 import { $sessions, resolveComposerSessionKey } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
+import { flushStreamDeltas } from '@/store/stream-delta-flush'
 
+import { sealLiveStream } from './rewind'
 import type { SubmissionDestination } from './submission-destination'
-import { type GatewayRequest, isTargetSessionBusy, type SubmitTextOptions } from './utils'
+import {
+  type GatewayRequest,
+  isCompressionBusyError,
+  isSessionBusyError,
+  isTargetSessionBusy,
+  type SubmitTextOptions
+} from './utils'
 
 // Typed /undo, /retry, /steer and /queue: one behaviour per command on every surface, mirroring the
 // Ink TUI on the same shared gateway (ui-tui/src/app/slash/commands/core.ts +
@@ -22,6 +30,7 @@ const TEXT_PARTS = new Set(['input_text', 'output_text', 'text'])
 const PREVIEW_CHARS = 50
 
 interface SnapshotRow {
+  archived?: unknown
   content?: unknown
   display_kind?: unknown
   role?: unknown
@@ -63,6 +72,14 @@ const previewOf = (text: string) => `${text.slice(0, PREVIEW_CHARS)}${text.lengt
 
 const errorText = (err: unknown) => `error: ${err instanceof Error ? err.message : String(err)}`
 
+/** A refused rewind: main's busy text (wait for a running /compress, else stop the reply), or the raw error. */
+const rewindErrorText = (err: unknown, command: 'retry' | 'undo') =>
+  isCompressionBusyError(err)
+    ? copy().busyCompressing(command)
+    : isSessionBusyError(err)
+      ? copy().busy(command)
+      : errorText(err)
+
 /** A human-authored user turn (`split_user_originated_turn`): no display-only kind other than a
  *  typed /steer, a durable row id, and not a compaction handoff carrier. */
 function isUserTurn(row: SnapshotRow): boolean {
@@ -70,6 +87,8 @@ function isUserTurn(row: SnapshotRow): boolean {
     row.role === 'user' &&
     (!row.display_kind || row.display_kind === 'steer') &&
     Number.isSafeInteger(row.row_id) &&
+    // A live row only: a row a compression archived is history the snapshot shows, never a turn to rewind to.
+    !row.archived &&
     !(typeof row.content === 'string' && COMPACTION_MARKERS.some(marker => String(row.content).includes(marker)))
   )
 }
@@ -224,7 +243,7 @@ export function sessionCommandHandlers<C extends { arg: string }>(env: SessionCo
 
         out.render(rewound.count === 1 ? copy().undidOne('1') : copy().undidOther(String(rewound.count)))
       } catch (err) {
-        out.render(errorText(err))
+        out.render(rewindErrorText(err, 'undo'))
       }
     },
     retry: async (ctx: C) => {
@@ -254,7 +273,7 @@ export function sessionCommandHandlers<C extends { arg: string }>(env: SessionCo
 
         await submitPromptText(text, { destination, sessionId: out.sessionId, storedSessionId: out.storedSessionId })
       } catch (err) {
-        out.render(errorText(err))
+        out.render(rewindErrorText(err, 'retry'))
       }
     },
     steer: async (ctx: C) => {
@@ -289,6 +308,11 @@ export function sessionCommandHandlers<C extends { arg: string }>(env: SessionCo
       }
 
       if (accepted) {
+        // The notice marks where the steer arrived: seal the live reply above it so the
+        // output the model writes after reading the steer streams below, not above it.
+        flushStreamDeltas(out.sessionId)
+        updateSessionState(out.sessionId, state => sealLiveStream(state, { keepRunningTools: true }))
+
         return out.render(copy().steerQueued(previewOf(text)))
       }
 

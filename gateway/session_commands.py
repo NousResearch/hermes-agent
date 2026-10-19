@@ -51,7 +51,12 @@ _KANBAN_READS = frozenset({'', 'help', '--help', '-h', '?', 'list', 'ls', 'show'
 
 
 def _first_token(arg):
-    tokens = iter(shlex.split(arg) if arg.strip() else [])
+    """/kanban's verb as its handler parses it (shlex, hermes_cli/kanban.py ``run_slash``): an unclosed
+    quote can't run there either, so it is refused by name instead of failing as an internal error."""
+    try:
+        tokens = iter(shlex.split(arg) if arg.strip() else [])
+    except ValueError as exc:
+        raise RuntimeStoreError('invalid_params', field='arg', detail=str(exc)) from None
     for token in tokens:
         if token == '--board':
             next(tokens, None)
@@ -60,28 +65,61 @@ def _first_token(arg):
     return ''
 
 
+def _first_word(arg):
+    """The first whitespace-separated word, as main's CLI and the messaging /memory and /skills
+    handlers split it: a quote later in the line belongs to the argument (`/memory pending it's`)."""
+    words = arg.split(None, 1)
+    return words[0].lower() if words else ''
+
+
 # The read-only argument forms of a read command whose other subcommands write: ``/usage reset``
-# redeems a credit, ``/memory approve|approval`` applies writes / edits config.yaml,
-# ``/suggestions accept|catalog`` schedules cron jobs delivering to this (non-messaging) chat.
+# redeems a credit, ``/suggestions accept|catalog`` schedules cron jobs delivering to this
+# (non-messaging) chat. The review queues read like main's CLI: only the first word counts.
 _READ_ARGUMENTS = {
-    'skills': lambda arg: _first_token(arg) in {'', 'pending', 'diff'},
+    'skills': lambda arg: _first_word(arg) in {'', 'pending', 'diff'},
     'usage': lambda arg: not arg.strip(),
-    'memory': lambda arg: arg.strip().lower() in {'', 'pending'},
+    'memory': lambda arg: _first_word(arg) in {'', 'pending'},
     'suggestions': lambda arg: not arg.strip(),
     'kanban': lambda arg: _first_token(arg) in _KANBAN_READS,
 }
 
 
 # The write forms of a command whose reads are above: the messaging handler's own review verbs,
-# applied for this session's profile (`/skills approve|reject` the staged queue, `/skills approval`
-# its config.yaml switch, as main's CLI wrote it).
+# applied for this session's profile (`/memory` and `/skills` approve|reject their staged queues;
+# `approval` updates their config.yaml switch, as main's CLI wrote it).
 _CONTROL_ARGUMENTS = {
-    'skills': lambda arg: _first_token(arg) in {'approve', 'apply', 'reject', 'deny', 'drop', 'approval', 'mode'},
+    'skills': lambda arg: _first_word(arg) in {'approve', 'apply', 'reject', 'deny', 'drop', 'approval', 'mode'},
+    'memory': lambda arg: _first_word(arg) in {'approve', 'apply', 'reject', 'deny', 'drop', 'approval', 'mode'},
+}
+
+
+# The setting forms a local session cannot deliver: `/voice tts` asks the owner to voice every reply,
+# and a local session's audio plays only in its client. Read like the handler reads it (no shlex): an
+# unbalanced quote in any other `/voice` argument still reaches the handler.
+_REFUSED_ARGUMENTS = {
+    'voice': lambda arg: arg.strip().lower() == 'tts',
+}
+
+
+# What to use instead, for the client-local commands a shared-gateway session cannot run: they act
+# on the host's profiles, state snapshots, terminal or git checkout, which the gateway may not share
+# with the client. Rides the ``unsupported_command`` refusal as ``data.detail`` (the reason stays the
+# same, so shipped clients keep working); Ink and Desktop print it under the refusal.
+REFUSAL_HINTS = {
+    'export': 'Run `hermes profile export [name] -o <file>` in a terminal.',
+    'import': 'Run `hermes profile import <archive> [--name <name>]` in a terminal.',
+    'snapshot': 'Run `hermes backup --quick` in a terminal (restore: `hermes --cli`, then /snapshot restore).',
+    'handoff': 'Hand off from the classic CLI: `hermes --cli --resume <session>`, then /handoff <platform>.',
+    'hatch': 'Generate a pet from the classic CLI (`hermes --cli`, then /hatch), or use /pet to pick one.',
+    'worktree': 'Start in a fresh worktree with `hermes -w`, or use the classic CLI (`hermes --cli`).',
+    'palette': 'Type / to search commands (the composer completes and filters them).',
 }
 
 
 def command_verdict(name, arg=''):
     """``read`` / ``control`` / ``refused`` for a canonical registry command on a local session."""
+    if _REFUSED_ARGUMENTS.get(name, lambda _a: False)(arg):
+        return 'refused'
     if (name in _CONTROL_COMMANDS or name in _HANDLER_CONTROLS or name in _PROMPT_COMMANDS
             or name in _SETTING_COMMANDS or name in _APPROVAL_COMMANDS
             or _CONTROL_ARGUMENTS.get(name, lambda _a: False)(arg)):
@@ -399,7 +437,7 @@ async def execute_command(connection, ref, params, *, dispatch=False):
                   'session:control' if definition or runner_command else 'session:submit')
     authority.authorize(actor, ref, capability)
     if verdict == 'refused':
-        raise RuntimeStoreError('unsupported_command')
+        raise RuntimeStoreError('unsupported_command', detail=REFUSAL_HINTS.get(canonical))
     from gateway.session_local import authorize_local_source
     live = authority.sessions[ref.session_id]
     if authorize_local_source(authority.runner, live.source) is not True:
@@ -441,6 +479,11 @@ async def execute_command(connection, ref, params, *, dispatch=False):
                 prompt = event.text
         else:
             await before()
+            if canonical == 'reasoning':
+                from gateway.run_config_loaders import GatewayConfigLoadersMixin
+                from gateway.session_setting_commands import commit_reasoning_command
+                await commit_reasoning_command(authority, actor, ref,
+                                               *GatewayConfigLoadersMixin._parse_reasoning_command_args(arg))
             handler = runner._command_handler_table((canonical,))[canonical]
             output = await handler(event)
     if canonical in _APPROVAL_COMMANDS:

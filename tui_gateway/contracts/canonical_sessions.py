@@ -6,6 +6,7 @@ from typing import Literal
 
 from .base import JsonValue, Params, Result
 from .common import ProfileParams, TranscriptMessage
+from .connectors_operation import ConnectionRequestPayload
 from .canonical import AdmissionStatus, CanonicalSessionRef, PromptResponseResult, SessionInventoryFields
 from .registry import canonical_method
 
@@ -82,6 +83,13 @@ class CanonicalSessionHandle(Result):
 class CanonicalPendingAdmission(AdmissionStatus):
     input_id: str
     text: str
+    # The queued-row verbs the owner serves for this row: ``steer`` (``prompt.steer_queued``) and
+    # ``replace`` (``prompt.replace_queued``). Absent from an owner that predates them.
+    controls: list[Literal['steer', 'replace']] | None = None
+    # A queued admission in transfer to the running turn (``prompt.steer_queued``): listed ``started``
+    # until that turn settles it, but it returns to ``queued`` if its text never reached the turn, so a
+    # client keeps it at its queued rank. Absent from an owner that predates it.
+    steering: bool | None = None
 
 
 class CanonicalPendingPrompt(Result):
@@ -106,6 +114,7 @@ class CanonicalSnapshotInfo(SessionInventoryFields):
     profile_id: str | None = None
     profile_name: str | None = None
     cwd: str | None = None
+    edit_approval_policy: Literal['ask', 'workspace_session', 'session'] | None = None
     launch_request: dict[str, JsonValue] | None = None
     reasoning_effort: str | None = None
     reasoning_effort_wire: str | None = None
@@ -139,6 +148,8 @@ class CanonicalSnapshot(Result):
     pending: list[CanonicalPendingAdmission]
     prompts: list[CanonicalPendingPrompt]
     info: CanonicalSnapshotInfo
+    # The open ``manage_connections`` card, so a resume restores it while the tool waits.
+    pending_connection: ConnectionRequestPayload | None = None
 
 
 class CanonicalListParams(ProfileParams):
@@ -181,6 +192,9 @@ class CanonicalTurnAuthor(Params):
 class CanonicalModelOverride(Params):
     model: str
     provider: str | None = None
+    # ``/model B --once --reasoning X``: this admission alone runs level X. The owner refuses a level
+    # ``parse_reasoning_effort`` cannot read (``gateway/session_cli_turn.py``).
+    reasoning: str | None = None
 
 
 class CanonicalSubmitParams(CanonicalSessionParams):
@@ -209,6 +223,21 @@ class CanonicalSubmitParams(CanonicalSessionParams):
     # The submitter answers the clarify tool's whole batch in one ``clarify`` server request (main's
     # batch panel); without it the turn's viewers get one ``clarify.request`` card per question.
     clarify_batch: bool = False
+
+
+class CanonicalSteerQueuedParams(CanonicalSessionParams):
+    admission_id: str
+
+
+class CanonicalReplaceQueuedParams(CanonicalSessionParams):
+    """The edited prompt: admitted as a NEW admission (``submission_id``) at the FIFO tail."""
+
+    admission_id: str
+    submission_id: str
+    text: str
+    attachments: list[CanonicalAttachment] | None = None
+    display_kind: Literal['hidden'] | None = None
+    title_preview: str | None = None
 
 
 class CanonicalControlParams(CanonicalSessionParams):
@@ -271,3 +300,18 @@ for _name, _params, _result in (
     ('approval.respond', CanonicalApprovalParams, PromptResponseResult),
 ):
     canonical_method(_name, params=_params, result=_result)
+
+canonical_method('prompt.steer_queued', params=CanonicalSteerQueuedParams, result=AdmissionStatus,
+                 doc="Hand a still-queued admission's text to the running turn's agent as a steer. "
+                     "The admission reads 'started' with that turn (pending snapshots mark it "
+                     "'steering') and never runs on its own; it settles terminal 'steered' when the "
+                     "turn completes with its text, else 'interrupted' (its completion frame says "
+                     "'cancelled', as an interrupted turn's does); a text the turn never consumed "
+                     "goes back to its queue place. "
+                     "Refusals: admission_started, session_idle, steer_unavailable (no agent to take "
+                     "it: the admission stays queued), unsupported_control, not_found.")
+canonical_method('prompt.replace_queued', params=CanonicalReplaceQueuedParams, result=AdmissionStatus,
+                 doc="Cancel a still-queued admission and admit the edited prompt as a new admission "
+                     "at the back of the FIFO, in one write bound to the replaced admission. "
+                     "Refusals: admission_started, admission_conflict (the submission_id replaced "
+                     "another admission), queue_full, unsupported_control, not_found.")

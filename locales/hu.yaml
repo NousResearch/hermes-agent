@@ -167,6 +167,7 @@ gateway:
     full_logs_hint: "Teljes naplók feltöltéséhez használd a `hermes debug share` parancsot a CLI-ből."
     share_hint: "Oszd meg ezeket a hivatkozásokat a Hermes csapattal támogatásért."
     report_label: "Jelentés"
+    local_refused: "A `/debug local` azon a gépen tartja a jelentést, amelyen a Hermes fut, ezért csevegésből nem érhető el. Küldd el a `/debug` parancsot az összefoglaló jelentés feltöltéséhez."
   deny:
     stale: "❌ Parancs elutasítva (a jóváhagyás elavult)."
     no_pending: "Nincs elutasítható függőben lévő parancs."
@@ -448,6 +449,9 @@ gateway:
     state_no: "Nem"
     queued: "**Sorban álló folytatások:** {count}"
     platforms: "**Csatlakoztatott platformok:** {platforms}"
+  discard:
+    nothing: "Nincs mit elvetni: ebben a csevegésben nem veszett el kör újraindításkor."
+    done: "🗑️ {count} elveszett kör elvetve; nem futottak újra. A mentett üzeneteidre most válasz érkezik."
   stop:
     stopped_pending: "⚡ Leállítva. Az ügynök még el sem kezdte — folytathatod ezt a munkamenetet."
     stopped: "⚡ Leállítva. Folytathatod ezt a munkamenetet."
@@ -1547,6 +1551,8 @@ slash:
     description: "Megosztott profilarchívum importálása új profilként"
   stop:
     description: "Minden futó háttérfolyamat leállítása"
+  discard:
+    description: "Egy Hermes újraindításakor elveszett kör elvetése, hogy a csevegés sora újra fusson"
   pause:
     description: "Új munka globális szüneteltetése (vészleállítás); a '/pause off' folytatja"
   deny:
@@ -1700,6 +1706,21 @@ slash:
   quit:
     description: "Kilépés a CLI-ből (a --delete a munkamenet előzményeit is törli)"
 cli:
+  modern:
+    thought_for: "{seconds} mp-ig gondolkodott"
+    thought: "Gondolkodott"
+    working: "Dolgozik…"
+    preparing: "{what} előkészítése…"
+    hint_steer: "terelés"
+    hint_queue: "sorba"
+    hint_interrupt: "megszakítás"
+    hint_stop: "leállítás"
+    hint_commands: "parancsok"
+    hint_files: "fájlok"
+    hint_shell: "shell"
+    placeholder_busy_steer: "írj, hogy tereld ezt a kört · Tab sorba állítja utánra"
+    placeholder_busy_interrupt: "írj, hogy átirányítsd ezt a kört · Tab sorba állítja utánra"
+    placeholder_busy_queue: "írj, hogy üzenetet állíts sorba e kör utánra"
   billing:
     load_failed: "{label}: {error}"
     load_failed_label: "Nem sikerült betölteni a számlázást"
@@ -2243,6 +2264,7 @@ cli:
     queue_heading: "Sor · {count} sorban · /queue list{controls}"
     more_queued: "+{count} további"
     transcript_unavailable: "Élő átirat még nem érhető el."
+    control_pending: "Küldés…"
     steer_prompt: "Irányítás: "
     roster_empty: "Nincs élő alügynök vagy háttérfolyamat. Az eredmények a beszélgetésben érkeznek."
     entry_gone: "Ez a bejegyzés már nem élő."
@@ -3021,6 +3043,10 @@ cli:
       usage_disconnect: "disconnect   Visszaállás az alapértelmezett böngésző-háttérrendszerre"
       usage_status: "status       Jelenlegi böngészőmód megjelenítése"
       usage_use: "use [off]    Átváltás Browser Use módra (CLI 3.0) / vissza a beépített eszközökre"
+      remote_gateway: "A /browser connect és /browser disconnect egy Chromium böngészőt kezel az átjáró gépén — csak helyi átjáróval érhető el."
+      checking: "A Chromium böngésző távoli hibakeresésének ellenőrzése: {url}..."
+      new_sessions_only: "Új munkamenetekre vonatkozik — ez megtartja a jelenlegi eszközeit (/new újat indít)."
+      status_gateway_default: "🌐 Böngésző: az átjáró alapértelmezett böngésző-háttere (nincs élő CDP-kapcsolat)"
     heartbeat:
       label: "Szívverések"
       paused: "⏸ Szívverés szüneteltetve: {prompt}"
@@ -3129,6 +3155,10 @@ cli:
     loaded: "(betöltve)"
     not_found: "(nem található)"
     microsoft_entra_id: "Microsoft Entra ID"
+    google_vertex_oauth: "Google OAuth (Vertex AI)"
+    key_cmd_token: "key_cmd token (command)"
+    minimax_oauth: "MiniMax OAuth"
+    token_provider: "Token provider"
     api_key_not_set: "Nincs beállítva!"
     value_not_set: "nincs beállítva"
     section_model: "Modell"
@@ -3310,8 +3340,22 @@ cli:
     next_session_deepens: "A következő `hermes -w` munkamenet mélyíti a klónt, és automatikusan eltávolítja a beolvasztott worktree-ket."
     unpushed_keeping: "⚠ A worktree-ben feltöltetlen commitok vannak, megtartva: {path}"
     uncommitted_keeping: "⚠ A worktree-ben nem commitolt változások vannak, megtartva: {path}"
+    kept_reason: "⚠ Worktree megtartva ({reason}): {path}"
     clean_up_manually: "Kézi takarításhoz: git worktree remove --force {path}"
     cleaned_up: "✓ Worktree eltakarítva: {path}"
+    exit_question_dirty: "Ebben a worktree-ben nem commitolt változások vannak: {path}"
+    exit_question_unpushed: "Ebben a worktree-ben feltöltetlen commitok vannak: {path}"
+    exit_choice_keep: "Worktree megtartása (alapértelmezett)"
+    exit_choice_archive: "Archiválás és eltávolítás (visszaállítható)"
+    exit_choice_discard: "Eltávolítás a változások elvetésével"
+    archiving: "{path} archiválása … (nagy fánál ez eltarthat egy ideig)"
+    archived: "✓ Worktree archiválva ide: {ref}, és eltávolítva: {path}"
+    restore_hint: "Visszaállítás: hermes worktree restore {name}"
+    archive_failed: "✗ {path} archiválása sikertelen, megtartva: {error}"
+    archived_kept: "✓ Worktree archiválva ide: {ref}, de megtartva ({reason}): {path}"
+    sweep_archived_removed: "archiválva + eltávolítva → {ref}"
+    sweep_archived_kept: "archiválva, megtartva ({reason}) → {ref}"
+    discarded: "Worktree eltávolítva, változásai elvetve: {path}"
 display:
   verb:
     web_search: "Keresés a weben"
@@ -3740,7 +3784,7 @@ tips:
   t241: "Az átjáró munkamenetenként gyorsítótárazza az AIAgent példányokat – e cache törlése elrontja az Anthropic prompt-gyorsítótárazást."
   t242: "Bármely weboldal közzétehet skilleket a /.well-known/skills/index.json címen – a skill hub automatikusan felfedezi őket."
   t243: "A skill auditnapló a ~/.hermes/skills/.hub/audit.log fájlban minden telepítést és eltávolítást rögzít."
-  t244: "Az elavult git worktree-k indításkor automatikusan törlődnek: a tiszta, teljesen beolvasztott fák kikerülnek; a piszkos vagy fel nem töltött munka mindig megmarad."
+  t244: "Az elavult git worktree-k automatikusan törlődnek: a tiszta, beolvasztott fák kikerülnek; a tétlen, nem commitolt vagy fel nem töltött munkát tartalmazó fák előbb archiválódnak, és a hermes worktree restore paranccsal visszaállíthatók."
   t245: "A profilok a HERMES_HOME útján határolják a Hermes állapotát; a gazdagép eszközfolyamatai megtartják a valódi HOME-ot, hacsak a terminal.home_mode nem profile."
   t246: "A HERMES_HOME_MODE környezeti változó (oktális, pl. 0701) egyedi mappajogosultságot állít be a webszerver bejárásához."
   t247: "Konténer mód: helyezz egy .container-mode fájlt a HERMES_HOME-ba, és a gazda CLI automatikusan a konténerbe lép át."

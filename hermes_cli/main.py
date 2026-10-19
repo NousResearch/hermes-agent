@@ -1685,7 +1685,7 @@ def _first_run_setup_guard(args) -> None:
     sys.exit(1)
 
 
-# args attr -> (kwarg, default) passed through to _launch_tui / cli.main.
+# args attr -> (kwarg, default) passed through to _launch_tui / cli.main; only cli.main takes --api-key/--base-url.
 _CHAT_PASSTHROUGH = (
     ("provider", None), ("toolsets", None), ("skills", None), ("verbose", None),
     ("quiet", False), ("query", None), ("image", None), ("resume", None),
@@ -1774,7 +1774,7 @@ def cmd_chat(args):
         "ignore_rules": getattr(args, "ignore_rules", False) or safe_mode,
         "ignore_user_config": getattr(args, "ignore_user_config", False) or safe_mode,
         "compact": getattr(args, "compact", False),
-        **{k: getattr(args, k, d) for k, d in _CHAT_PASSTHROUGH},
+        **{k: getattr(args, k, d) for k, d in _CHAT_PASSTHROUGH + (("api_key", None), ("base_url", None))},
     }
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
 
@@ -2988,7 +2988,7 @@ def _prepare_agent_startup(args) -> None:
         from agent.outbound_webhooks import register_from_config as register_outbound_webhooks
 
         _hooks_cfg = load_config()
-        register_from_config(_hooks_cfg, accept_hooks=_accept_hooks)
+        register_from_config(_hooks_cfg, accept_hooks=_accept_hooks, interactive=args.command in {None, "chat", "rl"})
         if _accept_hooks and args.command == "gateway":  # every session-open re-sync keeps honouring it
             from agent.shell_hooks import accept_for_process
             accept_for_process()

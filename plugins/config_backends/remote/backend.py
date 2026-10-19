@@ -21,13 +21,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli.config_backend import (
-    Changes, ConfigBackendUnavailable, ConfigLockedError, ConfigValueError, ConfigWriteError, UserLayer)
+    Changes, ConfigBackendUnavailable, ConfigLockedError, ConfigValueError, ConfigWriteError, UserLayer,
+    refused_locked_omission_prefixes)
 
 from . import client
 from .credentials import PLANE_CREDENTIAL_ENV_NAMES, PlaneCredentialError
 from .diff import _get_path, apply_intent, diff, encode_changes, intent_diff, json_equal, strip_locked, write_check
 from .paths import Path as KeyPath
-from .paths import PathError, decode, encode, from_dotted
+from .paths import PathError, covers, decode, encode, from_dotted
 from .values import secret_literal_path, to_wire
 
 logger = logging.getLogger(__name__)
@@ -565,6 +566,13 @@ class RemoteBackend:
 
         if changes.document is not None:
             base, new, dropped = strip_locked(base, new, st.locks)
+            for prefix in refused_locked_omission_prefixes():
+                whole = from_dotted(prefix)
+                for path in dropped:
+                    if covers(whole, path) or covers(path, whole):
+                        level = next((lv for lk, lv in st.locks if lk == path), "upper")
+                        raise ConfigLockedError(encode(path), level,
+                                                f"{encode(path)} is locked by the {level} level of Remote Config")
             if dropped:
                 print(f"Note: {len(dropped)} setting(s) locked by Remote Config were not saved: "
                       f"{', '.join(sorted(encode(p) for p in dropped))}", file=sys.stderr)

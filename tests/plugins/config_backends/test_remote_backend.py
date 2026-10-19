@@ -1766,3 +1766,50 @@ def test_dashboard_model_switch_refuses_whole_assignment_on_a_locked_route_key(p
         _dashboard_switch(monkeypatch, url)
     assert exc.value.status_code in (403, 409), exc.value
     assert plane.patches() == []
+
+
+def test_dashboard_model_switch_keeps_mask_when_target_provider_carries_key_env(plane, monkeypatch):
+    """The target provider's key_env pointer replaces the inline key. Under Remote Config the
+    inherited ``model.api_key`` must stay masked (null) after that credential step, or the old
+    endpoint's key (which outranks key_env at runtime) reaches the new endpoint."""
+    from hermes_cli.config import read_user_config_raw
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+    url = "https://new.example/v1"
+    monkeypatch.setenv("OLD_KEY", "old-synthetic-key")
+    monkeypatch.setenv("NEW_KEY", "new-synthetic-key")
+    plane.upper = {"model": dict(_OLD_ROUTE), "providers": {"custom": {"base_url": url, "key_env": "NEW_KEY"}}}
+    assert _dashboard_switch(monkeypatch, url)["ok"] is True
+    body = plane.patches()[-1]["body"]
+    assert body["set"].get("model.api_key", "absent") is None and "model.api_key" not in body.get("unset", []), body
+    model = read_user_config_raw()["model"]
+    assert model["base_url"] == url and model.get("api_key") is None and model["key_env"] == "NEW_KEY", model
+    route = resolve_runtime_provider(requested="custom")
+    assert route.get("base_url") == url and route.get("api_key") == "new-synthetic-key", route
+
+
+@pytest.mark.parametrize("conflict_first", [False, True], ids=["poll", "cas-retry"])
+def test_dashboard_model_switch_refuses_when_a_lock_lands_after_the_guard(plane, monkeypatch, conflict_first):
+    """A lock published after the preflight guard (seen by a poll right before the save, or by the
+    re-read after a 409) refuses the whole assignment: no half route is saved and acknowledged."""
+    from fastapi import HTTPException
+    from hermes_cli import config as cfgmod
+    url = "https://new.example/v1"
+    plane.upper = {"model": dict(_OLD_ROUTE), "providers": {"known-new": {"base_url": url}}}
+    backend = get_config_backend()
+    orig = cfgmod.save_config
+
+    def lock_then_save(cfg, **kw):
+        plane.upper_locks = [{"path": "model.api_key", "level": "tenant"}]
+        if conflict_first:
+            plane.profile("default")["version"] += 1  # the save's PATCH meets a 409 and re-reads
+        else:
+            assert backend.poll_one(backend._state(plane.home))
+        return orig(cfg, **kw)
+
+    monkeypatch.setattr(cfgmod, "save_config", lock_then_save)
+    with pytest.raises(HTTPException) as exc:
+        _dashboard_switch(monkeypatch, url)
+    assert exc.value.status_code == 403, exc.value
+    if not conflict_first:
+        assert plane.patches() == []
+    assert plane.profile("default")["values"].get("model") in (None, {}), plane.profile("default")

@@ -110,6 +110,20 @@ def test_resolve_unknown_name_points_at_tool_search_not_direct_call():
     assert "directly-listed tool" in err and "not a known tool" not in err
 
 
+def test_resolve_directly_listed_echoes_a_ready_to_reissue_direct_call():
+    # #137639: the refusal was accurate but the model had to re-derive the direct-call
+    # shape itself, costing a full iteration. Echo it back ready to reissue — the same
+    # echo-the-caller's-payload approach as the batch refusal. The unknown-name branch
+    # must not learn the arguments.
+    args = {"path": "notes.txt"}
+    _, _, err = resolve_underlying_call({"name": "read_file", "arguments": args})
+    assert "directly-listed tool" in err
+    retry = err.split("Re-issue it directly with the same arguments: ", 1)[1]
+    assert json.loads(retry) == {"name": "read_file", "arguments": args}
+    _, _, err = resolve_underlying_call({"name": "not_a_real_tool", "arguments": args})
+    assert "not a known tool name" in err and "notes.txt" not in err
+
+
 def test_resolve_legacy_connector_single_shape_routes_to_sentinel():
     name, args, err = resolve_underlying_call(
         {"name": "connectors__gmail__CREATE_EMAIL_DRAFT", "arguments": {}}

@@ -21,15 +21,18 @@ The receipt is machine-readable and a failed drill cannot report ``verified``.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import sys
 import tempfile
 import zipfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from hermes_cli import backup as _backup
+
+logger = logging.getLogger(__name__)
 
 _TMP_PREFIX = "hermes-backup-verify-"
 _RECEIPT_SCHEMA = 1
@@ -37,9 +40,9 @@ _RECEIPT_SCHEMA = 1
 _AUTH_REL = "auth.json"
 
 
-def _member_targets(members: List[str], prefix: str) -> List[str]:
+def _member_targets(members: list[str], prefix: str) -> list[str]:
     """Home-relative target for every member that is not a policy exclusion."""
-    rels: List[str] = []
+    rels: list[str] = []
     for member in members:
         if member.startswith(_backup._EXTERNAL_PREFIX):
             continue
@@ -50,8 +53,8 @@ def _member_targets(members: List[str], prefix: str) -> List[str]:
 
 
 def _restore_members(
-    zf: zipfile.ZipFile, members: List[str], prefix: str, candidate: Path,
-) -> tuple[int, List[str], List[str]]:
+    zf: zipfile.ZipFile, members: list[str], prefix: str, candidate: Path,
+) -> tuple[int, list[str], list[str]]:
     """Publish *members* into *candidate* with the primitives the live import uses.
 
     The live restore loop runs inline in ``hermes_cli.backup.run_import`` (upstream inlined
@@ -69,8 +72,8 @@ def _restore_members(
     )
 
     restored = 0
-    errors: List[str] = []
-    skipped_runtime: List[str] = []
+    errors: list[str] = []
+    skipped_runtime: list[str] = []
     # Resolved once, like the live import: members are published via a temp file, and
     # mkstemp would otherwise create newly restored files as 0600.
     new_file_mode = _default_new_file_mode()
@@ -107,14 +110,14 @@ def _restore_members(
     return restored, errors, skipped_runtime
 
 
-def _check_stores(candidate: Path) -> tuple[Dict[str, Any], List[str]]:
+def _check_stores(candidate: Path) -> tuple[dict[str, Any], list[str]]:
     """Run the production SQLite health primitive on every restored database."""
-    stores: Dict[str, Any] = {}
-    errors: List[str] = []
+    stores: dict[str, Any] = {}
+    errors: list[str] = []
     for db_path in sorted(p for p in candidate.rglob("*.db") if p.is_file()):
         rel = db_path.relative_to(candidate).as_posix()
         result = _backup.verify_sqlite_integrity(db_path)
-        entry: Dict[str, Any] = {
+        entry: dict[str, Any] = {
             "status": "healthy" if result.get("valid") else "unhealthy",
             "detail": result.get("message"),
         }
@@ -127,7 +130,7 @@ def _check_stores(candidate: Path) -> tuple[Dict[str, Any], List[str]]:
     return stores, errors
 
 
-def _check_config(candidate: Path) -> tuple[Dict[str, str], List[str]]:
+def _check_config(candidate: Path) -> tuple[dict[str, str], list[str]]:
     """Parse ``config.yaml`` through the effective-config pipeline (fail-closed)."""
     config_path = candidate / "config.yaml"
     if not config_path.is_file():
@@ -138,27 +141,31 @@ def _check_config(candidate: Path) -> tuple[Dict[str, str], List[str]]:
         # fail_closed: a torn YAML in the *candidate* must fail the drill, not silently
         # recover the last-good copy the way the live config pipeline does.
         effective = load_user_config_effective(config_path, fail_closed=True)
-    except Exception as exc:  # noqa: BLE001 — any parse failure means "not restorable"
+    except Exception as exc:  # health: allow BLE001 -- any parse failure means "not restorable"
+        # A YAML loader error, an env-expansion error or the schema bridge can each reject the
+        # candidate; the drill's answer is the same and the receipt carries the message. The
+        # traceback is logged so an operator sees which stage refused it.
+        logger.warning("%s failed to parse in the restored candidate", config_path, exc_info=True)
         return {"status": "invalid"}, [f"config.yaml: {exc}"]
     if not isinstance(effective, dict):
         return {"status": "invalid"}, ["config.yaml: effective config is not a mapping"]
     return {"status": "valid"}, []
 
 
-def _check_auth(candidate: Path) -> tuple[Dict[str, str], List[str]]:
+def _check_auth(candidate: Path) -> tuple[dict[str, str], list[str]]:
     """Structural, offline auth check — no refresh, no provider contact."""
     auth_path = candidate / _AUTH_REL
     if not auth_path.is_file():
         return {"status": "absent"}, []
     try:
-        with open(auth_path, "r", encoding="utf-8") as fh:
+        with open(auth_path, "r", encoding="utf-8-sig") as fh:
             json.load(fh)
     except (OSError, json.JSONDecodeError) as exc:
         return {"status": "invalid"}, [f"{_AUTH_REL}: {exc}"]
     return {"status": "valid"}, []
 
 
-def _check_cron(candidate: Path) -> tuple[Dict[str, Any], List[str]]:
+def _check_cron(candidate: Path) -> tuple[dict[str, Any], list[str]]:
     """Cron state parses; no job is started and no scheduler is touched."""
     jobs_path = candidate / _backup._CRON_JOBS_REL
     if not jobs_path.is_file():
@@ -174,7 +181,7 @@ def verify_backup_archive(
     *,
     keep_candidate: bool = False,
     candidate_home: Optional[Path] = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Restore *zip_path* into an isolated home and return the verification receipt.
 
     ``status`` is ``"verified"`` only when every required object landed and every
@@ -185,7 +192,7 @@ def verify_backup_archive(
     or an explicit *keep_candidate* leaves it in place for inspection.
     """
     archive = Path(zip_path).expanduser().resolve()
-    receipt: Dict[str, Any] = {
+    receipt: dict[str, Any] = {
         "schema": _RECEIPT_SCHEMA,
         "archive": str(archive),
         "status": "failed",

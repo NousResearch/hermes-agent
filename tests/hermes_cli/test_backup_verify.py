@@ -151,3 +151,34 @@ def test_external_members_are_policy_exclusions(tmp_path, monkeypatch):
     assert receipt["policy_exclusions"] == 1
     assert _tree_digest(fake_home) == {}  # nothing was written back into the user's home
     assert not (candidate / "_external").exists()
+
+
+def test_the_import_command_routes_verify_only_to_the_drill(tmp_path, monkeypatch, capsys):
+    """``hermes import --verify-only`` reaches the drill and leaves the live profile alone.
+
+    The flag is parsed by the ``import`` subcommand and dispatched at the command boundary, so
+    the restore path (``hermes_cli.backup.run_import``) is not even entered.
+    """
+    import argparse
+
+    from hermes_cli.main import cmd_import
+    from hermes_cli.subcommands.import_cmd import build_import_cmd_parser
+
+    live = tmp_path / "live-hermes"
+    live.mkdir()
+    (live / "config.yaml").write_text("model: live\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(live))
+    archive = _zip_home(_make_source_home(tmp_path), tmp_path / "backup.zip")
+
+    parser = argparse.ArgumentParser()
+    build_import_cmd_parser(parser.add_subparsers(), cmd_import=cmd_import)
+    parsed = parser.parse_args(["import", str(archive), "--verify-only", "--keep-candidate"])
+    assert parsed.func is cmd_import
+    assert parsed.verify_only is True and parsed.keep_candidate is True
+
+    assert cmd_import(parsed) is None
+    printed = capsys.readouterr().out
+    assert '"status": "verified"' in printed
+    # The drill restored into its own temporary home, not this profile.
+    assert (live / "config.yaml").read_text(encoding="utf-8") == "model: live\n"
+    assert not (live / "skills").exists()

@@ -426,6 +426,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import fence_state_after
+from gateway.platforms.base_clarify import format_clarify_prompt
 from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
     ea_reason_label_text, ea_smart_deny_line_text, format_approval_deadline_line)
@@ -1851,24 +1852,6 @@ def _lazy_attr(obj: Any, name: str, factory: Callable[[], Any]) -> Any:
 
 
 _strip_media_directives = _strip_media_tag_directives
-
-
-def format_clarify_prompt(question: str, choices: "list | None", multi_select: bool = False) -> str:
-    """Plain-text clarify rendering: ``❓ question``, the numbered choices, then the reply hint.
-
-    ``BasePlatformAdapter.send_clarify`` sends this text, and the gateway's origin relay
-    (``TurnRunner._relay_clarify_question``) posts the same text to the messaging chat that
-    ORIGINATED a session rendered on another surface (a Desktop-driven turn inside a Telegram
-    topic, #103209). One formatter keeps both views of the question identical — the relay is
-    only useful if the topic shows what the card actually offers.
-    """
-    question_line = t("gateway.clarify.question", question=question)
-    if not choices:
-        return question_line
-    hint = t("gateway.clarify.hint_multi") if multi_select else t("gateway.clarify.hint_single")
-    numbered = [t("gateway.clarify.option_line", index=i, choice=choice)
-                for i, choice in enumerate(choices, start=1)]
-    return "\n".join([question_line, "", *numbered, "", hint])
 
 
 class BasePlatformAdapter(ABC):

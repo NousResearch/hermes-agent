@@ -115,7 +115,6 @@ def _answer_once(predicate, text: str) -> None:
     waiter blocked and the test fails on its assertions rather than on timing luck."""
     def _wait_then_answer():
         if _wait_until(predicate):
-            time.sleep(0.05)
             cm.resolve_text_response_for_session(SESSION_KEY, text)
 
     threading.Thread(target=_wait_then_answer, daemon=True).start()

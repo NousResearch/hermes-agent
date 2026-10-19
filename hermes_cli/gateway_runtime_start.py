@@ -67,14 +67,28 @@ def spawn_unmanaged_gateway(profile_home: Path, *, deadline: float, idle_exit: b
     logs = home / "logs"
     logs.mkdir(parents=True, exist_ok=True)
     try:
-        with (logs / "gateway-stdio.log").open("ab", buffering=0) as output:
-            remaining(deadline)
+        output = (logs / "gateway-stdio.log").open("ab", buffering=0)
+    except OSError as exc:
+        raise RuntimeStartError("stdio_log_unavailable", detail=os_refusal(exc)) from exc
+    with output:
+        remaining(deadline)  # a spent deadline is the caller's "deadline", not a refusal
+        try:
             return subprocess.Popen(command, cwd=root, env=env, close_fds=True,
                                     stdin=subprocess.DEVNULL, stdout=output, stderr=output,
                                     **windows_detach_popen_kwargs())
-    except OSError as exc:
-        reason = "windows_breakaway_unavailable" if sys.platform == "win32" else "spawn_failed"
-        raise RuntimeStartError(reason) from exc
+        except OSError as exc:
+            # Only CreateProcess's own refusal is the job's verdict.
+            reason = "windows_breakaway_unavailable" if sys.platform == "win32" else "spawn_failed"
+            raise RuntimeStartError(reason, detail=os_refusal(exc)) from exc
+
+
+def os_refusal(exc: OSError) -> str | None:
+    """The OS's own code and message (``WinError 5: Access is denied``), never the filename: it can
+    name a profile home."""
+    winerror = getattr(exc, "winerror", None)
+    code = f"WinError {winerror}" if winerror is not None else (
+        f"errno {exc.errno}" if exc.errno is not None else None)
+    return ": ".join(part for part in (code, exc.strerror) if part) or None
 
 
 def stdio_log_path(profile_home: Path) -> Path:

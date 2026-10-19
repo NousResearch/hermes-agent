@@ -281,6 +281,11 @@ class GatewayChatView:
                 print(flush=True)
             else:
                 print("\n" + text, flush=True)
+        # A turn the owner's restart/stop interrupted names that cause (#134889 F1); other
+        # message.complete warnings stay Ink/Desktop-only as before.
+        warning = payload.get("warning")
+        if payload.get("status") == "interrupted" and isinstance(warning, str) and warning.strip():
+            print(warning.strip(), file=sys.stderr, flush=True)
         self.completions[admission] = payload
 
     def _request(self, admission, payload):

@@ -1,3 +1,4 @@
+import { deDesktopCommands } from './de_desktop_commands'
 import { deSessionCommands } from './de_session_commands'
 import type { TranslationOverrides } from './define-locale'
 
@@ -27,7 +28,8 @@ export const deNotices = {
     compactedTurnUnavailable:
       'Diese Nachricht wurde beim Komprimieren des Chats zusammengefasst und kann nicht mehr wiederhergestellt oder bearbeitet werden.',
     staleTurnUnavailable: 'Diese Nachricht ist nicht mehr im Verlauf dieses Chats.',
-    sessionCommands: deSessionCommands
+    sessionCommands: deSessionCommands,
+    desktopCommands: deDesktopCommands
   },
   keepAwakeOffer: {
     title: 'Ihr Computer ist eingeschlafen, während Hermes gearbeitet hat',

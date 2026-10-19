@@ -62,6 +62,7 @@ def plot(aggregate, output):
         "Description": "Source aggregate SHA-256: " + hashlib.sha256(aggregate.read_bytes()).hexdigest(),
     })
     plt.close(fig)
+    output.write_text("\n".join(line.rstrip() for line in output.read_text().splitlines()) + "\n")
 
 
 def main():

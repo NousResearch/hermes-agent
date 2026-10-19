@@ -26,7 +26,7 @@ import { KeyRound, Lock, Plus, ShieldLock, Trash2 } from '@/lib/icons'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $gatewayState } from '@/store/session'
-import { $settingsOwner } from '@/store/settings-scope'
+import { $settingsOwner, settingsGatewayRequestOwnership } from '@/store/settings-scope'
 
 import { CONTROL_TEXT } from './constants'
 import { ListRow, Pill, SectionHeading, SettingsContent } from './primitives'
@@ -455,7 +455,8 @@ function VaultSettingsInner({
         undefined,
         ownerAbort.signal,
         {
-        spawnPriority: 'foreground'
+          ...settingsGatewayRequestOwnership(settingsOwner),
+          spawnPriority: 'foreground'
         }
       )
 

@@ -30,7 +30,7 @@ from tools.approval_context import (
 )
 from tools.approval_detection import (
     _approval_key_aliases, _check_sudo_stdin_guard, detect_content_rule_keys, detect_dangerous_command,
-    detect_hardline_command,
+    detect_hardline_command, SMART_MANUAL_ONLY_DESCRIPTIONS,
 )
 from tools.approval_floors import (
     _command_matches_permanent_allowlist, _hardline_block_result, _matching_permanent_allowlist_entry, _match_user_deny_rule, _sudo_stdin_block_result,
@@ -958,11 +958,15 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     ``pattern_keys`` are what :func:`_persist_choice` stores on session/always; a smart-DENY
     owner override reduces every surface to once/deny and persists nothing. ``pending_body`` is a thunk, built only once a human is
     actually asked, so a smart APPROVE never pays for redacting a large script.
+
+    A description in ``SMART_MANUAL_ONLY_DESCRIPTIONS`` skips the guardian: the decision needs the
+    operator, because what is at risk is their own unsaved work and the auxiliary model's APPROVE
+    is not the consent of the person who owns it (#141346).
     """
     from agent.redact import redact_approval_display
 
     smart_denied = False
-    if smart:
+    if smart and description not in SMART_MANUAL_ONLY_DESCRIPTIONS:
         result, smart_denied = _smart_gate(spec, command, description, pattern_key, pattern_keys,
                                            session_key, human_present=is_cli or is_gateway or is_ask)
         if result is not None:

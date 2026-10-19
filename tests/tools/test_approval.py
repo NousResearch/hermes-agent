@@ -91,6 +91,73 @@ class TestSmartApproval:
         assert is_approved(session_key, pattern_key) is False
 
 
+class TestAppleScriptDiscardsUnsavedWork:
+    """#141346: an `osascript` payload closed the operator's own unsaved deck with `saving no`
+    and the export was deleted with it. The pattern covers the spellings, and the class is
+    manual-only in smart mode: the guardian LLM cannot consent on the operator's behalf."""
+
+    @pytest.mark.parametrize("command", [
+        # The reported command: one -e payload, statements on their own lines.
+        'osascript -e \'tell application "Microsoft PowerPoint"\n'
+        '  open POSIX file "/tmp/traz.pptx"\n'
+        '  save active presentation in POSIX file "/tmp/traz.pdf" as save as PDF\n'
+        '  close active presentation saving no\n'
+        'end tell\'',
+        'osascript -e \'tell application "Keynote" to close front document saving no\'',
+        'osascript -e \'tell application "Pages" to quit without saving\'',
+        'osascript -e \'Application("Keynote").documents[0].close({saving: false})\'',
+    ])
+    def test_closing_without_saving_requires_approval(self, command):
+        dangerous, key, desc = detect_dangerous_command(command)
+        assert dangerous is True, command
+        assert key == "AppleScript closes or quits a document without saving"
+        assert desc == key
+
+    @pytest.mark.parametrize("command", [
+        # Reading state, and the reported command's saving half: both leave the document alone.
+        'osascript -e \'tell application "Finder" to get the name of every disk\'',
+        'osascript -e \'tell application "Microsoft PowerPoint" to save active presentation '
+        'in POSIX file "/tmp/traz.pdf" as save as PDF\'',
+        'osascript -e \'tell application "Keynote" to close front document saving yes\'',
+        # Command position: the phrase as prose in another command's argument is data.
+        'git commit -m "osascript closed the deck with saving no"',
+    ])
+    def test_benign_osascript_is_not_flagged(self, command):
+        assert detect_dangerous_command(command) == (False, None, None), command
+
+    def test_smart_mode_asks_the_human_instead_of_the_guardian(self, monkeypatch):
+        """The reported failure: smart approval auto-approved the close."""
+        from tools import approval as mod
+        from tools import approval_smart
+
+        command = 'osascript -e \'tell application "Keynote" to close front document saving no\''
+        session_key = "test-141346-manual-only"
+        prompts = []
+        monkeypatch.setenv("HERMES_SESSION_KEY", session_key)
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        monkeypatch.setattr(approval_context, "_get_approval_config", lambda: {"mode": "smart"})
+        monkeypatch.setattr(mod, "_YOLO_MODE_FROZEN", False)
+
+        def guardian_must_not_decide(*_args, **_kwargs):
+            raise AssertionError("smart approval auto-decided a close that discards the operator's work")
+
+        monkeypatch.setattr(approval_smart, "_smart_approve", guardian_must_not_decide)
+        mod.clear_session(session_key)
+        mod._permanent_approved.clear()
+
+        def deny(*args, **kwargs):
+            prompts.append((args, kwargs))
+            return "deny"
+
+        result = mod.check_all_command_guards(command, "local", approval_callback=deny)
+
+        assert len(prompts) == 1
+        assert result["approved"] is False
+        assert not result.get("smart_approved")
+
+
 class TestDetectDangerousRm:
     def test_rm_flags_after_operands_detected(self):
         # GNU rm permutes options: `rm build/ -rf` == `rm -rf build/`.

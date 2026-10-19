@@ -500,6 +500,13 @@ DANGEROUS_PATTERNS = [
     (r'\busers[\\/][^\\/\s]+[\\/]\.ssh\b', "access to SSH keys (Windows path)"),
     (r'\bappdata[\\/](?:local|roaming)[\\/]hermes[^\n]*\.env\b', "access to Hermes secrets (Windows path)"),
     # ── end of Windows tier
+    # macOS GUI automation: `osascript` can drive an application the agent never opened, and the
+    # document it names (`active presentation`, `front document`) belongs to the operator. Closing
+    # or quitting with "do not save" discards that unsaved work and takes the app's AutoRecovery
+    # with it, so there is no recovery path (#141346). One alternation for the spellings AppleScript
+    # and JXA accept for "close without saving"; `saving yes` and plain `save` stay unflagged.
+    (_CMDPOS + r'osascript\b[^\n]*(?:saving\s+no\b|without\s+saving\b|saving\s*:\s*false\b)',
+     "AppleScript closes or quits a document without saving"),
     (r'\bchmod\s+(-[^\s]*\s+)*(777|666|o\+[rwx]*w|a\+[rwx]*w)\b', "world/other-writable permissions"),
     (r'\bchmod\s+--recursive\b.*(777|666|o\+[rwx]*w|a\+[rwx]*w)', "recursive world/other-writable (long flag)"),
     (r'\bchown\s+(-[^\s]*)?R\s+root', "recursive chown to root"),
@@ -732,6 +739,14 @@ _CONTENT_RULE_DESCRIPTIONS = frozenset({
     "upload a secret or credential file via curl/wget (possible exfiltration)",
     "pipe a credential file into a curl/wget upload (possible exfiltration)",
     "invisible or bidirectional Unicode control character (possible obfuscation)",
+})
+
+# Descriptions whose blast radius is the OPERATOR's own work rather than anything the session
+# owns, so an auxiliary-LLM APPROVE is not consent for them: smart mode asks the human instead of
+# consulting the guardian. Keep this list to actions that destroy state the agent did not create
+# and cannot recreate — every entry is a guaranteed prompt, not a smarter classifier.
+SMART_MANUAL_ONLY_DESCRIPTIONS = frozenset({
+    "AppleScript closes or quits a document without saving",
 })
 
 # Preserve approvals stored under the removed interpreter regex rules.

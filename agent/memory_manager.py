@@ -154,7 +154,7 @@ class _StuckCallGate:
         self.lock = threading.Lock()
         self.calls: dict[tuple[str, str], dict[object, tuple[float, float]]] = {}  # token -> (start, deadline)
         self.last_ok: dict[tuple[str, str], float] = {}
-        self.closed_at: dict[tuple[str, str], float] = {}  # gate closed / last probe admitted
+        self.probe_at: dict[tuple[str, str], float] = {}  # interval start: gate close, then each probe
         self.skips: dict[tuple[str, str], int] = {}
 
     def enter(self, key: tuple[str, str], token: object, timeout: float) -> Optional[tuple[int, int, int]]:
@@ -168,16 +168,15 @@ class _StuckCallGate:
                 admit = False
             elif stuck < _MAX_STUCK_CALLS:
                 admit = True
-                self.closed_at.pop(key, None)
+                self.probe_at.pop(key, None)
+                self.skips.pop(key, None)  # gate open: the next outage warns on its first skip
             else:
-                admit = now - self.closed_at.setdefault(key, now) >= _PROBE_INTERVAL_S
+                admit = now - self.probe_at.setdefault(key, now) >= _PROBE_INTERVAL_S
                 if admit:
-                    self.closed_at[key] = now
+                    self.probe_at[key] = now
             if not admit:
                 skips = self.skips[key] = self.skips.get(key, 0) + 1
                 return stuck, len(calls), skips
-            # A later outage warns on its first skip, even if an orphan keeps the key alive.
-            self.skips.pop(key, None)
             calls[token] = (now, now + timeout)
             return None
 
@@ -190,7 +189,7 @@ class _StuckCallGate:
                 if ok:
                     self.last_ok[key] = time.monotonic()
                 return
-            for state in (self.calls, self.last_ok, self.closed_at, self.skips):
+            for state in (self.calls, self.last_ok, self.probe_at, self.skips):
                 state.pop(key, None)
 
 

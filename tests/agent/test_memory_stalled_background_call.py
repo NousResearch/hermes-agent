@@ -56,7 +56,7 @@ _GATE = MemoryManager._BACKGROUND_GATE
 
 
 def _clear_gate():
-    for state in (_GATE.calls, _GATE.last_ok, _GATE.closed_at, _GATE.skips):
+    for state in (_GATE.calls, _GATE.last_ok, _GATE.probe_at, _GATE.skips):
         state.clear()
 
 
@@ -212,6 +212,25 @@ def test_closed_gate_admits_a_half_open_probe_that_reopens_it(monkeypatch):
         monkeypatch.setattr(mm, "_PROBE_INTERVAL_S", 1e9)  # no further probe: only a reopened gate admits
         _skip(_manager(healthy), "after the probe")
         assert healthy.sync_calls == 2
+    finally:
+        for _, provider in hung:
+            provider.release.set()
+    for mgr, _ in hung:
+        mgr.shutdown_all()
+
+
+def test_failed_probe_does_not_restart_the_outage_warning(monkeypatch):
+    """A probe that wedges too is not a recovery: the skip count keeps running, so a long outage
+    warns on its first skip and every 100th, not after every probe."""
+    hung = [_hang_one_call() for _ in range(mm._MAX_STUCK_CALLS)]
+    key = hung[0][0]._registry_key(hung[0][1])
+    try:
+        _skip(_manager(_HangingProvider()), "closed")
+        monkeypatch.setattr(mm, "_PROBE_INTERVAL_S", 0.0)
+        hung.append(_hang_one_call())  # the probe is admitted and hangs
+        monkeypatch.setattr(mm, "_PROBE_INTERVAL_S", 1e9)
+        _skip(_manager(_HangingProvider()), "still closed")
+        assert _GATE.skips[key] == 2
     finally:
         for _, provider in hung:
             provider.release.set()

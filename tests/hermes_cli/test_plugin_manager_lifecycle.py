@@ -601,3 +601,52 @@ def test_background_persistence_finishes_before_same_home_reservation_yields(
     assert persisted_manager == [(manager, manager.home_path)]
     assert home not in plugins._plugin_managers_by_home
     plugins._reset_plugin_managers_for_tests()
+
+
+def test_retired_manager_cannot_reload_captured_manifest_into_successor(
+    profile_env, monkeypatch
+):
+    import types
+
+    from hermes_cli.plugins_lifecycle import unload_plugin_manager_for_home
+
+    plugins._reset_plugin_managers_for_tests()
+    home = profile_env.resolve()
+    old_manager = plugins.get_plugin_manager()
+    old_manager._discovered = True
+
+    plugin_calls = []
+    old_callback = lambda **_kwargs: None
+    module = types.ModuleType("retired_plugin_test")
+
+    def register(ctx):
+        plugin_calls.append(ctx._manager)
+        ctx.register_hook("memory_prefetch", old_callback)
+
+    monkeypatch.setattr(module, "register", register, raising=False)
+    monkeypatch.setattr(
+        old_manager, "_load_directory_module", lambda *_args, **_kwargs: module
+    )
+    monkeypatch.setattr(old_manager, "_runs_in_plugin_host", lambda _manifest: False)
+    captured_manifest = plugins.PluginManifest(
+        name="retired-plugin", source="user", path=str(home / "plugins" / "retired-plugin")
+    )
+
+    try:
+        assert unload_plugin_manager_for_home(home) is True
+        successor = plugins.get_plugin_manager()
+        successor._discovered = True
+        successor_callback = lambda **_kwargs: None
+        plugins.PluginContext(
+            plugins.PluginManifest(name="successor-plugin"), successor
+        ).register_hook("memory_prefetch", successor_callback)
+
+        # This is the delayed reload from PluginHost._restart after it captured its manifest.
+        old_manager._load_plugin(captured_manifest)
+
+        assert old_manager._retired is True
+        assert plugin_calls == []
+        assert old_manager._hooks.get("memory_prefetch", []) == []
+        assert successor._hooks["memory_prefetch"] == [successor_callback]
+    finally:
+        plugins._reset_plugin_managers_for_tests()

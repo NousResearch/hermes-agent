@@ -13,6 +13,7 @@ import logging
 import queue
 import sys
 import threading
+import weakref
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -56,15 +57,21 @@ class _RetainedObserverText:
 @dataclass
 class _ConsumerDispatcher:
     scope_key: object
+    profile_key: object | None
+    generation: object
     hook_name: str
     callback: Callable[..., Any]
+    manager_ref: weakref.ReferenceType | None
     events: queue.Queue[_QueuedObserverEvent | object]
     thread: threading.Thread | None = None
     retired: bool = False
+    stop_requested: bool = False
 
 
 @dataclass(frozen=True)
 class _QueuedObserverEvent:
+    scope_key: object
+    generation: object
     payload: dict[str, Any]
     context: contextvars.Context
     retained_text: _RetainedObserverText | None = None
@@ -120,16 +127,34 @@ def _worker(dispatcher: _ConsumerDispatcher) -> None:
     while True:
         item = dispatcher.events.get()
         payload: dict[str, Any] | None = None
+        callback: Callable[..., Any] | None = None
         try:
             if item is _STOP:
-                return
+                with _dispatcher_lock:
+                    if dispatcher.retired or dispatcher.stop_requested:
+                        if dispatcher.thread is threading.current_thread():
+                            dispatcher.thread = None
+                        key = (
+                            dispatcher.scope_key,
+                            dispatcher.hook_name,
+                            id(dispatcher.callback),
+                        )
+                        if _dispatchers.get(key) is dispatcher:
+                            _dispatchers.pop(key, None)
+                        return
+                continue
             if not isinstance(item, _QueuedObserverEvent):
                 continue
-            # Retirement and this gate share a lock. Work that passed the gate is
-            # already in flight; queued work not yet admitted is never invoked.
+            # Retirement, generation rotation, and admission share a lock. A callback
+            # that passed the gate may finish; events from prior dispatcher generations cannot.
             with _dispatcher_lock:
-                if dispatcher.retired:
+                if (
+                    dispatcher.retired
+                    or item.scope_key is not dispatcher.scope_key
+                    or item.generation is not dispatcher.generation
+                ):
                     continue
+                callback = dispatcher.callback
             payload = dict(item.payload)
             if item.retained_text is not None:
                 payload["final_text"] = item.retained_text.text
@@ -141,7 +166,7 @@ def _worker(dispatcher: _ConsumerDispatcher) -> None:
                 # while keeping the callback on this off-turn worker.
                 item.context.run(
                     PluginDispatchMixin._invoke_hook_callback,
-                    dispatcher.callback,
+                    callback,
                     payload,
                 )
             except BaseException as exc:  # health: allow BLE001 -- isolate all failures from observer plugins
@@ -160,7 +185,7 @@ def _worker(dispatcher: _ConsumerDispatcher) -> None:
                     manager = item.context.run(get_plugin_manager)
                     item.context.run(
                         manager._report_hook_failure,
-                        dispatcher.hook_name, dispatcher.callback, payload, exc,
+                        dispatcher.hook_name, callback, payload, exc,
                     )
                 except BaseException:  # health: allow BLE001 -- reporter failures must not kill the worker
                     try:
@@ -330,7 +355,7 @@ def _registered_dispatch_scope(hook_name: str):
     """
     manager = _active_plugin_manager()
     if manager is None:
-        yield _FALLBACK_SCOPE, (), False
+        yield None, _FALLBACK_SCOPE, (), False
         return
     scope_key = _active_manager_scope(manager)
     try:
@@ -343,7 +368,7 @@ def _registered_dispatch_scope(hook_name: str):
     # Never make the observer producer wait behind a discovery/reload transaction. It is safe to
     # drop this observation while the manager is busy; lifecycle teardown will retire the old queue.
     if manager_lock is not None and not manager_lock.acquire(blocking=False):
-        yield scope_key, (), False
+        yield manager, scope_key, (), False
         return
     try:
         callbacks = _registered_callbacks(hook_name, manager)
@@ -353,7 +378,7 @@ def _registered_dispatch_scope(hook_name: str):
             still_current = still_current and _same_callbacks(
                 callbacks, tuple(current_hooks.get(hook_name, ()))
             )
-        yield scope_key, callbacks, still_current
+        yield manager, scope_key, callbacks, still_current
     finally:
         if manager_lock is not None:
             manager_lock.release()
@@ -362,26 +387,45 @@ def _registered_dispatch_scope(hook_name: str):
 def _stop_dispatcher(
     dispatcher: _ConsumerDispatcher, timeout: float = 1.0, *, discard_pending: bool = False
 ) -> None:
-    if discard_pending:
-        while True:
-            try:
-                discarded = dispatcher.events.get_nowait()
-                dispatcher.events.task_done()
-                _release_queued_text(discarded)
-            except queue.Empty:
-                break
-    _put_drop_oldest(dispatcher.events, _STOP)
-    if dispatcher.thread is not None and dispatcher.thread is not threading.current_thread():
-        dispatcher.thread.join(timeout=timeout)
+    with _dispatcher_lock:
+        if not dispatcher.retired and not dispatcher.stop_requested:
+            return
+        if discard_pending:
+            while True:
+                try:
+                    discarded = dispatcher.events.get_nowait()
+                    dispatcher.events.task_done()
+                    _release_queued_text(discarded)
+                except queue.Empty:
+                    break
+        dispatcher.stop_requested = True
+        _put_drop_oldest(dispatcher.events, _STOP)
+        thread = dispatcher.thread
+    if thread is not None and thread is not threading.current_thread():
+        thread.join(timeout=timeout)
 
 
 def _dispatchers_for_scope(
-    scope_key: object, hook_name: str, callbacks: tuple[Callable[..., Any], ...]
+    manager: Any,
+    scope_key: object,
+    hook_name: str,
+    callbacks: tuple[Callable[..., Any], ...],
 ) -> tuple[list[_ConsumerDispatcher], list[_ConsumerDispatcher]]:
     callback_ids = {id(callback) for callback in callbacks}
     stale: list[_ConsumerDispatcher] = []
     ready: list[_ConsumerDispatcher] = []
+    try:
+        manager_ref = weakref.ref(manager)
+    except TypeError:
+        manager_ref = None
+    # Stable home scope lets replaced managers share a worker without crossing profiles.
+    profile_key = getattr(manager, "scope_key", None)
     with _dispatcher_lock:
+        for key, dispatcher in list(_dispatchers.items()):
+            thread = dispatcher.thread
+            if dispatcher.retired and (thread is None or not thread.is_alive()):
+                _dispatchers.pop(key, None)
+
         for key, dispatcher in list(_dispatchers.items()):
             key_scope, key_hook_name, callback_id = key
             if (
@@ -389,21 +433,78 @@ def _dispatchers_for_scope(
                 and key_hook_name == hook_name
                 and callback_id not in callback_ids
             ):
-                dispatcher = _dispatchers.pop(key)
                 dispatcher.retired = True
                 stale.append(dispatcher)
 
         for callback in callbacks:
             key = (scope_key, hook_name, id(callback))
             dispatcher = _dispatchers.get(key)
-            if dispatcher is None or dispatcher.thread is None or not dispatcher.thread.is_alive():
+            if (
+                dispatcher is not None
+                and not dispatcher.retired
+                and dispatcher.thread is not None
+                and dispatcher.thread.is_alive()
+            ):
+                ready.append(dispatcher)
+                continue
+            if dispatcher is not None and (
+                dispatcher.thread is None or not dispatcher.thread.is_alive()
+            ):
+                _dispatchers.pop(key, None)
+                dispatcher = None
+
+            if dispatcher is None or dispatcher.retired:
+                for old_key, candidate in list(_dispatchers.items()):
+                    thread = candidate.thread
+                    same_manager = (
+                        candidate.manager_ref is not None
+                        and candidate.manager_ref() is manager
+                    )
+                    same_generation = (
+                        candidate.scope_key is scope_key
+                        and old_key[2] == id(callback)
+                    )
+                    same_profile = (
+                        profile_key is not None and candidate.profile_key == profile_key
+                    )
+                    if (
+                        old_key[1] != hook_name
+                        or not candidate.retired
+                        or thread is None
+                        or not thread.is_alive()
+                        or not (same_manager or same_generation or same_profile)
+                    ):
+                        continue
+                    _dispatchers.pop(old_key, None)
+                    while True:
+                        try:
+                            discarded = candidate.events.get_nowait()
+                            candidate.events.task_done()
+                            _release_queued_text(discarded)
+                        except queue.Empty:
+                            break
+                    candidate.scope_key = scope_key
+                    candidate.profile_key = profile_key
+                    candidate.manager_ref = manager_ref
+                    candidate.generation = object()
+                    candidate.callback = callback
+                    candidate.retired = False
+                    candidate.stop_requested = False
+                    _dispatchers[key] = candidate
+                    dispatcher = candidate
+                    break
+
+            if dispatcher is None or dispatcher.retired:
                 events: queue.Queue[_QueuedObserverEvent | object] = queue.Queue(
                     maxsize=_QUEUE_SIZE
                 )
                 dispatcher = _ConsumerDispatcher(
                     scope_key=scope_key,
+                    profile_key=profile_key,
+                    generation=object(),
                     hook_name=hook_name,
                     callback=callback,
+                    manager_ref=manager_ref,
                     events=events,
                 )
                 dispatcher.thread = spawn_context_thread(
@@ -420,10 +521,10 @@ def _dispatchers_for_scope(
 
 
 def _dispatchers_for(hook_name: str) -> list[_ConsumerDispatcher]:
-    with _registered_dispatch_scope(hook_name) as (scope_key, callbacks, still_current):
+    with _registered_dispatch_scope(hook_name) as (manager, scope_key, callbacks, still_current):
         if not still_current:
             return []
-        ready, stale = _dispatchers_for_scope(scope_key, hook_name, callbacks)
+        ready, stale = _dispatchers_for_scope(manager, scope_key, hook_name, callbacks)
 
     for dispatcher in stale:
         _stop_dispatcher(dispatcher, timeout=0.2)
@@ -448,7 +549,7 @@ def _enqueue_plugin_observer_hook(
             return False
     queued = False
     event_context = contextvars.copy_context()
-    with _registered_dispatch_scope(hook_name) as (scope_key, callbacks, still_current):
+    with _registered_dispatch_scope(hook_name) as (manager, scope_key, callbacks, still_current):
         if not still_current:
             return False
         if payload_factory is not None:
@@ -463,7 +564,9 @@ def _enqueue_plugin_observer_hook(
                 return False
         if payload_size is None:
             return False
-        dispatchers, stale = _dispatchers_for_scope(scope_key, hook_name, callbacks)
+        dispatchers, stale = _dispatchers_for_scope(
+            manager, scope_key, hook_name, callbacks
+        )
         retained_text = None
         if payload_size > _MAX_OBSERVER_EVENT_BYTES:
             final_text = event_payload.get("final_text")
@@ -484,6 +587,8 @@ def _enqueue_plugin_observer_hook(
             # consumer gets an independent copy of the originating enqueue
             # context, while retaining the same event payload.
             item = _QueuedObserverEvent(
+                scope_key=scope_key,
+                generation=dispatcher.generation,
                 payload=event_payload,
                 context=event_context.copy(),
                 retained_text=retained_text,
@@ -499,7 +604,7 @@ def _enqueue_plugin_observer_hook(
                 )
 
     for dispatcher in stale:
-        _stop_dispatcher(dispatcher, timeout=0.2)
+        _stop_dispatcher(dispatcher, timeout=0.0)
     return queued
 
 
@@ -560,7 +665,6 @@ def retire_plugin_observer_dispatchers(
                 else callback_id not in live_callback_ids.get(hook_name, set())
             )
             if should_retire:
-                dispatcher = _dispatchers.pop(key)
                 dispatcher.retired = True
                 stale.append(dispatcher)
     return stale
@@ -610,6 +714,8 @@ def shutdown_plugin_observer_dispatcher(timeout: float = 1.0) -> None:
     with _dispatcher_lock:
         dispatchers = list(_dispatchers.values())
         _dispatchers = {}
+        for dispatcher in dispatchers:
+            dispatcher.stop_requested = True
     for dispatcher in dispatchers:
         _stop_dispatcher(dispatcher, timeout=timeout)
 

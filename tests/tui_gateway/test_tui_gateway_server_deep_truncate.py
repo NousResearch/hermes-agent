@@ -103,13 +103,17 @@ def test_deep_truncate_counts_every_durable_row_a_merged_carrier_holds(monkeypat
         server._sessions.pop("deep-carrier-sid", None)
 
 
-def test_prompt_submit_empty_truncation_allowed_with_confirm(monkeypatch):
+def test_prompt_submit_empty_truncation_allowed_with_confirm(monkeypatch, tmp_path):
     """Intentional restore/regenerate of the first user turn may wipe history."""
 
     seen = {}
     replaced = []
+    import hermes_constants
+    monkeypatch.setattr(hermes_constants, "get_process_hermes_home", lambda: tmp_path)
 
     class _Agent:
+        session_id = "actual-truncated-session"
+
         def run_conversation(
             self, prompt, conversation_history=None, stream_callback=None, **_kwargs
         ):

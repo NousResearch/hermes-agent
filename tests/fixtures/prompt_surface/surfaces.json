@@ -5,7 +5,7 @@
       "stable": 1829,
       "volatile": 1528
     },
-    "tool_tokens": 11242,
+    "tool_tokens": 11381,
     "tools": [
       "browser_cdp",
       "browser_dialog",
@@ -17,6 +17,7 @@
       "memory",
       "patch",
       "read_file",
+      "review",
       "search_files",
       "skill_manage",
       "skill_view",
@@ -38,7 +39,7 @@
       "stable": 1225,
       "volatile": 1528
     },
-    "tool_tokens": 11242,
+    "tool_tokens": 11381,
     "tools": [
       "browser_cdp",
       "browser_dialog",
@@ -50,6 +51,7 @@
       "memory",
       "patch",
       "read_file",
+      "review",
       "search_files",
       "skill_manage",
       "skill_view",
@@ -71,7 +73,7 @@
       "stable": 1646,
       "volatile": 1527
     },
-    "tool_tokens": 11242,
+    "tool_tokens": 11381,
     "tools": [
       "browser_cdp",
       "browser_dialog",
@@ -83,6 +85,7 @@
       "memory",
       "patch",
       "read_file",
+      "review",
       "search_files",
       "skill_manage",
       "skill_view",
@@ -104,7 +107,7 @@
       "stable": 2420,
       "volatile": 1524
     },
-    "tool_tokens": 11398,
+    "tool_tokens": 11537,
     "tools": [
       "browser_cdp",
       "browser_dialog",
@@ -116,6 +119,7 @@
       "memory",
       "patch",
       "read_file",
+      "review",
       "search_files",
       "skill_manage",
       "skill_view",
@@ -137,7 +141,7 @@
       "stable": 1225,
       "volatile": 1528
     },
-    "tool_tokens": 11242,
+    "tool_tokens": 11381,
     "tools": [
       "browser_cdp",
       "browser_dialog",
@@ -149,6 +153,7 @@
       "memory",
       "patch",
       "read_file",
+      "review",
       "search_files",
       "skill_manage",
       "skill_view",
@@ -170,7 +175,7 @@
       "stable": 1211,
       "volatile": 1528
     },
-    "tool_tokens": 11242,
+    "tool_tokens": 11381,
     "tools": [
       "browser_cdp",
       "browser_dialog",
@@ -182,6 +187,7 @@
       "memory",
       "patch",
       "read_file",
+      "review",
       "search_files",
       "skill_manage",
       "skill_view",
@@ -203,7 +209,7 @@
       "stable": 1473,
       "volatile": 1529
     },
-    "tool_tokens": 11898,
+    "tool_tokens": 12037,
     "tools": [
       "browser_cdp",
       "browser_dialog",
@@ -216,6 +222,7 @@
       "patch",
       "react_to_message",
       "read_file",
+      "review",
       "search_files",
       "skill_manage",
       "skill_view",
@@ -237,7 +244,7 @@
       "stable": 1244,
       "volatile": 1529
     },
-    "tool_tokens": 11242,
+    "tool_tokens": 11381,
     "tools": [
       "browser_cdp",
       "browser_dialog",
@@ -249,6 +256,7 @@
       "memory",
       "patch",
       "read_file",
+      "review",
       "search_files",
       "skill_manage",
       "skill_view",
@@ -270,7 +278,7 @@
       "stable": 1276,
       "volatile": 1529
     },
-    "tool_tokens": 11242,
+    "tool_tokens": 11381,
     "tools": [
       "browser_cdp",
       "browser_dialog",
@@ -282,6 +290,7 @@
       "memory",
       "patch",
       "read_file",
+      "review",
       "search_files",
       "skill_manage",
       "skill_view",

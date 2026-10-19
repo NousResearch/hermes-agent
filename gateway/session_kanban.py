@@ -238,10 +238,19 @@ def _worker_workspace(frame):
     if not session_id:
         yield None
         return
+    from gateway.session_authorities import served_profile_name
     from gateway.session_context import clear_session_vars, set_session_vars
     from gateway.session_policy import bind_turn_workspace, restore_policy
+    from hermes_state_keys import profile_from_session_key
     policy = restore_policy(frame['policy'])
-    tokens = set_session_vars(session_key=frame.get('route') or session_id, session_id=session_id)
+    route = frame.get('route') or session_id
+    # The profile its in-process turns bind, so persistent Docker keys the container they and the
+    # session's side agents use (#140665): a served secondary's name, which its routes carry
+    # (``agent:<name>:``); none for the launch home, whatever its name (``hermes -p beta gateway``
+    # keys ``agent:main:``, and only the default profile runs the multiplexer).
+    profile = served_profile_name(frame.get('home'))
+    tokens = set_session_vars(session_key=route, session_id=session_id,
+                              profile=profile if profile_from_session_key(route) == profile else '')
     try:
         bind_turn_workspace(policy, session_id)
         yield session_id

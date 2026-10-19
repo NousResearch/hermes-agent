@@ -890,6 +890,14 @@ export function usePromptActions({
             { session_id: id, text }
           )
 
+          // TUI-26: a bare stop phrase typed mid-turn into a LOCAL voice chat ended that chat on
+          // the owner and reached no turn. Settled (nothing to re-queue), and no bubble stays.
+          if (result?.voice_stopped === true) {
+            discardOptimisticMessage()
+
+            return true
+          }
+
           if (result?.status === 'redirected') {
             if (mode === 'interrupt') {
               flushStreamDeltas(id)

@@ -431,9 +431,11 @@ def _model_flow_named_custom(config, provider_info):
             save_config(cfg)
     else:
         # Save model name to the custom_providers entry for next time.
-        # Pass name= so deduplication matches the entry by its canonical identity instead of
+        # Pass name= so deduplication matches the entry's canonical identity instead of
         # auto-generating a name from the URL — otherwise re-saving a second same-URL entry
-        # overwrites the first (#45481).
-        _save_custom_provider(base_url, config_api_key, model_name, api_mode=api_mode, name=name)
+        # overwrites the first (#45481). key_env round-trips so a key_env-based entry keeps
+        # its .env reference instead of being rewritten to an inline ${VAR} api_key.
+        _save_custom_provider(base_url, config_api_key, model_name, api_mode=api_mode, name=name,
+                              key_env=key_env)
 
     _say(f"\n✅ Model set to: {model_name}", f"   Provider: {name} ({base_url})")

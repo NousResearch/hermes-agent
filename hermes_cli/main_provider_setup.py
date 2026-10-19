@@ -537,7 +537,7 @@ def _save_custom_provider(base_url, api_key="", model="", context_length=None, n
             entry["key_env"] = key_env
             entry.pop("api_key", None)
             changed = True
-        elif api_key and (entry.get("api_key") != api_key or entry.get("key_env")):
+        elif not key_env and api_key and (entry.get("api_key") != api_key or entry.get("key_env")):
             entry["api_key"] = api_key
             entry.pop("key_env", None)
             changed = True

@@ -838,7 +838,7 @@ function runtimeReferenced(runtimeId: string, storedSessionId: null | string): b
  *  `needsInput` states stay — the sidebar's attention dot reads them. */
 function evictable(runtimeId: string, state: ClientSessionState): boolean {
   return (
-    !state.busy && !state.needsInput && !state.awaitingResponse && !runtimeReferenced(runtimeId, state.storedSessionId)
+    !state.busy && !state.needsInput && !state.awaitingResponse && !runtimeReferenced(runtimeId, state.storedSessionId) && !retainedAfterReclaim.has(runtimeId)
   )
 }
 
@@ -950,6 +950,9 @@ export function clearAllSessionStates() {
   silentTurnChecks.clear()
   settledExpiry.clear()
   unconfirmedReconnectSettles.clear()
+  // The next backend re-mints every runtime id, so a retained reclaim id from
+  // the previous gateway would make a same-id runtime look reclaim-retained.
+  retainedAfterReclaim.clear()
   clearAllProviderWaits()
   sessionScopeByRuntimeId.clear()
   sessionOwnerByRuntimeId.clear()
@@ -1813,6 +1816,53 @@ function syncPreviewScope() {
 
 $activeSessionId.subscribe(syncPreviewScope)
 syncPreviewScope()
+
+/** Runtimes whose transcript `session.reclaimed` kept on screen while the
+ *  durable resume was in flight (#122507). The backend re-mints a fresh runtime
+ *  id on resume and never publishes against the reclaimed one again, so the
+ *  publish-time eviction above can never reach it — it would otherwise park one
+ *  full transcript per idle-timeout of the visible chat until a gateway switch.
+ *
+ *  Dropped the moment the atom leaves the runtime: the primary view resolves
+ *  only `$sessionStates[$activeSessionId]`, so once the atom moves the slice is
+ *  unreachable from every surface and this is memory, not pixels. A warm switch
+ *  onto a sibling is untouched — the gate is retention membership, not "the
+ *  previous atom value".
+ *
+ *  shortcut: retained while `$activeSessionId` never moves — a reclaim whose
+ *  resume is declined (no durable id, heal budget spent, tombstoned, or a
+ *  request the route-resume effect cannot consume) holds its transcript until
+ *  the user leaves the chat. Bounded by window lifetime; upgrade if reclaim can
+ *  be cancelled or durable resume guaranteed without keeping full transcript. */
+const retainedAfterReclaim = new Set<string>()
+
+/** Keep `runtimeId`'s transcript visible through a reclaim, until the resume
+ *  that replaces it rebinds the pane. Callers must already have decided the
+ *  runtime is the atom-visible one; nothing here re-derives that. */
+export function retainAfterReclaim(runtimeId: string): void {
+  if (runtimeId) {
+    retainedAfterReclaim.add(runtimeId)
+  }
+}
+
+/** Named subscriber, not folded into `syncPreviewScope`: that one also runs on
+ *  initial mount (above) and owns rail scope, not session-state lifetime. */
+$activeSessionId.subscribe(() => {
+  if (retainedAfterReclaim.size === 0) {
+    return
+  }
+
+  const live = $activeSessionId.get()
+
+  for (const runtimeId of Array.from(retainedAfterReclaim)) {
+    if (runtimeId === live) {
+      continue
+    }
+
+    retainedAfterReclaim.delete(runtimeId)
+    dropSessionState(runtimeId)
+  }
+})
 
 /** The mode of the backend that serves `owner`: the route's own `mode`, else
  *  its registry connection's kind, else the socket already dialed for it (a

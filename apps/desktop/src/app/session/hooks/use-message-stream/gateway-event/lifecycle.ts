@@ -2,6 +2,7 @@ import type { GatewayEvent } from '@hermes/shared'
 import type { HermesSkin } from '@hermes/shared/skin'
 
 import { invalidateContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
+import { sealOpenToolParts } from '@/lib/chat-messages'
 import { eventSourceMatchesOwner, gatewayEventSource } from '@/lib/replay-gap-owner'
 import { clearClarifyRequest } from '@/store/clarify'
 import {
@@ -18,9 +19,9 @@ import {
 } from '@/store/live-sync'
 import { clearAllPrompts, clearApprovalRequest } from '@/store/prompts'
 import { markRuntimeGone } from '@/store/runtime-gone'
-import { getSessionOwnerHint, knownSessionOwner, ownerLookupSessionRows, requestSessionResume } from '@/store/session'
+import { $activeSessionId, getSessionOwnerHint, knownSessionOwner, ownerLookupSessionRows, requestSessionResume } from '@/store/session'
 import type { SessionOwnerScope } from '@/store/session-request-router'
-import { $sessionTiles, dropSessionState, sessionTileDelegate, unbindTileRuntime } from '@/store/session-states'
+import { $sessionStates, $sessionTiles, dropSessionState, publishSessionState, retainAfterReclaim, sessionTileDelegate, unbindTileRuntime } from '@/store/session-states'
 // Leaf import (not the `@/themes` barrel) to avoid pulling the ThemeProvider
 // module graph into the gateway event hot path.
 import { ingestBackendSkin } from '@/themes/backend-sync'
@@ -138,19 +139,68 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
     // session vanishing rather than being reclaimed. Drop the cached state
     // now — the stored row is untouched, so the sidebar keeps the
     // conversation and reopening it resumes from the DB.
-    const reclaimedRuntimeId = String((payload as { session_id?: string } | undefined)?.session_id ?? '')
+    const reclaimPayload = payload as { session_id?: string; stored_session_id?: string } | undefined
+    const reclaimedRuntimeId = String(reclaimPayload?.session_id ?? '')
 
     // The compression/reclaim lifecycle invalidates the keyed context
     // breakdown so the statusbar gauge refetches instead of serving the
     // pre-compression figure (#94001). The breakdown cache keys on the
     // STORED id; the reclaim payload carries it alongside the runtime id.
-    const reclaimedStoredId = String((payload as { stored_session_id?: string } | undefined)?.stored_session_id ?? '')
+    const reclaimedStoredId = String(reclaimPayload?.stored_session_id ?? '')
 
     if (reclaimedRuntimeId) {
-      // Heal while the cached stored-id mapping is still intact, then drop.
-      markRuntimeGone(reclaimedRuntimeId)
+      // Heal while the cached stored-id mapping is still intact. The active view
+      // renders directly from this state slice, so deleting it here makes an
+      // already-painted chat flash empty until the explicit durable resume lands.
+      const isActiveRuntime = $activeSessionId.get() === reclaimedRuntimeId
+
+      markRuntimeGone(reclaimedRuntimeId, reclaimedStoredId)
       invalidateContextBreakdown(reclaimedStoredId || reclaimedRuntimeId)
-      dropSessionState(reclaimedRuntimeId)
+
+      if (isActiveRuntime) {
+        // The runtime is dead, so its activity/input claims cannot stay authoritative
+        // while the durable resume is in flight. Keep only the visible transcript
+        // and cheap metadata; late events for this id remain harmless until the
+        // active atom is replaced by the resumed runtime.
+        const current = $sessionStates.get()[reclaimedRuntimeId]
+
+        if (current) {
+          // Seal any still-open tool rows so a retained transcript does not spin
+          // forever (mirrors the settle in use-background-sync.ts).
+          const flagsDirty =
+            current.awaitingResponse ||
+            current.busy ||
+            current.needsInput ||
+            Boolean(current.streamId) ||
+            current.turnStartedAt !== null ||
+            current.turnLive
+
+          const sealedMessages = sealOpenToolParts(current.messages)
+
+          // Hold the slice until the atom moves off this runtime, then drop it
+          // with its per-runtime ledgers. Retain BEFORE publish so eviction can
+          // never strip the transcript in the reclaim publish window.
+          retainAfterReclaim(reclaimedRuntimeId)
+
+          if (flagsDirty || sealedMessages !== current.messages) {
+            publishSessionState(reclaimedRuntimeId, {
+              ...current,
+              messages: sealedMessages,
+              awaitingResponse: false,
+              busy: false,
+              needsInput: false,
+              streamId: null,
+              turnStartedAt: null,
+              turnLive: false
+            })
+          }
+        } else {
+          dropSessionState(reclaimedRuntimeId)
+        }
+      } else {
+        dropSessionState(reclaimedRuntimeId)
+      }
+
       // A prompt keyed to the dead runtime must not outlive it. The runtime id
       // rotates on every resume (cold/lazy/eager all mint a fresh sid), so the
       // new runtime's turn-end clears can never remove an entry keyed to THIS
@@ -160,7 +210,7 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
       clearClarifyRequest(undefined, reclaimedRuntimeId)
       // A tile bound to the reclaimed runtime would otherwise render an
       // empty transcript forever: its view reads $sessionStates[runtime]
-      // (just dropped) and its resume effect is gated on !runtimeId, so a
+      // and its resume effect is gated on !runtimeId, so a
       // bound tile never re-resumes (#82620). Unbind it so the effect
       // refires against the intact stored session — and purge the wiring
       // cache's entry, or resumeTile's warm path would hand the dead

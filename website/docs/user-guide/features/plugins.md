@@ -424,6 +424,8 @@ hermes plugins install user/repo             # install from Git, then prompt Ena
 hermes plugins install user/repo --enable    # request enable; dependency consent still applies
 hermes plugins install user/repo --no-enable # install but leave disabled (no prompt)
 hermes plugins update my-plugin              # pull latest (local edits are autostashed and re-applied)
+hermes plugins update                        # list every plugin with an update, then "Update all N? [Y/n]"
+hermes plugins update --yes                  # same, without the question (scripts, cron; required without a terminal)
 hermes plugins remove my-plugin              # uninstall; also drops it from plugins.enabled/disabled/entries
                                              # and resets memory.provider when it was the live provider
 hermes plugins enable my-plugin              # add to allow-list
@@ -451,7 +453,20 @@ check runs when `plugins.auto_update_check_hours` is due: default 24 hours,
 desktop sync-status view. This is not a hard once-per-day limit if you configure
 a different interval.
 
-By default, updates require `hermes plugins update NAME`. Setting
+`hermes plugins update` with no name runs the same check and lists the
+plugins it can move: catalog installs (re-pinned to the reviewed catalog
+commit) and tracked Git installs (pulled). It names every plugin it skips and
+why: pinned, needs fixing, status unknown, or a pip distribution Hermes does
+not upgrade. In a terminal it asks once, then updates each plugin through the
+same path as `hermes plugins update NAME`, so new capabilities, a widened
+catalog pin and scan findings still prompt per plugin. One failure does not
+stop the rest; the summary lists what updated, what was already current and
+what failed with its reason (exit code 1 if any failed). Without a terminal
+it prints the list and updates nothing unless you pass `--yes`; with `--yes`,
+consent prompts fail closed as in any non-interactive update (new
+capabilities stay ungranted, a widened catalog pin is not applied).
+
+By default, plugins only update when you run `hermes plugins update`. Setting
 `plugins.auto_apply: true` opts tracked Git plugins into unattended updates.
 Both routes use the update security scan. Auto-apply does not manage pinned,
 manual, drifted, or pip-distribution rows.

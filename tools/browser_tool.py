@@ -647,7 +647,7 @@ def _secret_url_error(url: str) -> Optional[dict]:
     return None
 
 
-def _url_policy_error(url: str, *, auto_local: bool = False) -> Optional[dict]:
+def _url_policy_error(url: str, *, auto_local: bool = False, always_blocked=None) -> Optional[dict]:
     """Backend-aware URL checks on an already-normalized URL; None if allowed. Ordered floors:
     (1) cloud metadata / IMDS refused UNCONDITIONALLY (a local Chromium on a cloud VM still
     reaches the host IMDS); (2) private addresses refused unless local, sidecar-routed, or
@@ -656,7 +656,8 @@ def _url_policy_error(url: str, *, auto_local: bool = False) -> Optional[dict]:
     Credential-NAMED query params (``?token=``, ``?signature=``) are deliberately NOT a floor:
     magic links, OAuth callbacks and signed CDN assets are how the agent signs in and browses, and
     a cloud browser already sees every cookie and typed password of the session — refusing the
-    URL protects nothing. Hermes' own secrets leaking into a URL are caught by ``_secret_url_error``."""
+    URL protects nothing. Hermes' own secrets leaking into a URL are caught by ``_secret_url_error``.
+    ``always_blocked`` replaces the floor's check (``_is_always_blocked_url``) for a caller that caches it."""
     local = _cloud._is_local_backend()
     # Always-blocked floor: cloud metadata / IMDS endpoints are denied regardless of backend, hybrid
     # routing, or allow_private_urls. There's no legitimate agent use case for navigating to 169.254.169.254
@@ -664,7 +665,7 @@ def _url_policy_error(url: str, *, auto_local: bool = False) -> Optional[dict]:
     # sidecar on an EC2/GCP/Azure host exfiltrates IAM credentials (#16234). The floor is UNCONDITIONAL — it
     # must fire for every backend, including the pure-local headless Chromium and off-host CDP cases (a
     # local Chromium on a cloud VM still reaches the host IMDS).
-    if _is_always_blocked_url(url):
+    if (always_blocked or _is_always_blocked_url)(url):
         return _err("Blocked: URL targets a cloud metadata endpoint")
     if not local and not auto_local and not _cloud._allow_private_urls() and not _is_safe_url(url):
         return _err("Blocked: URL targets a private or internal address")

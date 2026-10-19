@@ -51,6 +51,10 @@ _MAX_LANES = 256
 _MAX_TABS = 64
 # The extension lists at most this many tabs, so a shorter list is the whole set and a longer one may not be.
 _LISTING_CAP = 100
+# The cloud-metadata floor resolves a hostname, and an address is checked on every result and for every listed
+# tab, so each host's answer is kept this long rather than asking the gateway's resolver every time.
+_FLOOR_TTL_S = 60.0
+_MAX_FLOOR_HOSTS = 512
 
 
 class _Withheld:
@@ -107,9 +111,45 @@ class _Withheld:
 _withheld = _Withheld()
 
 
+class _FloorAnswers:
+    """Recent answers of the cloud-metadata floor, per host: ``{host: (expires at, blocked)}``."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._answers: OrderedDict[str, tuple[float, bool]] = OrderedDict()
+
+    def blocked(self, url: str) -> bool:
+        try:
+            host = urllib.parse.urlsplit(url).hostname or ""
+        except ValueError:
+            host = ""
+        if not host:
+            return _origin()._is_always_blocked_url(url)
+        now = time.monotonic()
+        with self._lock:
+            answer = self._answers.get(host)
+            if answer is not None and answer[0] > now:
+                return answer[1]
+        blocked = bool(_origin()._is_always_blocked_url(url))
+        with self._lock:
+            self._answers[host] = (now + _FLOOR_TTL_S, blocked)
+            self._answers.move_to_end(host)
+            while len(self._answers) > _MAX_FLOOR_HOSTS:
+                self._answers.popitem(last=False)
+        return blocked
+
+    def clear(self) -> None:
+        with self._lock:
+            self._answers.clear()
+
+
+_floor = _FloorAnswers()
+
+
 def reset_withheld() -> None:
-    """Forget every withheld tab (tests; a new process starts empty)."""
+    """Forget every withheld tab and every cached floor answer (tests; a new process starts empty)."""
     _withheld.clear()
+    _floor.clear()
 
 
 def _tab_arg(args: dict[str, Any]) -> Optional[int]:
@@ -139,8 +179,10 @@ def _landed_url(action: str, payload: dict[str, Any]) -> str:
 
 def _policy_error(url: str) -> Optional[dict]:
     """The block the landed-URL policy puts on ``url``: the cloud-metadata floor and the operator's website
-    policy, but not the private-address rule, which the extension lane skips on purpose."""
-    return _origin()._url_policy_error(url, auto_local=True) if url else None
+    policy, but not the private-address rule, which the extension lane skips on purpose. The floor's answer for
+    a host is reused for a minute (``_FloorAnswers``); the URL that was asked for is checked uncached before
+    anything is sent."""
+    return _origin()._url_policy_error(url, auto_local=True, always_blocked=_floor.blocked) if url else None
 
 
 def _blocked_host(landed: str, policy_error: dict) -> str:

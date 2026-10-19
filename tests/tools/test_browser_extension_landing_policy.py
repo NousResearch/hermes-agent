@@ -648,3 +648,45 @@ def test_an_untargeted_navigation_that_moves_the_one_tab_back_leaves_nothing_wit
     broker.replies["browser_click"] = {"status": "clicked", "url": PREVIOUS_PAGE["url"]}
     assert _call("browser_click", {"ref": "@e1", "tab_id": 41})["status"] == "clicked"
     assert _call("browser_click", {"ref": "@e1"})["status"] == "clicked"
+
+
+# --- the floor's DNS answer is reused per host --------------------------------------------------------------------
+
+
+def test_the_metadata_floor_asks_the_resolver_once_per_host_not_once_per_result_or_tab(lane, monkeypatch):
+    asked = []
+    monkeypatch.setattr(browser_tool, "_is_always_blocked_url", lambda url: asked.append(url) or False)
+    listing = _tabs(*[(index, f"https://host-{index % 3}.test/page-{index}") for index in range(1, 41)])
+    lane({"url": "https://host-0.test/clicked", "status": "clicked"}, {"browser_tabs": listing})
+
+    _call("browser_click", {"ref": "@e1"})
+    _call("browser_click", {"ref": "@e1"})
+    _call("browser_tabs", {})
+
+    assert sorted({url.split("/")[2] for url in asked}) == ["host-0.test", "host-1.test", "host-2.test"]
+    assert len(asked) == 3
+
+
+def test_a_cached_metadata_answer_expires(lane, monkeypatch):
+    import tools.browser_tool_extension_landing as landing
+
+    clock = [1000.0]
+    monkeypatch.setattr(landing.time, "monotonic", lambda: clock[0])
+    asked = []
+    monkeypatch.setattr(browser_tool, "_is_always_blocked_url", lambda url: asked.append(url) or False)
+    lane({"url": "https://example.test/clicked", "status": "clicked"})
+
+    _call("browser_click", {"ref": "@e1"})
+    clock[0] += landing._FLOOR_TTL_S + 1
+    _call("browser_click", {"ref": "@e1"})
+
+    assert len(asked) == 2
+
+
+def test_a_host_the_floor_blocks_by_name_stays_blocked_from_the_cache(lane, monkeypatch):
+    monkeypatch.setattr(browser_tool, "_is_always_blocked_url", lambda url: "metadata.example" in url)
+    lane({"url": "http://metadata.example/latest/", "status": "clicked"})
+
+    for _ in range(2):
+        out = _call("browser_click", {"ref": "@e1", "tab_id": 41})
+        assert out["code"] in ("redirect_blocked", "tab_withheld")

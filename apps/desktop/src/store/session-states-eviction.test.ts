@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { $projectTree } from '@/store/project-tree'
 import {
   $activeSessionId,
   $messagingSessions,
@@ -36,6 +37,7 @@ beforeEach(() => {
   $sessionTiles.set([])
   $sessions.set([])
   $messagingSessions.set([])
+  $projectTree.set([])
   $activeSessionId.set(null)
   $selectedStoredSessionId.set(null)
   $unreadFinishedSessionIds.set([])
@@ -71,6 +73,40 @@ describe('publish-time eviction', () => {
     publishSessionState('rt-work', state('shared', { busy: false }))
 
     expect($unreadFinishedSessionIds.get()).toContain('shared')
+  })
+
+  it('does not mark a messaging completion unread when only the project tree has its row', () => {
+    // The project tree lists messaging rows too (it excludes only cron/kanban/oneshot), and a
+    // conversation older than the loaded messaging page is known only from there.
+    $projectTree.set([
+      {
+        id: 'proj',
+        label: 'proj',
+        path: null,
+        repos: [
+          {
+            id: 'repo',
+            label: 'repo',
+            path: null,
+            groups: [
+              {
+                id: 'lane',
+                label: 'lane',
+                path: null,
+                sessions: [makeSessionInfo({ id: 'tg-old', source: 'telegram' })]
+              }
+            ],
+            sessionCount: 1
+          }
+        ],
+        sessionCount: 1
+      } as never
+    ])
+
+    publishSessionState('rt-tg', state('tg-old', { busy: true }))
+    publishSessionState('rt-tg', state('tg-old', { busy: false }))
+
+    expect($unreadFinishedSessionIds.get()).not.toContain('tg-old')
   })
 
   it('keeps a busy session with no surface — its background turn feeds the sidebar dot', () => {

@@ -84,3 +84,26 @@ def test_panel_borders_and_rows_share_one_cell_width():
     lines = [line for line in "".join(chunk for _style, chunk in rendered).split("\n") if line]
 
     assert {cells(line) for line in lines} == {32}, lines  # box_width + 2 borders, every line
+
+
+def test_wrap_line_cells_keeps_every_ideograph_it_breaks_on():
+    """A row break must not swallow the character that triggered it.
+
+    ``_wrap_line_cells`` used to flush the finished row and reset ``current``
+    without re-emitting the ideograph that did not fit, so any CJK text landing
+    exactly on a row boundary lost a character and gained a spurious empty row.
+    """
+    source = "汉" * 11
+
+    rows = cli_render._wrap_line_cells(source, 20, 20, "")
+
+    assert "".join(rows) == source, rows
+    assert rows == ["汉" * 10, "汉"], rows
+
+
+def test_kinsoku_carries_the_ideograph_down_with_the_punctuation():
+    # Ten ideographs fill the row exactly; the comma that does not fit must
+    # drag the last ideograph with it instead of opening the row by itself.
+    rows = cli_render._wrap_line_cells("汉" * 10 + "，", 20, 20, "")
+
+    assert rows == ["汉" * 9, "汉，"], rows

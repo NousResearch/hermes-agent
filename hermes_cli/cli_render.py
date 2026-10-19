@@ -1080,16 +1080,32 @@ def _wrap_line_cells(line: str, first_width: int, rest_width: int, indent: str =
                 current += ch
                 used += cells
             elif current.strip():
-                # Keep closing punctuation off the start of the new row by
-                # dragging the preceding ideograph down with it.
-                carry = ""
-
-                if ch in _CLOSING_PUNCTUATION and _CJK_IDEOGRAPH_RE.match(current[-1]):
-                    carry = current[-1]
-                    current = current[:-1]
-
                 rows.append(current.rstrip())
-                current, used = indent + carry, indent_cells + _display_width(carry)
+                current, used = indent + ch, indent_cells + cells
+        elif (
+            ch in _CLOSING_PUNCTUATION
+            and not word
+            and current
+            and _CJK_IDEOGRAPH_RE.match(current[-1])
+        ):
+            # Kinsoku: closing punctuation must not start a row. ``ch`` never
+            # reaches the ideograph branch above (punctuation is outside
+            # _CJK_IDEOGRAPH_RE), so the rule has to live here. When it does
+            # not fit, drag the preceding ideograph down with it so the
+            # punctuation stays attached instead of opening the next row.
+            cells = _display_width(ch)
+
+            if used + cells <= limit:
+                current += ch
+                used += cells
+            elif current.strip():
+                carry = current[-1]
+                current = current[:-1]
+                rows.append(current.rstrip())
+                current, used = indent + carry + ch, indent_cells + _display_width(carry) + cells
+            else:
+                current += ch
+                used += cells
         else:
             word += ch
 

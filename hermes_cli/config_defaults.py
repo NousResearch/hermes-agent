@@ -453,7 +453,8 @@ DEFAULT_CONFIG = {
         # Also gates the browser_exec `local` arg (real-profile session under a cloud backend). Desktop Settings -> Browser.
         "use_real_profile": False,
         # Windows only: a running Chrome/Edge/Brave locks its cookie DB, so the profile can't be
-        # copied (the session runs on a fresh browser). When on, the agent ASKS first; on approval it
+        # copied (the last snapshot is reused; with none yet, the session runs on a fresh browser).
+        # When on, the agent ASKS first; on approval it
         # runs `hermes browser close-profile` (kills that profile's browser tree, unsaved tabs lost)
         # so a new session can copy it; no auto-kill. No effect on macOS/Linux, where a running
         # browser only locks the password/autofill DBs, which are skipped (cookies still copy).

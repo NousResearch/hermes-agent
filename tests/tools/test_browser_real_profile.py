@@ -946,6 +946,42 @@ class TestReviewRound3:
         assert err and err.startswith(bc._PROFILE_LOCKED_PREFIX)
         assert killed["n"] == 0  # snapshot must NOT invoke the killer itself
 
+    def test_locked_profile_reuses_completed_snapshot(self, tmp_path, monkeypatch):
+        """A completed snapshot of the same source profile is served as-is when the live
+        profile is locked — not refused into a signed-out fallback. No re-sync runs."""
+        import hermes_cli.browser_connect as bc
+        src = self._multi(tmp_path / "real")
+        home = tmp_path / "hh"
+        monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
+        first, err = bc.snapshot_real_profile("chrome", src=str(src))
+        assert err is None
+        _auth_db((src / "Profile 6" / "Cookies"), "NEWER-SESSION")
+        open(os.path.join(first, "SingletonLock"), "w", encoding="utf-8").close()  # windows-footgun: ok — write mode, not a read
+        monkeypatch.setattr(bc, "_profile_is_locked", lambda s, p: True)
+        monkeypatch.setattr(bc, "_mirror_profile_auth",
+                            lambda *a: pytest.fail("must not touch the locked live profile"))
+        dst, err = bc.snapshot_real_profile("chrome", src=str(src))
+        assert (dst, err) == (first, None)
+        assert _auth_db(home / "browser-profile" / "chrome" / "Default" / "Cookies") == "PROFILE6-SESSION"
+        assert not os.path.exists(os.path.join(dst, "SingletonLock"))
+
+    def test_locked_profile_refuses_snapshot_of_another_profile(self, tmp_path, monkeypatch):
+        """A completed snapshot taken from a DIFFERENT source profile is another account's
+        logins: a locked live profile still fails rather than serving it."""
+        import hermes_cli.browser_connect as bc
+        src = self._multi(tmp_path / "real")
+        home = tmp_path / "hh"
+        monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
+        first, err = bc.snapshot_real_profile("chrome", src=str(src))
+        assert err is None
+        with open(os.path.join(first, bc._SNAPSHOT_DONE_MARKER), "w", encoding="utf-8") as fh:
+            fh.write("Default")
+        monkeypatch.setattr(bc, "_profile_is_locked", lambda s, p: True)
+        monkeypatch.setattr(bc, "_real_profile_autoclose", lambda: False)
+        dst, err = bc.snapshot_real_profile("chrome", src=str(src))
+        assert dst is None
+        assert err and err.startswith(bc._PROFILE_LOCKED_PREFIX)
+
     def test_processes_holding_profile_identity_binding(self, tmp_path, monkeypatch):
         """The process matcher requires BOTH a browser binary AND this exact
         user-data-dir in the cmdline — never a same-name process on another dir."""

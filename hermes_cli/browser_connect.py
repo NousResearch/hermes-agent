@@ -710,11 +710,39 @@ def _copy_profile_tree(src: str, dst: str, source_profile: str) -> None:
             len(multi.args[0]) if multi.args else 0, src, source_profile)
 
 
+def _drop_singleton_leftovers(dst: str) -> None:
+    """Never carry live-instance leftovers into the copy (they make Chrome think it's open)."""
+    for leftover in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+        with contextlib.suppress(OSError):
+            os.unlink(os.path.join(dst, leftover))
+
+
+def _snapshot_source(marker: str) -> str | None:
+    """Source profile name a completed snapshot was taken from (the done marker's content)."""
+    try:
+        with open(marker, encoding="utf-8") as fh:
+            return fh.read().strip() or None
+    except OSError:
+        return None
+
+
+def _reuse_snapshot(browser: str, dst: str) -> tuple[str, None]:
+    """Serve the last completed snapshot as-is when the live profile is locked. Its logins are as
+    fresh as that copy; the next launch with the browser closed re-syncs them. Refusing instead
+    would drop the session to a signed-out browser although a usable copy is on disk."""
+    _drop_singleton_leftovers(dst)
+    logger.info("real-profile: %s holds its profile lock; reusing the last snapshot in %s "
+                "(logins as of that copy)", browser, dst)
+    return dst, None
+
+
 def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | None, str | None]:
     """Snapshot ``browser``'s real ACTIVE profile into the hermes copy dir; returns ``(dst, err)``.
     Copies ``Local State`` plus the active profile's auth files into the copy's ``Default``. The
     completion marker is written only after full success, so a torn first copy (disk full, Ctrl+C)
-    never looks "already populated" — it is redone from scratch."""
+    never looks "already populated" — it is redone from scratch. A locked live profile (Windows,
+    browser running) reuses a completed snapshot of the same source profile without re-syncing;
+    only a missing or other-profile snapshot fails with the locked error."""
     src = src or real_profile_data_dir(browser)
     if not src or not os.path.isdir(src):
         return None, (
@@ -724,15 +752,17 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
     if resolve_err or not source_profile:
         return None, resolve_err
     dst = real_profile_copy_dir(browser)
-    # Fast lock probe BEFORE any copy: a blocking file op on a Windows-locked cookie DB can
-    # hang the launch for minutes. Never trips on POSIX, where a running browser only locks the
-    # password/autofill DBs, which ``_mirror_profile_auth`` skips.
-    if _profile_is_locked(src, source_profile):
-        return None, _locked_profile_error(browser)
     marker = os.path.join(dst, _SNAPSHOT_DONE_MARKER)
     # Only a copy that previously COMPLETED counts as populated; a half-written tree is
     # rebuilt — otherwise a torn first copy poisons freshness forever.
     populated = os.path.isfile(marker)
+    # Fast lock probe BEFORE any copy: a blocking file op on a Windows-locked cookie DB can
+    # hang the launch for minutes. Never trips on POSIX, where a running browser only locks the
+    # password/autofill DBs, which ``_mirror_profile_auth`` skips.
+    if _profile_is_locked(src, source_profile):
+        if populated and _snapshot_source(marker) == source_profile:
+            return _reuse_snapshot(browser, dst)
+        return None, _locked_profile_error(browser)
     try:
         os.makedirs(dst, exist_ok=True)
         # Secure the snapshot dir AND its browser-profile parent on EVERY launch so a failed
@@ -746,10 +776,7 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
         failed_dbs = _mirror_profile_auth(src, dst, source_profile)
         if failed_dbs:  # no session cookies: a "real profile" launch would be signed out
             return None, _unavailable_auth_dbs_error(browser, failed_dbs)
-        # Never carry live-instance leftovers into the copy.
-        for leftover in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
-            with contextlib.suppress(OSError):
-                os.unlink(os.path.join(dst, leftover))
+        _drop_singleton_leftovers(dst)
         # Mark complete only after everything above succeeded.
         try:
             with open(marker, "w", encoding="utf-8") as fh:

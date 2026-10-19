@@ -7006,8 +7006,6 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             if topic_info:
                 chat_topic = topic_info.get("name")
                 topic_skill = topic_info.get("skill")
-            # The topic name a creation reveals is cached by _handle_forum_topic_created, which is the
-            # only path Telegram delivers a ``forum_topic_created`` service message through.
         elif chat_type == "group" and thread_id_str:
             # Forum topic skill binding via config.extra['group_topics']; accepts both
             # [{"chat_id": ..., "topics": [...]}] and legacy {"-100...": [{"thread_id": 12}]}.

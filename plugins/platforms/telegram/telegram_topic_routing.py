@@ -75,8 +75,8 @@ class TelegramTopicRoutingMixin:
         """Record an authorized, non-bot private-chat topic creation (#136567).
 
         The service ``Message`` supplies ``message_thread_id``; ``ForumTopicCreated`` does not.
-        Apply the existing intake authorization gate before remembering routing state or caching
-        a name, so rejected users cannot populate either. Routing signal only: never an agent turn.
+        Apply the existing intake authorization gate before remembering routing state, so
+        rejected users cannot populate it. Routing signal only: never an agent turn.
         """
         message = getattr(update, "effective_message", None)
         created = getattr(message, "forum_topic_created", None) if message is not None else None
@@ -101,10 +101,8 @@ class TelegramTopicRoutingMixin:
             pending.pop(oldest)
         pending[(chat_id, self._sender_id_str(message))] = (
             str(thread_id), message_id, time.monotonic())
-        topic_name = getattr(created, "name", None)
-        if topic_name and isinstance(getattr(self, "_dm_topics", None), dict):
-            # The creation is the one message that reveals the new topic's name.
-            self._cache_dm_topic_from_message(chat_id, str(thread_id), str(topic_name))
+        # Never cache the user-chosen name in _dm_topics: _get_dm_topic_info hits there mark
+        # operator-fixed topics, so caching it would silently block session-title auto-rename.
         logger.debug("[%s] Recorded new Telegram topic %s (chat=%s)", self.name, thread_id, chat_id)
 
     def _adopt_created_topic_thread(self, message: Any, chat_type: str, thread_id: Optional[str]) -> Optional[str]:

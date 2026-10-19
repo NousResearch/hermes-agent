@@ -423,7 +423,8 @@ async def test_healthy_threaded_opener_consumes_creation_without_changing_thread
     async with connected(monkeypatch) as (adapter, app, delivered):
         await _deliver(app, adapter, topic_created(app.bot))
         assert set(adapter._pending_created_topics) == {("42", "88")}
-        assert adapter._dm_topics["42:Prova 3"] == 40798
+        # A user-chosen name must not enter the operator-topic cache, or auto-rename treats it as fixed.
+        assert "42:Prova 3" not in adapter._dm_topics
 
         await _deliver(app, adapter, opener(app.bot, thread=explicit_thread, is_topic=True))
         assert [event.source.thread_id for event in delivered] == [str(explicit_thread)]

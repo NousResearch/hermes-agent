@@ -50,6 +50,7 @@ import {
   adoptRecoveredRetry,
   applyRetryOptimistic,
   planFailedRetry,
+  promptAdmissionRejected,
   retryMessageId,
   rollbackFailedRetry,
   type RetryRunConfig,
@@ -322,6 +323,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
     updateSessionState: (sessionId, updater) => sessionTileDelegate()!.updateSession(sessionId, updater),
     scope: {
       removeAttachments: attachments => scope.attachments.removeOccurrences(attachments),
+      patchAttachment: (expected, patch) => void scope.attachments.updateIfCurrent(expected, patch),
       readAttachments: () => scope.attachments.$attachments.get(),
       // Busy/messages flow through updateSession -> the tile's state slice;
       // the primary view atoms must never see a tile turn.
@@ -488,7 +490,8 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
               const message = state.messages.find(candidate => candidate.id === messageId)
 
               // A newer reply may precede this ACK; it already owns its boundary.
-              const hasNewReply = state.messages.slice(state.messages.findIndex(candidate => candidate.id === messageId) + 1)
+              const hasNewReply = state.messages
+                .slice(state.messages.findIndex(candidate => candidate.id === messageId) + 1)
                 .some(candidate => candidate.role === 'assistant')
 
               return message && state.streamId && !hasNewReply
@@ -664,6 +667,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       const storedId = storedIdRef.current
       let retryRuntimeId = sessionId
       let optimisticMessages: ChatMessage[] | undefined
+      let freshRetry = false
       const updateRetry = (updater: (state: ClientSessionState) => ClientSessionState) =>
         sessionTileDelegate()?.updateSession(retryRuntimeId, updater)
 
@@ -674,6 +678,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
           return
         }
 
+        freshRetry = 'text' in plan
         const optimistic = updateRetry(state => applyRetryOptimistic(state, messageId))
         optimisticMessages = optimistic?.messages
         await submitFailedRetry(
@@ -692,7 +697,14 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
           () => runtimeIdRef.current === sessionId && storedIdRef.current === storedId
         )
       } catch (error) {
-        updateRetry(state => rollbackFailedRetry(state, messages, optimisticMessages))
+        updateRetry(state =>
+          rollbackFailedRetry(
+            state,
+            messages,
+            optimisticMessages,
+            freshRetry && !promptAdmissionRejected(error) ? messageId : undefined
+          )
+        )
         notifyError(error, copy.regenerateFailed)
       }
     },

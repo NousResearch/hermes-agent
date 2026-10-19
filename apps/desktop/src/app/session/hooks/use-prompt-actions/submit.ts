@@ -16,8 +16,10 @@ import {
 import {
   $composerAttachments,
   type ComposerAttachment,
+  type ComposerAttachmentPatch,
   freezeComposerTransportPayload,
   mainComposerScope,
+  patchMainComposerAttachmentOccurrence,
   revokeDiscardedAttachmentPreviews
 } from '@/store/composer'
 import { serverOwnsComposerQueue } from '@/store/composer-queue'
@@ -62,10 +64,12 @@ import {
   acquireSubmitInFlight,
   type GatewayRequest,
   inlineErrorMessage,
+  isForwardedReceipt,
   isProviderSetupError,
   isSessionBusyError,
-  isSessionNotOwnedError,
   isTargetSessionBusy,
+  ownershipErrorSurface,
+  refusalDroppedImages,
   releaseSubmitInFlight,
   SessionRecoveryAborted,
   type SubmitTextOptions,
@@ -101,6 +105,8 @@ interface SubmitPromptDeps {
    *  the primary view's $busy/$messages or clears the main attachment chips. */
   scope?: {
     removeAttachments: (attachments: readonly ComposerAttachment[]) => void
+    /** Merge `patch` into the chip occurrence `expected` names, if it is still there. */
+    patchAttachment: (expected: ComposerAttachment, patch: ComposerAttachmentPatch) => void
     readAttachments: () => ComposerAttachment[]
     setAwaitingResponse: (awaiting: boolean) => void
     setBusy: (busy: boolean) => void
@@ -108,10 +114,40 @@ interface SubmitPromptDeps {
   }
 }
 
+// #140968: serve unstages the images of a send the gateway owner refused, so the restored chips must
+// not claim the session still holds them. Un-stage them (original source path back, no session
+// stamp) and the resend uploads them again.
+function unstageRefusedImages(
+  err: unknown,
+  usingComposerAttachments: boolean,
+  scope: NonNullable<SubmitPromptDeps['scope']>,
+  attachments: readonly ComposerAttachment[]
+): void {
+  if (!usingComposerAttachments || !refusalDroppedImages(err)) {
+    return
+  }
+
+  for (const original of attachments) {
+    // The chip as staged now (a legacy chip without an occurrence id was replaced by object).
+    const current = scope
+      .readAttachments()
+      .find(item => item.id === original.id && item.occurrenceId === original.occurrenceId)
+
+    if (current && original.kind === 'image' && original.path) {
+      scope.patchAttachment(current, {
+        attachedSessionId: undefined,
+        label: original.label,
+        path: original.attachedSessionId ? (original.detail ?? original.path) : original.path
+      })
+    }
+  }
+}
+
 // Stable identity — a fresh default object per render would churn the
 // useCallback below on every render.
 const MAIN_SUBMIT_SCOPE: NonNullable<SubmitPromptDeps['scope']> = {
   removeAttachments: attachments => mainComposerScope.removeOccurrences(attachments),
+  patchAttachment: (expected, patch) => void patchMainComposerAttachmentOccurrence(expected, patch),
   readAttachments: () => $composerAttachments.get(),
   setAwaitingResponse,
   setBusy,
@@ -156,7 +192,7 @@ export function rebindPaneToResumedRuntime({
 
 /** The prompt submit pipeline, extracted from usePromptActions. */
 /** Canonical admission receipt; `user_row_id` binds the optimistic bubble to its durable row. */
-type SubmitReceipt = Pick<PromptSubmitResult, 'user_row_id'> & {
+type SubmitReceipt = Pick<PromptSubmitResult, 'forwarded' | 'user_row_id'> & {
   admission_id?: string
   submission_id?: string
   session_id?: string
@@ -1228,6 +1264,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
               }
             }
 
+            // RT-37: forwarded to the gateway owner's FIFO; its queued-row card stands for the send.
+            if (isForwardedReceipt(legacyAccepted, result)) {
+              abortForSessionSwitch(sessionId)
+            }
+
             const rowId = result?.user_row_id
 
             if (typeof rowId === 'number' && Number.isSafeInteger(rowId) && rowId > 0) {
@@ -1303,6 +1344,8 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       } catch (err) {
         releaseBusy()
 
+        unstageRefusedImages(err, usingComposerAttachments, scope, attachments)
+
         // A queued drain that raced a not-yet-settled turn gets a transient
         // "session busy" (4009). Don't surface an error bubble/toast — the entry
         // stays queued and the composer's bounded auto-drain retries when idle.
@@ -1318,9 +1361,6 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
         const message = inlineErrorMessage(err, copy.promptFailed)
         const occurredAt = Date.now() / 1000
-        // Another surface owns the session (#106217): a deterministic gateway
-        // refusal, so the error card drops Retry and offers a new session.
-        const notOwned = isSessionNotOwnedError(err)
 
         updateSessionState(
           sessionId,
@@ -1334,7 +1374,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
                 parts: [],
                 error: message || copy.promptFailed,
                 admissionRejected: promptAdmissionRejected(err),
-                ...(notOwned && { errorSurface: { layer: 'gateway', code: 'SESSION_NOT_OWNED', retryable: false } }),
+                ...ownershipErrorSurface(err),
                 branchGroupId: state.pendingBranchGroup ?? undefined,
                 completedAt: occurredAt,
                 timestamp: occurredAt

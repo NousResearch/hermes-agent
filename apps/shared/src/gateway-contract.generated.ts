@@ -2744,6 +2744,8 @@ export interface PromptSubmitResult {
   survivor_user_row_ids?: (number | null)[] | null
   survivor_row_id_map?: Record<string, number | null> | null
   turn_isolation?: boolean | null
+  admission_id?: string | null
+  forwarded?: boolean | null
 }
 export type PromptSubmitStatus = 'streaming' | 'queued' | 'steered' | 'redirected'
 export interface ClipboardPasteParams {
@@ -5126,6 +5128,7 @@ export interface CanonicalTurnAuthor {
 export interface CanonicalModelOverride {
   model: string
   provider?: string | null
+  reasoning?: string | null
 }
 export interface CanonicalApprovalParams {
   profile?: string | null

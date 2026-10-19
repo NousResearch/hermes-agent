@@ -89,6 +89,8 @@ The canonical `hermes-gateway-v1` owner supports this for Desktop (`source: gui`
 
 Tokens are process-local. A missing token, backend restart, agent replacement, changed/compacted transcript, unproven tool outcome, screenshot replay depending on external image files/config, or unsupported isolated/Codex worker refuses with `4034` on standalone serve or `4001 retry_checkpoint_unavailable` on the canonical owner; clients must preserve the transcript and ask the user to review completed work before continuing. Never downgrade this refusal to a truncating submit or replay the original prompt. A tool effect that occurs before its result commits remains an unknowable window: this mechanism does not guarantee arbitrary exactly-once effects.
 
+A forwarded send refused as `SESSION_OWNER_UNCONFIRMED` may already be queued: do not resend it, even though it shares code `4090` with definite ownership refusals. Fresh error-card resubmission is limited to definitively rejected, text-only input on the original runtime; it never automatically resumes onto another owner. Each fresh attempt needs its own definite refusal before another resend is allowed; an unconfirmed retry consumes the old refusal proof without replacing newer output or a new checkpoint. Token continuation retains runtime recovery and backend validation. A `SESSION_OWNER_BUSY` refusal can discard staged images; review and resend the restored composer draft so its images upload again instead of reusing stale attachment references or sending text alone.
+
 ### Events streamed back
 
 `message.delta`, `message.complete`, `tool.start`, `tool.generating`, `tool.complete`, `gateway.ready`, `request.cancel`, plus session lifecycle and error events.

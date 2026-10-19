@@ -103,6 +103,13 @@ def display_projection(history, profile_home):
     return server._history_to_messages(rows, profile_home=profile_home)
 
 
+def model_only(row):
+    """A live row the model reads but nobody typed as one message (a micro-compaction merge): never rendered."""
+    from agent.context_compressor import MODEL_ONLY_DISPLAY_METADATA_KEY
+    metadata = row.get('display_metadata')
+    return isinstance(metadata, dict) and bool(metadata.get(MODEL_ONLY_DISPLAY_METADATA_KEY))
+
+
 class AuthorityConnection:
     def __init__(self, authority, transport, identity, *, operator=False):
         self.authority = authority
@@ -425,9 +432,10 @@ class AuthorityConnection:
             return await self._create(params, title)
 
     async def _create(self, params, title):
-        from gateway.session_local import stage_local_session
+        from gateway.session_local import stage_local_session, staged_creation_follows
         from gateway.session_local_recovery import restore_local_session
         from gateway.session_local_title import resolve_titled_session, title_new_session
+        from gateway.session_policy import BYPASS_FIELDS
         from gateway.session_runtime_workers import tracked_write
         from hermes_state_local import commit_local_session
         # Bot Mode's forever-chat mint: born hidden from the sidebar. `follow_profile_config` stays in
@@ -436,6 +444,13 @@ class AuthorityConnection:
         if type(hidden) is not bool:
             raise RuntimeStoreError('invalid_params', field='hidden', detail='must be a boolean')
         ref = title and resolve_titled_session(self.authority, self.actor, title, missing_ok=True)
+        if (not ref and title == 'Bot Chat'
+                and not any(params.get(name) is True for name in BYPASS_FIELDS)
+                and staged_creation_follows(self.authority, self.actor, params.get('request_id'))):
+            # ``chat -c "Bot Chat" --create-if-missing`` and any other titled create. A safe-mode
+            # or ignore-user-config launch never reads the profile, so it stays frozen. An exact
+            # retry of a creation staged without the flag keeps that frozen request.
+            params.setdefault('follow_profile_config', True)
         if not ref:
             skills_prompt = None
             if 'skills' in params:
@@ -602,11 +617,12 @@ class AuthorityConnection:
         # reopens it (``reopen_local_session`` in the drain), so opening a finished chat
         # never re-lights DB-derived liveness with no new activity.
         self.authority.authorize(self.actor, ref, 'session:read')
-        if 'session:control' in self.actor.capabilities and ref.session_id not in self.subscriptions:
+        if 'session:control' in self.actor.capabilities:
             # A client attaching (main's `hermes -c` was a new process) re-reads the config-derived settings
-            # (CFG-2); a snapshot poll on this attachment does not.
+            # (CFG-2); a snapshot poll on this attachment does not. Any open still adopts a frozen Bot Chat
+            # whose earlier open found it busy (Desktop's warm `session.activate` resumes on one connection).
             from gateway.session_policy_refresh import refresh_resumed_policy
-            await refresh_resumed_policy(self.authority, ref)
+            await refresh_resumed_policy(self.authority, ref, attached=ref.session_id in self.subscriptions)
         from gateway.session_retry import retry_inflight
         snapshot = await self.authority.attach(self.actor, ref)
         self.subscriptions[ref.session_id] = snapshot.subscription_id
@@ -622,7 +638,9 @@ class AuthorityConnection:
         from gateway.session_connections import pending_connection
         display = {}
         if params.get('display_projection'):
-            display['display_messages'] = display_projection(snapshot.history, self.authority.profile_id)
+            # A micro-compaction merge stays in ``messages`` (an undo target); its originals are what shows.
+            display['display_messages'] = display_projection(
+                [row for row in snapshot.history if not model_only(row)], self.authority.profile_id)
         return {'session_id': ref.session_id, 'stored_session_id': ref.session_id,
                 'messages': list(snapshot.history), **display,
                 'inflight': retry_inflight(self.authority.sessions[ref.session_id], snapshot.pending), 'message_count': len(snapshot.history),

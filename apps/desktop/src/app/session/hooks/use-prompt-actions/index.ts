@@ -57,7 +57,16 @@ import type {
 } from '../../../types'
 import type { CreateBackendSessionForSend } from '../use-session-actions/create-overrides'
 
-import { adoptRecoveredRetry, applyRetryOptimistic, planFailedRetry, retryMessageId, type RetryRunConfig, rollbackFailedRetry, submitFailedRetry } from './retry'
+import {
+  adoptRecoveredRetry,
+  applyRetryOptimistic,
+  planFailedRetry,
+  promptAdmissionRejected,
+  retryMessageId,
+  type RetryRunConfig,
+  rollbackFailedRetry,
+  submitFailedRetry
+} from './retry'
 import {
   appendMidTurnUserMessage,
   applyBranchVisibility,
@@ -1146,6 +1155,7 @@ export function usePromptActions({
 
       let retryRuntimeId = sessionId
       let optimisticMessages: ChatMessage[] | undefined
+      let freshRetry = false
 
       const update = (updater: (state: ClientSessionState) => ClientSessionState) =>
         updateSessionState(retryRuntimeId, updater)
@@ -1159,6 +1169,7 @@ export function usePromptActions({
           return
         }
 
+        freshRetry = 'text' in plan
         const optimistic = update(state => applyRetryOptimistic(state, messageId))
         optimisticMessages = optimistic?.messages
         await submitFailedRetry(
@@ -1180,7 +1191,14 @@ export function usePromptActions({
           () => activeSessionIdRef.current === sessionId && selectedStoredSessionIdRef.current === storedId
         )
       } catch (error) {
-        update(state => rollbackFailedRetry(state, messages, optimisticMessages))
+        update(state =>
+          rollbackFailedRetry(
+            state,
+            messages,
+            optimisticMessages,
+            freshRetry && !promptAdmissionRejected(error) ? messageId : undefined
+          )
+        )
         notifyError(error, copy.regenerateFailed)
       }
     },

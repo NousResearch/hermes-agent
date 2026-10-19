@@ -4,6 +4,8 @@ Pure-data leaf module — must not import from hermes_cli.config. Comments are t
 docs of config.yaml.
 """
 
+from hermes_cli.config_defaults_database import database_defaults
+
 
 #: Image every container terminal backend (docker/modal/daytona/singularity) uses unless the
 #: user pins one. LEGACY_SANDBOX_IMAGES are the plain defaults that preceded the desktop stack
@@ -42,16 +44,7 @@ DEFAULT_CONFIG = {
     "toolsets": ["hermes-cli"],
     # journal_mode: SQLite journal mode for every Hermes DB. "wal" default; use "delete" on
     # weak-fsync/shared filesystems where WAL is not crash-safe (macOS virtiofs, NFS, SMB).
-    "database": {
-        "journal_mode": "wal",
-        # WAL sizing pragmas (ints). None = SQLite defaults (autocheckpoint 1000 pages, no limit).
-        "wal_autocheckpoint": None,
-        "journal_size_limit": None,
-        # Byte cap on the main-image copy inside a retired-WAL capture artifact (hermes_state_dbfile):
-        # above it the artifact keeps only the 100-byte SQLite header, and says so in the log and in
-        # manifest.json's main.mode. None = the shipped 512 MiB, which a long-lived store outgrows.
-        "retired_generation_max_bytes": None,
-    },
+    "database": database_defaults(),
     # Soft fd limit for long-running server processes; clamped to OS hard limit. 0/false/null = off.
     "runtime": {"nofile_soft_limit": 4096},
     # Global active chat session cap across CLI, TUI/dashboard, and messaging. None/0 = unbounded.

@@ -435,8 +435,11 @@ def retired_generation_main_image_max_bytes() -> int:
         from hermes_cli.config import cfg_get, load_config_readonly
         raw = cfg_get(load_config_readonly(), "database", _RETIRED_GENERATION_MAIN_IMAGE_CONFIG_KEY, default=None)
     except Exception as exc:
+        # Deliberate catch-all: this runs on a halt/close path, where a config read (yaml, ACLs,
+        # a half-written profile) must not cost the capture. The traceback goes to the log so the
+        # reason the override was ignored is recoverable; the shipped cap still applies.
         logger.debug("retired-WAL capture: database.%s unavailable (%s); using %d bytes",
-                     _RETIRED_GENERATION_MAIN_IMAGE_CONFIG_KEY, exc, shipped)
+                     _RETIRED_GENERATION_MAIN_IMAGE_CONFIG_KEY, exc, shipped, exc_info=True)
         return shipped
     if raw is None or (isinstance(raw, str) and not raw.strip()):
         return shipped

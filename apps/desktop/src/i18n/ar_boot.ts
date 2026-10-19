@@ -55,6 +55,12 @@ export const arBoot = {
       identityProvider: 'مزود الهوية'
     }
   },
+  keepAwakeOffer: {
+    title: 'دخل جهاز الكمبيوتر في وضع السكون أثناء عمل Hermes',
+    message:
+      'يمكن لـ Hermes إبقاء جهازك مستيقظًا أثناء تشغيل مهمة. ستنطفئ الشاشة كالمعتاد، وقد يدخل الجهاز في وضع السكون عند العمل بالبطارية.',
+    action: 'إبقاء الجهاز مستيقظًا أثناء العمل'
+  },
   remoteDisplayBanner: {
     message: reason => `العرض البرمجي نشط — تم اكتشاف شاشة بعيدة (${reason}). تم تعطيل تسريع GPU لمنع الوميض.`
   },
@@ -71,6 +77,12 @@ export const arBoot = {
   promptNotices: {
     legacySendUnconfirmed:
       'تعذّر على هذا الخادم تأكيد الإرسال السابق لهذه الرسالة، لذا ربما تم تنفيذها بالفعل. راجع المحادثة قبل إرسالها مرة أخرى.',
+    mcpReloadDeferred:
+      'هذه المحادثة مشغولة: يُطبَّق تغيير MCP بعد انتهاء دورها وإعادة تحميل MCP مجددًا، أو عند إعادة فتح المحادثة',
+    mcpReloadNotInChat: server => `${server} غير مفعّل في هذه المحادثة`,
+    mcpReloadUnavailable: servers => `تعذّر الاتصال: ${servers}`,
+    compactedTurnUnavailable: 'تم تلخيص هذه الرسالة عند ضغط المحادثة، لذا لم يعد بالإمكان استعادتها أو تحريرها.',
+    staleTurnUnavailable: 'لم تعد هذه الرسالة موجودة في سجل هذه المحادثة.',
     sessionCommands: arSessionCommands
   },
   updates: {
@@ -339,5 +351,5 @@ export const arBoot = {
   }
 } satisfies Pick<
   TranslationOverrides,
-  'boot' | 'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'updates' | 'install' | 'onboarding'
+  'boot' | 'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'updates' | 'install' | 'onboarding'
 >

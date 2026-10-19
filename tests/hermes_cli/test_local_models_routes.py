@@ -124,7 +124,7 @@ def test_status_tracks_preset_spill_and_restored_window(client, tmp_path, monkey
     def router_response(running, route, **kwargs):
         if route == "/models":
             return {"data": [{"id": model_id, "status": {"value": "loaded"}}]}
-        assert route == f"/props?model={model_id}"
+        assert route == f"/props?model={model_id}&autoload=false"
         return {"default_generation_settings": {"n_ctx": server_window}}
 
     monkeypatch.setattr(local_models, "_router_request", router_response)
@@ -215,6 +215,32 @@ def test_calibrated_catalog_and_quickstart_respect_backend(client, monkeypatch, 
     assert local_models._quickstart_target(local_models.QuickstartBody(), budget)[0].id == expected
     explicit = local_models.QuickstartBody(model_id="qwen3.8-27b")
     assert local_models._quickstart_target(explicit, budget)[0].id == "qwen3.8-27b"
+
+
+def test_quickstart_falls_back_past_entries_that_are_never_recommended(monkeypatch):
+    """When the recommended entry can't start, quickstart tries the other recommendable entries.
+    Nemotron 3.5 Bolt is an option only, so the fallback refuses rather than download it."""
+    from fastapi import HTTPException
+
+    from hermes_cli.local_runtime import catalog
+    from hermes_cli.local_runtime.estimator import HardwareBudget
+    from hermes_cli.web_routers import local_models
+
+    budget = HardwareBudget(44 << 30, 48 << 30, 64 << 30, uma=False)
+    bolt = catalog.catalog_by_id()["nemotron-3.5-bolt-74b-a9b"]
+    the_27b = catalog.catalog_by_id()["qwen3.8-27b"]
+    real_select = catalog.select_variant
+    monkeypatch.setattr(local_models, "_engine_too_old", lambda min_engine: False)
+    monkeypatch.setattr(catalog, "recommended_entry", lambda *a, **kw: (the_27b, "best-quality-resident"))
+    monkeypatch.setattr(catalog, "select_variant",
+                        lambda entry, b: real_select(entry, b) if entry.id == bolt.id else None)
+
+    assert real_select(bolt, budget) is not None
+    with pytest.raises(HTTPException) as refused:
+        local_models._quickstart_target(local_models.QuickstartBody(), budget)
+    assert refused.value.status_code == 409
+    explicit = local_models.QuickstartBody(model_id=bolt.id)
+    assert local_models._quickstart_target(explicit, budget)[0].id == bolt.id
 
 
 def test_catalog_never_hides_unaffordable_models(client, monkeypatch):

@@ -13,5 +13,9 @@ export const jaSessionCommands = {
   queued: (preview: string) => `キューに追加: 「${preview}」`,
   queueFailed: 'メッセージをキューに追加できませんでした',
   countOne: (count: string) => `キュー内のメッセージ ${count} 件`,
-  countOther: (count: string) => `キュー内のメッセージ ${count} 件`
+  countOther: (count: string) => `キュー内のメッセージ ${count} 件`,
+  queueEditKeptTitle: 'キュー内のメッセージは変更されていません',
+  queueEditKept: '編集を保存する前に開始されたか、拒否されました。編集したテキストは入力欄にあります。',
+  queueEditUnconfirmedTitle: '編集を確認できません',
+  queueEditUnconfirmed: 'Hermes は編集を確認できませんでした。もう一度保存すると同じ編集を再試行します。二重にキューに入ることはありません。'
 }

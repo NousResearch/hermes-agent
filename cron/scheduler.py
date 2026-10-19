@@ -421,9 +421,9 @@ def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
     """
     cron_cfg = (cfg or {}).get("cron") or {}
     if cron_cfg.get("allow_agent_scheduling"):
-        disabled = ["messaging", "clarify"]
+        disabled = ["messaging", "clarify", "terminal", "code_execution"]
     else:
-        disabled = ["cronjob", "messaging", "clarify"]
+        disabled = ["cronjob", "messaging", "clarify", "terminal", "code_execution"]
     agent_cfg = (cfg or {}).get("agent") or {}
     from agent.skill_utils import parse_config_string_list
 

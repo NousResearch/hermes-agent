@@ -2371,7 +2371,7 @@ def _record_run_outcome(
         job["run_claim"] = None
 
 
-def _advance_after_run(job: dict[str, Any], now: str, *, ladder_rung: bool = False) -> None:
+def _advance_after_run(job: dict[str, Any], now: str, *, ladder_rung: bool = False, success: bool = True) -> None:
     """Bump ``repeat.completed`` and recompute ``next_run_at``; retire the record as a terminal
     completion when the repeat limit is reached or a one-shot has no further run.
 
@@ -2393,7 +2393,7 @@ def _advance_after_run(job: dict[str, Any], now: str, *, ladder_rung: bool = Fal
         # Count each occurrence once. A ladder re-run's occurrence already counted, and finite
         # one-shots were pre-claimed by claim_dispatch() (completed already incremented); every
         # other run, recurring or direct, gets the increment.
-        if not ladder_rung and not (kind == "once" and finite and completed > 0):
+        if success and not ladder_rung and not (kind == "once" and finite and completed > 0):
             completed += 1
             repeat["completed"] = completed
         if finite and completed >= times:
@@ -2472,7 +2472,7 @@ def mark_job_run(
         if execution_id is not None:  # retire ids recovery can no longer replay; latest stays last
             from cron.scheduler_authority import replayable_completions as live
             job["canonical_completions"] = [*live(job_id, job.get("canonical_completions")), execution_id]
-        _advance_after_run(job, now, ladder_rung=ladder_rung)
+        _advance_after_run(job, now, ladder_rung=ladder_rung, success=success)
         from cron import quota_hold
         from cron.unreachable_retry import clear_state, plan_retry
 

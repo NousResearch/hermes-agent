@@ -6003,6 +6003,25 @@ def _compat_model(client: Any, model: Optional[str], cached_default: Optional[st
     return model or cached_default
 
 
+def _aux_client_transport_closed(client: Any) -> bool:
+    """True when a cached client's transport is already closed.
+
+    Belt-and-suspenders for the cache-hit path: a client can be force-closed by loop
+    teardown / timeout poisoning while its owner loop is still alive, so the loop-only
+    check below would hand back a dead transport and the next request fails with
+    "Cannot send a request, as the client has been closed" (httpx RuntimeError).
+    """
+    for obj in (client, getattr(client, "_client", None), getattr(client, "_real_client", None)):
+        if obj is None:
+            continue
+        is_closed = getattr(obj, "is_closed", None)
+        if callable(is_closed):
+            with contextlib.suppress(Exception):
+                if is_closed():
+                    return True
+    return False
+
+
 def _get_cached_client(
     provider: str, model: str | None = None, async_mode: bool = False, base_url: str | None = None,
     api_key: str | None = None, api_mode: str | None = None, main_runtime: Optional[dict[str, Any]] = None,
@@ -6037,7 +6056,7 @@ def _get_cached_client(
             loop_ok = not async_mode or (
                 cached_loop is not None and cached_loop is current_loop and not cached_loop.is_closed()
             )
-            if loop_ok:
+            if loop_ok and not _aux_client_transport_closed(cached_client):
                 return cached_client, _compat_model(cached_client, model, cached_default)
             # Stale async entry — evict. Only a closed owner loop may be awaited here; a live
             # foreign loop stays force-neutered.

@@ -462,6 +462,10 @@ class ModelSwitchResult:
     runtime_capabilities: Optional[dict[str, bool]] = None
     model_info: Optional[ModelInfo] = None
     is_global: bool = False
+    # The resolved direct alias's own ``base_url`` (and the credential decided for it) replaced the
+    # provider's route. ``resolved_via_alias`` alone is also set by a built-in shortcut, an endpointless
+    # entry or a process provider's declared id, which name a model like a plain pick.
+    alias_endpoint_applied: bool = False
 
 
 @dataclass(frozen=True)
@@ -1186,6 +1190,7 @@ class _Switch:
     new_model: str = ""
     target_provider: str = ""
     resolved_alias: str = ""
+    alias_endpoint_applied: bool = False
     provider_label: str = ""
     api_key: str = ""
     base_url: str = ""
@@ -1586,6 +1591,7 @@ def _resolve_switch_credentials(st: _Switch) -> Optional[ModelSwitchResult]:
         da = DIRECT_ALIASES.get(st.resolved_alias)
         if da is not None and da.base_url:
             _apply_direct_alias_endpoint(st, da)
+            st.alias_endpoint_applied = True
 
     # Fills an empty mode (alias cleared it) and overrides a STALE mode carried from previous
     # session state when the host mandates one wire protocol (e.g. gpt-5.x on api.openai.com
@@ -1738,7 +1744,7 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
         provider_label=st.provider_label, resolved_via_alias=st.resolved_alias, capabilities=capabilities,
         runtime_capabilities={
             k: v for k, v in runtime_capabilities.items() if isinstance(k, str) and isinstance(v, bool)},
-        model_info=model_info, is_global=st.is_global)
+        model_info=model_info, is_global=st.is_global, alias_endpoint_applied=st.alias_endpoint_applied)
 
 
 def switch_model(

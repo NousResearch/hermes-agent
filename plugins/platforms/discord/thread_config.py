@@ -4,6 +4,10 @@ from typing import Any
 VALID_THREAD_AUTO_ARCHIVE_MINUTES = frozenset({60, 1440, 4320, 10080})
 
 
+def is_thread_auto_archive_duration(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value in VALID_THREAD_AUTO_ARCHIVE_MINUTES
+
+
 def validate_thread_auto_archive_duration(value: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, str)):
         return 1440
@@ -11,7 +15,7 @@ def validate_thread_auto_archive_duration(value: Any) -> int:
         parsed = int(value)
     except ValueError:
         return 1440
-    return parsed if parsed in VALID_THREAD_AUTO_ARCHIVE_MINUTES else 1440
+    return parsed if is_thread_auto_archive_duration(parsed) else 1440
 
 
 def configured_thread_auto_archive_duration() -> int:

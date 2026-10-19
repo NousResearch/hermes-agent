@@ -45,10 +45,15 @@ async def test_profile_duration_reaches_gateway_handoff_auto_and_model_tool(tmp_
             assert message.create_thread.call_args.kwargs["auto_archive_duration"] == duration
             discord_tool.discord_core(action="create_thread",channel_id="123",name="From model")
             assert requests[-1]["auto_archive_duration"] == duration and requests[-1]["type"] == 11
+            assert type(requests[-1]["auto_archive_duration"]) is int
             discord_tool.discord_core(action="create_thread",channel_id="123",name="Override",auto_archive_duration=60)
             assert requests[-1]["auto_archive_duration"] == 60
             count=len(requests)
-            result=json.loads(discord_tool.discord_core(action="create_thread",channel_id="123",name="Invalid",auto_archive_duration=17))
-            assert result.get("error") and len(requests)==count
+            calls=parent.create_thread.await_count
+            for invalid in [17,60.0,True,[],{},"60"]:
+                result=json.loads(discord_tool.discord_core(action="create_thread",channel_id="123",name="Invalid",auto_archive_duration=invalid))
+                assert result.get("error") and len(requests)==count
+                rejected=await adapter._create_thread(interaction,name="Invalid",auto_archive_duration=invalid)
+                assert rejected.get("error") and parent.create_thread.await_count==calls
         finally:
             reset_hermes_home_override(scope)

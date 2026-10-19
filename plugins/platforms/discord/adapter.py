@@ -81,7 +81,9 @@ class _Snowflake:
         self.id = id
 
 
-from .thread_config import VALID_THREAD_AUTO_ARCHIVE_MINUTES, validate_thread_auto_archive_duration
+from .thread_config import (
+    VALID_THREAD_AUTO_ARCHIVE_MINUTES, is_thread_auto_archive_duration, validate_thread_auto_archive_duration,
+)
 _DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}
 _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
@@ -5420,7 +5422,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             if auto_archive_duration is not None
             else self._thread_auto_archive_duration
         )
-        if effective_duration not in VALID_THREAD_AUTO_ARCHIVE_MINUTES:
+        if not is_thread_auto_archive_duration(effective_duration):
             allowed = ", ".join(str(v) for v in sorted(VALID_THREAD_AUTO_ARCHIVE_MINUTES))
             return {"error": t("platform.discord.command.thread.error_invalid_archive", allowed=allowed)}
         channel = await self._resolve_interaction_channel(interaction)

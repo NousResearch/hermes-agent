@@ -360,11 +360,11 @@ def _create_thread(
     auto_archive_duration: Optional[int] = None, **_kwargs: Any) -> str:
     """Create a thread — anchored to ``message_id`` when given, else standalone public."""
     from plugins.platforms.discord.thread_config import (
-        VALID_THREAD_AUTO_ARCHIVE_MINUTES, configured_thread_auto_archive_duration,
+        is_thread_auto_archive_duration, configured_thread_auto_archive_duration,
     )
     if auto_archive_duration is None:
         auto_archive_duration = configured_thread_auto_archive_duration()
-    if isinstance(auto_archive_duration, bool) or auto_archive_duration not in VALID_THREAD_AUTO_ARCHIVE_MINUTES:
+    if not is_thread_auto_archive_duration(auto_archive_duration):
         return tool_error("Thread archive duration must be one of 60, 1440, 4320 or 10080 minutes.")
     body: dict[str, Any] = {"name": name, "auto_archive_duration": auto_archive_duration}
     path = f"/channels/{channel_id}/threads"

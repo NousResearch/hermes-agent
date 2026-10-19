@@ -99,15 +99,24 @@ The recorded corpus contains Alice's Adventures in Wonderland, Frankenstein, and
 COMPOSE_PROJECT_NAME=graphrag-benchmark MCP_PORT=3100 INPUT_HOST_DIR=./examples/generated/long-markdown-corpus docker compose up -d --build --wait
 ```
 
-In Hermes, submit one full index job for the mounted corpus, then poll the returned job ID until it is `succeeded` before querying:
+`MCP_PORT` changes Docker's host port; it does not update a URL already saved in Hermes. Keep the normal `graphrag-ts` catalog connection untouched and add a temporary server that points at the isolated benchmark service:
+
+```sh
+hermes mcp add graphrag-benchmark --url http://127.0.0.1:3100/mcp
+hermes mcp test graphrag-benchmark
+```
+
+Start a new Hermes session (or run `/reload-mcp`) so it discovers the temporary server. Submit one full index job through `graphrag-benchmark`, then poll the returned job ID until it is `succeeded` before querying:
 
 ```text
-Use graphrag-ts submit_index_job with a new workspace_id such as "benchmark-20261019" and path=".".
-Poll get_index_job using that same workspace_id and the returned job_id until status is "succeeded".
-Then use query_graph in that same workspace:
+Use the graphrag-benchmark MCP server's submit_index_job with a new workspace_id such as "benchmark-20261019" and path=".".
+Poll that server's get_index_job using the same workspace_id and returned job_id until status is "succeeded".
+Then use that server's query_graph in the same workspace:
 What did Alice notice about the White Rabbit before following it down the rabbit-hole?
 Include the answer and supporting source excerpts. Do not infer facts absent from the excerpts.
 ```
+
+After the benchmark, remove the temporary connection with `hermes mcp remove graphrag-benchmark` and stop its Compose project with `COMPOSE_PROJECT_NAME=graphrag-benchmark docker compose down -v`. This deletes only the disposable benchmark database volume; do not use `-v` with your regular Compose project.
 
 For the repeatable MCP recall benchmark, with the long corpus mounted and the MCP server running:
 

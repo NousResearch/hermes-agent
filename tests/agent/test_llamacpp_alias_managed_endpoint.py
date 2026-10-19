@@ -30,24 +30,32 @@ def managed_server(monkeypatch):
     """Write server.json for a real supervised child; yields write(port, key)."""
     monkeypatch.setattr(detect, "DEFAULT_PROBE_PORTS", ())  # no stray :8080 server
     monkeypatch.setenv("GEMINI_API_KEY", "cloud-key-must-not-be-used")
-    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"],
-                             stdin=subprocess.DEVNULL)
-    proc = psutil.Process(child.pid)
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; print('ready', flush=True); time.sleep(120)"],
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, text=True,
+    )
+    try:
+        # macOS framework Python execs its app binary during startup. Read identity
+        # only after Python code runs, otherwise proc.exe() caches the launcher path.
+        assert child.stdout.readline().strip() == "ready"
+        proc = psutil.Process(child.pid)
 
-    def write(port: int, key: str) -> None:
-        state_path().parent.mkdir(parents=True, exist_ok=True)
-        state_path().write_text(json.dumps({
-            "base_url": f"http://127.0.0.1:{port}/v1", "api_key": key, "pid": child.pid,
-            "create_time": proc.create_time(), "executable": proc.exe(),
-            "owner_pid": os.getpid(), "owner_create_time": psutil.Process().create_time(),
-        }))
+        def write(port: int, key: str) -> None:
+            state_path().parent.mkdir(parents=True, exist_ok=True)
+            state_path().write_text(json.dumps({
+                "base_url": f"http://127.0.0.1:{port}/v1", "api_key": key, "pid": child.pid,
+                "create_time": proc.create_time(), "executable": proc.exe(),
+                "owner_pid": os.getpid(), "owner_create_time": psutil.Process().create_time(),
+            }))
 
-    aux._client_cache.clear()
-    yield write
-    child.kill()
-    child.wait()
-    state_path().unlink(missing_ok=True)
-    aux._client_cache.clear()
+        aux._client_cache.clear()
+        yield write
+    finally:
+        child.kill()
+        child.wait()
+        child.stdout.close()
+        state_path().unlink(missing_ok=True)
+        aux._client_cache.clear()
 
 
 def test_fallback_resolution_uses_live_managed_server_or_nothing(managed_server):

@@ -29,7 +29,8 @@ def test_authenticated_submit_passes_server_stamped_origin_to_turn(tmp_path, mon
             self.target()
 
     monkeypatch.setattr(server.threading, "Thread", InlineThread)
-    monkeypatch.setattr(server, "_run_after_agent_ready", lambda *args: origins.append(args[-1]))
+    # The submit claim id and physical key now follow approval_origin.
+    monkeypatch.setattr(server, "_run_after_agent_ready", lambda *args: origins.append(args[8]))
     token = bind_transport(LoginSocket())
     try:
         created = server.handle_request({"id": "c", "method": "session.create",

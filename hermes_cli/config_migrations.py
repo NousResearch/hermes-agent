@@ -29,7 +29,7 @@ SUPPORT_FLOOR_VERSION = 12
 #: document and nothing else: steps that also touch local files (``.env``, profile ``SOUL.md``,
 #: ``logs/``) skip that part, so reading a profile's remote config, or a refused write's check, never
 #: changes a file on disk — a sibling profile's least of all.
-_CONFIG_ONLY: "contextvars.ContextVar[bool]" = contextvars.ContextVar("config_migrations_config_only", default=False)
+_CONFIG_ONLY: contextvars.ContextVar[bool] = contextvars.ContextVar("config_migrations_config_only", default=False)
 
 
 def _local_files_allowed() -> bool:

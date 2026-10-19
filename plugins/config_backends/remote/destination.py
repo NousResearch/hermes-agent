@@ -41,7 +41,7 @@ def checked_url(url: str, *, env_name: str) -> str:
     try:
         parts = urllib.parse.urlsplit(url)
         host = (parts.hostname or "").lower()
-        parts.port  # noqa: B018 — raises ValueError on a malformed port
+        _ = parts.port  # raises ValueError on a malformed port
     except ValueError as exc:
         raise CredentialDestinationError(f"{env_name}={url!r} is not a valid URL: {exc}") from exc
     if not host:

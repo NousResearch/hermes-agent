@@ -9,12 +9,12 @@ if TYPE_CHECKING:
     from hermes_cli.config import ConfigIssue
 
 
-def _issue(issues: List["ConfigIssue"], severity: str, message: str, hint: str) -> None:
+def _issue(issues: list[ConfigIssue], severity: str, message: str, hint: str) -> None:
     from hermes_cli.config import ConfigIssue  # late: the facade imports this module
     issues.append(ConfigIssue(severity, message, hint))
 
 
-def _validate_voice(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:
+def _validate_voice(config: dict[str, Any], issues: list[ConfigIssue]) -> None:
     voice_cfg = config.get("voice")
     if not (isinstance(voice_cfg, dict) and "submit_mode" in voice_cfg):
         return
@@ -25,7 +25,7 @@ def _validate_voice(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:
                "Set voice.submit_mode to direct (submit immediately) or draft (edit before sending)")
 
 
-def _validate_timezone(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:
+def _validate_timezone(config: dict[str, Any], issues: list[ConfigIssue]) -> None:
     """``timezone`` must be an IANA name the runtime can load.
 
     ``hermes_time._get_zoneinfo()`` swallows an invalid name behind a single WARNING in the
@@ -58,7 +58,7 @@ def _validate_timezone(config: Dict[str, Any], issues: List[ConfigIssue]) -> Non
         _issue(issues, "error", f"timezone {name!r} is not a valid IANA zone name", hint)
 
 
-def _validate_web_backends(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:
+def _validate_web_backends(config: dict[str, Any], issues: list[ConfigIssue]) -> None:
     """A stale web backend selection otherwise fails only at the first web_search/web_extract
     call with a generic "no registered provider" error; warn at startup instead."""
     # See #99199.

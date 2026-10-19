@@ -64,6 +64,7 @@ async def config_get(connection, ref, params):
     def read():
         from gateway.run import _profile_runtime_scope
         from hermes_cli.config import load_config
+        from hermes_cli.config_backend import config_exists, config_version
         from hermes_cli.config_effective import load_user_config_effective
         from hermes_constants import DEFAULT_INDICATOR_STYLE
         from tools.approval_context import _get_approval_mode
@@ -75,8 +76,9 @@ async def config_get(connection, ref, params):
                 # The user's own settings, not DEFAULT_CONFIG: clients read an absent key as their
                 # own default (the TUI streams unless display.streaming is explicitly false).
                 'full': lambda: {'config': _client_config(load_user_config_effective(home / 'config.yaml'))},
-                'mtime': lambda: {'mtime': (home / 'config.yaml').stat().st_mtime
-                                 if (home / 'config.yaml').exists() else 0,
+                # The backend's version leads with a nanosecond time (st_mtime_ns for the file backend).
+                'mtime': lambda: {'mtime': config_version(home / 'config.yaml')[0] / 1_000_000_000
+                                 if config_exists(home / 'config.yaml') else 0,
                                  # Frozen tool policy is not a live MCP reload request.
                                  'mcp_rev': hashlib.sha256(json.dumps({
                                      k: (policy.config() if policy else cfg).get(k)

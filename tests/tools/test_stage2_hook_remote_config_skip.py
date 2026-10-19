@@ -53,7 +53,7 @@ def _run(home: Path, backend_env: str | None) -> str:
         + _block()
     )
     proc = subprocess.run(["sh", "-c", script], capture_output=True, text=True, timeout=60,
-                          stdin=subprocess.DEVNULL, env=_env(root, backend_env))
+                          stdin=subprocess.DEVNULL, env=_env(root, backend_env), check=False)
     assert proc.returncode == 0, proc.stderr
     assert "could not determine the config backend" not in proc.stdout, proc.stdout
     return proc.stdout
@@ -79,7 +79,7 @@ def _runtime_selects(home: Path, backend_env: str | None) -> str:
     env = _env(home.parent, backend_env)
     env["HERMES_HOME"] = str(home)
     proc = subprocess.run([sys.executable, "-c", code, str(home)], capture_output=True, text=True,
-                          timeout=60, env=env, cwd=str(home.parent))
+                          timeout=60, env=env, cwd=str(home.parent), check=False)
     assert proc.returncode == 0, proc.stderr
     return proc.stdout.strip().splitlines()[-1]
 

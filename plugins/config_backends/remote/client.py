@@ -26,7 +26,7 @@ _HTTP_TIMEOUT_S = 15.0
 @dataclass(frozen=True)
 class Response:
     status: int
-    body: Dict[str, Any]
+    body: dict[str, Any]
     etag: Optional[str]
     retry_after: Optional[float]
 
@@ -53,7 +53,7 @@ def instance_id() -> str:
     return os.environ.get(INSTANCE_ENV, "").strip()
 
 
-def _parse_body(raw: bytes) -> Dict[str, Any]:
+def _parse_body(raw: bytes) -> dict[str, Any]:
     if not raw:
         return {}
     try:
@@ -71,7 +71,7 @@ def _retry_after(value: Optional[str]) -> Optional[float]:
 
 
 def request(method: str, home: Path, profile: str, *, etag: Optional[str] = None,
-            body: Optional[Dict[str, Any]] = None) -> Response:
+            body: Optional[dict[str, Any]] = None) -> Response:
     """One call to ``/v1/config/self?profile=<profile>`` as ``home``'s agent.
 
     The destination is checked before the bearer is resolved, and the request never follows a

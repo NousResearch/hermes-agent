@@ -102,7 +102,7 @@ class _Scanner:
         if start is None or end is None:
             return ""
         # col offsets are UTF-8 byte offsets.
-        c0, c1 = getattr(node, "col_offset"), getattr(node, "end_col_offset")
+        c0, c1 = node.col_offset, node.end_col_offset
         b = self.blines
         if start == end:
             return b[start - 1][c0:c1].decode("utf-8", "replace")

@@ -30,7 +30,7 @@ CLIENT_SECRET = "agent-secret"
 INSTANCE = "inst-0001"
 
 
-def deep_merge(base: Dict[str, Any], over: Dict[str, Any]) -> Dict[str, Any]:
+def deep_merge(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
     """contract.md §6.2: lists replace, ``null`` over a mapping is ignored, ``null`` over anything
     else sets ``null``."""
     out = copy.deepcopy(base)
@@ -56,15 +56,15 @@ def _depth(value: Any) -> int:
 
 class StubPlane:
     def __init__(self) -> None:
-        self.upper: Dict[str, Any] = {}
-        self.upper_locks: List[Dict[str, str]] = []
+        self.upper: dict[str, Any] = {}
+        self.upper_locks: list[dict[str, str]] = []
         # portal-groups contract §6.7: a member's group levels ({"groupId", "priority", "version"}) and
         # groupProvenance, emitted as-is so tests prove the agent ignores fields it does not use.
-        self.groups: List[Dict[str, Any]] = []
-        self.group_provenance: Optional[Dict[str, Any]] = None
-        self.profiles: Dict[str, Dict[str, Any]] = {}
+        self.groups: list[dict[str, Any]] = []
+        self.group_provenance: Optional[dict[str, Any]] = None
+        self.profiles: dict[str, dict[str, Any]] = {}
         self.fail_status: Optional[int] = None   # every /self request returns this
-        self.requests: List[Dict[str, Any]] = []
+        self.requests: list[dict[str, Any]] = []
         self.token_requests = 0
         self.home: Optional[Path] = None  # the test's HERMES_HOME, set by the fixture
         self.lock = threading.Lock()
@@ -72,7 +72,7 @@ class StubPlane:
         self.url = f"http://127.0.0.1:{self._server.server_address[1]}"
         self._thread = threading.Thread(target=self._server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
 
-    def __enter__(self) -> "StubPlane":
+    def __enter__(self) -> StubPlane:
         self._thread.start()
         return self
 
@@ -82,10 +82,10 @@ class StubPlane:
 
     # --- model ---
 
-    def profile(self, name: str) -> Dict[str, Any]:
+    def profile(self, name: str) -> dict[str, Any]:
         return self.profiles.setdefault(name, {"values": {}, "version": 0, "writer": None})
 
-    def effective(self, name: str) -> Dict[str, Any]:
+    def effective(self, name: str) -> dict[str, Any]:
         prof = self.profile(name)
         body = {
             "instanceId": INSTANCE, "profile": name,
@@ -103,7 +103,7 @@ class StubPlane:
         body["etag"] = f'"{digest}"'
         return body
 
-    def patches(self) -> List[Dict[str, Any]]:
+    def patches(self) -> list[dict[str, Any]]:
         return [r for r in self.requests if r["method"] == "PATCH"]
 
     # --- HTTP ---
@@ -112,10 +112,10 @@ class StubPlane:
         plane = self
 
         class Handler(BaseHTTPRequestHandler):
-            def log_message(self, format, *args) -> None:  # noqa: A002 — base signature
+            def log_message(self, format, *args) -> None:
                 pass
 
-            def _send(self, status: int, body: Optional[Dict[str, Any]] = None, etag: Optional[str] = None):
+            def _send(self, status: int, body: Optional[dict[str, Any]] = None, etag: Optional[str] = None):
                 raw = json.dumps(body).encode() if body is not None else b""
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
@@ -125,7 +125,7 @@ class StubPlane:
                 self.end_headers()
                 self.wfile.write(raw)
 
-            def _body(self) -> Dict[str, Any]:
+            def _body(self) -> dict[str, Any]:
                 n = int(self.headers.get("Content-Length") or 0)
                 return json.loads(self.rfile.read(n) or b"{}")
 
@@ -165,7 +165,7 @@ class StubPlane:
                         return self._send(200, eff, eff["etag"])
                     return self._patch(profile, body or {})
 
-            def _patch(self, profile: str, body: Dict[str, Any]):
+            def _patch(self, profile: str, body: dict[str, Any]):
                 prof = plane.profile(profile)
                 if body.get("expectedVersion") != prof["version"]:
                     return self._send(409, {"error": "config_version_conflict", "message": "stale",
@@ -220,7 +220,7 @@ class StubPlane:
         return Handler
 
 
-def remote_env(plane: StubPlane) -> Dict[str, str]:
+def remote_env(plane: StubPlane) -> dict[str, str]:
     return {
         "HERMES_CONFIG_BACKEND": "remote",
         "HERMES_CONFIG_REMOTE_URL": plane.url,

@@ -31,7 +31,7 @@ class _Listener:
         listener = self
 
         class Handler(BaseHTTPRequestHandler):
-            def log_message(self, format, *args) -> None:  # noqa: A002 — base signature
+            def log_message(self, format, *args) -> None:
                 pass
 
             def _any(self):

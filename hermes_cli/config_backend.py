@@ -34,7 +34,7 @@ PathLike = Union[str, "os.PathLike[str]"]
 class UserLayer:
     """One read of a profile's user layer."""
     doc: Any                    # the parsed root as written (None for an empty document)
-    version: Tuple[Any, ...]    # the cache signature this doc was read at (etag for a remote backend)
+    version: tuple[Any, ...]    # the cache signature this doc was read at (etag for a remote backend)
     locks: Mapping[str, str] = field(default_factory=dict)   # dotted prefix -> level that locks it
     provenance: str = ""        # where the doc came from, for diagnostics
 
@@ -49,7 +49,7 @@ class Changes:
     """
     document: Optional[dict] = None
     set: Mapping[str, Any] = field(default_factory=dict)
-    unset: Tuple[str, ...] = ()
+    unset: tuple[str, ...] = ()
     extra_content_on_create: Optional[str] = None
 
 
@@ -63,7 +63,7 @@ class ConfigBackend(Protocol):
         """``read_user_layer(home).doc`` re-read only when ``version`` changes; never mutate it."""
         ...
 
-    def version(self, home: Path) -> Tuple[Any, ...]:
+    def version(self, home: Path) -> tuple[Any, ...]:
         """Cheap cache signature; changes whenever the user layer does."""
         ...
 
@@ -150,7 +150,7 @@ class FileBackend:
     # Path-level primitives: the file backend's whole behaviour, also used for explicit files
     # that are not a home's config.yaml (see ``_route``).
     @staticmethod
-    def version_path(path: Path) -> Tuple[int, int, int, int]:
+    def version_path(path: Path) -> tuple[int, int, int, int]:
         from utils import file_signature
         return file_signature(path.stat())
 
@@ -186,7 +186,7 @@ class FileBackend:
     def read_user_doc_readonly(self, home: Path) -> Any:
         return self.read_path_readonly(self.config_path(home))
 
-    def version(self, home: Path) -> Tuple[int, int, int, int]:
+    def version(self, home: Path) -> tuple[int, int, int, int]:
         return self.version_path(self.config_path(home))
 
     def exists(self, home: Path) -> bool:
@@ -291,7 +291,7 @@ def get_config_backend() -> ConfigBackend:
         f"{BACKEND_ENV}={kind!r} is not a config backend (expected 'file' or 'remote').")
 
 
-def _route(config_path: PathLike) -> Tuple[Any, Path, bool]:
+def _route(config_path: PathLike) -> tuple[Any, Path, bool]:
     """``(backend, home_or_path, is_user_layer)`` for a config path.
 
     ``<home>/config.yaml`` is that home's user layer and goes to the selected backend. Any other
@@ -316,7 +316,7 @@ def read_config_doc_readonly(config_path: PathLike) -> Any:
     return backend.read_user_doc_readonly(target) if is_layer else backend.read_path_readonly(target)
 
 
-def config_version(config_path: PathLike) -> Tuple[Any, ...]:
+def config_version(config_path: PathLike) -> tuple[Any, ...]:
     """Cache signature of a config file; raises ``FileNotFoundError`` / ``OSError`` like ``stat``."""
     backend, target, is_layer = _route(config_path)
     return backend.version(target) if is_layer else backend.version_path(target)

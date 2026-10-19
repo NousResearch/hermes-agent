@@ -1270,7 +1270,7 @@ def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
 def _strip_multiplex_flag(config_path: Path) -> None:
     """Multiplexing belongs to the default profile; a clone that keeps the flag would start its
     own multiplexer (or be refused at boot) the first time it runs a gateway."""
-    if not config_path.is_file():
+    if not config_exists(config_path):
         return
     with contextlib.suppress(Exception):  # creation must not fail over an unreadable copy
         from hermes_cli.config import atomic_config_replace, read_user_config_raw

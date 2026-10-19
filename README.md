@@ -58,7 +58,7 @@ for the separate MSIX/App Installer package and its update ownership.
 
 > **Android / Termux:** A signed APT repository is available for aarch64 devices, with a `stable` channel (tagged releases) and a prerelease `canary` channel. The package includes Python, Node.js, and the TUI. Use the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux), not the desktop/server installer script.
 >
-> **Android APK:** For a native Android app experience, download the [APK](https://github.com/luciano2-web/hermes-agent/releases/latest/download/Hermes-Agent-latest.apk) directly. Just tap to download and install - it's a one-click installation! See [Android APK Installation Guide](README.android.md) for detailed instructions.
+> **Android APK:** For a native Android app experience, you can build the APK yourself or download it from GitHub Actions artifacts. See [Android APK Installation Guide](README.android.md) for build instructions and download links.
 >
 > **Windows:** Native Windows is fully supported — the PowerShell one-liner above installs everything. If you'd rather use WSL2, the Linux command works there too. Native Windows install lives under `%LOCALAPPDATA%\hermes`; WSL2 installs under `~/.hermes` as on Linux.
 

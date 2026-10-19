@@ -1,64 +1,56 @@
 # Hermes Agent for Android - APK Installation
 
-[![Download APK](https://img.shields.io/badge/Download-APK-green?style=for-the-badge)](https://github.com/NousResearch/hermes-agent/releases/latest/download/Hermes-Agent-latest.apk)
-
 This guide explains how to install and use Hermes Agent on Android devices.
 
-## 📱 Quick Start
+## \ud83d\udcf1 Quick Start
 
-### 1. Download the APK
+### Option 1: Download Pre-built APK from GitHub Actions
 
-Click the button above or visit: [Latest Release](https://github.com/NousResearch/hermes-agent/releases/latest)
+1. Go to: [GitHub Actions](https://github.com/luciano2-web/hermes-agent/actions)
+2. Find the latest successful run of "Android APK Build" workflow
+3. Click on the workflow run
+4. Scroll down to "Artifacts" section
+5. Download `hermes-agent-apk` artifact
+6. Extract the APK file from the zip archive
 
-### 2. Enable Unknown Sources
+### Option 2: Build the APK Yourself
 
-Before installing the APK, enable installation from unknown sources:
+#### 1. Download or Build the APK
 
-**Android 8.0+:**
-- Open **Settings**
-- Go to **Apps & notifications** > **Special app access** > **Install unknown apps**
-- Select your browser or file manager and enable it
+Use the build script:
+```bash
+./scripts/build_android_apk.sh --version 1.0.0 --debug
+```
 
-**Older Android:**
-- Open **Settings**
-- Go to **Security**
-- Enable **Unknown sources**
+The APK will be created as `Hermes-Agent-1.0.0-debug.apk`
 
-### 3. Install the APK
+---
 
-- Open the downloaded file (usually in your **Downloads** folder)
-- Tap **Install**
-- Wait for installation to complete
-- Tap **Open** to launch Hermes Agent
+## \ud83c\udfaf Features
 
-## 🎯 Features
+\u2705 **Full AI Agent** - Same powerful agent as desktop version
+\u2705 **Continuous Learning** - Skills improve with use
+\u2705 **Multi-Model Support** - Use OpenRouter, Nous Research, and more
+\u2705 **Background Execution** - Keep agent running
+\u2705 **Offline Mode** - Works without internet (with local models)
+\u2705 **Easy Updates** - Download new versions as they're released
 
-✅ **Full AI Agent** - Same powerful agent as desktop version
-✅ **Continuous Learning** - Skills improve with use
-✅ **Multi-Model Support** - Use OpenRouter, Nous Research, and more
-✅ **Background Execution** - Keep agent running
-✅ **Offline Mode** - Works without internet (with local models)
-✅ **Easy Updates** - Download new versions as they're released
-
-## 📋 Requirements
+## \ud83d\udccb Requirements
 
 - **Android 7.0 (Nougat) or later**
 - **2GB RAM minimum** (4GB recommended)
 - **500MB+ free storage**
 - **Internet connection** for first setup
 
-## 🚀 First Launch
+## \ud83d\ude80 First Launch
 
 On first launch, Hermes Agent will:
 
 1. Request necessary permissions
-2. Download Python runtime (if needed)
-3. Download latest Hermes package
-4. Initialize your agent
+2. Initialize Python runtime (bundled with the APK)
+3. Initialize your agent
 
-This may take 2-5 minutes depending on your connection speed.
-
-## 💬 Usage
+## \ud83d\udcac Usage
 
 ### Starting a Conversation
 
@@ -101,7 +93,7 @@ hermes config set nous_api_key your_key
 hermes config set model_provider local
 ```
 
-## ⚙️ Configuration
+## \u2699\ufe0f Configuration
 
 Edit `~/.hermes/config.yaml` or use the `hermes config` command.
 
@@ -113,7 +105,7 @@ openrouter_api_key: sk-or-v1-your-key
 model: openai/gpt-4o-mini
 ```
 
-## 🔧 Troubleshooting
+## \ud83d\udd27 Troubleshooting
 
 ### "App not installed" Error
 
@@ -135,8 +127,8 @@ model: openai/gpt-4o-mini
 
 ### Python Initialization Fails
 
-- **Solution 1**: Ensure you have internet connection
-- **Solution 2**: Wait and retry (first launch downloads dependencies)
+- **Solution 1**: Ensure you have internet connection (only needed for first setup with Termux, not for APK)
+- **Solution 2**: Wait and retry
 - **Solution 3**: Try on a different network
 
 ### Out of Memory Errors
@@ -145,7 +137,7 @@ model: openai/gpt-4o-mini
 - **Solution 2**: Close other apps to free memory
 - **Solution 3**: Use Termux version for better memory management
 
-## 🏗️ Building from Source
+## \ud83c\udfd7\ufe0f Building from Source
 
 ### Prerequisites
 
@@ -157,7 +149,7 @@ model: openai/gpt-4o-mini
 
 ```bash
 # Clone repository
-git clone https://github.com/NousResearch/hermes-agent.git
+git clone https://github.com/luciano2-web/hermes-agent.git
 cd hermes-agent
 
 # Make build script executable
@@ -176,9 +168,9 @@ chmod +x scripts/build_android_apk.sh
 ./scripts/build_android_apk.sh --version 1.0.0 --release
 ```
 
-⚠️ **Note**: Release builds require a signing keystore. Place it at `android/app/keystore/release.keystore`
+\u26a0\ufe0f **Note**: Release builds require a signing keystore. Place it at `android/app/keystore/release.keystore`
 
-## 📚 Alternative: Termux Installation
+## \ud83d\udcda Alternative: Termux Installation
 
 For advanced users who prefer terminal access:
 
@@ -191,36 +183,36 @@ dpkg -i hermes-agent_<version>_aarch64.deb
 hermes
 ```
 
-## 🔒 Security
+## \ud83d\udd12 Security
 
-⚠️ **Important**:
+\u26a0\ufe0f **Important**:
 
-- Only install APKs from official releases
+- Only install APKs from official sources
 - Review permissions before installing
 - Your conversation data stays on your device
 - Model interactions go through your configured provider
 
-## 📊 Comparison: APK vs Termux
+## \ud83d\udcca Comparison: APK vs Termux
 
 | Feature | APK | Termux |
 |---------|-----|--------|
-| Easy Installation | ✅ Yes | ❌ Manual |
-| GUI Interface | ✅ Yes | ❌ CLI only |
-| Background Execution | ✅ Yes | ✅ Yes |
-| Notifications | ✅ Yes | ❌ No |
-| Storage Access | ✅ Yes | ✅ Yes |
-| Updates | ✅ Automatic | ❌ Manual |
-| Performance | ⚠️ Good | ✅ Better |
-| Memory Usage | ⚠️ Higher | ✅ Lower |
-| Offline Mode | ✅ Yes | ✅ Yes |
+| Easy Installation | \u2705 Yes | \u274c Manual |
+| GUI Interface | \u2705 Yes | \u274c CLI only |
+| Background Execution | \u2705 Yes | \u2705 Yes |
+| Notifications | \u2705 Yes | \u274c No |
+| Storage Access | \u2705 Yes | \u2705 Yes |
+| Updates | \u2705 Automatic | \u274c Manual |
+| Performance | \u26a0\ufe0f Good | \u2705 Better |
+| Memory Usage | \u26a0\ufe0f Higher | \u2705 Lower |
+| Offline Mode | \u2705 Yes | \u2705 Yes |
 
-## 📞 Support
+## \ud83d\udcde Support
 
 - **Issues**: [GitHub Issues](https://github.com/NousResearch/hermes-agent/issues)
 - **Discord**: [Join our server](https://discord.gg/NousResearch)
 - **Docs**: [Official Documentation](https://hermes-agent.nousresearch.com/docs/)
 
-## 📜 License
+## \ud83d\udcdc License
 
 MIT License - See [LICENSE](LICENSE) for details.
 

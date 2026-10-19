@@ -106,7 +106,10 @@ _ASSIGNED_DECLARATION = (r"(?<![\w$.]){0}\s*=\s*(?:class\b[^{{]*|function\s*\*?\
 _REBINDING = (
     r"(?<![\w$.]){0}\s*(?:&&|\|\||\?\?|\*\*|<<|>>>?|[-+*/%&|^])?=(?![=>])"
     r"|\b(?:let|const|var|class|function\s*\*?)\s+{0}(?![\w$])"
-    r"|(?<![\w$.]){0}(?![\w$])[^;=()]*?[}}\]][\s}}\]]*(?:=(?![=>])|\b(?:of|in)\b)"
+    # a PATTERN opens where an expression cannot (not ``obj[`` / ``f()[``), names ``X`` itself (not
+    # ``X.name``), and is assigned or iterated
+    r"|(?:^|(?<=[;(,{{}}=\n])|\b(?:let|const|var))\s*[\[{{][^;=()]*?(?<![\w$.]){0}(?![\w$.])[^;=()]*?[}}\]][\s}}\]]*"
+    r"(?:=(?![=>])|\b(?:of|in)\b)"
     r"|(?:\bfunction\s*\*?\s*[\w$]*|(?<![\w$.])(?!(?:if|for|while|switch|with|return|typeof|await)\b)[\w$]+)"
     r"\s*\([^()]*?(?<![\w$.]){0}(?![\w$])[^()]*\)\s*\{{"
     r"|\(([^()]*?(?<![\w$.]){0}(?![\w$])[^()]*)\)\s*=>|(?<![\w$.]){0}\s*=>"
@@ -117,12 +120,27 @@ _REBINDING = (
 _REGEX_AFTER_WORD = re.compile(r"(?:^|[^\w$.])(?:return|typeof|case|do|else|in|of|void|delete|throw|new|yield|await)\s*$")
 
 
+def _after_control_condition(source: str, close: int) -> bool:
+    """The ``)`` at *close* ends an ``if``/``while``/``for``/``with`` condition (a statement may follow)."""
+    depth = 0
+    for k in range(close, -1, -1):
+        if source[k] == ")":
+            depth += 1
+        elif source[k] == "(":
+            depth -= 1
+            if depth == 0:
+                return bool(re.search(r"(?:^|[^\w$.])(?:if|while|for|with)\s*$", source[max(0, k - 12):k]))
+    return False
+
+
 def _regex_may_start(source: str, at: int) -> bool:
     j = at - 1
     while j >= 0 and source[j] in " \t\r\n":
         j -= 1
     if j < 0:
         return True
+    if source[j] == ")":
+        return _after_control_condition(source, j)
     if source[j] in "(,=:[!&|?{};+-*%<>~^":
         return not source.startswith("/", at + 1) and not (source[j] in "+-" and j > 0 and source[j - 1] == source[j])
     return bool(_REGEX_AFTER_WORD.search(source, max(0, j - 12), j + 1))
@@ -150,7 +168,8 @@ def _code_view(source: str) -> str:
     """*source* with the text of quoted strings, template literals and regex literals blanked, same
     length. Only text that can never run is blanked: a template's ``${…}`` stays code, and a ``/``
     starts a regex only where an expression cannot end before it (after an operator, ``(``, ``,``,
-    a keyword such as ``return``); after a name, number, ``)`` or ``]`` it is division."""
+    a keyword such as ``return``, or the ``)`` of an ``if``/``while``/``for`` condition); after a
+    name, number, other ``)`` or ``]`` it is division."""
     out = list(source)
 
     def blank(i: int) -> None:

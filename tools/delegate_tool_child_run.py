@@ -586,7 +586,14 @@ def _build_result_entry(
         exit_reason = "completed" if result.get("completed", False) else "max_iterations"
         status = "completed" if usable_summary else "failed"
 
-    _cost = getattr(child, "session_estimated_cost_usd", 0.0)
+    # Billed (actual) and estimated spend are separate columns; a child's spend is their sum.
+    # A child whose cost attribute is not numeric degrades to 0.0 rather than raising here.
+    def _as_float(value: Any) -> float:
+        return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
+
+    _cost = _as_float(getattr(child, "session_estimated_cost_usd", 0.0)) + _as_float(
+        getattr(child, "session_actual_cost_usd", 0.0)
+    )
     _cost_status = getattr(child, "session_cost_status", None)
     # Result entry contract: see the _run_single_child docstring.
     entry: dict[str, Any] = {
@@ -1040,7 +1047,14 @@ class _ChildRun:
         if entry.get("failure_reason"):
             # Classified verdict rides the event so every surface glosses the failure the same way.
             complete_kwargs["failure_reason"] = entry["failure_reason"]
-        _cost_usd = getattr(child, "session_estimated_cost_usd", None)
+        # Billed (actual) and estimated spend are separate columns; report their sum, as the
+        # result entry does, so a provider-billed child never reports $0 to a progress consumer.
+        _est = getattr(child, "session_estimated_cost_usd", 0.0)
+        _act = getattr(child, "session_actual_cost_usd", 0.0)
+        _cost_usd = (
+            (float(_est) if isinstance(_est, (int, float)) and not isinstance(_est, bool) else 0.0)
+            + (float(_act) if isinstance(_act, (int, float)) and not isinstance(_act, bool) else 0.0)
+        )
         if _cost_usd is not None:
             with _quiet(None):
                 complete_kwargs["cost_usd"] = float(_cost_usd)

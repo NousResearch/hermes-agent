@@ -34,7 +34,9 @@ _SESSION_TOKEN_KEYS = (
     "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens",
     "reasoning_tokens", "prompt_tokens", "completion_tokens", "total_tokens",
 )
-_SESSION_COST_KEYS = ("estimated_cost_usd", "cost_status", "cost_source")
+_SESSION_COST_KEYS = (
+    "estimated_cost_usd", "actual_cost_usd", "cost_status", "cost_source",
+)
 
 
 def _assistant_row_missing_visible_text(msg: dict) -> bool:
@@ -712,7 +714,9 @@ def finalize_turn(
             if getattr(agent.context_compressor, "last_prompt_tokens", 0) > 0
             else getattr(agent.context_compressor, "last_prompt_tokens", 0)
         ) or 0,
-        **{key: getattr(agent, f"session_{key}") for key in _SESSION_COST_KEYS},
+        # Billed (actual) and estimated spend are separate columns, so both ride the result; a
+        # durable agent always carries both, and a lightweight stub may carry only one.
+        **{key: getattr(agent, f"session_{key}", None) for key in _SESSION_COST_KEYS},
         # Requested service tier, for billing audits (`hermes -z --usage-file`).
         "service_tier": (
             (getattr(agent, "request_overrides", {}) or {}).get("extra_body") or {}

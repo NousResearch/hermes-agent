@@ -97,6 +97,10 @@ def _served_model_fields(agent: Any, response: Any, wire_model: Any) -> Optional
                 agent.last_served_model = None
             agent._turn_served_model = None
             return None
+        # A proxy header captured for THIS response names the actual deployment, which is more
+        # specific than the body's model echo. Never overwrite it with the coarser signal.
+        if getattr(agent, "last_served_model", None) and not getattr(agent, "_turn_served_model", None):
+            return None
         agent.last_served_model = served
         agent._turn_served_model = served
         return served

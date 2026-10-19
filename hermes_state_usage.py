@@ -439,7 +439,7 @@ class SessionUsageMixin:
             where.append("COALESCE(archived, 0) = 0")
         row = self._read_one(f"""
             SELECT COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0),
-                   COALESCE(SUM(COALESCE(actual_cost_usd, estimated_cost_usd, 0)), 0)
+                   COALESCE(SUM(COALESCE(actual_cost_usd, 0) + COALESCE(estimated_cost_usd, 0)), 0)
               FROM sessions
              WHERE {' AND '.join(where)}
             """, params)

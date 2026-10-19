@@ -18,7 +18,10 @@ logger = logging.getLogger("hermes_state")
 
 _LAST_ACTIVE_SQL = _sql_session_last_active("s")
 _TOKENS_SQL = "(COALESCE(s.input_tokens, 0) + COALESCE(s.output_tokens, 0))"
-_COST_SQL = "COALESCE(s.actual_cost_usd, s.estimated_cost_usd, 0)"
+# A call is billed (actual) OR estimated, never both, so a session's spend is the SUM of the
+# two columns. COALESCE would drop whichever half it did not pick, silently under-reporting any
+# session that mixed a provider-reported call with an estimated one.
+_COST_SQL = "(COALESCE(s.actual_cost_usd, 0) + COALESCE(s.estimated_cost_usd, 0))"
 
 
 def _like(value: str) -> str:

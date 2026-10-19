@@ -47,6 +47,24 @@ def env_launch_flags() -> dict:
     return {field: True for field, name in _ENV_LAUNCH_FLAGS if is_truthy_value(os.environ.get(name))}
 
 
+def shell_client_env() -> dict:
+    """This shell's allowlisted environment (``agent.session_client_env``) with the extra names of the
+    profile's effective config (managed layer included), as the gateway reads them. A bypass launch's
+    owner freezes code defaults, so it reads no profile."""
+    from agent.session_client_env import collect_client_env
+    if {'safe_mode', 'ignore_user_config'} & set(env_launch_flags()):
+        return collect_client_env()
+    from hermes_cli.config import get_config_path
+    from hermes_cli.config_effective import load_user_config_effective
+    return collect_client_env(config=load_user_config_effective(get_config_path()))
+
+
+def client_env_policy(parameters) -> dict:
+    """``client_env`` for a new session (main's process read these from its shell; the shared gateway
+    applies them to this session only), or nothing for a gateway that predates the field."""
+    return {"client_env": shell_client_env()} if "client_env" in parameters else {}
+
+
 def bypass_launch(args) -> bool:
     """--safe-mode / --ignore-user-config (or their env opt-ins): the owner freezes code defaults,
     the client reads no profile."""
@@ -190,6 +208,7 @@ async def run_gateway_chat(args, emitter=None):
             if create_if_missing:
                 policy["title"] = title
             policy.update(env_launch_flags())
+            policy.update(client_env_policy(parameters))
             cwd = await asyncio.to_thread(_caller_cwd, args)
             if "cwd" in parameters:
                 policy["cwd"] = cwd
@@ -201,6 +220,8 @@ async def run_gateway_chat(args, emitter=None):
             if missing:
                 raise GatewayClientError("Gateway does not support creation options: " + ", ".join(missing))
             snapshot = await client.rpc("session.create", request_id=uuid.uuid4().hex, source=source, **policy)
+            if (warning := (snapshot.get("info") or {}).get("config_warning")) and not isinstance(oneshot_prompt, str):
+                print(f"Warning: {warning}", file=sys.stderr)
         if not isinstance(oneshot_prompt, str):  # main's -z writes nothing to stderr on success
             print("Session: " + snapshot["stored_session_id"], file=sys.stderr, flush=True)
         if not oneshot:
@@ -214,13 +235,41 @@ async def run_gateway_chat(args, emitter=None):
         view.unattended = isinstance(oneshot_prompt, str)
         view.resume_footer = oneshot and not quiet
         if (getattr(args, "resume", None) or title or latest) and not quiet:
+            from agent.context_compressor import MODEL_ONLY_DISPLAY_METADATA_KEY
             for row in snapshot.get("messages", []):
-                if row.get("role") in {"user", "assistant"} and isinstance(row.get("content"), str):
+                # A micro-compaction merge (model_only) is not printed: its original prompts are.
+                metadata = row.get("display_metadata")
+                merged = isinstance(metadata, dict) and metadata.get(MODEL_ONLY_DISPLAY_METADATA_KEY)
+                if row.get("role") in {"user", "assistant"} and isinstance(row.get("content"), str) and not merged:
                     print(f"{row['role']}: {row['content']}")
         return await view.run(query, oneshot=oneshot)
 
 
 _RESUME_POLICY_MISMATCH = "Resume retains gateway session policy; creation overrides are unsupported on resume."
+# A refused resume flag as the user typed it, and the slash command that changes it on the resumed session.
+_RESUME_FLAG_HINTS = {"model": ("-m/--model", "/model"), "provider": ("--provider", "/model"),
+                      "base_url": ("--base-url", "/model"), "reasoning": ("--reasoning", "/reasoning"),
+                      "yolo": ("--yolo", "/yolo"), "toolsets": ("-t/--toolsets", None),
+                      "skills": ("-s/--skills", None), "verbose": ("-v/--verbose", None), "cwd": ("--in", None)}
+
+
+def resume_policy_error(keys):
+    """The resume refusal naming each flag that differs from the session's frozen launch, and the way forward."""
+    hints = [_RESUME_FLAG_HINTS.get(key, ("--" + key.replace("_", "-"), None)) for key in keys]
+    flags = ", ".join(dict.fromkeys(flag for flag, _ in hints))
+    switch = " or ".join(dict.fromkeys(command for _, command in hints if command))
+    one = len(hints) == 1
+    them = "it" if one else "them"
+    after = f" and use {switch} after resuming to switch" if switch else f", or start a new session to use {them}"
+    return GatewayClientError(f"{_RESUME_POLICY_MISMATCH} {flags} {'differs' if one else 'differ'} from this "
+                              f"session's launch: resume without {them}{after}.")
+
+
+def exit_on_resume_refusal(exc):
+    """A refused resume is a usage error on every classic path (interactive startup's copy): ``Error:``, exit 2."""
+    if isinstance(exc, GatewayClientError) and str(exc).startswith(_RESUME_POLICY_MISMATCH):
+        print(f"Error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
 
 
 def _launch_flags(args):
@@ -266,11 +315,10 @@ def check_resume_policy(args, snapshot):
         from hermes_constants import get_hermes_home
         flags = {key: requested[key] for key in ("model", "provider", "base_url", "api_key") if key in requested}
         requested["model"] = resolve_launch_route(flags, load_user_config_effective(get_hermes_home() / "config.yaml"))["model"]
-    for key, value in requested.items():
-        if key == "api_key":
-            continue  # never durable; a repeated key is not a policy change
-        if frozen.get(key) != value:
-            raise GatewayClientError(_RESUME_POLICY_MISMATCH)
+    # api_key is never durable; a repeated key is not a policy change.
+    differs = [key for key, value in requested.items() if key != "api_key" and frozen.get(key) != value]
+    if differs:
+        raise resume_policy_error(differs)
 
 
 def _register_terminal_process() -> None:

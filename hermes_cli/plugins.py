@@ -128,7 +128,7 @@ VALID_HOOKS: set[str] = {
     # Run-all-then-pick-first (see get_plugin_error_classification). Privacy: error_message/
     # error_body may be unredacted.
     "transform_api_error_classification", "on_session_start", "on_session_end",
-    "on_session_finalize", "on_session_reset",
+    "on_session_finalize", "on_session_reset", "on_session_delete",
     # on_skill_lifecycle: successful skill lifecycle facts (local skill name visible to plugins).
     "on_skill_lifecycle", "subagent_start", "subagent_stop",
     # pre_gateway_dispatch: once per incoming MessageEvent, after the internal-event guard, BEFORE
@@ -195,10 +195,10 @@ VALID_HOOKS: set[str] = {
     # returns IGNORED in v1. Deliberately NOT fired for the gateway's running-agent intercept path
     # (/stop, /approve, busy_policy) — a slow/hostile plugin must not touch the operator's escape
     # hatches. Kwargs: surface, command (canonical), alias_used, args_raw, session_key, platform.
-    # Slash-command dispatch observer (#64204, observer-first per #64182 ground rule 3). Return values are
-    # IGNORED in v1 — a plugin returning a directive-shaped dict gets a debug log so future block/rewrite
-    # adopters are discoverable once the middleware variant ships against the #64231 taxonomy.
+    # Observer-first (#64204, #64182 rule 3); a directive-shaped return gets a debug log so future
+    # block/rewrite adopters are discoverable once the middleware variant ships (#64231 taxonomy).
     "pre_command",
+    "post_compaction",  # once per committed compaction on every path; observer (hooks.md, #118382)
 }
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as
@@ -459,12 +459,7 @@ class PluginContext:
         """Register a tool in the global registry and track it as plugin-provided. ``override=True``
         replaces a same-named built-in (without it a name claimed by another toolset is rejected) and
         needs operator opt-in via ``plugins.entries.<plugin_id>.allow_tool_override: true`` — otherwise
-        any enabled plugin could silently replace a privileged built-in like ``write_file``.
-
-        ``override=True`` against a built-in tool requires the operator to opt in via
-        ``plugins.entries.<plugin_id>.allow_tool_override: true`` in config.yaml — mirrors the trust gate
-        pattern used for ``ctx.llm`` provider/model overrides (#23194).
-        """
+        any enabled plugin could silently replace a privileged built-in like ``write_file`` (#23194)."""
         if override and not self._tool_override_allowed(name):
             raise PluginToolOverrideError(
                 f"Plugin {self.manifest.name!r} cannot override built-in tool {name!r}. Set "
@@ -573,16 +568,8 @@ class PluginContext:
     def _tool_override_allowed(self, tool_name: str) -> bool:
         """Whether this plugin may override built-in tools: bundled plugins are trusted (a maintainer
         choice, not privilege escalation); others need ``tools.override`` via
-        :func:`plugin_capability_granted` (granted_capabilities OR legacy ``allow_tool_override: true``).
-
-        Bundled plugins (shipped with Hermes core) are trusted by default — an override there is a
-        deliberate maintainer choice, not a third-party plugin trying to elevate privilege. For every other
-        source, the canonical check is :func:`plugin_capability_granted` with the ``tools.override``
-        capability — satisfied by EITHER the consent-flow grant
-        (``plugins.entries.<plugin_id>.granted_capabilities``) OR the deprecated legacy key
-        ``allow_tool_override: true`` (still honored for backward compatibility; #64228 reference
-        migration).
-        """
+        :func:`plugin_capability_granted` (granted_capabilities OR legacy ``allow_tool_override: true``,
+        still honored for backward compatibility; #64228)."""
         if self.manifest.source == "bundled":
             return True
         try:
@@ -602,20 +589,31 @@ class PluginContext:
         self, content: str, role: str = "user", *, session_key: str | None = None,
         origin: Mapping[str, Any] | None = None,
     ) -> bool:
-        """Inject a message into a CLI, Ink TUI/desktop, or messaging-gateway conversation.
-
-        CLI uses the attached REPL queues. Ink TUI and desktop use a separate injector
-        from the messaging gateway and queue onto the live session named by ``session_key``
-        (the durable key, not the ephemeral UI session id). ``origin`` (a
-        ``SessionSource.to_dict()``-shaped mapping: platform, chat_id, chat_type, thread_id,
-        user_id, ...) instead names a messaging chat: the gateway starts (or continues) that
-        chat's session in THIS plugin's own profile and runs a turn there; the plugin cannot
-        target another profile. Non-CLI injection needs ``session_key`` or ``origin`` plus
-        ``plugins.entries.<plugin_id>.allow_gateway_injection`` in the plugin's profile config.
-        ``True`` means a host accepted the request, not that the turn completed.
-        """
+        """Queue *content* for a session (``session_key``) or a chat in this plugin's own profile
+        (``origin``); ``True`` means a host accepted it. Contract: plugins_injection.py, plugin docs."""
         from hermes_cli.plugins_injection import inject_plugin_message
         return inject_plugin_message(self, content, role, session_key=session_key, origin=origin)
+
+    def session_cwd(self) -> str:
+        """The calling session's recorded cwd, never the gateway's own (``plugin_session``)."""
+        from hermes_cli.plugin_session import context_cwd
+        return context_cwd(self._manager)
+
+    def session_surface(self) -> str:
+        """The calling session's client (``cli``/``tui``/``desktop``/``acp``) or messaging platform."""
+        from hermes_cli.plugin_session import context_surface
+        return context_surface(self._manager)
+
+    def post_message(self, text: str) -> Any:
+        """Post *text* into the session bound to this call; the handle's ``edit(text)`` updates it in
+        place. Never raises (``ok=False`` + ``error`` with no conversation): ``plugin_messages.py``."""
+        from hermes_cli.plugin_messages import post
+        return post(self, text)
+
+    async def apost_message(self, text: str) -> Any:
+        """``post_message`` for async code on the gateway loop (edit with ``await handle.aedit``)."""
+        from hermes_cli.plugin_messages import apost
+        return await apost(self, text)
 
     def _gateway_injection_allowed(self) -> bool:
         """Return whether this plugin may trigger gateway session turns (read from the plugin's
@@ -647,7 +645,7 @@ class PluginContext:
         argument_mode: str | None = None,
     ) -> Optional[PluginRegistration]:
         """Register an in-session slash command (``/name``); handler ``fn(raw_args: str) -> str | None``
-        (sync or async). ``args_hint`` (e.g. ``"<file>"``) lets adapters like Discord surface an argument
+        (sync or async), plus the session-context keywords it declares (``plugin_command_dispatch``). ``args_hint`` (e.g. ``"<file>"``) lets adapters like Discord surface an argument
         field; without it the command registers parameterless there but still accepts trailing text."""
         clean = name.lower().strip().lstrip("/").replace(" ", "-")
         if not clean:

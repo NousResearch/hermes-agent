@@ -75,8 +75,15 @@ def test_native_callbacks_preserve_full_command_in_started_event():
     assert ctx.progress_queue.get_nowait()["tool_call_id"] == "call-1"
 
 
-def test_progress_callback_does_not_duplicate_native_events():
+def test_progress_callback_preserves_log_mode_events_for_feishu():
     ctx = _ctx()
+    ctx.feishu_progress_card_enabled = True
+    ctx.progress_queue = None
+    ctx.log_queue = queue.Queue()
     runner = TurnRunner(MagicMock(), ctx)
-    runner.progress_callback("tool.completed", "terminal", "failed", {}, is_error=True)
-    assert ctx.progress_queue.empty()
+
+    runner.progress_callback("tool.started", "terminal", "git status", {})
+
+    assert ctx.log_queue.get_nowait().endswith('terminal: "git status"')
+
+

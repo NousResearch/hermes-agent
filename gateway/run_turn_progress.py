@@ -213,14 +213,14 @@ class GatewayTurnProgressMixin:
             self._progress_subagent_notice(preview, kwargs)
             return
         self._progress_live_status(event_type, tool_name, args)
-        if ctx.feishu_progress_card_enabled and event_type in {"tool.started", "tool.completed"}:
-            return  # The ID-bearing lifecycle callbacks handle Feishu cards.
         # "log" mode: append tool.started lines to the log queue, silent in chat. Handled before
         # the progress_queue guard because log mode runs without a chat progress queue.
         if ctx.log_queue is not None and event_type == "tool.started" and tool_name and tool_name != "_thinking":
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             preview_str = f' "{preview}"' if preview else ""
             ctx.log_queue.put(f"{ts}  {tool_name}:{preview_str}".rstrip())
+        if ctx.feishu_progress_card_enabled and event_type in {"tool.started", "tool.completed"}:
+            return  # The ID-bearing lifecycle callbacks handle Feishu cards.
         if not ctx.progress_queue or not ctx._run_still_current():
             return
         if event_type == "tool.completed" and not ctx.long_tool_hint_fired[0]:

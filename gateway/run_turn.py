@@ -886,7 +886,12 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         # Webhooks can't edit messages; a bot peer gets the final reply only (#137027): no progress lanes.
         is_webhook, bot_peer = source.platform == Platform.WEBHOOK, not automatic_notices_allowed(source)
         tool_progress_enabled = progress_mode not in {"off", "log"} and not is_webhook and not bot_peer
-        feishu_progress_card_enabled = source.platform == Platform.FEISHU and not is_webhook
+        feishu_progress_card_enabled = (
+            source.platform == Platform.FEISHU
+            and not is_webhook
+            and not bot_peer
+            and not (_tool_progress_explicit and progress_mode == "off")
+        )
         # Live status for text-rendering typing indicators (Slack); independent of tool_progress.
         _live_status_mode = resolve_display_setting(user_config, platform_key, "live_status", "full")
         _live_status_adapter = (

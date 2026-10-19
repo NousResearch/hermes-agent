@@ -6,6 +6,7 @@ import type { Dialog, Shell } from 'electron'
 
 import { readAndConsumeHandoffResult, type ReleaseHolder } from './handoff-result'
 import { closableReleaseHolders } from './release-holder-consent'
+import { explainUpdateStop, readStoppedRun } from './update-stop-remedy'
 
 export interface HandoffReportHost {
   hermesHome: string
@@ -88,8 +89,17 @@ export function reportHandoffResult(host: HandoffReportHost): void {
     } else if (result && result.ok) {
       host.log(`[updates] detached update finished OK (branch ${result.branch})`)
     } else if (result) {
-      host.log(`[updates] detached update FAILED (exit ${result.exitCode}): ${result.message}`)
+      // The run's own receipt names the stop the updater took (it is written
+      // before this dialog renders). Matched by correlation id, so an older
+      // run's stop can never explain this one.
+      const stop: ReturnType<typeof readStoppedRun> = readStoppedRun(host.hermesHome, result.runId)
+      const explained: ReturnType<typeof explainUpdateStop> = explainUpdateStop(stop?.stopClass ?? null)
       const handoffLogPath = path.join(host.hermesHome, 'logs', 'desktop-update-handoff.log')
+
+      host.log(
+        `[updates] detached update FAILED (exit ${result.exitCode}): ${result.message}` +
+          (stop === null ? '' : ` (stop_class ${stop.stopClass})`)
+      )
 
       // Async so boot is not blocked behind the dialog; the response handlers
       // reuse the menu's open-updates path (queued until the renderer is ready)
@@ -98,11 +108,14 @@ export function reportHandoffResult(host: HandoffReportHost): void {
         .showMessageBox({
           type: 'error',
           title: 'Hermes update',
-          message: "Hermes couldn't finish updating",
-          detail:
-            "You're still on the previous version and can keep using it. Try the update again, or open the update log to report the problem.\n\n" +
-            `Details: ${result.message}`,
-          buttons: ['Try again', 'Open log', 'Close'],
+          message: explained?.message ?? "Hermes couldn't finish updating",
+          detail: explained === null
+            ? "You're still on the previous version and can keep using it. Try the update again, or open the update log to report the problem.\n\n" +
+              `Details: ${result.message}`
+            : `${explained.detail}\n\nDetails: ${result.message}`,
+          // A refusal is not retried: the same offer fails the same way. Its way
+          // out is the channel the update settings own, so lead with that.
+          buttons: explained === null ? ['Try again', 'Open log', 'Close'] : ['Update settings', 'Open log', 'Close'],
           defaultId: 0,
           cancelId: 2,
           noLink: true

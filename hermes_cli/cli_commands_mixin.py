@@ -31,13 +31,14 @@ from hermes_state_ids import new_session_id as mint_session_id
 from agent.i18n import t
 from agent.message_metadata import message_identity
 from agent.turn_context import extract_api_content_sidecar
-from hermes_cli.cli_agent_setup_mixin import _retire_agent
+from hermes_cli.cli_agent_setup_mixin import _gateway_owned_id, _retire_agent
 from hermes_cli.cli_commands_session_tools import (
     CLICommandsSessionToolsMixin, _TTYBuf, _accent, _accent_line, _command_arg, _cp, _dim,
     _dim_line, _gt, _lines, _pr, _probe, _rollback_kept, _save, _say_block, _shlex_args, _t, _tn)
 from hermes_cli.browser_connect import (
     DEFAULT_BROWSER_CDP_URL, discover_local_cdp_url, find_free_debug_port, is_browser_debug_ready,
     launch_chrome_debug, local_port_in_use, manual_chrome_debug_command)
+from hermes_cli.cli_browser_gateway import _normalize_cdp_url
 
 
 # Output helpers. Slash-command text is user-visible: every literal below is load-bearing.
@@ -354,26 +355,6 @@ def _browser_use(cli, arg: str) -> None:
     headline = _t("browser.use_enabled" if arg == "on" else "browser.use_disabled")
     cli.new_session()
     _say_block(headline, f"   {_t('browser.session_reset')}")
-
-
-def _normalize_cdp_url(cdp_url: str):
-    """Validate a /browser connect URL: ``(cdp_url, port)`` or None after printing the error.
-    A ``/devtools/browser/<id>`` path is kept verbatim; anything else is reduced to the origin."""
-    parsed = urlparse(cdp_url if "://" in cdp_url else f"http://{cdp_url}")
-    if parsed.scheme not in {"http", "https", "ws", "wss"}:
-        _say_block(f"   {_t('browser.unsupported_scheme', scheme=parsed.scheme or _t('browser.scheme_missing'))}")
-        return None
-    try:
-        port = parsed.port or (443 if parsed.scheme in {"https", "wss"} else 80)
-    except ValueError:
-        _say_block(f"   {_t('browser.invalid_port', url=cdp_url)}")
-        return None
-    if not parsed.hostname:
-        _say_block(f"   {_t('browser.missing_host', url=cdp_url)}")
-        return None
-    if parsed.path.startswith("/devtools/browser/"):
-        return parsed.geturl(), port
-    return parsed._replace(path="", params="", query="", fragment="").geturl(), port
 
 
 def _launch_default_cdp_browser(port: int):
@@ -994,6 +975,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         from hermes_cli.kanban_resume_guard import kanban_resume_refusal
         if (kanban_refusal := kanban_resume_refusal(self._session_db, target_id)):
             return _cp(f"  {kanban_refusal}")
+        read_id, target_id = target_id, _gateway_owned_id(self._session_db, target_id)  # the receipt owner
         if target_id == self.session_id:
             return _cp(f"  {_t('resume.already_on')}")
         old_session_id = self.session_id
@@ -1002,7 +984,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         _sync_process_session_id(target_id)
         # One lineage SELECT, two projections: model_history is alternation-repaired for live
         # replay (heals a durable user;user once); display_history is verbatim (as startup --resume).
-        model_history, display_history = self._session_db.get_resume_conversations(target_id)
+        model_history, display_history = self._session_db.get_resume_conversations(read_id)
         self.conversation_history = _without_session_meta(model_history)
         self._resume_display_history = _without_session_meta(display_history)
         with suppress(Exception):  # re-open the target session so it's not marked as ended
@@ -1031,9 +1013,8 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         self._restore_session_model(session_meta)
 
     def _resolve_resume_target(self, target: str):
-        """``(session_id, meta)`` for a numbered selection, title, or id; None after printing why
-        it could not be resolved. An empty compression-chain head redirects to the descendant
-        that actually holds the transcript."""
+        """``(session_id, meta)`` for a numbered selection, title, or id (an empty compression-chain head
+        redirects to the descendant holding the transcript); None after printing why it was not resolved."""
         if target.isdigit():
             sessions = self._list_recent_sessions(limit=10)
             index = int(target)
@@ -1845,6 +1826,10 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
                 _t("browser.usage"), "",
                 *(f"   {_t(f'browser.usage_{sub}')}" for sub in ("connect", "disconnect", "status", "use")))
             return
+        from hermes_cli.gateway_side import connection_for
+        if (connection := connection_for(self)) is not None:
+            from hermes_cli.cli_browser_gateway import gateway_browser
+            return gateway_browser(self, connection, word, rest.strip())
         handler(self, rest.strip())
 
     # ---- /heartbeat, /refine, /review -----------------------------------------------------

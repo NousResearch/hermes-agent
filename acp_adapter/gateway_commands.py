@@ -69,6 +69,24 @@ async def _rewind_command(agent, session_id, command, arg):
     return await _rewind(agent, await agent._client(), session_id, command, arg)
 
 
+async def _discard_unknown(agent, session_id, _command, admission_id):
+    """Acknowledge one exact lost turn and refresh its FIFO snapshot."""
+    if not admission_id:
+        return 'Usage: /discard <lost admission id>', None
+    # Pending-only refreshes: adopting the whole snapshot would advance its reply cursor past
+    # messages and approvals the editor's event pump has not projected yet.
+    await agent._refresh_unknown(session_id)
+    lost = next((row for row in agent._snapshots[session_id].get('pending', [])
+                 if row.get('admission_id') == admission_id and row.get('status') == 'unknown'), None)
+    if lost is None:
+        return (f'No unknown (lost) admission with id {admission_id}; refresh the session and try again.', None)
+    client = await agent._client()
+    await client.rpc('prompt.resolve_unknown', session_id=session_id, admission_id=admission_id,
+                     execution_generation=lost['execution_generation'])
+    await agent._refresh_unknown(session_id)
+    return 'Discarded the lost turn. Queued messages can continue.', None
+
+
 async def _forward(agent, client, session_id, command, arg):
     """The owner's ``slash.exec`` answer: its report, a turn to submit (a skill body or the turn a
     command built, after its notice), or the shared refusal for a command it does not serve."""
@@ -119,7 +137,7 @@ async def _rewind(agent, client, session_id, command, arg):
         return t('cli.session.retry_no_user_message' if retry else 'cli.session.undo_no_user_message'), None
     # Retained until the refresh lands: a repeat after a lost refresh replays this rewind instead of
     # deriving a new target from the already-shortened transcript (which would drop the turn before).
-    agent._snapshots[session_id] = await client.rpc('session.resume', session_id=session_id)
+    await agent._adopt(session_id, await client.rpc('session.resume', session_id=session_id))
     agent._mutations.acknowledge(session_id, 'rewind', payload)
     content = (result.get('target_message') or {}).get('content')
     if retry:
@@ -174,7 +192,7 @@ async def _mutate(agent, client, session_id, command, arg):
     if unchanged is not None:
         reply = unchanged(result)
     else:
-        agent._snapshots[session_id] = await client.rpc('session.resume', session_id=session_id)
+        await agent._adopt(session_id, await client.rpc('session.resume', session_id=session_id))
         if operation in {'reset', 'compress'}:
             await _refresh_context(agent, client, session_id, operation)
         reply = {'model': lambda: _model_text('Model switched to', result),
@@ -208,7 +226,7 @@ async def _refresh_context(agent, client, session_id, operation):
     stats = await client.rpc('session.stats', session_id=session_id)
     if stats.get('context_length') is None:
         from agent.model_metadata import estimate_request_tokens_rough
-        messages = agent._snapshots[session_id].get('messages') or []
+        messages = [m for m in agent._snapshots[session_id].get('messages') or [] if not m.get('archived')]
         stats = {**stats, 'context_length': (agent._usage.get(session_id) or {}).get('context_length'),
                  'context_tokens': estimate_request_tokens_rough(messages) if operation == 'compress' else 0}
     await agent._project_usage(session_id, agent._editor_id(session_id), stats)
@@ -257,6 +275,7 @@ def _tools_text(info):
 # "new session + clear screen"; here it is ``/new``'s reset of this session.
 ROUTES = {
     'branch': ('ACP fork_session', _branch),
+    'discard': ('prompt.resolve_unknown', _discard_unknown),
     'help': ('local', _help),
     'steer': ('session.steer', _prompt),
     'queue': ('prompt.submit', _prompt),

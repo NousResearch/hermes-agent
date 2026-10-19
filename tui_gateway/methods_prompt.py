@@ -236,10 +236,10 @@ def _pending_reaction_notes(session: dict) -> str:
 
 # ── prompt.submit pieces ────────────────────────────────────────────────────
 
-def _typed_stop_phrase_response(rid, text):
-    """RPC reply ending the voice chat when a bare stop phrase is TYPED while backend voice
+def _typed_stop_phrase_response(rid, text, sid=None):
+    """RPC reply ending the voice chat when a bare stop phrase is TYPED while the session's voice
     mode is on (typed twin of the spoken stop phrase), or None for a normal message."""
-    if not (isinstance(text, str) and _voice_mode_enabled()):
+    if not (isinstance(text, str) and _session_voice_enabled(sid)):
         return None
     try:
         # Typed bare stop phrase while backend voice mode is active ends the voice chat instead of sending
@@ -251,7 +251,7 @@ def _typed_stop_phrase_response(rid, text):
             return None
     except Exception:
         return None
-    _end_voice_chat(stop_loop=True, stop_tts=True)
+    _end_session_voice_chat(sid, stop_loop=True, stop_tts=True)
     _voice_emit("voice.transcript", {"stop_phrase": True, "typed": True})
     logger.info("prompt.submit: typed stop phrase — voice chat ended")
     return _ok(rid, {"voice_stopped": True})
@@ -695,6 +695,73 @@ def _run_after_agent_ready(
 _TRUNCATION_PARAMS = (
     "truncate_before_user_ordinal", "truncate_before_row_id", "truncate_before_message_id")
 
+#: The refusal reason when the owner's FIFO could not take a typed prompt (RT-37): transient, the
+#: gateway's turn ends on its own, so the client offers "send when the turn ends", not a new chat.
+SESSION_OWNER_BUSY = "SESSION_OWNER_BUSY"
+#: The owner's FIFO did not confirm a forwarded prompt in time; it may still have been queued, so the
+#: client must not offer Retry (a second copy would run): check the chat first.
+SESSION_OWNER_UNCONFIRMED = "SESSION_OWNER_UNCONFIRMED"
+
+
+def _slot_refusal(rid, sid, session, text, params, refusal, internal_hosted_submit) -> dict:
+    """The answer to a refused slot: a ledger refusal of a client submit goes to the owner's FIFO."""
+    if getattr(refusal, "ledger_status", None) is not None and not internal_hosted_submit:
+        return _submit_to_ledger_owner(rid, sid, session, text, params, refusal)
+    reason = getattr(refusal, "reason", None)
+    return _err(rid, 4090, str(refusal), {"reason": reason} if reason else None)
+
+
+def _submit_to_ledger_owner(rid, sid, session, text, params, refusal) -> dict:
+    """The gateway's durable ledger holds work for this session (#140385, RT-37): one owner, one FIFO.
+    Work that ends on its own (a running or queued gateway turn) gets this prompt queued behind it in
+    the OWNER's FIFO (``owner_forward``): the owner runs it once, after the current turn, and nothing
+    runs here. An ``unknown`` admission, or work no running gateway will finish, keeps its refusal
+    (only Discard / a gateway resume resolves it); anything else that cannot be queued is refused
+    with the reason and the advice to send when the turn ends."""
+    from tui_gateway import owner_forward
+    not_owned = _err(rid, 4090, str(refusal), {"reason": getattr(refusal, "reason", None) or "SESSION_NOT_OWNED"})
+    if getattr(refusal, "ledger_status", None) == "unknown":
+        return not_owned
+    why = None
+    if not owner_forward.forwardable(refusal, session, text, params):
+        why = ("a rewind or attachment cannot join its queue" if isinstance(text, str) and text.strip()
+               else "this kind of message cannot join its queue")
+        if _unstage_refused_images(session):
+            why = "an image cannot join its queue, so it was removed from this message"
+    else:
+        try:
+            receipt = owner_forward.forward_prompt(sid, session, text)
+        except owner_forward.OwnerNotRunning:
+            return not_owned  # no gateway runs the ledger's work: it will not end on its own
+        except owner_forward.OwnerUnconfirmed:
+            return _err(rid, 4090, "The gateway is running a turn in this chat and did not confirm your message"
+                        " in time. It may already be queued there: check the chat before sending it again.",
+                        {"reason": SESSION_OWNER_UNCONFIRMED})
+        except Exception as exc:  # every owner failure is the same named refusal
+            logger.info("forwarding prompt for %s to the owner failed: %s",
+                        session.get("session_key") or sid, exc, exc_info=True)
+            why = str(exc) if isinstance(exc, owner_forward.OwnerUnavailable) else "the gateway refused it"
+        else:
+            return _ok(rid, {"status": "queued", "admission_id": receipt.get("admission_id"),
+                             "forwarded": True})
+    return _err(rid, 4090, "The gateway is running a turn in this chat and " + why
+                + ". Nothing was sent. Send it again when the current turn ends.",
+                {"reason": SESSION_OWNER_BUSY})
+
+
+def _unstage_refused_images(session) -> int:
+    """Drop the images staged for a submit the owner's FIFO cannot take (RT-37c live finding).
+
+    Every other refusal leaves ``attached_images`` staged because the turn that ends the refusal (the
+    legacy turn once the slot frees) consumes them. Here no legacy turn comes: while the gateway owns the
+    chat, a staged image makes every later text-only send unforwardable too, so the chat stays refused
+    behind an image the composer may no longer show. The refusal names the removal, so the user re-attaches
+    it knowingly instead of losing it silently."""
+    with session["history_lock"]:
+        dropped = len(session.get("attached_images") or ())
+        session["attached_images"] = []
+    return dropped
+
 
 def _lock_in_submit_turn(
     rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind):
@@ -748,7 +815,7 @@ def _(rid, params: dict) -> dict:
         if isinstance(title_preview, str) and title_preview.strip()
         else None
     )
-    if (stopped := _typed_stop_phrase_response(rid, text)) is not None:
+    if (stopped := _typed_stop_phrase_response(rid, text, sid)) is not None:
         return stopped
     if params.get("interrupted"):
         # Client-side barge-in: latch so this turn's model message carries the note.
@@ -775,8 +842,7 @@ def _(rid, params: dict) -> dict:
     if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
         # Refused HERE — before the busy queue, db row and agent build — so a refusal
         # leaves the session untouched.  The reason travels as machine-readable data.
-        reason = getattr(limit_message, "reason", None)
-        return _err(rid, 4090, str(limit_message), {"reason": reason} if reason else None)
+        return _slot_refusal(rid, sid, session, text, params, limit_message, internal_hosted_submit)
     # Rewritten every submit: a session alternates app window / HUD / live voice; a stale value misinforms.
     session["client_surface"] = params.get("surface") if params.get("surface") in _CLIENT_SURFACES else ""
     # Live-voice delegations carry the recent spoken transcript for the MODEL INPUT only (the persisted

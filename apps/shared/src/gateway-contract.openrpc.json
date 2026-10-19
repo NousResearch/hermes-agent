@@ -9053,6 +9053,18 @@
             ],
             "default": null,
             "title": "Provider"
+          },
+          "reasoning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reasoning"
           }
         },
         "required": [
@@ -10188,6 +10200,23 @@
             "default": null,
             "title": "Cwd"
           },
+          "edit_approval_policy": {
+            "anyOf": [
+              {
+                "enum": [
+                  "ask",
+                  "workspace_session",
+                  "session"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Edit Approval Policy"
+          },
           "launch_request": {
             "anyOf": [
               {
@@ -10595,6 +10624,17 @@
           },
           "info": {
             "$ref": "#/components/schemas/CanonicalSnapshotInfo"
+          },
+          "pending_connection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConnectionRequestPayload"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -10921,6 +10961,23 @@
             ],
             "default": null,
             "title": "Cwd"
+          },
+          "edit_approval_policy": {
+            "anyOf": [
+              {
+                "enum": [
+                  "ask",
+                  "workspace_session",
+                  "session"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Edit Approval Policy"
           },
           "launch_request": {
             "anyOf": [
@@ -31969,6 +32026,30 @@
             ],
             "default": null,
             "title": "Turn Isolation"
+          },
+          "admission_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Admission Id"
+          },
+          "forwarded": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Forwarded"
           }
         },
         "title": "PromptSubmitResult",
@@ -36440,6 +36521,18 @@
             ],
             "default": null,
             "title": "Last Seen"
+          },
+          "replay_epoch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Replay Epoch"
           }
         },
         "required": [
@@ -36551,6 +36644,68 @@
           "max_bytes_process"
         ],
         "title": "SessionEventsStatsResult",
+        "type": "object"
+      },
+      "SessionExportParams": {
+        "additionalProperties": false,
+        "description": "``format``: json (default) / md / markdown / html / snapshot (``normalize_save_format``).",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "format": {
+            "default": "json",
+            "title": "Format",
+            "type": "string"
+          },
+          "redact": {
+            "default": false,
+            "title": "Redact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "SessionExportParams",
+        "type": "object"
+      },
+      "SessionExportResult": {
+        "additionalProperties": false,
+        "description": "``gateway/session_tui_ops.py::export_session``: the rendered ``/save`` body and its default\nfile name. The client writes it (the gateway may be remote); nothing is written on the host.",
+        "properties": {
+          "format": {
+            "title": "Format",
+            "type": "string"
+          },
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          }
+        },
+        "required": [
+          "format",
+          "filename",
+          "content"
+        ],
+        "title": "SessionExportResult",
         "type": "object"
       },
       "SessionForeignIdParams": {
@@ -37326,7 +37481,7 @@
       },
       "SessionMutateParams": {
         "additionalProperties": false,
-        "description": "``operation`` + ``payload`` are validated by ``hermes_state_mutations.validate_action``;\n``expected_generation`` is required for delete/rewind/reset/branch/model/compress/reasoning/workspace.\n``reasoning`` (``{effort}``) and ``workspace`` (``{cwd}``, refused ``session_busy`` mid-turn) rewrite\nthe session's frozen policy: session-scope ``/reasoning`` and Desktop's Move to project.",
+        "description": "``operation`` + ``payload`` are validated by ``hermes_state_mutations.validate_action``;\n``expected_generation`` is required for delete/rewind/reset/branch/model/compress/reasoning/workspace.\n``reasoning`` (``{effort}``) and ``workspace`` (``{cwd}``, refused ``session_busy`` mid-turn) rewrite\nthe session's frozen policy: session-scope ``/reasoning`` and Desktop's Move to project. ``edit_policy``\n(``{policy}``: ask / workspace_session / session) is an ACP session's edit approval (main's ACP modes).",
         "properties": {
           "session_id": {
             "title": "Session Id",
@@ -47436,6 +47591,24 @@
       }
     },
     {
+      "name": "session.export",
+      "summary": "The /save transcript rendered for the client to write (the gateway writes nothing).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionExportParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionExportResult"
+        }
+      }
+    },
+    {
       "name": "session.info",
       "summary": "Frozen launch policy projection of one local session.",
       "params": [
@@ -47491,7 +47664,7 @@
     },
     {
       "name": "session.mutate",
-      "summary": "Revision-fenced, retry-idempotent session edit (rename, archive, sidebar, branch, delete, rewind, reset, model, reasoning, workspace, compress, import).",
+      "summary": "Revision-fenced, retry-idempotent session edit (rename, archive, sidebar, branch, delete, rewind, reset, model, reasoning, workspace, edit_policy, compress, import).",
       "params": [
         {
           "name": "params",

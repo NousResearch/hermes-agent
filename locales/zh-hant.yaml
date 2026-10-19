@@ -445,6 +445,9 @@ gateway:
     state_no: "否"
     queued: "**排隊中的後續：** {count}"
     platforms: "**已連線平台：** {platforms}"
+  discard:
+    nothing: "沒有可捨棄的內容：此聊天沒有在重新啟動時遺失的回合。"
+    done: "🗑️ 已捨棄 {count} 個遺失的回合；未重新執行。現在會回覆你已儲存的訊息。"
   stop:
     stopped_pending: "⚡ 已停止。代理尚未啟動 — 你可以繼續此工作階段。"
     stopped: "⚡ 已停止。你可以繼續此工作階段。"
@@ -1530,6 +1533,8 @@ slash:
     description: "將分享的設定檔封存檔匯入為新設定檔"
   stop:
     description: "終止所有執行中的背景程序"
+  discard:
+    description: "捨棄 Hermes 重新啟動時遺失的回合，讓此聊天的佇列繼續執行"
   pause:
     description: "全域暫停新工作（緊急停止）；'/pause off' 恢復"
   deny:
@@ -3074,6 +3079,10 @@ cli:
       usage_disconnect: "disconnect   還原為預設瀏覽器後端"
       usage_status: "status       顯示目前的瀏覽器模式"
       usage_use: "use [off]    切換至 Browser Use 模式（CLI 3.0）／切回內建工具"
+      remote_gateway: "/browser connect 與 /browser disconnect 管理閘道主機上的 Chromium 系瀏覽器 — 僅在連線至本機閘道時可用。"
+      checking: "正在檢查 {url} 的 Chromium 系瀏覽器遠端偵錯..."
+      new_sessions_only: "套用於新工作階段 — 此工作階段保留目前工具（/new 開始新的）。"
+      status_gateway_default: "🌐 瀏覽器：閘道的預設瀏覽器後端（無即時 CDP 連線）"
     heartbeat:
       label: "心跳"
       paused: "⏸ 心跳已暫停：{prompt}"

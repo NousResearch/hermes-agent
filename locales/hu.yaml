@@ -448,6 +448,9 @@ gateway:
     state_no: "Nem"
     queued: "**Sorban álló folytatások:** {count}"
     platforms: "**Csatlakoztatott platformok:** {platforms}"
+  discard:
+    nothing: "Nincs mit elvetni: ebben a csevegésben nem veszett el kör újraindításkor."
+    done: "🗑️ {count} elveszett kör elvetve; nem futottak újra. A mentett üzeneteidre most válasz érkezik."
   stop:
     stopped_pending: "⚡ Leállítva. Az ügynök még el sem kezdte — folytathatod ezt a munkamenetet."
     stopped: "⚡ Leállítva. Folytathatod ezt a munkamenetet."
@@ -1547,6 +1550,8 @@ slash:
     description: "Megosztott profilarchívum importálása új profilként"
   stop:
     description: "Minden futó háttérfolyamat leállítása"
+  discard:
+    description: "Egy Hermes újraindításakor elveszett kör elvetése, hogy a csevegés sora újra fusson"
   pause:
     description: "Új munka globális szüneteltetése (vészleállítás); a '/pause off' folytatja"
   deny:
@@ -3091,6 +3096,10 @@ cli:
       usage_disconnect: "disconnect   Visszaállás az alapértelmezett böngésző-háttérrendszerre"
       usage_status: "status       Jelenlegi böngészőmód megjelenítése"
       usage_use: "use [off]    Átváltás Browser Use módra (CLI 3.0) / vissza a beépített eszközökre"
+      remote_gateway: "A /browser connect és /browser disconnect egy Chromium böngészőt kezel az átjáró gépén — csak helyi átjáróval érhető el."
+      checking: "A Chromium böngésző távoli hibakeresésének ellenőrzése: {url}..."
+      new_sessions_only: "Új munkamenetekre vonatkozik — ez megtartja a jelenlegi eszközeit (/new újat indít)."
+      status_gateway_default: "🌐 Böngésző: az átjáró alapértelmezett böngésző-háttere (nincs élő CDP-kapcsolat)"
     heartbeat:
       label: "Szívverések"
       paused: "⏸ Szívverés szüneteltetve: {prompt}"

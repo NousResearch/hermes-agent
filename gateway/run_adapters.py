@@ -1363,6 +1363,9 @@ class GatewayAdapterLifecycleMixin:
         if callable(_set_reaction):
             _set_reaction(self._handle_reaction_event)
         adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
+        _set_transfer = getattr(adapter, "set_topic_transfer_fn", None)
+        if callable(_set_transfer):
+            _set_transfer(self._transfer_telegram_root_dm)
         adapter.set_authorization_check(
             authorization_check or self._make_adapter_auth_check(adapter.platform)
         )

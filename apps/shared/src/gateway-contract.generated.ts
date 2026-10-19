@@ -2744,6 +2744,8 @@ export interface PromptSubmitResult {
   survivor_user_row_ids?: (number | null)[] | null
   survivor_row_id_map?: Record<string, number | null> | null
   turn_isolation?: boolean | null
+  admission_id?: string | null
+  forwarded?: boolean | null
 }
 export type PromptSubmitStatus = 'streaming' | 'queued' | 'steered' | 'redirected'
 export interface ClipboardPasteParams {
@@ -3617,6 +3619,7 @@ export interface SessionEventsSinceParams {
   session_id: string
   profile?: string | null
   last_seen?: number | null
+  replay_epoch?: string | null
 }
 export interface SessionEventsSinceResult {
   events: Record<string, unknown>[]
@@ -4548,7 +4551,7 @@ export interface PromptResolveUnknownParams {
   admission_id: string
   execution_generation: number
 }
-/** ``operation`` + ``payload`` are validated by ``hermes_state_mutations.validate_action``; ``expected_generation`` is required for delete/rewind/reset/branch/model/compress/reasoning/workspace. ``reasoning`` (``{effort}``) and ``workspace`` (``{cwd}``, refused ``session_busy`` mid-turn) rewrite the session's frozen policy: session-scope ``/reasoning`` and Desktop's Move to project. */
+/** ``operation`` + ``payload`` are validated by ``hermes_state_mutations.validate_action``; ``expected_generation`` is required for delete/rewind/reset/branch/model/compress/reasoning/workspace. ``reasoning`` (``{effort}``) and ``workspace`` (``{cwd}``, refused ``session_busy`` mid-turn) rewrite the session's frozen policy: session-scope ``/reasoning`` and Desktop's Move to project. ``edit_policy`` (``{policy}``: ask / workspace_session / session) is an ACP session's edit approval (main's ACP modes). */
 export interface SessionMutateParams {
   session_id: string
   request_id: string
@@ -4612,6 +4615,7 @@ export interface CanonicalSessionInfo {
   desktop_protocol: string
   profile_name: string
   cwd?: string | null
+  edit_approval_policy?: 'ask' | 'workspace_session' | 'session' | null
   launch_request?: Record<string, unknown> | null
   reasoning_effort?: string | null
   reasoning_effort_wire?: string | null
@@ -4669,6 +4673,19 @@ export interface RollbackSessionDiffResult {
   diff_lines?: number
   empty?: boolean
   error?: string | null
+}
+/** ``format``: json (default) / md / markdown / html / snapshot (``normalize_save_format``). */
+export interface SessionExportParams {
+  session_id: string
+  profile?: string | null
+  format?: string
+  redact?: boolean
+}
+/** ``gateway/session_tui_ops.py::export_session``: the rendered ``/save`` body and its default file name. The client writes it (the gateway may be remote); nothing is written on the host. */
+export interface SessionExportResult {
+  format: string
+  filename: string
+  content: string
 }
 export interface SessionAutomationParams {
   session_id: string
@@ -4930,6 +4947,7 @@ export interface CanonicalSnapshot {
   pending: CanonicalPendingAdmission[]
   prompts: CanonicalPendingPrompt[]
   info: CanonicalSnapshotInfo
+  pending_connection?: ConnectionRequestPayload | null
 }
 export interface CanonicalPendingAdmission {
   admission_id: string
@@ -4981,6 +4999,7 @@ export interface CanonicalSnapshotInfo {
   profile_id?: string | null
   profile_name?: string | null
   cwd?: string | null
+  edit_approval_policy?: 'ask' | 'workspace_session' | 'session' | null
   launch_request?: Record<string, unknown> | null
   reasoning_effort?: string | null
   reasoning_effort_wire?: string | null
@@ -5118,6 +5137,7 @@ export interface CanonicalTurnAuthor {
 export interface CanonicalModelOverride {
   model: string
   provider?: string | null
+  reasoning?: string | null
 }
 export interface CanonicalApprovalParams {
   profile?: string | null
@@ -6758,11 +6778,13 @@ export interface CanonicalRpcMethods {
   /** Drop this connection's subscription; a stale subscription id answers detached=false. end_reason (snake_case): the viewer is closing the conversation; the last viewer leaving an idle local session ends its row with that reason. */
   'session.detach': { params: SessionDetachParams; result: SessionDetachResult }
   'session.events.since': { params: CanonicalEventsParams; result: CanonicalEventsResult }
+  /** The /save transcript rendered for the client to write (the gateway writes nothing). */
+  'session.export': { params: SessionExportParams; result: SessionExportResult }
   /** Frozen launch policy projection of one local session. */
   'session.info': { params: CanonicalSessionInfoParams; result: CanonicalSessionInfo }
   'session.interrupt': { params: CanonicalControlParams; result: CanonicalSessionHandle }
   'session.list': { params: CanonicalListParams; result: CanonicalListResult }
-  /** Revision-fenced, retry-idempotent session edit (rename, archive, sidebar, branch, delete, rewind, reset, model, reasoning, workspace, compress, import). */
+  /** Revision-fenced, retry-idempotent session edit (rename, archive, sidebar, branch, delete, rewind, reset, model, reasoning, workspace, edit_policy, compress, import). */
   'session.mutate': { params: SessionMutateParams; result: SessionMutateResult }
   /** Local operator only: the owner deletes the ended sessions `hermes sessions prune` selected, skipping busy sessions and retained reset owners. */
   'session.prune': { params: SessionPruneParams; result: SessionPruneResult }
@@ -6816,6 +6838,7 @@ export const CANONICAL_RPC_METHODS = [
   'session.create',
   'session.detach',
   'session.events.since',
+  'session.export',
   'session.info',
   'session.interrupt',
   'session.list',

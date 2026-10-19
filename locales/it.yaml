@@ -445,6 +445,9 @@ gateway:
     state_no: "No"
     queued: "**Follow-up in coda:** {count}"
     platforms: "**Piattaforme connesse:** {platforms}"
+  discard:
+    nothing: "Niente da scartare: questa chat non ha turni persi in un riavvio."
+    done: "🗑️ Scartati {count} turni persi; non sono stati rieseguiti. I tuoi messaggi salvati riceveranno ora risposta."
   stop:
     stopped_pending: "⚡ Fermato. L'agente non era ancora partito — puoi continuare questa sessione."
     stopped: "⚡ Fermato. Puoi continuare questa sessione."
@@ -1530,6 +1533,8 @@ slash:
     description: "Importa un archivio di profilo condiviso come nuovo profilo"
   stop:
     description: "Termina tutti i processi in background in esecuzione"
+  discard:
+    description: "Scarta un turno perso al riavvio di Hermes così la coda di questa chat riprende"
   pause:
     description: "Metti in pausa globalmente il nuovo lavoro (arresto di emergenza); '/pause off' riprende"
   deny:
@@ -3074,6 +3079,10 @@ cli:
       usage_disconnect: "disconnect   Torna al backend browser predefinito"
       usage_status: "status       Mostra la modalità browser attuale"
       usage_use: "use [off]    Passa alla modalità Browser Use (CLI 3.0) / torna agli strumenti integrati"
+      remote_gateway: "/browser connect e /browser disconnect gestiscono un browser Chromium sull'host del gateway — disponibile solo con un gateway locale."
+      checking: "Verifica del debug remoto del browser Chromium su {url}..."
+      new_sessions_only: "Si applica alle nuove sessioni — questa mantiene gli strumenti attuali (/new per avviarne una)."
+      status_gateway_default: "🌐 Browser: backend browser predefinito del gateway (nessuna connessione CDP attiva)"
     heartbeat:
       label: "Heartbeat"
       paused: "⏸ Heartbeat in pausa: {prompt}"

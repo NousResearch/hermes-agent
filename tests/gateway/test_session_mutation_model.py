@@ -38,7 +38,7 @@ def test_model_commit_republishes_session_info(monkeypatch):
         runner=SimpleNamespace(_set_session_reasoning_override=lambda *_args: None),
         _schedule=lambda _ref: None,
     )
-    monkeypatch.setattr(session_local, "publish_local_policy", lambda *_args: None)
+    monkeypatch.setattr(session_local, "publish_local_policy", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(session_local, "local_session_info", lambda *_args: {"model": "switched"})
 
     _project_committed(authority, SessionRef("profile", "session"), "model", {})

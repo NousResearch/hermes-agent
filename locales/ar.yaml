@@ -1689,6 +1689,21 @@ slash:
   quit:
     description: "الخروج من واجهة سطر الأوامر (استخدم --delete لحذف سجل الجلسة أيضًا)"
 cli:
+  modern:
+    thought_for: "فكّر لمدة {seconds} ث"
+    thought: "فكّر"
+    working: "يعمل…"
+    preparing: "جارٍ تحضير {what}…"
+    hint_steer: "توجيه"
+    hint_queue: "إضافة للطابور"
+    hint_interrupt: "مقاطعة"
+    hint_stop: "إيقاف"
+    hint_commands: "الأوامر"
+    hint_files: "الملفات"
+    hint_shell: "الطرفية"
+    placeholder_busy_steer: "اكتب لتوجيه هذه الجولة · Tab يضيفها للطابور لما بعد"
+    placeholder_busy_interrupt: "اكتب لإعادة توجيه هذه الجولة · Tab يضيفها للطابور لما بعد"
+    placeholder_busy_queue: "اكتب لإضافة رسالة إلى الطابور بعد هذه الجولة"
   billing:
     load_failed: "{label}: {error}"
     load_failed_label: "تعذّر تحميل الفوترة"
@@ -2232,6 +2247,7 @@ cli:
     queue_heading: "قائمة الانتظار · {count} في الانتظار · /queue list{controls}"
     more_queued: "+{count} أخرى"
     transcript_unavailable: "النص المباشر غير متاح بعد."
+    control_pending: "جارٍ الإرسال…"
     steer_prompt: "توجيه: "
     roster_empty: "لا وكلاء فرعيين نشطين ولا عمليات في الخلفية. تصل النتائج في المحادثة."
     entry_gone: "هذا العنصر لم يعد نشطًا."

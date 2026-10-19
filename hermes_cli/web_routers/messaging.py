@@ -22,8 +22,8 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException
 
 from gateway.status import (
-    own_profile_platforms_owned_by, profile_platforms_from_multiplexer,
-    resolve_gateway_liveness, retained_gateway_state)
+    profile_platforms_from_multiplexer, resolve_gateway_liveness, retained_gateway_state)
+from gateway.status_platform_ownership import own_profile_platforms_owned_by
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path
 from hermes_constants import get_process_hermes_home

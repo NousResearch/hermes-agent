@@ -145,12 +145,12 @@ def _owned_profile_platforms(writer_identity: Optional[tuple], platforms: dict) 
     Gateway startup preserves plain platform entries in gateway_state.json across restarts, so the
     raw map can carry fatal state for platforms since disabled/removed. Cross-profile aggregation
     has no config context to filter against, so it demands exact ``(pid, start_time)`` writer
-    identity instead. Delegates to the single shared predicate in ``gateway.status`` (the same one
-    the own-profile dashboard readers apply) so the two paths can never disagree.
+    identity instead. Delegates to the single shared predicate in ``gateway.status_platform_ownership``
+    (the same one the own-profile dashboard readers apply) so the two paths can never disagree.
     """
     if writer_identity is None:
         return {}
-    from gateway.status import runtime_platforms_owned_by
+    from gateway.status_platform_ownership import runtime_platforms_owned_by
     return runtime_platforms_owned_by(platforms, writer_identity[0], writer_identity[1])
 
 

@@ -991,7 +991,7 @@ class TestOwnProfilePlatformOwnership:
         self, monkeypatch, tmp_path
     ):
         from gateway.status import GatewayLiveness
-        import hermes_cli.web_routers.messaging as messaging
+        from hermes_cli.web_routers import messaging
 
         entry = next(e for e in messaging._messaging_platform_catalog()
                      if e["id"] == "telegram")

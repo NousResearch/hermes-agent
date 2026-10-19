@@ -365,8 +365,8 @@ def _not_configured_error(platform_name, platform, entry):
     # gateway started from the default root (the reporter's shell had HERMES_HOME=<root>/profiles/<p>)
     # never reads this profile's .env at all.
     try:
-        from gateway.status import (
-            read_runtime_status, runtime_platforms_owned_by, runtime_status_pid_is_live)
+        from gateway.status import read_runtime_status, runtime_status_pid_is_live
+        from gateway.status_platform_ownership import runtime_platforms_owned_by
         from hermes_constants import get_default_hermes_root, hermes_home_key
         root = get_default_hermes_root()
         gateways = [(home, read_runtime_status())]

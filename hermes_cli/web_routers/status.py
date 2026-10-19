@@ -20,10 +20,10 @@ from starlette.concurrency import run_in_threadpool
 from fastapi import HTTPException, Request
 from gateway.status import (
     derive_gateway_busy, derive_gateway_drainable, normalize_updated_at,
-    own_profile_platforms_owned_by, parse_active_agents,
-    profile_platforms_from_multiplexer, resolve_gateway_liveness,
-    retained_gateway_state,
+    parse_active_agents, profile_platforms_from_multiplexer,
+    resolve_gateway_liveness, retained_gateway_state,
     runtime_status_heartbeat_age_s, runtime_status_is_stale)
+from gateway.status_platform_ownership import own_profile_platforms_owned_by
 from gateway.status_served import local_liveness_pid
 from hermes_cli import __release_date__
 from hermes_cli.config import get_config_path, get_env_path
@@ -206,7 +206,8 @@ def _status_platform_key_allowed(key: object, configured: set[str] | None) -> bo
 # aggregation ownership check) are process recon — the same class of detail as the
 # auth-gated top-level ``gateway_pid`` — and must not project onto the public endpoint.
 # The ``stale_*`` fields park a previous gateway life's verdict when a platform entry is
-# downgraded across a life boundary (see gateway.status._downgrade_foreign_life_platforms):
+# downgraded across a life boundary (see
+# gateway.status_platform_ownership.platform_map_for_write):
 # process recon too, and never public.
 _PRIVATE_PLATFORM_ENTRY_KEYS = frozenset({
     "writer_pid", "writer_start_time",
@@ -278,7 +279,7 @@ def _project_gateway_platforms(gateway_platforms: dict, configured: set[str] | N
     cleared so a dead process can't report "connected"; a startup_failed gateway's FATAL
     entries are the diagnosis (credential collisions, auth failures) that the single
     exit_reason string can't express, so they are kept. Upstream writer-identity filtering
-    (``_own_profile_platforms_owned_by``) already dropped entries a previous gateway life
+    (``own_profile_platforms_owned_by``) already dropped entries a previous gateway life
     wrote, so a live process can only certify platforms IT connected."""
     platforms = {key: _public_platform_entry(value) for key, value in gateway_platforms.items()
                  if _status_platform_key_allowed(key, configured)}

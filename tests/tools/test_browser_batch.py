@@ -105,9 +105,11 @@ def test_every_step_action_runs_on_the_built_in_browser(browser):
 
     assert out["status"] == "completed", out
     assert [command for command, _ in browser] == [
-        "fill", "type", "select", "hover", "drag", "scrollintoview", "scroll", "press", "mouse", "mouse", "mouse", "snapshot"]
+        "fill", "focus", "press", "keyboard", "select", "hover", "drag", "scrollintoview", "scroll", "press", "mouse",
+        "mouse", "mouse", "snapshot"]
+    assert browser[1:4] == [("focus", ["@e1"]), ("press", ["Control+End"]), ("keyboard", ["type", "!"])]
     assert ("scroll", ["right", "300"]) in browser and ("press", ["Control+a"]) in browser
-    assert browser[8:11] == [("mouse", ["move", "10", "20"]), ("mouse", ["down"]), ("mouse", ["up"])]
+    assert browser[10:13] == [("mouse", ["move", "10", "20"]), ("mouse", ["down"]), ("mouse", ["up"])]
 
 
 def test_a_step_the_active_browser_backend_cannot_do_is_reported_on_that_step(browser, monkeypatch):

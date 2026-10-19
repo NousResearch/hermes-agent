@@ -971,14 +971,32 @@ def browser_click(ref: str = "", task_id: Optional[str] = None, x: Optional[floa
     return _guarded_action(task_id, "click", "click", [ref], {"clicked": ref}, f"Failed to click {ref}")
 
 
-def _enter_text(tool: str, ref: str, text: str, task_id: Optional[str], command: str, done: str) -> str:
-    """``fill`` (replace) or ``type`` (add to) ``text`` into ``ref``; the echoed text is secret-redacted."""
+def _append_to_field(task_id: str, ref: str, text: str) -> dict[str, Any]:
+    """Type ``text`` after what the field at ``ref`` already holds; returns the failing command's result, or the
+    last one. agent-browser's own ``type <ref> <text>`` inserts at the START of the field ("abc" + "XYZ" becomes
+    "XYZabc"), so the field is focused, the caret goes to the end (Control+End reaches the end of the whole
+    value in an input, a textarea and a contenteditable, where End stops at the end of the line) and the text is
+    typed with real keystrokes at the caret."""
+    result: dict[str, Any] = {}
+    for command, command_args in (("focus", [ref]), ("press", ["Control+End"]), ("keyboard", ["type", text])):
+        result = _session._run_browser_command(task_id, command, command_args)
+        if not result.get("success"):
+            break
+    return result
+
+
+def _enter_text(tool: str, ref: str, text: str, task_id: Optional[str], done: str, *, append: bool = False) -> str:
+    """Replace (``fill``) or add to (``append``) the contents of ``ref`` with ``text``; the echoed text is
+    secret-redacted."""
     effective_task_id = _last_session_key(task_id or "default")
     blocked = _blocked_private_page_action(effective_task_id, "type")
     if blocked is not None:
         return blocked
     ref = _at_ref(ref)
-    result = _session._run_browser_command(effective_task_id, command, [ref, text])
+    if append:
+        result = _append_to_field(effective_task_id, ref, text)
+    else:
+        result = _session._run_browser_command(effective_task_id, "fill", [ref, text])
     from agent.display import redact_browser_typed_text_for_display, redact_tool_args_for_display
     # Typed text goes through the secret-pattern redactor so API keys / tokens don't
     # leak into tool progress or chat history (the raw value already went to the browser).
@@ -998,14 +1016,14 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None, clear: bool
         if clear is False:
             return _camofox_lacks("browser_type", "way to add to a field without clearing it")
         return _camofox("camofox_type", ref, text, task_id)
-    return _enter_text("browser_type", ref, text, task_id, "fill" if clear is not False else "type", "typed")
+    return _enter_text("browser_type", ref, text, task_id, "typed", append=clear is False)
 
 
 def browser_fill(ref: str, value: str, task_id: Optional[str] = None) -> str:
     """Replace the contents of the field ``ref`` with ``value``."""
     if _is_camofox_mode():
         return _camofox_lacks("browser_fill", "fill command", "Use browser_type, or connect the Hermes Browser Extension.")
-    return _enter_text("browser_fill", ref, value, task_id, "fill", "filled")
+    return _enter_text("browser_fill", ref, value, task_id, "filled")
 
 
 def browser_select(ref: str, value: str, task_id: Optional[str] = None) -> str:

@@ -98,7 +98,6 @@ def test_schema_ranges_match_the_extension():
         ("browser_scroll", {"direction": "down"}, "scroll", ["down", "500"], {"scrolled": "down"}),
         ("browser_press", {"key": "a", "modifiers": ["control", "Shift"]}, "press", ["Control+Shift+a"],
          {"pressed": "Control+Shift+a"}),
-        ("browser_type", {"ref": "@e1", "text": "more", "clear": False}, "type", ["@e1", "more"], {"typed": "more"}),
         ("browser_type", {"ref": "@e1", "text": "all new"}, "fill", ["@e1", "all new"], {"typed": "all new"}),
     ],
 )
@@ -108,6 +107,48 @@ def test_actions_the_built_in_browser_can_do_run_with_their_arguments(browser, t
     assert browser == [(command, command_args)]
     assert out["success"] is True
     assert reported.items() <= out.items()
+
+
+def test_typing_without_clearing_focuses_moves_the_caret_to_the_end_and_types_there(browser):
+    """agent-browser's own ``type`` inserts at the START of the field ("abc" + "XYZ" -> "XYZabc")."""
+    out = _call("browser_type", {"ref": "e1", "text": "more", "clear": False})
+
+    assert browser == [("focus", ["@e1"]), ("press", ["Control+End"]), ("keyboard", ["type", "more"])]
+    assert out == {"success": True, "typed": "more", "element": "@e1"}
+
+
+def test_typing_without_clearing_stops_at_the_first_command_that_fails(monkeypatch):
+    ran = []
+
+    def run(task_id, command, args, **_kwargs):
+        ran.append(command)
+        return {"success": command != "press", "error": "no such key", "data": {}}
+
+    monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(browser_tool, "_last_session_key", lambda task_id: task_id)
+    monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda task_id: False)
+    monkeypatch.setattr(bt_session, "_run_browser_command", run)
+
+    out = _call("browser_type", {"ref": "@e1", "text": "more", "clear": False})
+
+    assert ran == ["focus", "press"]  # nothing was typed after the caret could not be moved
+    assert out["success"] is False and out["error"] == "no such key"
+
+
+def test_typing_without_clearing_still_masks_a_secret_in_the_result(browser):
+    secret = "sk-ant-api03-" + "A" * 40
+
+    out = _call("browser_type", {"ref": "@e1", "text": secret, "clear": False})
+
+    assert out["success"] is True and secret not in json.dumps(out)
+    assert browser[-1] == ("keyboard", ["type", secret])  # the field itself gets the real text
+
+
+def test_a_batch_type_step_without_clear_appends_through_the_same_handler(browser):
+    out = _call("browser_batch", {"actions": [{"action": "type", "ref": "@e1", "text": "more", "clear": False}]})
+
+    assert out["status"] == "completed"
+    assert browser[:3] == [("focus", ["@e1"]), ("press", ["Control+End"]), ("keyboard", ["type", "more"])]
 
 
 def test_a_coordinate_click_moves_presses_and_releases_at_the_point(browser):

@@ -30,14 +30,18 @@ export const expandPasteTokens = (tokens: ComposerToken[]) =>
 
 const slashArgument = (command: string) => /^\/\S+\s+([\s\S]+)$/.exec(command)?.[1] ?? ''
 
-export const queueItemFromSlash = (displayCommand: string, expandedCommand: string): QueueItem | undefined => {
+export const queueItemFromSlash = (
+  displayCommand: string,
+  expandedCommand: string,
+  expand?: (value: string) => string
+): QueueItem | undefined => {
   const display = slashArgument(displayCommand)
 
   if (!display.trim()) {
     return undefined
   }
 
-  return queueItem(slashArgument(expandedCommand), display)
+  return queueItem(slashArgument(expandedCommand), display, expand)
 }
 
 export const prepareSubmission = (display: string, tokens: ComposerToken[]) => ({
@@ -247,22 +251,29 @@ export function useSubmission(opts: UseSubmissionOptions) {
         return send(text, true, item.display, value => value, { destination, queueItem: item, skipDetectDrop: true })
       }
 
-      if (text.startsWith('!')) {
+      // Gate shell/interpolation on the visible surface (the collapsed paste
+      // label), not the expanded payload, so a paste can't smuggle `!`/`{!...}`
+      // into execution. Re-expand the paste after resolving the visible
+      // interpolation so the model still receives the full payload.
+      const gate = item?.display ?? text
+      const expand = item?.expand ?? ((value: string) => value)
+
+      if (gate.startsWith('!')) {
         return shellExec(text.slice(1).trim(), destination, item)
       }
 
-      if (hasInterpolation(text)) {
+      if (hasInterpolation(gate)) {
         patchUiState({ busy: true })
 
         return interpolate(
-          text,
-          result => send(result, true, undefined, value => value, { destination, queueItem: item }),
+          gate,
+          resolvedDisplay => send(expand(resolvedDisplay), true, resolvedDisplay, value => value, { destination, queueItem: item }),
           destination,
           item
         )
       }
 
-      send(text, true, undefined, value => value, { destination, queueItem: item })
+      send(text, true, gate, value => value, { destination, queueItem: item })
     },
     [interpolate, send, shellExec]
   )
@@ -286,7 +297,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
         if (opts.fallbackToFront) {
           composerActions.prependQueue(item, destination)
         } else {
-          composerActions.enqueue(item.text, item.display, destination)
+          composerActions.enqueue(item.text, item.display, destination, undefined, item.expand)
         }
       }
 
@@ -375,13 +386,17 @@ export function useSubmission(opts: UseSubmissionOptions) {
         const parsed = parseSlashCommand(full)
 
         const queued =
-          parsed.name === 'queue' || parsed.name === 'q' ? queueItemFromSlash(slash.display, slash.command) : undefined
+          parsed.name === 'queue' || parsed.name === 'q'
+            ? queueItemFromSlash(slash.display, slash.command, expandPasteTokens(submissionTokens))
+            : undefined
 
         if (queued) {
           // Handled here, before the slash handler, so it is counted here.
           reportSlashCommand(gw, parsed.name, getUiState().sid)
 
-          const saved = journaled(() => composerActions.enqueue(queued.text, queued.display, destination, submission.attachments))
+          const saved = journaled(() =>
+            composerActions.enqueue(queued.text, queued.display, destination, submission.attachments, queued.expand)
+          )
 
           if (saved) { sys(`queued: "${queued.display.slice(0, 50)}${queued.display.length > 50 ? '…' : ''}"`) }
         } else {
@@ -411,7 +426,9 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
       if (unbound) {
         composerActions.pushHistory(toHistory)
-        journaled(() => composerActions.enqueue(submission.text, submission.display, destination, submission.attachments))
+        journaled(() =>
+          composerActions.enqueue(submission.text, submission.display, destination, submission.attachments, expandTokens(submissionTokens))
+        )
 
         return
       }
@@ -456,7 +473,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
       if (getUiState().busy) {
         return void journaled(() =>
-          handleBusyInput({ ...queueItem(submission.text, submission.display), attachments: submission.attachments }))
+          handleBusyInput({ ...queueItem(submission.text, submission.display, expandTokens(submissionTokens)), attachments: submission.attachments }))
       }
 
       if (shouldInterpolateSubmission(full)) {

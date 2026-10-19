@@ -18,7 +18,7 @@ export const isSessionBusyError = (e: unknown) => e instanceof Error && SESSION_
 
 export interface SubmitPromptDeps {
   appendMessage: (msg: Msg) => void
-  enqueue: (text: string, display?: string, destination?: SubmissionDestination) => void
+  enqueue: (text: string, display?: string, destination?: SubmissionDestination, attachments?: QueueItem['attachments'], expand?: (value: string) => string) => void
   expand: (text: string) => string
   gw: GatewayClient
   setLastUserMsg: (value: string) => void
@@ -394,7 +394,12 @@ export function submitPrompt(
         // the re-queue path as a safety net for any future/legacy gateway that
         // still errors, so a message is never silently dropped.
         if (isSessionBusyError(e)) {
-          deps.enqueue(submitText, displayOverride, destination)
+          // A retried queue item supplies expanded text plus a collapsed
+          // displayOverride. Never re-authorize the payload as shell/`{!...}`
+          // by losing the visible surface on another busy rejection.
+          const visibleText = displayOverride || displayText
+
+          deps.enqueue(submitText, visibleText, destination, undefined, deps.expand)
 
           if (!focused()) {
             return
@@ -402,7 +407,7 @@ export function submitPrompt(
 
           patchUiState({ busy: true, status: 'queued for next turn' })
 
-          return deps.sys(`queued: "${submitText.slice(0, 50)}${submitText.length > 50 ? '…' : ''}"`)
+          return deps.sys(`queued: "${visibleText.slice(0, 50)}${visibleText.length > 50 ? '…' : ''}"`)
         }
 
         if (!focused()) {

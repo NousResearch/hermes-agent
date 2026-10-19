@@ -16,9 +16,19 @@ import {
   savePendingInput
 } from '../lib/pendingInputs.js'
 
+export type QueueExpand = (value: string) => string
+
 export interface QueueItem {
   display: string
   text: string
+  // Expands paste labels into their payload WITHOUT running `{!...}`
+  // interpolation. Captured over the live composer tokens at enqueue so
+  // `sendQueued` can re-expand the paste AFTER it resolves the visible
+  // interpolation on the display — the live tokens are cleared before the
+  // queue drains, so the queue must carry its own expand. The prompt.submit
+  // busy re-queue passes that same expand with the collapsed display; an item
+  // that omits expand drains with an identity expand.
+  expand?: QueueExpand
   queued?: boolean
   createdAt?: number
   submissionId?: string
@@ -34,7 +44,8 @@ export interface QueueItem {
   settle?: (accepted: boolean) => void
 }
 
-export const queueItem = (text: string, display = text): QueueItem => ({ display, text })
+export const queueItem = (text: string, display = text, expand?: QueueExpand): QueueItem =>
+  expand ? { display, expand, text } : { display, text }
 
 export function prependQueueItem(queue: QueueItem[], item: QueueItem): void {
   queue.unshift(item)
@@ -257,12 +268,18 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
   )
 
   const draft = useCallback(
-    (text: string, display: string, destination?: SubmissionDestination, attachments?: QueueItem['attachments']) => {
+    (
+      text: string,
+      display: string,
+      destination?: SubmissionDestination,
+      attachments?: QueueItem['attachments'],
+      expand?: QueueExpand
+    ) => {
       const owner = pendingInputOwner(destination ?? captureDestination())
       const queue = getQueue(owner)
 
       const item: QueueItem = {
-        ...queueItem(text, display),
+        ...queueItem(text, display, expand),
         ...(attachments?.length ? { attachments } : {}),
         submissionId: randomUUID(),
         destination: owner,
@@ -275,8 +292,14 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
   )
 
   const enqueue = useCallback(
-    (text: string, display = text, destination?: SubmissionDestination, attachments?: QueueItem['attachments']) => {
-      const { queue, item } = draft(text, display, destination, attachments)
+    (
+      text: string,
+      display = text,
+      destination?: SubmissionDestination,
+      attachments?: QueueItem['attachments'],
+      expand?: QueueExpand
+    ) => {
+      const { queue, item } = draft(text, display, destination, attachments, expand)
       savePendingInput(item)
       queue.items.push(item)
       syncQueue()

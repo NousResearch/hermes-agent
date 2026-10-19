@@ -91,7 +91,7 @@ def collect_download_plans(root: Path, *, grace_seconds: float = MODEL_PLAN_GRAC
                     retained.update(keys)
                     continue
                 path.unlink(missing_ok=True)
-            except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            except (OSError, ValueError, TypeError, KeyError, IndexError, AttributeError):
                 continue  # Unreadable metadata cannot establish safe expiry.
     return retained
 

@@ -362,6 +362,13 @@ export function isForwardedReceipt(
   return legacyAccepted && result?.forwarded === true && result.status === 'queued'
 }
 
+/** TUI-26: the owner ended the session's voice chat on a typed stop phrase and admitted nothing. The
+ * identityless legacy retry gets the same reply (the sidecar forwards it to the ledger owner), and no
+ * turn will complete that send either. */
+export function isVoiceStoppedReceipt(result: { voice_stopped?: boolean } | undefined): boolean {
+  return result?.voice_stopped === true
+}
+
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 
 // Retry a gateway call across transient "session busy" so it never reaches the

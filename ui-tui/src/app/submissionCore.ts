@@ -139,8 +139,21 @@ function settleControlReply(
   item: QueueItem,
   r: PromptSubmitResponse,
   deps: SubmitPromptDeps,
-  focused: () => boolean
+  focused: () => boolean,
+  sid: string
 ): void {
+  // A bare stop phrase typed as a busy correction ended the voice chat and reached
+  // no turn (TUI-26): settled, rendered as the stop-phrase event, the turn untouched.
+  if (r?.voice_stopped === true) {
+    item.settle?.(true)
+
+    if (deps.gw.isCanonical) {
+      deps.gw.publishLocalEvent({ payload: { stop_phrase: true, typed: true }, session_id: sid, type: 'voice.transcript' })
+    }
+
+    return
+  }
+
   const control = r as PromptSubmitResponse & { execution_generation?: number }
 
   const accepted =
@@ -349,20 +362,38 @@ export function submitPrompt(
       )
       .then(r => {
         if (item?.controlMethod) {
-          settleControlReply(item, r, deps, focused)
+          settleControlReply(item, r, deps, focused, sid)
+
+          return
+        }
+
+        // The gateway consumed a typed voice stop phrase server-side (voice
+        // chat ended, nothing admitted) — release the busy latch. The sidecar
+        // sends a voice.transcript {stop_phrase} event for the mode flags and
+        // notice; the shared gateway answers in this reply only (TUI-26), so
+        // render that same event locally.
+        if (r?.voice_stopped === true) {
+          item?.settle?.(true)
+
+          if (deps.gw.isCanonical) {
+            deps.gw.publishLocalEvent({
+              payload: { stop_phrase: true, typed: true },
+              session_id: sid,
+              type: 'voice.transcript'
+            })
+          }
+
+          // Only the busy latch this submission took: a stop typed behind a running
+          // turn ends the voice chat, not that turn, so its busy/status stay.
+          if (ownsTurn()) {
+            patchUiState({ busy: false, status: 'ready' })
+          }
 
           return
         }
 
         if (item) {
           settleAdmissionReply(item, r, { deps, destination, focused, owner, sid })
-        }
-
-        // The gateway consumed a typed voice stop phrase server-side (voice
-        // chat ended, no turn started) — release the busy latch; the
-        // voice.transcript {stop_phrase} event handles the mode flags + notice.
-        if (r?.voice_stopped && focused()) {
-          patchUiState({ busy: false, status: 'ready' })
         }
       })
       .catch(async (e: Error & { code?: number }) => {

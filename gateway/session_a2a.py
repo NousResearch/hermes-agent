@@ -173,13 +173,14 @@ async def status(connection, params):
     row = find_session_admission(authority.db, principal_id=actor.subject, session_id=sid,
                                  request_id=params['input_id'])
     if row is None:
-        return {'status': 'missing', 'session_id': sid, 'admission_id': '', 'result': None}
+        return {'status': 'missing', 'outcome': None, 'session_id': sid, 'admission_id': '', 'result': None}
     result = None
     if row['status'] == 'terminal':
         from gateway.session_results import admission_result
         saved = admission_result(authority.db, row['admission_id'])
         result = saved['result'] if saved is not None else None
-    return {'status': row['status'], 'session_id': sid, 'admission_id': row['admission_id'], 'result': result}
+    return {'status': row['status'], 'outcome': row.get('outcome'), 'session_id': sid,
+            'admission_id': row['admission_id'], 'result': result}
 
 
 async def forward_to_owner(home, *, agent, tenant, peer, context_id, input_id, text, timeout, wait=True):

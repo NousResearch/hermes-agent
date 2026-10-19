@@ -1930,6 +1930,74 @@ class TestV1SpecRegressionFixes:
         assert calls[0][1]['input_id']
         assert not (tmp_path / 'state.db').exists()
 
+    def test_forwarded_accept_then_poll_returns_at_once_and_keeps_the_identity(self, monkeypatch, tmp_path):
+        """``configuration.returnImmediately`` on a FORWARDED route must not run the forward to the end.
+
+        ``_prepare_task`` blocked on the owner for the whole turn before ``_rpc_message_send`` ever read
+        the flag, so the exact path in the #91687 field report could not accept-then-poll at all.
+        """
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+        from gateway import session_a2a
+
+        calls = []
+
+        async def owner(home, **params):
+            calls.append(params)
+            return {"status": "queued", "admission_id": "adm-1", "outcome": None, "result": None}
+
+        monkeypatch.setattr(session_a2a, "forward_to_owner", owner)
+        monkeypatch.setattr("plugins.platforms.a2a.adapter._profile_home", lambda profile: str(tmp_path))
+        adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
+            "agents": {"dev": {"profile": "dev", "tenant": "team", "timeout": 5}}}))
+        params = _send_body("run the full suite",
+                            extra_params={"configuration": {"returnImmediately": True}})["params"]
+
+        task, pending = adapter._prepare_task(params, "peer", adapter._agents["dev"])
+
+        assert pending is None
+        assert task["status"]["state"] == protocol.STATE_WORKING
+        assert "asynchronous" in protocol.extract_text(task["status"]["message"]).lower()
+        assert calls and calls[0]["wait"] is False, "the forwarded route must accept, not block on the owner"
+        rec = adapter.tasks.get(task["id"])
+        # The identity tasks/get reads the owner ledger with: agent slug, tenant, context, admission id.
+        assert (rec["agent_slug"], rec["tenant"], rec["input_id"]) == ("dev", "team", calls[0]["input_id"])
+
+    def test_tasks_get_reads_the_owner_ledger_for_a_forwarded_task(self, monkeypatch, tmp_path):
+        """tasks/get maps the owner admission: queued -> SUBMITTED, started -> WORKING, terminal -> outcome."""
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+        from gateway import session_a2a
+
+        seen = []
+
+        async def status(home, **params):
+            seen.append(params)
+            if len(seen) == 1:
+                return {"status": "queued", "outcome": None, "result": None, "admission_id": "a"}
+            if len(seen) == 2:
+                return {"status": "started", "outcome": None, "result": None, "admission_id": "a"}
+            return {"status": "terminal", "outcome": "completed",
+                    "result": {"final_response": "ledger reply"}, "admission_id": "a"}
+
+        monkeypatch.setattr(session_a2a, "status_from_owner", status)
+        monkeypatch.setattr("plugins.platforms.a2a.adapter._profile_home", lambda profile: str(tmp_path))
+        adapter = A2AAdapter(PlatformConfig(enabled=True, extra={"agents": {"dev": {"profile": "dev"}}}))
+        adapter.tasks.create("t-fwd", "c1", "peer", "dev", "", input_id="in-1")
+
+        first = adapter._rpc_tasks_get(1, {"taskId": "t-fwd"})["result"]
+        assert first["status"]["state"] == protocol.STATE_SUBMITTED
+        second = adapter._rpc_tasks_get(1, {"taskId": "t-fwd"})["result"]
+        assert second["status"]["state"] == protocol.STATE_WORKING
+        third = adapter._rpc_tasks_get(1, {"taskId": "t-fwd"})["result"]
+        assert third["status"]["state"] == protocol.STATE_COMPLETED
+        assert protocol.extract_text(third["status"]["message"]) == "ledger reply"
+        assert seen[0]["input_id"] == "in-1" and seen[0]["agent"] == "dev"
+        # A task with no forwarded identity is never read against a ledger.
+        adapter.tasks.create("t-local", "c1", "peer")
+        assert adapter._rpc_tasks_get(1, {"taskId": "t-local"})["result"]["status"]["state"] == protocol.STATE_SUBMITTED
+        assert len(seen) == 3
+
 
 
 class TestExclusivePort:

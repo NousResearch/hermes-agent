@@ -445,6 +445,7 @@ class A2aStatusResult(Result):
     """The admission state of one forwarded A2A turn, read from the owner's ledger."""
 
     status: Literal["queued", "started", "unknown", "terminal", "missing"]
+    outcome: str | None
     session_id: str
     admission_id: str
     result: JsonValue | None

@@ -720,6 +720,12 @@ class A2AAdapter(BasePlatformAdapter):
         self._register_inline_push(task_id, params, agent=agent)
         if forwarded:
             self._activate_task(task_id)
+            if self._return_immediately(params):
+                # Accept-then-poll on a forwarded route — the path in the #91687 field report. Take
+                # the first durable receipt and keep the task identity, so a job longer than the reply
+                # window never rides on this request thread; tasks/get reads the owner ledger from here.
+                return self._forward_accept(rec, task_id, context_id, peer, agent, framed,
+                                            input_id or task_id), None
             try:
                 reply, state = self._forward_to_profile(agent, peer, context_id, framed, input_id=input_id or task_id)
                 self._record_outcome(task_id, context_id, peer, state, reply)
@@ -766,6 +772,83 @@ class A2AAdapter(BasePlatformAdapter):
         completed = receipt.get('outcome') == 'completed' and not result.get('failed')
         return (security.redact_outbound(result.get('final_response') or ''),
                 protocol.STATE_COMPLETED if completed else protocol.STATE_FAILED)
+
+    def _forward_accept(self, rec: dict, task_id: str, context_id: str, peer: str,
+                        agent: dict, framed_text: str, input_id: str) -> dict:
+        """Accept-then-poll on a forwarded route: hand the caller the first durable receipt.
+
+        The owner's admission IS the task state from here on (read back through ``a2a.status``), so
+        neither the reply window nor an age budget applies: the task stays WORKING until the ledger
+        says otherwise. A receipt already terminal is recorded as any other outcome.
+        """
+        from gateway.session_a2a import forward_to_owner
+        profile = str(agent.get("profile") or agent.get("slug") or "").strip()
+        home = _profile_home(profile)
+        if not home:
+            return self._end_task(rec, protocol.STATE_FAILED, "[profile unavailable]")[0]
+        try:
+            receipt = asyncio.run(forward_to_owner(
+                home, agent=str(agent.get("slug") or profile or "agent"),
+                tenant=str(agent.get("tenant") or ""), peer=peer, context_id=context_id,
+                input_id=input_id, text=framed_text,
+                timeout=int(agent.get("timeout") or _reply_timeout()), wait=False))
+        except Exception as exc:
+            # Boundary for a network peer: the full error stays in the local log, the reply is redacted.
+            logger.warning("A2A: forwarded accept for profile %r unverified", profile, exc_info=True)
+            return self._end_task(rec, protocol.STATE_FAILED,
+                                  security.redact_outbound(f"Profile dispatch unverified: {exc}"))[0]
+        if str(receipt.get("status") or "") == "terminal":
+            result = receipt.get("result") or {}
+            completed = receipt.get("outcome") == "completed" and not result.get("failed")
+            reply = security.redact_outbound(result.get("final_response") or "")
+            outcome = protocol.STATE_COMPLETED if completed else protocol.STATE_FAILED
+            self._record_outcome(task_id, context_id, peer, outcome, reply)
+            return protocol.build_task(task_id, context_id, outcome, reply, created_at=rec["created_iso"])
+        self.tasks.set_state(task_id, protocol.STATE_WORKING)
+        self.tasks.note(task_id, _ASYNC_ACCEPTED_NOTE)
+        return protocol.build_task(task_id, context_id, protocol.STATE_WORKING, _ASYNC_ACCEPTED_NOTE,
+                                   created_at=rec["created_iso"])
+
+    def _refresh_forwarded_state(self, rec: Optional[dict], agent: Optional[dict]) -> Optional[dict]:
+        """Map a forwarded task's state from the owner's admission ledger (accept-then-poll).
+
+        The plugin never opens the served profile's database — it asks the owner (``a2a.status``) and
+        maps ``queued`` -> SUBMITTED, ``started``/``unknown`` -> WORKING, ``terminal`` -> its outcome.
+        A task with no stored identity, an unreachable owner, or a missing admission keeps its state.
+        """
+        if rec is None or not rec.get("input_id") or rec.get("state") in protocol.TERMINAL_STATES:
+            return rec
+        from gateway.session_a2a import status_from_owner
+        agent = agent or self._agents.get(rec.get("agent_slug") or "") or {}
+        profile = str(agent.get("profile") or rec.get("agent_slug") or "").strip()
+        home = _profile_home(profile)
+        if not home:
+            return rec
+        try:
+            state = asyncio.run(status_from_owner(
+                home, agent=rec.get("agent_slug") or profile or "agent",
+                tenant=rec.get("tenant") or "", peer=rec["peer"], context_id=rec["context_id"],
+                input_id=rec["input_id"], timeout=int(agent.get("timeout") or _reply_timeout())))
+        except Exception:
+            logger.debug("A2A: forwarded status read for %s failed", rec.get("task_id"), exc_info=True)
+            return rec
+        ledger = str(state.get("status") or "")
+        task_id = rec["task_id"]
+        if ledger == "queued":
+            self.tasks.set_state(task_id, protocol.STATE_SUBMITTED)
+        elif ledger in ("started", "unknown"):
+            self.tasks.set_state(task_id, protocol.STATE_WORKING)
+            self.tasks.note(task_id, _ASYNC_ACCEPTED_NOTE)
+        elif ledger == "terminal":
+            result = state.get("result") or {}
+            completed = state.get("outcome") == "completed" and not result.get("failed")
+            reply = security.redact_outbound(result.get("final_response") or "")
+            outcome = protocol.STATE_COMPLETED if completed else protocol.STATE_FAILED
+            self._record_outcome(task_id, rec["context_id"], rec["peer"], outcome, reply)
+        else:  # missing: no admission under this identity — leave the task as it stands
+            return rec
+        return self.tasks.get(task_id) or rec
+
     def _record_outcome(self, task_id: str, context_id: str, peer: str, state: str, reply: str,
                         started: Optional[float] = None) -> None:
         """Persist + audit + count a finished task, mark it terminal, and fire its push callback."""
@@ -921,7 +1004,12 @@ class A2AAdapter(BasePlatformAdapter):
 
     def _rpc_tasks_get(self, req_id: Any, params: dict, agent: Optional[dict] = None) -> dict:
         _task_id, rec, error = self._find_task(req_id, params, agent)
-        return error or _ok(req_id, protocol.TaskStore.to_task(rec))
+        if error:
+            return error
+        # A forwarded task's truth is the owner's admission ledger: refresh it before answering, so a
+        # poller sees SUBMITTED/WORKING/terminal without the plugin ever opening the served database.
+        rec = self._refresh_forwarded_state(rec, agent) or rec
+        return _ok(req_id, protocol.TaskStore.to_task(rec))
 
     def _rpc_tasks_list(self, req_id: Any, params: dict, agent: Optional[dict] = None) -> dict:
         offset = _to_int(params.get("pageToken") or 0, 0)

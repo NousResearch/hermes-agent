@@ -264,6 +264,49 @@ class TestDispatcherBackedMutations:
 
 
 class TestManagerOnlyMutations:
+    def test_setters_create_control_state_without_command_dispatch(self, server, session, monkeypatch):
+        sid, _, _ = session
+        _forbid_dispatch(server, monkeypatch)
+
+        goal = _call(server, "session.control", session_id=sid, action="goal.set", args={
+            "title": "Ship the structured controls", "max_turns": 7,
+            "contract": {"outcome": "Setters work", "verification": "Run focused tests"},
+        })
+        assert goal["result"]["control"]["goal"] == {
+            "title": "Ship the structured controls", "status": "active", "turns_used": 0,
+            "max_turns": 7,
+            "contract": {"outcome": "Setters work", "verification": "Run focused tests", "constraints": "",
+                         "boundaries": "", "stop_when": ""},
+            "subgoals": [], "gates": [],
+            "created_at": pytest.approx(time.time(), abs=2),
+        }
+
+        loop = _call(server, "session.control", session_id=sid, action="loop.set", args={
+            "prompt": "Check the PR", "interval_seconds": None, "times": 3,
+        })
+        assert loop["result"]["control"]["loop"]["prompt"] == "Check the PR"
+        assert loop["result"]["control"]["loop"]["mode"] == "self_paced"
+        assert loop["result"]["control"]["loop"]["times"] == 3
+
+        heartbeat = _call(server, "session.control", session_id=sid, action="heartbeat.set", args={
+            "prompt": "Check the deployment", "interval_seconds": 60,
+        })
+        assert heartbeat["result"]["control"]["heartbeat"]["interval_seconds"] == 60
+
+        waiting = _call(server, "session.control", session_id=sid, action="goal.wait_time", args={
+            "seconds": 30, "reason": "Await CI",
+        })
+        assert waiting["result"]["control"]["goal"]["wait_barrier"]["type"] == "until"
+        assert waiting["result"]["control"]["goal"]["wait_barrier"]["reason"] == "Await CI"
+
+    def test_goal_set_uses_the_profile_default_turn_budget(self, server, session, monkeypatch):
+        sid, _, _ = session
+        monkeypatch.setattr(server, "_load_cfg", lambda: {"goals": {"max_turns": 9}})
+
+        response = _call(server, "session.control", session_id=sid, action="goal.set", args={"title": "Use profile defaults"})
+
+        assert response["result"]["control"]["goal"]["max_turns"] == 9
+
     def test_subgoal_add_remove_clear_are_real_one_based_mutations_without_dispatch(self, server, session, monkeypatch):
         from hermes_cli.goals import load_goal
 

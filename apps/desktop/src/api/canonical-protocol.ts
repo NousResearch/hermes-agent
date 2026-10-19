@@ -246,12 +246,16 @@ export class CanonicalDesktopProtocol {
     // failure carries no reason; its outcome is unknown and the token stays for the exact retry.
     if (typeof reason === 'string') { this.settleModelConfirmation(params) }
 
+    // Any typed refusal of a rewind wrote nothing. A derived /undo or /retry is retained by operation
+    // alone, so keeping the refused request would resend it for every later /undo instead of deriving.
+    if (typeof reason === 'string' && params.operation === 'rewind') { this.forgetMutation(params) }
+
     // A typed busy refusal of a rewind or a move wrote nothing either; the retry is a new request at the new revision.
     if (reason !== 'revision_conflict' && reason !== 'stale_generation' && !(reason === 'session_busy' && ['rewind', 'workspace'].includes(params.operation as string))) { return }
 
     // A confirmed fence refusal did not mutate. Ambiguous transport failures keep
     // the original revision/id so a retry cannot overwrite another user's edit.
-    for (const [key, mutation] of this.mutations) { if (mutation.request_id === params.request_id) { this.mutations.delete(key) } }
+    this.forgetMutation(params)
     // The owner names its current fences on the refusal: adopt them so the next attempt presents them.
     const data = (error as { data?: { revision?: unknown; execution_generation?: unknown } })?.data
     const owner = canonicalSessionKey(params.session_id, params.profile)
@@ -289,9 +293,13 @@ export class CanonicalDesktopProtocol {
     return POLICY_EDIT_METHODS.has(method) && typeof prepared.operation === 'string' ? 'session.mutate' : method
   }
 
-  private retainedMutation(sessionId: unknown, profile: unknown, operation: string, payload: Record<string, unknown>, withGeneration: boolean): Record<string, unknown> {
+  // `derived`: the payload was derived from a snapshot (a typed /undo or /retry names the Nth newest user
+  // turn). Keyed by operation alone, as Ink's mutateCanonical and the classic PreparedMutations do: a
+  // retry after a lost reply re-presents the original target, never one re-derived from a transcript the
+  // first attempt already rewound.
+  private retainedMutation(sessionId: unknown, profile: unknown, operation: string, payload: Record<string, unknown>, withGeneration: boolean, derived = false): Record<string, unknown> {
     const owner = canonicalSessionKey(sessionId, profile)
-    const key = JSON.stringify([owner, operation, payload])
+    const key = JSON.stringify([owner, operation, derived ? null : payload])
     this.retireMutations(owner, key)
     const retained = this.mutations.get(key)
 
@@ -317,6 +325,38 @@ export class CanonicalDesktopProtocol {
     // Routing belongs to the envelope, independently of the canonical payload.
     // Creation applies its own default-profile normalization.
     return method !== 'session.create' && params.profile !== undefined ? { ...prepared, profile: params.profile } : prepared
+  }
+
+  private fencedMutation(method: string, params: Record<string, unknown>, fenced: { operation: string; payload: Record<string, unknown> }): Record<string, unknown> {
+    // An edit / regenerate / restore names its target explicitly; a typed /undo or /retry derives it.
+    const derived = method === 'session.rewind' && params.derived_target === true
+
+    // A replay-only probe only ever re-presents the retained rewind (localAnswer handles the rest).
+    if (derived && params.replay_only === true && !this.retainsDerivedRewind(params.session_id, params.profile)) {
+      throw new Error('No retained rewind to replay')
+    }
+
+    return this.retainedMutation(params.session_id, params.profile, fenced.operation, fenced.payload, true, derived)
+  }
+
+  // A typed /undo or /retry whose reply was lost is still retained for its exact retry.
+  private retainsDerivedRewind(sessionId: unknown, profile: unknown): boolean {
+    return this.mutations.has(JSON.stringify([canonicalSessionKey(sessionId, profile), 'rewind', null]))
+  }
+
+  // A request this protocol answers without the owner, or undefined. A replay-only /undo or /retry
+  // probe with no retained rewind owes nothing: no request is sent, and the command derives its target.
+  localAnswer(method: string, params: Record<string, unknown>): Record<string, unknown> | undefined {
+    if (method === 'session.rewind' && params.replay_only === true && !this.retainsDerivedRewind(params.session_id, params.profile)) {
+      return { session_id: params.session_id, status: 'nothing', rewound_count: 0 }
+    }
+
+    return undefined
+  }
+
+  // Drop the retained request the owner answered: its outcome is known, so no retry may resend it.
+  private forgetMutation(params: Record<string, unknown>) {
+    for (const [key, mutation] of this.mutations) { if (mutation.request_id === params.request_id) { this.mutations.delete(key) } }
   }
 
   // Only a session's very next control may retry an ambiguous one: any other verb retires the rest.
@@ -379,7 +419,7 @@ export class CanonicalDesktopProtocol {
       'session.rewind': () => ({ operation: 'rewind', payload: { target_message_id: params.target_message_id } })
     } as Record<string, () => { operation: string; payload: Record<string, unknown> }>)[method]?.()
 
-    if (fenced) { return this.retainedMutation(params.session_id, params.profile, fenced.operation, fenced.payload, true) }
+    if (fenced) { return this.fencedMutation(method, params, fenced) }
 
     if (method === 'session.model') {
       const payload = { ...(params.payload as Record<string, unknown>), ...(typeof params.confirm === 'string' ? { confirm: params.confirm } : {}) }
@@ -619,7 +659,7 @@ export class CanonicalDesktopProtocol {
   private mutationReceipt(method: string, params: Record<string, unknown>, value: any): any {
     if (value.session_id !== params.session_id) { throw new Error('Metadata receipt destination mismatch') }
 
-    for (const [key, mutation] of this.mutations) { if (mutation.request_id === params.request_id) { this.mutations.delete(key) } }
+    this.forgetMutation(params)
     this.settleModelConfirmation(params)
     this.retireSupersededMutations(params, value.revision)
 

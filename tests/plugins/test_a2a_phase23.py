@@ -545,7 +545,9 @@ class TestTaskStore:
         assert result == [(protocol.STATE_COMPLETED, "reply")]
         assert adapter.tasks.get("t-live")["state"] == protocol.STATE_COMPLETED
 
-    def test_stream_disconnect_releases_active_request(self, monkeypatch):
+    def test_stream_disconnect_parks_then_releases_on_the_reply(self, monkeypatch):
+        """A stream client that leaves no longer fails the task: it parks (WORKING + poll hint), the
+        agent's later reply still lands in the store, and the active request is released then."""
         adapter, _base = _make_live_adapter(monkeypatch)
         rec = adapter.tasks.create("t-live", "c1", "peer")
         adapter.tasks.set_state("t-live", protocol.STATE_WORKING)
@@ -575,8 +577,16 @@ class TestTaskStore:
         adapter._rpc_message_stream(Handler(), 1, {}, "peer")
 
         stored = adapter.tasks.get("t-live")
-        assert stored["state"] == protocol.STATE_FAILED
-        assert stored["reply"] == "[client disconnected]"
+        assert stored["state"] == protocol.STATE_WORKING
+        assert "tasks/get" in stored["reply"]
+        adapter._resolve_task("t-live", protocol.STATE_COMPLETED, "late reply")
+        for _ in range(100):
+            stored = adapter.tasks.get("t-live")
+            if stored["state"] != protocol.STATE_WORKING:
+                break
+            time.sleep(0.05)
+        assert stored["state"] == protocol.STATE_COMPLETED
+        assert stored["reply"] == "late reply"
         assert "t-live" not in adapter._pending
         assert "t-live" not in adapter._active_tasks
 

@@ -1,7 +1,7 @@
 """GPT-Live voice chat mode: the full-duplex voice frontend that delegates to Hermes.
 
 ``voice.voice_chat_mode: gpt-live`` replaces the chained STT → turn → TTS loop with ONE
-full-duplex voice model (OpenAI ``gpt-live-1``) that owns the microphone and the speaker and
+full-duplex voice model (OpenAI GPT-Live) that owns the microphone and the speaker and
 delegates every real request to Hermes as its *client-delegation* backend. Hermes stays the
 agent: whatever model/provider the session has selected answers, with the full toolset.
 
@@ -10,23 +10,29 @@ Division of labour (the Live API has no tools of its own in client mode):
 * the desktop renderer holds the WebRTC media session (mic in, speech out) and the data channel;
 * this module resolves WHICH credentials/voice/persona to use and performs the one server-side
   step the API requires — exchanging the browser's SDP offer for an answer with the project key
-  (``POST /v1/live/sessions``), so the key never reaches the client;
+  (``POST /v1/live/sessions``), or using Hermes Codex OAuth for explicit subscription mode;
+  long-lived credentials and the subscription account identity never reach the client;
 * the renderer turns each ``session.delegation.created`` into a normal ``prompt.submit`` on the
   active session (surface ``voice-live``) and streams the reply back as
   ``session.commentary.append`` — Hermes' answer is what the voice speaks.
 
 Vendor contract: https://developers.openai.com/api/docs/guides/live (+ live-delegation,
-voice-webrtc). Billing is $0.05/min of session time on the OpenAI key, separate from the
-Hermes turn.
+voice-webrtc). API billing is separate from the Hermes turn. Subscription mode uses the
+Codex frameless WebRTC contract (OpenAI Codex c4017a87aacc7558002b7cb510025e967c1d765e,
+realtime_call.rs and realtime_websocket/methods_frameless_bidi.rs); it never falls back to API.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 import urllib.error
 import urllib.request
-from typing import Any, Dict, Optional
+from typing import Any, Optional
+from urllib.parse import urlparse
+
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +41,11 @@ CHAINED_MODE = "chained"
 DEFAULT_LIVE_MODEL = "gpt-live-1"
 DEFAULT_LIVE_VOICE = "marin"
 DEFAULT_LIVE_BASE_URL = "https://api.openai.com/v1"
+DEFAULT_SUBSCRIPTION_MODEL = "gpt-live-1-codex"
+DEFAULT_SUBSCRIPTION_VOICE = "cove"
+CODEX_LIVE_URL = (
+    "https://chatgpt.com/backend-api/codex/realtime/calls?intent=quicksilver&architecture=avas"
+)
 # Voices the vendor lists for gpt-live-1 (live-conversations guide) plus the realtime defaults it
 # accepts; free text stays allowed for custom voices.
 GPT_LIVE_VOICES = (
@@ -123,43 +134,121 @@ def _resolve_credentials(live: dict[str, Any]) -> tuple[str, str]:
     return api_key, base_url
 
 
+def _live_auth(live: dict[str, Any]) -> str:
+    auth = str(live.get("auth", "api")).strip().lower()
+    if auth not in {"api", "subscription"}:
+        raise ValueError("voice.gpt_live.auth must be api or subscription; no fallback was used")
+    return auth
+
+
+def _live_model_voice(live: dict[str, Any], auth: str) -> tuple[str, str]:
+    if auth == "subscription":
+        return (str(live.get("subscription_model") or DEFAULT_SUBSCRIPTION_MODEL),
+                str(live.get("subscription_voice") or DEFAULT_SUBSCRIPTION_VOICE))
+    return str(live.get("model") or DEFAULT_LIVE_MODEL), str(live.get("voice") or DEFAULT_LIVE_VOICE)
+
+
+def _subscription_credentials(*, refresh_if_expiring: bool = True, read_only: bool = False) -> tuple[str, str]:
+    from hermes_cli.auth_codex import resolve_codex_runtime_credentials
+    from hermes_cli.auth_constants import AuthError, _decode_jwt_claims
+
+    try:
+        credentials = resolve_codex_runtime_credentials(
+            refresh_if_expiring=refresh_if_expiring,
+            read_only=read_only,
+        )
+    except AuthError:
+        raise ValueError(
+            "GPT-Live subscription needs a working Codex sign-in on the Hermes host. "
+            "Run `hermes auth` and choose OpenAI Codex. No API fallback was used."
+        ) from None
+    token = str(credentials.get("api_key") or "").strip()
+    claims = _decode_jwt_claims(token).get("https://api.openai.com/auth", {})
+    account = claims.get("chatgpt_account_id") if isinstance(claims, dict) else None
+    if (not token or not isinstance(account, str) or not account.strip()
+            or any(c in token + account for c in "\r\n")):
+        raise ValueError("GPT-Live subscription needs Codex OAuth with an account identity; no API fallback was used")
+    return token, account.strip()
+
+
 def live_instructions(live: Optional[dict[str, Any]] = None) -> str:
     extra = str((live if live is not None else _live_section()).get("instructions") or "").strip()
     return f"{LIVE_PERSONA}\n\n{extra}" if extra else LIVE_PERSONA
 
 
 def resolve_gpt_live_status() -> dict[str, Any]:
-    """Non-secret readiness verdict for the client: which mode is selected and whether GPT-Live
-    can start (a key resolves). Never returns the key."""
+    """Credential readiness only; subscription entitlement is checked when the call starts."""
     voice = _voice_section()
-    mode = voice_chat_mode(voice)
     live = _live_section(voice)
-    api_key, _base = _resolve_credentials(live)
+    auth = str(live.get("auth", "api")).strip().lower()
+    reason = None
+    try:
+        auth = _live_auth(live)
+        if auth == "subscription":
+            _subscription_credentials(refresh_if_expiring=False, read_only=True)
+        elif not _resolve_credentials(live)[0]:
+            reason = "no OpenAI API key (set OPENAI_API_KEY or voice.gpt_live.api_key)"
+    except ValueError as exc:
+        reason = str(exc)
+    model, selected_voice = _live_model_voice(live, auth)
     return {
-        "mode": mode,
-        "available": bool(api_key),
-        "reason": None if api_key else "no OpenAI API key (set OPENAI_API_KEY or voice.gpt_live.api_key)",
-        "model": str(live.get("model") or DEFAULT_LIVE_MODEL),
-        "voice": str(live.get("voice") or DEFAULT_LIVE_VOICE),
+        "mode": voice_chat_mode(voice), "auth": auth,
+        "available": reason is None, "reason": reason,
+        "model": model, "voice": selected_voice,
     }
 
 
-def build_session_config(history: Optional[list] = None) -> dict[str, Any]:
-    """The ``session`` object for ``POST /v1/live/sessions`` (client delegation, WebRTC — the
-    transport negotiates the audio format, so none is set)."""
-    live = _live_section()
+def build_session_config(history: Optional[list] = None, *, live: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """Client delegation and history for the explicitly selected Live protocol."""
+    live = _live_section() if live is None else live
+    auth = _live_auth(live)
+    model, selected_voice = _live_model_voice(live, auth)
     config: dict[str, Any] = {
-        "model": str(live.get("model") or DEFAULT_LIVE_MODEL),
+        "model": model,
         "instructions": live_instructions(live),
-        "audio": {"output": {"voice": str(live.get("voice") or DEFAULT_LIVE_VOICE)}},
+        "audio": {"output": {"voice": selected_voice}},
         "delegation": {"type": "client"},
     }
     if history:
-        config["input"] = history
+        config["initial_items" if auth == "subscription" else "input"] = history
     return config
 
 
-def create_webrtc_session(sdp_offer: str, history: Optional[list] = None) -> dict[str, Any]:
+def _create_subscription_session(sdp_offer: str, config: dict[str, Any]) -> dict[str, Any]:
+    token, account = _subscription_credentials()
+    # Codex frameless WebRTC: the bearer and its account identity never reach the renderer.
+    # Do not follow redirects with subscription credentials or retry through the API route.
+    try:
+        with httpx.Client(timeout=30, follow_redirects=False) as client:
+            response = client.post(CODEX_LIVE_URL, json={"sdp": sdp_offer, "session": config}, headers={
+                "Authorization": f"Bearer {token}", "ChatGPT-Account-Id": account,
+                "OpenAI-Alpha": "quicksilver=v2",
+            })
+    except httpx.RequestError:
+        raise RuntimeError("GPT-Live subscription connection failed; no API fallback was used") from None
+    if not response.is_success:
+        raise RuntimeError(
+            f"GPT-Live subscription session was rejected (HTTP {response.status_code}); "
+            "check Codex sign-in and voice access. No API fallback was used."
+        )
+    sdp = response.text
+    call_id = urlparse(response.headers.get("Location", "")).path.rstrip("/").rsplit("/", 1)[-1]
+    call_id_pattern = (
+        r"rtc_[A-Za-z0-9_-]+|"
+        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+    )
+    if not sdp.startswith("v=0") or not re.fullmatch(call_id_pattern, call_id):
+        raise RuntimeError("GPT-Live subscription returned an invalid WebRTC answer; no API fallback was used")
+    return {"auth": "subscription", "session": {"id": call_id},
+            "transport": {"type": "webrtc", "sdp": sdp}}
+
+
+def create_webrtc_session(
+    sdp_offer: str,
+    history: Optional[list] = None,
+    *,
+    expected_auth: Optional[str] = None,
+) -> dict[str, Any]:
     """Exchange the renderer's SDP offer for the Live session answer.
 
     Returns the vendor response ``{"session": {"id": ...}, "transport": {"type": "webrtc",
@@ -167,11 +256,20 @@ def create_webrtc_session(sdp_offer: str, history: Optional[list] = None) -> dic
     status/detail) for a rejected request.
     """
     live = _live_section()
+    auth = _live_auth(live)
+    if expected_auth is not None:
+        if expected_auth not in {"api", "subscription"}:
+            raise ValueError("Invalid expected GPT-Live auth mode")
+        if auth != expected_auth:
+            raise RuntimeError("GPT-Live auth mode changed after preflight; no session was started")
+    config = build_session_config(history, live=live)
+    if auth == "subscription":
+        return _create_subscription_session(sdp_offer, config)
     api_key, base_url = _resolve_credentials(live)
     if not api_key:
         raise ValueError("GPT-Live needs an OpenAI API key (OPENAI_API_KEY or voice.gpt_live.api_key)")
     body = json.dumps({
-        "session": build_session_config(history),
+        "session": config,
         "transport": {"type": "webrtc", "sdp": sdp_offer},
     }).encode("utf-8")
     req = urllib.request.Request(
@@ -179,7 +277,9 @@ def create_webrtc_session(sdp_offer: str, history: Optional[list] = None) -> dic
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            result = json.loads(resp.read().decode("utf-8"))
+            result["auth"] = "api"
+            return result
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")[:600]
         logger.warning("GPT-Live session creation failed: %s %s", exc.code, detail)

@@ -1,4 +1,5 @@
 import { useStore } from '@nanostores/react'
+import { useEffect } from 'react'
 
 import {
   DropdownMenuLabel,
@@ -9,7 +10,12 @@ import {
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { notifyError } from '@/store/notifications'
-import { $voiceLiveStatus, selectedVoiceChatMode, setVoiceChatMode } from '@/store/voice-live'
+import {
+  $voiceLiveStatus,
+  refreshVoiceLiveStatus,
+  selectedVoiceChatMode,
+  setVoiceChatMode
+} from '@/store/voice-live'
 
 /**
  * Which engine the next voice conversation mounts: the chained
@@ -26,6 +32,13 @@ export function VoiceEngineRows({ disabled }: { disabled: boolean }) {
   const { t } = useI18n()
   const c = t.composer
   const status = useStore($voiceLiveStatus)
+
+  // The menu can outlive a transient OAuth/readiness failure. Re-check every
+  // time its contents mount so a recovered subscription does not stay grey
+  // until the entire Desktop app is restarted.
+  useEffect(() => {
+    void refreshVoiceLiveStatus().catch(() => undefined)
+  }, [])
 
   if (status === null) {
     return null

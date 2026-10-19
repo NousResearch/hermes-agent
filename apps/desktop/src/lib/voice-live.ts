@@ -1,28 +1,29 @@
-import { type OwnerScope, ownerScoped, profileScoped } from '@/api/client'
+import { type OwnerScope, ownerScoped } from '@/api/client'
 import { hermesApi } from '@/hermes'
 
 /**
  * GPT-Live voice chat: the full-duplex voice frontend that DELEGATES to Hermes.
  *
  * `voice.voice_chat_mode: gpt-live` swaps the chained mic → STT → turn → TTS
- * loop for one OpenAI voice model (`gpt-live-1`) that listens and speaks at
- * the same time over WebRTC and has no tools of its own. Whenever the user
- * asks for real work it emits `session.delegation.created`; the desktop turns
- * that into an ordinary Hermes turn on the open session and streams the reply
- * back with `session.commentary.append`, which the voice paraphrases aloud.
+ * loop for one voice model that listens and speaks at the same time over
+ * WebRTC and has no tools of its own. API-key and Codex-subscription modes use
+ * different wire events, normalized here before each client delegation becomes
+ * an ordinary Hermes turn and the reply streams back for spoken paraphrasing.
  * Hermes keeps every capability — model choice, tools, memory, approvals.
  *
  * This module owns the transport only: session creation via the gateway
- * (the OpenAI key never reaches the renderer), the RTCPeerConnection, the
+ * (API keys and OAuth credentials never reach the renderer), the RTCPeerConnection, the
  * `oai-events` data channel, transcript accumulation and the command
  * surface the conversation hook drives. Vendor contract:
  * https://developers.openai.com/api/docs/guides/live-delegation
  */
 
 export type VoiceChatMode = 'chained' | 'gpt-live'
+export type VoiceLiveAuth = 'api' | 'subscription'
 
 export interface VoiceLiveStatus {
   mode: VoiceChatMode
+  auth: VoiceLiveAuth
   available: boolean
   reason: null | string
   model: string
@@ -43,6 +44,14 @@ interface LiveServerEvent {
   start_ms?: number
   end_ms?: number
   delegation?: { id: string; type: string; target: string }
+  item?: {
+    id?: string
+    type?: string
+    target?: string
+    text?: string
+    content?: Array<{ type?: string; text?: string }>
+  }
+  delegationContext?: LiveTranscriptFragment[]
   error?: { type?: string; code?: null | string; message?: string; client_event_id?: string }
   usage?: { seconds?: number }
   reason?: string
@@ -54,6 +63,8 @@ export interface LiveTranscriptFragment {
   text: string
   startMs: number
   endMs: number
+  /** Frameless timing is local arrival, not provider audio timestamps. */
+  timestampSource?: 'arrival'
 }
 
 export interface VoiceLiveHandlers {
@@ -78,28 +89,177 @@ const APPEND_CHAR_LIMIT = 1_400
 const CONTEXT_WINDOW_MS = 5 * 60_000
 const CONTEXT_MAX_FRAGMENTS = 80
 
-export async function fetchVoiceLiveStatus(): Promise<null | VoiceLiveStatus> {
+const VOICE_LIVE_STATUS_PATH = '/api/audio/voice-live/status'
+const LEGACY_API_LIVE_MODEL = 'gpt-live-1'
+
+function isMissingVoiceLiveStatusEndpoint(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false
+  }
+
+  const message = error.message
+
+  const json404 = message.match(
+    /^(?:error invoking remote method '[^']+': error:\s*)?404:\s*(\{.*\})\s*$/i
+  )
+
+  if (json404) {
+    try {
+      const body = JSON.parse(json404[1]) as { detail?: unknown }
+
+      return body.detail === 'Not Found' || body.detail === `No such API endpoint: ${VOICE_LIVE_STATUS_PATH}`
+    } catch {
+      return false
+    }
+  }
+
+  const html = message.match(/expected json from (\S+) but got html \(status \d+\)\./i)
+
+  if (!html || !/endpoint is likely missing on the hermes backend/i.test(message)) {
+    return false
+  }
+
   try {
-    const response = await hermesApi<{ ok: boolean } & VoiceLiveStatus>({
-      ...profileScoped(),
+    return new URL(html[1], 'http://localhost').pathname === VOICE_LIVE_STATUS_PATH
+  } catch {
+    return false
+  }
+}
+
+function invalidVoiceStatus(field = ''): never {
+  throw new Error(`Voice status response is invalid${field ? `: ${field}` : ''}`)
+}
+
+function voiceStatusRecord(response: unknown): Record<string, unknown> {
+  if (!response || typeof response !== 'object' || !('ok' in response) || response.ok !== true) {
+    invalidVoiceStatus()
+  }
+
+  return response as Record<string, unknown>
+}
+
+function voiceStatusMode(value: unknown): VoiceChatMode {
+  return value === 'chained' || value === 'gpt-live' ? value : invalidVoiceStatus('mode')
+}
+
+function voiceStatusAvailable(value: unknown): boolean {
+  return typeof value === 'boolean' ? value : invalidVoiceStatus('available')
+}
+
+function voiceStatusText(value: unknown, field: 'model' | 'voice'): string {
+  return typeof value === 'string' && value.trim() ? value : invalidVoiceStatus(field)
+}
+
+function voiceStatusReason(status: Record<string, unknown>): null | string {
+  if (!('reason' in status) || (status.reason !== null && typeof status.reason !== 'string')) {
+    invalidVoiceStatus('reason')
+  }
+
+  return status.reason as null | string
+}
+
+function voiceStatusAuth(status: Record<string, unknown>, model: string): VoiceLiveAuth {
+  if ('auth' in status) {
+    return status.auth === 'api' || status.auth === 'subscription'
+      ? status.auth
+      : invalidVoiceStatus('auth')
+  }
+
+  // The status endpoint predates subscription auth. Its one known model was
+  // API-only; do not infer API billing for any newer or custom model shape.
+  return model === LEGACY_API_LIVE_MODEL ? 'api' : invalidVoiceStatus('auth')
+}
+
+function normalizeVoiceLiveStatus(response: unknown): VoiceLiveStatus {
+  const status = voiceStatusRecord(response)
+  const model = voiceStatusText(status.model, 'model')
+
+  return {
+    auth: voiceStatusAuth(status, model),
+    available: voiceStatusAvailable(status.available),
+    mode: voiceStatusMode(status.mode),
+    model,
+    reason: voiceStatusReason(status),
+    voice: voiceStatusText(status.voice, 'voice')
+  }
+}
+
+export async function fetchVoiceLiveStatus(owner?: OwnerScope): Promise<null | VoiceLiveStatus> {
+  try {
+    const response = await hermesApi<unknown>({
+      ...ownerScoped(owner),
       path: '/api/audio/voice-live/status'
     })
 
-    if (!response?.ok) {
+    return normalizeVoiceLiveStatus(response)
+  } catch (error) {
+    // A missing status route is the only legacy capability signal. Keep the
+    // classifier route-specific: profile/resource 404s and every other status
+    // error must fail closed so subscription billing cannot silently change.
+    if (isMissingVoiceLiveStatusEndpoint(error)) {
       return null
     }
 
-    return {
-      available: Boolean(response.available),
-      mode: response.mode === 'gpt-live' ? 'gpt-live' : 'chained',
-      model: response.model,
-      reason: response.reason ?? null,
-      voice: response.voice
-    }
-  } catch {
-    // Older backend without the endpoint → chained.
-    return null
+    throw error
   }
+}
+
+/** Resolve billing before opening any microphone or selecting a voice engine. */
+export async function resolveVoiceConversationStart(owner?: OwnerScope): Promise<{
+  auth: null | VoiceLiveAuth
+  mode: VoiceChatMode
+  fallbackReason: null | string
+}> {
+  const status = await fetchVoiceLiveStatus(owner)
+
+  if (!status) {
+    return { auth: null, mode: 'chained', fallbackReason: null }
+  }
+
+  if (status.mode !== 'gpt-live') {
+    return { auth: status.auth === 'subscription' ? 'subscription' : 'api', mode: 'chained', fallbackReason: null }
+  }
+
+  if (status.available) {
+    if (status.auth !== 'api' && status.auth !== 'subscription') {
+      throw new Error('GPT-Live auth mode is invalid; no voice session was started')
+    }
+
+    return { auth: status.auth, mode: 'gpt-live', fallbackReason: null }
+  }
+
+  if (status.auth !== 'api') {
+    throw new Error(status.reason ?? 'GPT-Live subscription is unavailable; no API fallback was used')
+  }
+
+  return { auth: 'api', mode: 'chained', fallbackReason: status.reason ?? 'not configured' }
+}
+
+// The Codex frameless protocol caps context appends at 500 UTF-8 bytes.
+function subscriptionChunks(text: string): string[] {
+  const chunks: string[] = []
+  const encoder = new TextEncoder()
+  let chunk = ''
+  let bytes = 0
+
+  for (const character of text.trim()) {
+    const size = encoder.encode(character).length
+
+    if (bytes + size > 500) {
+      chunks.push(chunk)
+      chunk = ''
+      bytes = 0
+    }
+
+    chunk += character
+    bytes += size
+  }
+
+  if (chunk) {
+    chunks.push(chunk)
+  }
+
+  return chunks
 }
 
 /** Split a reply into append-sized chunks on sentence boundaries. */
@@ -211,12 +371,63 @@ async function waitForIceGathering(connection: RTCPeerConnection): Promise<void>
   })
 }
 
+function normalizeSubscriptionEvent(event: LiveServerEvent): LiveServerEvent | null {
+  if (event.type === 'input_transcript.added' || event.type === 'output_transcript.added') {
+    if (typeof event.item?.text !== 'string') {
+      return null
+    }
+
+    const arrivedAt = performance.now()
+
+    return {
+      start_ms: arrivedAt,
+      end_ms: arrivedAt,
+      delta: event.item.text,
+      type:
+        event.type === 'input_transcript.added'
+          ? 'session.input_transcript.delta'
+          : 'session.output_transcript.delta'
+    }
+  }
+
+  if (event.type !== 'delegation.created') {
+    return event
+  }
+
+  const item = event.item
+
+  if (!item?.id || item.type !== 'delegation' || item.target !== 'client') {
+    return null
+  }
+
+  const text = (item.content ?? [])
+    .filter(part => part.type === 'input_text' && typeof part.text === 'string')
+    .map(part => part.text?.trim() ?? '')
+    .filter(Boolean)
+    .join(' ')
+
+  const arrivedAt = performance.now()
+
+  return {
+    type: 'session.delegation.created',
+    delegation: { id: item.id, type: item.type, target: item.target },
+    ...(text
+      ? {
+          delegationContext: [
+            { startMs: arrivedAt, endMs: arrivedAt, speaker: 'user', text, timestampSource: 'arrival' }
+          ]
+        }
+      : {})
+  }
+}
+
 export class VoiceLiveSession {
   readonly audio: HTMLAudioElement
   /** Whose (connection, profile) this session dials; null → the active scope.
    *  A Bot chat runs its GPT-Live session on the Bot's own profile, so the
    *  voice configured there is the voice that answers. */
   private readonly owner: null | OwnerScope
+  private readonly expectedAuth: null | VoiceLiveAuth
   private readonly handlers: VoiceLiveHandlers
   private peer: null | RTCPeerConnection = null
   private events: null | RTCDataChannel = null
@@ -225,6 +436,8 @@ export class VoiceLiveSession {
   private finalized = false
   private started = false
   private eventCounter = 0
+  private subscription = false
+  private delegationIds = new Set<string>()
   private transcript: LiveTranscriptFragment[] = []
   private speakingProbe: null | number = null
   private analyser: null | AnalyserNode = null
@@ -235,9 +448,14 @@ export class VoiceLiveSession {
    *  older id are dropped by the conversation hook. */
   activeDelegationId: null | string = null
 
-  constructor(handlers: VoiceLiveHandlers, owner: null | OwnerScope = null) {
+  constructor(
+    handlers: VoiceLiveHandlers,
+    owner: null | OwnerScope = null,
+    expectedAuth: null | VoiceLiveAuth = null
+  ) {
     this.handlers = handlers
     this.owner = owner
+    this.expectedAuth = expectedAuth
     this.audio = new Audio()
     this.audio.autoplay = true
   }
@@ -270,7 +488,9 @@ export class VoiceLiveSession {
       return []
     }
 
-    const floor = last.endMs - CONTEXT_WINDOW_MS
+    // Arrival timestamps share the local clock; silence must age them out too.
+    // API audio timestamps use a separate clock, so retain their existing window.
+    const floor = (this.subscription ? performance.now() : last.endMs) - CONTEXT_WINDOW_MS
 
     return this.transcript.filter(fragment => fragment.endMs >= floor).slice(-CONTEXT_MAX_FRAGMENTS)
   }
@@ -325,11 +545,12 @@ export class VoiceLiveSession {
 
     const response = await hermesApi<{
       ok: boolean
+      auth?: string
       session?: { id: string }
       transport?: { sdp: string; type: string }
     }>({
       ...ownerScoped(this.owner ?? undefined),
-      body: { history, sdp },
+      body: { history, sdp, ...(this.expectedAuth ? { expected_auth: this.expectedAuth } : {}) },
       method: 'POST',
       path: '/api/audio/voice-live/session',
       timeoutMs: 45_000
@@ -339,6 +560,13 @@ export class VoiceLiveSession {
       throw new Error('GPT-Live session creation failed')
     }
 
+    const responseAuth = response.auth ?? (this.expectedAuth === 'api' ? 'api' : null)
+
+    if (this.expectedAuth && responseAuth !== this.expectedAuth) {
+      throw new Error('GPT-Live auth mode changed after preflight; no session was started')
+    }
+
+    this.subscription = responseAuth === 'subscription'
     this.sessionId = response.session?.id ?? null
     await connection.setRemoteDescription({ sdp: response.transport.sdp, type: 'answer' })
   }
@@ -386,69 +614,119 @@ export class VoiceLiveSession {
       return
     }
 
+    if (this.subscription) {
+      const normalized = normalizeSubscriptionEvent(event)
+
+      if (!normalized) {
+        return
+      }
+
+      event = normalized
+    }
+
+    this.dispatchEvent(event)
+  }
+
+  private dispatchEvent(event: LiveServerEvent): void {
     switch (event.type) {
       case 'session.started':
         this.started = true
         this.sessionId = event.session?.id ?? this.sessionId
 
-        return
+        break
 
       case 'session.input_transcript.delta':
-      case 'session.output_transcript.delta': {
-        const fragment: LiveTranscriptFragment = {
-          endMs: event.end_ms ?? 0,
-          speaker: event.type === 'session.input_transcript.delta' ? 'user' : 'assistant',
-          startMs: event.start_ms ?? 0,
-          text: event.delta ?? ''
-        }
 
-        this.transcript.push(fragment)
+      case 'session.output_transcript.delta':
+        this.recordTranscript(event)
 
-        if (this.transcript.length > 2_000) {
-          this.transcript.splice(0, this.transcript.length - 1_500)
-        }
+        break
 
-        this.handlers.onTranscript?.(fragment)
+      case 'session.delegation.created':
+        this.dispatchDelegation(event)
 
-        return
-      }
+        break
 
-      case 'session.delegation.created': {
-        const id = event.delegation?.id
+      case 'error':
+        this.dispatchError(event)
 
-        if (id) {
-          this.activeDelegationId = id
-          this.handlers.onDelegation(id, this.contextWindow())
-        }
-
-        return
-      }
-
-      case 'error': {
-        const code = event.error?.code ?? ''
-
-        // Late appends after our own close are expected noise.
-        if (code === 'context_injection_incomplete') {
-          return
-        }
-
-        this.handlers.onError(event.error?.message ?? 'GPT-Live error', false)
-
-        return
-      }
+        break
 
       case 'session.closed':
         this.finish(event.reason ?? 'closed', event.usage?.seconds ?? null)
 
-        return
+        break
+    }
+  }
 
-      default:
-        return
+  private recordTranscript(event: LiveServerEvent): void {
+    const fragment: LiveTranscriptFragment = {
+      endMs: event.end_ms ?? 0,
+      speaker: event.type === 'session.input_transcript.delta' ? 'user' : 'assistant',
+      startMs: event.start_ms ?? 0,
+      text: event.delta ?? '',
+      ...(this.subscription ? { timestampSource: 'arrival' as const } : {})
+    }
+
+    this.transcript.push(fragment)
+
+    if (this.transcript.length > 2_000) {
+      this.transcript.splice(0, this.transcript.length - 1_500)
+    }
+
+    this.handlers.onTranscript?.(fragment)
+  }
+
+  private dispatchDelegation(event: LiveServerEvent): void {
+    const id = event.delegation?.id
+
+    if (!id || this.delegationIds.has(id)) {
+      return
+    }
+
+    this.delegationIds.add(id)
+    this.activeDelegationId = id
+    const context = this.contextWindow()
+    const provided = event.delegationContext ?? []
+    const providedText = provided.at(-1)?.text.trim()
+
+    const lastUserText = [...context]
+      .reverse()
+      .find(fragment => fragment.speaker === 'user')
+      ?.text.trim()
+
+    const delegationContext = providedText && providedText !== lastUserText ? [...context, ...provided] : context
+
+    this.handlers.onDelegation(id, delegationContext)
+  }
+
+  private dispatchError(event: LiveServerEvent): void {
+    if (event.error?.code === 'context_injection_incomplete') {
+      return
+    }
+
+    this.handlers.onError(event.error?.message ?? 'GPT-Live error', false)
+  }
+
+  private appendSubscription(delegationId: null | string, content: string, channel: 'commentary' | 'speakable'): void {
+    for (const chunk of subscriptionChunks(content)) {
+      this.send({
+        channel,
+        content: [{ text: chunk, type: 'input_text' }],
+        ...(delegationId ? { delegation_item_id: delegationId } : {}),
+        type: delegationId ? 'delegation.context.append' : 'session.context.append'
+      })
     }
   }
 
   /** Quiet progress for the live model ("Hermes is running the tests…"). */
   think(delegationId: null | string, content: string): void {
+    if (this.subscription) {
+      this.appendSubscription(delegationId, content, 'commentary')
+
+      return
+    }
+
     const text = content.replace(/\s+/g, ' ').trim().slice(0, APPEND_CHAR_LIMIT)
 
     if (text) {
@@ -463,6 +741,12 @@ export class VoiceLiveSession {
 
   /** A result the voice should say aloud (paraphrased). */
   speak(delegationId: null | string, content: string): void {
+    if (this.subscription) {
+      this.appendSubscription(delegationId, content, 'speakable')
+
+      return
+    }
+
     for (const chunk of chunkForCommentary(content)) {
       this.send({
         content: chunk,
@@ -475,6 +759,12 @@ export class VoiceLiveSession {
 
   /** Steer the live persona mid-conversation (session-wide). */
   instruct(content: string): void {
+    if (this.subscription) {
+      this.appendSubscription(null, content, 'commentary')
+
+      return
+    }
+
     const text = content.trim().slice(0, APPEND_CHAR_LIMIT)
 
     if (text) {
@@ -490,6 +780,11 @@ export class VoiceLiveSession {
   setMuted(muted: boolean): void {
     for (const track of this.microphone?.getAudioTracks() ?? []) {
       track.enabled = !muted
+    }
+
+    // Subscription WebRTC mutes the microphone track; it has no API mute event.
+    if (this.subscription) {
+      return
     }
 
     this.send({

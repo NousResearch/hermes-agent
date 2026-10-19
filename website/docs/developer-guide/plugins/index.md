@@ -2024,6 +2024,18 @@ re-discovery. Every one of those paths runs a **real forced rescan** (`discover_
   `mcp.json` servers, by their mcp.json names) connect on `mcp.reload` or the next session.
 - There is no un-wire: disabling a plugin mid-run keeps its already-wired handlers until the gateway
   restarts, and the surfaces say so.
+- **Forced rescans keep hooks dispatchable** — while a forced rescan unloads and re-registers plugins,
+  hook dispatch (`invoke_hook`, `ainvoke_hook`, `has_hook`, `iter_hook_callbacks`) serves a frozen copy of
+  the hook table taken when the rescan started, including for a lookup that was already under way at that
+  moment, and switches to the rebuilt table when the rescan finishes. If the rescan fails, dispatch
+  returns to the live table, which holds only what re-registered before the failure (as before this
+  change). Plugin middleware and system-prompt sections are not covered by the frozen copy. The copy holds
+  the previous plugin incarnations' callbacks, so a concurrent turn can still call them after the plugin's
+  `on_unload` callbacks have run; write hook callbacks to tolerate that (a `pre_tool_call` callback that
+  raises blocks the tool call). Hooks of a plugin that the rescan does not load again stop when the rescan
+  finishes. A `ctx.spawn_task` task that is still running is kept and handed to the plugin's new
+  incarnation; it is cancelled if the plugin does not come back or its new `register()` spawns a task of
+  the same name. A targeted unload still cancels the plugin's tasks.
 
 Install surfaces report exactly this split: `hermes plugins install/enable` prints it after nudging the running
 gateway (`reload-plugins` control-socket verb), `plugins.manage install/toggle/update` returns `activation` +

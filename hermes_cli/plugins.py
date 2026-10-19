@@ -414,7 +414,7 @@ class PluginContext:
         return handle
 
     def spawn_task(self, coro, *, name: Optional[str] = None) -> asyncio.Task:
-        """Spawn a supervised asyncio task; unload/force reload cancels it. Needs a running loop."""
+        """Spawn a supervised task (needs a running loop); unload cancels it, force re-discovery may keep it."""
         if not asyncio.iscoroutine(coro):
             raise TypeError("spawn_task expects a coroutine")
         loop = asyncio.get_running_loop()
@@ -1286,7 +1286,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             # deadline worker that cannot re-acquire the sweep's RLock; the flag is already set for the
             # whole sweep, so return where the locked re-entry used to. Every other caller still waits.
             return
-        with self._discovery_lock, _plugin_home_scope(self.home_path):
+        with self._discovery_lock, _plugin_home_scope(self.home_path), self._force_sweep_continuity(force):
             if self._discovered and not force:
                 return
             # ``on_plugin_loaded`` reports the plugins this sweep loads that the process did not have before

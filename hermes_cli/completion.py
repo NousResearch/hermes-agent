@@ -31,7 +31,7 @@ def _clean(text: str, maxlen: int = 60) -> str:
 
 
 # Profile actions that take a profile name as their next argument.
-_PROFILE_NAME_ACTIONS = ("use", "delete", "show", "alias", "rename", "export")
+_PROFILE_NAME_ACTIONS = ("use", "delete", "reset", "show", "alias", "rename", "export")
 
 
 def _sorted_subcommands(parser: argparse.ArgumentParser) -> list[tuple[str, dict[str, Any]]]:

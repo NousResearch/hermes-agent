@@ -1758,11 +1758,11 @@ class ProfileIdentitySettlementPending(RuntimeError):
 
 
 def delete_profile(name: str, yes: bool = False) -> Path:
-    """Delete a profile, its wrapper script, and its gateway service (service disabled first
-    to prevent auto-restart, gateway stopped if running)."""
+    """Delete a profile, its wrapper script and gateway service (disabled first, gateway stopped)."""
     canon = normalize_profile_name(name)
-    if canon == "default":
-        raise ValueError("Cannot delete the default profile (~/.hermes).\nTo remove everything, use: hermes uninstall")
+    if canon == "default":  # its home holds the install and every other profile: reset it instead
+        from hermes_cli.profiles_reset import DEFAULT_PROFILE_DELETE_REFUSAL
+        raise ValueError(DEFAULT_PROFILE_DELETE_REFUSAL)
     canon, profile_dir = _existing_profile_dir(canon)
     gw_running = _check_gateway_running(profile_dir)
     wrapper_path = _find_our_wrapper(canon)

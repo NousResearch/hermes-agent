@@ -292,9 +292,22 @@ def _profile_create(args):
 
 
 def _profile_delete(args):
-    from hermes_cli.profiles import delete_profile
+    from hermes_cli.profiles import delete_profile, normalize_profile_name
     try:
+        if normalize_profile_name(args.profile_name) == "default":
+            # The default home holds the install and every other profile: deleting it means resetting it.
+            print("The default profile cannot be removed; it will be reset instead "
+                  "(same as `hermes profile reset default`).")
+            return _profile_reset(args)
         delete_profile(args.profile_name, yes=getattr(args, "yes", False))
+    except (ValueError, FileNotFoundError, RuntimeError) as e:
+        _die(f"Error: {e}")
+
+
+def _profile_reset(args):
+    from hermes_cli.profiles_reset import reset_profile
+    try:
+        reset_profile(getattr(args, "profile_name", None) or "default", yes=getattr(args, "yes", False))
     except (ValueError, FileNotFoundError, RuntimeError) as e:
         _die(f"Error: {e}")
 
@@ -615,6 +628,7 @@ PROFILE_ACTIONS = {
     'use': _profile_use,
     'create': _profile_create,
     'delete': _profile_delete,
+    'reset': _profile_reset,
     'describe': _profile_describe,
     'show': _profile_show,
     'alias': _profile_alias,

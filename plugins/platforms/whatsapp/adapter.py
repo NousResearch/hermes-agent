@@ -425,6 +425,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         verdict = self._is_sender_authorized(user_id, source.chat_type, source.chat_id)
         return verdict if verdict is not None else self._is_dm_allowed(user_id)
 
+    @staticmethod
+    def _is_reaction_event(event: MessageEvent) -> bool:
+        """An inbound reaction (the bridge sets ``nativeType: reactionMessage``) carries no message of its own to
+        mark; reacting to it is a wasted send that could also feed an echo loop."""
+        raw = event.raw_message if isinstance(event.raw_message, dict) else {}
+        return raw.get("nativeType") == "reactionMessage"
+
     def _bridge_url(self, path: str) -> str:
         return f"http://127.0.0.1:{self._bridge_port}/{path}"
 
@@ -970,7 +977,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """React with 👀 while the message is being processed."""
-        if not self._reactions_enabled() or not self._reaction_sender_authorized(event):
+        if not self._reactions_enabled() or self._is_reaction_event(event) or not self._reaction_sender_authorized(event):
             return
         chat_id = getattr(event.source, "chat_id", None) if event.source else None
         message_id = event.message_id
@@ -981,7 +988,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Swap the in-progress reaction for the final outcome reaction."""
-        if not self._reactions_enabled() or not self._reaction_sender_authorized(event):
+        if not self._reactions_enabled() or self._is_reaction_event(event) or not self._reaction_sender_authorized(event):
             return
         if outcome == ProcessingOutcome.SUCCESS:
             emoji = "✅"

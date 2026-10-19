@@ -351,3 +351,19 @@ class TestWhatsAppReactionsInBackground:
 
         assert _sent_emojis(adapter._http_session.post) == ["👀", "❌"]
         assert adapter._background_tasks == set()
+
+
+class TestWhatsAppInboundReactionEvents:
+    @pytest.mark.asyncio
+    async def test_inbound_reaction_event_gets_no_reaction(self):
+        """bridge_helpers.js forwards a reaction as a TEXT "[Reaction: …]" event with nativeType reactionMessage."""
+        adapter = _make_adapter()
+        post = _recording_session(adapter)
+        event = _event(message_id="reaction-msg-1")
+        event.raw_message.update({"nativeType": "reactionMessage", "mediaType": "reaction"})
+
+        await adapter.on_processing_start(event)
+        await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+        await _drain(adapter)
+
+        post.assert_not_called()

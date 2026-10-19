@@ -1,0 +1,25 @@
+name: openrouter-spend
+title: "OpenRouter Spend"
+repo: https://github.com/AllenRobinHubert/openrouter-spend
+sha: 4a54b43f82264a0703d21abec9f7e49e8650abcf
+description: "OpenRouter API-key spend and recorded chat costs in USD/INR. Disclosure — sends the configured OpenRouter key (OPENROUTER_API_KEY, or the variable named in api_key_env) only to openrouter.ai's read-only key and generation accounting endpoints, and fetches public USD/INR rates from api.frankfurter.dev unless a manual rate is set; middleware on every LLM request records ids, model, token counts and reported cost (no prompt or reply text) to its own ledger; the dashboard reads accounting metadata (session ids, token counts, billing provider) read-only from the state.db and OpenRouter Spend ledger of every profile under the Hermes root."
+maintainer: AllenRobinHubert
+tier: community
+category: desktop
+version: "0.4.1"
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/AllenRobinHubert/openrouter-spend#readme
+readme: true
+screenshots:
+  - https://raw.githubusercontent.com/AllenRobinHubert/openrouter-spend/4a54b43f82264a0703d21abec9f7e49e8650abcf/docs/statusbar.png
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_api_request
+    - api_request_error
+    - post_auxiliary_call
+    - post_tool_call
+  provides_middleware:
+    - llm_execution
+  requires_env:
+    - OPENROUTER_API_KEY

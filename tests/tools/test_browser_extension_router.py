@@ -316,19 +316,16 @@ def test_routed_handler_reads_server_bound_identity_from_session_context(monkeyp
     )
 
 
-def test_routeable_browser_tools_are_available_for_bound_extension_controller(monkeypatch):
-    """The extension route must not be stripped by legacy Browser Use checks."""
+def test_routeable_browser_tools_are_available_for_a_session_that_can_bind_a_controller(monkeypatch):
+    """The extension route must not be stripped by legacy Browser Use checks, and whether it is offered does
+    not depend on what is attached: a controller that attaches or leaves must not rewrite the tool block."""
     from tools import browser_tool
 
     monkeypatch.setattr(bt_install, "check_browser_requirements", lambda: False)
-    monkeypatch.setattr(
-        browser_tool,
-        "extension_controller_available",
-        lambda action: action == "browser_snapshot",
-    )
+    monkeypatch.setattr(browser_tool, "extension_lane_configured", lambda: True)
 
     assert browser_tool.check_browser_snapshot_requirements() is True
-    assert browser_tool.check_browser_click_requirements() is False
+    assert browser_tool.check_browser_click_requirements() is True
 
 
 def test_extension_availability_requires_exact_scope_and_capability(monkeypatch):
@@ -463,19 +460,15 @@ def test_bound_identity_without_extension_control_keeps_cache_scope(monkeypatch)
         clear_session_vars(tokens)
 
 
-def test_registry_advertises_snapshot_through_extension_when_legacy_backend_is_down(
+def test_registry_advertises_browser_tools_to_a_bound_session_when_legacy_backend_is_down_and_nothing_is_attached(
     monkeypatch,
 ):
+    from gateway import browser_control_broker
     from gateway.session_context import clear_session_vars, set_session_vars
-    from tools import browser_tool
     from tools.registry import registry
 
     monkeypatch.setattr(bt_install, "check_browser_requirements", lambda: False)
-    monkeypatch.setattr(
-        browser_tool,
-        "extension_controller_available",
-        lambda action: action == "browser_snapshot",
-    )
+    monkeypatch.setattr(browser_control_broker, "browser_control_enabled", lambda: True)
     tokens = set_session_vars(
         session_id="session-fixture",
         browser_control_principal="principal-fixture",
@@ -486,8 +479,8 @@ def test_registry_advertises_snapshot_through_extension_when_legacy_backend_is_d
     finally:
         clear_session_vars(tokens)
 
-    assert [definition["function"]["name"] for definition in definitions] == [
-        "browser_snapshot"
+    assert sorted(definition["function"]["name"] for definition in definitions) == [
+        "browser_click", "browser_snapshot",
     ]
 
 

@@ -56,10 +56,31 @@ def _bound_identity() -> tuple[Optional[str], Optional[str], Optional[str]]:
     )
 
 
+#: Tells the model what to say when a session that can bind a controller has none attached, which is the one
+#: state it cannot fix itself (the tool surface is the same whether or not a controller is attached).
+TURN_ON_HERMES_CONTROL = "Ask the person to turn on Hermes Control in the browser extension and attach a tab, then retry."
+
+
 def _controller_unavailable(message: str) -> Exception:
     from gateway.browser_control_broker import ControllerUnavailable
 
     return ControllerUnavailable(message)
+
+
+def extension_lane_configured() -> bool:
+    """Whether this request belongs to a session that can bind a browser extension controller: the feature flag
+    (``browser.extension_control.enabled``) is on and the request carries the server-bound principal and
+    transport. It does not ask what is attached right now, so the answer is the same on every request of a
+    session. The tool surface follows it: a surface that changed whenever the person turned Hermes Control on
+    or off, or the extension reconnected, would rewrite the tool block mid-conversation and lose the provider's
+    prompt cache."""
+    try:
+        from gateway.browser_control_broker import browser_control_enabled
+
+        return browser_control_enabled() and all(_bound_identity())
+    except Exception:
+        logger.debug("browser extension lane check failed", exc_info=True)
+        return False
 
 
 def extension_controller_available(action: str) -> bool:
@@ -113,13 +134,13 @@ def route_browser_tool(
         lane_bound = getattr(broker, "lane_registered", None)
         if callable(lane_bound) and not lane_bound(**identity):
             return fallback()
-        raise _controller_unavailable(f"bound browser controller unavailable for {action}")
+        raise _controller_unavailable(f"bound browser controller unavailable for {action}. {TURN_ON_HERMES_CONTROL}")
 
     if broker.select(scope, action) is None:
         raise _controller_unavailable(
-            f"bound browser controller cannot execute {action}: the connected browser extension does not offer it "
-            "(an older extension, or a browser such as Firefox that cannot do it). Use another browser action, or "
-            "update the extension and reconnect.")
+            f"bound browser controller cannot execute {action}. {TURN_ON_HERMES_CONTROL} If it is on and connected, "
+            "the browser extension does not offer this action (an older extension, or a browser such as Firefox "
+            "that cannot do it): use another browser action, or update the extension and reconnect.")
 
     # Controller is authoritative: never retry the legacy backend. Registry
     # handlers must return a string; keep string results byte-identical and

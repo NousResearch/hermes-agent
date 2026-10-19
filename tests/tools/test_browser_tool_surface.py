@@ -12,6 +12,7 @@ import pytest
 
 from gateway.browser_control_broker import BROWSER_CONTROL_CAPABILITIES
 from tools import browser_tool
+from tools import browser_tool_extension_schemas as extension_schemas
 from tools import browser_tool_eval_policy as bt_eval_policy
 from tools import browser_tool_install as bt_install
 from tools import browser_tool_session as bt_session
@@ -22,11 +23,6 @@ NEW_TOOLS = (
     "browser_batch", "browser_fill", "browser_select", "browser_hover", "browser_drag", "browser_scroll_to",
     "browser_tabs", "browser_tab_activate", "browser_tab_create", "browser_tab_close", "browser_tab_group",
     "browser_tab_ungroup", "browser_screenshot",
-)
-# Tools the built-in browser cannot do: offered only when a bound controller advertises them.
-EXTENSION_ONLY = (
-    "browser_tabs", "browser_tab_activate", "browser_tab_create", "browser_tab_close", "browser_tab_group",
-    "browser_tab_ungroup",
 )
 # A 1x1 PNG.
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==")
@@ -48,13 +44,20 @@ def browser(monkeypatch):
     return commands
 
 
+def _lane_schemas():
+    """Every browser tool schema as a session that can bind an extension controller is offered it."""
+    stock = {s["name"]: s for s in browser_tool.BROWSER_TOOL_SCHEMAS}
+    lane = {name: extension_schemas.lane_schema(stock[name]) for name in extension_schemas.LANE_TOOLS}
+    return {**stock, **lane, **{s["name"]: s for s in extension_schemas.EXTENSION_ONLY_SCHEMAS}}
+
+
 def _call(tool, args):
     """Through the registry handler, as the agent calls it (extension control off: the built-in browser runs)."""
     return json.loads(registry.get_entry(tool).handler(dict(args), task_id="task-1"))
 
 
 def test_every_new_tool_is_registered_allowlisted_and_has_a_legacy_function():
-    schemas = {s["name"] for s in browser_tool.BROWSER_TOOL_SCHEMAS}
+    schemas = set(_lane_schemas())
     for name in NEW_TOOLS:
         assert name in schemas, name
         assert callable(getattr(browser_tool, name)), f"{name} needs a module-level legacy function"
@@ -65,21 +68,21 @@ def test_every_new_tool_is_registered_allowlisted_and_has_a_legacy_function():
 
 def test_every_declared_argument_reaches_the_legacy_handler():
     """_fallback_call hands the legacy function only the arguments its table row declares."""
-    schemas = {s["name"]: s for s in browser_tool.BROWSER_TOOL_SCHEMAS}
+    schemas = _lane_schemas()
     for name, _emoji, _check, defaults, *_extra in browser_tool._BROWSER_TOOL_TABLE:
         declared = set(schemas[name]["parameters"]["properties"]) - {"tab_id"}  # tab_id: refused, see below
         assert declared <= set(defaults), f"{name} would silently drop {sorted(declared - set(defaults))}"
 
 
 def test_schema_ranges_match_the_extension():
-    schemas = {s["name"]: s["parameters"]["properties"] for s in browser_tool.BROWSER_TOOL_SCHEMAS}
+    schemas = {name: s["parameters"]["properties"] for name, s in _lane_schemas().items()}
     assert schemas["browser_scroll"]["direction"]["enum"] == ["up", "down", "left", "right"]
     assert (schemas["browser_scroll"]["amount"]["minimum"], schemas["browser_scroll"]["amount"]["maximum"]) == (100, 5000)
     assert schemas["browser_press"]["modifiers"]["items"]["enum"] == ["Alt", "Control", "Meta", "Shift"]
     assert schemas["browser_type"]["clear"]["default"] is True
     assert schemas["browser_batch"]["actions"]["maxItems"] == 20
     assert schemas["browser_click"]["x"]["type"] == schemas["browser_click"]["y"]["type"] == "number"
-    click = next(s for s in browser_tool.BROWSER_TOOL_SCHEMAS if s["name"] == "browser_click")
+    click = _lane_schemas()["browser_click"]
     assert click["parameters"]["required"] == []  # a ref or both coordinates: checked in code, not by the schema
 
 
@@ -201,7 +204,7 @@ def test_a_bad_argument_is_refused_before_anything_runs(browser, tool, args, fra
 
 @pytest.mark.parametrize("tool", ("browser_tab_group", "browser_tab_ungroup"))
 def test_the_tab_group_tools_name_their_tabs_in_tab_ids_not_tab_id(tool):
-    schema = next(s for s in browser_tool.BROWSER_TOOL_SCHEMAS if s["name"] == tool)
+    schema = _lane_schemas()[tool]
     properties = schema["parameters"]["properties"]
 
     assert set(properties) == {"tab_ids"} and schema["parameters"]["required"] == ["tab_ids"]
@@ -221,28 +224,18 @@ def test_the_built_in_browser_keeps_its_default_scroll_and_clear_behaviour(brows
 # --- who is offered which tool ------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("tool", EXTENSION_ONLY)
-def test_extension_only_tools_need_a_controller_that_advertises_them(monkeypatch, tool):
-    monkeypatch.setattr(bt_install, "check_browser_requirements", lambda: True)
-    advertised = set()
-    monkeypatch.setattr(browser_tool, "extension_controller_available", lambda action: action in advertised)
-    check = registry.get_entry(tool).check_fn
-
-    assert check() is False  # a built-in-only install never sees a tool that can only fail
-    advertised.add(tool)
-    assert check() is True
-
-
-@pytest.mark.parametrize("tool", sorted(set(NEW_TOOLS) - set(EXTENSION_ONLY)))
-def test_tools_the_built_in_browser_can_run_follow_the_usual_availability(monkeypatch, tool):
-    monkeypatch.setattr(browser_tool, "extension_controller_available", lambda action: False)
+@pytest.mark.parametrize("tool", NEW_TOOLS)
+def test_tools_follow_the_usual_availability_or_a_session_that_can_bind_a_controller(monkeypatch, tool):
+    """The gate never asks what is attached: a bound session sees the tool whether or not Hermes Control is on."""
+    lane = []
+    monkeypatch.setattr(browser_tool, "extension_lane_configured", lambda: bool(lane))
     check = registry.get_entry(tool).check_fn
 
     monkeypatch.setattr(bt_install, "check_browser_requirements", lambda: True)
     assert check() is True
     monkeypatch.setattr(bt_install, "check_browser_requirements", lambda: False)
     assert check() is False
-    monkeypatch.setattr(browser_tool, "extension_controller_available", lambda action: action == tool)
+    lane.append(True)
     assert check() is True
 
 
@@ -329,13 +322,13 @@ TAB_TARGETING = (
 
 
 def test_tab_id_is_declared_where_a_tab_can_be_chosen_and_nowhere_else():
-    properties = {s["name"]: s["parameters"]["properties"] for s in browser_tool.BROWSER_TOOL_SCHEMAS}
+    properties = {name: s["parameters"]["properties"] for name, s in _lane_schemas().items()}
     declaring = {name for name, props in properties.items() if "tab_id" in props}
 
     assert declaring == {*TAB_TARGETING, "browser_tab_activate", "browser_tab_close"}
     for name in declaring:
         assert properties[name]["tab_id"]["type"] == "integer" and properties[name]["tab_id"]["minimum"] == 1
-    required = {s["name"]: s["parameters"]["required"] for s in browser_tool.BROWSER_TOOL_SCHEMAS}
+    required = {name: s["parameters"]["required"] for name, s in _lane_schemas().items()}
     assert all("tab_id" not in required[name] for name in TAB_TARGETING)
     assert "tab_id" in required["browser_tab_activate"] and "tab_id" in required["browser_tab_close"]
 

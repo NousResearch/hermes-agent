@@ -21,6 +21,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from tools.registry import CHECK_FN_CACHE_BYPASS, check_fn_cache_scope, discover_builtin_tools, registry, tool_error
 from tools.registry import _MAX_TOOL_ERROR_CHARS as _TOOL_ERROR_MAX_LEN
 from toolsets import resolve_toolset, validate_toolset
+from tools import browser_tool_extension_schemas as _extension_lane
 from tools.arg_coercion import coerce_tool_args
 from tools.todo_tool import TODO_LEGACY_ALIASES, TODO_SCHEMA
 from utils import file_signature
@@ -451,45 +452,22 @@ def _rewrite_input_tool_for_vault(td: dict[str, Any], available: set) -> Optiona
     return _fn_def({**fn, "description": fn.get("description", "") + _VAULT_NO_PASSWORD_NOTE})
 
 
-# The static browser descriptions tell the model to open a page and read its refs before acting. That is
-# right for the built-in browser and wrong when a browser extension controller is bound to the request:
-# the attached page is already open, the turn carries a snapshot of it with refs, and actions that change
-# the page return it with fresh refs. Each pair is (legacy wording, extension wording), applied only on that lane,
-# so the memoized legacy text stays byte-identical. A reworded schema that no longer contains its legacy
-# wording would silently keep the stale advice, so tests assert every routed browser tool is covered.
-_EXTENSION_REFS_SENTENCE = ("Refs come from the page snapshot attached to the turn (or the most recent one in this "
-                            "conversation) or from the latest action result.")
-_EXTENSION_LANE_REWRITES = {
-    "browser_navigate": (("Must be called before other browser tools.",
-                          "The page you are attached to is already open: call this only to move to a different URL."),),
-    "browser_snapshot": (("Requires browser_navigate first. Note: browser_navigate already returns a compact snapshot "
-                          "— use this to refresh after interactions that change the page, or with full=true for "
-                          "complete content.",
-                          "Browser actions that change the page already return it with fresh refs: use this for "
-                          "full=true (complete page content), to re-read a page that changed on its own, or when "
-                          "the turn carries no snapshot."),),
-    "browser_click": (("Requires browser_navigate and browser_snapshot to be called first.", _EXTENSION_REFS_SENTENCE),),
-    "browser_type": (("Requires browser_navigate and browser_snapshot to be called first.", _EXTENSION_REFS_SENTENCE),),
-    "browser_scroll": (("Requires browser_navigate to be called first.", ""),),
-    "browser_back": (("Requires browser_navigate to be called first.", ""),),
-    "browser_press": (("Requires browser_navigate to be called first.", ""),),
-}
-
-
 def _rewrite_for_extension_lane(td: dict[str, Any], available: set) -> Optional[dict[str, Any]]:
-    """Drop the "navigate/snapshot first" advice from a routed browser tool when this request has an extension
-    controller able to run it. Decided per request while the schema is assembled; the bound-identity path
-    bypasses the memo and the check_fn cache, so one process serves both lanes."""
-    name = td["function"]["name"]
-    from tools.browser_extension_router import extension_controller_available
+    """The browser extension lane's tool surface, for sessions that can bind an extension controller.
 
-    if not extension_controller_available(name):
-        return td
-    description = td["function"].get("description", "")
-    for legacy, extension in _EXTENSION_LANE_REWRITES.get(name, ()):
-        # an empty replacement removes the sentence together with the space before it
-        description = description.replace(legacy if extension else f" {legacy}", extension)
-    return _fn_def({**td["function"], "description": description})
+    Such a session (``browser.extension_control.enabled`` plus a server-bound principal and transport) is
+    offered the tab and action tools only the extension runs and the extension form of the long-standing
+    browser tools (``tab_id``, approval and background-tab wording, no "navigate first" advice). Every other
+    session keeps the stock browser schemas, with none of the extension tools. The answer comes from the session,
+    never from what is attached at the moment, so the tool block does not change between requests of one
+    conversation and the provider's prompt cache survives Hermes Control being turned on, off or reconnected.
+    The bound-identity path bypasses the definition memo and the check_fn cache, so one process serves both."""
+    from tools.browser_extension_router import extension_lane_configured
+
+    configured = extension_lane_configured()
+    if td["function"]["name"] in _extension_lane.EXTENSION_ONLY_TOOLS:
+        return td if configured else None
+    return _fn_def(_extension_lane.lane_schema(td["function"])) if configured else td
 
 
 def _compose_rewriters(*fns):
@@ -512,6 +490,7 @@ _DYNAMIC_SCHEMA_REWRITERS = {
     "browser_scroll": _rewrite_for_extension_lane,
     "browser_back": _rewrite_for_extension_lane,
     "browser_press": _rewrite_for_extension_lane,
+    **dict.fromkeys(_extension_lane.EXTENSION_ONLY_TOOLS, _rewrite_for_extension_lane),
     "browser_cdp": _rewrite_browser_cdp,
     "browser_exec": _compose_rewriters(_rewrite_browser_exec, _rewrite_input_tool_for_vault),
     "browser_type": _compose_rewriters(_rewrite_for_extension_lane, _rewrite_input_tool_for_vault),

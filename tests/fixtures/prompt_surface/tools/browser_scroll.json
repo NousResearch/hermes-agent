@@ -1,28 +1,15 @@
 {
-  "description": "Scroll the page up, down, left or right. Use this to reveal more content that may be outside the current viewport. Without amount a scroll moves about a screen; amount sets the distance in pixels. Works on a background tab. Requires browser_navigate to be called first.",
+  "description": "Scroll the page in a direction. Use this to reveal more content that may be below or above the current viewport. Requires browser_navigate to be called first.",
   "name": "browser_scroll",
   "parameters": {
     "properties": {
-      "amount": {
-        "description": "Distance in pixels (100-5000). Omit for about a screen.",
-        "maximum": 5000,
-        "minimum": 100,
-        "type": "integer"
-      },
       "direction": {
         "description": "Direction to scroll",
         "enum": [
           "up",
-          "down",
-          "left",
-          "right"
+          "down"
         ],
         "type": "string"
-      },
-      "tab_id": {
-        "description": "Tab to act on, from browser_tabs or browser_tab_create (default: the current tab). Refs belong to the tab they came from. Browser extension only.",
-        "minimum": 1,
-        "type": "integer"
       }
     },
     "required": [

@@ -428,9 +428,20 @@ The model-facing `browser_*` tools use these capability names one to one, and
 a tool's arguments travel in the command frame's `arguments` object as the
 model gave them (a URL is sent in its normalized form). An optional `arguments.tab_id` picks one of the tabs
 attached to the controller for any action other than the tab tools themselves;
-the extension refuses an id it does not own with `lease_not_owned`. Tools
-that only an extension can run (the six tab tools) are
-offered to a session only while its bound controller advertises them. Before a
+the extension refuses an id it does not own with `lease_not_owned`.
+
+The model is offered this extended surface (the tools above, `tab_id`, the extension
+wording on the long-standing tools, and the six tab tools that only an extension can
+run) only when `browser.extension_control.enabled` is on and the request can bind a
+controller, which every API server request does through its server-bound principal and
+transport family. The decision belongs to the session, never to what is attached at that
+moment: the same tools are sent on every request of the session whether or not a
+controller is attached, so turning Hermes Control on or off, or an extension
+reconnecting, never changes the tool block and costs the conversation its prompt cache.
+With a controller registered but offline, a call fails closed with an error that asks
+the person to turn on Hermes Control and attach a tab. Without the setting, and for every
+CLI and messaging session, the browser tools are exactly the ones documented for the
+built-in browser, with no `tab_id` and none of the tools above that are new. Before a
 `browser_navigate`, `browser_tab_create` or `browser_batch` navigate step is sent,
 Hermes refuses a URL that carries a secret or targets a cloud metadata address or a
 host the operator's website blocklist rules out; the controller never sees it.

@@ -6,6 +6,7 @@ other anchor exists (a relative/sentinel ``TERMINAL_CWD`` would silently anchor
 edits to the agent process cwd, e.g. the main repo during a worktree session).
 """
 
+import logging
 import os
 import posixpath
 import sys
@@ -13,6 +14,8 @@ import time
 from pathlib import Path, PurePosixPath
 
 from agent.runtime_self_protection import split_entry
+
+logger = logging.getLogger(__name__)
 
 # ``TERMINAL_CWD`` values that mean "not configured" ("." from a stale config;
 # "auto"/"cwd" are wizard placeholders). gateway/run.py sanitizes the same set.
@@ -265,18 +268,19 @@ def _resolve_base_dir(
 
 
 def _container_default_cwd(task_id: str = "default") -> str | None:
-    """A container backend's own working directory when the session recorded none: the live env's cwd, else the
-    configured one (already sanitized to the backend default). The process cwd is a host directory (``/opt/data``
-    in the Docker image) the sandbox does not have, and terminal commands do not run there."""
+    """A container backend's configured working directory (already sanitized to the backend default) when the
+    session recorded none: the cwd its terminal commands start in (``_resolve_command_cwd``'s default). The process
+    cwd is a host directory (``/opt/data`` in the Docker image) the sandbox does not have. The live env's cwd is NOT
+    used: a shared env's cwd is wherever ANOTHER session last ``cd``'d."""
     try:
         from tools.terminal_tool import _get_env_config
-        from tools.terminal_tool_lifecycle import get_active_env
 
-        for cwd in (getattr(get_active_env(task_id), "cwd", None), _get_env_config().get("cwd")):
-            if isinstance(cwd, str) and posixpath.isabs(cwd):
-                return cwd
+        cwd = _get_env_config().get("cwd")
+        if isinstance(cwd, str) and posixpath.isabs(cwd):
+            return cwd
     except Exception:
-        pass
+        # Path resolution must not fail on a broken terminal config; the caller falls back to the process cwd.
+        logger.debug("container default cwd unavailable for task %s", task_id, exc_info=True)
     return None
 
 

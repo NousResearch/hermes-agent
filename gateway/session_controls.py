@@ -720,8 +720,16 @@ class AuthorityConnection:
     async def mutate(self, ref, params):
         from gateway.session_mutations import mutate_session
         from hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
+        legacy_unfenced = params.pop('legacy_unfenced', False)
+        if legacy_unfenced and not (
+                params['operation'] in {'sidebar', 'delete'}
+                and params['expected_revision'] is None
+                and params.get('expected_generation') is None
+                and params['request_id'].startswith('legacy-http:')):
+            raise RuntimeStoreError('invalid_params')
         try:
-            result = await mutate_session(self.authority, self.actor, ref, params)
+            result = await mutate_session(self.authority, self.actor, ref, params,
+                                          legacy_unfenced=legacy_unfenced)
         except MUTATION_GUARD_REFUSALS as exc:
             # A live turn lease / compression lock is the same retryable busy verdict a
             # running admission gets (REST maps it to 409), not an internal error.

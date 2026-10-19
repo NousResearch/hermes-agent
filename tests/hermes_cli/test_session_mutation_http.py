@@ -83,6 +83,39 @@ async def test_http_and_ws_clients_compete_for_one_revision(tmp_path, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_legacy_desktop_sidebar_mutations_use_the_authority_without_identity(tmp_path, monkeypatch):
+    """Released Desktop sends sidebar writes without the later HTTP CAS fields."""
+    from hermes_cli.web_routers.sessions import manage_router
+    from hermes_cli import web_server as web
+    monkeypatch.setattr(web, '_SESSION_TOKEN', 'fixture-token')
+    monkeypatch.setattr('hermes_state._default_db_path', lambda: tmp_path / 'state.db')
+    app = FastAPI()
+    app.state.auth_required = False
+    app.include_router(manage_router)
+    with SessionDB(db_path=tmp_path / 'state.db') as db:
+        db.create_session('rename', source='test')
+        db.create_session('archive', source='test')
+        db.create_session('delete', source='test')
+        epoch = begin_runtime_epoch(db, instance_id='owner')
+        authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id=str(tmp_path), instance_id='owner', db=db, epoch=epoch)
+        authority.sessions['rename'] = LiveSession(None, 'rename-route')
+        authority.sessions['archive'] = LiveSession(None, 'archive-route')
+        authority.sessions['delete'] = LiveSession(None, 'delete-route')
+        app.state.session_authority = authority
+        headers = {'Authorization': 'Bearer fixture-token'}
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://localhost', headers=headers) as client:
+            renamed = await client.patch('/api/sessions/rename', json={'title': 'Renamed'})
+            archived = await client.patch('/api/sessions/archive', json={'archived': True})
+            deleted = await client.delete('/api/sessions/delete')
+            partial = await client.patch('/api/sessions/archive', json={'title': 'Must not apply', 'request_id': 'partial'})
+        assert renamed.status_code == archived.status_code == deleted.status_code == 200
+        assert partial.status_code == 409
+        assert db.get_session('rename')['title'] == 'Renamed'
+        assert bool(db.get_session('archive')['archived']) is True
+        assert db.get_session('delete') is None
+
+
+@pytest.mark.asyncio
 async def test_http_import_and_delete_keep_atomic_receipts(tmp_path, monkeypatch):
     from hermes_cli.web_routers.sessions import manage_router
     from hermes_cli import web_server as web

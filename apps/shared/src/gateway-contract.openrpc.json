@@ -37492,8 +37492,15 @@
             "type": "string"
           },
           "expected_revision": {
-            "title": "Expected Revision",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Revision"
           },
           "operation": {
             "title": "Operation",
@@ -37515,6 +37522,11 @@
             ],
             "default": null,
             "title": "Expected Generation"
+          },
+          "legacy_unfenced": {
+            "default": false,
+            "title": "Legacy Unfenced",
+            "type": "boolean"
           }
         },
         "required": [

@@ -151,7 +151,7 @@ def _native_history_transport(request, authority, actor):
         unbind_native_transport(authority, actor)
 
 
-def _mutate_offline_store(profile, actor, params):
+def _mutate_offline_store(profile, actor, params, *, legacy_unfenced=False):
     """Standalone edit: the receipt transaction on this process's single shared writer.
 
     Runs under the exact owner lock (409 while any gateway owns the store, never a
@@ -178,6 +178,7 @@ def _mutate_offline_store(profile, actor, params):
             epoch = row[0] if row else begin_runtime_epoch(db, instance_id='dashboard-offline')
             return mutate_runtime_session(db, epoch=epoch, principal_id=actor.subject,
                 expected_generation=params.get('expected_generation'), _authorize_write=write_guard,
+                legacy_unfenced=legacy_unfenced,
                 **{key: params[key] for key in ('session_id', 'request_id', 'expected_revision',
                                                 'operation', 'payload')})
         finally:
@@ -185,7 +186,7 @@ def _mutate_offline_store(profile, actor, params):
     return _with_session_maintenance(profile, run)
 
 
-async def _mutate_via_gateway_owner(profile, actor, params):
+async def _mutate_via_gateway_owner(profile, actor, params, *, legacy_unfenced=False):
     """Forward a standalone dashboard mutation to the live gateway owner.
 
     While a gateway serves the same home, a separately launched ``hermes
@@ -230,6 +231,8 @@ async def _mutate_via_gateway_owner(profile, actor, params):
             ('session_id', 'request_id', 'expected_revision', 'operation', 'payload') if key in params}
     if params.get('expected_generation') is not None:
         call['expected_generation'] = params['expected_generation']
+    if legacy_unfenced:
+        call['legacy_unfenced'] = True
     try:
         async with connect_gateway(endpoint=endpoint, subject=actor.subject) as client:
             return await client.rpc('session.mutate', **call)
@@ -266,12 +269,17 @@ async def _mutate_session_request(request, profile, session_id, *, request_id,
         _, errors = authority.db._validate_import_payload(payload['sessions'])
         if errors:
             raise HTTPException(status_code=400, detail={'errors': errors})
-    if request_id is None and expected_revision is None and expected_generation is None:
-        # A pre-fence client (Desktop <= 0.22.2) sends none of the identity. The owner never
-        # commits an unfenced write, so name the upgrade; the wording is what those builds'
-        # toast summariser maps to "different versions, update" (#139742).
-        raise HTTPException(status_code=409, detail=CLIENT_UPGRADE_REQUIRED)
-    if request_id is None or expected_revision is None:
+    # Desktop releases before the fenced HTTP protocol sent none of these
+    # fields. Keep that exact, all-absent shape working through the authority:
+    # it gets a server-owned receipt id and captures its preconditions inside
+    # the writer transaction. A partial identity remains an invalid client
+    # request rather than silently weakening a current client's CAS fence.
+    legacy_unfenced = (operation in {'sidebar', 'delete'} and request_id is None
+                       and expected_revision is None and expected_generation is None)
+    if legacy_unfenced:
+        import uuid
+        request_id = 'legacy-http:' + uuid.uuid4().hex
+    elif request_id is None or expected_revision is None:
         raise HTTPException(status_code=409, detail='mutation_identity_required')
     params = dict(session_id=session_id, request_id=request_id, expected_revision=expected_revision,
         operation=operation, payload=payload)
@@ -281,12 +289,18 @@ async def _mutate_session_request(request, profile, session_id, *, request_id,
         if authority is None:
             # A live gateway owner answers first; only an owner-less home takes
             # the offline store (whose reservation loses to that same owner).
-            result = await _mutate_via_gateway_owner(profile, actor, params)
+            result = await _mutate_via_gateway_owner(profile, actor, params,
+                                                      legacy_unfenced=legacy_unfenced)
             if result is None:
-                result = await asyncio.to_thread(_mutate_offline_store, profile, actor, params)
+                if legacy_unfenced:
+                    result = await asyncio.to_thread(_mutate_offline_store, profile, actor, params,
+                                                      legacy_unfenced=True)
+                else:
+                    result = await asyncio.to_thread(_mutate_offline_store, profile, actor, params)
         else:
             with _native_history_transport(request, authority, actor):
-                result = await mutate_session(authority, actor, SessionRef(authority.profile_id, session_id), params)
+                result = await mutate_session(authority, actor, SessionRef(authority.profile_id, session_id), params,
+                                              legacy_unfenced=legacy_unfenced)
         return {'ok': True, **result}
     except RuntimeStoreError as exc:
         raise HTTPException(status_code=_MUTATION_REFUSAL_STATUS.get(exc.reason, 409), detail=exc.reason) from exc

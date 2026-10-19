@@ -81,23 +81,25 @@ def _owner_ref(authority, ref, params):
     return ref if owner == ref.session_id else SessionRef(ref.profile_id, owner)
 
 
-async def mutate_session(authority, actor, ref, params):
+async def mutate_session(authority, actor, ref, params, *, legacy_unfenced=False):
     from gateway.session_runtime_workers import track_mutation
     authority._require_admission_open()
     # A request socket can disappear while its writer is inside to_thread. The owner task keeps
     # the session gate until commit AND publication finish, and retirement joins that same task.
-    task = track_mutation(authority, _owned_mutation(authority, actor, ref, params))
+    task = track_mutation(authority, _owned_mutation(authority, actor, ref, params,
+                                                      legacy_unfenced=legacy_unfenced))
     return await asyncio.shield(task)
 
 
-async def _owned_mutation(authority, actor, ref, params):
+async def _owned_mutation(authority, actor, ref, params, *, legacy_unfenced=False):
     if (params.get('operation') in {*_POLICY, 'compress', 'reset', 'rewind'}
             and ref.session_id not in authority.sessions and 'request_id' in params):
         _authorize_control(authority, actor, ref, params)
     owner = _owner_ref(authority, ref, params)
     live = authority.sessions.get(owner.session_id)
     if live is None:
-        return await _mutate_session(authority, actor, ref, params, owner=owner)
+        return await _mutate_session(authority, actor, ref, params, owner=owner,
+                                     legacy_unfenced=legacy_unfenced)
     # Prepared policy/route publication is inseparable from its durable commit
     # for admission and claim: neither may observe a half-published policy.
     if params.get('operation') == 'compress':
@@ -105,11 +107,13 @@ async def _owned_mutation(authority, actor, ref, params):
         # edit is not parked behind it; the commit is revision/generation-fenced against anything
         # that lands meanwhile. Claims wait on ``claim_gate``, so no turn runs under it.
         async with live.claim_gate:
-            result = await _mutate_session(authority, actor, ref, params, commit_lock=live.mutation_lock, owner=owner)
+            result = await _mutate_session(authority, actor, ref, params, commit_lock=live.mutation_lock,
+                                           owner=owner, legacy_unfenced=legacy_unfenced)
     else:
         async with live.mutation_lock:
             try:
-                result = await _mutate_session(authority, actor, ref, params, owner=owner)
+                result = await _mutate_session(authority, actor, ref, params, owner=owner,
+                                               legacy_unfenced=legacy_unfenced)
             except (RuntimeStoreError, *MUTATION_GUARD_REFUSALS) as exc:
                 # A pick on a running session is for the next turn (the running turn keeps its route).
                 if params.get('operation') != 'model' or getattr(exc, 'reason', 'session_busy') != 'session_busy':
@@ -122,11 +126,14 @@ async def _owned_mutation(authority, actor, ref, params):
     return result
 
 
-async def _mutate_session(authority, actor, ref, params, *, commit_lock=None, owner=None):
+async def _mutate_session(authority, actor, ref, params, *, commit_lock=None, owner=None,
+                          legacy_unfenced=False):
     if (set(params) - {'expected_generation'} != _FIELDS
             or params['session_id'] != ref.session_id):
         raise RuntimeStoreError('invalid_params')
     operation = params['operation']
+    if legacy_unfenced and operation not in {'sidebar', 'delete'}:
+        raise RuntimeStoreError('invalid_params')
     if not isinstance(operation, str) or (operation in _POLICY and params.get('expected_generation') is None):
         raise RuntimeStoreError('invalid_params')
     from gateway.session_local_mcp import private_mutation_payload
@@ -153,7 +160,7 @@ async def _mutate_session(authority, actor, ref, params, *, commit_lock=None, ow
 
     return await write_mutation(authority, ref, params, editor_servers, principal_id=actor.subject,
                                 authorize_write=authorize_write if cold_history or operation == 'import' else None,
-                                commit_lock=commit_lock)
+                                commit_lock=commit_lock, legacy_unfenced=legacy_unfenced)
 
 
 def _runtime_owns_authority(authority) -> bool:
@@ -171,7 +178,7 @@ def _runtime_owns_authority(authority) -> bool:
 
 
 async def write_mutation(authority, ref, params, editor_servers, *, principal_id, authorize_write=None,
-                         commit_lock=None):
+                         commit_lock=None, legacy_unfenced=False):
     """The writer phase of ``session.mutate``, and of the admission-start editor MCP re-freeze
     (``refreeze_editor_mcp``): fenced prepare, the receipt commit, then its runtime projections.
     The caller authorized the change and holds the session's locks; this takes neither."""
@@ -235,7 +242,8 @@ async def write_mutation(authority, ref, params, editor_servers, *, principal_id
             # The receipt transaction is synchronous SQLite: run it off the event loop so a large
             # state.db or a contended writer lock never stalls other clients (main 1769024ca3b).
             result = await asyncio.to_thread(mutate_runtime_session, authority.db, **fields,
-                                             _prepared=prepared, _authorize_write=authorize_write)
+                                             _prepared=prepared, _authorize_write=authorize_write,
+                                             legacy_unfenced=legacy_unfenced)
         try:
             await _project_result(authority, ref, live, params, result, editor_servers, applied=applied)
         finally:

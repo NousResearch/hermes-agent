@@ -54,3 +54,21 @@ async def test_declared_params_gate_canonical_verbs_before_their_handlers(owner)
         assert db.get_session('s')['title'] == 'Declared'
     finally:
         await connection.close()
+
+
+@pytest.mark.asyncio
+async def test_legacy_dashboard_mutation_is_narrowly_admitted_by_the_owner(owner):
+    """Only the dashboard's all-absent sidebar shape may cross the canonical owner boundary."""
+    connection, db = owner
+    try:
+        legacy = await connection.dispatch({'id': 1, 'method': 'session.mutate', 'params': {
+            'session_id': 's', 'request_id': 'legacy-http:receipt', 'expected_revision': None,
+            'operation': 'sidebar', 'payload': {'title': 'Legacy'}, 'legacy_unfenced': True}})
+        partial = await connection.dispatch({'id': 2, 'method': 'session.mutate', 'params': {
+            'session_id': 's', 'request_id': 'legacy-http:partial', 'expected_revision': 1,
+            'operation': 'sidebar', 'payload': {'title': 'Must not apply'}, 'legacy_unfenced': True}})
+        assert legacy['result']['revision'] == 1
+        assert partial['error']['data']['reason'] == 'invalid_params'
+        assert db.get_session('s')['title'] == 'Legacy'
+    finally:
+        await connection.close()

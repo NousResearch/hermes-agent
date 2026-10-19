@@ -88,10 +88,13 @@ class SessionMutateParams(Params):
 
     session_id: str
     request_id: str
-    expected_revision: int
+    expected_revision: int | None
     operation: str
     payload: dict[str, JsonValue]
     expected_generation: int | None = None
+    # Dashboard-only compatibility for releases that predate the HTTP CAS fields. The authority
+    # revalidates this as sidebar/delete with both fences absent before committing it.
+    legacy_unfenced: bool = False
 
 
 class SessionMutateResult(OpenModel):

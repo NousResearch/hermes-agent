@@ -4555,10 +4555,11 @@ export interface PromptResolveUnknownParams {
 export interface SessionMutateParams {
   session_id: string
   request_id: string
-  expected_revision: number
+  expected_revision: number | null
   operation: string
   payload: Record<string, unknown>
   expected_generation?: number | null
+  legacy_unfenced?: boolean
 }
 /** The committed mutation receipt plus the operation's projection (``title``, ``archived``, ``branched_session_id``, compress ``status``/``lines``, …). ``revision`` is absent only on a read-only compress preview. */
 export interface SessionMutateResult {

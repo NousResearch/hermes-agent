@@ -102,6 +102,36 @@ async def test_standalone_mutation_falls_back_to_offline_without_an_owner(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_legacy_sidebar_mutation_forwards_its_compatibility_mode_to_owner(tmp_path, monkeypatch):
+    """A standalone dashboard must preserve the old Desktop wire shape at the live owner."""
+    from hermes_cli import web_server_sessions
+
+    request = _standalone_request(monkeypatch, tmp_path)
+    _discover(monkeypatch, 'owner-endpoint')
+    calls = {}
+
+    @asynccontextmanager
+    async def fake_connect(endpoint=None, subject=None):
+        class Owner:
+            async def rpc(self, method, **params):
+                calls['method'] = method
+                calls['params'] = params
+                return {'session_id': params['session_id'], 'operation': 'sidebar', 'revision': 1}
+        yield Owner()
+
+    monkeypatch.setattr('hermes_cli.gateway_client.connect_gateway', fake_connect)
+    result = await web_server_sessions._mutate_session_request(
+        request, None, 'session-legacy', request_id=None, expected_revision=None,
+        operation='sidebar', payload={'title': 'Renamed'})
+
+    assert result == {'ok': True, 'session_id': 'session-legacy', 'operation': 'sidebar', 'revision': 1}
+    assert calls['method'] == 'session.mutate'
+    assert calls['params']['legacy_unfenced'] is True
+    assert calls['params']['expected_revision'] is None
+    assert calls['params']['request_id'].startswith('legacy-http:')
+
+
+@pytest.mark.asyncio
 async def test_owner_dial_failure_surfaces_a_retryable_error(tmp_path, monkeypatch):
     """A dial that dies on an endpoint discovery just identified is not owner-less (a slow first
     dial, not a stale endpoint): the offline reservation would only lose to that same owner and

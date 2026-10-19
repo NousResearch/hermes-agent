@@ -1,14 +1,14 @@
-﻿name: hermes-lang-pt-br
+name: hermes-lang-pt-br
 repo: https://github.com/StudioCodeAI/hermes-lang-pt-br
-sha: b0eab60fc41392a0fe652c0b2d2f53a0d07feb9d
+sha: eb4cefe1354b4d07e259a4f2f4d6990f29459135
 title: Brazilian Portuguese (Português do Brasil) Language Pack
-description: "Brazilian Portuguese (pt-BR) language pack for Hermes Agent covering all three UI surfaces — core CLI/gateway/platforms (3,436/3,436 keys), the Ink TUI (1,346/1,346) and the Desktop app (5,106/5,106). Every catalog is complete against the English source of `main`: no missing key, no key upstream has since removed, and zero placeholder divergence — checked with `hermes plugins validate` and with the pack's own `tools/verify_pack.py`, which also runs as public CI on every push. Core and TUI mirror the bundled `pt` locale, registered as a real `pt-br` variant so it wins over the `pt`/`pt-BR` alias; the Desktop catalog is the original contribution, since the Desktop app ships no Portuguese at all. Manifest-only plugin: flat dotted YAML catalogs under locales/, no code, no network, no dependencies. Registering the pack never changes display.language — the user opts in via `hermes config set display.language pt-br`. A weekly drift workflow reports when `main` adds or drops keys; nothing self-updates. Tradução pt-BR da interface do Hermes Agent."
+description: "Brazilian Portuguese (pt-BR) language pack for Hermes Agent covering all three UI surfaces — core CLI/gateway/platforms (3,436/3,436 keys), the Ink TUI (1,346/1,346) and the Desktop app (5,172/5,176 — the four remaining entries are array/structured values a text pack cannot carry). Every catalog is complete against the English source of `main`: no missing key, no key upstream has since removed, and zero placeholder divergence — checked with `hermes plugins validate` and with the pack's own `tools/verify_pack.py`, which also runs as public CI on every push. Core and TUI mirror the bundled `pt` locale, registered as a real `pt-br` variant so it wins over the `pt`/`pt-BR` alias; the Desktop catalog is the original contribution, since the Desktop app ships no Portuguese at all. Manifest-only plugin: flat dotted YAML catalogs under locales/, no code, no network, no dependencies. Registering the pack never changes display.language — the user opts in via `hermes config set display.language pt-br`. A weekly drift workflow reports when `main` adds or drops keys; nothing self-updates. Tradução pt-BR da interface do Hermes Agent."
 maintainer: StudioCodeAI
 tier: community
 category: general
 requires_hermes: ">=0.21.6"
 docs_url: https://github.com/StudioCodeAI/hermes-lang-pt-br#readme
-version: "1.0.0"
+version: "1.1.0"
 platforms: []
 capabilities:
   provides_tools: []

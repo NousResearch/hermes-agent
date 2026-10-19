@@ -11,10 +11,8 @@ a ``-c``/``-e``-style option would hand to another interpreter.
 
 import pytest
 
-from tools.approval import (
-    _command_matches_permanent_allowlist,
-    _has_allowlist_shell_operator,
-)
+from tools.approval import _command_matches_permanent_allowlist
+from tools.approval_floors import _has_allowlist_shell_operator
 
 
 class TestHasAllowlistShellOperator:

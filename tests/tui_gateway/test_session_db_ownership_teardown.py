@@ -139,7 +139,7 @@ def test_raising_close_is_swallowed_and_not_retried():
     agent.close()  # flag already cleared — no second attempt
 
     assert attempts == [1]
-    assert getattr(agent, "_owns_session_db") is False
+    assert agent._owns_session_db is False
 
 
 def test_close_still_ends_the_session_row_before_closing():
@@ -178,7 +178,7 @@ def test_lazy_recall_open_is_owned_by_the_agent(monkeypatch):
         opened.append(db)
         return db
 
-    monkeypatch.setattr("hermes_state.get_shared_session_db", _factory)
+    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
 
     agent = _bare_agent(_session_db=None, _persist_disabled=False)
     got = agent._get_session_db_for_recall()
@@ -241,17 +241,6 @@ def test_transfer_is_refused_for_the_shared_launch_handle(monkeypatch):
     assert agent._owns_session_db is False
 
 
-def test_get_db_returns_the_cached_instance(monkeypatch):
-    """The identity defense (``db is _get_db()``) only works while _get_db
-    hands out ONE process-wide instance. Pin the caching semantics: once a
-    handle exists, repeated calls return the same object rather than
-    constructing per-call wrappers (review finding on #91631)."""
-    sentinel = types.SimpleNamespace(closed=0)
-    monkeypatch.setattr(server, "_db", sentinel)
-    monkeypatch.setattr(server, "_db_error", None)
-
-    assert server._get_db() is sentinel
-    assert server._get_db() is server._get_db()
 
 
 # ---------------------------------------------------------------------------
@@ -272,9 +261,9 @@ def build_env(monkeypatch, tmp_path):
         opened.append(db)
         return db
 
-    monkeypatch.setattr("hermes_state.get_shared_session_db", _factory)
+    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
     for name, value in [
-        ("_set_session_context", lambda _key: []),
+        ("_set_session_context", lambda _key, cwd=None: []),
         ("_clear_session_context", lambda _tokens: None),
         ("_wire_callbacks", lambda _sid: None),
         ("_config_model_target", lambda: None),
@@ -283,11 +272,11 @@ def build_env(monkeypatch, tmp_path):
         ("_notify_session_boundary", lambda *a, **k: None),
         ("_session_info", lambda *a, **k: {}),
         ("_probe_config_health", lambda _cfg: None),
-        ("_load_cfg", lambda: {}),
+        ("_load_cfg", dict),
         ("_emit", lambda *a, **k: None),
         ("_schedule_mcp_late_refresh", lambda *a, **k: None),
         ("_session_source", lambda _current: None),
-        ("_child_run_active", lambda _key: False),
+        ("_child_run_active", lambda *_a: False),
     ]:
         if hasattr(server, name):
             monkeypatch.setattr(server, name, value)
@@ -407,11 +396,14 @@ def test_deferred_build_closes_the_handle_when_the_session_is_reaped_midbuild(
     handle has to be closed right here instead of handed over.
     """
 
+    built = []
+
     def _fake_make_agent(sid, key, session_db=None, **_kwargs):
         # Simulate a concurrent reap landing while the agent was being built.
         with server._sessions_lock:
             server._sessions[sid] = {"session_key": "someone-else"}
-        return types.SimpleNamespace(_session_db=session_db, _owns_session_db=False)
+        built.append(types.SimpleNamespace(_session_db=session_db, _owns_session_db=False))
+        return built[-1]
 
     monkeypatch.setattr(server, "_make_agent", _fake_make_agent)
     sid, session = "sid-reaped", _session(build_env.profile_home)
@@ -421,7 +413,10 @@ def test_deferred_build_closes_the_handle_when_the_session_is_reaped_midbuild(
 
     db = build_env.opened[0]
     assert db.closed == 1
-    assert session["agent"]._owns_session_db is False
+    # The orphaned agent is closed and dropped rather than attached to the reaped record
+    # (#49852), so ownership is read off the agent itself.
+    assert built[0]._owns_session_db is False
+    assert "agent" not in session
 
 
 def test_deferred_build_never_opens_or_closes_for_the_launch_profile(

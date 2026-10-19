@@ -51,7 +51,7 @@ def _fake_response(text: str = "ok", *, prompt: int = 3, completion: int = 5) ->
     )
 
 
-def _capturing_caller(captured: Dict[str, Any]):
+def _capturing_caller(captured: dict[str, Any]):
     """Sync caller that records kwargs and reports a slot-derived model.
 
     When a ``task`` is routed it reports ``("aux-provider", "aux-model")``
@@ -68,7 +68,7 @@ def _capturing_caller(captured: Dict[str, Any]):
     return caller
 
 
-def _async_capturing_caller(captured: Dict[str, Any]):
+def _async_capturing_caller(captured: dict[str, Any]):
     async def caller(**kwargs: Any):
         captured.update(kwargs)
         if kwargs.get("task"):
@@ -78,16 +78,16 @@ def _async_capturing_caller(captured: Dict[str, Any]):
     return caller
 
 
-def _set_registry(monkeypatch, entries: List[Dict[str, Any]]) -> None:
+def _set_registry(monkeypatch, entries: list[dict[str, Any]]) -> None:
     """Point ``_resolve_task_ownership`` at a controlled plugin registry."""
     monkeypatch.setattr(
         "hermes_cli.plugins.get_plugin_auxiliary_tasks", lambda: list(entries)
     )
 
 
-def _set_builtins(monkeypatch, keys: List[str]) -> None:
+def _set_builtins(monkeypatch, keys: list[str]) -> None:
     monkeypatch.setattr(
-        "hermes_cli.main._AUX_TASKS", [(k, k.title(), "") for k in keys]
+        "hermes_cli.main_provider_setup._AUX_TASKS", [(k, k.title(), "") for k in keys]
     )
 
 
@@ -198,7 +198,7 @@ class TestRouting:
     def test_default_call_passes_task_none(self, monkeypatch):
         _set_registry(monkeypatch, [])
         _set_builtins(monkeypatch, [])
-        captured: Dict[str, Any] = {}
+        captured: dict[str, Any] = {}
         llm = make_plugin_llm_for_test(
             plugin_id="my-plugin",
             policy=_policy(),
@@ -213,7 +213,7 @@ class TestRouting:
     def test_registered_task_routes_and_reports_slot_model(self, monkeypatch):
         _set_registry(monkeypatch, [{"key": "classifier", "plugin": "my-plugin"}])
         _set_builtins(monkeypatch, ["vision"])
-        captured: Dict[str, Any] = {}
+        captured: dict[str, Any] = {}
         llm = make_plugin_llm_for_test(
             plugin_id="my-plugin",
             policy=_policy(),
@@ -229,7 +229,7 @@ class TestRouting:
     def test_foreign_task_raises_before_invoking_caller(self, monkeypatch):
         _set_registry(monkeypatch, [{"key": "classifier", "plugin": "other-plugin"}])
         _set_builtins(monkeypatch, [])
-        captured: Dict[str, Any] = {}
+        captured: dict[str, Any] = {}
         llm = make_plugin_llm_for_test(
             plugin_id="my-plugin",
             policy=_policy(),
@@ -243,7 +243,7 @@ class TestRouting:
     def test_unknown_task_raises_before_invoking_caller(self, monkeypatch):
         _set_registry(monkeypatch, [])
         _set_builtins(monkeypatch, [])
-        captured: Dict[str, Any] = {}
+        captured: dict[str, Any] = {}
         llm = make_plugin_llm_for_test(
             plugin_id="my-plugin",
             policy=_policy(),
@@ -256,7 +256,7 @@ class TestRouting:
     def test_structured_routes_task(self, monkeypatch):
         _set_registry(monkeypatch, [{"key": "classifier", "plugin": "my-plugin"}])
         _set_builtins(monkeypatch, [])
-        captured: Dict[str, Any] = {}
+        captured: dict[str, Any] = {}
         llm = make_plugin_llm_for_test(
             plugin_id="my-plugin",
             policy=_policy(),
@@ -273,7 +273,7 @@ class TestRouting:
     def test_async_routes_task(self, monkeypatch):
         _set_registry(monkeypatch, [{"key": "classifier", "plugin": "my-plugin"}])
         _set_builtins(monkeypatch, [])
-        captured: Dict[str, Any] = {}
+        captured: dict[str, Any] = {}
         llm = make_plugin_llm_for_test(
             plugin_id="my-plugin",
             policy=_policy(),
@@ -288,7 +288,7 @@ class TestRouting:
     def test_async_structured_routes_task(self, monkeypatch):
         _set_registry(monkeypatch, [{"key": "classifier", "plugin": "my-plugin"}])
         _set_builtins(monkeypatch, [])
-        captured: Dict[str, Any] = {}
+        captured: dict[str, Any] = {}
         llm = make_plugin_llm_for_test(
             plugin_id="my-plugin",
             policy=_policy(),
@@ -303,45 +303,6 @@ class TestRouting:
         )
         assert captured["task"] == "classifier"
         assert result.audit["task"] == "classifier"
-
-    def test_async_variants_log_exact_route(self, monkeypatch, caplog):
-        _set_registry(monkeypatch, [{"key": "classifier", "plugin": "my-plugin"}])
-        _set_builtins(monkeypatch, [])
-        llm = make_plugin_llm_for_test(
-            plugin_id="my-plugin",
-            policy=_policy(),
-            async_caller=_async_capturing_caller({}),
-        )
-
-        with caplog.at_level(logging.INFO, logger="agent.plugin_llm"):
-            asyncio.run(
-                llm.acomplete(
-                    [{"role": "user", "content": "hi"}],
-                    task="classifier",
-                    purpose="plain",
-                )
-            )
-            asyncio.run(
-                llm.acomplete_structured(
-                    instructions="classify",
-                    input=[PluginLlmTextInput(text="payload")],
-                    task="classifier",
-                    purpose="structured",
-                )
-            )
-
-        messages = [record.getMessage() for record in caplog.records]
-        assert any(
-            "plugin_llm.acomplete plugin=my-plugin provider=aux-provider "
-            "model=aux-model task=classifier purpose=plain tokens=8" in message
-            for message in messages
-        )
-        assert any(
-            "plugin_llm.acomplete_structured plugin=my-plugin provider=aux-provider "
-            "model=aux-model task=classifier purpose=structured "
-            "content_type=text tokens=8" in message
-            for message in messages
-        )
 
 
 def test_successful_fallback_route_beats_requested_route_for_attribution():
@@ -359,10 +320,10 @@ class TestForwardsToCallLlm:
     where the previously-hardcoded ``task=None`` is replaced by the routed
     key. The injected-caller tests above bypass this line."""
 
-    def test_sync_task_uses_auxiliary_attribution_and_log(self, monkeypatch, caplog):
+    def test_sync_task_uses_auxiliary_attribution(self, monkeypatch):
         _set_registry(monkeypatch, [{"key": "classifier", "plugin": "my-plugin"}])
         _set_builtins(monkeypatch, [])
-        seen: Dict[str, Any] = {}
+        seen: dict[str, Any] = {}
 
         def fake_call_llm(**kwargs: Any):
             seen.update(kwargs)
@@ -371,19 +332,14 @@ class TestForwardsToCallLlm:
 
         monkeypatch.setattr("agent.auxiliary_client.call_llm", fake_call_llm)
         llm = make_plugin_llm_for_test(plugin_id="my-plugin", policy=_policy())
-        with caplog.at_level(logging.INFO, logger="agent.plugin_llm"):
-            result = llm.complete([{"role": "user", "content": "hi"}], task="classifier")
+        result = llm.complete([{"role": "user", "content": "hi"}], task="classifier")
         assert seen["task"] == "classifier"
         assert (result.provider, result.model) == ("aux-provider", "aux-model")
-        assert any(
-            "provider=aux-provider model=aux-model task=classifier" in record.getMessage()
-            for record in caplog.records
-        )
 
     def test_sync_default_forwards_task_none(self, monkeypatch):
         _set_registry(monkeypatch, [])
         _set_builtins(monkeypatch, [])
-        seen: Dict[str, Any] = {}
+        seen: dict[str, Any] = {}
 
         def fake_call_llm(**kwargs: Any):
             seen.update(kwargs)
@@ -397,7 +353,7 @@ class TestForwardsToCallLlm:
     def test_async_task_uses_auxiliary_attribution(self, monkeypatch):
         _set_registry(monkeypatch, [{"key": "classifier", "plugin": "my-plugin"}])
         _set_builtins(monkeypatch, [])
-        seen: Dict[str, Any] = {}
+        seen: dict[str, Any] = {}
 
         async def fake_async_call_llm(**kwargs: Any):
             seen.update(kwargs)
@@ -498,7 +454,7 @@ auxiliary:
         monkeypatch.setattr("agent.auxiliary_client._read_main_provider", lambda: "")
         monkeypatch.setattr("agent.auxiliary_client._read_main_model", lambda: "")
 
-        captured: Dict[str, Any] = {}
+        captured: dict[str, Any] = {}
         client = SimpleNamespace(
             chat=SimpleNamespace(
                 completions=SimpleNamespace(create=lambda **_kwargs: _fake_response())

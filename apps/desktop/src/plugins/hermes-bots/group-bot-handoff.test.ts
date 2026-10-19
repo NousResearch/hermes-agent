@@ -76,6 +76,14 @@ async function loadRoom(): Promise<Room> {
 
 const BOT: RosterRow = { name: 'alpha', title: 'Alpha' }
 
+const REMOTE_BOT: RosterRow = {
+  connectionId: 'remote-1',
+  name: 'alpha',
+  remoteSource: true,
+  sourceScoped: true,
+  title: 'Alpha'
+}
+
 /** Seat a room and front it as a main-window tab, recording tab closes in
  *  the order they happen relative to the canonical open. */
 function registerGroup(room: Room, group: string, timeline: string[]) {
@@ -84,7 +92,7 @@ function registerGroup(room: Room, group: string, timeline: string[]) {
     [group]: { log: [], sessions: {}, watermarks: {} }
   } as unknown as Record<string, GroupChat>)
   host.openWorkspace = (id: string) => () => timeline.push(`close:${id}`)
-  room.view.openGroupChat(group)
+  room.view.openGroupChat(group, 'name')
 }
 
 beforeEach(() => {
@@ -106,6 +114,22 @@ describe('opening a bot from a fronted room', () => {
     })
 
     expect(await room.actions.openRosterBot(BOT)).toBe(true)
+    expect(timeline.filter(event => event.includes(':group:'))).toHaveLength(1)
+    expect(timeline.findIndex(event => event.includes(':group:'))).toBeLessThan(timeline.indexOf('canonicalOpen'))
+    expect(room.panes.groupChatMainTabs.has('Core')).toBe(false)
+  })
+
+  it('retires the group tab before opening a bot from another connection', async () => {
+    const timeline: string[] = []
+    const room = await loadRoom()
+    registerGroup(room, 'Core', timeline)
+    openBotCanonicalChat.mockImplementation(async () => {
+      timeline.push('canonicalOpen')
+
+      return { openedId: 'stored-chat', registryId: 'stored-chat' }
+    })
+
+    expect(await room.actions.openRosterBot(REMOTE_BOT)).toBe(true)
     expect(timeline.filter(event => event.includes(':group:'))).toHaveLength(1)
     expect(timeline.findIndex(event => event.includes(':group:'))).toBeLessThan(timeline.indexOf('canonicalOpen'))
     expect(room.panes.groupChatMainTabs.has('Core')).toBe(false)
@@ -141,8 +165,9 @@ describe('a failed open must not steal the center', () => {
     registerGroup(room, 'Core', [])
     prepareBotSource.mockRejectedValue(new Error('source preparation failed'))
 
-    expect(await room.actions.openRosterBot({ ...BOT, connectionId: 'local', sourceScoped: true })).toBe(false)
+    expect(await room.actions.openRosterBot(REMOTE_BOT)).toBe(false)
     expect(room.chat.$groupChatWorkspace.get()).toBe('Core')
+    expect(room.panes.groupChatMainTabs.has('Core')).toBe(true)
   })
 
   it('restores the room by its immutable roomId, so a rename mid-open still finds it', async () => {
@@ -151,7 +176,7 @@ describe('a failed open must not steal the center', () => {
       Core: { log: [], roomId: 'r-core', sessions: {}, watermarks: {} }
     } as unknown as Record<string, GroupChat>)
     host.openWorkspace = () => () => undefined
-    room.view.openGroupChat('Core')
+    room.view.openGroupChat('Core', 'name')
     openBotCanonicalChat.mockImplementation(async () => {
       const rooms = room.chat.$groupChats.get()
       room.chat.$groupChats.set({ Renamed: rooms.Core } as unknown as Record<string, GroupChat>)

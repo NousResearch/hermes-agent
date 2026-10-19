@@ -148,7 +148,7 @@ const setup = (tiles, seedTurns, streamSeed, zones, seedSessions, streaming, dea
           id: 'perf-row-' + i, title: 'Seeded session ' + i, ended_at: null,
           input_tokens: 1200, output_tokens: 800, is_active: false,
           last_active: Date.now() - i * 60000, message_count: 12,
-          model: 'hermes-4', preview: 'seeded row', cwd: '/tmp/proj-' + (i % 7)
+          model: 'hermes-4', preview: 'seeded row', cwd: '/home/perf/proj-' + (i % 7)
         })
       }
       hook.seedSessions(rows)

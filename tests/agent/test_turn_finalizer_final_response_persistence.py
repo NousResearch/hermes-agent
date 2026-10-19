@@ -366,6 +366,44 @@ def test_failed_turn_does_not_recover_stream_buffer_as_final_response(monkeypatc
     assert result["failed"] is True
 
 
+def test_stream_recovered_final_response_survives_persist_step_failure(monkeypatch):
+    """#95514 + #8049 ordering: the stream-recovered ``final_response`` is bound as soon
+    as it is computed, BEFORE the fallible tail-shaping / override / persist calls in the
+    guarded persist step. A raise later in that step (here the persist-override) must not
+    drop text the user already saw — the caller still gets the streamed answer and the
+    failure is reported via ``cleanup_errors``."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    agent._current_streamed_assistant_text = "  streamed answer  "
+
+    def exploding_override(_messages):
+        raise RuntimeError("override exploded")
+
+    agent._apply_persist_user_message_override = exploding_override
+    messages = [{"role": "user", "content": "q"}, {"role": "assistant", "content": ""}]
+
+    result = finalize_turn(
+        agent,
+        final_response="",
+        api_call_count=2,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="q",
+        original_user_message="q",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response(final)",
+    )
+
+    assert result["final_response"] == "streamed answer"
+    assert result["cleanup_errors"] == ["persist_session: override exploded"]
+    # The blank tail was filled before the raise (same order as the inline BASE block).
+    assert messages[-1]["content"] == "streamed answer"
+
+
 def test_delivery_only_reasoning_excerpt_does_not_fill_blank_assistant(monkeypatch):
     """Labeled empty-terminal excerpt is delivery-only, not durable content.
 
@@ -409,3 +447,35 @@ def test_delivery_only_reasoning_excerpt_does_not_fill_blank_assistant(monkeypat
         for m in result["messages"]
     )
 
+
+
+def _finalize(agent, *, exit_reason, final_response, failed=False, api_calls=3):
+    return finalize_turn(
+        agent, final_response=final_response, api_call_count=api_calls, interrupted=False, failed=failed,
+        messages=[{"role": "user", "content": "q"}, {"role": "assistant", "content": final_response or ""}],
+        conversation_history=[], effective_task_id="task", turn_id="turn", user_message="q",
+        original_user_message="q", _should_review_memory=False, _turn_exit_reason=exit_reason,
+    )
+
+
+def test_advisory_exit_reasons_keep_failed_false_but_carry_a_failure_code(monkeypatch):
+    """empty_response_exhausted / local_processing_error: Desktop and TUI get a specific code, yet
+    ``failed`` stays False so cron silence, the kanban breaker and gateway transcript persistence
+    behave exactly as before the code was added."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent_max = FakeAgent().max_iterations
+    for exit_reason, code in (("empty_response_exhausted", "empty_response"),
+                              ("local_processing_error(TypeError: x)", "loop_error")):
+        result = _finalize(FakeAgent(), exit_reason=exit_reason, final_response="the model's last thoughts")
+        assert result["failed"] is False, exit_reason
+        # ``completed`` follows the ordinary rule for a non-failed turn (not forced False here).
+        assert result["completed"] == (result["final_response"] is not None and 3 < agent_max), exit_reason
+        assert result["failure_reason"] == code and isinstance(result["failure_retryable"], bool)
+        assert "error" not in result  # not a failed turn: no error text for the gateway to append a notice to
+
+
+def test_hard_failure_exit_reasons_still_fail_the_turn(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    result = _finalize(FakeAgent(), exit_reason="repeated_outer_errors(RuntimeError)", final_response="stopped")
+    assert result["failed"] is True and result["completed"] is False
+    assert result["failure_reason"] == "loop_error" and result["error"] == "stopped"

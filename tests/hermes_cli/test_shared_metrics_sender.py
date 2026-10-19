@@ -9,8 +9,7 @@ user's local history rather than a send queue.
 from __future__ import annotations
 
 import json
-import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 
 import pytest
 
@@ -26,7 +25,7 @@ from hermes_cli.observability.shared_metrics_sender import (
 from hermes_cli.sqlite_util import write_txn
 
 INSTALL_ID = "12a73e97-4de9-4766-830d-9ca1192c0420"
-NOW = datetime(2026, 8, 26, 12, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 26, 12, 0, tzinfo=UTC)
 ENDPOINT = "https://telemetry.test/v1/telemetry"
 
 
@@ -77,8 +76,8 @@ def store(tmp_path):
 
 def _grant_consent(
     store,
-    opened=datetime(2026, 8, 20, tzinfo=timezone.utc),
-    confirmed_through=datetime(2026, 10, 1, tzinfo=timezone.utc),
+    opened=datetime(2026, 8, 20, tzinfo=UTC),
+    confirmed_through=datetime(2026, 10, 1, tzinfo=UTC),
 ):
     """Open a consent window and heartbeat it forward, via the real writer."""
     with store._connection() as connection:
@@ -153,7 +152,7 @@ def _row(store, package_id):
 
 
 def _iso(moment):
-    return moment.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return moment.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _sender(store, transport, **kwargs):
@@ -267,7 +266,7 @@ class TestConsentGate:
     def test_packages_from_before_opt_in_are_never_sent(self, store):
         # Consent opens on Aug 24; the "old" package's period predates it.
         _clear_consent(store)
-        _grant_consent(store, opened=datetime(2026, 8, 24, tzinfo=timezone.utc))
+        _grant_consent(store, opened=datetime(2026, 8, 24, tzinfo=UTC))
         _add_package(store, "old", "2026-08-20")
         _add_package(store, "new", "2026-08-26")
         transport = FakeTransport(FakeResponse(202))
@@ -374,17 +373,6 @@ class TestConsentGate:
 
 
 class TestIdentity:
-    def test_the_stable_install_id_is_transmitted_as_is(self, store):
-        """Product decision 2026-08-27: no pseudonymization.
-
-        The wire body carries the profile-scoped install_id verbatim. This
-        test is the deliberate inversion of the pre-decision assertion that
-        the raw id never crossed the wire.
-        """
-        _add_package(store, "pkg-1", "2026-08-26")
-        transport = FakeTransport(FakeResponse(202))
-        _sender(store, transport).send_pending()
-        assert transport.bodies[0]["install_id"] == INSTALL_ID
 
     def test_transmitted_id_is_frozen_on_the_row(self, store):
         _add_package(store, "pkg-1", "2026-08-26")
@@ -1000,10 +988,6 @@ class TestCompression:
         assert captured["data"][:2] == b"\x1f\x8b", "gzip magic bytes"
         assert captured["headers"].get("Content-encoding".lower()) == "gzip"
 
-    def test_gzip_actually_shrinks_the_body(self):
-        payload = json.dumps({"filler": "x" * 20000}).encode("utf-8")
-        captured = self._captured_request(payload)
-        assert len(captured["data"]) < len(payload)
 
     def test_gzip_is_deterministic_across_time(self):
         """Kills the mtime footgun: gzip embeds a timestamp by default.

@@ -97,12 +97,14 @@ function headRunCutoffMs(entries: readonly SidebarSessionEntry[], nowMs: number,
 export function groupEntriesByRecency(
   entries: readonly SidebarSessionEntry[],
   nowMs = Date.now(),
-  weekStartsOn = localeWeekStartDay()
+  weekStartsOn = localeWeekStartDay(),
+  maxGroups = Number.POSITIVE_INFINITY
 ): SidebarListRow[] {
   const rows: SidebarListRow[] = []
   const emitted = new Set<string>()
   const cutoff = headRunCutoffMs(entries, nowMs, weekStartsOn)
   let lastKey: null | string = null
+  let groups = 1
 
   for (const entry of entries) {
     // Nested branch rows travel with their parent cluster; they never open a new
@@ -136,6 +138,11 @@ export function groupEntriesByRecency(
       // A divider only ever separates two groups — never label the very first
       // rendered row, whatever group it belongs to.
       if (rows.length > 0 && !alreadyEmitted) {
+        if (groups >= maxGroups) {
+          break
+        }
+
+        groups++
         rows.push({ bucket, key: bucket.key, kind: 'divider' })
       }
     }

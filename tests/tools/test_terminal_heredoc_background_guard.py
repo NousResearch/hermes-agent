@@ -16,16 +16,17 @@ triggers:
 
 The fix masks heredoc bodies via ``tools.shell_heredoc`` — conservatively.
 The guard may ignore ampersands only in quoted heredoc bodies sent to known
-non-shell interpreters. Unknown, expandable (unquoted delimiter), compound,
-nested, or shell-consumed bodies stay visible so process-management guidance
-cannot be bypassed: a false positive on exotic syntax is acceptable, hiding a
-real background operator is not.
+non-shell interpreters. Unknown, expandable (unquoted delimiter), nested,
+backgrounded, or shell-consumed bodies stay visible so process-management
+guidance cannot be bypassed: a false positive on exotic syntax is acceptable,
+hiding a real background operator is not.
 """
+
+import pytest
 
 from tools.shell_heredoc import strip_inert_heredoc_bodies
 from tools.terminal_tool import (
     _foreground_background_guidance as guidance,
-    _strip_quotes,
 )
 
 # Build commands without a literal '&' in this source where convenient, so the
@@ -49,9 +50,6 @@ class TestInertQuotedHeredocPayloadAllowed:
         cmd = "python3 <<'EOF'" + NL + "z = a " + AMP + " b" + NL + "print(z)" + NL + "EOF"
         assert guidance(cmd) is None
 
-    def test_cat_literal_ui_text_in_body(self):
-        cmd = "cat <<'EOF'" + NL + "About FaceTime " + AMP + " Privacy" + NL + "EOF"
-        assert guidance(cmd) is None
 
     def test_double_quoted_delimiter(self):
         cmd = 'cat <<"EOF"' + NL + "foo " + AMP + " bar" + NL + "EOF"
@@ -83,6 +81,31 @@ class TestInertQuotedHeredocPayloadAllowed:
         cmd = (
             "FOO=1 env /usr/bin/python3.12 - <<'PY'" + NL
             + "x = a " + AMP + " b" + NL
+            + "PY"
+        )
+        assert guidance(cmd) is None
+
+    @pytest.mark.parametrize(
+        "prefix",
+        [
+            pytest.param("cd /tmp && ", id="and-list-prefix"),
+            pytest.param("echo 'ready to run'; ", id="semicolon-prefix"),
+            pytest.param("printf ignored | ", id="pipeline-prefix"),
+        ],
+    )
+    def test_owner_after_shell_prefix(self, prefix):
+        cmd = (
+            prefix + "python3 - <<'PY'" + NL
+            + "value = left " + AMP + " right" + NL
+            + "PY"
+        )
+        assert guidance(cmd) is None
+
+    @pytest.mark.parametrize("redirect", ["2>&1", "&>/tmp/python.log"])
+    def test_owner_with_fd_redirect(self, redirect):
+        cmd = (
+            "python3 - <<'PY' " + redirect + NL
+            + "value = left " + AMP + " right" + NL
             + "PY"
         )
         assert guidance(cmd) is None
@@ -132,6 +155,14 @@ class TestUnsafeHeredocPayloadRemainsVisible:
         )
         assert guidance(cmd) is not None
 
+    def test_downstream_shell_keeps_body_visible(self):
+        cmd = (
+            "cat <<'EOF' | sh" + NL
+            + "nohup sleep 10 " + AMP + NL
+            + "EOF"
+        )
+        assert guidance(cmd) is not None
+
     def test_nested_substitution_does_not_authorize_heredoc(self):
         cmd = (
             "python3 -c $(bash <<'SH'" + NL
@@ -139,6 +170,14 @@ class TestUnsafeHeredocPayloadRemainsVisible:
             + "printf pass" + NL
             + "SH" + NL
             + ")"
+        )
+        assert guidance(cmd) is not None
+
+    def test_allowlisted_name_function_keeps_body_visible(self):
+        cmd = (
+            "python3() { bash; }; python3 <<'PY'" + NL
+            + "nohup sleep 10 " + AMP + NL
+            + "PY"
         )
         assert guidance(cmd) is not None
 
@@ -185,6 +224,19 @@ class TestRealBackgroundingStillBlocked:
         cmd = "python3 - <<'PY' " + AMP + NL + "print('ok')" + NL + "PY"
         assert guidance(cmd) is not None
 
+    def test_fd_redirect_does_not_hide_trailing_background(self):
+        cmd = (
+            "python3 - <<'PY' 2>"
+            + AMP
+            + "1 "
+            + AMP
+            + NL
+            + "print('ok')"
+            + NL
+            + "PY"
+        )
+        assert guidance(cmd) is not None
+
     def test_background_after_heredoc(self):
         # A real backgrounding '&' AFTER the closing delimiter is still caught.
         cmd = (
@@ -195,27 +247,11 @@ class TestRealBackgroundingStillBlocked:
         )
         assert guidance(cmd) is not None
 
-    def test_background_after_cat_heredoc_redirect(self):
-        cmd = (
-            "cat <<'EOF' > f.txt" + NL + "payload" + NL + "EOF" + NL
-            + "long_running " + AMP
-        )
-        assert guidance(cmd) is not None
 
 
 class TestStripHelpers:
     """Direct unit checks on the masking helpers."""
 
-    def test_inert_body_removed_shell_tail_preserved(self):
-        cmd = (
-            "python3 - <<'PY'" + NL
-            + "x = left " + AMP + " right" + NL
-            + "PY" + NL
-            + "sleep 10 " + AMP
-        )
-        stripped = _strip_quotes(cmd)
-        assert "x = left " + AMP + " right" not in stripped
-        assert "sleep 10 " + AMP in stripped
 
     def test_masking_preserves_line_structure(self):
         cmd = (

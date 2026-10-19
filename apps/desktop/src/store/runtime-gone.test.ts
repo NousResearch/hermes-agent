@@ -1,9 +1,19 @@
+import { JsonRpcGatewayError } from '@hermes/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { refreshBackgroundProcesses, resetBackgroundPollingGuard } from './composer-status'
 import { $gateway } from './gateway'
-import { markRuntimeGone, noteRuntimeAlive, resetRuntimeGoneHealing } from './runtime-gone'
+import {
+  isSessionGone,
+  isSessionGoneForBackgroundPolling,
+  markRuntimeGone,
+  markSessionGone,
+  noteRuntimeAlive,
+  resetBackgroundPollingGuardAfterRebind,
+  resetRuntimeGoneHealing
+} from './runtime-gone'
 import { $activeSessionId, $sessionResumeRequest } from './session'
+import { $removedSessionIds, tombstoneSessions } from './session-removal'
 import { $sessionStates, $sessionTiles } from './session-states'
 
 const STORED = 'stored-1'
@@ -20,6 +30,7 @@ beforeEach(() => {
   $sessionTiles.set([])
   $activeSessionId.set(null)
   $sessionResumeRequest.set(null)
+  $removedSessionIds.set(new Set())
 })
 
 afterEach(() => {
@@ -30,6 +41,7 @@ afterEach(() => {
   $sessionTiles.set([])
   $activeSessionId.set(null)
   $sessionResumeRequest.set(null)
+  $removedSessionIds.set(new Set())
 })
 
 describe('markRuntimeGone', () => {
@@ -63,6 +75,19 @@ describe('markRuntimeGone', () => {
     $activeSessionId.set('runtime-of-the-focused-chat')
 
     expect(markRuntimeGone(RUNTIME)).toBe(true)
+    expect($sessionResumeRequest.get()).toBeNull()
+  })
+
+  it('does not resurrect a chat the user just deleted', () => {
+    // An idle reap can land its 4001 in the same tick as the delete. The stored
+    // id is already tombstoned, so requestSessionResume drops the request
+    // instead of re-selecting a doomed chat and toasting "Resume failed".
+    $sessionStates.set({ [RUNTIME]: cachedState(STORED) })
+    $activeSessionId.set(RUNTIME)
+    tombstoneSessions([STORED])
+
+    markRuntimeGone(RUNTIME)
+
     expect($sessionResumeRequest.get()).toBeNull()
   })
 
@@ -115,6 +140,27 @@ describe('markRuntimeGone', () => {
 })
 
 describe('refreshBackgroundProcesses recovery', () => {
+  it('does not unbind a live session for canonical non-missing failures sharing code 4001', async () => {
+    $sessionTiles.set([tile(STORED, RUNTIME)])
+    $sessionStates.set({ [RUNTIME]: cachedState(STORED) })
+    $activeSessionId.set(RUNTIME)
+    const request = vi.fn()
+    $gateway.set({ request } as never)
+
+    for (const reason of ['invalid_params', 'permission_denied', 'stale_generation', 'profile_mismatch']) {
+      request.mockRejectedValueOnce(new JsonRpcGatewayError(reason, { code: 4001, data: { reason } }))
+      await refreshBackgroundProcesses(RUNTIME)
+      expect($sessionTiles.get()[0]?.runtimeId).toBe(RUNTIME)
+      expect($sessionResumeRequest.get()).toBeNull()
+      expect(isSessionGone(RUNTIME)).toBe(false)
+    }
+
+    request.mockRejectedValueOnce(new JsonRpcGatewayError('not_found', { code: 4001, data: { reason: 'not_found' } }))
+    await refreshBackgroundProcesses(RUNTIME)
+    expect($sessionTiles.get()[0]?.runtimeId).toBeUndefined()
+    expect($sessionResumeRequest.get()?.sessionId).toBe(STORED)
+  })
+
   it('carries the gateway 4001 verdict to the view instead of only going quiet', async () => {
     $sessionTiles.set([tile(STORED, RUNTIME)])
     $sessionStates.set({ [RUNTIME]: cachedState(STORED) })
@@ -145,5 +191,66 @@ describe('refreshBackgroundProcesses recovery', () => {
 
     expect($sessionTiles.get()[0]?.runtimeId).toBe(RUNTIME)
     expect($sessionResumeRequest.get()).toBeNull()
+  })
+})
+
+describe('gone-latch classifier and rebind seam', () => {
+  it('recognizes structured 4001 and bare legacy text without misclassifying coded errors', () => {
+    expect(isSessionGoneForBackgroundPolling(new JsonRpcGatewayError('gone', { code: 4001 }))).toBe(true)
+    expect(isSessionGoneForBackgroundPolling(new JsonRpcGatewayError('session not found', { code: 5007 }))).toBe(false)
+    expect(isSessionGoneForBackgroundPolling(new JsonRpcGatewayError('session not found'))).toBe(true)
+    expect(
+      isSessionGoneForBackgroundPolling(new Error("Error invoking remote method 'x': Error: session not found"))
+    ).toBe(true)
+    expect(isSessionGoneForBackgroundPolling(new Error('tool failed: upstream said session not found'))).toBe(false)
+  })
+
+  it('clears the latch only for ids a successful resume/activate rebound', () => {
+    markSessionGone('rt-dead')
+    markSessionGone('rt-other')
+
+    resetBackgroundPollingGuardAfterRebind('process.list', { session_id: 'rt-dead' }, { session_id: 'rt-dead' })
+    expect(isSessionGone('rt-dead')).toBe(true)
+
+    resetBackgroundPollingGuardAfterRebind('session.resume', { session_id: 'stored-1' }, { session_id: 'rt-dead' })
+    expect(isSessionGone('rt-dead')).toBe(false)
+    expect(isSessionGone('rt-other')).toBe(true)
+
+    resetBackgroundPollingGuardAfterRebind('session.activate', { session_id: 'rt-other' }, undefined)
+    expect(isSessionGone('rt-other')).toBe(false)
+  })
+
+  it('a respawned backend (global clear) also resets every heal budget', () => {
+    for (const rt of ['rt-1', 'rt-2', 'rt-3']) {
+      $sessionStates.set({ [rt]: cachedState(STORED) })
+      $sessionTiles.set([tile(STORED, rt)])
+      expect(markRuntimeGone(rt)).toBe(true)
+    }
+
+    resetBackgroundPollingGuard()
+
+    $sessionStates.set({ 'rt-4': cachedState(STORED) })
+    $sessionTiles.set([tile(STORED, 'rt-4')])
+    expect(markRuntimeGone('rt-4')).toBe(true)
+  })
+
+  it('refunds the stored session heal budget on a successful rebind', () => {
+    // Three reaps exhaust MAX_CONSECUTIVE_HEALS for STORED...
+    for (const rt of ['rt-1', 'rt-2', 'rt-3']) {
+      $sessionStates.set({ [rt]: cachedState(STORED) })
+      $sessionTiles.set([tile(STORED, rt)])
+      expect(markRuntimeGone(rt)).toBe(true)
+    }
+
+    $sessionStates.set({ 'rt-4': cachedState(STORED) })
+    $sessionTiles.set([tile(STORED, 'rt-4')])
+    expect(markRuntimeGone('rt-4')).toBe(false)
+
+    // ...but a rebind of STORED proves it alive, so the next reap heals again.
+    resetBackgroundPollingGuardAfterRebind('session.resume', { session_id: STORED }, { session_id: 'rt-5' })
+
+    $sessionStates.set({ 'rt-5': cachedState(STORED) })
+    $sessionTiles.set([tile(STORED, 'rt-5')])
+    expect(markRuntimeGone('rt-5')).toBe(true)
   })
 })

@@ -13,6 +13,7 @@ pre-existing regression unrelated to dashboard-auth.
 
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -20,6 +21,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from hermes_cli import web_server
+import hermes_cli.web_server_chat as _web_server_chat
 from hermes_cli.dashboard_auth import clear_providers, register_provider
 from hermes_cli.dashboard_auth.ws_tickets import (
     _reset_for_tests,
@@ -27,7 +29,7 @@ from hermes_cli.dashboard_auth.ws_tickets import (
     internal_ws_credential,
     mint_ticket,
 )
-from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider, _sign
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +207,7 @@ class TestWsAuthOkLoopback:
 
     def test_correct_token_accepted(self, loopback_app):
         ws = _fake_ws(query={"token": web_server._SESSION_TOKEN})
-        assert web_server._ws_auth_ok(ws) is True
+        assert _web_server_chat._ws_auth_ok(ws) is True
 
 
 class TestWsAuthOkGated:
@@ -216,27 +218,27 @@ class TestWsAuthOkGated:
         ticket = mint_ticket(user_id="u1", provider="stub")
         ws_one = _fake_ws(query={"ticket": ticket})
         ws_two = _fake_ws(query={"ticket": ticket})
-        assert web_server._ws_auth_ok(ws_one) is True
+        assert _web_server_chat._ws_auth_ok(ws_one) is True
         # Single-use — second consumption fails.
-        assert web_server._ws_auth_ok(ws_two) is False
+        assert _web_server_chat._ws_auth_ok(ws_two) is False
 
     def test_ticket_subprotocol_is_single_use_and_selects_only_the_public_protocol(self, gated_app):
         ticket = mint_ticket(user_id="subprotocol-user", provider="stub")
         protocols = (
-            web_server._GATEWAY_WS_PROTOCOL,
-            f"{web_server._GATEWAY_WS_TICKET_PROTOCOL_PREFIX}{ticket}",
+            _web_server_chat._GATEWAY_WS_PROTOCOL,
+            f"{_web_server_chat._GATEWAY_WS_TICKET_PROTOCOL_PREFIX}{ticket}",
         )
         ws_one = _fake_ws(query={}, path="/api/ws", protocols=protocols)
         ws_two = _fake_ws(query={}, path="/api/ws", protocols=protocols)
 
-        assert web_server._ws_auth_ok(ws_one) is True
+        assert _web_server_chat._ws_auth_ok(ws_one) is True
         assert ws_one._hermes_auth_identity == {
             "user_id": "subprotocol-user",
             "provider": "stub",
         }
-        assert ws_one._hermes_ws_subprotocol == web_server._GATEWAY_WS_PROTOCOL
+        assert ws_one._hermes_ws_subprotocol == _web_server_chat._GATEWAY_WS_PROTOCOL
         assert ticket not in ws_one._hermes_ws_subprotocol
-        assert web_server._ws_auth_ok(ws_two) is False
+        assert _web_server_chat._ws_auth_ok(ws_two) is False
 
     def test_ticket_subprotocol_rejects_missing_public_protocol_or_ambiguous_tickets(self, gated_app):
         first = mint_ticket(user_id="u1", provider="stub")
@@ -245,7 +247,7 @@ class TestWsAuthOkGated:
             path="/api/ws",
             protocols=(f"hermes-gateway-ticket.{first}",),
         )
-        assert web_server._ws_auth_ok(missing_public) is False
+        assert _web_server_chat._ws_auth_ok(missing_public) is False
 
         second = mint_ticket(user_id="u2", provider="stub")
         ambiguous = _fake_ws(
@@ -257,7 +259,7 @@ class TestWsAuthOkGated:
                 f"hermes-gateway-ticket.{second}",
             ),
         )
-        assert web_server._ws_auth_ok(ambiguous) is False
+        assert _web_server_chat._ws_auth_ok(ambiguous) is False
 
 
     def test_legacy_token_rejected_in_gated_mode(self, gated_app):
@@ -265,7 +267,81 @@ class TestWsAuthOkGated:
         even when someone has access to the in-process value of
         _SESSION_TOKEN (e.g. a leaked log line)."""
         ws = _fake_ws(query={"token": web_server._SESSION_TOKEN})
-        assert web_server._ws_auth_ok(ws) is False
+        assert _web_server_chat._ws_auth_ok(ws) is False
+
+    def test_session_token_accepted_in_gated_mode(self, gated_app):
+        """A provider-verified session access token (?token=) is accepted in
+        gated mode — the credential a token-mode Remote desktop connection
+        bakes into its WS URL. Reuses the same verify_session provider seam
+        as the native bearer REST leg (#106685)."""
+        access_token = _sign({
+            "sub": "remote-desktop-user",
+            "email": "user@example.test",
+            "name": "Remote User",
+            "org_id": "org-1",
+            "exp": int(time.time()) + 3600,
+        })
+        ws = _fake_ws(query={"token": access_token}, path="/api/ws")
+        assert _web_server_chat._ws_auth_ok(ws) is True
+        assert ws._hermes_auth_identity == {
+            "user_id": "remote-desktop-user",
+            "provider": "stub",
+        }
+
+    def test_invalid_session_token_rejected_in_gated_mode(self, gated_app):
+        """A bogus ?token= fails with token_invalid (and audits), not a crash."""
+        ws = _fake_ws(query={"token": "bogus-token"}, path="/api/ws")
+        reason, cred = _web_server_chat._ws_auth_reason(ws)
+        assert reason == "token_invalid"
+        assert cred == "token"
+        assert _web_server_chat._ws_auth_ok(ws) is False
+
+    def test_expired_session_token_rejected_in_gated_mode(self, gated_app):
+        """A well-formed but expired session token is rejected: the provider
+        verify seam honours exp, so a leaked stale token grants nothing."""
+        access_token = _sign({
+            "sub": "remote-desktop-user",
+            "email": "user@example.test",
+            "name": "Remote User",
+            "org_id": "org-1",
+            "exp": int(time.time()) - 3600,
+        })
+        ws = _fake_ws(query={"token": access_token}, path="/api/ws")
+        assert _web_server_chat._ws_auth_ok(ws) is False
+
+    def test_display_ticket_still_rejected_as_gateway_login(self, gated_app):
+        """The token leg must not disturb the bot-desktop display-ticket
+        guard: a display ticket presented as a gateway login stays invalid."""
+        ticket = mint_ticket(user_id="bot-user", provider="bot-desktop")
+        ws = _fake_ws(query={"ticket": ticket}, path="/api/ws")
+        assert _web_server_chat._ws_auth_ok(ws) is False
+
+    def test_session_token_audit_logs(self, gated_app, tmp_path, monkeypatch):
+        """Accept and reject of a session token both audit."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from hermes_cli.dashboard_auth import audit as audit_mod
+
+        if hasattr(audit_mod, "_LOGGER"):
+            monkeypatch.setattr(audit_mod, "_LOGGER", None, raising=False)
+
+        access_token = _sign({
+            "sub": "remote-desktop-user",
+            "email": "user@example.test",
+            "name": "Remote User",
+            "org_id": "org-1",
+            "exp": int(time.time()) + 3600,
+        })
+        ws_ok = _fake_ws(query={"token": access_token}, path="/api/ws")
+        assert _web_server_chat._ws_auth_ok(ws_ok) is True
+
+        ws_bad = _fake_ws(query={"token": "bogus-token"}, path="/api/ws")
+        assert _web_server_chat._ws_auth_ok(ws_bad) is False
+
+        log_file = tmp_path / "logs" / "dashboard-auth.log"
+        if log_file.exists():
+            content = log_file.read_text()
+            assert "token_auth_success" in content
+            assert "token_auth_failure" in content
 
     def test_rejection_audit_logs(self, gated_app, tmp_path, monkeypatch):
         # Point the audit log at a tmp dir so we can read what got written.
@@ -278,7 +354,7 @@ class TestWsAuthOkGated:
             monkeypatch.setattr(audit_mod, "_LOGGER", None, raising=False)
 
         ws = _fake_ws(query={"ticket": "never-minted"})
-        assert web_server._ws_auth_ok(ws) is False
+        assert _web_server_chat._ws_auth_ok(ws) is False
 
         log_file = tmp_path / "logs" / "dashboard-auth.log"
         # The audit module may write asynchronously through stdlib logging,
@@ -317,7 +393,7 @@ class TestWsRequestIsAllowedGated:
         guessing it."""
         ws = _fake_ws(query={}, client_host="192.168.1.42")
         ws.headers = {"host": "127.0.0.1:8080"}
-        assert web_server._ws_request_is_allowed(ws) is False
+        assert _web_server_chat._ws_request_is_allowed(ws) is False
 
 
     def test_non_loopback_peer_allowed_in_insecure_public_mode(self, insecure_public_app):
@@ -333,7 +409,7 @@ class TestWsRequestIsAllowedGated:
             "host": "192.168.0.222:9120",
             "origin": "http://192.168.0.222:9120",
         }
-        assert web_server._ws_request_is_allowed(ws) is True
+        assert _web_server_chat._ws_request_is_allowed(ws) is True
 
     def test_peer_allowed_on_explicit_non_loopback_bind(self, insecure_explicit_host_app):
         """`--host 100.64.0.10 --insecure` (Tailscale/LAN IP) is an explicit
@@ -348,7 +424,7 @@ class TestWsRequestIsAllowedGated:
             "host": "100.64.0.10:9119",
             "origin": "http://100.64.0.10:9119",
         }
-        assert web_server._ws_request_is_allowed(ws) is True
+        assert _web_server_chat._ws_request_is_allowed(ws) is True
 
 
 
@@ -375,7 +451,7 @@ class TestWsRequestIsAllowedGated:
             "host": "192.168.0.222:9120",
             "origin": "http://192.168.0.222:9120",
         }
-        assert web_server._ws_client_is_allowed(ws) is True
+        assert _web_server_chat._ws_client_is_allowed(ws) is True
 
 
 class TestWsHostOriginGuardOrigins:
@@ -408,30 +484,36 @@ class TestWsHostOriginGuardOrigins:
         non-gated mode the legacy session token remains the auth boundary.
         """
         ws = self._ws(origin="file://", host="100.64.0.10:9119")
-        assert web_server._ws_host_origin_is_allowed(ws) is True
+        assert _web_server_chat._ws_host_origin_is_allowed(ws) is True
 
 
 
 
 
-    def test_gated_cross_site_http_origin_still_host_checked(self, gated_app):
+    @pytest.mark.parametrize("origin", [
+        "https://evil.test",
+        # Malformed authorities make urlparse raise; they must fail closed.
+        "http://[::1",
+        "https://[not-an-ip]:52133",
+    ])
+    def test_gated_cross_site_http_origin_still_host_checked(self, gated_app, origin):
         # An http(s) origin is still subjected to the same-host check even on a
         # gated bind: a cross-site http origin whose netloc doesn't match the
         # bound host is rejected. Real browser DNS-rebinding defence unchanged.
-        ws = self._ws(origin="https://evil.test", host="fly-app.fly.dev")
-        assert web_server._ws_host_origin_is_allowed(ws) is False
+        ws = self._ws(origin=origin, host="fly-app.fly.dev")
+        assert _web_server_chat._ws_host_origin_is_allowed(ws) is False
 
 
 
 class TestSidecarUrl:
     def test_loopback_uses_session_token(self, loopback_app):
-        url = web_server._build_sidecar_url("ch-1")
+        url = _web_server_chat._build_sidecar_url("ch-1")
         assert url is not None
         assert f"token={web_server._SESSION_TOKEN}" in url
         assert "ticket=" not in url
 
     def test_gated_uses_internal_credential(self, gated_app):
-        url = web_server._build_sidecar_url("ch-1")
+        url = _web_server_chat._build_sidecar_url("ch-1")
         assert url is not None
         assert "token=" not in url
         assert "ticket=" not in url
@@ -448,7 +530,7 @@ class TestSidecarUrl:
     def test_no_bound_host_returns_none(self, gated_app):
         web_server.app.state.bound_host = None
         try:
-            assert web_server._build_sidecar_url("ch") is None
+            assert _web_server_chat._build_sidecar_url("ch") is None
         finally:
             web_server.app.state.bound_host = "fly-app.fly.dev"
 
@@ -466,8 +548,8 @@ class TestGatewayWsUrl:
     def test_gated_credential_matches_sidecar(self, gated_app):
         """Both server-internal builders share one process credential, so a
         single value authenticates /api/ws and /api/pub alike."""
-        gw = web_server._build_gateway_ws_url()
-        sc = web_server._build_sidecar_url("ch-1")
+        gw = _web_server_chat._build_gateway_ws_url()
+        sc = _web_server_chat._build_sidecar_url("ch-1")
         assert gw is not None and sc is not None
         gw_cred = gw.split("internal=")[1].split("&")[0]
         sc_cred = sc.split("internal=")[1].split("&")[0]

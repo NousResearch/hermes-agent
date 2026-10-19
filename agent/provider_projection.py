@@ -1,31 +1,13 @@
 """Fold an agent-as-provider's own activity back into Hermes' turn state.
 
-Most providers are models: they ask Hermes to run a tool and Hermes runs it, so
-the transcript and the loop's counters see every tool iteration. Some providers
-are *agents* — an ACP CLI reached through a client shim, or the codex
-app-server, which takes an analogous path in ``agent/codex_runtime.py``. They
-execute their own read/edit/execute tools inside their own session, and by the
-time Hermes sees the response that work is already done.
-
-Those calls must never come back as pending ``tool_calls`` — Hermes would re-run
-finished work. But two subsystems go blind if they are merely summarised into
-the ``reasoning`` field:
-
-* the **self-improvement loop**, which distils memories and skills by replaying
-  ``messages`` — a one-line activity feed teaches it nothing;
-* the **skill-review nudge**, whose counter (``_iters_since_skill``) only moves
-  on Hermes tool iterations, of which there are none.
-
-So the provider client hands both back on the completion object and this helper
-applies them: ``hermes_projected_messages`` (already-completed
-``assistant(tool_calls=[…])`` + ``tool(result)`` history rows) and
-``hermes_provider_tool_iterations`` (how many tool iterations happened inside
-the provider). Clients that set neither are unaffected, which is every ordinary
-OpenAI-compatible provider.
-
-The splice is append-only and rows go through ``append_message`` like every
-other live-transcript append, so they carry a timestamp and persist the same way
-the codex projection path's rows do.
+Agent providers (ACP CLI shims, the codex app-server) run their own tools, so that
+work must never come back as pending ``tool_calls`` (Hermes would re-run it) — but
+the self-improvement loop (replays ``messages``) and the skill-review nudge
+(``_iters_since_skill`` counter) go blind if it is merely summarised into
+``reasoning``. The client hands back ``hermes_projected_messages`` (completed
+assistant/tool rows) and ``hermes_provider_tool_iterations`` on the completion
+object; this helper applies them append-only via ``append_message`` (timestamped,
+persisted). Ordinary OpenAI-compatible clients set neither and are unaffected.
 """
 
 from __future__ import annotations
@@ -40,9 +22,7 @@ logger = logging.getLogger(__name__)
 __all__ = ["splice_provider_projection"]
 
 
-def splice_provider_projection(
-    agent: Any, response: Any, messages: list[dict[str, Any]]
-) -> int:
+def splice_provider_projection(agent: Any, response: Any, messages: list[dict[str, Any]]) -> int:
     """Append the provider's projected history rows and tick the nudge counter.
 
     Returns the number of rows spliced. Tolerates absent/garbage attributes so a
@@ -54,14 +34,11 @@ def splice_provider_projection(
         append_message(messages, row)
     if rows:
         logger.debug(
-            "spliced %d provider-projected transcript row(s) from %s",
-            len(rows),
-            getattr(agent, "provider", "?"),
+            "spliced %d provider-projected transcript row(s) from %s", len(rows), getattr(agent, "provider", "?"),
         )
 
-    raw_iters = getattr(response, "hermes_provider_tool_iterations", 0)
     try:
-        iterations = int(raw_iters or 0)
+        iterations = int(getattr(response, "hermes_provider_tool_iterations", 0) or 0)
     except (TypeError, ValueError):
         iterations = 0
     if iterations > 0:

@@ -52,6 +52,22 @@ function withConnectionId<T extends object>(route: T, connectionId?: string): T 
 }
 
 /**
+ * Pool key used by v1 settings/profile SSH (`sshConnections`).
+ *
+ * Bootstrap stores the tunnel under sshScopeKey(profile or null).
+ * resolveDesktopRemoteRoute may also stamp a registry connectionId when
+ * the host matches a v2 row. That id is identity, not the pool key.
+ * Looking up backendScopeKey(connectionId, profile) misses the live tunnel.
+ */
+export function v1SshTerminalPoolKey(route: { source: string }, profile?: null | string): string {
+  if (route.source === 'profile') {
+    return connectionScopeKey(profile) || ''
+  }
+
+  return ''
+}
+
+/**
  * Select one remote route with the existing precedence and freeze any exact
  * registry identity before I/O. A null result means the profile resolves
  * locally. Invalid dial data remains the dialler's error, except the existing
@@ -209,4 +225,17 @@ function resolveRegistryPrimaryRoute(registry: ConnectionRegistry): DesktopRemot
     token: entry.token,
     url
   }
+}
+
+/**
+ * Boot target when the user asked to launch the registry primary. Returns null
+ * for last-used mode and for a local primary — those keep the local spawn.
+ * Ignores legacy connection.json mode, which must not override this choice.
+ */
+export function registryPrimaryBootRoute(registry: ConnectionRegistry): DesktopRemoteRoute | null {
+  if (registry?.launchMode !== 'primary') {
+    return null
+  }
+
+  return resolveRegistryPrimaryRoute(registry)
 }

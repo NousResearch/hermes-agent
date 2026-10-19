@@ -1,6 +1,7 @@
 import pytest
 
 from tools.browser_extension_router import route_browser_tool, routed_browser_handler
+from tools import browser_tool_install as bt_install
 
 
 class FakeBroker:
@@ -317,7 +318,7 @@ def test_routeable_browser_tools_are_available_for_bound_extension_controller(mo
     """The extension route must not be stripped by legacy Browser Use checks."""
     from tools import browser_tool
 
-    monkeypatch.setattr(browser_tool, "check_browser_requirements", lambda: False)
+    monkeypatch.setattr(bt_install, "check_browser_requirements", lambda: False)
     monkeypatch.setattr(
         browser_tool,
         "extension_controller_available",
@@ -419,15 +420,17 @@ def test_routeable_browser_tools_preserve_legacy_gate_without_bound_identity(mon
     from tools import browser_tool
 
     monkeypatch.setattr(browser_control_broker, "browser_control_enabled", lambda: True)
-    monkeypatch.setattr(browser_tool, "check_browser_requirements", lambda: False)
+    monkeypatch.setattr(bt_install, "check_browser_requirements", lambda: False)
 
     assert browser_tool.check_browser_snapshot_requirements() is False
 
 
-def test_bound_browser_request_bypasses_availability_caches():
+def test_bound_browser_request_bypasses_availability_caches(monkeypatch):
+    from gateway import browser_control_broker
     from gateway.session_context import clear_session_vars, set_session_vars
     from tools.registry import CHECK_FN_CACHE_BYPASS, check_fn_cache_scope
 
+    monkeypatch.setattr(browser_control_broker, "browser_control_enabled", lambda: True)
     tokens = set_session_vars(
         session_id="session-fixture",
         browser_control_principal="principal-fixture",
@@ -439,6 +442,25 @@ def test_bound_browser_request_bypasses_availability_caches():
         clear_session_vars(tokens)
 
 
+def test_bound_identity_without_extension_control_keeps_cache_scope(monkeypatch):
+    """api_server binds a principal on every request; without the feature flag
+    that identity must not bypass the availability caches (#79047)."""
+    from gateway import browser_control_broker
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tools.registry import CHECK_FN_CACHE_BYPASS, check_fn_cache_scope
+
+    monkeypatch.setattr(browser_control_broker, "browser_control_enabled", lambda: False)
+    tokens = set_session_vars(
+        session_id="session-fixture",
+        browser_control_principal="principal-fixture",
+        browser_control_transport_family="local-api",
+    )
+    try:
+        assert check_fn_cache_scope() != CHECK_FN_CACHE_BYPASS
+    finally:
+        clear_session_vars(tokens)
+
+
 def test_registry_advertises_snapshot_through_extension_when_legacy_backend_is_down(
     monkeypatch,
 ):
@@ -446,7 +468,7 @@ def test_registry_advertises_snapshot_through_extension_when_legacy_backend_is_d
     from tools import browser_tool
     from tools.registry import registry
 
-    monkeypatch.setattr(browser_tool, "check_browser_requirements", lambda: False)
+    monkeypatch.setattr(bt_install, "check_browser_requirements", lambda: False)
     monkeypatch.setattr(
         browser_tool,
         "extension_controller_available",

@@ -33,11 +33,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gateway.config import PlatformConfig
-from plugins.platforms.wecom.adapter import (
-    WeComAdapter,
-    WeComStreamExpiredError,
-    STREAM_EXPIRED_ERRCODE,
-)
+from plugins.platforms.wecom.adapter import WeComAdapter
+from plugins.platforms.wecom.streaming import STREAM_EXPIRED_ERRCODE, WeComStreamExpiredError
 
 
 CHAT_ID = "chat-dup"

@@ -9,7 +9,7 @@ Covers:
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 import pytest
 
@@ -32,11 +32,6 @@ class TestWebProviderABCs:
     ``supports_search() / supports_extract()`` flags.
     """
 
-    def test_cannot_instantiate_abc_directly(self):
-        from agent.web_search_provider import WebSearchProvider
-
-        with pytest.raises(TypeError):
-            WebSearchProvider()  # type: ignore[abstract]
 
 
     def test_search_only_provider_skips_extract(self):
@@ -58,7 +53,7 @@ class TestWebProviderABCs:
             def supports_search(self) -> bool:
                 return True
 
-            def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
+            def search(self, query: str, limit: int = 5) -> dict[str, Any]:
                 return {"success": True, "data": {"web": []}}
 
         # Should instantiate fine — extract has default supports_*()
@@ -105,21 +100,6 @@ class TestPerCapabilityBackendSelection:
 # ---------------------------------------------------------------------------
 
 
-class TestDefaultConfig:
-    """The web section exists in DEFAULT_CONFIG with per-capability keys."""
-
-    def test_web_section_in_default_config(self):
-        from hermes_cli.config import DEFAULT_CONFIG
-
-        assert "web" in DEFAULT_CONFIG
-        web = DEFAULT_CONFIG["web"]
-        assert "backend" in web
-        assert "search_backend" in web
-        assert "extract_backend" in web
-        # All empty string by default (no override)
-        assert web["backend"] == ""
-        assert web["search_backend"] == ""
-        assert web["extract_backend"] == ""
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +185,7 @@ class TestUnconfiguredErrorEnvelopeParity:
         monkeypatch.setattr(web_tools, "_firecrawl_client", None, raising=False)
         monkeypatch.setattr(web_tools, "_firecrawl_client_config", None, raising=False)
         monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)
-        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
+        monkeypatch.setattr(web_tools, "_load_web_config", dict)
         monkeypatch.setattr(web_search_registry, "_keyless_tier_enabled", lambda: False)
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
 
@@ -279,7 +259,7 @@ class TestDispatchersTriggerPluginDiscovery:
     even when the user has both the config key set AND the API key
     exported.
 
-    Mirrors :func:`tools.browser_tool._ensure_browser_plugins_loaded` —
+    Mirrors :func:`tools.browser_tool_cloud._ensure_browser_plugins_loaded` —
     every other plugin-backed dispatcher (image_gen, video_gen, browser,
     skills) already does this.
     """

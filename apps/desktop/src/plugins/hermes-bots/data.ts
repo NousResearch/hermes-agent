@@ -8,6 +8,7 @@
 
 import { atom, host, queryClient, useQuery, useValue } from '@hermes/plugin-sdk'
 
+import { botsText } from './i18n'
 import { displayName } from './labels'
 import {
   aliasIdentityFor,
@@ -18,6 +19,7 @@ import {
   botWorkspaceOwnerKey,
   indexAliasRoutes,
   requestForBot,
+  resolveBotConnectionRoute,
   setBotsWorkspaceOwner
 } from './routing'
 import { getPluginCtx, ID } from './shared'
@@ -61,12 +63,19 @@ const BOT_ATTENTION_CLASSES: ReadonlySet<string> = new Set<AttentionClass>([
   'missing_config'
 ])
 
-/** One-line user hint per attention class (roster badge tooltip). */
-export const BOT_ATTENTION_HINTS: Record<string, string> = {
-  provider_auth_or_access: 'Sign in again for this profile',
-  provider_quota_limit: 'Quota or balance exhausted',
-  missing_config: 'Provider not configured — run hermes model',
-  agent_blocked: 'Bot is blocked — see its last message'
+/** One-line user hint per attention class (roster badge tooltip), in the
+ *  active locale; unknown classes fall back to the generic hint. */
+export function botAttentionHint(reason: string): string {
+  const text = botsText().bot
+
+  const hints: Record<string, string> = {
+    provider_auth_or_access: text.attentionProviderAuth,
+    provider_quota_limit: text.attentionQuota,
+    missing_config: text.attentionMissingConfig,
+    agent_blocked: text.attentionBlocked
+  }
+
+  return hints[reason] || text.attentionFallback
 }
 
 /** Map an error (a #93091 reason code or raw error text) to an attention
@@ -181,6 +190,15 @@ interface BotMetaStorage {
 /** Per-bot appearance + display meta, persisted via ctx.storage:
  *  { [botName]: { shape, color, title } } */
 export const $botMeta = atom<BotMetaSnapshot>({})
+
+// One desktop.log line per route key whose title changes, from any writer
+// (hydrate, server merge, save): a title that jumps between scoped keys names
+// the moment, the window and the key it landed on.
+$botMeta.listen(snapshot => {
+  for (const [key, meta] of Object.entries(snapshot)) {
+    host.traceIdentityChange?.('bot-meta', key, `title=${JSON.stringify(meta?.title ?? null)}`)
+  }
+})
 
 export function commitBotMetaV2(storage: BotMetaStorage | undefined, snapshot: BotMetaSnapshot) {
   const commit = botMetaV2Commit.then(async () => {
@@ -299,7 +317,104 @@ interface BotMetaSaveResult {
 /** `profiles.configure` reply. Older gateways answer without `applied` at all,
  *  which is what makes the field optional rather than the contract. */
 interface ProfilesConfigureResult {
-  applied?: { ui_meta?: boolean }
+  applied?: {
+    ui_meta?: boolean
+    ui_meta_conflicts?: Record<string, unknown>
+  }
+}
+
+/** The bot's `hermes-bots` namespace as its OWN backend holds it right now. */
+interface ServerBotMeta {
+  meta: StoredBotMeta
+  /** Per-key CAS revision; null on gateways that predate `ui_meta_revisions`. */
+  revision: null | number
+}
+
+/** How many times a save re-reads the server after losing a CAS race. */
+const BOT_META_CAS_ATTEMPTS = 3
+
+async function readServerBotMeta(
+  bot: RosterRow,
+  name: string,
+  route: null | ProfileRoute
+): Promise<null | ServerBotMeta> {
+  const params = { include_sessions: false }
+
+  // The read is the first half of a user's save: it dials foreground like the write.
+  const result = (await (route
+    ? requestForBot(bot, 'profiles.list', params, { spawnPriority: 'foreground' })
+    : host.request('profiles.list', params))) as {
+    profiles?: RosterRow[]
+  }
+
+  const target = route?.targetProfile || name
+  const row = (Array.isArray(result?.profiles) ? result.profiles : []).find(profile => profile?.name === target)
+
+  if (!row) {
+    return null
+  }
+
+  const meta = row.ui_meta?.['hermes-bots']
+  const revisions = row.ui_meta_revisions
+
+  return {
+    meta: meta && typeof meta === 'object' && !Array.isArray(meta) ? (meta as StoredBotMeta) : {},
+    revision: revisions && typeof revisions === 'object' ? Math.max(0, Number(revisions['hermes-bots'] || 0)) : null
+  }
+}
+
+/** Write ONE save's patch onto the server's current namespace. The local cache is never the
+ *  write base: it can hold another bot's fields (a restored or name-keyed record, a window that
+ *  missed a rename) and a whole-cache write publishes them as this bot's identity — to every
+ *  Desktop, every relay roster, and every group prompt. CAS turns a concurrent writer's newer
+ *  value into a re-read instead of a silent overwrite. */
+async function persistBotMetaPatch(
+  bot: RosterRow,
+  name: string,
+  route: null | ProfileRoute,
+  patch: StoredBotMeta
+): Promise<null | ProfilesConfigureResult> {
+  const { image: _image, pet: _pet, ...fields } = patch
+
+  for (let attempt = 0; attempt < BOT_META_CAS_ATTEMPTS; attempt++) {
+    const server = await readServerBotMeta(bot, name, route)
+
+    if (!server) {
+      return null
+    }
+
+    const { chat: _chat, ...base } = server.meta
+
+    const params: Record<string, unknown> = {
+      name,
+      ui_meta: {
+        'hermes-bots': {
+          ...base,
+          ...fields
+        }
+      }
+    }
+
+    if (server.revision !== null) {
+      params.ui_meta_expected_revisions = {
+        'hermes-bots': server.revision
+      }
+    }
+
+    const result = (await (route
+      ? requestForBot(bot, 'profiles.configure', params)
+      : host.request('profiles.configure', params))) as ProfilesConfigureResult
+
+    if (!result?.applied?.ui_meta_conflicts) {
+      return result
+    }
+  }
+
+  return {
+    applied: {
+      ui_meta: false
+    }
+  }
 }
 
 export async function saveBotMeta(owner: RosterRow | string, patch: StoredBotMeta): Promise<BotMetaSaveResult> {
@@ -339,26 +454,10 @@ export async function saveBotMeta(owner: RosterRow | string, patch: StoredBotMet
   // rides every profiles.list); the avatar IMAGE goes to the profile asset
   // store instead (profiles.set_asset), which is server-side and uncapped by
   // the list call — so pfps follow the profile across machines too.
-  let serverRequest: null | Promise<ProfilesConfigureResult> = null
+  let serverRequest: null | Promise<null | ProfilesConfigureResult> = null
 
   try {
-    const { image, pet, ...rest } = next[key] || {}
-
-    const request = route
-      ? requestForBot(bot, 'profiles.configure', {
-          name,
-          ui_meta: {
-            'hermes-bots': rest
-          }
-        })
-      : host.request('profiles.configure', {
-          name,
-          ui_meta: {
-            'hermes-bots': rest
-          }
-        })
-
-    serverRequest = Promise.resolve(request) as Promise<ProfilesConfigureResult>
+    serverRequest = persistBotMetaPatch(bot, name, route, patch)
   } catch {
     /* older/unavailable gateway — the local fallback remains saved */
   }
@@ -620,6 +719,10 @@ interface UnionAgentRow {
   connectionLabel?: string
   handle?: string
   profile?: string
+  /** Credential-free metadata Electron enumerates alongside the name — the
+   *  only source of a REMOTE row's title, since profiles.list is asked of the
+   *  active gateway alone. */
+  profileMetadata?: Pick<RosterRow, 'display_name' | 'has_avatar' | 'title' | 'ui_meta'>
   targetProfile?: string
 }
 
@@ -631,82 +734,187 @@ interface UnionRoster {
   sources?: GatewaySource[]
 }
 
+/** The rich rows come from the AMBIENT socket and are stamped with
+ *  `activeConnectionId`; when the install that answered is not that
+ *  connection's install, every title on the active source is another
+ *  machine's, so say so in desktop.log. */
+function traceRosterSnapshot(
+  local: RosterSnapshot | null | undefined,
+  sources: GatewaySource[],
+  activeConnectionId: null | string | undefined,
+  rows: RosterRow[]
+): void {
+  const answered = String((local as { install_id?: string } | null | undefined)?.install_id || '')
+  const active = activeConnectionId || 'local'
+  const expected = String(sources.find(source => source.connectionId === active)?.installId || '')
+  const flag = answered && expected && answered !== expected ? 'MISROUTED ' : ''
+  const shown = rows.map(row => `${row.connectionId ?? '-'}/${row.name}=${JSON.stringify(row.display_name ?? '')}`)
+
+  host.traceIdentityChange?.(
+    'bot-roster',
+    'snapshot',
+    `${flag}active=${active} answered=${answered.slice(0, 8) || '-'} expected=${expected.slice(0, 8) || '-'} rows=[${shown.join(' ')}]`
+  )
+}
+
+/** One roster snapshot for `activeConnectionId` — the pane's query and the
+ *  composer's cold-cache prime (`primeRoster`) share it, so both see the same
+ *  cross-connection rows. */
+async function fetchRosterSnapshot(activeConnectionId: null | string | undefined): Promise<RosterSnapshot> {
+  // Stamp the ISSUE time on the snapshot: mergeServerMeta compares it
+  // against each bot's last local meta write, and a fetch issued before
+  // a write can only carry pre-write ui_meta. (Issue time is the
+  // conservative bound — the server answered no earlier than this.)
+  const issuedAt = Date.now()
+
+  // Rich rows (last_session, canonical_session, ui_meta, has_avatar)
+  // come from the ACTIVE gateway's profiles.list — the canonical Bot
+  // Chat is resolved server-side by NAME (the "Bot Chat" registry row),
+  // so the roster never sends session pointers.
+  // Refresh the alias identity index alongside the roster: alias routes
+  // (Desktop profile → remote backend root) are what let a backend row
+  // keep its configured friendly identity after activation (#89131).
+  // Best-effort and feature-detected — a failed read keeps the last
+  // good index rather than dropping identities mid-session.
+  let routes: ProfileRoute[] = []
+
+  if (typeof host.profileRoutes === 'function') {
+    const epoch = beginAliasRouteIndex()
+
+    try {
+      routes = await host.profileRoutes()
+      indexAliasRoutes(routes, epoch)
+    } catch {
+      /* keep the previous alias index */
+    }
+  }
+
+  // The rows are cached under `activeConnectionId`, so they must come from
+  // that connection. A retry or late run of a query keyed to the connection
+  // the window just switched away from would otherwise be answered by the
+  // one it switched to and cached under the old key — the cross-machine
+  // swap that relabelled a VPS bot with the local bot's title.
+  if ((host.state.connectionId?.get?.() || null) !== (activeConnectionId || null)) {
+    throw new Error('Bot roster query outlived its connection')
+  }
+
+  const activeBot = {
+    name: String(host.state.profile?.get?.() || 'default').trim() || 'default'
+  }
+
+  // Ask the keyed connection by name rather than the ambient socket, which
+  // can sit on another machine (a secondary foregrounded across a connection
+  // apply). No exact route (older Desktop host) → the ambient owner.
+  const route = Array.isArray(routes)
+    ? routes.find(r => r?.connectionId === activeConnectionId && r?.profile === activeBot.name)
+    : undefined
+
+  const local = route
+    ? await host.requestProfile<RosterSnapshot>(route, 'profiles.list', {})
+    : await requestForBot<RosterSnapshot>(activeBot, 'profiles.list', {})
+
+  // Newer backends inject the teammate-messaging protocol into every
+  // session's system prompt (agent.bot_mode_protocol) — SOUL.md must not
+  // carry a second copy. Older gateways lack the flag: keep appending.
+  serverInjectsProtocol = Boolean(local?.bot_mode_protocol)
+
+  // Multi-source desktops (hermes-agent #86875) also expose the union
+  // agent roster across every registered connection. Merge agents from
+  // OTHER sources in as additional rows. Feature-detected + best-effort:
+  // an older Desktop build (no host.agents) or a roster hiccup leaves
+  // the local list exactly as it was.
+  if (typeof host.agents === 'function') {
+    try {
+      const union = await host.agents()
+      const previous: RosterRow[] = $lastRoster.get().filter(row => !row?.ghost)
+      const merged = mergeMultiSourceRoster(local, union, activeConnectionId, previous)
+      const sources = Array.isArray(union?.sources) ? union.sources : []
+      traceRosterSnapshot(local, sources, activeConnectionId, merged?.profiles || [])
+      const profiles = (merged?.profiles || []).map(row => annotateBotSource(row, sources))
+      await reconcileBotMeta(profiles, issuedAt)
+
+      return {
+        ...merged,
+        profiles,
+        sources,
+        fetchedAt: issuedAt
+      }
+    } catch {
+      /* Aggregate-roster failure, not a registry change: keep the
+       * previously painted remote rows on the roster as unreachable
+       * instead of repainting Bot Mode local-only (#98844). `sources`
+       * stays absent so the pane falls back to its remembered source
+       * snapshot rather than clearing it. */
+      const previous: RosterRow[] = $lastRoster.get().filter(row => !row?.ghost)
+      const merged = mergeMultiSourceRoster(local, null, activeConnectionId, previous)
+
+      const profiles = (merged?.profiles || []).map(row =>
+        row?.remoteSource ? { ...row, sourceReachable: false } : row
+      )
+
+      await reconcileBotMeta(profiles, issuedAt)
+
+      return {
+        ...merged,
+        profiles,
+        fetchedAt: issuedAt
+      }
+    }
+  }
+
+  await reconcileBotMeta(Array.isArray(local?.profiles) ? local.profiles : [], issuedAt)
+
+  return {
+    ...(local && typeof local === 'object' ? local : {}),
+    fetchedAt: issuedAt
+  }
+}
+
+/** Every fresh snapshot corrects the cached names before anyone reads them —
+ *  the Bots pane's query and the composer's cold `primeRoster` alike. Run only
+ *  from the pane's effect, a launch that never opened Bots kept a stale cached
+ *  title ahead of the backend's own in mentions and group prompts. Late import:
+ *  profile-ops imports this module. */
+async function reconcileBotMeta(rows: RosterRow[], fetchedAt: number): Promise<void> {
+  const { mergeServerMeta } = await import('./profile-ops')
+
+  mergeServerMeta(
+    rows.filter(row => !row?.ghost),
+    fetchedAt
+  )
+}
+
 export function useRoster() {
   const activeConnectionId = useValue(host.state.connectionId)
 
   return useQuery({
     queryKey: [...ROSTER_KEY, activeConnectionId],
-    queryFn: async () => {
-      // Stamp the ISSUE time on the snapshot: mergeServerMeta compares it
-      // against each bot's last local meta write, and a fetch issued before
-      // a write can only carry pre-write ui_meta. (Issue time is the
-      // conservative bound — the server answered no earlier than this.)
-      const issuedAt = Date.now()
-
-      // Rich rows (last_session, canonical_session, ui_meta, has_avatar)
-      // come from the ACTIVE gateway's profiles.list — the canonical Bot
-      // Chat is resolved server-side by NAME (the "Bot Chat" registry row),
-      // so the roster never sends session pointers.
-      // Refresh the alias identity index alongside the roster: alias routes
-      // (Desktop profile → remote backend root) are what let a backend row
-      // keep its configured friendly identity after activation (#89131).
-      // Best-effort and feature-detected — a failed read keeps the last
-      // good index rather than dropping identities mid-session.
-      if (typeof host.profileRoutes === 'function') {
-        const epoch = beginAliasRouteIndex()
-
-        try {
-          indexAliasRoutes(await host.profileRoutes(), epoch)
-        } catch {
-          /* keep the previous alias index */
-        }
-      }
-
-      // Owner routing is ambient in the SDK now (post-#92731): requestForBot
-      // resolves the active owner itself, no captured route needed here.
-      const activeBot = {
-        name: String(host.state.profile?.get?.() || 'default').trim() || 'default'
-      }
-
-      const local = await requestForBot<RosterSnapshot>(activeBot, 'profiles.list', {})
-      // Newer backends inject the teammate-messaging protocol into every
-      // session's system prompt (agent.bot_mode_protocol) — SOUL.md must not
-      // carry a second copy. Older gateways lack the flag: keep appending.
-      serverInjectsProtocol = Boolean(local?.bot_mode_protocol)
-
-      // Multi-source desktops (hermes-agent #86875) also expose the union
-      // agent roster across every registered connection. Merge agents from
-      // OTHER sources in as additional rows. Feature-detected + best-effort:
-      // an older Desktop build (no host.agents) or a roster hiccup leaves
-      // the local list exactly as it was.
-      if (typeof host.agents === 'function') {
-        try {
-          const union = await host.agents()
-          const previous: RosterRow[] = $lastRoster.get().filter(row => !row?.ghost)
-          const merged = mergeMultiSourceRoster(local, union, activeConnectionId, previous)
-          const sources = Array.isArray(union?.sources) ? union.sources : []
-
-          return {
-            ...merged,
-            profiles: (merged?.profiles || []).map(row => annotateBotSource(row, sources)),
-            sources,
-            fetchedAt: issuedAt
-          }
-        } catch {
-          /* older build or roster failure — single-source list stands */
-        }
-      }
-
-      return {
-        ...(local && typeof local === 'object' ? local : {}),
-        fetchedAt: issuedAt
-      }
-    },
+    queryFn: () => fetchRosterSnapshot(activeConnectionId),
     refetchInterval: 5000,
     staleTime: 5000,
     retry: ROSTER_QUERY_RETRY,
     retryDelay: attempt => Math.min(15000, 1000 * 2 ** attempt)
   })
+}
+
+/** Fill the live connection's roster cache entry without mounting the Bots
+ *  pane. `useRoster` is the only `host.agents()` caller and the pane its only
+ *  mount, so a launch that never opened it left the composer's synchronous
+ *  readers blind to every other connection; the middleware's fallback asked
+ *  the ACTIVE gateway for profiles.list, which cannot enumerate them (#94018).
+ *  One fetch, no polling — the pane owns the refresh while open. Never throws. */
+export async function primeRoster(): Promise<void> {
+  const connectionId = String(host.state.connectionId?.get?.() || host.activeConnectionId?.() || 'local')
+
+  try {
+    await queryClient.fetchQuery({
+      queryKey: [...ROSTER_KEY, connectionId],
+      queryFn: () => fetchRosterSnapshot(connectionId),
+      staleTime: 5000
+    })
+  } catch {
+    /* offline or older build — readers keep their existing fallbacks */
+  }
 }
 
 /** Synchronous union-roster read for the composer surfaces (autocomplete
@@ -762,7 +970,7 @@ export function cachedUnionRoster(): RosterSnapshot | null {
  *  source label so BotRow can badge them, warm the captured agent, and route
  *  every open directly through that descriptor. Pure — exercised directly by
  *  the tests. */
-function mergeMultiSourceRoster(
+export function mergeMultiSourceRoster(
   local: RosterSnapshot | null | undefined,
   union: UnionRoster | null | undefined,
   activeConnectionId?: null | string,
@@ -883,6 +1091,10 @@ function mergeMultiSourceRoster(
 
     profiles.push({
       name: profile,
+      // A remote row's title/display_name ride the union enumeration; without
+      // them a remote default titled "CoS Bot" only ever tags as @hermes(-device)
+      // and its title slug is unknown to the composer (#103731).
+      ...(agent.profileMetadata || {}),
       handle: agent.handle,
       connectionId,
       connectionKind: agent.connectionKind,
@@ -936,6 +1148,7 @@ function mergeMultiSourceRoster(
         profiles.push({
           ...row,
           remoteSource: true,
+          retained: true,
           sourceScoped: true
         })
         present.add(key)
@@ -988,13 +1201,17 @@ export function mentionNameForms(value: null | string | undefined): string[] {
 /** Every friendly (renameable) name a roster row carries: the Bot Mode title
  *  (server-synced via ui_meta, locally stored, or persisted on a durable
  *  group descriptor) and the core profile display_name — in displayName's
- *  precedence order. Remote rows never borrow local meta (two `default`s
- *  must not share a title) — EXCEPT the connection-exact alias identity
- *  (#89131): a backend row claimed by a configured alias route carries the
- *  alias's friendly names, so @moxie keeps resolving after handoff. */
+ *  precedence order. Local meta is read under the row's OWN key only: a bare
+ *  name key belongs to whichever single-source gateway wrote it, so reading it
+ *  for a scoped row hands one machine's `default` title to another's — and the
+ *  group prompt then tells that bot it is someone else. The one cross-key read
+ *  is the connection-exact alias identity (#89131): a backend row claimed by a
+ *  configured alias route carries the alias's friendly names, so @moxie keeps
+ *  resolving after handoff. */
 export function botFriendlyNames(bot: Partial<RosterRow> | null | undefined): Array<null | string | undefined> {
   const metaByName: Record<string, BotMeta | undefined> | null = typeof $botMeta !== 'undefined' ? $botMeta.get() : null
-  const localTitle = !bot?.remoteSource ? metaByName?.[bot?.name!]?.title : null
+  const ownKey = bot ? botMetaKey(bot) : undefined
+  const localTitle = ownKey ? metaByName?.[ownKey]?.title : null
   const alias = aliasIdentityFor(bot)
 
   const aliasTitle = alias
@@ -1066,10 +1283,12 @@ export function botSelectionKey(bot: Partial<RosterRow> | null | undefined): str
 /* eslint-enable no-redeclare */
 
 export function isDefaultBot(bot: Partial<RosterRow> | null | undefined): boolean {
-  const route = botConnectionRoute(bot)
+  // Render-path read (bot-row context menu, hidden-bots selection over the whole roster):
+  // an orphaned row (connection deleted) resolves by its own name instead of throwing.
+  const resolved = resolveBotConnectionRoute(bot)
 
   return (
-    String(route?.profile || bot?.name || '')
+    String(resolved.route?.profile || bot?.name || '')
       .trim()
       .toLowerCase() === 'default'
   )
@@ -1121,6 +1340,7 @@ export function resolveRosterMentions(
     .replace(/`[^`\n]*`/g, ' ')
 
   const byForm = new Map<string, RosterRow | null>()
+  const formsByBot = new Map<RosterRow, Set<string>>()
 
   for (const bot of members) {
     if (!bot?.name || isActiveRosterBot(bot, active)) {
@@ -1144,6 +1364,8 @@ export function resolveRosterMentions(
       }
     }
 
+    formsByBot.set(bot, forms)
+
     for (const form of forms) {
       if (!form) {
         continue
@@ -1163,17 +1385,44 @@ export function resolveRosterMentions(
     }
   }
 
+  // Previous profile names fill gaps only: a bot renamed after a handle was
+  // typed (or remembered) still resolves, but a live name always wins over
+  // another bot's rename history (#110200).
+  for (const bot of members) {
+    if (!bot?.name || isActiveRosterBot(bot, active)) {
+      continue
+    }
+
+    const previous = Array.isArray(bot.previous_names) ? bot.previous_names : []
+
+    for (const name of previous) {
+      for (const form of mentionNameForms(name)) {
+        if (form && !byForm.has(form)) {
+          byForm.set(form, bot)
+        }
+      }
+    }
+  }
+
   const mentioned: RosterRow[] = []
   const seen = new Set<string>()
 
-  for (const match of prose.matchAll(/(^|\s)@([a-z0-9][a-z0-9_-]*)/gi)) {
+  // `@tag@connection` is the form the picker inserts when a bare tag is
+  // ambiguous (two remote defaults both titled "CoS Bot"): the suffix pins
+  // the row to one connection, so a colliding tag still resolves exactly.
+  for (const match of prose.matchAll(/(^|\s)@([a-z0-9][a-z0-9_-]*)(?:@([a-z0-9][a-z0-9_-]*))?/gi)) {
     let token = match[2].toLowerCase()
+    const connection = (match[3] || '').toLowerCase()
 
     if (token === 'hermes') {
       token = byForm.has('hermes') ? 'hermes' : token
     }
 
-    const bot = byForm.get(token)
+    const bot = connection
+      ? [...formsByBot].find(
+          ([row, forms]) => String(row.connectionId || '').toLowerCase() === connection && forms.has(token)
+        )?.[0]
+      : byForm.get(token)
 
     if (!bot) {
       continue
@@ -1209,9 +1458,15 @@ export function botMetaKey(bot: RosterRow): string
 export function botMetaKey(bot: Partial<RosterRow> | null | undefined): string | undefined
 
 export function botMetaKey(bot: Partial<RosterRow> | null | undefined): string | undefined {
-  const route = botConnectionRoute(bot)
+  // Passive meta lookup, read while painting: branch on the typed status like botRosterMeta does.
+  // An orphaned row (connection deleted) keys by its degraded roster key rather than throwing.
+  const resolved = resolveBotConnectionRoute(bot)
 
-  return route ? botRouteKey(route) : bot?.name
+  if (resolved.status === 'owner_removed') {
+    return botRosterKey(bot)
+  }
+
+  return resolved.route ? botRouteKey(resolved.route) : bot?.name
 }
 /* eslint-enable no-redeclare */
 
@@ -1260,6 +1515,7 @@ export function annotateBotSource(bot: RosterRow, sources: GatewaySource[] | nul
     ...bot,
     connectionKind: bot.connectionKind || source.kind,
     connectionLabel: bot.connectionLabel || source.label,
+    ...(source.installId ? { installId: source.installId } : {}),
     sourceError: source.error || null,
     sourceMissing: false,
     sourceReachable: source.reachable

@@ -314,7 +314,8 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
         """A stored logical cwd and its physical directory identify the same session root."""
         import tempfile, shutil
         from pathlib import Path
-        from agent.system_prompt import build_system_prompt
+        from agent.conversation_loop import _restore_or_build_system_prompt
+        from agent.system_prompt import build_system_prompt, invalidate_system_prompt
 
         tmp = Path(tempfile.mkdtemp(prefix="test-resumed-alias-")).resolve()
         try:
@@ -329,8 +330,15 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
                 self.assertIn("Status: clean", stored)
                 (repo / "untracked.txt").write_text("wip\n")
                 db = SimpleNamespace(get_session=lambda sid: {"system_prompt": stored})
-                resumed = self._pin_agent(_cached_system_prompt=None, _session_db=db)
-                with patch("agent.system_prompt.resolve_context_cwd", return_value=repo):
+                resumed = self._pin_agent(
+                    _cached_system_prompt=None, _session_db=db, tools=[], _use_prompt_caching=False,
+                    _build_system_prompt=lambda _: self.fail("equivalent cwd must restore the stored prompt"),
+                )
+                with patch("agent.system_prompt.resolve_context_cwd", return_value=repo), \
+                     patch("agent.conversation_loop.resolve_agent_cwd", return_value=repo):
+                    _restore_or_build_system_prompt(resumed, None, [{"role": "user", "content": "continue"}])
+                    self.assertIs(resumed._cached_system_prompt, stored)
+                    invalidate_system_prompt(resumed)
                     self.assertEqual(build_system_prompt(resumed), stored)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)

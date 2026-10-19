@@ -121,6 +121,8 @@ Provider and model changes remain a local draft until you click **Apply**. **Can
 
 Explore and preview the working directory without leaving the app — useful for following along as the agent reads, writes, and edits files. Set the initial project directory with `hermes desktop --cwd <path>` (or the `HERMES_DESKTOP_CWD` environment variable).
 
+`.csv` and `.tsv` files open as a table: the first record is the header, rows are numbered, and quoted delimiters, escaped quotes and multi-line cells parse as in a spreadsheet. The table shows the first 500 rows and 100 columns; **SOURCE** shows the complete file, and editing works from either view.
+
 ### Artifacts
 
 Preview links above the composer are session suggestions, not a task-completion checklist. Dismissing one keeps historical tool rows from bringing it back after navigation or reload. A new successful tool completion can offer the file again. Read-only file inspection and failed writes do not create suggestions. Files with the same name show enough directory context to distinguish them; dismissing a suggestion does not delete its file or transcript. Changing a `/goal` does not erase a conversation's artifacts.

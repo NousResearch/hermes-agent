@@ -12,6 +12,7 @@ import { jaModelSettings } from './ja_model_settings'
 import { jaNotices } from './ja_notices'
 import { jaOnboarding } from './ja_onboarding'
 import { jaPluginSettings } from './ja_plugins'
+import { jaPreview } from './ja_preview'
 import { jaProjects } from './ja_projects'
 import { jaSharedMetrics } from './ja_shared_metrics'
 import { jaThemePicker } from './ja_theme_picker'
@@ -3086,113 +3087,7 @@ export const jaOverrides = {
     addToChat: 'チャットに追加'
   },
 
-  preview: {
-    tab: 'プレビュー',
-    pin: 'ワークスペースにピン留め',
-    unpin: 'ワークスペースからピン留めを外す',
-    closePane: 'プレビューペインを閉じる',
-    loading: 'プレビューを読み込み中',
-    unavailable: 'プレビューは利用できません',
-    missingTitle: 'ファイルは存在しません',
-    missingBody: label =>
-      `${label} は削除・移動されたか、一時的な場所が消去されました。このタブは次回の起動時には復元されません。`,
-    opening: '開いています...',
-    hide: '非表示',
-    openPreview: 'プレビューを開く',
-    openInBrowser: 'ブラウザで開く',
-    openInExternal: '外部で開く',
-    popIn: 'ポップイン',
-    popOut: 'ポップアウト',
-    linkHint: '⌘/Ctrl+クリックでプレビューペイン',
-    sourceLineTitle: 'クリックして選択 · Shift クリックで拡張 · コンポーザーにドラッグ',
-    source: 'ソース',
-    renderedPreview: 'プレビュー',
-    diff: '差分',
-    unknownSize: 'サイズ不明',
-    binaryTitle: 'これはバイナリファイルのようです',
-    binaryBody: label => `${label} をプレビューすると読み取り不能なテキストが表示される場合があります。`,
-    largeTitle: 'このファイルは大きいです',
-    largeBody: (label, size) => `${label} は ${size} です。Hermes は最初の 512 KB のみを表示します。`,
-    previewAnyway: 'とにかくプレビュー',
-    truncated: '最初の 512 KB を表示しています。',
-    noInlineTitle: 'インラインプレビューなし',
-    noInlineBody: mimeType => `${mimeType || 'このファイルタイプ'} はコンテキストとして添付できます。`,
-    edit: '編集',
-    editing: '編集中',
-    unsavedChanges: '未保存の変更',
-    saveFailed: message => `保存できませんでした：${message}`,
-    saveScopeChanged: 'この下書きを保存するには、元の接続とプロファイルに戻ってください。',
-    diskChangedTitle: 'ファイルがディスク上で変更されました',
-    diskChangedBody:
-      'このファイルは開いてから変更されています。あなたの版で上書きするか、編集を破棄して再読み込みしますか？',
-    overwrite: '上書き',
-    discardReload: '破棄して再読み込み',
-    console: {
-      deselect: 'エントリーの選択を解除',
-      select: 'エントリーを選択',
-      copyFailed: 'コンソール出力をコピーできませんでした',
-      copyEntry: 'このエントリーをコピー',
-      sendEntry: 'このエントリーをチャットに送信',
-      messages: count => `${count} 件のコンソールメッセージ`,
-      resize: 'プレビューコンソールのサイズ変更',
-      title: 'プレビューコンソール',
-      selected: count => `${count} 件選択`,
-      sendToChat: 'チャットに送信',
-      copySelected: '選択をクリップボードにコピー',
-      copyAll: 'すべてをクリップボードにコピー',
-      copy: 'コピー',
-      clear: 'クリア',
-      empty: 'コンソールメッセージはまだありません。',
-      promptHeader: 'プレビューコンソール:',
-      sentTitle: 'チャットに送信しました',
-      sentMessage: count => `${count} 件のログエントリーがコンポーザーに追加されました`
-    },
-    web: {
-      appFailedToBoot: 'プレビューアプリの起動に失敗しました',
-      serverNotFound: 'サーバーが見つかりません',
-      remoteLoopback:
-        'このアドレスはエージェントを実行しているマシンを指しており、このマシンではありません。ブラウザペインはページをローカルで読み込むため、リモートの開発サーバーにはポート転送か到達可能なホスト名が必要です。',
-      failedToLoad: 'プレビューの読み込みに失敗しました',
-      tryAgain: '再試行',
-      restarting: 'Hermes を再起動中...',
-      askRestart: 'Hermes にサーバーの再起動を依頼',
-      lookingRestart: taskId => `Hermes は再起動するプレビューサーバーを検索中です (${taskId})`,
-      restartingTitle: 'プレビューサーバーを再起動中',
-      restartingMessage: 'Hermes はバックグラウンドで作業中です。進捗はプレビューコンソールで確認してください。',
-      startRestartFailed: message => `サーバー再起動を開始できませんでした: ${message}`,
-      restartFailed: 'サーバーの再起動に失敗しました',
-      hideConsole: 'プレビューコンソールを非表示',
-      showConsole: 'プレビューコンソールを表示',
-      hideDevTools: 'プレビュー DevTools を非表示',
-      openDevTools: 'プレビュー DevTools を開く',
-      goBack: '戻る',
-      goForward: '進む',
-      reload: 'ページを再読み込み',
-      address: 'アドレス',
-      addressPlaceholder: 'アドレスを入力',
-      blankPageBody: '上のアドレス欄に入力するか、Hermes にページを開くよう頼んでください。',
-      finishedRestarting: message =>
-        `Hermes がプレビューサーバーの再起動を完了しました${message ? `: ${message}` : ''}`,
-      failedRestarting: message => `サーバーの再起動に失敗しました: ${message}`,
-      unknownError: '不明なエラー',
-      restartedTitle: 'プレビューサーバーが再起動しました',
-      reloadingNow: 'プレビューを再読み込み中です。',
-      restartFailedTitle: 'プレビューの再起動に失敗しました',
-      restartFailedMessage: 'Hermes がサーバーを再起動できませんでした。',
-      stillWorking:
-        'Hermes はまだ作業中ですが、再起動の結果がまだ届いていません。サーバーコマンドがフォアグラウンドで実行されている可能性があります。',
-      workspaceReloading: 'ワークスペースが変更され、プレビューを再読み込み中',
-      fileChanged: url => `ファイルが変更され、プレビューを再読み込み中: ${url}`,
-      filesChanged: (count, url) => `${count} 件のファイルが変更され、プレビューを再読み込み中: ${url}`,
-      watchFailed: message => `プレビューファイルを監視できませんでした: ${message}`,
-      moduleMimeDescription:
-        'モジュールスクリプトが間違った MIME タイプで提供されています。通常、静的ファイルサーバーがプロジェクトの開発サーバーの代わりに Vite/React アプリを提供していることを意味します。',
-      loadFailedConsole: (code, message) => `読み込みに失敗しました${code ? ` (${code})` : ''}: ${message}`,
-      unreachableDescription: 'プレビューページに到達できませんでした。',
-      openTarget: url => `${url} を開く`,
-      fallbackTitle: 'プレビュー'
-    }
-  },
+  preview: jaPreview,
 
   interfaceMode: {
     title: 'インターフェースモード',

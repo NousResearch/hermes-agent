@@ -68,7 +68,7 @@ _LARK_SDK_IMPORTS = (
         "CreateMessageRequest", "CreateMessageRequestBody", "GetChatRequest", "GetMessageRequest",
         "DeleteMessageRequest", "GetMessageResourceRequest", "P2ImMessageMessageReadV1",
         "ReplyMessageRequest", "ReplyMessageRequestBody",
-        "UpdateMessageRequest", "UpdateMessageRequestBody",
+        "UpdateMessageRequest", "UpdateMessageRequestBody", "PatchMessageRequest", "PatchMessageRequestBody",
     )),
     ("lark_oapi.core", ("AccessTokenType", "HttpMethod")),
     ("lark_oapi.core.const", ("FEISHU_DOMAIN", "LARK_DOMAIN")),
@@ -1290,6 +1290,7 @@ class FeishuAdapter(BasePlatformAdapter):
     serves_profile_prefix: bool = True
 
     supports_code_blocks = True  # Feishu renders fenced code blocks
+    supports_turn_progress_card = True
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
     serial_receive_loop = True  # a chat's next message waits on its lock (_handle_message_with_guards)
     MAX_MESSAGE_LENGTH = 8000
@@ -1729,6 +1730,34 @@ class FeishuAdapter(BasePlatformAdapter):
             return result
         except Exception as exc:
             logger.error("[Feishu] Failed to edit message %s: %s", message_id, exc, exc_info=True)
+            return SendResult(success=False, error=str(exc))
+
+    async def send_turn_progress_card(self, chat_id: str, card: dict[str, Any], *, metadata=None, reply_to=None) -> SendResult:
+        """Send the single interactive card used for a Feishu turn's live progress."""
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+        try:
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id, msg_type="interactive", payload=json.dumps(card, ensure_ascii=False),
+                reply_to=reply_to, metadata=metadata,
+            )
+            return self._finalize_send_result(response, "send turn progress card failed")
+        except Exception as exc:
+            return SendResult(success=False, error=str(exc))
+
+    async def edit_turn_progress_card(self, chat_id: str, message_id: str, card: dict[str, Any], *, metadata=None) -> SendResult:
+        """Replace the existing live progress card without creating a new message."""
+        if not self._client or not message_id:
+            return SendResult(success=False, error="Not connected")
+        try:
+            body = self._build_patch_message_body(content=json.dumps(card, ensure_ascii=False))
+            request = self._build_patch_message_request(message_id=message_id, request_body=body)
+            response = await self._run_blocking(self._client.im.v1.message.patch, request)
+            result = self._finalize_send_result(response, "update turn progress card failed")
+            if result.success:
+                result.message_id = message_id
+            return result
+        except Exception as exc:
             return SendResult(success=False, error=str(exc))
 
     async def delete_message(self, chat_id: str, message_id: str) -> bool:
@@ -2207,6 +2236,10 @@ class FeishuAdapter(BasePlatformAdapter):
             if action_value.get("hermes_update_prompt_action"):
                 return self._handle_update_prompt_card_action(event=event, action_value=action_value, loop=loop)
         self._submit_on_loop(loop, self._handle_card_action_event(data))
+        if isinstance(action_value, dict):
+            replacement_card = action_value.get("hermes_replace_card")
+            if isinstance(replacement_card, dict):
+                return self._card_response(replacement_card)
         return self._card_response()
 
     @staticmethod
@@ -4013,6 +4046,14 @@ class FeishuAdapter(BasePlatformAdapter):
     @staticmethod
     def _build_update_message_request(message_id: str, request_body: Any) -> Any:
         return _sdk_build(UpdateMessageRequest, message_id=message_id, request_body=request_body)
+
+    @staticmethod
+    def _build_patch_message_body(*, content: str) -> Any:
+        return _sdk_build(PatchMessageRequestBody, content=content)
+
+    @staticmethod
+    def _build_patch_message_request(message_id: str, request_body: Any) -> Any:
+        return _sdk_build(PatchMessageRequest, message_id=message_id, request_body=request_body)
 
     @staticmethod
     def _build_delete_message_request(message_id: str) -> Any:

@@ -1072,6 +1072,11 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         # Webhooks can't edit messages, so tool progress / log mode are off there.
         is_webhook = source.platform == Platform.WEBHOOK
         tool_progress_enabled = progress_mode not in {"off", "log"} and not is_webhook
+        feishu_progress_card_enabled = (
+            source.platform == Platform.FEISHU
+            and not is_webhook
+            and not (_tool_progress_explicit and progress_mode == "off")
+        )
         # Live status for text-rendering typing indicators (Slack); independent of tool_progress.
         _live_status_mode = resolve_display_setting(user_config, platform_key, "live_status", "full")
         _live_status_adapter = (
@@ -1113,17 +1118,18 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             progress_mode=progress_mode, progress_grouping=progress_grouping,
             _display_surface_mode=_display_surface_mode,
             tool_progress_enabled=tool_progress_enabled, _live_status_mode=_live_status_mode,
+            feishu_progress_card_enabled=feishu_progress_card_enabled,
             _live_status_adapter=_live_status_adapter, log_mode_enabled=log_mode_enabled,
             log_queue=queue.Queue() if log_mode_enabled else None,
             interim_assistant_messages_enabled=interim_assistant_messages_enabled,
             _thinking_enabled=_thinking_enabled, _native_slack_task_cards=_native_slack_task_cards,
-            needs_progress_queue=tool_progress_enabled or _thinking_enabled or _native_slack_task_cards,
+            needs_progress_queue=tool_progress_enabled or _thinking_enabled or _native_slack_task_cards or feishu_progress_card_enabled,
             _generic_status_phrase=_generic_status_phrase,
         )
 
     # _RunAgentDisplay fields copied verbatim onto the TurnContext.
     _DISPLAY_TO_TURN_CTX = (
-        "_live_status_adapter", "_live_status_mode", "_thinking_enabled", "progress_mode",
+        "_live_status_adapter", "_live_status_mode", "_thinking_enabled", "progress_mode", "feishu_progress_card_enabled",
         "progress_grouping", "tool_progress_enabled", "log_queue", "resolve_display_setting",
         "user_config", "enabled_toolsets", "disabled_toolsets", "log_mode_enabled",
         "interim_assistant_messages_enabled", "needs_progress_queue", "_native_slack_task_cards",
@@ -2393,6 +2399,19 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                     turn_ctx, adapter, pending, pending_event, response, result, stream_task,
                 )
         finally:
+            # Publish the real terminal outcome before cancelling the progress task.  A
+            # CancelledError from cleanup must never be rendered as a successful turn.
+            _progress_result = turn_ctx.result_holder[0]
+            if isinstance(_progress_result, dict) and _progress_result.get("interrupted"):
+                turn_ctx.progress_final_status = "interrupted"
+            elif isinstance(_progress_result, dict) and _progress_result.get("failed"):
+                turn_ctx.progress_final_status = "failed"
+            elif isinstance(locals().get("response"), dict) and locals()["response"].get("interrupted"):
+                turn_ctx.progress_final_status = "interrupted"
+            elif (isinstance(locals().get("response"), dict) and locals()["response"].get("failed")) or "response" not in locals():
+                turn_ctx.progress_final_status = "failed"
+            else:
+                turn_ctx.progress_final_status = "success"
             await self._run_agent_cleanup_turn_tasks(
                 turn_ctx, progress_task=progress_task, log_task=log_task, interrupt_monitor=interrupt_monitor,
                 _notify_task=_notify_task, tracking_task=tracking_task, stream_task=stream_task,

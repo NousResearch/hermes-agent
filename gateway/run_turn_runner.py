@@ -428,9 +428,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # callback, so neither infers identity from tool names.
         agent.tool_start_callback = (
             (ctx.native_tool_start_callback or ctx.voice_ack_callback)
-            if (ctx._voice_ack_guild[0] is not None or ctx._native_slack_task_cards) else None
+            if (ctx._voice_ack_guild[0] is not None or ctx._native_slack_task_cards or ctx.feishu_progress_card_enabled) else None
         )
-        agent.tool_complete_callback = ctx.native_tool_complete_callback if ctx._native_slack_task_cards else None
+        agent.tool_complete_callback = (
+            ctx.native_tool_complete_callback if (ctx._native_slack_task_cards or ctx.feishu_progress_card_enabled) else None)
         if self._approval_owner is not None:
             agent.tool_start_callback = self.combined_tool_start_callback
             agent.tool_complete_callback = self.combined_tool_complete_callback

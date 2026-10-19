@@ -242,3 +242,59 @@ def test_merge_helper_non_dict_runtime_extra_body_replaced():
         {"extra_body": "junk"}, {"extra_body": {"a": 1}}
     )
     assert merged == {"extra_body": {"a": 1}}
+
+
+# ── delegation.service_tier: a fast parent, standard-speed children (#132269) ─
+
+
+def _parent_pinned_tier(**overrides):
+    parent = _parent(request_overrides={**overrides, "extra_body": {"thinking": {"type": "disabled"}}})
+    parent.model, parent.reasoning_config, parent.max_tokens = "gpt-6-astra", None, None
+    parent.base_url, parent.provider, parent.api_mode = "https://api.openai.com/v1", "openai-api", "codex_responses"
+    parent.acp_command, parent.acp_args, parent.capabilities, parent._client_kwargs = None, [], None, None
+    parent.requested_provider, parent.openrouter_min_coding_score, parent._fallback_chain = "openai-api", None, None
+    return parent
+
+
+def _built_child_overrides(cfg: dict, parent, **build_kwargs) -> dict:
+    """request_overrides the child is CONSTRUCTED with, through the real credential resolve + build path."""
+    from tools.delegate_tool import _build_child_agent
+    with patch("tools.delegate_tool._load_config", return_value=cfg), patch("run_agent.AIAgent") as mock_agent:
+        mock_agent.return_value = MagicMock()
+        creds = _resolve_delegation_credentials(cfg, parent)
+        _build_child_agent(
+            task_index=0, goal="g", context=None, toolsets=None, model=creds["model"], max_iterations=5,
+            task_count=1, parent_agent=parent, override_request_overrides=creds["request_overrides"], **build_kwargs,
+        )
+    return mock_agent.call_args.kwargs["request_overrides"]
+
+
+def test_service_tier_normal_builds_children_without_the_parents_pinned_tier_but_inherit_keeps_it():
+    """Every tier /fast can pin (OpenAI priority / ultrafast, Anthropic speed) is dropped from the CHILD only
+    under ``normal`` — the parent keeps its tier and its other overrides survive on both sides; a
+    model-only worker override takes the same inherit branch and gets the same treatment."""
+    for pin in ({"service_tier": "ultrafast"}, {"service_tier": "priority"}, {"speed": "fast"}):
+        parent = _parent_pinned_tier(**pin)
+        for cfg_model in ("", "gpt-6-luna"):
+            normal = _built_child_overrides({"model": cfg_model, "provider": "", "service_tier": "normal"}, parent)
+            assert normal == {"extra_body": {"thinking": {"type": "disabled"}}}, (pin, cfg_model)
+            inherit = _built_child_overrides({"model": cfg_model, "provider": ""}, parent)
+            assert inherit == {**pin, "extra_body": {"thinking": {"type": "disabled"}}}, (pin, cfg_model)
+        assert parent.request_overrides == {**pin, "extra_body": {"thinking": {"type": "disabled"}}}  # never mutated
+    # A tier-only parent must build a child with an explicit EMPTY dict: a None here would re-enter the
+    # construction fallback and hand the parent's tier straight back to the child.
+    bare = _parent_pinned_tier(service_tier="ultrafast")
+    bare.request_overrides = {"service_tier": "ultrafast"}
+    assert _built_child_overrides({"model": "", "provider": "", "service_tier": "normal"}, bare) == {}
+
+
+def test_service_tier_normal_touches_only_hermes_pinned_tiers_and_explicit_pins_still_win():
+    """A user's own tier word (``flex``) is route personality, not the parent's /fast pin, so it is kept; an
+    explicit ``delegation.request_overrides`` tier is authoritative under ``normal`` too; and an unknown
+    policy word reads as ``inherit`` rather than silently dropping the tier."""
+    flex = _parent_pinned_tier(service_tier="flex")
+    assert _built_child_overrides({"model": "", "provider": "", "service_tier": "normal"}, flex)["service_tier"] == "flex"
+    fast = _parent_pinned_tier(service_tier="priority")
+    explicit = {"model": "", "provider": "", "service_tier": "normal", "request_overrides": {"service_tier": "priority"}}
+    assert _built_child_overrides(explicit, fast)["service_tier"] == "priority"
+    assert _built_child_overrides({"model": "", "provider": "", "service_tier": "turbo"}, fast)["service_tier"] == "priority"

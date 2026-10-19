@@ -156,7 +156,7 @@ async def _run_one_notifier_tick(monkeypatch, runner):
 
     async def fake_sleep(delay):
         if delay == 5:
-            return None
+            return
         runner._running = False
         await real_sleep(0)
 
@@ -196,7 +196,7 @@ def test_served_profile_wake_runs_in_process_only_for_the_session_it_owns(served
     assert _unseen(task) == []
 
     # Ownership of the exact session — not the platform — is the only proof.
-    resolve = lambda sub, profile="builder", **kw: _adapter_for_subscription(  # noqa: E731
+    resolve = lambda sub, profile="builder", **kw: _adapter_for_subscription(
         _make_runner(**kw), Platform.API_SERVER, sub, profile)
     assert resolve(_api_sub(chat_id="20260918_051500_deadbe")) is None           # unknown session
     assert resolve(_api_sub(), profile="atlas") is None                          # not the owner

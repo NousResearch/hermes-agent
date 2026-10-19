@@ -19,7 +19,7 @@ import threading
 import time
 from collections import OrderedDict
 from concurrent.futures import Future, ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timezone, UTC
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
@@ -187,14 +187,40 @@ def _in_home(home: Any, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> No
         reset_hermes_home_override(token)
 
 
+# (profile home, platform) -> UTC day of the open failed-connect episode. Touched only on the FIFO worker.
+_failing_connects: dict[tuple[str, str], str] = {}
+
+
+def _record_connect(platform: Any, event: str, *, exc: BaseException | None, fatal_code: Any, terminal: bool) -> None:
+    from hermes_constants import get_hermes_home
+
+    from .relay_shared_metrics import enabled
+
+    # Keyed by the real adapter (two custom adapters both emit "plugin"); projected only at emission.
+    key = (str(get_hermes_home()), str(getattr(platform, "value", platform)))
+    day = datetime.now(UTC).date().isoformat()
+    if event != "connect_failed" or terminal:
+        counted = _failing_connects.pop(key, None) == day
+    elif not enabled():  # nothing is recorded, so nothing is latched: opting in mid-outage counts it
+        return
+    else:
+        counted = _failing_connects.get(key) == day
+        _failing_connects[key] = day
+    if not (counted and event == "connect_failed"):  # else: a watcher retry already counted today
+        _record_health(platform, event, exc=exc, fatal_code=fatal_code)
+
+
 def record_platform_connect(
     adapter: Any, platform: Any, *, is_reconnect: bool, ok: bool, exc: BaseException | None = None,
 ) -> None:
     """One adapter connect attempt (cold start or reconnect watcher), from the runner's single
-    connect seam. A failed attempt is ``connect_failed`` whichever path made it."""
+    connect seam. ``connect_failed`` counts a failed EPISODE once per profile, platform and UTC day:
+    the watcher's backoff retries are not new failures, so the next row is the success that ends
+    it (or the next day it is still failing). A non-retryable failure ends its episode."""
     event = ("reconnect" if is_reconnect else "connect_ok") if ok else "connect_failed"
     fatal_code = None if ok or exc is not None else getattr(adapter, "fatal_error_code", None)
-    _submit(_record_health, platform, event, exc=exc, fatal_code=fatal_code)
+    terminal = not ok and exc is None and bool(fatal_code) and not getattr(adapter, "fatal_error_retryable", True)
+    _submit(_record_connect, platform, event, exc=exc, fatal_code=fatal_code, terminal=terminal)
 
 
 # The user turned the platform off (relay opt-out revokes its credential): not a lost connection.

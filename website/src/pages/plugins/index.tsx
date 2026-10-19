@@ -33,7 +33,7 @@ const META_URL = "/docs/api/plugins-meta.json";
 /** Mirrors the `max-width: 600px` blocks in styles.module.css. */
 const MOBILE_PANEL_QUERY = "(max-width: 600px)";
 
-const TIER_ORDER = ["all", "official", "community"];
+const TIER_ORDER = ["all", "official", "verified", "community"];
 
 // Sort orders. "stars" is the extractor's own order (stars desc, name), so it
 // needs no client-side work; the two date sorts read the git-derived

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, cast
 
 from agent.i18n import t
+from agent.retry_utils import jittered_backoff
 from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
 from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
 from gateway.platforms.event import MessageEvent, MessageType
@@ -63,6 +64,9 @@ _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 # Storage causes that clear on their own (one session's lease/compression, not the store): the
 # home-channel notice appends the operator restart tail for every OTHER cause.
 _SELF_CLEARING_STORAGE_CAUSES = frozenset({"compression", "compression_closed", "turn_lease"})
+# Process-watcher retries of a refused completion: ~5 min at the default 5 s check interval.
+_MAX_COMPLETION_INJECTION_ATTEMPTS = 8
+_COMPLETION_INJECTION_RETRY_MAX_DELAY = 60
 
 # Durable async-delegation claim transitions: kind -> (tools.async_delegation function, failure log).
 _DURABLE_CLAIM_OPS = {
@@ -106,6 +110,28 @@ def _raw_process_event_session_id(evt: dict) -> str:
     return str(evt.get("origin_session_id") or session_key or "").strip()
 
 
+def _local_completion_card(evt: dict) -> dict[str, str]:
+    """The card of a local process notice: the async-result card the in-process TUI wrote for a
+    completion or async delegation (a gateway-side ``/review`` reports as one), and a liveness tick's
+    one-line receipt. The claim's ``message.start`` carries it, and an idle classic CLI only opens a
+    turn that has one. ``{}`` for a watch match."""
+    from tools.process_registry_notifications import (
+        PROCESS_COMPLETE_DISPLAY_KIND, async_delegation_display_text, process_completion_display_text)
+    evt_type = evt.get("type", "completion")
+    if evt_type == "completion":
+        return {"display_kind": PROCESS_COMPLETE_DISPLAY_KIND,
+                "display_text": evt.get("_display_text") or process_completion_display_text([evt])}
+    if evt_type == "async_delegation":
+        return {"display_kind": "async_delegation_complete", "display_text": async_delegation_display_text(evt)}
+    if evt_type == "heartbeat":
+        # The wake stays machinery (no bubble, and a quiet tick may end in silence); the receipt lets an
+        # idle CLI open the turn with one line and show the agent's reply.
+        from gateway.response_filters import INTERNAL_NOTIFICATION_DISPLAY_KIND
+        from tools.process_registry_notifications import heartbeat_display_text
+        return {"display_kind": INTERNAL_NOTIFICATION_DISPLAY_KIND, "display_text": heartbeat_display_text(evt)}
+    return {}
+
+
 def _watch_notification_metadata(evt: dict, source) -> dict[str, Any]:
     """Synthetic-event metadata for a watch/completion notification: routing pins, proof ids,
     automation identities, and the local async-result card."""
@@ -121,13 +147,10 @@ def _watch_notification_metadata(evt: dict, source) -> dict[str, Any]:
         metadata["gateway_session_id"] = parent_session_id
     if evt.get('_automation_identities'):
         metadata['automation_identities'] = evt['_automation_identities']
-    if source.platform == Platform.LOCAL and evt.get("type", "completion") == "completion":
-        # A local completion persists as the async-result card the in-process TUI wrote;
-        # messaging rows stay internal_notification, as on main.
-        from tools.process_registry_notifications import (
-            PROCESS_COMPLETE_DISPLAY_KIND, process_completion_display_text)
-        metadata["display_kind"] = PROCESS_COMPLETE_DISPLAY_KIND
-        metadata["display_text"] = evt.get("_display_text") or process_completion_display_text([evt])
+    if source.platform == Platform.LOCAL:
+        # A local completion persists as the async-result card the in-process TUI wrote, and a tick
+        # carries its CLI receipt; messaging rows stay internal_notification, as on main.
+        metadata.update(_local_completion_card(evt))
     proven_session_id = str(evt.get("proven_session_id") or "").strip()
     if proven_session_id:
         metadata["gateway_proven_session_id"] = proven_session_id
@@ -693,14 +716,19 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                     continue
                 if self._load_background_notifications_mode() == "off":
                     continue
-                synth_text = _format_gateway_process_notification(evt)
-                if not synth_text:
-                    continue
-                try:
-                    delivered = await self._inject_watch_notification(synth_text, evt)
-                except Exception:
-                    logger.exception("Watch notification injection error")
-                    delivered = False
+                if evt.get("type") == "heartbeat":
+                    from gateway.session_automation import deliver_heartbeat
+                    delivered = await deliver_heartbeat(self, evt)
+                else:
+                    synth_text = _format_gateway_process_notification(evt)
+                    if not synth_text:
+                        continue
+                    try:
+                        delivered = await self._inject_watch_notification(synth_text, evt)
+                    except Exception:
+                        logger.exception("Watch notification injection error")
+                        delivered = False
+            # The original event: a requeued tick folds again from what is still queued.
             if delivered is False:
                 completion_queue.put(evt)
 
@@ -869,17 +897,18 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             from gateway.session_authorities import active_authority
             authority = active_authority(self)
             if authority is not None:
-                from gateway.session_automation import producer_identity
+                from gateway.session_automation import admit_process_notice
                 from hermes_state_runtime import RuntimeStoreError
                 try:
-                    identity = producer_identity(self, evt)
-                    await authority.admit_automation(adapter, synth_event, identity)
+                    await admit_process_notice(self, authority, adapter, synth_event, evt)
                 except RuntimeStoreError as exc:
                     raise WakeNotAccepted(str(exc)) from exc
             else:
                 await admit_internal_event(adapter, synth_event)
             return True
-        except WakeNotAccepted:
+        except WakeNotAccepted as exc:
+            logger.warning("Watch notification not admitted for %s chat=%s: %s",
+                           platform_name, source.chat_id, exc)
             # Durable callers refund the claim; ordinary watch callers just requeue.
             if raise_not_accepted:
                 raise
@@ -907,7 +936,9 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 task_idx = ((evt.get("results") or [{}])[0] or {}).get("task_index", "")
                 return (evt_type, producer_id, f"task_failure:{task_idx}")
             return (evt_type, producer_id, "")
-        if evt_type in {"watch_match", "watch_disabled"} and evt.get("event_id"):
+        # A liveness tick is one watch event like a match: without an identity the session authority
+        # refuses it and the drain requeues it forever.
+        if evt_type in {"watch_match", "watch_disabled", "heartbeat"} and evt.get("event_id"):
             return (evt_type, str(evt["session_id"]), str(evt["event_id"]))
         if evt_type == "completion":
             producer_id = str(evt.get("session_id") or "")
@@ -966,7 +997,11 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             parent_session_id, entry.session_id if entry else "",
         )
         target_session_id = parent_session_id
-        if verdict == "deliver" and parent is not None and parent.get("ended_at"):
+        # A local conversation a viewer closed keeps its own work as a note on its closed tip (#134889 LC-7).
+        closed_tip = await self._closed_local_target(session_db, entry, parent_session_id, parent)
+        if closed_tip:
+            verdict, target_session_id = "deliver", closed_tip
+        elif verdict == "deliver" and parent is not None and parent.get("ended_at"):
             end_reason = str(parent.get("end_reason") or "")
             if end_reason != "compression":
                 # Only a USER-closed session (/new, user_exit, session_switch) is unreachable; idle/timeout
@@ -1676,8 +1711,10 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                       session_id, interval, notify_mode, agent_notify)
         silent = notify_mode == "off" and not agent_notify
         last_output_len = 0
+        completion_attempts = 0
+        retry_interval = interval
         while True:
-            await asyncio.sleep(interval)
+            await asyncio.sleep(retry_interval)
             session = process_registry.get(session_id)
             if session is None:
                 break
@@ -1711,20 +1748,43 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                     # turn itself installs the guard).
                     turn_busy = await self._launching_turn_active(platform_name, watcher)
                     delivered = await self._enqueue_process_completion_notification(synth_text, completion_evt)
-                    if delivered is False:
-                        # The process remains terminal; retry after failed adapter injection instead
-                        # of suppressing the result.
+                    if delivered is not False:
+                        # The agent normally reports the result itself, so the chat gets no separate
+                        # receipt. While the launching turn is still running the injection only queues a
+                        # follow-up, and the chat would stay mute for as long as that turn lasts
+                        # (#112033): send the concise receipt now.
+                        if turn_busy and (notify_mode in {"concise", "all", "result"} or (
+                            notify_mode == "error" and session.exit_code not in {0, None}
+                        )):
+                            message_text = self._format_process_final_message(session_id, session, "concise")
+                            await self._send_watcher_message(platform_name, chat_id, thread_id, message_text, watcher)
+                        break
+                    # A refusal may clear (adapter reconnecting, store draining), so retry with backoff
+                    # for a few minutes, then fall through to the plain notice instead of dropping it.
+                    completion_attempts += 1
+                    if completion_attempts < _MAX_COMPLETION_INJECTION_ATTEMPTS:
+                        retry_interval = jittered_backoff(
+                            completion_attempts, base_delay=max(interval, 1) * 2,
+                            max_delay=_COMPLETION_INJECTION_RETRY_MAX_DELAY, jitter_ratio=0.0)
                         continue
-                    # The agent normally reports the result itself, so the chat gets no separate receipt.
-                    # While the launching turn is still running the injection only queues a follow-up, and
-                    # the chat would stay mute for as long as that turn lasts (#112033): send the concise
-                    # receipt now.
-                    if turn_busy and (notify_mode in {"concise", "all", "result"} or (
-                        notify_mode == "error" and session.exit_code not in {0, None}
-                    )):
-                        message_text = self._format_process_final_message(session_id, session, "concise")
-                        await self._send_watcher_message(platform_name, chat_id, thread_id, message_text, watcher)
-                    break
+                    if (getattr(self, 'session_authority', None) is not None
+                            and self._completion_delivery_identity(completion_evt) is not None):
+                        from gateway.session_automation import completion_admission
+                        try:
+                            # The owning profile's authority, as on the delivery path.
+                            async with self._completion_event_scope(completion_evt):
+                                committed = completion_admission(self, completion_evt) is not None
+                        except Exception:
+                            # Failing open sends the notice; a dead watcher would send nothing.
+                            logger.debug("Process watcher: admission recheck failed for %s", session_id,
+                                         exc_info=True)
+                            committed = False
+                        if committed:
+                            break  # The last refusal was a lost ACK: the turn is committed.
+                    logger.warning(
+                        "Process watcher: completion for %s was refused %d times; falling back to the "
+                        "notify_mode=%s notice", session_id, completion_attempts, notify_mode,
+                    )
                 # Text-only notification; skip when already consumed via wait/log (the agent_notify branch
                 # FALLS THROUGH here, hence the re-check).
                 if process_registry.is_completion_consumed(session_id):

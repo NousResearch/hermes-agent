@@ -53,9 +53,9 @@ def managed_policy(authority, ref):
     return policy
 
 
-def _bootstrap(authority, ref, row, policy, scope):
+def _bootstrap(authority, ref, row, policy, scope, text=None):
     from gateway.session_ingress import row_turn_author
-    from gateway.session_policy import launch_key
+    from gateway.session_policy import route_launch_key
     from gateway.session_policy_credentials import recover_config_secrets
     terminal = json.loads(policy.terminal_json)
     if policy.config_secret_ref:
@@ -73,11 +73,12 @@ def _bootstrap(authority, ref, row, policy, scope):
         **({'display_v1': row['payload']['display_v1']} if row['payload'].get('display_v1') else {})})
     from gateway.session_worker_construct import construct_inputs
     request['construct_v1'] = construct_inputs(authority, policy, live.source.chat_id)
-    hydrated = replace(policy, config_json=json.dumps(_worker_config(authority, policy)), request_json=json.dumps(request),
+    config = _worker_config(authority, policy)
+    hydrated = replace(policy, config_json=json.dumps(config), request_json=json.dumps(request),
                        terminal_json=json.dumps(terminal), credential_ref=None, config_secret_ref=None)
     return {'version': 1, 'home': authority.profile_id, 'scope': scope,
-            'policy': asdict(hydrated), 'api_key': launch_key(authority, policy),
-            'text': row['payload']['text'], 'route': live.route,
+            'policy': asdict(hydrated), 'api_key': route_launch_key(authority, policy, config),
+            'text': row['payload']['text'] if text is None else text, 'route': live.route,
             **({'attachments_v1': row['payload']['attachments_v1']} if 'attachments_v1' in row['payload'] else {}),
             'user_id': live.source.user_id, 'chat_id': live.source.chat_id,
             'turn_author': row_turn_author(policy, row),
@@ -290,7 +291,8 @@ class ManagedWorker:
             return
         try:
             proc = psutil.Process(self.worker[0])
-            if proc.create_time() == self.worker[1]:
+            from hermes_cli.process_identity import process_birth
+            if process_birth(proc) == self.worker[1]:
                 (proc.kill if kill else proc.terminate)()
         except psutil.Error:
             pass
@@ -449,8 +451,67 @@ def _interrupted_before_bootstrap(authority, row):
     return ''
 
 
+def _settled_session_usage(authority, session_id, accepted, execution_id=None):
+    """A managed turn's ``message.complete.usage``: the worker exits with its turn, so the session-cumulative counters come from the rows its usage writes committed. A worker that compresses mid-turn ends on a child of this reservation's session; the owner's execution row records that tip (compression moves it in the same transaction), so the path from the tip back to the reservation plus the reservation's own compression ancestors is summed, and stale siblings or the conversation a branch came from never count."""
+    import sqlite3
+    db = authority.db
+    try:
+        tip = _execution_tip(db, execution_id)
+        path = _continuation_path(db, session_id, tip) if tip and tip != session_id else None
+        ids = list(dict.fromkeys([*_compression_ancestors(db, session_id), *(path or [session_id])]))
+        rows = [db.get_session(sid) or {} for sid in ids]
+    except sqlite3.Error:  # usage is display-only; settlement never waits on it
+        return {}
+    counts = {key: sum(int(row.get(key) or 0) for row in rows) for key in (
+        'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens', 'reasoning_tokens')}
+    prompt = counts['input_tokens'] + counts['cache_read_tokens'] + counts['cache_write_tokens']
+    return {'session_usage': {**counts, 'prompt_tokens': prompt, 'completion_tokens': counts['output_tokens'],
+                              'total_tokens': prompt + counts['output_tokens'],
+                              'api_calls': sum(int(row.get('api_call_count') or 0) for row in rows),
+                              'model': str(accepted.get('model') or rows[-1].get('model') or '')}}
+
+
+def _execution_tip(db, execution_id):
+    """The session this worker execution last wrote to, as the owner's ledger records it."""
+    if not execution_id:
+        return None
+    with db._read_ctx() as conn:
+        row = conn.execute('SELECT session_id FROM worker_executions WHERE execution_id=?', (execution_id,)).fetchone()
+    return row[0] if row else None
+
+
+def _continuation_path(db, start, tip):
+    """Ids from *start* to *tip* when *tip* reaches *start* through compression continuations only, else None."""
+    path, current = [tip], tip
+    while current != start and len(path) <= 200:
+        row = db.get_session(current)
+        if not row or not db._is_compression_child_row(row):
+            return None
+        current = row['parent_session_id']
+        path.append(current)
+    return path[::-1] if current == start else None
+
+
+def _compression_ancestors(db, session_id):
+    """Root-first ids of the sessions *session_id* continues by compression, excluding itself."""
+    ancestors, current = [], db.get_session(session_id)
+    while current and db._is_compression_child_row(current) and len(ancestors) < 200:
+        parent = current['parent_session_id']
+        if parent in ancestors or parent == session_id:
+            break
+        ancestors.append(parent)
+        current = db.get_session(parent)
+    return ancestors[::-1]
+
+
 async def execute_managed(authority, ref, row, policy):
     from gateway.run_turn_progress import publish_worker_tool_event
+    # This route never passes the inbound prepare step, so the worker would read ``@`` tokens as typed.
+    from gateway.session_context_refs import managed_turn_text, refused_turn_result
+    text, refusal = await managed_turn_text(authority, row, policy)
+    if refusal is not None:
+        authority.pending_results[row['admission_id']] = {'result': refused_turn_result(row, refusal), 'usage': {}}
+        return refusal
     try:
         env = await asyncio.to_thread(_worker_env, authority)
         cwd = (await asyncio.to_thread(Path(__file__).resolve)).parents[1]
@@ -488,7 +549,7 @@ async def execute_managed(authority, ref, row, policy):
                     admission_id=row['admission_id'], process=process, principal_id=row['principal_id'], hello=hello))
         worker.worker = (scope['pid'], scope['birth'])
         # The child reads nothing else until the exact reservation has committed.
-        frame = await asyncio.to_thread(_bootstrap, authority, ref, row, policy, scope)
+        frame = await asyncio.to_thread(_bootstrap, authority, ref, row, policy, scope, text)
         worker.secrets.extend(v for v in (frame['api_key'], scope['secret']) if isinstance(v, str) and v)
         await asyncio.to_thread(worker.send, frame)
         worker.writer.start()
@@ -524,7 +585,9 @@ async def execute_managed(authority, ref, row, policy):
                 with suppress(subprocess.TimeoutExpired):
                     await asyncio.to_thread(process.wait, 10)
                 # Like in-process execution, settlement belongs to the drain's stream lock.
-                authority.pending_results[row['admission_id']] = {'result': accepted, 'usage': usage}
+                authority.pending_results[row['admission_id']] = {
+                    'result': {**accepted, 'local_viewer': True}, 'usage': usage,
+                    **await asyncio.to_thread(_settled_session_usage, authority, scope['session_id'], accepted, scope['execution_id'])}
                 return accepted['final_response']
             raise RuntimeStoreError('invalid_worker_frame')
     except (Exception, asyncio.CancelledError) as exc:

@@ -13,7 +13,7 @@ import logging
 import socket
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 from tui_gateway import server
 from agent.message_sanitization import _sanitize_surrogates
@@ -29,20 +29,42 @@ _log = logging.getLogger(__name__)
 _DASHBOARD_CLIENT_TOUCH_MIN_INTERVAL_S = 5.0
 _dashboard_client_touched_at = 0.0
 _dashboard_client_touch_lock = threading.Lock()
+# The touch is file I/O and every caller sits on the event loop, where a slow disk stalls every
+# connection, managed-worker RPCs included (#139011). It runs on its own single worker so it never
+# ties up the pool asyncio.to_thread shares, and at most one write per path waits behind a slow one.
+_dashboard_client_touch_pool = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="dashboard-client-touch")
+_dashboard_client_touch_pending: set = set()
+
+
+def _touch_dashboard_client_marker(path) -> None:
+    with _dashboard_client_touch_lock:
+        # Cleared before the write: activity during a slow write queues exactly one follow-up.
+        _dashboard_client_touch_pending.discard(path)
+    from gateway.scale_to_zero import touch_dashboard_client_heartbeat
+    touch_dashboard_client_heartbeat(path)  # best-effort, never raises
 
 
 def _note_dashboard_client_activity(*, force: bool = False) -> None:
-    """Refresh the dashboard-client liveness marker (throttled, best-effort)."""
+    """Refresh the dashboard-client liveness marker (throttled, best-effort, never blocks the caller)."""
     global _dashboard_client_touched_at
     now = time.monotonic()
     with _dashboard_client_touch_lock:
         if not force and now - _dashboard_client_touched_at < _DASHBOARD_CLIENT_TOUCH_MIN_INTERVAL_S:
             return
         _dashboard_client_touched_at = now
+    path = None
     try:
-        from gateway.scale_to_zero import touch_dashboard_client_heartbeat
-        touch_dashboard_client_heartbeat()
+        from gateway.scale_to_zero import dashboard_client_heartbeat_path
+        # Resolved here: the worker thread does not carry the caller's profile scope.
+        path = dashboard_client_heartbeat_path()
+        with _dashboard_client_touch_lock:
+            if path in _dashboard_client_touch_pending:
+                return
+            _dashboard_client_touch_pending.add(path)
+        _dashboard_client_touch_pool.submit(_touch_dashboard_client_marker, path)
     except Exception:
+        _dashboard_client_touch_pending.discard(path)  # a refused submit (shutdown) must not wedge it
         _log.debug("dashboard client heartbeat touch failed", exc_info=True)
 
 
@@ -74,6 +96,14 @@ _WS_LOG_PAYLOAD_PREVIEW = 240
 # by a long compaction, a GIL-heavy turn): the client's heartbeat deadline measures the transport, not
 # handler latency (#108325). A full queue parks the reader — the old serial behaviour.
 _WS_DISPATCH_QUEUE_MAX = 256
+# These handlers only project already-owned state.  They may take seconds for a large stored
+# transcript, so running them through the serial control lane turns an inexpensive interrupt or
+# control read behind them into a client timeout.  Keep the exception deliberately narrow: mutating
+# RPCs still retain arrival order, and no more than two expensive reads consume a connection.
+_WS_CONCURRENT_READ_METHODS = frozenset({"session.context_breakdown"})
+_WS_CONCURRENT_READ_LIMIT = 2
+# Reads admitted beyond the running ones; one more parks the reader (as the serial lane did).
+_WS_WAITING_READ_LIMIT = 8
 
 # Per-token streaming frames are coalesced: buffered and flushed as a batch on a short timer instead
 # of waking the loop once per token (each wakeup competes with the agent turn for the GIL). Keep this
@@ -197,21 +227,29 @@ class WSTransport:
 
     async def write_many_async(self, frames: list[dict]) -> bool:
         """``write_async`` for an ordered batch: buffered tokens, then *frames*, in one send batch."""
+        return await self.write_many_if_current_async(frames, None)
+
+    async def write_many_if_current_async(self, frames: list[dict], is_current: Callable[[], bool] | None) -> bool:
+        """Recheck the batch's owner at each send without gating other producers' buffered tokens."""
         if self._closed:
             return False
         with self._token_lock:
             batch, self._pending_tokens = self._pending_tokens, []
+            unguarded_prefix = len(batch)
             batch.extend(serialize_frame(frame, self._peer, _log) for frame in frames)
-        await self._safe_send_many(batch)
+        await self._safe_send_many(batch, is_current=is_current, unguarded_prefix=unguarded_prefix)
         return not self._closed
 
-    async def _safe_send_many(self, lines: list[str]) -> None:
+    async def _safe_send_many(self, lines: list[str], *, is_current: Callable[[], bool] | None = None,
+                              unguarded_prefix: int = 0) -> None:
         """Send one indivisible batch of pre-serialized frames in wire order."""
         async with self._send_lock:
             if self._closed:
                 return
-            for line in lines:
+            for index, line in enumerate(lines):
                 if self._closed:
+                    return
+                if is_current is not None and index >= unguarded_prefix and not is_current():
                     return
                 payload = _sanitize_ws_text(line)
                 try:
@@ -375,35 +413,101 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
 
     pending: asyncio.Queue = asyncio.Queue(maxsize=_WS_DISPATCH_QUEUE_MAX)
     dispatcher: asyncio.Task | None = None
+    concurrent_reads: set[asyncio.Task] = set()
+    started_reads: set[asyncio.Task] = set()
+    concurrent_read_slots = asyncio.Semaphore(_WS_CONCURRENT_READ_LIMIT)
+    # Running + waiting reads: taken by the reader before a read is queued, so a flood parks it.
+    read_admission = asyncio.Semaphore(_WS_CONCURRENT_READ_LIMIT + _WS_WAITING_READ_LIMIT)
+    # Set when the read lane could not send a reply: ends the reader without cancelling the
+    # control handler the serial lane is running (it finishes, then the dispatcher stops).
+    send_failed: asyncio.Future = asyncio.get_running_loop().create_future()
     stop = object()  # queue sentinel; a JSON ``null`` frame parses to None, so None can't be it
 
-    async def _dispatch_loop() -> None:
-        """Dispatch queued requests one at a time in arrival order until the ``stop`` sentinel."""
+    async def _dispatch_one(req: Any) -> None:
+        """Dispatch one request and write its inline reply."""
         nonlocal dispatch_crashes
-        while (req := await pending.get()) is not stop:
-            req_id = req.get("id") if isinstance(req, dict) else None
-            req_method = req.get("method") if isinstance(req, dict) else None
-            # dispatch() may schedule long handlers on the pool; it returns None then and the worker
-            # writes the response itself via transport.write (a separate thread, so that is the safe
-            # path). Inline handlers return the response dict, written here from the loop.
+        req_id = req.get("id") if isinstance(req, dict) else None
+        req_method = req.get("method") if isinstance(req, dict) else None
+        # dispatch() may schedule long handlers on the pool; it returns None then and the worker
+        # writes the response itself via transport.write (a separate thread, so that is the safe
+        # path). Inline handlers return the response dict, written here from the loop.
+        try:
+            resp = await _dispatch_request(authority_connection, req, req_method, transport)
+        # health: allow BLE001 -- dispatch boundary: logs the traceback (_log.exception) and answers -32603
+        except Exception:
+            dispatch_crashes += 1
+            _log.exception("ws dispatch crash peer=%s id=%s method=%s", peer, req_id, req_method)
+            await _reply(_error(-32603, "internal error", req_id), "send_failed_after_dispatch_crash",
+                         "ws dispatch-crash reply send failed peer=%s id=%s method=%s", peer, req_id, req_method)
+            return
+        if resp is not None:
+            await _reply(resp, "send_failed_after_response",
+                         "ws response send failed peer=%s id=%s method=%s", peer, req_id, req_method)
+
+    async def _dispatch_concurrent_read(req: Any) -> None:
+        async with concurrent_read_slots:
+            started_reads.add(asyncio.current_task())
             try:
-                resp = await _dispatch_request(authority_connection, req, req_method, transport)
-            except Exception:
-                dispatch_crashes += 1
-                _log.exception("ws dispatch crash peer=%s id=%s method=%s", peer, req_id, req_method)
-                await _reply(_error(-32603, "internal error", req_id), "send_failed_after_dispatch_crash",
-                             "ws dispatch-crash reply send failed peer=%s id=%s method=%s", peer, req_id, req_method)
+                await _dispatch_one(req)
+            except _SendFailed:
+                # A failed response ends the reader even from the concurrent lane, never by
+                # cancelling the serial lane's in-flight handler.
+                if not send_failed.done():
+                    send_failed.set_result(None)
+                raise
+
+    def _finish_concurrent_read(task: asyncio.Task) -> None:
+        # Here, not in the task: a task cancelled before its first step never runs its body.
+        read_admission.release()
+        concurrent_reads.discard(task)
+        started_reads.discard(task)
+        with contextlib.suppress(asyncio.CancelledError, _SendFailed):
+            task.result()
+
+    async def _next_request() -> Any:
+        """The next queued frame, or ``stop`` once the read lane failed to send a reply."""
+        step = asyncio.ensure_future(pending.get())
+        await asyncio.wait({step, send_failed}, return_when=asyncio.FIRST_COMPLETED)
+        if step.done():
+            return stop if send_failed.done() else step.result()
+        step.cancel()
+        return stop
+
+    async def _dispatch_loop() -> None:
+        """Dispatch controls in arrival order; bounded expensive read-only projections run alongside them."""
+        while (req := await _next_request()) is not stop:
+            req_method = req.get("method") if isinstance(req, dict) else None
+            if req_method in _WS_CONCURRENT_READ_METHODS:
+                task = asyncio.create_task(_dispatch_concurrent_read(req))
+                concurrent_reads.add(task)
+                task.add_done_callback(_finish_concurrent_read)
                 continue
-            if resp is not None:
-                await _reply(resp, "send_failed_after_response",
-                             "ws response send failed peer=%s id=%s method=%s", peer, req_id, req_method)
+            await _dispatch_one(req)
+
+    async def _queue_request(req: Any) -> None:
+        if isinstance(req, dict) and req.get("method") in _WS_CONCURRENT_READ_METHODS:
+            # A read past the waiting cap parks the reader, as the serial lane did; released
+            # when its task ends (a read cancelled before it ran releases it too).
+            await _unless_dispatch_failed(read_admission.acquire())
+        await _unless_dispatch_failed(pending.put(req))
+
+    async def _end_reads() -> None:
+        """Reads that never started are dropped (their client is gone); started ones finish before the
+        authority closes, unless the connection itself was cancelled (server shutdown)."""
+        task = asyncio.current_task()
+        shutting_down = task is not None and task.cancelling()
+        for read in concurrent_reads:
+            if shutting_down or read not in started_reads:
+                read.cancel()
+        await asyncio.gather(*concurrent_reads, return_exceptions=True)
 
     async def _unless_dispatch_failed(aw: Any) -> Any:
-        """Await *aw*, or raise _SendFailed once the dispatcher has ended on a reply it could not send."""
+        """Await *aw*, or raise _SendFailed once a reply could not be sent (the dispatcher ended on one,
+        or the read lane failed one)."""
         assert dispatcher is not None
         step = asyncio.ensure_future(aw)
         try:
-            await asyncio.wait({step, dispatcher}, return_when=asyncio.FIRST_COMPLETED)
+            await asyncio.wait({step, dispatcher, send_failed}, return_when=asyncio.FIRST_COMPLETED)
             if step.done():
                 return step.result()
             raise _SendFailed
@@ -481,7 +585,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
                 await _reply({"jsonrpc": "2.0", "result": {"ok": True}, "id": req_id}, "send_failed_after_heartbeat",
                              "ws heartbeat reply send failed peer=%s id=%s", peer, req_id)
                 continue
-            await _unless_dispatch_failed(pending.put(req))
+            await _queue_request(req)
     except _SendFailed:
         pass
     finally:
@@ -499,6 +603,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             failure = None if dispatcher.cancelled() else dispatcher.exception()
             if failure is not None and not isinstance(failure, _SendFailed):
                 _log.error("ws dispatcher failed peer=%s", peer, exc_info=failure)
+        await _end_reads()
         if authority_connection is not None:
             # After the dispatcher drained: an in-flight authority call must not see its connection closed.
             await authority_connection.close()

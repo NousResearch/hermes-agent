@@ -17,6 +17,7 @@ import hashlib
 import json
 import logging
 import secrets
+import time
 import unicodedata
 from abc import ABC, abstractmethod
 from typing import Optional, Dict
@@ -30,6 +31,7 @@ from tools.file_operations_common import (
     _strip_terminal_fence_leaks, normalize_read_pagination, normalize_search_pagination)
 from tools.file_operations_lint import LINTERS_INPROC, LintMixin, _FAIL_CLOSED_INPROC_EXTS
 from tools.file_operations_search import SearchMixin
+from tools import file_operations_native as _native_io
 
 logger = logging.getLogger(__name__)
 
@@ -578,7 +580,11 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         gives umask-default perms instead of mktemp's 0600 — not ``$(umask)``
         arithmetic (zsh parses leading-zero constants as decimal), quoted so zsh
         doesn't =word-expand. ``trap ... EXIT`` removes the temp on every failure.
+        The local POSIX backend does the same in-process (``tools.file_operations_native``).
         """
+        if self._native_read_enabled():
+            error = _native_io.atomic_write(self._native_path(path), content.encode("utf-8", "surrogateescape"))
+            return ExecuteResult(stdout=error or "", exit_code=1 if error else 0)
         q_path = self._escape_shell_arg(path)
         q_parent = self._escape_shell_arg(os.path.dirname(path) or ".")
         tmpl = self._escape_shell_arg(".hermes-tmp.XXXXXX")
@@ -916,6 +922,10 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # Same "is this env the local host" test the LSP path uses; isinstance is
         # microseconds and self.env is never rebound, so nothing to memoize.
         return sys.platform != "win32" and self._lsp_local_only()
+
+    def _native_path(self, path: str) -> str:
+        """``path`` resolved the way the shell resolves it: against the live backend cwd."""
+        return path if os.path.isabs(path) else os.path.join(getattr(self.env, "cwd", None) or self.cwd, path)
 
     def _read_file_native(self, path: str, offset: int, limit: int) -> ReadResult:
         """``read_file`` without a shell — same contract as the shell path, byte for
@@ -1416,6 +1426,16 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         else:
             body_mode = None
 
+        native = _native_io.probe(self._native_path(path), body_mode == "cat") if self._native_read_enabled() else None
+        if native is not None:
+            has_bom, raw = native
+            # Decoded as the shell transport decodes (errors="replace"): same pre_content either way.
+            body = raw.decode("utf-8", "replace") if raw else ""
+            if body_mode == "cat" and body:
+                pre_content = body
+            sample = pre_content or (body if body_mode == "sample" else "")
+            return has_bom, pre_content, _detect_line_ending(sample) if sample else None
+
         sentinel = _new_sentinel(_WRITE_SENTINEL_PREFIX)
         probe = self._exec(self._write_probe_cmd(path, sentinel, body_mode))
         output = probe.stdout or ""
@@ -1479,9 +1499,11 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         The explicit flag saves the model a confirming re-read; a mismatch is a hard
         error. ``verified`` is None when the hash could not be taken."""
         try:
-            hash_result = self._exec(f"sha256sum {self._escape_shell_arg(path)} 2>/dev/null")
-            if hash_result.exit_code == 0 and hash_result.stdout.strip():
+            disk_sha = _native_io.sha256_of(self._native_path(path)) if self._native_read_enabled() else None
+            hash_result = None if disk_sha else self._exec(f"sha256sum {self._escape_shell_arg(path)} 2>/dev/null")
+            if hash_result is not None and hash_result.exit_code == 0 and hash_result.stdout.strip():
                 disk_sha = hash_result.stdout.strip().split()[0]
+            if disk_sha:
                 if disk_sha != hashlib.sha256(content_bytes).hexdigest():
                     return False, WriteResult(error=(
                         f"Post-write verification failed for {path}: on-disk "
@@ -1500,11 +1522,12 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         CANDIDATE content (JSON/YAML/TOML) → one compound on-disk probe
         (pre-content when wanted, CRLF, BOM; see ``_probe_write_target``) →
         JSON NaN/Infinity refusal when the write introduces one → CRLF/BOM
-        preservation → LSP baseline snapshot → atomic write (content rides
-        stdin: no ARG_MAX limit) → sha256 verification → lint delta → LSP
-        diagnostics when syntax is clean. ``pre_content``: pre-edit content the
+        preservation → atomic write (content rides stdin: no ARG_MAX limit) →
+        sha256 verification → lint delta → LSP check when syntax is clean
+        (non-blocking; the pre-edit content is its baseline, see ``_maybe_lsp_diagnostics``). ``pre_content``: pre-edit content the
         caller already has (skips the read); BOM detection always probes disk.
         """
+        started = time.monotonic()
         path = self._expand_path(path)
         denied = get_write_denied_error(path)
         if denied:
@@ -1531,8 +1554,6 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             content = _normalize_line_endings(content, "\r\n")
         if has_bom and not _has_bom(content):
             content = _UTF8_BOM + content
-        # Best-effort snapshot so the LSP tier reports only this edit's diagnostics.
-        self._snapshot_lsp_baseline(path)
         # ``dirs_created`` means "parent dirs ensured" (mkdir -p is folded into
         # _atomic_write; its failure surfaces as the atomic-write error below).
         dirs_created = bool(os.path.dirname(path))
@@ -1552,7 +1573,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # clean (no point asking an LSP about a file that won't parse).
         lsp_diagnostics: Optional[str] = None
         if lint_result.success or lint_result.skipped:
-            lsp_diagnostics = self._maybe_lsp_diagnostics(path, pre_content=pre_content, post_content=content) or None
+            lsp_diagnostics = self._maybe_lsp_diagnostics(
+                path, pre_content=pre_content, post_content=content, started=started) or None
         return WriteResult(
             bytes_written=len(content_bytes), dirs_created=dirs_created, verified=content_verified,
             _content_sha256=hashlib.sha256(content_bytes).hexdigest(),
@@ -1637,10 +1659,10 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         verify_error = self._verify_patch_persisted(path, new_content)
         if verify_error is not None:
             return verify_error
-        lint_result = self._check_lint_delta(path, pre_content=content, post_content=new_content)
+        # write_file already ran the lint delta on these bytes (pre = the raw read).
         return PatchResult(
             success=True, diff=self._unified_diff(content, new_content, path), files_modified=[path],
-            lint=lint_result.to_dict() if lint_result else None,
+            lint=write_result.lint,
             note="\n".join(n for n in (*correction_notes, boundary_note([strategy])) if n) or None,
             # From the internal write_file call, whose baseline was the pre-patch content.
             lsp_diagnostics=write_result.lsp_diagnostics,

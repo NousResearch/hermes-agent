@@ -18,7 +18,7 @@ from agent.replay_cleanup import strip_stale_dangerous_confirmations
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
-from gateway.platforms.base_edit_targets import adapter_supports_progress_edits, next_edit_target_message_id
+from gateway.platforms.base_edit_targets import adapter_declines_progress_edits, next_edit_target_message_id
 from gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
 from utils import is_truthy_value
@@ -751,12 +751,13 @@ class GatewayTurnProgressMixin:
         if ctx._native_slack_task_cards and hasattr(adapter, "send_native_task_card_progress"):
             await self._send_native_task_card_progress(adapter)
             return
-        # Skip tool progress where the progress bubble cannot be edited (e.g. iMessage/BlueBubbles):
-        # each update would be a separate bubble. An adapter may support explicit edits yet opt out
-        # of automatic progress edits (SUPPORTS_PROGRESS_EDITS). getattr, not attribute access:
-        # duck-typed adapters (test fakes, minimal plugins) may lack edit_message — "can't edit".
+        # Skip tool progress for platforms that can't edit messages (e.g. iMessage/BlueBubbles):
+        # each update would be a separate bubble. getattr, not attribute access: duck-typed
+        # adapters (test fakes, minimal plugins) may lack edit_message — treated as "can't edit".
+        # An adapter may also edit explicitly yet decline automatic progress edits (Signal before
+        # the user opts in): only a declared SUPPORTS_PROGRESS_EDITS=False counts.
         adapter_edit = getattr(type(adapter), "edit_message", None)
-        if (not adapter_supports_progress_edits(adapter) or adapter_edit is None
+        if (adapter_declines_progress_edits(adapter) or adapter_edit is None
                 or adapter_edit is BasePlatformAdapter.edit_message):
             self._drain_progress_queue()
             return

@@ -51,6 +51,33 @@ class _NoProgressEditAdapter(_MintingProgressAdapter):
     SUPPORTS_PROGRESS_EDITS = False
 
 
+class _CardlessDingTalkLikeAdapter(ProgressCaptureAdapter):
+    """DingTalk without AI Cards: declares no message editing, yet overrides edit_message (it
+    refuses at runtime) and says nothing about progress edits."""
+
+    SUPPORTS_MESSAGE_EDITING = False
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        await super().edit_message(chat_id, message_id, content)
+        return SendResult(success=False, error="AI Cards are not configured for message editing")
+
+
+class _ProgressOffSignalAdapter(SignalAdapter):
+    """The real Signal adapter with its progress opt-in withdrawn; JSON-RPC stubbed."""
+
+    SUPPORTS_PROGRESS_EDITS = False
+
+    def __init__(self, platform=Platform.SIGNAL):
+        super().__init__(PlatformConfig(enabled=True, extra={"http_url": "http://localhost:8080",
+                                                             "account": "+155****0000"}))
+        self.rpc_sends = []
+
+    async def _rpc(self, method, params, rpc_id=None, **kwargs):
+        if method == "send":
+            self.rpc_sends.append(dict(params))
+        return {"timestamp": 1712345678000 + len(self.rpc_sends)}
+
+
 class _MissingIdProgressAdapter(_MintingProgressAdapter):
     """Delivers progress but never returns an edit handle."""
 
@@ -191,6 +218,24 @@ async def test_progress_respects_explicit_progress_edit_opt_out(monkeypatch, tmp
     assert result["final_response"] == "done"
     assert adapter.sent == []
     assert adapter.edits == []
+
+
+@pytest.mark.asyncio
+async def test_progress_gate_keeps_main_behaviour_for_adapters_without_a_progress_flag(monkeypatch, tmp_path):
+    """Only a declared SUPPORTS_PROGRESS_EDITS=False skips progress. An adapter that overrides
+    edit_message but reports SUPPORTS_MESSAGE_EDITING=False (cardless DingTalk) keeps the progress
+    loop it has on main, while Signal with its progress opt-in withdrawn still sends nothing."""
+    monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "")
+    dingtalk, _ = await _run_with_agent(
+        monkeypatch, tmp_path, FakeAgent, session_id="sess-dingtalk-progress",
+        config_data={"display": {"tool_progress": "all", "interim_assistant_messages": False}},
+        platform=Platform.DINGTALK, chat_id="cid-1", chat_type="dm", thread_id=None,
+        adapter_cls=_CardlessDingTalkLikeAdapter,
+    )
+    signal_off, _ = await _run_signal(monkeypatch, tmp_path, FakeAgent, _ProgressOffSignalAdapter, "sess-signal-off")
+
+    assert dingtalk.sent, "the progress loop must run for an adapter that only overrides edit_message"
+    assert signal_off.rpc_sends == []
 
 
 @pytest.mark.asyncio

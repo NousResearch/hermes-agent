@@ -5,8 +5,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gateway.platforms.base_edit_targets import (
+    adapter_declines_progress_edits,
     adapter_refuses_token_streaming,
-    adapter_supports_progress_edits,
     adapter_supports_streaming_edits,
 )
 from tests.gateway.test_signal import _make_signal_adapter, _stub_rpc
@@ -46,20 +46,25 @@ class TestSignalEditCapabilities:
         adapter = _make_signal_adapter(monkeypatch)
 
         assert adapter_supports_streaming_edits(adapter) is False
-        assert adapter_supports_progress_edits(adapter) is True
+        assert adapter_declines_progress_edits(adapter) is False
         assert adapter_refuses_token_streaming(adapter) is True
 
-    def test_capabilities_fall_back_to_message_editing(self):
+    def test_capability_defaults(self):
         class EditableAdapter:
             SUPPORTS_MESSAGE_EDITING = True
 
         class NonEditableAdapter:
             SUPPORTS_MESSAGE_EDITING = False
 
+        class ProgressOffAdapter:
+            SUPPORTS_PROGRESS_EDITS = False
+
         assert adapter_supports_streaming_edits(EditableAdapter()) is True
         assert adapter_supports_streaming_edits(NonEditableAdapter()) is False
-        assert adapter_supports_progress_edits(EditableAdapter()) is True
-        assert adapter_supports_progress_edits(NonEditableAdapter()) is False
+        # Progress edits are declined only explicitly; SUPPORTS_MESSAGE_EDITING does not decide it.
+        assert adapter_declines_progress_edits(EditableAdapter()) is False
+        assert adapter_declines_progress_edits(NonEditableAdapter()) is False
+        assert adapter_declines_progress_edits(ProgressOffAdapter()) is True
         # A legacy non-editable adapter is not an explicit streaming refusal (proxy keeps its fallback).
         assert adapter_refuses_token_streaming(NonEditableAdapter()) is False
 

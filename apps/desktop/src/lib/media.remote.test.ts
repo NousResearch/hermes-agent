@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $connection } from '@/store/session'
+import { $connection, $currentCwd, $selectedStoredSessionId, $workspaceCwdOwner } from '@/store/session'
 
 import {
   downloadGatewayMediaFile,
@@ -10,7 +10,9 @@ import {
   isInlineMediaSrc,
   mediaExternalUrl,
   mediaGatewayStreamUrl,
+  mediaImageKey,
   resolveMediaDisplaySrc,
+  resolveMediaPathAgainstWorkspace,
   resolveMediaPlaybackSrc
 } from './media'
 
@@ -316,5 +318,110 @@ describe('downloadGatewayMediaFile', () => {
     await expect(downloadGatewayMediaFile('/Users/me/project/report.md')).rejects.toThrow(
       'Desktop file download bridge'
     )
+  })
+})
+
+
+describe('workspace-relative display resolution (#141628)', () => {
+  beforeEach(() => {
+    $connection.set(null)
+    $currentCwd.set('/Users/me/Projects/demo')
+    $selectedStoredSessionId.set('s1')
+    $workspaceCwdOwner.set('s1')
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    $connection.set(null)
+    $currentCwd.set('')
+    $selectedStoredSessionId.set(null)
+    $workspaceCwdOwner.set(null)
+  })
+
+  it('reads an owned relative path off the local disk through the cwd', async () => {
+    const readFileDataUrl = vi.fn(async () => 'data:image/png;base64,ZHVtbXk=')
+    vi.stubGlobal('window', { hermesDesktop: { readFileDataUrl } })
+
+    await expect(resolveMediaDisplaySrc('out/sheet.png')).resolves.toBe('data:image/png;base64,ZHVtbXk=')
+    expect(readFileDataUrl).toHaveBeenCalledWith('/Users/me/Projects/demo/out/sheet.png')
+  })
+
+  it('opens an owned relative path as a file URL under the cwd (was a bogus host before)', () => {
+    expect(mediaExternalUrl('out/sheet.png')).toBe('file:///Users/me/Projects/demo/out/sheet.png')
+  })
+
+  it('geometry keys an owned relative path by its RESOLVED bytes', () => {
+    const key = mediaImageKey('out/sheet.png', null)
+    const absoluteKey = mediaImageKey('/Users/me/Projects/demo/out/sheet.png', null)
+
+    expect(key).toBe(absoluteKey)
+  })
+})
+
+describe('resolveMediaPathAgainstWorkspace (#141628)', () => {
+  afterEach(() => {
+    $connection.set(null)
+    $currentCwd.set('')
+    $selectedStoredSessionId.set(null)
+    $workspaceCwdOwner.set(null)
+  })
+
+  it('absolutizes a workspace-relative path against the owned session cwd', () => {
+    $connection.set(null)
+    $currentCwd.set('/Users/me/Projects/demo')
+    $selectedStoredSessionId.set('s1')
+    $workspaceCwdOwner.set('s1')
+
+    expect(resolveMediaPathAgainstWorkspace('out/sheet.png')).toBe('/Users/me/Projects/demo/out/sheet.png')
+    expect(resolveMediaPathAgainstWorkspace('png/a b.png')).toBe('/Users/me/Projects/demo/png/a b.png')
+  })
+
+  it('normalizes the cwd join (trailing slash)', () => {
+    $connection.set(null)
+    $currentCwd.set('/Users/me/Projects/demo/')
+    $selectedStoredSessionId.set('s1')
+    $workspaceCwdOwner.set('s1')
+
+    expect(resolveMediaPathAgainstWorkspace('a.png')).toBe('/Users/me/Projects/demo/a.png')
+  })
+
+  it('leaves file URLs, absolute paths, tilde and Windows paths untouched', () => {
+    $currentCwd.set('/Users/me/Projects/demo')
+    $selectedStoredSessionId.set('s1')
+    $workspaceCwdOwner.set('s1')
+
+    expect(resolveMediaPathAgainstWorkspace('file:///tmp/a.png')).toBe('file:///tmp/a.png')
+    expect(resolveMediaPathAgainstWorkspace('/tmp/a.png')).toBe('/tmp/a.png')
+    expect(resolveMediaPathAgainstWorkspace('~/a.png')).toBe('~/a.png')
+    expect(resolveMediaPathAgainstWorkspace('C:\\tmp\\a.png')).toBe('C:\\tmp\\a.png')
+  })
+
+  it('passes a relative path through when the workspace ownership is unknown', () => {
+    // No owner: the live cwd may belong to another conversation — adopting it
+    // could resolve the name to a DIFFERENT existing file, which is worse
+    // than the honest failure.
+    $currentCwd.set('/Users/me/Projects/other-repo')
+    $selectedStoredSessionId.set('s1')
+    $workspaceCwdOwner.set(null)
+
+    expect(resolveMediaPathAgainstWorkspace('out/sheet.png')).toBe('out/sheet.png')
+  })
+
+  it('passes a relative path through when the cwd is empty', () => {
+    $connection.set(null)
+    $currentCwd.set('')
+    $selectedStoredSessionId.set('s1')
+    $workspaceCwdOwner.set('s1')
+
+    expect(resolveMediaPathAgainstWorkspace('out/sheet.png')).toBe('out/sheet.png')
+  })
+
+  it('is cwd-agnostic for absolute input even under remote connections', () => {
+    $connection.set({ baseUrl: 'https://gw.example', mode: 'remote', token: 'tok' } as never)
+    $currentCwd.set('/remote-only/cwd')
+    $selectedStoredSessionId.set('s1')
+    $workspaceCwdOwner.set('s1')
+
+    expect(resolveMediaPathAgainstWorkspace('/local/disk/a.png')).toBe('/local/disk/a.png')
   })
 })

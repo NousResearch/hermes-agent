@@ -7,7 +7,7 @@ import { desktopFsCacheKey, isReadFileErrorResult, readDesktopFileDataUrl } from
 import { LruCache } from '@/lib/lru-cache'
 import { capitalize } from '@/lib/text'
 import { notify, notifyError } from '@/store/notifications'
-import { $connection } from '@/store/session'
+import { $connection, $currentCwd, workspaceCwdBelongsToSelectedSession } from '@/store/session'
 
 export type MediaKind = 'audio' | 'image' | 'video' | 'file'
 
@@ -109,16 +109,45 @@ export function isFileMediaPath(path: string): boolean {
   return /^(?:file:|\/|~\/|[a-z]:[\\/]|\\\\)/i.test(path)
 }
 
-export async function resolveMediaDisplaySrc(path: string, owner?: OwnerScope): Promise<string> {
-  if (isInlineMediaSrc(path) || !isFileMediaPath(path)) {
+/**
+ * Resolve a workspace-relative media path against the live session workspace.
+ *
+ * `MEDIA:` values are agent-emitted paths; a relative one is relative to the
+ * cwd the message was produced under, which for the selected session is the
+ * tracked `$currentCwd` (the same truth `workspaceCwdBelongsToSelectedSession`
+ * gates workspace surfaces on). An absolute-ish path and an unowned workspace
+ * pass through unchanged — the latter because adopting the previous
+ * conversation's cwd could resolve the name to a DIFFERENT existing file
+ * (#141628). Only the cwd-mismatch caller decides what an unowned relative
+ * path means; every other consumer keeps today's behavior.
+ */
+export function resolveMediaPathAgainstWorkspace(path: string): string {
+  if (isFileMediaPath(path) || !workspaceCwdBelongsToSelectedSession()) {
     return path
+  }
+
+  const cwd = $currentCwd.get()?.trim()
+
+  return cwd ? `${cwd.replace(/[\\/]+$/, '')}/${path}` : path
+}
+
+export async function resolveMediaDisplaySrc(path: string, owner?: OwnerScope): Promise<string> {
+  // A workspace-relative MEDIA: value (the agent emitted it relative to the
+  // session cwd) is absolutized while the workspace is still owned by the
+  // selected conversation — chat inline display and artifacts both funnel
+  // through this resolver (#141628). Unresolvable shapes come back unchanged
+  // and fail exactly as they did before.
+  const resolvedPath = resolveMediaPathAgainstWorkspace(path)
+
+  if (isInlineMediaSrc(resolvedPath) || !isFileMediaPath(resolvedPath)) {
+    return resolvedPath
   }
 
   // An explicit local owner is this device, even with a remote foreground.
   // Keep the native reader and its configured size cap; the backend preview
   // endpoint has a separate fixed limit.
   if (owner?.connectionId === LOCAL_CONNECTION_ID && window.hermesDesktop?.readFileDataUrl) {
-    const dataUrl = await window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
+    const dataUrl = await window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(resolvedPath))
 
     if (isReadFileErrorResult(dataUrl)) {
       throw new Error(dataUrl.message || `Media file read failed: ${dataUrl.error}`)
@@ -131,7 +160,7 @@ export async function resolveMediaDisplaySrc(path: string, owner?: OwnerScope): 
   // halves at read admission rather than resolving them when the read settles.
   if (window.hermesDesktop && (owner?.connectionId || owner?.profile)) {
     const result = await hermesApi<string | { dataUrl?: string }>({
-      path: `/api/fs/read-data-url?path=${encodeURIComponent(filePathFromMediaPath(path))}`,
+      path: `/api/fs/read-data-url?path=${encodeURIComponent(filePathFromMediaPath(resolvedPath))}`,
       ...(owner.connectionId ? { connectionId: owner.connectionId } : {}),
       ...(owner.profile ? { profile: owner.profile } : {})
     })
@@ -140,14 +169,14 @@ export async function resolveMediaDisplaySrc(path: string, owner?: OwnerScope): 
   }
 
   if (window.hermesDesktop && isRemoteGateway()) {
-    return gatewayMediaDataUrl(path)
+    return gatewayMediaDataUrl(resolvedPath)
   }
 
   if (!window.hermesDesktop?.readFileDataUrl) {
-    return mediaExternalUrl(path)
+    return mediaExternalUrl(resolvedPath)
   }
 
-  const dataUrl = await window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
+  const dataUrl = await window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(resolvedPath))
 
   if (isReadFileErrorResult(dataUrl)) {
     throw new Error(dataUrl.message || `Media file read failed: ${dataUrl.error}`)
@@ -168,16 +197,23 @@ export interface MediaImageDimensions {
 const imageDimensions = new LruCache<string, 'broken' | MediaImageDimensions>(512)
 
 export function mediaImageKey(path: string, connection: HermesConnection | null, owner?: OwnerScope): string {
+  // Geometry belongs to the RESOLVED bytes (#141628): two sessions can emit
+  // the same workspace-relative name in different workspaces, and keying on
+  // the raw relative string would let one session's dimensions (or its
+  // 'broken' mark) contaminate the other's frame. Resolving here keeps the
+  // key in sync with what resolveMediaDisplaySrc will actually read.
+  const resolvedPath = resolveMediaPathAgainstWorkspace(path)
+
   // File reads ignore URL query/fragment, but callers can use them to identify
   // a new revision. Keep them in the geometry key while joining proven aliases.
-  const revision = /^file:/i.test(path) ? (path.match(/[?#].*$/)?.[0] ?? '') : ''
+  const revision = /^file:/i.test(resolvedPath) ? (resolvedPath.match(/[?#].*$/)?.[0] ?? '') : ''
 
   return JSON.stringify([
     owner?.connectionId ||
       connection?.connectionId ||
       desktopFsCacheKey(connection && { ...connection, profile: owner?.profile ?? connection.profile }),
     owner?.profile ?? connection?.profile ?? '',
-    mediaSourceIdentity(path),
+    mediaSourceIdentity(resolvedPath),
     revision
   ])
 }
@@ -257,13 +293,15 @@ export function mediaExternalUrl(path: string): string {
     const conn = $connection.get()
 
     if (conn?.baseUrl && conn.token) {
-      const file = encodeURIComponent(filePathFromMediaPath(path))
+      const file = encodeURIComponent(filePathFromMediaPath(resolveMediaPathAgainstWorkspace(path)))
 
       return `${conn.baseUrl}/api/files/download?path=${file}&token=${encodeURIComponent(conn.token)}`
     }
   }
 
-  return /^file:/i.test(path) ? path : pathToLocalFileUrl(path)
+  const resolvedPath = resolveMediaPathAgainstWorkspace(path)
+
+  return /^file:/i.test(resolvedPath) ? resolvedPath : pathToLocalFileUrl(resolvedPath)
 }
 
 // Remote gateway audio/video is proxied by the Electron main process. OAuth
@@ -274,7 +312,7 @@ export function mediaGatewayStreamUrl(path: string): string {
   const conn = $connection.get()
 
   if (isRemoteGateway()) {
-    const file = encodeURIComponent(filePathFromMediaPath(path))
+    const file = encodeURIComponent(filePathFromMediaPath(resolveMediaPathAgainstWorkspace(path)))
 
     const scope = [
       conn?.connectionId ? `connectionId=${encodeURIComponent(conn.connectionId)}` : '',
@@ -293,7 +331,7 @@ export function mediaGatewayStreamUrl(path: string): string {
 // file with Range support. Used for audio/video so playback bypasses the data
 // URL size cap and supports seeking. `path` may be a plain path or `file://…`.
 export function mediaStreamUrl(path: string): string {
-  return `hermes-media://stream/${encodeURIComponent(filePathFromMediaPath(path))}`
+  return `hermes-media://stream/${encodeURIComponent(filePathFromMediaPath(resolveMediaPathAgainstWorkspace(path)))}`
 }
 
 export function mediaPathFromMarkdownHref(href?: string): string | null {

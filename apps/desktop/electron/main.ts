@@ -2489,7 +2489,15 @@ async function openExternalFile(rawUrl: string) {
 
   try {
     localPath = resolveRequestedPathForIpc(rawUrl, { purpose: 'Open external file' })
-  } catch {
+  } catch (error) {
+    // An unusable path shape must never die silently (#141628): a raw
+    // relative value arrives as a file:// URL whose first segment parses as a
+    // host (ERR_INVALID_FILE_URL_HOST), and a bare `catch { return }` turned
+    // that into a no-op click with zero feedback. Report it through the same
+    // broadcast the OS-open failures use so the user sees the fallback dialog.
+    rememberLog(`[file] path resolve failed for open: ${error instanceof Error ? error.message : String(error)}`)
+    broadcastOpenFailed(rawUrl, error instanceof Error ? error.message : String(error))
+
     return
   }
 

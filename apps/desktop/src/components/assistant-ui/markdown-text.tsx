@@ -33,6 +33,7 @@ import {
   mediaKind,
   mediaName,
   mediaPathFromMarkdownHref,
+  resolveMediaPathAgainstWorkspace,
   resolveMediaPlaybackSrc,
   validImageDimensions
 } from '@/lib/media'
@@ -118,7 +119,14 @@ function useOpenMediaFile(path: string) {
       setOpenFailed(false)
       void downloadGatewayMediaFile(path).catch(() => setOpenFailed(true))
     } else {
-      openExternalLink(mediaExternalUrl(path))
+      // A workspace-relative MEDIA: value is relative to the session's cwd,
+      // which this renderer tracks — absolutize before building a file:// URL,
+      // or the first segment becomes a URL HOST and the hardened main-process
+      // resolver throws ERR_INVALID_FILE_URL_HOST (the silent no-op in
+      // #141628). Unresolvable shapes (no cwd, unowned workspace) keep the raw
+      // path so the OS/reporting layers own the failure message instead of
+      // this code inventing one.
+      openExternalLink(mediaExternalUrl(resolveMediaPathAgainstWorkspace(path)))
     }
   }
 

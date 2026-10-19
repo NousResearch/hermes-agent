@@ -70,7 +70,10 @@ Peers resolved from `config.yaml` → `a2a_agents`, or a direct URL.
   that sweep tears the task down completely (`_drop_swept_pending`): a pending entry
   left behind would sit at the head of `_pending_order[context]` and, because
   `send()` resolves replies oldest-first, eat the *next* real reply on that context.
-  Inline profile forwards take that same job budget as their subprocess timeout.
+  A forwarded route is the exception: it reports the *owner's* admission instead of running a
+  clock of its own — the accept-then-poll path parks on the first durable receipt and `tasks/get`
+  reads `a2a.status` from there on, so neither the reply window nor the job budget bounds it.
+  A blocking forward keeps its own call timeout.
 - **input-required:** the platform hint tells the agent to start a reply with
   `[INPUT_REQUIRED]` when it needs clarification; the adapter maps that to
   `TASK_STATE_INPUT_REQUIRED` with the question in `status.message`.

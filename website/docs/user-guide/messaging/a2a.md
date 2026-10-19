@@ -144,8 +144,9 @@ which is why the non-blocking path is the rule and this is the safety net.
    client timeout short for non-blocking calls: 30 s is generous, since a compliant peer answers at once.
 4. **Write deliverables to a file and reply with `path + sha`** — still the right shape: the file survives
    anything, and the task store now carries the same reply, so SSH recovery is a fallback rather than the plan.
-5. **Anything longer than `A2A_JOB_TIMEOUT`, or anything that must survive a peer restart** → a kanban
-   card, not an A2A call.
+5. **Anything longer than `A2A_JOB_TIMEOUT`** → a kanban card, not an A2A call. A *forwarded* task is
+   the exception to the restart half: its identity is persisted, so `tasks/get` reads the owner's
+   admission back after a restart instead of answering "not found".
 
 ## Security model
 
@@ -198,4 +199,4 @@ curl -X POST http://your-host:9900/ \
 - **Peers can't reach the card URL** — the card was advertising your bind address; set `A2A_PUBLIC_URL` to the externally routable URL.
 - **`401 Unauthorized`** — token mismatch; check `A2A_PEER_TOKENS`/`A2A_BEARER_TOKEN` on the server and the peer's `auth:` block.
 - **Server won't bind non-localhost** — by design: set a bearer token first, then `A2A_HOST=0.0.0.0`.
-- **Replies time out on long tasks** — do not raise `A2A_REPLY_TIMEOUT` first: see [Long jobs and the reply window](#long-jobs-and-the-reply-window). The fix is a non-blocking send (`returnImmediately` / `wait=false`) or a kanban card; a late reply is stored in the task store either way, and `A2A_JOB_TIMEOUT` is the ceiling on how long it may take. Use a push-notification config (or `GetTask`) if you want the completion pushed to you.
+- **Replies time out on long tasks** — do not raise `A2A_REPLY_TIMEOUT` first: see [Long jobs and the reply window](#long-jobs-and-the-reply-window). The fix is a non-blocking send (`returnImmediately` / `wait=false`) or a kanban card; a late reply is stored in the task store either way, and `A2A_JOB_TIMEOUT` is the ceiling on how long it may take. A **forwarded** route is the exception: its state comes from the owner's admission ledger, so the job budget does not bound it — poll `tasks/get` until the ledger reports terminal. Use a push-notification config (or `GetTask`) if you want the completion pushed to you.

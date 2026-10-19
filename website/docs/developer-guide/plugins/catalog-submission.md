@@ -106,7 +106,9 @@ the gallery. There is no separate listing to maintain.
 8. **Desktop plugins stay inside the SDK surface.** A `desktop/plugin.js` runs
    in the Desktop renderer with the app's full authority (the loader isolates
    errors, not capabilities), so a listed one may only use the plugin SDK:
-   no prototype patching (`X.prototype.y =`, `Object.defineProperty(...prototype`),
+   no prototype patching of renderer or browser objects (`Storage.prototype.y =`,
+   `Object.defineProperty(...prototype`); a bundled library setting fields on
+   classes it declares itself (three.js and the like) is fine,
    no `eval`/`new Function`, no `import()` of anything but `@hermes/plugin-sdk`
    / `react` (app bundle chunks, blob or http URLs included), no script-tag
    injection, no reaching into the app's internal stores or its own markup

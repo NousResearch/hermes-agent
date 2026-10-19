@@ -908,9 +908,10 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
     stored_sid = identity_line_value(prompt, "Session ID")
     if stored_sid and getattr(agent, "pass_session_id", False) and stored_sid != agent.session_id:
         return False
-    # Use the builder's cwd resolver, canonicalizing aliases before comparing workspace identity.
+    # The builder captures a physical cwd. Never re-resolve a historical alias: it may now
+    # point at another workspace. Legacy logical paths conservatively rebuild once.
     stored_cwd = runtime_host_value(prompt, "Current working directory")
-    if stored_cwd and Path(stored_cwd).resolve() != Path(resolve_agent_cwd()).resolve():
+    if stored_cwd and Path(stored_cwd) != Path(resolve_agent_cwd()).resolve():
         return False
     # Platform is deliberately NOT an identity field: a surface switch does not invalidate the
     # stored bytes, it only makes their interface section out of date, and that is corrected by

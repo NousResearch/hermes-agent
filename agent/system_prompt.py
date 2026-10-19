@@ -620,7 +620,7 @@ def _persisted_workspace_block(prompt: str, key: str) -> Optional[str]:
     cwd = Path(key).resolve()
     while start >= 0:
         block = prompt[start + 2:].split("\n\n", 1)[0]
-        root = Path(block.split("\n", 2)[1][len("- Root: "):]).resolve()
+        root = Path(block.split("\n", 2)[1][len("- Root: "):])
         if root == cwd or root in cwd.parents:
             return block
         start = prompt.find(head, start + 2)
@@ -654,7 +654,7 @@ def _seed_workspace_pin(agent: Any, key: str) -> None:
     if not prompt:
         return
     stored_cwd = runtime_host_value(prompt, "Current working directory")
-    if stored_cwd and str(Path(stored_cwd).resolve()) != key:
+    if stored_cwd and str(Path(stored_cwd)) != key:
         return
     block = _persisted_workspace_block(prompt, key)
     # Only a real snapshot is adopted: a prompt without one (built on a surface without the

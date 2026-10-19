@@ -142,7 +142,7 @@ async def pause_delegation(connection, ref, params):
 
 
 _ROLLBACK_FIELDS = {'list': {'session_id', 'profile'}, 'diff': {'session_id', 'profile', 'hash'},
-                    'restore': {'session_id', 'profile', 'hash', 'file_path'},
+                    'restore': {'session_id', 'profile', 'hash', 'file_path', 'all'},
                     'session_diff': {'session_id', 'profile'}}
 # ``rollback.session_diff`` body bound: well inside one 8 MiB frame (the classic CLI shows 400 lines).
 _SESSION_DIFF_CHARS = 2 * 1024 * 1024
@@ -159,7 +159,8 @@ async def rollback(connection, ref, params, *, kind):
     (main's ``_rewind_active_session_history``) through the owner's fenced ``rewind`` mutation."""
     fields = _ROLLBACK_FIELDS[kind]
     if any(key in params and (not isinstance(params[key], str) or (key == 'hash' and not params[key]))
-           for key in ('hash', 'file_path')) or (kind in ('diff', 'restore') and 'hash' not in params):
+           for key in ('hash', 'file_path')) or (kind in ('diff', 'restore') and 'hash' not in params) or (
+               params.get('all') is not None and not isinstance(params['all'], bool)):  # nullable: null is omitted
         raise RuntimeStoreError('invalid_params')
     live = _live_ref(connection, ref, params, fields, 'session:read' if kind != 'restore' else 'session:control')
     authority = connection.authority
@@ -218,7 +219,9 @@ async def rollback(connection, ref, params, *, kind):
             return payload
         if refusal:
             return {'success': False, 'error': refusal}
-        return mgr.restore(cwd, target, file_path=file_path or None)
+        # Main's whole-tree /rollback keeps the user's hand-edits unless ``--all`` (``all``) says otherwise.
+        return mgr.restore(cwd, target, file_path=file_path or None,
+                           safe=not file_path and not params.get('all'))
     result = await asyncio.to_thread(run)
     if kind == 'restore' and result.get('success') and not file_path:
         result['history_removed'] = await _rewind_last_turn(connection, ref)
@@ -246,8 +249,8 @@ async def _rewind_last_turn(connection, ref):
     from agent.context_compressor import user_originated_turn_view
     from gateway.session_local_recovery import local_history
     rows = await asyncio.to_thread(local_history, authority, ref)
-    target = next((row['row_id'] for row in reversed(rows)
-                   if isinstance(row.get('row_id'), int) and user_originated_turn_view(row) is not None), None)
+    target = next((row['row_id'] for row in reversed(rows) if isinstance(row.get('row_id'), int)
+                   and not row.get('archived') and user_originated_turn_view(row) is not None), None)
     if target is None:
         return 0
     from gateway.session_mutations import mutate_session

@@ -759,3 +759,40 @@ def test_projects_without_a_profile_stay_on_the_launch_home(monkeypatch, tmp_pat
     assert not (Path(os.environ["HERMES_HOME"]) / "projects.db").exists()
 
 
+def test_projects_tree_leaves_messaging_sessions_to_their_own_section(monkeypatch, tmp_path):
+    """Telegram/Slack rows have their own Messaging section; with no workspace cwd they
+    used to land in Home as well, listing the same conversation twice."""
+    from hermes_state import SessionDB
+
+    launch_home = _profile_dir(tmp_path, "launch")
+    _bind_profiles(monkeypatch, tmp_path, {"default": launch_home})
+    db = SessionDB(db_path=launch_home / "state.db")
+    try:
+        for session_id, source in (("local-chat", "desktop"), ("tg-chat", "telegram"), ("slack-chat", "slack")):
+            db.create_session(session_id, source)
+        db._conn.execute("UPDATE sessions SET message_count = 1")
+        db._conn.commit()
+    finally:
+        db.close()
+
+    with _serving_launch_profile(launch_home):
+        tree = _call("projects.tree")
+
+    assert tree["scoped_session_ids"] == ["local-chat"]
+    home = next(p for p in tree["projects"] if p.get("isNoProject"))
+    assert [s["id"] for s in home["previewSessions"]] == ["local-chat"]
+
+
+def test_project_tree_messaging_sources_match_the_desktop_messaging_section():
+    """The tree may only drop sources the desktop renders in its Messaging section,
+    or a dropped row would vanish from the sidebar entirely."""
+    import re
+
+    from tui_gateway import methods_projects
+
+    ts = Path(__file__).resolve().parents[2] / "apps" / "desktop" / "src" / "lib" / "session-source.ts"
+    block = re.search(r"MESSAGING_SESSION_SOURCE_IDS = \[(.*?)\]", ts.read_text(encoding="utf-8"), re.DOTALL)
+    assert block, "MESSAGING_SESSION_SOURCE_IDS not found in session-source.ts"
+    desktop = set(re.findall(r"'([^']+)'", block.group(1)))
+
+    assert set(methods_projects._MESSAGING_SESSION_SOURCES) == desktop

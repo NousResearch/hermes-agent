@@ -1338,7 +1338,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           }
 
           setVoiceEnabled(true)
-          await rpc('voice.toggle', { action: 'on' })
+          // A shared-owner session's voice mode is the owner's per-session /voice state (T9), the
+          // one voice.record gates on; the sidecar's voice.toggle flips only its global flag.
+          await (gw.isCanonical
+            ? gw.request('slash.exec', { command: 'voice on', session_id: sid })
+            : rpc('voice.toggle', { action: 'on' }))
           await rpc('voice.record', { action: 'start', session_id: sid })
         })().catch((e: unknown) => {
           sys(t('gatewayMsg.wake.failed', rpcErrorMessage(e)))

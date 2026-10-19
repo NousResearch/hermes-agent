@@ -62,6 +62,40 @@ class TestChatVerboseArg:
         assert captured["quiet"] is False
         assert "verbose" not in captured
 
+    @pytest.mark.parametrize("argv, expected", [
+        (["chat", "--provider", "custom", "--base-url", "http://127.0.0.1:9/v1", "--api-key", "launch-key"],
+         {"api_key": "launch-key", "base_url": "http://127.0.0.1:9/v1"}),
+        (["chat"], {}),
+    ])
+    def test_cmd_chat_forwards_the_launch_key_and_endpoint_to_the_classic_cli(self, monkeypatch, argv, expected):
+        """`hermes chat --cli --api-key K --base-url U` must launch the classic CLI on K and U, not on the
+        profile's credential; the TUI refuses both flags and points here."""
+        import types
+
+        import hermes_cli.main as main_mod
+        from hermes_cli._parser import build_top_level_parser
+
+        parser, _subparsers, chat_parser = build_top_level_parser()
+        chat_parser.set_defaults(func=main_mod.cmd_chat)
+        args = parser.parse_args(argv)
+        captured = {}
+        fake_cli = types.ModuleType("cli")
+        fake_cli.main = lambda **kwargs: captured.update(kwargs)
+        fake_banner = types.ModuleType("hermes_cli.banner")
+        fake_banner.prefetch_update_check = lambda: None
+        fake_skills_sync = types.ModuleType("tools.skills_sync")
+        fake_skills_sync.sync_skills = lambda quiet=True: None
+
+        monkeypatch.setitem(sys.modules, "cli", fake_cli)
+        monkeypatch.setitem(sys.modules, "hermes_cli.banner", fake_banner)
+        monkeypatch.setitem(sys.modules, "tools.skills_sync", fake_skills_sync)
+        monkeypatch.setattr(main_mod, "_has_any_provider_configured", lambda: True)
+        monkeypatch.setattr(main_mod, "_pin_kanban_board_env", lambda: None)
+
+        main_mod.cmd_chat(args)
+
+        assert {k: captured[k] for k in ("api_key", "base_url") if k in captured} == expected
+
 
 class TestAcceptHooksOnAgentSubparsers:
     """Verify --accept-hooks is accepted at every agent-subcommand

@@ -79,7 +79,6 @@ def _pin_environment() -> None:
     socket.socket.connect = refuse  # type: ignore[method-assign]
     socket.create_connection = refuse  # type: ignore[assignment]
     socket.getaddrinfo = refuse  # type: ignore[assignment]
-    sys.platform = "linux"  # skills index ``platforms:`` gate
 
     import hermes_time
     hermes_time.now = lambda: FIXED_NOW  # type: ignore[assignment]
@@ -87,7 +86,13 @@ def _pin_environment() -> None:
     # read credentials, binaries and the tool store, which vary by host and would hide schemas.
     import tools.registry as registry_module
     registry_module._check_fn_cached = lambda _fn: True  # type: ignore[assignment]
-    from agent import skill_utils
+    from agent import prompt_builder, skill_utils
+    from types import SimpleNamespace
+    # Pin model-facing platform inputs, not the global interpreter platform:
+    # native/stdlib imports must still load modules built for the real host.
+    render_sys = SimpleNamespace(**vars(sys))
+    render_sys.platform = "linux"
+    skill_utils.sys = prompt_builder.sys = render_sys
     skill_utils._ENV_DETECT_CACHE.update({"docker": False, "s6": False})
     # The toolchain probe line reports the host's python/node/pip; it is environment, not code.
     from tools import env_probe
@@ -107,11 +112,13 @@ class _ImportFailures(logging.Handler):
 
 def _scrub(text: str, home: Path) -> str:
     import platform as _platform
-    for raw, token in sorted({
-        str(home / ".hermes"): "<HERMES_HOME>",
-        str(home): "<HOME>",
-        f"{_platform.system()} ({_platform.release()})": "<HOST_OS>",
-    }.items(), key=lambda kv: -len(kv[0])):
+    replacements = {f"{_platform.system()} ({_platform.release()})": "<HOST_OS>"}
+    # macOS temp homes can be spelled through /var or /private/var. Config
+    # retains the lexical HOME while cwd probes resolve it; scrub both.
+    for root in {home, Path(os.environ["HOME"])}:
+        replacements[str(root / ".hermes")] = "<HERMES_HOME>"
+        replacements[str(root)] = "<HOME>"
+    for raw, token in sorted(replacements.items(), key=lambda kv: -len(kv[0])):
         text = text.replace(raw, token)
     return text
 

@@ -48,9 +48,9 @@ _spec.loader.exec_module(cc)
 # tests.yml runs on Ubuntu; tests-os[windows] imports only list_os_marked_tests.py's files and
 # keeps ``-m platforms`` tests its host admits. Python 3 there is a venv holding python.exe alone,
 # bash is Git Bash: the replay, its dispatch chain and the ineffective-step controls carry this
-# marker so a green Windows job has run them on that layout (review F81-R). Not "any": macOS
-# bash 3.2 is not a host the replay has been run on.
-_NATIVE_WINDOWS_PLATFORMS = pytest.mark.platforms("linux", "windows")
+# marker so a green Windows job has run them on that layout (review F81-R).
+# macOS's Bash 3.2 runs the same selection steps now that array collection is portable.
+_NATIVE_WINDOWS_PLATFORMS = pytest.mark.platforms("linux", "macos", "windows")
 # Not Windows on arm64: Git for Windows ships an x86-64 MSYS bash.exe there, run under emulation,
 # and with the os-tests lane's 16 workers it dies with 0xC000026F (STATUS_WX86_INTERNAL_ERROR) or
 # 0xC0000005 before running a line, on replays of unchanged workflows: one copy of this file red

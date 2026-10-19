@@ -95,6 +95,44 @@ def _quiet_sync(call, default=None):
         return default
 
 
+def _display_provider_name(
+    provider_name: str, status_agent, active_override: dict, route: dict, persisted_route: dict
+) -> str:
+    """Provider label for /status: a NAMED custom provider shows its name, not the class ``custom``.
+
+    ``provider_name`` is the billed route (``custom`` for every named custom entry) and must stay
+    untouched — it feeds the route that resolves the context window and matches price tables. This
+    only answers "what do we print", mirroring /model (config key) and the session notice
+    (``requested_provider``). Falls back to ``custom`` whenever the name can't be proven.
+    """
+    if _clean_str(provider_name) != "custom":
+        return provider_name
+    for source in (
+        getattr(status_agent, "requested_provider", ""),
+        (active_override or {}).get("requested_provider"),
+        (active_override or {}).get("provider"),
+    ):
+        candidate = _clean_str(source)
+        if candidate and candidate != "custom":
+            return candidate
+    # Between turns no live agent may carry the name: trust the configured provider only when its
+    # endpoint matches the one this session actually billed (never relabel a /model switch).
+    from gateway.run import _load_gateway_config
+    user_config = _quiet_sync(_load_gateway_config, {}) or {}
+    model_cfg = user_config.get("model", {}) if isinstance(user_config, dict) else {}
+    if not isinstance(model_cfg, dict):
+        return provider_name
+    cfg_provider = _clean_str(model_cfg.get("provider"))
+    if not cfg_provider or cfg_provider in {"custom", "auto"}:
+        return provider_name
+    cfg_base = _clean_str(model_cfg.get("base_url")).rstrip("/")
+    route_base = (_clean_str((route or {}).get("base_url"))
+                  or _clean_str((persisted_route or {}).get("billing_base_url"))).rstrip("/")
+    if not cfg_base or not route_base or cfg_base != route_base:
+        return provider_name
+    return cfg_provider
+
+
 def _status_model_route(
     status_agent, active_override: dict, persisted_route: dict, session_row: dict, session_entry
 ):
@@ -273,7 +311,8 @@ class GatewayStatusCommandsMixin:
                 context_total = _int_value(resolved.context_length)
 
         fields = build_status_fields(
-            session_entry.session_id, None, session_row, title=title, model=model_name, provider=provider_name,
+            session_entry.session_id, None, session_row, title=title, model=model_name,
+            provider=_display_provider_name(provider_name, status_agent, active_override, route, persisted_route),
             created=session_entry.created_at, last_activity=session_entry.updated_at,
             tokens=db_total_tokens, agent_running=is_running,
         )

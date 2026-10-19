@@ -40,6 +40,15 @@ _STEP_ARGS: dict[str, tuple[dict[str, str], tuple[str, ...]]] = {
     "select": ({"ref": "str", "value": "str"}, ("ref", "value")),
     "type": ({"ref": "str", "text": "str", "clear": "bool"}, ("ref", "text")),
 }
+# Tools outside a batch that take arguments worth checking (tab ids must be real ids; a tab opens on a real URL).
+_TAB_TOOL_ARGS: dict[str, tuple[dict[str, str], tuple[str, ...]]] = {
+    "tab_activate": ({"tab_id": "tab"}, ("tab_id",)),
+    "tab_close": ({"tab_id": "tab"}, ("tab_id",)),
+    "tab_create": ({"url": "str"}, ("url",)),
+    "tab_group": ({"tab_ids": "tabs"}, ("tab_ids",)),
+    "tab_ungroup": ({"tab_ids": "tabs"}, ("tab_ids",)),
+    "screenshot": ({"ref": "str"}, ()),
+}
 #: Arguments that may be an empty string (typing "" into a field clears it); every other required string may not.
 _MAY_BE_EMPTY = frozenset({"text", "value"})
 #: Arguments the batch call itself takes besides ``actions``.
@@ -58,10 +67,14 @@ _TYPE_CHECKS: dict[str, Callable[[Any], bool]] = {
     "str": lambda v: isinstance(v, str),
     "number": _is_number,
     "int": _is_int,
+    "tab": lambda v: _is_int(v) and v >= 1,
+    "tabs": lambda v: isinstance(v, list) and bool(v) and all(_is_int(i) and i >= 1 for i in v),
     "bool": lambda v: isinstance(v, bool),
     "list": lambda v: isinstance(v, list),
 }
-_TYPE_NAMES = {"str": "a string", "number": "a number", "int": "a whole number", "bool": "true or false", "list": "a list"}
+_TYPE_NAMES = {"str": "a string", "number": "a number", "int": "a whole number", "bool": "true or false",
+               "list": "a list", "tab": "a tab id (a whole number from 1)",
+               "tabs": "a non-empty list of tab ids (whole numbers from 1)"}
 
 
 def _present(args: dict[str, Any], key: str) -> bool:
@@ -102,8 +115,20 @@ def press_error(args: dict[str, Any]) -> Optional[str]:
     return None
 
 
+def tab_ids_error(args: dict[str, Any]) -> Optional[str]:
+    """The tab group tools name their tabs in ``tab_ids`` only, each tab once; they take no ``tab_id``."""
+    unknown = sorted(set(args) - {"tab_ids"})
+    if unknown:
+        return f"does not take {', '.join(unknown)}; it takes tab_ids"
+    tab_ids = args.get("tab_ids")
+    if isinstance(tab_ids, list) and len(set(tab_ids)) != len(tab_ids):
+        return "'tab_ids' must list each tab once"
+    return None
+
+
 _STEP_CHECKS: dict[str, Callable[[dict[str, Any]], Optional[str]]] = {
     "click": click_error, "scroll": scroll_error, "press": press_error,
+    "tab_group": tab_ids_error, "tab_ungroup": tab_ids_error,
 }
 
 
@@ -113,6 +138,18 @@ def step_action(step: Any) -> str:
     if not isinstance(name, str):
         return ""
     return name.removeprefix("browser_")
+
+
+def _fields_error(action: str, fields: dict[str, Any], allowed: dict[str, str], required: tuple[str, ...]) -> Optional[str]:
+    """Type, presence and range problems in ``fields`` for ``action``, or ``None``. Unknown fields are not judged here."""
+    for key, kind in allowed.items():
+        if _present(fields, key) and not _TYPE_CHECKS[kind](fields[key]):
+            return f"'{key}' must be {_TYPE_NAMES[kind]}, got {fields[key]!r}"
+    for key in required:
+        if not _present(fields, key) or (fields[key] == "" and key not in _MAY_BE_EMPTY):
+            return f"needs '{key}'"
+    check = _STEP_CHECKS.get(action)
+    return check(fields) if check else None
 
 
 def step_error(index: int, step: Any) -> Optional[str]:
@@ -129,14 +166,7 @@ def step_error(index: int, step: Any) -> Optional[str]:
     unknown = sorted(set(step) - set(allowed) - {"action"})
     if unknown:
         return f"{label} does not take {', '.join(unknown)}; it takes {', '.join(allowed) or 'no arguments'}"
-    for key, kind in allowed.items():
-        if _present(step, key) and not _TYPE_CHECKS[kind](step[key]):
-            return f"{label}: '{key}' must be {_TYPE_NAMES[kind]}, got {step[key]!r}"
-    for key in required:
-        if not _present(step, key) or (step[key] == "" and key not in _MAY_BE_EMPTY):
-            return f"{label} needs '{key}'"
-    check = _STEP_CHECKS.get(action)
-    detail = check(step) if check else None
+    detail = _fields_error(action, step, allowed, required)
     return f"{label}: {detail}" if detail else None
 
 
@@ -159,9 +189,17 @@ def batch_error(args: dict[str, Any]) -> Optional[str]:
     return None
 
 
-#: Tool name -> check for the arguments that tool declares. Tools without an entry have nothing to check.
+def _tool_check(action: str) -> Callable[[dict[str, Any]], Optional[str]]:
+    allowed, required = _STEP_ARGS.get(action) or _TAB_TOOL_ARGS[action]
+    return lambda args: _fields_error(action, args, allowed, required)
+
+
+#: Tool name -> check for the arguments that tool declares. Tools without an entry (navigate, back, snapshot,
+#: tabs and the built-in-only tools) have nothing to check.
 _TOOL_CHECKS: dict[str, Callable[[dict[str, Any]], Optional[str]]] = {
     "browser_batch": batch_error,
+    **{f"browser_{action}": _tool_check(action)
+       for action in (*_STEP_ARGS, *_TAB_TOOL_ARGS) if action not in ("navigate", "back")},
 }
 
 

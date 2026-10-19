@@ -658,7 +658,7 @@ Navigate to a URL. With the built-in browser it must be called before any other 
 Navigate to https://github.com/NousResearch
 ```
 
-With the [Hermes Browser Extension](api-server.md#browser-extension-control) the page opens in your own browser, so private and local addresses stay reachable. Hermes still refuses a URL that carries an API key or token, a cloud metadata address, and any host your [website blocklist](../security.md#website-access-policy) rules out, before the request is sent. The same checks apply to a `navigate` step in `browser_batch`: one refused URL refuses the whole batch and nothing runs.
+With the [Hermes Browser Extension](api-server.md#browser-extension-control) the page opens in your own browser, so private and local addresses stay reachable. Hermes still refuses a URL that carries an API key or token, a cloud metadata address, and any host your [website blocklist](../security.md#website-access-policy) rules out, before the request is sent. The same checks apply to a `navigate` step in `browser_batch`: one refused URL refuses the whole batch and nothing runs. A redirect, a clicked link or a submitted form can land on a different address than the one requested, so the address the extension reports after a call is checked again against the cloud metadata floor and the website blocklist: after `browser_navigate`, `browser_back`, `browser_tab_create`, `browser_batch`, `browser_snapshot` and every action that can change the page (click, type, fill, select, press, hover, scroll), and for each tab in `browser_tabs`. A new tab is read back until it has an address before it is checked. If a page fails, the result is an error that says the page landed on a blocked address and names the host; its snapshot, title and text are not returned. The extension cannot blank a tab, so the tab stays on that page: Hermes takes it back one step when the call moved it there, and otherwise refuses every call on that tab (`tab_withheld`) until it goes to another page with `browser_navigate` or `browser_back` or is closed. A `browser_batch` is checked once, on the page it ends on, not at each step.
 
 :::tip
 For simple information retrieval, prefer `web_search` or `web_extract` — they are faster and cheaper. Use browser tools when you need to **interact** with a page (click buttons, fill forms, handle dynamic content).
@@ -685,23 +685,27 @@ You can also run `hermes config set browser.snapshot_threshold 30000`. The setti
 
 ### `browser_click`
 
-Click an element identified by its ref ID from the snapshot.
+Click an element identified by its ref ID from the snapshot, or a point given by `x` and `y` in CSS pixels from the top-left of the viewport. A call needs a `ref` or both coordinates; one coordinate alone is refused.
 
 ```
 Click @e5 to press the "Sign In" button
 ```
 
+With the [Hermes Browser Extension](api-server.md#browser-extension-control) the person is asked to approve a coordinate click and a click on a button or link labelled like submit, send, post, publish, delete, remove, pay, buy, checkout, download or upload; the call waits for the answer. A link that opens a new tab opens it in the background, and clicking works in a background tab.
+
 ### `browser_type`
 
-Type text into an input field. Clears the field first, then types the new text.
+Type text into an input field. Clears the field first, then types the new text; pass `clear=false` to add to what is already there.
 
 ```
 Type "hermes agent" into the search field @e3
 ```
 
+With the extension, password, payment-card, one-time-code and other credential fields, and text that looks like a secret, are refused: the person enters those themselves. Typing works in a background tab.
+
 ### `browser_scroll`
 
-Scroll the page up or down to reveal more content.
+Scroll the page up, down, left or right to reveal more content. `amount` sets the distance in pixels (100 to 5000); without it a scroll moves about a screen. Scrolling works in a background tab.
 
 ```
 Scroll down to see more results
@@ -709,13 +713,13 @@ Scroll down to see more results
 
 ### `browser_press`
 
-Press a keyboard key. Useful for submitting forms or navigation.
+Press a keyboard key. Useful for submitting forms or navigation. `modifiers` (`Alt`, `Control`, `Meta`, `Shift`) are held while the key is pressed; a combo such as `Control+a` also works as the key.
 
 ```
 Press Enter to submit the form
 ```
 
-Supported keys: `Enter`, `Tab`, `Escape`, `ArrowDown`, `ArrowUp`, and more.
+Supported keys: `Enter`, `Tab`, `Escape`, `ArrowDown`, `ArrowUp`, and more. With the extension, Enter or Return and paste shortcuts (`Control+v`, `Meta+v`, `Shift+Insert`) need the person's approval. Pressing keys works in a background tab.
 
 ### `browser_batch`
 
@@ -733,7 +737,39 @@ browser_batch(actions=[
 - With `stop_on_error` (default `true`) the batch stops at the first step that fails; with `false` it carries on. Either way it stops when the person declines an approval or the page moves away.
 - The result lists every step's outcome or error, plus `status` (`completed`, `completed_with_errors`, or `stopped`), `completed`, and `remaining`.
 - A step that changes the page (a navigation, a form that re-renders) can invalidate the refs later steps use, so end the batch there.
-- With the [Hermes Browser Extension](api-server.md#browser-extension-control) the whole batch travels to the browser in one command, and a step that needs the person's approval asks on its own while the batch waits. With the built-in browser the steps run one after another through the same handlers as the single tools, and a step the built-in browser cannot run is reported on that step instead of being skipped.
+- With the [Hermes Browser Extension](api-server.md#browser-extension-control) the whole batch travels to the browser in one command, and a step that needs the person's approval asks on its own while the batch waits. With the built-in browser the steps run one after another through the same handlers as the single tools, then one closing snapshot reads the page; a step the active backend cannot do (for example a hover on Camofox) is reported on that step instead of being skipped.
+
+### `browser_fill`, `browser_select`, `browser_hover`, `browser_drag`, `browser_scroll_to`
+
+Actions the browser extension already performs, now available to the model on both browsers.
+
+| Tool | What it does |
+|------|--------------|
+| `browser_fill(ref, value)` | Replaces a text field's contents in one step and tells the page it changed. Same refusals as `browser_type`. |
+| `browser_select(ref, value)` | Chooses an option (by text or value) in a `<select>` dropdown. For a custom dropdown, click it and click the option. |
+| `browser_hover(ref)` | Moves the pointer over an element, for menus and tooltips that open on hover. |
+| `browser_drag(ref, to_ref)` | Drags one element onto another. The extension asks the person to approve every drag, and no page is returned afterwards: take a snapshot to see the result. |
+| `browser_scroll_to(ref)` | Scrolls an element into view. |
+
+With the extension, `browser_hover` and `browser_drag` fail with `tab_hidden` in a background tab; the other four work there. The Chromium-based built-in browser runs all five; Camofox refuses them with a "not available in this browser" error.
+
+### `browser_tabs`, `browser_tab_activate`, `browser_tab_create`, `browser_tab_close`, `browser_tab_group`, `browser_tab_ungroup`
+
+Work with several tabs. These need the Hermes Browser Extension and are offered only when the connected extension advertises them; the built-in browser works in one tab per task and answers a direct call with a "not available in this browser" error that says how to connect the extension.
+
+- `browser_tabs()` lists the tabs the connection controls: id, title, URL and which one is active.
+- `browser_tab_create(url)` opens a URL in a new tab. The tab always opens in the background, behind the one the person is looking at. A URL is required, and it goes through the same checks as `browser_navigate`.
+- `browser_tab_activate(tab_id)` brings a tab to the front. Hermes never changes the tab the person is looking at on its own: the extension asks the person first, naming the page, and the call waits for the answer. A refusal is final.
+- `browser_tab_close(tab_id)` closes a tab the connection owns, after the person approves. Any other tab id is refused with `lease_not_owned`.
+- `browser_tab_group(tab_ids)` puts tabs into one native browser tab group so the person can see them together, and returns the group's id. `browser_tab_ungroup(tab_ids)` takes tabs out of their group and leaves them open. Neither switches the tab the person is looking at, and neither needs approval. They take `tab_ids` (a list of distinct tab ids, at least one) and no `tab_id`.
+
+The extension groups only tabs the connection owns that belong to the same task set, such as tabs the person attached together as one task; any other id, or tabs from different task sets, is refused with `lease_not_owned`. A tab opened with `browser_tab_create` is a task set of its own, so tabs from separate calls cannot be grouped with each other. Tab groups are a Chromium feature: a Firefox extension does not advertise these two tools, so they are not offered there.
+
+### `browser_screenshot`
+
+Take a screenshot of the page, or of one element when `ref` is given, and see it directly. It takes no question, unlike `browser_vision`. When the model accepts images the screenshot is attached to the conversation (resized and counted against the `vision` history budget like other native images); otherwise the result gives the saved file's path. Screenshots are stored in `~/.hermes/cache/screenshots/` and cleaned up after 24 hours.
+
+The extension does not ask the person before capturing a page they attached. On a background tab a screenshot can fail with `tab_hidden`: bring the tab forward with `browser_tab_activate` (the person approves) and retry. The built-in browser captures the whole page; a single-element screenshot needs the extension.
 
 ### `browser_back`
 

@@ -1,0 +1,17 @@
+{
+  "description": "Close a tab this connection owns, such as one opened with browser_tab_create. The browser extension asks the person to approve and the call waits for their answer; any other tab id is refused with lease_not_owned.",
+  "name": "browser_tab_close",
+  "parameters": {
+    "properties": {
+      "tab_id": {
+        "description": "The tab's id from browser_tabs",
+        "minimum": 1,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "tab_id"
+    ],
+    "type": "object"
+  }
+}

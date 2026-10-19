@@ -80,5 +80,22 @@ def test_batch_level_arguments_are_checked():
     assert "does not take steps" in invalid_arguments("browser_batch", {**_batch({"action": "back"}), "steps": []})
 
 
+@pytest.mark.parametrize("tool", ("browser_tab_group", "browser_tab_ungroup"))
+def test_the_tab_group_tools_take_a_list_of_distinct_tab_ids(tool):
+    assert invalid_arguments(tool, {"tab_ids": [4]}) is None
+    assert invalid_arguments(tool, {"tab_ids": [4, 9, 12]}) is None
+    for bad, fragment in [
+        ({}, "needs 'tab_ids'"),
+        ({"tab_ids": []}, "non-empty list of tab ids"),
+        ({"tab_ids": [4, True]}, "non-empty list of tab ids"),
+        ({"tab_ids": [4, 2.5]}, "non-empty list of tab ids"),
+        ({"tab_ids": [4, 4]}, "must list each tab once"),
+        ({"tab_ids": [4], "tab_id": 4}, "does not take tab_id"),
+        ({"tab_ids": [4], "windows": 1}, "does not take windows"),
+    ]:
+        error = invalid_arguments(tool, bad)
+        assert error and error.startswith(f"{tool}: ") and fragment in error, (bad, error)
+
+
 def test_tools_without_a_check_pass_through():
     assert invalid_arguments("browser_snapshot", {"anything": 1}) is None

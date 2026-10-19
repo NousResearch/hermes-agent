@@ -9,6 +9,7 @@ Sibling ``browser_tool_*`` modules hold extracted clusters.
 """
 
 import atexit
+import base64
 import json
 import logging
 import os
@@ -508,21 +509,29 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_click",
-        "description": "Click on an element identified by its ref ID from the snapshot (e.g., '@e5'). The ref IDs are shown in square brackets in the snapshot output. Requires browser_navigate and browser_snapshot to be called first.",
+        "description": "Click on an element identified by its ref ID from the snapshot (e.g., '@e5'), or on a point given by x and y in CSS pixels from the top-left of the viewport (only when no ref reaches the target). The ref IDs are shown in square brackets in the snapshot output. With the browser extension, a link that opens a new tab opens it in the background, clicking works on a background tab, and the person is asked to approve a coordinate click and a click on a button or link labelled like submit, send, post, publish, delete, remove, pay, buy, checkout, download or upload; the call waits for the answer, so do not repeat it. Requires browser_navigate and browser_snapshot to be called first.",
         "parameters": {
             "type": "object",
             "properties": {
                 "ref": {
                     "type": "string",
                     "description": "The element reference from the snapshot (e.g., '@e5', '@e12')"
+                },
+                "x": {
+                    "type": "number",
+                    "description": "Horizontal position in CSS pixels; use together with y instead of ref"
+                },
+                "y": {
+                    "type": "number",
+                    "description": "Vertical position in CSS pixels; use together with x instead of ref"
                 }
             },
-            "required": ["ref"]
+            "required": []
         }
     },
     {
         "name": "browser_type",
-        "description": "Type text into an input field identified by its ref ID. Clears the field first, then types the new text. Requires browser_navigate and browser_snapshot to be called first.",
+        "description": "Type text into an input field identified by its ref ID. Clears the field first (unless clear is false), then types the new text. With the browser extension, password, payment-card, one-time-code and other credential fields, and text that looks like a secret, are refused: ask the person to enter those themselves. Works on a background tab. Requires browser_navigate and browser_snapshot to be called first.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -532,6 +541,11 @@ BROWSER_TOOL_SCHEMAS = [
                 },
                 "text": {
                     "type": "string", "description": "The text to type into the field"
+                },
+                "clear": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Clear the field before typing (default true). Pass false to add to what is already there."
                 }
             },
             "required": ["ref", "text"]
@@ -539,12 +553,16 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_scroll",
-        "description": "Scroll the page in a direction. Use this to reveal more content that may be below or above the current viewport. Requires browser_navigate to be called first.",
+        "description": "Scroll the page up, down, left or right. Use this to reveal more content that may be outside the current viewport. Without amount a scroll moves about a screen; amount sets the distance in pixels. Works on a background tab. Requires browser_navigate to be called first.",
         "parameters": {
             "type": "object",
             "properties": {
                 "direction": {
-                    "type": "string", "enum": ["up", "down"], "description": "Direction to scroll"
+                    "type": "string", "enum": ["up", "down", "left", "right"], "description": "Direction to scroll"
+                },
+                "amount": {
+                    "type": "integer", "minimum": 100, "maximum": 5000,
+                    "description": "Distance in pixels (100-5000). Omit for about a screen."
                 }
             },
             "required": ["direction"]
@@ -559,13 +577,18 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_press",
-        "description": "Press a keyboard key. Useful for submitting forms (Enter), navigating (Tab), or keyboard shortcuts. Requires browser_navigate to be called first.",
+        "description": "Press a keyboard key, optionally with modifier keys held. Useful for submitting forms (Enter), navigating (Tab), or keyboard shortcuts (Control+a). With the browser extension, Enter or Return and paste shortcuts (Control+v, Meta+v, Shift+Insert) need the person's approval, and the call waits for the answer, so do not repeat it. Works on a background tab. Requires browser_navigate to be called first.",
         "parameters": {
             "type": "object",
             "properties": {
                 "key": {
                     "type": "string",
-                    "description": "Key to press (e.g., 'Enter', 'Tab', 'Escape', 'ArrowDown')"
+                    "description": "Key to press (e.g., 'Enter', 'Tab', 'Escape', 'ArrowDown', or a combo such as 'Control+a')"
+                },
+                "modifiers": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["Alt", "Control", "Meta", "Shift"]},
+                    "description": "Modifier keys held while the key is pressed"
                 }
             },
             "required": ["key"]
@@ -664,6 +687,143 @@ BROWSER_TOOL_SCHEMAS = [
             "required": ["actions"]
         }
     },
+    {
+        "name": "browser_fill",
+        "description": "Set a text field's value in one step: the field is focused, its contents are replaced with value, and the page is told it changed. Prefer it over browser_type for plain text inputs and textareas; use browser_type when the page needs real keystrokes. With the browser extension, password, payment-card, one-time-code and other credential fields, and text that looks like a secret, are refused: ask the person to enter those themselves. Works on a background tab. Refs come from the latest snapshot or action result.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ref": {"type": "string", "description": "The field's element reference from the snapshot (e.g., '@e3')"},
+                "value": {"type": "string", "description": "The text to put in the field"}
+            },
+            "required": ["ref", "value"]
+        }
+    },
+    {
+        "name": "browser_select",
+        "description": "Choose an option in a dropdown (a <select> element) identified by its ref ID. For a custom dropdown that is not a <select>, click it and click the option instead. With the browser extension, payment and credential fields are refused. Works on a background tab. Refs come from the latest snapshot or action result.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ref": {"type": "string", "description": "The dropdown's element reference from the snapshot (e.g., '@e7')"},
+                "value": {"type": "string", "description": "The option's visible text or its value"}
+            },
+            "required": ["ref", "value"]
+        }
+    },
+    {
+        "name": "browser_hover",
+        "description": "Move the pointer over an element identified by its ref ID, for menus and tooltips that open on hover. With the browser extension this fails with tab_hidden on a background tab: bring the tab forward with browser_tab_activate first. Refs come from the latest snapshot or action result.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ref": {"type": "string", "description": "The element reference from the snapshot (e.g., '@e5')"}
+            },
+            "required": ["ref"]
+        }
+    },
+    {
+        "name": "browser_drag",
+        "description": "Drag one element and drop it on another, both identified by ref IDs. With the browser extension the person is asked to approve every drag and the call waits for the answer, so do not repeat it; it fails with tab_hidden on a background tab. The page is not returned after a drag: take a snapshot to see the result. Refs come from the latest snapshot or action result.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ref": {"type": "string", "description": "The element to pick up (e.g., '@e5')"},
+                "to_ref": {"type": "string", "description": "The element to drop it on (e.g., '@e9')"}
+            },
+            "required": ["ref", "to_ref"]
+        }
+    },
+    {
+        "name": "browser_scroll_to",
+        "description": "Scroll the page until an element identified by its ref ID is in view, without moving the pointer. Works on a background tab. Refs come from the latest snapshot or action result.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ref": {"type": "string", "description": "The element reference from the snapshot (e.g., '@e5')"}
+            },
+            "required": ["ref"]
+        }
+    },
+    {
+        "name": "browser_tabs",
+        "description": "List the browser tabs this connection controls: each tab's id, title, URL and whether it is the active one. Only tabs the person attached to Hermes, or that you opened, are listed. Use the ids with browser_tab_activate and browser_tab_close.",
+        "parameters": {
+            "type": "object", "properties": {}, "required": []
+        }
+    },
+    {
+        "name": "browser_tab_activate",
+        "description": "Bring one of your tabs to the front. This changes what the person is looking at, so the browser extension asks them to approve first (the request names the page) and the call waits for their answer: do not repeat it while it waits, and treat a refusal as final. You rarely need it: click, type, press, scroll and scroll_to work in a background tab; hover and drag need the tab in front.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "tab_id": {"type": "integer", "minimum": 1, "description": "The tab's id from browser_tabs"}
+            },
+            "required": ["tab_id"]
+        }
+    },
+    {
+        "name": "browser_tab_create",
+        "description": "Open a URL in a new tab. With the browser extension the tab always opens in the background, behind the one the person is looking at, so it never takes their view; browser_tab_activate brings it forward after the person approves. Returns the new tab's id. A URL is required.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "The page to load in the new tab (e.g., 'https://example.com')"}
+            },
+            "required": ["url"]
+        }
+    },
+    {
+        "name": "browser_tab_close",
+        "description": "Close a tab this connection owns, such as one opened with browser_tab_create. The browser extension asks the person to approve and the call waits for their answer; any other tab id is refused with lease_not_owned.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "tab_id": {"type": "integer", "minimum": 1, "description": "The tab's id from browser_tabs"}
+            },
+            "required": ["tab_id"]
+        }
+    },
+    {
+        "name": "browser_tab_group",
+        "description": "Put tabs into one native browser tab group so the person can see them together. Pass the ids from browser_tabs. It groups only tabs this connection owns that belong to the same task set, such as tabs the person attached together as one task; a tab you open with browser_tab_create is a task set of its own, so tabs from separate calls cannot be grouped with each other. It never switches the tab the person is looking at and needs no approval. Returns the group's id. lease_not_owned means an id is not one of your tabs or the tabs are not all in one task set; any other error means the browser could not group them. Chromium-based browsers only.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "tab_ids": {
+                    "type": "array", "items": {"type": "integer", "minimum": 1}, "minItems": 1, "uniqueItems": True,
+                    "description": "The ids of the tabs to group, from browser_tabs"
+                }
+            },
+            "required": ["tab_ids"]
+        }
+    },
+    {
+        "name": "browser_tab_ungroup",
+        "description": "Take tabs out of their native browser tab group and leave them open, the reverse of browser_tab_group. Pass the ids from browser_tabs. The same rules apply: only tabs this connection owns that belong to the same task set, with lease_not_owned when they do not. It never switches the tab the person is looking at and needs no approval. Chromium-based browsers only.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "tab_ids": {
+                    "type": "array", "items": {"type": "integer", "minimum": 1}, "minItems": 1, "uniqueItems": True,
+                    "description": "The ids of the tabs to take out of their group, from browser_tabs"
+                }
+            },
+            "required": ["tab_ids"]
+        }
+    },
+    {
+        "name": "browser_screenshot",
+        "description": "Take a screenshot of the page, or of one element when ref is given, and see it directly. Use it when the snapshot cannot show what you need (layout, charts, images). It takes no question, and on a model without image input the result gives the saved file's path instead. The browser extension does not ask the person before a screenshot of a page they attached; on a background tab it can fail with tab_hidden: bring the tab forward with browser_tab_activate (the person approves) and retry. Refs come from the latest snapshot or action result.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ref": {"type": "string", "description": "Optional element reference to capture instead of the whole page (e.g., '@e5')"}
+            },
+            "required": []
+        }
+    },
 ]
 
 from tools import browser_tool_snapshot as _snapshot
@@ -747,9 +907,9 @@ def _extension_url_error(url: str) -> tuple[str, Optional[dict]]:
 
 def _extension_url_guard(action: str, args: dict[str, Any]) -> tuple[dict[str, Any], Optional[str]]:
     """Router guard for the extension lane: ``(args to dispatch, refusal JSON or None)``. Covers every call that
-    opens a URL (navigate and each navigate step of a batch). The URL that was checked is the URL
+    opens a URL (navigate, tab_create and each navigate step of a batch). The URL that was checked is the URL
     sent, and one refused step refuses the whole batch before anything runs."""
-    if action == "browser_navigate":
+    if action in ("browser_navigate", "browser_tab_create"):
         url = args.get("url")
         if not isinstance(url, str):  # the argument checks and the extension report a missing or odd url
             return args, None
@@ -976,44 +1136,129 @@ def _at_ref(ref: str) -> str:
     return ref if ref.startswith("@") else f"@{ref}"
 
 
-def browser_click(ref: str, task_id: Optional[str] = None) -> str:
-    """Click the element ``ref`` (e.g. "@e5")."""
+def _unsupported_here(tool: str, cause: str, remedy: str) -> str:
+    """Refusal for an action the built-in browser cannot do. The extension lane runs it where the controller
+    advertises it; here it is a clear error, never a silent no-op."""
+    return _dumps(_err(f"{tool} is not available in this browser: {cause}. {remedy}", code="unsupported_in_this_browser"))
+
+
+_NEEDS_EXTENSION = "Connect the Hermes Browser Extension to use it."
+
+
+def _camofox_lacks(tool: str, what: str, instead: str = _NEEDS_EXTENSION) -> str:
+    return _unsupported_here(tool, f"the Camofox backend has no {what}", instead)
+
+
+def _bad_arguments(tool: str, **arguments: Any) -> Optional[str]:
+    """Error JSON when ``arguments`` would be refused on the extension lane too (same checks, both lanes)."""
+    problem = _args.invalid_arguments(tool, arguments)
+    return _dumps(_err(problem)) if problem else None
+
+
+def browser_click(ref: str = "", task_id: Optional[str] = None, x: Optional[float] = None, y: Optional[float] = None) -> str:
+    """Click the element ``ref`` (e.g. "@e5"), or the viewport point ``(x, y)`` when no ref is given."""
+    if bad := _bad_arguments("browser_click", ref=ref, x=x, y=y):
+        return bad
     if _is_camofox_mode():
+        if not ref:
+            return _camofox_lacks("browser_click", "coordinate clicks", "Click an element by its ref instead.")
         return _camofox("camofox_click", ref, task_id)
+    if not ref:  # the pointer commands take the position as separate arguments
+        effective_task_id = _last_session_key(task_id or "default")
+        blocked = _blocked_private_page_action(effective_task_id, "click")
+        if blocked is not None:
+            return blocked
+        for command_args in (["move", str(x), str(y)], ["down"], ["up"]):
+            result = _session._run_browser_command(effective_task_id, "mouse", command_args)
+            if not result.get("success"):
+                return _failed_response(result, f"Failed to click at ({x}, {y})")
+        return _dumps({"success": True, "clicked": f"({x}, {y})"})
     ref = _at_ref(ref)
     return _guarded_action(task_id, "click", "click", [ref], {"clicked": ref}, f"Failed to click {ref}")
 
 
-def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
-    """Type ``text`` into the element ``ref`` (fill: clears, then types)."""
-    if _is_camofox_mode():
-        return _camofox("camofox_type", ref, text, task_id)
+def _enter_text(tool: str, ref: str, text: str, task_id: Optional[str], command: str, done: str) -> str:
+    """``fill`` (replace) or ``type`` (add to) ``text`` into ``ref``; the echoed text is secret-redacted."""
     effective_task_id = _last_session_key(task_id or "default")
     blocked = _blocked_private_page_action(effective_task_id, "type")
     if blocked is not None:
         return blocked
     ref = _at_ref(ref)
-    result = _session._run_browser_command(effective_task_id, "fill", [ref, text])
+    result = _session._run_browser_command(effective_task_id, command, [ref, text])
     from agent.display import redact_browser_typed_text_for_display, redact_tool_args_for_display
     # Typed text goes through the secret-pattern redactor so API keys / tokens don't
     # leak into tool progress or chat history (the raw value already went to the browser).
     display_text = (redact_tool_args_for_display("browser_type", {"text": text}) or {})["text"]
     if result.get("success"):
-        response = {"success": True, "typed": display_text, "element": ref}
+        response = {"success": True, done: display_text, "element": ref}
     else:
-        response = _err(result.get("error", f"Failed to type into {ref}"))
+        response = _err(result.get("error", f"Failed to {tool.removeprefix('browser_')} into {ref}"))
     return _dumps(redact_browser_typed_text_for_display(_lp._copy_fallback_warning(response, result), text))
 
 
-def browser_scroll(direction: str, task_id: Optional[str] = None) -> str:
-    """Scroll the page ``direction`` ("up"/"down") by about half a viewport."""
-    if direction not in {"up", "down"}:
-        return _dumps(_err(f"Invalid direction '{direction}'. Use 'up' or 'down'."))
+def browser_type(ref: str, text: str, task_id: Optional[str] = None, clear: bool = True) -> str:
+    """Type ``text`` into the element ``ref`` (clears first, then types, unless ``clear`` is false)."""
+    if bad := _bad_arguments("browser_type", ref=ref, text=text, clear=clear):
+        return bad
+    if _is_camofox_mode():
+        if clear is False:
+            return _camofox_lacks("browser_type", "way to add to a field without clearing it")
+        return _camofox("camofox_type", ref, text, task_id)
+    return _enter_text("browser_type", ref, text, task_id, "fill" if clear is not False else "type", "typed")
+
+
+def browser_fill(ref: str, value: str, task_id: Optional[str] = None) -> str:
+    """Replace the contents of the field ``ref`` with ``value``."""
+    if _is_camofox_mode():
+        return _camofox_lacks("browser_fill", "fill command", "Use browser_type, or connect the Hermes Browser Extension.")
+    return _enter_text("browser_fill", ref, value, task_id, "fill", "filled")
+
+
+def browser_select(ref: str, value: str, task_id: Optional[str] = None) -> str:
+    """Choose the option ``value`` (text or value) in the dropdown ``ref``."""
+    if _is_camofox_mode():
+        return _camofox_lacks("browser_select", "dropdown command", "Click the dropdown and the option instead.")
+    ref = _at_ref(ref)
+    return _guarded_action(task_id, "select", "select", [ref, value], {"selected": ref, "value": value}, f"Failed to select {value!r} in {ref}")
+
+
+def browser_hover(ref: str, task_id: Optional[str] = None) -> str:
+    """Move the pointer over the element ``ref``."""
+    if _is_camofox_mode():
+        return _camofox_lacks("browser_hover", "hover command")
+    ref = _at_ref(ref)
+    return _guarded_action(task_id, "hover", "hover", [ref], {"hovered": ref}, f"Failed to hover {ref}")
+
+
+def browser_drag(ref: str, to_ref: str, task_id: Optional[str] = None) -> str:
+    """Drag the element ``ref`` onto ``to_ref``."""
+    if _is_camofox_mode():
+        return _camofox_lacks("browser_drag", "drag command")
+    ref, to_ref = _at_ref(ref), _at_ref(to_ref)
+    return _guarded_action(task_id, "drag", "drag", [ref, to_ref], {"dragged": ref, "dropped_on": to_ref}, f"Failed to drag {ref} onto {to_ref}")
+
+
+def browser_scroll_to(ref: str, task_id: Optional[str] = None) -> str:
+    """Scroll the element ``ref`` into view."""
+    if _is_camofox_mode():
+        return _camofox_lacks("browser_scroll_to", "scroll-into-view command", "Scroll with browser_scroll instead.")
+    ref = _at_ref(ref)
+    effective_task_id = _last_session_key(task_id or "default")
+    result = _session._run_browser_command(effective_task_id, "scrollintoview", [ref])
+    return _tool_response(result, {"scrolled_to": ref}, f"Failed to scroll {ref} into view")
+
+
+def browser_scroll(direction: str, task_id: Optional[str] = None, amount: Optional[int] = None) -> str:
+    """Scroll the page ``direction`` (up/down/left/right) by ``amount`` pixels, default about half a viewport."""
+    if bad := _bad_arguments("browser_scroll", direction=direction, amount=amount):
+        return bad
     _SCROLL_PIXELS = 500  # ~half a viewport in one call instead of 5x subprocess calls
     if _is_camofox_mode():  # Camofox REST API has no pixel argument; use repeated calls
+        if amount is not None or direction not in {"up", "down"}:
+            return _camofox_lacks("browser_scroll", "sideways or sized scrolling", "Scroll up or down without amount.")
         return [_camofox("camofox_scroll", direction, task_id) for _ in range(5)][-1]
     effective_task_id = _last_session_key(task_id or "default")
-    result = _session._run_browser_command(effective_task_id, "scroll", [direction, str(_SCROLL_PIXELS)])
+    result = _session._run_browser_command(effective_task_id, "scroll", [direction, str(amount or _SCROLL_PIXELS)])
     return _tool_response(result, {"scrolled": direction}, f"Failed to scroll {direction}")
 
 
@@ -1032,23 +1277,47 @@ def browser_back(task_id: Optional[str] = None) -> str:
     return _tool_response(result, {"url": result.get("data", {}).get("url", "")}, "Failed to go back")
 
 
-def browser_press(key: str, task_id: Optional[str] = None) -> str:
-    """Press a keyboard key (e.g. "Enter", "Tab")."""
+def browser_press(key: str, task_id: Optional[str] = None, modifiers: Optional[list] = None) -> str:
+    """Press a keyboard key (e.g. "Enter", "Tab") with optional ``modifiers`` held (e.g. ["Control"])."""
+    if bad := _bad_arguments("browser_press", key=key, modifiers=modifiers):
+        return bad
     if _is_camofox_mode():
+        if modifiers:
+            return _camofox_lacks("browser_press", "way to hold modifier keys", "Press a combo such as 'Control+a' as the key.")
         return _camofox("camofox_press", key, task_id)
-    return _guarded_action(task_id, "press", "press", [key], {"pressed": key}, f"Failed to press {key}")
+    combo = "+".join([*_canonical_modifiers(modifiers), key])
+    return _guarded_action(task_id, "press", "press", [combo], {"pressed": combo}, f"Failed to press {combo}")
 
 
-# Built-in handler and the step fields it takes, per batch step action. A step field outside its tuple, and a
-# step action without a row, is reported on that step; the built-in browser never drops an argument silently.
-_BATCH_BUILTIN_STEPS = {
-    "navigate": ("browser_navigate", ("url",)),
-    "click": ("browser_click", ("ref",)),
-    "type": ("browser_type", ("ref", "text")),
-    "scroll": ("browser_scroll", ("direction",)),
-    "back": ("browser_back", ()),
-    "press": ("browser_press", ("key",)),
-}
+def _canonical_modifiers(modifiers: Optional[list]) -> list[str]:
+    names = {name.lower(): name for name in _args.MODIFIERS}
+    return [names[str(modifier).lower()] for modifier in modifiers or []]
+
+
+def browser_tabs(task_id: Optional[str] = None) -> str:
+    """The built-in browser works in one tab per task."""
+    return _unsupported_here("browser_tabs", "the built-in browser works in one tab per task", _NEEDS_EXTENSION)
+
+
+def browser_tab_activate(tab_id: Optional[int] = None, task_id: Optional[str] = None) -> str:
+    return _unsupported_here("browser_tab_activate", "the built-in browser works in one tab per task", _NEEDS_EXTENSION)
+
+
+def browser_tab_create(url: str = "", task_id: Optional[str] = None) -> str:
+    return _unsupported_here("browser_tab_create", "the built-in browser works in one tab per task",
+                             "Open the page with browser_navigate, or connect the Hermes Browser Extension to work with several tabs.")
+
+
+def browser_tab_close(tab_id: Optional[int] = None, task_id: Optional[str] = None) -> str:
+    return _unsupported_here("browser_tab_close", "the built-in browser works in one tab per task", _NEEDS_EXTENSION)
+
+
+def browser_tab_group(tab_ids: Optional[list] = None, task_id: Optional[str] = None) -> str:
+    return _unsupported_here("browser_tab_group", "the built-in browser works in one tab per task", _NEEDS_EXTENSION)
+
+
+def browser_tab_ungroup(tab_ids: Optional[list] = None, task_id: Optional[str] = None) -> str:
+    return _unsupported_here("browser_tab_ungroup", "the built-in browser works in one tab per task", _NEEDS_EXTENSION)
 
 
 def _batch_step_failure(index: int, action: str, code: str, message: str) -> dict[str, Any]:
@@ -1057,26 +1326,18 @@ def _batch_step_failure(index: int, action: str, code: str, message: str) -> dic
 
 def _run_builtin_batch_step(index: int, step: dict[str, Any], task_id: Optional[str]) -> dict[str, Any]:
     """One batch step through the built-in browser's own handler; ``{index, action, status}`` or
-    ``{index, action, error, message}`` like the extension's per-step entries."""
+    ``{index, action, error, message}`` like the extension's per-step entries. Step fields carry the same names
+    as the single tool's arguments, so the handler receives them as given."""
     action = _args.step_action(step)
-    row = _BATCH_BUILTIN_STEPS.get(action)
-    if row is None:
-        return _batch_step_failure(index, action, "unsupported_action",
-                                   f"The built-in browser cannot run {action} steps. Connect the Hermes Browser "
-                                   f"Extension, or do this outside a batch.")
-    handler_name, fields = row
-    unsupported = sorted(set(step) - set(fields) - {"action"})
-    if unsupported:
-        return _batch_step_failure(index, action, "unsupported_argument",
-                                   f"The built-in browser does not support {', '.join(unsupported)} on a {action} step. "
-                                   f"Connect the Hermes Browser Extension, or leave it out.")
-    raw = globals()[handler_name](**{field: step[field] for field in fields if field in step}, task_id=task_id)
+    handler_name = f"browser_{action}"
+    raw = globals()[handler_name](**{key: value for key, value in step.items() if key != "action"}, task_id=task_id)
     try:
         outcome = json.loads(raw) if isinstance(raw, str) else dict(raw)
     except (TypeError, ValueError):
         return _batch_step_failure(index, action, "command_error", f"{handler_name} returned an unreadable result.")
     if outcome.get("success") is False:
-        return _batch_step_failure(index, action, "command_error", str(outcome.get("error") or "The step failed."))
+        return _batch_step_failure(index, action, str(outcome.get("code") or "command_error"),
+                                   str(outcome.get("error") or "The step failed."))
     return {"index": index, "action": action, "status": "ok"}
 
 
@@ -1464,13 +1725,95 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         return _dumps(error_info)
 
 
+def _screenshots_dir() -> Path:
+    from hermes_constants import get_hermes_dir
+    return get_hermes_dir("cache/screenshots", "browser_screenshots")
+
+
+def _screenshot_tool_result(screenshot_path: Path) -> str | dict[str, Any]:
+    """What the model gets for a saved screenshot: the pixels when its model takes images (the same native
+    embed, resize and history budget as browser_vision), otherwise the file's path."""
+    from tools.vision_tools import _should_use_native_vision_fast_path
+    if _should_use_native_vision_fast_path():
+        return _vision._native_vision_result(screenshot_path, "", False, {}, None)
+    return _dumps({
+        "success": True, "screenshot_path": str(screenshot_path),
+        "note": "This model cannot view images, so the screenshot was saved instead of attached. Read the page with "
+                "browser_snapshot, or share the file with the person by including MEDIA:<screenshot_path> in your response.",
+    })
+
+
+def browser_screenshot(ref: Optional[str] = None, task_id: Optional[str] = None) -> str | dict[str, Any]:
+    """Screenshot the current page and hand it to the model (no question, no auxiliary vision call)."""
+    if _is_camofox_mode():
+        return _camofox_lacks("browser_screenshot", "plain screenshot command", "Use browser_vision.")
+    if ref:
+        return _unsupported_here("browser_screenshot", "the built-in browser cannot capture a single element",
+                                 "Call it without ref for the whole page, or connect the Hermes Browser Extension.")
+    import uuid as uuid_mod
+    effective_task_id = _last_session_key(task_id or "default")
+    blocked = _blocked_private_page_content(effective_task_id)
+    if blocked is not None:
+        return blocked
+    screenshots_dir = _screenshots_dir()
+    screenshots_dir.mkdir(parents=True, exist_ok=True)
+    _lifecycle._cleanup_old_screenshots(screenshots_dir, max_age_hours=24)
+    _result, screenshot_path, error = _capture_vision_screenshot(
+        effective_task_id, False, screenshots_dir / f"browser_screenshot_{uuid_mod.uuid4().hex}.png", False)
+    return error if error is not None else _screenshot_tool_result(screenshot_path)
+
+
+_PNG_DATA_URL_PREFIX = "data:image/png;base64,"
+#: The extension refuses to send a longer data URL (``MAX_INLINE_SCREENSHOT_CHARS``); an older or odd peer is cut off here.
+_MAX_EXTENSION_SCREENSHOT_CHARS = 1_500_000
+
+
+def _extension_screenshot_result(raw: Any) -> Any:
+    """The extension answers a screenshot with a ``data:`` URL inside its JSON. Save it as a file and give the
+    model what the built-in browser gives, so raw base64 never lands in the text context. Anything else (an
+    error, the built-in browser's own result) passes through untouched."""
+    if not isinstance(raw, str):
+        return raw
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return raw
+    data_url = payload.get("dataUrl") if isinstance(payload, dict) else None
+    if not isinstance(data_url, str):
+        return raw
+    try:
+        if not data_url.startswith(_PNG_DATA_URL_PREFIX) or len(data_url) > _MAX_EXTENSION_SCREENSHOT_CHARS:
+            raise ValueError("not a PNG data URL, or too large")
+        image = base64.b64decode(data_url[len(_PNG_DATA_URL_PREFIX):], validate=True)
+    except ValueError:
+        return _dumps(_err("The browser extension returned a screenshot Hermes cannot read (expected a base64 PNG). "
+                           "Update the Hermes Browser Extension, or read the page with browser_snapshot."))
+    import uuid as uuid_mod
+    screenshots_dir = _screenshots_dir()
+    screenshots_dir.mkdir(parents=True, exist_ok=True)
+    _lifecycle._cleanup_old_screenshots(screenshots_dir, max_age_hours=24)
+    screenshot_path = screenshots_dir / f"browser_screenshot_{uuid_mod.uuid4().hex}.png"
+    screenshot_path.write_bytes(image)
+    return _screenshot_tool_result(screenshot_path)
+
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 from tools.registry import registry, tool_error
 from tools.browser_extension_router import extension_controller_available, routed_browser_handler
+from tools.browser_tool_extension_landing import (
+    extension_landing_guard as _extension_landing_guard, extension_withheld_guard as _extension_withheld_guard,
+)
 
 _BROWSER_SCHEMA_MAP = {s["name"]: s for s in BROWSER_TOOL_SCHEMAS}
+
+
+def _extension_call_guard(action: str, args: dict[str, Any], route=None) -> tuple[dict[str, Any], Optional[str]]:
+    """Router guard for the extension lane: a tab still showing a withheld page is refused first, then the URL
+    the call would open is checked (``_extension_url_guard``)."""
+    refusal = _extension_withheld_guard(action, args, route)
+    return (args, refusal) if refusal is not None else _extension_url_guard(action, args)
 
 
 def check_browser_routed_requirements(action: str = "browser_snapshot") -> bool:
@@ -1496,16 +1839,36 @@ def _fallback_call(fn_name: str, arg_defaults: dict[str, Any], extra_kw: tuple =
 _BROWSER_TOOL_TABLE = (
     ("browser_navigate", "🌐", None, {"url": ""}),
     ("browser_snapshot", "📸", None, {"full": False}, ("user_task",)),
-    ("browser_click", "👆", None, {"ref": ""}),
-    ("browser_type", "⌨️", None, {"ref": "", "text": ""}),
-    ("browser_scroll", "📜", None, {"direction": "down"}),
+    ("browser_click", "👆", None, {"ref": "", "x": None, "y": None}),
+    ("browser_type", "⌨️", None, {"ref": "", "text": "", "clear": True}),
+    ("browser_scroll", "📜", None, {"direction": "down", "amount": None}),
     ("browser_back", "◀️", None, {}),
-    ("browser_press", "⌨️", None, {"key": ""}),
+    ("browser_press", "⌨️", None, {"key": "", "modifiers": None}),
     ("browser_batch", "⚡", None, {"actions": [], "stop_on_error": True}),
+    ("browser_fill", "✍️", None, {"ref": "", "value": ""}),
+    ("browser_select", "🔽", None, {"ref": "", "value": ""}),
+    ("browser_hover", "🖱️", None, {"ref": ""}),
+    ("browser_drag", "🧲", None, {"ref": "", "to_ref": ""}),
+    ("browser_scroll_to", "🎯", None, {"ref": ""}),
+    ("browser_tabs", "🗂️", None, {}),
+    ("browser_tab_activate", "🪟", None, {"tab_id": None}),
+    ("browser_tab_create", "➕", None, {"url": ""}),
+    ("browser_tab_close", "✖️", None, {"tab_id": None}),
+    ("browser_tab_group", "🗃️", None, {"tab_ids": None}),
+    ("browser_tab_ungroup", "📤", None, {"tab_ids": None}),
+    ("browser_screenshot", "📷", None, {"ref": None}),
     ("browser_get_images", "🖼️", _install.check_browser_requirements, {}),
     ("browser_vision", "👁️", _install.check_browser_vision_requirements, {"question": "", "annotate": False}),
     ("browser_console", "🖥️", _install.check_browser_requirements, {"clear": False, "expression": None}),
 )
+
+# Routed tools the built-in browser cannot do (it works in one tab per task). They are offered only when the
+# request's bound extension controller advertises them, so a built-in-only install and an older extension never
+# see a tool that can only fail.
+_EXTENSION_ONLY_TOOLS = frozenset({
+    "browser_tabs", "browser_tab_activate", "browser_tab_create", "browser_tab_close", "browser_tab_group",
+    "browser_tab_ungroup",
+})
 
 
 def _routed_check_fn(name: str):
@@ -1516,21 +1879,38 @@ def _routed_check_fn(name: str):
     return check
 
 
+def _extension_only_check_fn(name: str):
+    """Gate for a tool only the extension lane can run: the request's controller must advertise it."""
+    def check() -> bool:
+        return extension_controller_available(name)
+    check.__name__ = check.__qualname__ = f"check_{name}_requirements"
+    return check
+
+
+# Reshapes a routed tool's result on the way back to the model (the built-in browser's own results pass through).
+_ROUTED_RESULT_FILTERS = {"browser_screenshot": _extension_screenshot_result}
+
+
 def _routed_handler(name: str, fallback):
+    finish = _ROUTED_RESULT_FILTERS.get(name)
+
     def handler(args, **kw):
         invalid = _args.invalid_arguments(name, args)
         if invalid:  # refused before either lane sees it: no approval card, no silently dropped argument
             return _dumps(_err(invalid))
-        return record_browser_call(lambda legacy: routed_browser_handler(
+        result = record_browser_call(lambda legacy: routed_browser_handler(
             name, args, fallback=lambda: legacy(lambda: fallback(args, kw)),
-            task_id=kw.get("task_id"), session_id=kw.get("session_id"), guard=_extension_url_guard,
+            task_id=kw.get("task_id"), session_id=kw.get("session_id"), guard=_extension_call_guard,
+            result_guard=_extension_landing_guard,
         ), _cloud.browser_backend_name)
+        return finish(result) if finish else result
     return handler
 
 
 for _name, _emoji, _check_fn, _defaults, *_extra in _BROWSER_TOOL_TABLE:
     if _check_fn is None:  # also binds the legacy check_browser_<x>_requirements globals (tests + callers)
-        _check_fn = globals()[f"check_{_name}_requirements"] = _routed_check_fn(_name)
+        _gate = _extension_only_check_fn if _name in _EXTENSION_ONLY_TOOLS else _routed_check_fn
+        _check_fn = globals()[f"check_{_name}_requirements"] = _gate(_name)
     registry.register(name=_name, toolset="browser", schema=_BROWSER_SCHEMA_MAP[_name],
                       handler=_routed_handler(_name, _fallback_call(_name, _defaults, *_extra)),
                       check_fn=_check_fn, emoji=_emoji)

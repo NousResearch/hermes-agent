@@ -1,0 +1,9 @@
+{
+  "description": "List the browser tabs this connection controls: each tab's id, title, URL and whether it is the active one. Only tabs the person attached to Hermes, or that you opened, are listed. Use the ids with browser_tab_activate and browser_tab_close.",
+  "name": "browser_tabs",
+  "parameters": {
+    "properties": {},
+    "required": [],
+    "type": "object"
+  }
+}

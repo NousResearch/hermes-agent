@@ -29,8 +29,10 @@ BROWSER_CONTROL_PROTOCOL_VERSION = 1
 
 #: Exact controller capability allowlist shared by every transport (raw CDP/eval/console stay out).
 BROWSER_CONTROL_CAPABILITIES = frozenset({
-    "controller.noop", "browser_back", "browser_batch", "browser_click", "browser_navigate", "browser_press",
-    "browser_screenshot", "browser_scroll", "browser_snapshot", "browser_tab_activate", "browser_tabs", "browser_type",
+    "controller.noop", "browser_back", "browser_batch", "browser_click", "browser_drag", "browser_fill",
+    "browser_hover", "browser_navigate", "browser_press", "browser_screenshot", "browser_scroll",
+    "browser_scroll_to", "browser_select", "browser_snapshot", "browser_tab_activate", "browser_tab_close",
+    "browser_tab_create", "browser_tab_group", "browser_tab_ungroup", "browser_tabs", "browser_type",
 })
 #: Privileged capabilities: fail-closed unless Developer Mode is on AND explicitly negotiated.
 BROWSER_CONTROL_DEVELOPER_CAPABILITIES = frozenset({"browser_cdp", "browser_evaluate"})

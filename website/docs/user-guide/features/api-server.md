@@ -399,17 +399,50 @@ controller.noop
 browser_back
 browser_batch
 browser_click
+browser_drag
+browser_fill
+browser_hover
 browser_navigate
 browser_press
 browser_screenshot
 browser_scroll
+browser_scroll_to
+browser_select
 browser_snapshot
 browser_tab_activate
+browser_tab_close
+browser_tab_create
+browser_tab_group
+browser_tab_ungroup
 browser_tabs
 browser_type
 ```
 
-Requested capabilities outside that list are filtered out. Raw CDP, arbitrary
+Requested capabilities outside that list are filtered out. A controller is only
+sent what it advertised: an older extension that does not list a capability
+(for example `browser_batch`) never receives that command, and a model call that
+needs it fails closed with an error naming the capability, never falling back to
+another browser.
+
+The model-facing `browser_*` tools use these capability names one to one. Tools
+that only an extension can run (the six tab tools) are
+offered to a session only while its bound controller advertises them. Before a
+`browser_navigate`, `browser_tab_create` or `browser_batch` navigate step is sent,
+Hermes refuses a URL that carries a secret or targets a cloud metadata address or a
+host the operator's website blocklist rules out; the controller never sees it.
+A redirect, a clicked link or a submitted form can land somewhere else, so Hermes also
+checks the address the controller reports back: for `browser_navigate`, `browser_back`,
+`browser_snapshot`, every action that can change the page (click, type, fill, select, press,
+hover, scroll), the page a `browser_batch` ended on, a new tab from `browser_tab_create`
+(read back until it has an address) and each tab in `browser_tabs`. If it is a cloud
+metadata address or a host the blocklist rules out, the result is replaced by an error that
+says the page landed on a blocked address and names the host, and the page's snapshot,
+title and text never reach the model. The extension cannot blank a tab, so the tab stays on
+that page: Hermes takes it back one step when the call moved it there, and otherwise
+refuses every later call on that tab (`tab_withheld`) until it goes to another page or is
+closed. A `browser_batch` is checked once, on the page it ends on, not after each step.
+This check does not apply the
+private-address rule, which the extension lane skips on purpose. Raw CDP, arbitrary
 script evaluation, console access, uploads, image extraction, and vision are not
 part of the controller protocol.
 

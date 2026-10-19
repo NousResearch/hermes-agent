@@ -1,0 +1,16 @@
+{
+  "description": "Open a URL in a new tab. With the browser extension the tab always opens in the background, behind the one the person is looking at, so it never takes their view; browser_tab_activate brings it forward after the person approves. Returns the new tab's id. A URL is required.",
+  "name": "browser_tab_create",
+  "parameters": {
+    "properties": {
+      "url": {
+        "description": "The page to load in the new tab (e.g., 'https://example.com')",
+        "type": "string"
+      }
+    },
+    "required": [
+      "url"
+    ],
+    "type": "object"
+  }
+}

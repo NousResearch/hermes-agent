@@ -21,12 +21,28 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-#: ``(action, args) -> (args to dispatch, refusal result or None)``; see :func:`route_browser_tool`.
-ArgsGuard = Callable[[str, dict[str, Any]], tuple[dict[str, Any], Optional[str]]]
+
+@dataclass(frozen=True)
+class RouteContext:
+    """What a guard may use about the call in flight on the extension lane.
+
+    ``key`` names the lane (session, principal and transport family), so a guard can remember something about
+    the browser between calls. ``send(action, arguments)`` sends the same controller one more command and
+    returns its result (it raises what the broker raises)."""
+
+    key: tuple
+    send: Callable[[str, dict[str, Any]], Any]
+
+
+#: ``(action, args, route) -> (args to dispatch, refusal result or None)``; see :func:`route_browser_tool`.
+ArgsGuard = Callable[[str, dict[str, Any], RouteContext], tuple[dict[str, Any], Optional[str]]]
+#: ``(action, args sent, controller result, route) -> result to give the model``; see :func:`route_browser_tool`.
+ResultGuard = Callable[[str, dict[str, Any], Any, RouteContext], Any]
 
 
 def _bound_identity() -> tuple[Optional[str], Optional[str], Optional[str]]:
@@ -70,6 +86,7 @@ def route_browser_tool(
     action: str, args: dict[str, Any], *, fallback: Callable[[], Any], broker: Any, enabled: bool,
     session_id: Optional[str] = None, task_id: Optional[str] = None, principal_id: Optional[str] = None,
     transport_family: Optional[str] = None, tool_call_id: Optional[str] = "", guard: Optional[ArgsGuard] = None,
+    result_guard: Optional[ResultGuard] = None,
 ) -> Any:
     """Route one browser action through the extension-control broker.
 
@@ -80,6 +97,9 @@ def route_browser_tool(
     ``guard`` runs only on that extension path, right before dispatch: it returns
     the arguments to send and, when the call must not reach the browser, a result
     string to answer with instead (the legacy backend runs its own checks).
+    ``result_guard`` also runs only on that path, on what the controller sent back, and returns the result the
+    model gets (the page a navigation landed on is only known once the controller reports it). Both receive a
+    :class:`RouteContext`.
     """
     if not enabled or not str(principal_id or "").strip() or not str(transport_family or "").strip():
         return fallback()
@@ -96,16 +116,25 @@ def route_browser_tool(
         raise _controller_unavailable(f"bound browser controller unavailable for {action}")
 
     if broker.select(scope, action) is None:
-        raise _controller_unavailable(f"bound browser controller cannot execute {action}")
+        raise _controller_unavailable(
+            f"bound browser controller cannot execute {action}: the connected browser extension does not offer it "
+            "(an older extension, or a browser such as Firefox that cannot do it). Use another browser action, or "
+            "update the extension and reconnect.")
 
     # Controller is authoritative: never retry the legacy backend. Registry
     # handlers must return a string; keep string results byte-identical and
     # serialize decoded JSON values at this boundary.
+    route = RouteContext(
+        key=(session_id, principal_id, transport_family),
+        send=lambda command, arguments: broker.dispatch(
+            scope, action=command, arguments=arguments, tool_call_id=tool_call_id))
     if guard is not None:
-        args, refusal = guard(action, args)
+        args, refusal = guard(action, args, route)
         if refusal is not None:
             return refusal
     result = broker.dispatch(scope, action=action, arguments=args, tool_call_id=tool_call_id)
+    if result_guard is not None:
+        result = result_guard(action, args, result, route)
     return result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
 
 
@@ -123,6 +152,7 @@ def routed_browser_handler(
     action: str, args: dict[str, Any], *, fallback: Callable[[], Any], task_id: Optional[str] = None,
     session_id: Optional[str] = None, principal_id: Optional[str] = None,
     transport_family: Optional[str] = None, tool_call_id: Optional[str] = None, guard: Optional[ArgsGuard] = None,
+    result_guard: Optional[ResultGuard] = None,
 ) -> Any:
     """Lazy registry-handler route wrapper for ``browser_*`` tools.
     Feature off (or gateway unimportable) ⇒ the legacy handler runs unchanged."""
@@ -144,4 +174,5 @@ def routed_browser_handler(
         session_id=session_id or env_session, task_id=task_id, principal_id=principal_id or env_principal,
         transport_family=transport_family or env_transport,
         tool_call_id=current_tool_call_id() if tool_call_id is None else tool_call_id, guard=guard,
+        result_guard=result_guard,
     )

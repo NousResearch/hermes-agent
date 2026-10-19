@@ -1,16 +1,22 @@
 {
-  "description": "Click on an element identified by its ref ID from the snapshot (e.g., '@e5'). The ref IDs are shown in square brackets in the snapshot output. Requires browser_navigate and browser_snapshot to be called first.",
+  "description": "Click on an element identified by its ref ID from the snapshot (e.g., '@e5'), or on a point given by x and y in CSS pixels from the top-left of the viewport (only when no ref reaches the target). The ref IDs are shown in square brackets in the snapshot output. With the browser extension, a link that opens a new tab opens it in the background, clicking works on a background tab, and the person is asked to approve a coordinate click and a click on a button or link labelled like submit, send, post, publish, delete, remove, pay, buy, checkout, download or upload; the call waits for the answer, so do not repeat it. Requires browser_navigate and browser_snapshot to be called first.",
   "name": "browser_click",
   "parameters": {
     "properties": {
       "ref": {
         "description": "The element reference from the snapshot (e.g., '@e5', '@e12')",
         "type": "string"
+      },
+      "x": {
+        "description": "Horizontal position in CSS pixels; use together with y instead of ref",
+        "type": "number"
+      },
+      "y": {
+        "description": "Vertical position in CSS pixels; use together with x instead of ref",
+        "type": "number"
       }
     },
-    "required": [
-      "ref"
-    ],
+    "required": [],
     "type": "object"
   }
 }

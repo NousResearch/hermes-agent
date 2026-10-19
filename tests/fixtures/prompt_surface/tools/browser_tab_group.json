@@ -1,0 +1,22 @@
+{
+  "description": "Put tabs into one native browser tab group so the person can see them together. Pass the ids from browser_tabs. It groups only tabs this connection owns that belong to the same task set, such as tabs the person attached together as one task; a tab you open with browser_tab_create is a task set of its own, so tabs from separate calls cannot be grouped with each other. It never switches the tab the person is looking at and needs no approval. Returns the group's id. lease_not_owned means an id is not one of your tabs or the tabs are not all in one task set; any other error means the browser could not group them. Chromium-based browsers only.",
+  "name": "browser_tab_group",
+  "parameters": {
+    "properties": {
+      "tab_ids": {
+        "description": "The ids of the tabs to group, from browser_tabs",
+        "items": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "minItems": 1,
+        "type": "array",
+        "uniqueItems": true
+      }
+    },
+    "required": [
+      "tab_ids"
+    ],
+    "type": "object"
+  }
+}

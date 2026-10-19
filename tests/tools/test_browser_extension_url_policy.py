@@ -61,6 +61,20 @@ def test_a_refused_navigate_never_reaches_the_controller(broker, url):
     assert broker.dispatched == []
 
 
+@pytest.mark.parametrize("url", [SECRET_URL, "https://blocked.test/page", "http://169.254.169.254/latest/meta-data/"])
+def test_a_refused_tab_create_never_reaches_the_controller(broker, url):
+    out = _call("browser_tab_create", {"url": url})
+
+    assert out["success"] is False and out["error"].startswith("Blocked")
+    assert broker.dispatched == []
+
+
+def test_an_allowed_tab_create_is_sent_with_the_normalized_url(broker):
+    _call("browser_tab_create", {"url": "http://localhost:3000/Köln"})
+
+    assert broker.dispatched == [("browser_tab_create", {"url": "http://localhost:3000/K%C3%B6ln"})]
+
+
 def test_the_operator_policy_refusal_names_the_rule(broker):
     out = _call("browser_navigate", {"url": "https://blocked.test/page"})
 
@@ -114,10 +128,19 @@ def test_an_allowed_batch_is_sent_with_normalized_urls_and_the_callers_args_are_
     assert steps[0]["url"] == "https://example.test/Köln"
 
 
+@pytest.mark.parametrize("name, args", [
+    ("browser_tab_group", {"tab_ids": [7, 8]}), ("browser_tab_ungroup", {"tab_ids": [7, 8]}),
+])
+def test_the_tab_group_tools_open_no_url_and_go_through_untouched(broker, name, args):
+    _call(name, args)
+
+    assert broker.dispatched == [(name, args)]
+
+
 def test_the_guard_does_not_run_on_the_built_in_lane():
     seen = []
     result = route_browser_tool(
         "browser_navigate", {"url": SECRET_URL}, fallback=lambda: "legacy", broker=FakeBroker(), enabled=False,
-        guard=lambda action, args: seen.append(action) or (args, "refused"))
+        guard=lambda action, args, route: seen.append(action) or (args, "refused"))
 
     assert result == "legacy" and seen == []

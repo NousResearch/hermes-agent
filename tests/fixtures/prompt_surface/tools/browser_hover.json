@@ -1,0 +1,16 @@
+{
+  "description": "Move the pointer over an element identified by its ref ID, for menus and tooltips that open on hover. With the browser extension this fails with tab_hidden on a background tab: bring the tab forward with browser_tab_activate first. Refs come from the latest snapshot or action result.",
+  "name": "browser_hover",
+  "parameters": {
+    "properties": {
+      "ref": {
+        "description": "The element reference from the snapshot (e.g., '@e5')",
+        "type": "string"
+      }
+    },
+    "required": [
+      "ref"
+    ],
+    "type": "object"
+  }
+}

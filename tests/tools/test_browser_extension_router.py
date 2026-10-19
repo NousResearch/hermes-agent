@@ -522,3 +522,53 @@ def test_bound_controller_without_batch_fails_closed_instead_of_running_steps_el
             broker=broker, enabled=True, session_id="session-fixture", principal_id="principal-fixture",
             transport_family="local-api",
         )
+
+
+@pytest.mark.parametrize(
+    "action, args",
+    [
+        ("browser_click", {"x": 10, "y": 20.5}),
+        ("browser_scroll", {"direction": "right", "amount": 300}),
+        ("browser_press", {"key": "a", "modifiers": ["Control", "Shift"]}),
+        ("browser_type", {"ref": "@e1", "text": "hello", "clear": False}),
+        ("browser_fill", {"ref": "@e1", "value": "hello"}),
+        ("browser_select", {"ref": "@e2", "value": "Two"}),
+        ("browser_hover", {"ref": "@e3"}),
+        ("browser_drag", {"ref": "@e3", "to_ref": "@e4"}),
+        ("browser_scroll_to", {"ref": "@e9"}),
+        ("browser_tabs", {}),
+        ("browser_tab_activate", {"tab_id": 7}),
+        ("browser_tab_create", {"url": "https://example.test"}),
+        ("browser_tab_close", {"tab_id": 7}),
+        ("browser_tab_group", {"tab_ids": [7, 8]}),
+        ("browser_tab_ungroup", {"tab_ids": [7, 8]}),
+        ("browser_screenshot", {"ref": "@e5"}),
+    ],
+)
+def test_every_extension_action_reaches_the_controller_with_exactly_the_model_arguments(action, args):
+    sent = dict(args)
+    broker = FakeBroker(scope="scope-fixture", selected="connection-fixture", result={"status": "ok"})
+
+    route_browser_tool(
+        action, args, fallback=lambda: pytest.fail("a selected controller never falls back"), broker=broker,
+        enabled=True, session_id="session-fixture", principal_id="principal-fixture", transport_family="local-api",
+        tool_call_id="tool-call-fixture",
+    )
+
+    assert args == sent
+    assert ("dispatch", "scope-fixture", action, sent, "tool-call-fixture") in broker.calls
+
+
+def test_a_controller_that_does_not_offer_an_action_fails_closed_with_a_remedy():
+    from gateway.browser_control_broker import ControllerUnavailable
+
+    broker = FakeBroker(scope="scope-fixture", selected=None)
+    with pytest.raises(ControllerUnavailable) as raised:
+        route_browser_tool(
+            "browser_hover", {"ref": "@e1"}, fallback=lambda: pytest.fail("the extension lane fails closed"),
+            broker=broker, enabled=True, session_id="session-fixture", principal_id="principal-fixture",
+            transport_family="local-api",
+        )
+
+    message = str(raised.value)
+    assert "browser_hover" in message and "update the extension" in message

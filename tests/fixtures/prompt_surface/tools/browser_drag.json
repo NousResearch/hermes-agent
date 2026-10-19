@@ -1,0 +1,21 @@
+{
+  "description": "Drag one element and drop it on another, both identified by ref IDs. With the browser extension the person is asked to approve every drag and the call waits for the answer, so do not repeat it; it fails with tab_hidden on a background tab. The page is not returned after a drag: take a snapshot to see the result. Refs come from the latest snapshot or action result.",
+  "name": "browser_drag",
+  "parameters": {
+    "properties": {
+      "ref": {
+        "description": "The element to pick up (e.g., '@e5')",
+        "type": "string"
+      },
+      "to_ref": {
+        "description": "The element to drop it on (e.g., '@e9')",
+        "type": "string"
+      }
+    },
+    "required": [
+      "ref",
+      "to_ref"
+    ],
+    "type": "object"
+  }
+}

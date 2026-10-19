@@ -90,21 +90,36 @@ def test_navigate_and_back_steps_use_their_handlers(browser, monkeypatch):
     assert out["snapshot"] == "- button [ref=e1]"  # one closing snapshot, not the navigate step's
 
 
-def test_a_step_the_built_in_browser_cannot_run_is_reported_not_skipped(browser):
+def test_every_step_action_runs_on_the_built_in_browser(browser):
+    out = _run([
+        {"action": "fill", "ref": "@e1", "value": "hello"},
+        {"action": "type", "ref": "@e1", "text": "!", "clear": False},
+        {"action": "select", "ref": "@e2", "value": "Two"},
+        {"action": "hover", "ref": "@e1"},
+        {"action": "drag", "ref": "@e1", "to_ref": "@e2"},
+        {"action": "scroll_to", "ref": "@e2"},
+        {"action": "scroll", "direction": "right", "amount": 300},
+        {"action": "press", "key": "a", "modifiers": ["Control"]},
+        {"action": "click", "x": 10, "y": 20},
+    ])
+
+    assert out["status"] == "completed", out
+    assert [command for command, _ in browser] == [
+        "fill", "type", "select", "hover", "drag", "scrollintoview", "scroll", "press", "mouse", "mouse", "mouse", "snapshot"]
+    assert ("scroll", ["right", "300"]) in browser and ("press", ["Control+a"]) in browser
+    assert browser[8:11] == [("mouse", ["move", "10", "20"]), ("mouse", ["down"]), ("mouse", ["up"])]
+
+
+def test_a_step_the_active_browser_backend_cannot_do_is_reported_on_that_step(browser, monkeypatch):
+    monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: True)
+    monkeypatch.setattr(browser_tool, "_camofox", lambda name, *args: json.dumps({"success": True}))
+
     out = _run([{"action": "hover", "ref": "@e1"}, {"action": "press", "key": "Tab"}], stop_on_error=False)
 
-    assert out["steps"][0]["error"] == "unsupported_action"
-    assert "cannot run hover steps" in out["steps"][0]["message"] and "Extension" in out["steps"][0]["message"]
+    assert out["steps"][0]["error"] == "unsupported_in_this_browser"
+    assert "browser_hover is not available in this browser" in out["steps"][0]["message"]
     assert out["steps"][1]["status"] == "ok"
-    assert [command for command, _ in browser] == ["press", "snapshot"]
-
-
-def test_a_step_argument_the_built_in_browser_does_not_support_is_reported_not_dropped(browser):
-    out = _run([{"action": "click", "x": 10, "y": 20}], stop_on_error=False)
-
-    assert out["steps"][0]["error"] == "unsupported_argument"
-    assert "x, y" in out["steps"][0]["message"]
-    assert browser == []  # nothing ran, and no snapshot is taken for a batch that did nothing
+    assert browser == []
 
 
 def test_an_invalid_batch_is_refused_before_any_step_runs(browser):

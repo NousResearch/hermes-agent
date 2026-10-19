@@ -1,0 +1,22 @@
+{
+  "description": "Take tabs out of their native browser tab group and leave them open, the reverse of browser_tab_group. Pass the ids from browser_tabs. The same rules apply: only tabs this connection owns that belong to the same task set, with lease_not_owned when they do not. It never switches the tab the person is looking at and needs no approval. Chromium-based browsers only.",
+  "name": "browser_tab_ungroup",
+  "parameters": {
+    "properties": {
+      "tab_ids": {
+        "description": "The ids of the tabs to take out of their group, from browser_tabs",
+        "items": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "minItems": 1,
+        "type": "array",
+        "uniqueItems": true
+      }
+    },
+    "required": [
+      "tab_ids"
+    ],
+    "type": "object"
+  }
+}

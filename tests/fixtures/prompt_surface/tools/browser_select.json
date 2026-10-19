@@ -1,0 +1,21 @@
+{
+  "description": "Choose an option in a dropdown (a <select> element) identified by its ref ID. For a custom dropdown that is not a <select>, click it and click the option instead. With the browser extension, payment and credential fields are refused. Works on a background tab. Refs come from the latest snapshot or action result.",
+  "name": "browser_select",
+  "parameters": {
+    "properties": {
+      "ref": {
+        "description": "The dropdown's element reference from the snapshot (e.g., '@e7')",
+        "type": "string"
+      },
+      "value": {
+        "description": "The option's visible text or its value",
+        "type": "string"
+      }
+    },
+    "required": [
+      "ref",
+      "value"
+    ],
+    "type": "object"
+  }
+}

@@ -1,11 +1,24 @@
 {
-  "description": "Press a keyboard key. Useful for submitting forms (Enter), navigating (Tab), or keyboard shortcuts. Requires browser_navigate to be called first.",
+  "description": "Press a keyboard key, optionally with modifier keys held. Useful for submitting forms (Enter), navigating (Tab), or keyboard shortcuts (Control+a). With the browser extension, Enter or Return and paste shortcuts (Control+v, Meta+v, Shift+Insert) need the person's approval, and the call waits for the answer, so do not repeat it. Works on a background tab. Requires browser_navigate to be called first.",
   "name": "browser_press",
   "parameters": {
     "properties": {
       "key": {
-        "description": "Key to press (e.g., 'Enter', 'Tab', 'Escape', 'ArrowDown')",
+        "description": "Key to press (e.g., 'Enter', 'Tab', 'Escape', 'ArrowDown', or a combo such as 'Control+a')",
         "type": "string"
+      },
+      "modifiers": {
+        "description": "Modifier keys held while the key is pressed",
+        "items": {
+          "enum": [
+            "Alt",
+            "Control",
+            "Meta",
+            "Shift"
+          ],
+          "type": "string"
+        },
+        "type": "array"
       }
     },
     "required": [

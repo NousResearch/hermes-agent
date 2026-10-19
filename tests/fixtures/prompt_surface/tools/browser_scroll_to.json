@@ -1,0 +1,16 @@
+{
+  "description": "Scroll the page until an element identified by its ref ID is in view, without moving the pointer. Works on a background tab. Refs come from the latest snapshot or action result.",
+  "name": "browser_scroll_to",
+  "parameters": {
+    "properties": {
+      "ref": {
+        "description": "The element reference from the snapshot (e.g., '@e5')",
+        "type": "string"
+      }
+    },
+    "required": [
+      "ref"
+    ],
+    "type": "object"
+  }
+}

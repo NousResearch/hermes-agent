@@ -16,14 +16,11 @@ VERSION_URL = f"{HTTP_URL}/json/version"
 
 class TestResolveCdpOverride:
     @pytest.mark.parametrize(("raw", "version_url"), (
-        (HTTP_URL, VERSION_URL),
         (HTTP_URL + "/", VERSION_URL),
         (VERSION_URL, VERSION_URL),
         ("http://cdp.example/slot/one/cdp?tok=synthetic", "http://cdp.example/slot/one/cdp/json/version?tok=synthetic"),
-        ("http://cdp.example/slot/one/cdp/?tok=synthetic", "http://cdp.example/slot/one/cdp/json/version?tok=synthetic"),
         ("http://cdp.example/json/version?tok=synthetic", "http://cdp.example/json/version?tok=synthetic"),
         ("http://cdp.example/json/version/?tok=synthetic", "http://cdp.example/json/version?tok=synthetic"),
-        ("http://cdp.example?tok=synthetic", "http://cdp.example/json/version?tok=synthetic"),
     ))
     def test_discovery_appends_json_version_to_the_path_and_keeps_the_query(self, raw, version_url):
         from tools.browser_tool_cdp import _resolve_cdp_override

@@ -34675,6 +34675,18 @@
             "title": "Session Key",
             "type": "string"
           },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source"
+          },
           "started_at": {
             "title": "Started At",
             "type": "number"

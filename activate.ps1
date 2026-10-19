@@ -32,9 +32,19 @@ foreach ($candidate in @("$repo\.venv\Scripts\python.exe", "$repo\venv\Scripts\p
     if (Test-Path -LiteralPath $candidate) { $py = $candidate; break }
 }
 if (-not $py) {
-    $roots = @($env:HERMES_RUNTIME_DIR, "$repo\..\tools")
-    $homeRoot = if ($env:HERMES_HOME) { $env:HERMES_HOME } else { "$env:LOCALAPPDATA\hermes" }
-    $roots += (Join-Path $homeRoot 'tools')
+    # Same order as scripts/_activation.sh: the runtime override, then the store
+    # root the resolver agrees on (a profile home folds to its machine root),
+    # then the checkout's neighbour. Every name the resolver defines is
+    # *-Hermes*, so sourcing it adds nothing unprefixed to the session.
+    . (Join-Path $repo 'scripts\bootstrap\store_root.ps1')
+    # BEGIN/END markers: tests/pm/test_activate_scripts.py executes this block on
+    # its own to pin the candidate ORDER. The order is the whole fix (the neighbour
+    # used to come second), and it cannot be observed reliably by running stand-in
+    # interpreters on Windows — a shell-script "python.exe" is not a PE, so whichever
+    # candidate wins the invocation fails the same way.
+    # --- BEGIN activation store candidates ---
+    $roots = @($env:HERMES_RUNTIME_DIR, (Join-Path (Get-HermesRoot) 'tools'), "$repo\..\tools")
+    # --- END activation store candidates ---
     foreach ($root in $roots) {
         if (-not $root) { continue }
         foreach ($entry in @(Get-ChildItem -LiteralPath $root -Directory -Filter 'python-*' -ErrorAction SilentlyContinue)) {

@@ -42,7 +42,7 @@ def _make_fake_supervisor(
         t = threading.Thread(target=hold.wait, daemon=True)
         t.start()
         # Attach the release hook so the test can let the thread exit.
-        setattr(t, "_release", hold.set)
+        t._release = hold.set
     else:
         # An un-started thread — is_alive() returns False.
         t = threading.Thread(target=lambda: None)

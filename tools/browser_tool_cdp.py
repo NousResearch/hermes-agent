@@ -4,7 +4,7 @@ Split out of ``tools/browser_tool.py``. Facade-owned state is read through ``_bt
 
 import os
 import time
-from typing import Any, Optional, Tuple
+from typing import Any, Optional
 
 from agent.proxy_bypass import loopback_request_kwargs
 from tools.browser_tool_origin import origin_module as _origin
@@ -70,7 +70,7 @@ def _get_cdp_override() -> str:
     return _resolve_cdp_override(raw) if (raw := _get_cdp_override_raw()) else ""
 
 
-def _get_dialog_policy_config() -> Tuple[str, float]:
+def _get_dialog_policy_config() -> tuple[str, float]:
     """Read ``browser.dialog_policy`` + ``browser.dialog_timeout_s``; supervisor defaults when absent/invalid."""
     _bt = _origin()
     # Deferred so browser_tool imports in minimal environments.
@@ -131,10 +131,10 @@ def _ensure_cdp_supervisor(
             cdp_url = _resolve_cdp_override(maybe)
     if not cdp_url:
         return
-    try:
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
-        from tools import browser_tool_lifecycle as _lifecycle
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+    from tools import browser_tool_lifecycle as _lifecycle
 
+    try:
         policy, timeout_s = _get_dialog_policy_config()
 
         def _publication_allowed() -> bool:
@@ -165,16 +165,13 @@ def _ensure_cdp_supervisor(
             publish_guard=_publication_allowed,
         )
     except Exception as exc:
-        _bt.logger.debug("CDP supervisor attach for task=%s failed (non-fatal): %s", task_id, exc)
+        _bt.logger.debug("CDP supervisor attach for task=%s failed: %s", task_id, exc, exc_info=True)
 
 
 def _stop_cdp_supervisor(task_id: str) -> None:
     """Stop the CDP supervisor for ``task_id`` if one exists. No-op otherwise."""
-    try:
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
-        SUPERVISOR_REGISTRY.stop(task_id)
-    except Exception as exc:
-        _origin().logger.debug("CDP supervisor stop for task=%s failed (non-fatal): %s", task_id, exc)
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+    SUPERVISOR_REGISTRY.stop(task_id)
 
 
 def _pinned_cdp_target_id(task_id: str) -> Optional[str]:
@@ -200,10 +197,8 @@ def _close_shared_cdp_target_confirmed(cdp_url: str, target_id: str) -> bool:
     cdp_url = str(cdp_url or "").strip()
     if not target_id or not cdp_url:
         return False
-    try:
-        from tools.browser_cdp_tool import _cdp_call, _run_async
-    except Exception:
-        return False
+    from tools.browser_cdp_tool import _cdp_call, _run_async
+    from websockets.exceptions import WebSocketException
 
     def _targets() -> Optional[list[dict[str, Any]]]:
         try:
@@ -212,7 +207,7 @@ def _close_shared_cdp_target_confirmed(cdp_url: str, target_id: str) -> bool:
             )
             raw = result.get("targetInfos", [])
             return raw if isinstance(raw, list) else None
-        except Exception as exc:
+        except (OSError, TimeoutError, WebSocketException) as exc:
             _bt.logger.debug("Could not verify shared-CDP target %s: %s", target_id, exc)
             return None
 
@@ -226,7 +221,7 @@ def _close_shared_cdp_target_confirmed(cdp_url: str, target_id: str) -> bool:
                 10.0,
             )
         )
-    except Exception as exc:
+    except (OSError, TimeoutError, WebSocketException, RuntimeError) as exc:
         # The response can be lost after Chrome performed the close. Exact
         # absence is authoritative; any other outcome remains retryable.
         _bt.logger.debug("Shared-CDP close for target %s was uncertain: %s", target_id, exc)

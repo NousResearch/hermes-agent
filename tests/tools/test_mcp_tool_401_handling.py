@@ -14,7 +14,7 @@ import pytest
 
 
 pytest.importorskip("mcp.client.auth.oauth2")
-from tools import mcp_tool_loop as _mcp_loop  # noqa: E402
+from tools import mcp_tool_loop as _mcp_loop
 
 
 def test_is_auth_error_detects_oauth_flow_error():

@@ -147,6 +147,61 @@ def test_liveness_without_declaration_disables_package(tmp_path: Path) -> None:
         load_agent_plugin(tmp_path, tmp_path / "data")
 
 
+def _remote_package(root: Path, trust: object | None = None) -> None:
+    servers = {} if trust is None else {"trade": {"trust": trust}}
+    _write_json(root / "plugin.json", _manifest(extensions={"com.nousresearch.hermes": {"servers": servers}}))
+    _write_json(root / "mcp.json", {"$schema": MCP_SCHEMA_V1, "mcpServers": {
+        "trade": {"type": "streamable-http", "url": "https://mcp.example.com/mcp"}}})
+
+
+@pytest.mark.parametrize("declared,expected", [("untrusted", "untrusted"), ("full", None), (None, None)])
+def test_package_can_ask_for_its_server_to_be_gated_but_never_widened(
+    tmp_path: Path, declared: object, expected: object
+) -> None:
+    # A trading/payments package can make Hermes ask before every write-capable call; "full" is the default, so
+    # declaring it grants nothing a config.yaml entry would not already have.
+    _remote_package(tmp_path, declared)
+    package = load_agent_plugin(tmp_path, tmp_path / "data")
+    assert package.mcp_servers["trade"].get("trust") == expected
+    assert "trade" not in package.server_declarations  # trust alone declares no application
+
+
+def test_unknown_trust_value_disables_package(tmp_path: Path) -> None:
+    _remote_package(tmp_path, "trusted")
+    with pytest.raises(AgentPluginError, match="trust must be 'untrusted' or 'full'"):
+        load_agent_plugin(tmp_path, tmp_path / "data")
+
+
+@pytest.mark.parametrize("transport", ["stdio", "streamable-http"])
+def test_server_timeout_is_opt_in_and_scoped_to_its_server(tmp_path: Path, transport: str) -> None:
+    from tools.mcp_tool_common import _resolve_tool_timeout
+
+    server = {"type": "stdio", "command": "python"} if transport == "stdio" else {
+        "type": "streamable-http", "url": "https://mcp.example.com/mcp"}
+    _write_json(tmp_path / "mcp.json", {
+        "$schema": MCP_SCHEMA_V1, "mcpServers": {"slow": server, "ordinary": server}})
+    for settings in ({}, {"timeout": 1000, "trust": "untrusted"}, {}):
+        _write_json(tmp_path / "plugin.json", _manifest(extensions={
+            "com.nousresearch.hermes": {"servers": {"slow": settings}}} if settings else {}))
+        package = load_agent_plugin(tmp_path, tmp_path / "data")
+        assert "timeout" not in package.mcp_servers["ordinary"]
+        assert "slow" not in package.server_declarations
+        if settings:
+            assert _resolve_tool_timeout(package.mcp_servers["slow"]) == 1000
+            assert package.mcp_servers["slow"]["trust"] == "untrusted"
+        else:
+            assert "timeout" not in package.mcp_servers["slow"]
+
+
+@pytest.mark.parametrize("timeout", [True, None, "1000", 0, -1, float("inf"), float("nan")])
+def test_server_timeout_rejects_invalid_deadlines(tmp_path: Path, timeout: object) -> None:
+    _remote_package(tmp_path)
+    _write_json(tmp_path / "plugin.json", _manifest(extensions={
+        "com.nousresearch.hermes": {"servers": {"trade": {"timeout": timeout}}}}))
+    with pytest.raises(AgentPluginError, match="timeout must be"):
+        load_agent_plugin(tmp_path, tmp_path / "data")
+
+
 def test_unknown_fields_and_non_object_extensions_are_nonfatal(tmp_path: Path) -> None:
     _write_json(
         tmp_path / "plugin.json",
@@ -154,6 +209,20 @@ def test_unknown_fields_and_non_object_extensions_are_nonfatal(tmp_path: Path) -
     )
     package = load_agent_plugin(tmp_path, tmp_path / "data")
     assert len(package.diagnostics) == 2
+
+
+@pytest.mark.parametrize("declared", [{"trust": "untrusted", "future_key": 5}, {"future_key": 5}])
+def test_unknown_server_declaration_key_is_ignored_and_known_keys_still_apply(tmp_path: Path, declared: dict) -> None:
+    # A key a newer Hermes added must not make the package uninstallable on this one (REA's
+    # `timeout` broke every v0.22.2 install); the keys this release knows, trust included, still hold.
+    _remote_package(tmp_path)
+    _write_json(tmp_path / "plugin.json", _manifest(extensions={
+        "com.nousresearch.hermes": {"servers": {"trade": declared}}}))
+    package = load_agent_plugin(tmp_path, tmp_path / "data")
+    assert package.mcp_servers["trade"].get("trust") == declared.get("trust")
+    assert "trade" not in package.server_declarations
+    assert [d.scope for d in package.diagnostics] == ["server:trade"]
+    assert "future_key" in package.diagnostics[0].message
 
 
 def test_invalid_skill_does_not_hide_valid_sibling(tmp_path: Path) -> None:

@@ -12,10 +12,10 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Optional
 
 from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 from tools.browser_tool_origin import origin as _bt
@@ -69,10 +69,7 @@ def _task_state_locked(bare_task_id: str) -> BrowserTaskState:
     """Read lifecycle state while ``_cleanup_lock`` is held."""
     if bare_task_id in _bt._retired_browser_tasks:
         return BrowserTaskState.RETIRED
-    state = _bt._browser_task_states.get(bare_task_id, BrowserTaskState.ACTIVE)
-    # The compatibility tombstone stays authoritative. A stale RETIRED map
-    # entry cannot survive a test/hot-reload caller clearing the set.
-    return BrowserTaskState.ACTIVE if state is BrowserTaskState.RETIRED else state
+    return _bt._browser_task_states.get(bare_task_id, BrowserTaskState.ACTIVE)
 
 
 def _set_task_state_locked(
@@ -139,7 +136,7 @@ def _is_browser_task_unavailable(task_id: str) -> bool:
         }
 
 
-def _is_task_owned_shared_cdp_session(session_info: Dict[str, Any]) -> bool:
+def _is_task_owned_shared_cdp_session(session_info: dict[str, Any]) -> bool:
     """True only for a task-owned tab on a user-supplied shared CDP."""
     features = session_info.get("features")
     return bool(session_info.get("cdp_url")) and bool(
@@ -153,7 +150,7 @@ def _is_browser_task_retired(task_id: str) -> bool:
         return _task_state_locked(bare_task_id) is BrowserTaskState.RETIRED
 
 
-def _browser_session_retired_result(task_id: str) -> Dict[str, Any]:
+def _browser_session_retired_result(task_id: str) -> dict[str, Any]:
     bare_task_id = _bt._bare_task_id_for_session_key(task_id or "default")
     with _bt._cleanup_lock:
         state = _task_state_locked(bare_task_id)
@@ -210,7 +207,7 @@ def _restore_retired_browser_task_after_failed_navigation(
     cleanup_browser(session_key, reason=BrowserCleanupReason.RESTART_ROLLBACK)
 
 
-def _session_expiry_timestamp(session_info: Dict[str, Any]) -> Optional[float]:
+def _session_expiry_timestamp(session_info: dict[str, Any]) -> Optional[float]:
     """Provider-authoritative session expiry as epoch seconds; None when absent or
     malformed (cloud providers may omit ``expires_at``; local browsers never have one)."""
     value = session_info.get("expires_at")
@@ -228,12 +225,12 @@ def _session_expiry_timestamp(session_info: Dict[str, Any]) -> Optional[float]:
         _bt.logger.warning("Ignoring invalid cloud browser session expiry timestamp")
         return None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
     return parsed.timestamp()
 
 
 def _session_has_expired(
-    session_info: Dict[str, Any], *, now: Optional[float] = None
+    session_info: dict[str, Any], *, now: Optional[float] = None
 ) -> bool:
     """Whether a cached browser session crossed its provider deadline."""
     expires_at = _session_expiry_timestamp(session_info)
@@ -244,7 +241,7 @@ def _session_has_expired(
 
 def _provider_cleanup_key(
     task_id: str, provider: Any, session_id: str
-) -> Tuple[str, int, str]:
+) -> tuple[str, int, str]:
     return (task_id, id(provider) if provider is not None else 0, session_id)
 
 
@@ -295,19 +292,12 @@ def _attempt_provider_session_close(
     bare_task_id = _bt._bare_task_id_for_session_key(task_id)
     owner = provider
     if owner is None:
-        try:
-            owner = _cloud._get_cloud_provider()
-        except Exception as exc:
-            _bt.logger.warning("Could not resolve cloud browser provider for cleanup: %s", exc)
+        owner = _cloud._get_cloud_provider()
     if owner is None:
         _remember_pending_provider_cleanup(bare_task_id, provider, session_id)
         return False
-    try:
-        closed = owner.close_session(session_id)
-    except Exception as exc:
-        _bt.logger.warning("Could not close cloud browser session: %s", exc)
-        _remember_pending_provider_cleanup(bare_task_id, owner, session_id)
-        return False
+    _remember_pending_provider_cleanup(bare_task_id, owner, session_id)
+    closed = owner.close_session(session_id)
     if closed is not True:
         _bt.logger.warning("Cloud browser provider did not confirm session close")
         _remember_pending_provider_cleanup(bare_task_id, owner, session_id)
@@ -612,7 +602,7 @@ def _read_pid_file(path: str) -> Optional[int]:
         return None
 
 
-def _owner_pid_alive(socket_dir: str, session_name: str) -> Tuple[Optional[int], Optional[bool]]:
+def _owner_pid_alive(socket_dir: str, session_name: str) -> tuple[Optional[int], Optional[bool]]:
     """Read ``<session>.owner_pid`` and report ``(pid, alive)``; ``(None, None)`` when missing/corrupt."""
     owner_pid = _read_pid_file(os.path.join(socket_dir, f"{session_name}.owner_pid"))
     if owner_pid is None:
@@ -649,7 +639,7 @@ def _orphan_target_ownership(
             else OrphanTargetOwnership.CONFIRMED_UNPINNED
         )
     try:
-        payload = json.loads(target_file.read_text(encoding="utf-8"))
+        payload = json.loads(target_file.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError, TypeError):
         return OrphanTargetOwnership.UNKNOWN
     if not isinstance(payload, dict):
@@ -696,7 +686,7 @@ def _close_orphaned_pinned_target(socket_dir: str, session_name: str) -> bool:
         target_id = _read_recorded_pinned_target_id(socket_dir, session_name)
         cdp_url = (
             Path(socket_dir) / f"{session_name}.cdp_endpoint"
-        ).read_text(encoding="utf-8").strip()
+        ).read_text(encoding="utf-8-sig").strip()
     except (OSError, ValueError, TypeError):
         return False
     if not target_id or not cdp_url:
@@ -890,7 +880,7 @@ def _update_session_activity(task_id: str):
         _bt._session_owner_homes.setdefault(task_id, str(get_hermes_home()))
 
 
-def _kill_process_tree(proc: "subprocess.Popen") -> None:
+def _kill_process_tree(proc: subprocess.Popen) -> None:
     """Best-effort kill of *proc* and every descendant; never raises.
 
     ``Popen.kill()`` only signals the direct child; npm/npx helpers and the detached
@@ -917,9 +907,12 @@ def _kill_process_tree(proc: "subprocess.Popen") -> None:
         _legacy_kill_process_tree(proc)
 
 
-def _legacy_kill_process_tree(proc: "subprocess.Popen") -> None:
-    """Local tree-kill (SIGTERM then SIGKILL to the process group) — fallback when
-    agent.deadline is unavailable; tests pin this signal sequence."""
+def _legacy_kill_process_tree(proc: subprocess.Popen) -> None:
+    """Local tree-kill (fallback when agent.deadline is unavailable; tests pin
+    the signal sequence). A child leading its own group gets SIGTERM then
+    SIGKILL via killpg; a shared-group child can never be killpg'd (that is OUR
+    group), so it and its psutil-snapshotted descendants are killed
+    individually."""
     if os.name == "nt":
         try:
             subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
@@ -939,12 +932,38 @@ def _legacy_kill_process_tree(proc: "subprocess.Popen") -> None:
     try:
         pgid = os.getpgid(proc.pid)
     except (ProcessLookupError, OSError):
-        return
-    for sig in (signal.SIGTERM, getattr(signal, "SIGKILL", signal.SIGTERM)):
+        pgid = None
+    # Signal the group only when the child leads it (start_new_session / process_group=0):
+    # a child spawned into our group resolves pgid to OUR process group and killpg would
+    # take the whole Hermes tree down with it, and a recycled PID can resolve to a foreign
+    # group. The direct child still gets proc.kill() either way. Same ownership check as
+    # hermes_cli/_subprocess_compat._legacy_kill_process_tree.
+    descendants = []
+    if pgid is not None and pgid == proc.pid:
+        for sig in (signal.SIGTERM, getattr(signal, "SIGKILL", signal.SIGTERM)):
+            try:
+                killpg(pgid, sig)
+            except (ProcessLookupError, PermissionError, OSError):
+                break
+    else:
+        # No group signal is safe, so descendants are killed individually;
+        # a bare proc.kill() would leave them holding the capture pipe's write
+        # end open (the #68915 communicate() hang). The snapshot must precede
+        # the parent kill: once the parent exits, children reparent and psutil
+        # can no longer find them (process_registry._terminate_host_pid).
         try:
-            killpg(pgid, sig)
-        except (ProcessLookupError, PermissionError, OSError):
-            return
+            import psutil
+
+            descendants = psutil.Process(proc.pid).children(recursive=True)
+        except Exception:
+            descendants = []
+    try:
+        proc.kill()
+    except Exception:
+        pass
+    for child in descendants:
+        with contextlib.suppress(Exception):
+            child.kill()
 
 
 def _pid_exists(pid: int) -> bool:
@@ -1028,7 +1047,7 @@ def _begin_task_cleanup_locked(
     return effective_reason
 
 
-def _is_hermes_owned_local_browser_session(session_info: Dict[str, Any]) -> bool:
+def _is_hermes_owned_local_browser_session(session_info: dict[str, Any]) -> bool:
     """Whether headed cross-turn persistence may retain this session."""
     features = session_info.get("features")
     if isinstance(features, dict) and features.get("local") is True:
@@ -1192,16 +1211,13 @@ def cleanup_browser_for_turn(task_id: Optional[str] = None) -> bool:
     if _bt._is_camofox_mode():
         if preserve_local:
             return True
-        try:
-            from tools.browser_camofox import camofox_has_session
+        from tools.browser_camofox import camofox_has_session
 
-            if not camofox_has_session(task_id):
-                bare_task_id = _bt._bare_task_id_for_session_key(task_id)
-                with _bt._cleanup_lock:
-                    if bare_task_id not in _bt._browser_task_cleanup_locks:
-                        return True
-        except Exception:
-            pass
+        if not camofox_has_session(task_id):
+            bare_task_id = _bt._bare_task_id_for_session_key(task_id)
+            with _bt._cleanup_lock:
+                if bare_task_id not in _bt._browser_task_cleanup_locks:
+                    return True
     if preserve_local:
         bare_task_id = _bt._bare_task_id_for_session_key(task_id)
         with _bt._cleanup_lock:
@@ -1252,9 +1268,7 @@ def _kill_verified_daemon(socket_dir: str, session_name: str) -> bool:
 
 def _release_session_resources(
     task_id: str,
-    session_info: Dict[str, Any],
-    *,
-    retain_provider_failure: bool = True,
+    session_info: dict[str, Any],
 ) -> bool:
     """Untrack ``task_id``, close its cloud provider session, kill its daemon — the
     unconditional tail of a teardown, and the whole of the janitor's force-reap path.
@@ -1268,23 +1282,9 @@ def _release_session_resources(
 
     provider_closed = True
     if bb_session_id:
-        if retain_provider_failure:
-            provider_closed = _attempt_provider_session_close(
-                task_id,
-                session_info.get("_provider_cleanup_owner"),
-                str(bb_session_id),
-            )
-        else:
-            # Janitor last resort: after repeated cleanup exceptions, issue one
-            # provider close but do not keep retry state forever.
-            provider = session_info.get("_provider_cleanup_owner")
-            if provider is None:
-                provider = _cloud._get_cloud_provider()
-            if provider is not None:
-                try:
-                    provider.close_session(bb_session_id)
-                except Exception as exc:
-                    _bt.logger.warning("Could not close cloud browser session: %s", exc)
+        provider_closed = _attempt_provider_session_close(
+            task_id, session_info.get("_provider_cleanup_owner"), str(bb_session_id),
+        )
 
     session_name = session_info.get("session_name", "")
     if session_name:
@@ -1311,9 +1311,8 @@ def _force_reap_browser_session(task_id: str) -> None:
         return
     _cdp._stop_cdp_supervisor(task_id)
     if session_info:
-        _release_session_resources(
-            task_id, session_info, retain_provider_failure=False
-        )
+        if not _release_session_resources(task_id, session_info):
+            return
     with _bt._cleanup_lock:
         _bt._session_last_activity.pop(task_id, None)
     bare_task_id = _bt._bare_task_id_for_session_key(task_id)
@@ -1423,6 +1422,11 @@ def cleanup_all_browsers() -> None:
         SUPERVISOR_REGISTRY.stop_all()
     except Exception:
         pass
+
+    def _stop_harness():
+        from tools.browser_use_cli import stop_harness_daemons
+        stop_harness_daemons()
+    _best_effort("Browser Use harness daemon stop", _stop_harness)
 
     _install._discover_homebrew_node_dirs.cache_clear()
     _bt._chromium_autoinstall_attempted = False

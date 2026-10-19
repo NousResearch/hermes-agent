@@ -100,8 +100,8 @@ def _pin_tab_candidate_status(path: str) -> bool:
     if version is None or version < _origin().AGENT_BROWSER_PIN_TAB_MIN_VERSION:
         return False
     try:
-        result = subprocess.run([path, "--help"], capture_output=True, text=True,
-                                encoding="utf-8", errors="replace", timeout=10,
+        result = subprocess.run([path, "--help"], capture_output=True, text=True, encoding="utf-8",
+                                errors="replace", timeout=10,
                                 env=_version_probe_env(), creationflags=windows_hide_flags(), check=False)
     except (OSError, subprocess.SubprocessError, ValueError):
         return False

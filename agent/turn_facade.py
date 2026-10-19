@@ -7,62 +7,31 @@ MRO unchanged.
 """
 import logging
 import uuid
-from contextlib import contextmanager, suppress
-from contextvars import ContextVar
-from typing import Any, Dict, List, Optional
+from contextlib import suppress
+from typing import Any, Dict, Generator, List, Optional
 
 from agent.lazy_forward import forward as _forward
+from agent.browser_turn_cleanup import browser_turn_cleanup_boundary
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("run_agent")
-
-
-_browser_turn_cleanup_completed: ContextVar[bool] = ContextVar(
-    "browser_turn_cleanup_completed", default=False
-)
-
-
-def _mark_browser_turn_cleanup_complete() -> None:
-    """Record that this synchronous turn already ran its browser boundary."""
-    _browser_turn_cleanup_completed.set(True)
-
-
-@contextmanager
-def _browser_turn_cleanup_boundary(task_id: str):
-    """Guarantee browser finalization for every conversation-loop exit."""
-    token = _browser_turn_cleanup_completed.set(False)
-    try:
-        yield
-    finally:
-        try:
-            if not _browser_turn_cleanup_completed.get():
-                # Resolve through the public facade at call time so embedders
-                # and tests that replace the cleanup binding remain supported.
-                import run_agent
-
-                run_agent.cleanup_browser_for_turn(task_id)
-        except Exception as exc:
-            # Cleanup must not replace the response/original exception. The
-            # RETIRING state remains the fail-closed boundary for later retry.
-            logger.warning("Browser turn cleanup failed for task %s: %s", task_id, exc)
-        finally:
-            _browser_turn_cleanup_completed.reset(token)
 
 
 class TurnFacadeMixin:
     """run_conversation()/chat() (see module docstring)."""
 
     def run_conversation(
-        self, user_message: Any, system_message: str=None,
-        conversation_history: List[Dict[str, Any]]=None, task_id: str=None,
+        self, user_message: Any, system_message: str | None=None,
+        conversation_history: list[dict[str, Any]] | None=None, task_id: str | None=None,
         stream_callback: Optional[callable]=None, persist_user_message: Optional[Any]=None,
         persist_user_timestamp: Optional[float]=None, persist_user_display_kind: Optional[str]=None,
-        persist_user_display_metadata: Optional[Dict[str, Any]]=None,
+        persist_user_display_metadata: Optional[dict[str, Any]]=None,
         persist_user_platform_id: Optional[str]=None, moa_config: Optional[dict[str, Any]]=None,
-        turn_author: Optional[Dict[str, Any]] = None,
-        relay_metadata: Optional[Dict[str, Any]] = None,
+        turn_author: Optional[dict[str, Any]] = None,
+        relay_metadata: Optional[dict[str, Any]] = None,
         title_user_message: Optional[str]=None,
-    ) -> Dict[str, Any]:
+        prelude: Optional[Generator]=None,
+    ) -> dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         # A review shares this session_id for cache parity: fence review startup or interrupt
         # an admitted request and await its exit before opening live-turn instrumentation.
@@ -108,7 +77,7 @@ class TurnFacadeMixin:
         token = affinity_token = acct_token = None
         task_started = task_finished = False
         relay_outcome = "failed"
-        browser_cleanup_scope = _browser_turn_cleanup_boundary(effective_task_id)
+        browser_cleanup_scope = browser_turn_cleanup_boundary(effective_task_id)
         browser_cleanup_scope.__enter__()
 
         try:
@@ -145,7 +114,7 @@ class TurnFacadeMixin:
                 session_cwd=relay_session_cwd,
                 turn_cwd=relay_turn_cwd,
             )
-            relay_turn_kwargs: Dict[str, Any] = {
+            relay_turn_kwargs: dict[str, Any] = {
                 "turn_id": relay_turn_id,
                 "task_id": effective_task_id,
             }
@@ -188,6 +157,7 @@ class TurnFacadeMixin:
                         persist_user_platform_id=persist_user_platform_id, moa_config=moa_config,
                         turn_author=turn_author,
                         title_user_message=title_user_message,
+                        prelude=prelude,
                     )
                 finally:
                     # Post-loop relay/task finalization must not receive a late refresh interrupt;
@@ -229,27 +199,29 @@ class TurnFacadeMixin:
                     if relay_lease is not None:
                         relay_runtime.SESSION_COORDINATOR.release_conversation(relay_lease)
                 finally:
-                    browser_cleanup_scope.__exit__(None, None, None)
-                    if lease is not None:
-                        lease.stop_refresher()
-                        lease.join_threads()
-                        lease.clear_interrupt()  # refresher interrupt between stop and join; AFTER join
-                        lease.release()
-                    # Always clear mid-turn labels on exit — including interrupted early returns
-                    # that skip finalize_turn. Keep ts.
-                    with suppress(Exception):
-                        self._reset_activity_labels_after_turn()
-                    if getattr(self, "_relay_pending_turn_id", None) == relay_turn_id:
-                        self._relay_pending_turn_id = None
-                    if acct_token is not None:
-                        reset_accounting_context(acct_token)
-                    if token is not None:
-                        reset_conversation_context(token)
-                    if affinity_token is not None:
-                        reset_affinity_scope(affinity_token)
-                    # Balance note_turn_started so the idle queue's live-turn count cannot leak.
-                    with suppress(Exception):
-                        _review_queue.note_turn_finished()
+                    try:
+                        browser_cleanup_scope.__exit__(None, None, None)
+                    finally:
+                        if lease is not None:
+                            lease.stop_refresher()
+                            lease.join_threads()
+                            lease.clear_interrupt()  # refresher interrupt between stop and join; AFTER join
+                            lease.release()
+                        # Always clear mid-turn labels on exit — including interrupted early returns
+                        # that skip finalize_turn. Keep ts.
+                        with suppress(Exception):
+                            self._reset_activity_labels_after_turn()
+                        if getattr(self, "_relay_pending_turn_id", None) == relay_turn_id:
+                            self._relay_pending_turn_id = None
+                        if acct_token is not None:
+                            reset_accounting_context(acct_token)
+                        if token is not None:
+                            reset_conversation_context(token)
+                        if affinity_token is not None:
+                            reset_affinity_scope(affinity_token)
+                        # Balance note_turn_started so the idle queue's live-turn count cannot leak.
+                        with suppress(Exception):
+                            _review_queue.note_turn_finished()
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
         """Final response string of one turn; ``stream_callback`` receives each text delta."""

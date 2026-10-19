@@ -3510,6 +3510,7 @@
     "settings.localModels.serverStarted",
     "settings.localModels.serverStopFailed",
     "settings.localModels.serverStopped",
+    "settings.localModels.setupInterruptedLabel",
     "settings.localModels.sideloadAlreadyPresent",
     "settings.localModels.sideloadButton",
     "settings.localModels.sideloadDone",

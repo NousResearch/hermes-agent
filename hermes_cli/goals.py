@@ -1099,6 +1099,10 @@ class GoalManager:
         self.default_max_turns = int(default_max_turns or DEFAULT_MAX_TURNS)
         self._state: Optional[GoalState] = load_goal(session_id)
 
+    def refresh(self) -> None:
+        """Re-read state from the DB (another writer, e.g. a tool, moved it)."""
+        self._state = load_goal(self.session_id)
+
     # --- introspection ------------------------------------------------
 
     @property

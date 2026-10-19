@@ -452,6 +452,56 @@ describe('requestGatewayForAgent', () => {
     })
   })
 
+  it('revalidates a legacy Settings owner after a delayed profile dial and before dispatch', async () => {
+    const primary = makePrimary()
+
+    const capturedOwner = {
+      mode: 'remote',
+      baseUrl: 'https://original.example',
+      token: 'original-token'
+    } as const
+
+    let releaseConnect: () => void = () => undefined
+    connectGate = new Promise<void>(resolve => {
+      releaseConnect = resolve
+    })
+
+    const getConnectionFor = vi.fn(async () => {
+      throw new Error('Connection owner changed')
+    })
+
+    setPrimaryGateway(primary as never, 'default')
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      getConnection: vi.fn(async (profile: string) => ({
+        mode: 'remote',
+        port: 5151,
+        profile,
+        token: capturedOwner.token
+      })),
+      getConnectionFor
+    }
+
+    const pending = requestGatewayForAgent(null, 'worker', 'vault.add', { secret: 'synthetic' }, undefined, undefined, {
+      expectedConnectionOwner: capturedOwner,
+      expectedOwner: { profile: 'worker', connectionOwner: capturedOwner }
+    })
+
+    await vi.waitFor(() => expect(secondaryGateways[0]?.connect).toHaveBeenCalledOnce())
+    expect(getConnectionFor).not.toHaveBeenCalled()
+    releaseConnect()
+
+    await expect(pending).rejects.toThrow('Connection owner changed')
+    expect(getConnectionFor).toHaveBeenCalledWith({
+      connectionId: null,
+      expectedConnectionOwner: capturedOwner,
+      expectedOwner: { profile: 'worker', connectionOwner: capturedOwner },
+      profile: 'worker',
+      priority: 'background'
+    })
+    expect(secondaryGateways[0].request).not.toHaveBeenCalled()
+    expect(primary.request).not.toHaveBeenCalled()
+  })
+
   it('routes an explicit local registry descriptor through getConnectionFor', async () => {
     const primary = makePrimary()
 

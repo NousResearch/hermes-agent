@@ -141,15 +141,21 @@ interface SettingsOwner {
 }
 
 export function settingsGatewayRequestOwnership(scope: ProfileScope) {
-  if (!scope || typeof scope !== 'object' || !scope.connectionOwner) {
+  if (!scope || typeof scope !== 'object') {
+    return {}
+  }
+
+  const sourceOwner = scope.connectionOwner ?? scope.legacyConnection
+
+  if (!sourceOwner) {
     return {}
   }
 
   return {
-    expectedConnectionOwner: scope.cacheOwner ?? scope.connectionOwner,
+    expectedConnectionOwner: scope.cacheOwner ?? sourceOwner,
     expectedOwner: {
-      profile: scope.connectionOwnerProfile ?? scope.profile ?? 'custom',
-      connectionOwner: scope.connectionOwner
+      profile: scope.connectionOwnerProfile ?? scope.legacyConnectionProfile ?? scope.profile ?? 'custom',
+      connectionOwner: sourceOwner
     }
   }
 }

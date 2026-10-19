@@ -176,6 +176,26 @@ it('validates the foreground source while routing a distinct selected-profile de
   ])
 })
 
+it('uses the captured legacy descriptor for gateway owner validation', () => {
+  const legacy = {
+    mode: 'remote',
+    baseUrl: 'https://legacy.example',
+    token: 'synthetic-legacy',
+    profile: 'worker'
+  } as const
+
+  $activeGatewayProfile.set('worker')
+  $connection.set(legacy as HermesConnection)
+
+  expect(settingsGatewayRequestOwnership($settingsOwner.get()!)).toEqual({
+    expectedConnectionOwner: expect.objectContaining({ baseUrl: legacy.baseUrl, token: legacy.token }),
+    expectedOwner: {
+      profile: 'worker',
+      connectionOwner: expect.objectContaining({ baseUrl: legacy.baseUrl, token: legacy.token })
+    }
+  })
+})
+
 it('recycles the selected profile descriptor rather than the different foreground owner', async () => {
   const source = descriptors.default
 

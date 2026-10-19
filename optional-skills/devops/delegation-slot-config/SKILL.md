@@ -43,8 +43,8 @@ with urllib.request.urlopen(req, timeout=45) as r:
 Ledger rules:
 - OPEN: when dispatching N children, log `used = children_slot_cost + (1 if user actively chatting else 0)`.
 - CLOSE: when the batch-complete message lands, release the children's slots in the ledger.
-- 429 + Retry-After ~3 = ledger says over 5 — recount immediately (usual culprit: a live parent turn or a stray instance).
-- x-ratelimit-remaining counts RPM starts (20, burst 8), NOT slots — never confuse the two.
+- On any 429, read `x-ratelimit-remaining` FIRST: at/near 0 → RPM start budget (pace down; slow lane is 3/min burst 2 — wait for `x-ratelimit-reset`); healthy → slots: recount the ledger immediately (usual culprit: a live parent turn or a stray instance). `Retry-After ≈ 3` alone is ambiguous — full-speed RPM is one start per ~3s.
+- `x-ratelimit-remaining` counts RPM starts (20/min burst 8), NOT slots — it is the disambiguator between the two 429 kinds.
 - The pool is per-KEY and cross-model (proven 2026-10-15: 5 glm in flight → deepseek request also 429s). Mixing model families never adds capacity.
 
 ## 3. Stray-instance sweep (they silently consume slots)

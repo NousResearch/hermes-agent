@@ -25,16 +25,16 @@ Load whenever a task could spawn parallel delegate_task children on this machine
 - Child model is pinned via `delegation.model` in config.yaml — currently **`deepseek-v4.1-flash:dev`** (user's pick: strongest 1-slot :dev). Probe-verified 2026-10-15: 4-parallel all 200s in ~2.6s. If unset, children inherit the parent's model.
 - Default layout: **max children = slots − 1** (Turbo: 4 via `delegation.max_concurrent_children: 4`; Lite: 1) — one slot reserved for the parent's next turn / user interjection.
 - Never route children to `glm-5.3:dev`: two Heavy children eat 4 of 5 slots.
-- `429` + `Retry-After: 3` = slots (or burst) exhausted. Hermes queues/retries, but sustained contention killed a real child (real incident: stale-watchdog abort after 5 silent attempts). Don't oversubscribe.
-- RPM 20 (burst 8) is rarely binding for agent loops; slots bind first.
+- On any `429`, read `x-ratelimit-remaining` first: at/near 0 → RPM start budget (pace down); healthy → slots exhausted, recount the ledger. `Retry-After ≈ 3` alone can't tell the two apart at full speed (20/min = one start every ~3s). Hermes queues/retries, but sustained contention killed a real child (real incident: stale-watchdog abort after 5 silent attempts). Don't oversubscribe.
+- RPM (Turbo 20/min burst 8) rarely binds at full speed; in the slow lane (past full-speed headroom, or low-interactivity mode) it drops to 3/min burst 2 and binds before slots — pace fan-outs there.
 - Empirically: glm-5.3-flash:dev (2–7s) and deepseek-v4.1-flash:dev (~2–6s, probe-verified) are the fast/stable child models. Non-GLM :dev backends ran 20–45s or 500'd under fan-out — don't mix families to "spread load"; it does not spread the slot pool.
 - Headroom note (soft, not cost): Flash-series (glm-5.3-flash etc.) burns full-speed headroom at 0.5×, Standard (deepseek-v4.1-flash, qwen3.8-27b, minimax-m2.7) at 1×. Heavy glm-5.3:dev = 2 slots + 2×. If long grinding days slow down, that's the soft headroom lane — it paces, never blocks.
 
 ## Width vs single child (measured 2026-10-15)
 Same 2 units of work: 2x deepseek-v4.1-flash parallel = 12.8s wall; 1x glm-5.3-flash sequential = 20.2s; 1x deepseek = 28.9s. Parallel pair wins ~1.6x over the faster single model, plus failure isolation (one stalled child doesn't lose the other's work). Spawn overhead ~20-30s per batch dominates SMALL jobs — don't fan out trivial work; for minutes-long units (doc diffs, audits, research), width wins. Slot cost: N children = N slots (deepseek), vs 1 for a single glm child.
 
-## Effectiveness plan
-Full usage plan (workload playbooks per task type, model routing table, session-hygiene 12:1 rule, upgrade math) lives at docs/effectiveness_plan_TEMPLATE.md (in this repo). Core rules: tokens are free (never ration), slots are the only currency; width beats speed (measured); 1 task = 1 session; >200-message parents should have been fan-outs.
+## Core rules
+Tokens are free (never ration); slots are the only currency. Width beats speed (measured, above). One task = one session; a parent drifting past ~200 messages should have been a fan-out.
 
 ## When to fan out (default ON)
 - N documents/versions to diff or extract (the R21/TASH docx grind) — one child per doc; parent reads 2 KB digests.

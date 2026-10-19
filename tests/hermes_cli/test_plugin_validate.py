@@ -344,6 +344,24 @@ class TestDesktopSurface:
         assert "dynamic import outside the SDK (desktop/plugin.js:3)" in failed["desktop surface"]
         assert ":4)" not in failed["desktop surface"]
 
+    def test_bundled_library_own_class_prototypes_pass_but_renderer_globals_still_fail(self, tmp_path):
+        """A bundled library setting fields on classes it declares (three.js: ``var Vector2 = class
+        _Vector2 { constructor() { _Vector2.prototype.isVector2 = true } }``, ``function Track(){}``)
+        is not prototype patching. A write to a renderer global or an undeclared receiver still is,
+        including a global the file shadows with a same-named class elsewhere."""
+        d = self._desktop_plugin(tmp_path, (
+            "var Vector2 = class _Vector2 { constructor() { _Vector2.prototype.isVector2 = true } }\n"
+            "function Track() {}\nTrack.prototype.ValueTypeName = 'vector'\n"
+            "const S = window.Storage\nS.prototype.setItem = noop\n"
+            "class Storage {}\nStorage.prototype.setItem = noop\n"
+            "HTMLElement.prototype.click = spy\n"
+        ))
+        assert desktop_surface_hits(d) == [
+            "prototype patching (desktop/plugin.js:5)",
+            "prototype patching (desktop/plugin.js:7)",
+            "prototype patching (desktop/plugin.js:8)",
+        ]
+
     def test_node_sidecar_and_test_mjs_outside_desktop_are_not_the_surface(self, tmp_path):
         """A tools plugin with a Node sidecar (``sidecar/*.mjs`` lazily importing a lockfile-pinned
         dependency) and ``tests/*.test.mjs`` has no Desktop surface: the lint stays silent, and the

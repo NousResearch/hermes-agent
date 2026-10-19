@@ -14,9 +14,10 @@ from pathlib import Path
 from typing import List, Tuple
 
 # (rule, regex) applied to comment-stripped source; every hit fails the "desktop surface" check.
+# ``X.prototype.y =`` is checked separately (``_foreign_prototype_writes``): it fails only when ``X``
+# is not a class/function the file declares itself, because a bundled library setting fields on its
+# own classes (three.js: ``Vector2.prototype.isVector2 = true``) is not reaching into the renderer.
 _FORBIDDEN: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("prototype patching",
-     re.compile(r"\b[A-Za-z_$][\w$]*\.prototype\.[\w$]+\s*=[^=]")),
     ("prototype patching",
      re.compile(r"\bObject\.definePropert(?:y|ies)\(\s*[\w$.]+\.prototype\b")),
     ("prototype patching",
@@ -79,11 +80,34 @@ def _mask_regex_literals(source: str) -> str:
     return _REGEXP_CTOR_MATCHER.sub(lambda m: " " * len(m.group(0)), masked)
 
 
+_PROTOTYPE_WRITE = re.compile(r"\b([A-Za-z_$][\w$]*)\.prototype\.[\w$]+\s*=[^=]")
+# ``class X``/``function X`` anywhere, plus ``Y = class [X]`` / ``Y = function [X]`` (bundlers emit
+# ``var Vector2 = class _Vector2 {...}`` and the methods then write ``_Vector2.prototype``).
+_DECLARED_NAME = re.compile(
+    r"(?<![\w$.])([A-Za-z_$][\w$]*)\s*=\s*(?:class|function)\b(?:\s+([A-Za-z_$][\w$]*))?"
+    r"|\b(?:class|function)\s+([A-Za-z_$][\w$]*)")
+# A regex cannot see scope, so a same-named local declaration elsewhere in the file must not excuse
+# a write to a renderer global: these receivers always fail, declared or not.
+_RENDERER_GLOBAL = re.compile(
+    r"^(?:Object|Function|Array|String|Number|Boolean|Symbol|Promise|RegExp|Date|Error|JSON|Map|Set"
+    r"|WeakMap|WeakSet|Proxy|Reflect|Storage|Window|Document|Node|EventTarget|Event|Location|History"
+    r"|Navigator|WebSocket|XMLHttpRequest|Request|Response|Headers|URL|Blob|File|FileReader"
+    r"|MutationObserver|Worker|BroadcastChannel|MessagePort|IDB\w*|\w*Element|\w*Event|CSS\w*)$")
+
+
+def _foreign_prototype_writes(source: str) -> list[int]:
+    """Offsets of ``X.prototype.y =`` where ``X`` is a renderer global or not declared in the file."""
+    declared = {name for names in _DECLARED_NAME.findall(source) for name in names if name}
+    return [m.start() for m in _PROTOTYPE_WRITE.finditer(source)
+            if m.group(1) not in declared or _RENDERER_GLOBAL.match(m.group(1))]
+
+
 def desktop_surface_findings(source: str) -> list[tuple[str, int]]:
     """Return ``[(rule, line)]`` for every forbidden construct in a plugin.js source."""
     stripped = _strip_comments(source)
     no_regex = _mask_regex_literals(stripped)
-    findings: list[tuple[str, int]] = []
+    findings = [("prototype patching", stripped.count("\n", 0, at) + 1)
+                for at in _foreign_prototype_writes(stripped)]
     for rule, pattern in _FORBIDDEN:
         haystack = no_regex if rule in _MARKUP_RULES else stripped
         for match in pattern.finditer(haystack):

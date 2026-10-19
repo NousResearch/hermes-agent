@@ -3346,7 +3346,13 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
         is_group = getattr(message, "chat_type", "p2p") != "p2p"
         chat_id = getattr(message, "chat_id", "") or ""
         rule = self._group_rules.get(chat_id) if chat_id else None
-        if is_group and rule and rule.ignore_at_all and self._contains_at_all(message):
+        if (
+            is_group
+            and rule
+            and rule.ignore_at_all
+            and self._contains_at_all(message)
+            and not self._mentions_self(message)
+        ):
             return "group_at_all_ignored"
         if require_mention is None:
             require_mention = self._require_mention_for(chat_id)

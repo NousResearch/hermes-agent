@@ -1689,6 +1689,21 @@ slash:
   quit:
     description: "離開 CLI（加上 --delete 同時移除工作階段歷史）"
 cli:
+  modern:
+    thought_for: "思考了 {seconds} 秒"
+    thought: "思考"
+    working: "工作中…"
+    preparing: "正在準備 {what}…"
+    hint_steer: "引導"
+    hint_queue: "排隊"
+    hint_interrupt: "中斷"
+    hint_stop: "停止"
+    hint_commands: "指令"
+    hint_files: "檔案"
+    hint_shell: "終端"
+    placeholder_busy_steer: "輸入以引導本輪 · Tab 排到之後"
+    placeholder_busy_interrupt: "輸入以改變本輪方向 · Tab 排到之後"
+    placeholder_busy_queue: "輸入以排隊一則本輪結束後的訊息"
   billing:
     load_failed: "{label}：{error}"
     load_failed_label: "無法載入帳務資訊"
@@ -2232,6 +2247,7 @@ cli:
     queue_heading: "佇列 · {count} 個排隊中 · /queue list{controls}"
     more_queued: "還有 {count} 個"
     transcript_unavailable: "即時逐字稿尚未可用。"
+    control_pending: "傳送中…"
     steer_prompt: "引導："
     roster_empty: "沒有進行中的子代理或背景程序。結果會出現在對話中。"
     entry_gone: "此項目已不再進行中。"

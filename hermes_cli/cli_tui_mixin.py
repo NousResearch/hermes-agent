@@ -39,6 +39,7 @@ from prompt_toolkit.widgets import TextArea
 from typing import Optional
 
 from hermes_cli.cli_footer_split import FooterSplit
+from hermes_cli.cli_panel import _Panel
 
 # Rows below an overlay panel taken by spinner/tool-progress, status bar, input, separators and
 # prompt symbol (measured ~6 during live PTY approval prompts) — shared by every panel budget.
@@ -82,32 +83,6 @@ def _num_prefix(i: int) -> str:
 
 def _term_rows() -> int:
     return shutil.get_terminal_size((100, 24)).lines
-
-
-class _Panel:
-    """Fragment accumulator for one bordered overlay panel (``(style, text)`` tuples)."""
-
-    def __init__(self, border: str, box_width: int, title: str = "", title_style: str = ""):
-        from cli import _append_blank_panel_line, _append_panel_line
-        self.lines, self.border, self.width = [], border, box_width
-        self._row, self._blank = _append_panel_line, _append_blank_panel_line
-        if title:
-            # Title inlined into the top rule: ``╭─ Title ───╮``.
-            self.lines.append((border, "╭─ "))
-            self.lines.append((title_style, title))
-            self.lines.append((border, " " + ("─" * max(0, box_width - len(title) - 3)) + "╮\n"))
-        else:
-            self.lines.append((border, "╭" + ("─" * box_width) + "╮\n"))
-
-    def row(self, style: str, text: str) -> None:
-        self._row(self.lines, self.border, style, text, self.width)
-
-    def blank(self) -> None:
-        self._blank(self.lines, self.border, self.width)
-
-    def close(self) -> list:
-        self.lines.append((self.border, "╰" + ("─" * self.width) + "╯\n"))
-        return self.lines
 
 
 def _wrap_rows(wrap, items, width, indent) -> list[tuple[int, str]]:
@@ -438,6 +413,8 @@ class CLITuiMixin:
             input_rule_bot,
             voice_status_bar,
             completions_menu]
+        if getattr(self, "_modern_layout", False):  # footer under the composer and its completions
+            ordered.append(ordered.pop(ordered.index(status_bar)))
         return [item for item in ordered if item is not None]
 
     def _tui_spinner_loop(self):
@@ -819,6 +796,8 @@ class CLITuiMixin:
         if self._command_running:
             return f"{self._command_spinner_frame()} {self._command_status or t('cli.tui.placeholder_processing_command')}"
         if self._agent_running:
+            if getattr(self, "_modern_layout", False):
+                return t(f"cli.modern.placeholder_busy_{self.busy_input_mode}")
             return t("cli.tui.placeholder_busy")
         if self._voice_mode:
             return t("cli.tui.placeholder_voice_idle", shortcut=self._voice_record_key_label())
@@ -1501,7 +1480,7 @@ class CLITuiMixin:
         event.app.invalidate()
         return True
 
-    def _tui_enter_while_busy(self, text: str, images: list, payload) -> None:
+    def _tui_enter_while_busy(self, text: str, images: list, payload, mode: str | None = None) -> None:
         """Route a submission typed while the agent runs, per ``busy_input_mode``.
 
         steer → agent.steer(text) mid-run (images can't ride along and a missing/rejecting
@@ -1510,7 +1489,7 @@ class CLITuiMixin:
         multimodal follow-ups, or a turn that finished in the race). queue → next turn.
         """
         from cli import CLI_CONFIG, _ACCENT, _DIM, _RST, _cprint, _hermes_home
-        _effective_mode = self.busy_input_mode
+        _effective_mode = mode or self.busy_input_mode
         redirected = False
         if _effective_mode == "steer":
             if images or not text:
@@ -2159,6 +2138,9 @@ class CLITuiMixin:
         input_rule_bot = Window(
             char='─', height=lambda: cli_ref._tui_input_rule_height("bottom"), style='class:input-rule',
         )
+        if getattr(self, "_modern_layout", False):
+            from hermes_cli.cli_modern_layout import modern_input_rules
+            input_rule_top, input_rule_bot = modern_input_rules(self, kb)
         image_bar = Window(
             content=FormattedTextControl(self._tui_image_bar_fragments),
             height=Condition(lambda: bool(cli_ref._attached_images)))

@@ -387,7 +387,7 @@ def _read_bridge_token(session_path: Path) -> str:
     return ""
 
 
-def _bridge_auth_headers(token: str) -> Dict[str, str]:
+def _bridge_auth_headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -406,6 +406,8 @@ async def _authenticated_bridge_health(session, base_url: str, token: str, timeo
     Connection errors and timeouts propagate (no answer is no identity evidence either way)."""
     import hmac
     import secrets
+
+    import aiohttp
     challenge = secrets.token_urlsafe(24)
     async with session.get(f"{base_url}/auth-proof", headers={"X-Hermes-Bridge-Challenge": challenge}, timeout=timeout) as resp:
         if resp.status != 200:
@@ -414,7 +416,7 @@ async def _authenticated_bridge_health(session, base_url: str, token: str, timeo
             proof = (await resp.json()).get("authProof")
         except TimeoutError:
             raise
-        except Exception:
+        except (aiohttp.ClientError, ValueError, AttributeError):  # non-JSON / non-object body
             return False, None
     if not (isinstance(proof, str) and hmac.compare_digest(proof, _bridge_auth_proof(token, challenge))):
         return False, None
@@ -425,7 +427,7 @@ async def _authenticated_bridge_health(session, base_url: str, token: str, timeo
             return True, await resp.json()
         except TimeoutError:
             raise  # a body that never arrives is no answer, the same as headers that never arrive
-        except Exception:
+        except (aiohttp.ClientError, ValueError):
             return True, None
 
 

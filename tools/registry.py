@@ -237,12 +237,14 @@ class ToolInvocationContext:
     # cannot populate them.
     browser_control_provider: str = ""
     browser_control_subject: str = ""
+    user_message: str = ""
 
 
 def _current_tool_invocation_context() -> ToolInvocationContext:
     """Snapshot task-local gateway identity for one tool invocation."""
     try:
-        from gateway.session_context import browser_control_identity, get_session_env, get_session_run_generation
+        from gateway.session_context import (browser_control_identity, get_session_env,
+                                             get_session_run_generation, get_turn_user_message)
     except Exception:
         return ToolInvocationContext()
 
@@ -264,6 +266,7 @@ def _current_tool_invocation_context() -> ToolInvocationContext:
         message_id=value("HERMES_SESSION_MESSAGE_ID"),
         browser_control_provider=browser_control_provider,
         browser_control_subject=browser_control_subject,
+        user_message=get_turn_user_message(),
     )
 
 

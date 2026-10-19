@@ -106,6 +106,19 @@ def get_session_run_generation() -> int | None:
     return int(value) if isinstance(value, str) and value.isdigit() and int(value) > 0 else None
 
 
+# The current human turn text is transient host context for tools that need an
+# explicit user instruction. It is never inferred from a model tool argument.
+_TURN_USER_MESSAGE: ContextVar[str] = ContextVar("turn_user_message", default="")
+
+
+def set_turn_user_message(message: str) -> None:
+    _TURN_USER_MESSAGE.set(message if isinstance(message, str) else "")
+
+
+def get_turn_user_message() -> str:
+    return _TURN_USER_MESSAGE.get()
+
+
 @contextmanager
 def scoped_current_session_id(session_id: str | None = None) -> Iterator[None]:
     """Bind a task-local session id and restore the prior value on exit; never touches
@@ -187,6 +200,7 @@ def clear_session_vars(tokens: list) -> None:
     declared nothing, and an undeclared capability FAILS CLOSED (#98619)."""
     for var in _SESSION_VARS:
         var.set("")
+    _TURN_USER_MESSAGE.set("")
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
     _SESSION_HISTORY_DELIVERY.set(_UNSET)
     _runtime_cwd("clear_session_cwd")

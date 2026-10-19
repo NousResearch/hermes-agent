@@ -90,3 +90,23 @@ def test_anonymous_desktop_session_row_stays_identity_less(monkeypatch, tmp_path
         server._sessions.pop(sid, None)
 
     assert not (db.get_session(key)["user_id"] or "").strip()
+
+
+def test_tool_context_carries_only_server_stamped_desktop_identity(monkeypatch, tmp_path):
+    from tools.registry import _current_tool_invocation_context
+
+    _real_db(monkeypatch, tmp_path)
+    for peer, expected in ((_LoginSocket(), ("basic", _LOADED_USER)),
+                           (_AnonymousSocket(), ("", ""))):
+        _record, sid, key = _create_desktop_session(peer, tmp_path)
+        try:
+            tokens = server._set_session_context(key, ui_session_id=sid)
+            try:
+                identity = _current_tool_invocation_context()
+                assert (identity.browser_control_provider,
+                        identity.browser_control_subject) == expected
+                assert identity.session_key == key
+            finally:
+                server._clear_session_context(tokens)
+        finally:
+            server._sessions.pop(sid, None)

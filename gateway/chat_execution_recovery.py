@@ -77,6 +77,25 @@ class ChatExecutionStore:
             db.commit()
             return True
 
+    def start_local_worker(self, session_key, session_id):
+        """Atomically admit a Desktop/TUI turn with its actual Agent session id."""
+        if not session_key or not session_id:
+            return None
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            fence = db.execute("SELECT state FROM session_fences WHERE session_key=?", (session_key,)).fetchone()
+            pending = db.execute("SELECT 1 FROM executions WHERE session_key=? AND worker!='completed' LIMIT 1",
+                                 (session_key,)).fetchone()
+            if (fence and fence["state"] == "fenced") or pending:
+                db.rollback(); return None
+            latest = db.execute("SELECT MAX(generation) FROM executions WHERE session_key=?",
+                                (session_key,)).fetchone()[0] or 0
+            generation = latest + 1
+            db.execute("INSERT INTO executions VALUES (?, ?, ?, 'pending', 1, 'unknown', 0)",
+                       (session_key, generation, session_id))
+            db.commit()
+            return generation
+
     def reserve(self, session_key, memory_floor, caller_floor, *, predecessor=None):
         """Atomically reserve a durable generation before the physical session id exists."""
         if not session_key or type(memory_floor) is not int or type(caller_floor) is not int:

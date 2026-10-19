@@ -502,6 +502,7 @@ class _TurnRun:
     prompt_text: str = ""
     marker_key: str = ""
     receipt_attempted: bool = False
+    chat_execution_generation: int | None = None
 
 
 def _adopt_out_of_band_turns(session: dict) -> None:
@@ -666,6 +667,11 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     scopes = st.scopes
     scopes.approval = set_current_session_key(session["session_key"])
     scopes.session_tokens = _set_session_context(session["session_key"], ui_session_id=sid)
+    from gateway.session_context import set_turn_user_message
+    set_turn_user_message("")
+    if st.chat_execution_generation is not None:
+        from gateway.session_context import set_session_run_generation
+        set_session_run_generation(st.chat_execution_generation)
     # Profile turn: that profile's home + secrets + terminal policy. Launch-profile turn: unscoped in a
     # single-profile process; once multiplexing is active (#68559 / #107422 residual) its OWN scope,
     # built from the env frozen at activation — get_secret() fails closed then, so an unscoped default
@@ -1175,7 +1181,24 @@ def _run_prompt_submit(
         st.marker_key = _record_turn_marker(session, text, auto_continue=terminal_callback is None,
             notification_category=(display_metadata or {}).get("notification_category"))
         goal_followup = None
+        execution_store = None
+        execution_scope = None
+        execution_started = False
         try:
+            from gateway.chat_execution_recovery import ChatExecutionStore
+            from agent.chat_execution_context import bind_chat_execution
+            from hermes_constants import get_process_hermes_home
+            home = str(session.get("profile_home") or get_process_hermes_home())
+            key = str(session.get("session_key") or "")
+            actual_session_id = str(getattr(st.agent, "session_id", "") or "")
+            execution_store = ChatExecutionStore(home)
+            generation = execution_store.start_local_worker(key, actual_session_id)
+            if generation is None:
+                raise RuntimeError("Durable Desktop/TUI worker admission refused")
+            execution_started = True
+            st.chat_execution_generation = generation
+            execution_scope = bind_chat_execution(home, key, generation)
+            execution_scope.__enter__()
             prepared = _prepare_turn_input(sid, session, st, text, images)
             if prepared is None:
                 if st.terminal_callback is not None and not st.receipt_attempted:
@@ -1185,6 +1208,8 @@ def _run_prompt_submit(
                     st.receipt_committed = True
                 return
             prompt, run_message, cols, streamer = prepared
+            from gateway.session_context import set_turn_user_message
+            set_turn_user_message(text if approval_origin is not None and isinstance(text, str) else "")
             _invoke_agent(
                 sid, session, st, prompt, run_message, streamer, images, display_kind,
                 display_metadata, turn_author, text)
@@ -1205,6 +1230,14 @@ def _run_prompt_submit(
         except Exception as e:
             _recover_turn_exception(sid, session, st, e)
         finally:
+            if execution_scope is not None:
+                execution_scope.__exit__(None, None, None)
+            if execution_started:
+                try:
+                    if not execution_store.worker_finished(key, generation):
+                        logger.error("Durable Desktop/TUI worker completion refused for %s/%s", key, generation)
+                except Exception:
+                    logger.exception("Durable Desktop/TUI worker completion uncertain for %s/%s", key, generation)
             _release_turn_scopes(sid, session, st)
             try:  # a raising settle step must not skip the trim / HERMES_HOME reset
                 _current_runtime_session_record.reset(runtime_session_token)

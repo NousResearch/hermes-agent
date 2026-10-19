@@ -25,6 +25,22 @@ def test_quiescent_tool_user_can_retire_without_fabricating_effects_none(tmp_pat
     assert ChatExecutionStore(tmp_path).retire_for_handoff("old-chat", 1, "recovery") == retired
 
 
+def test_desktop_turn_uses_real_session_and_tool_observation_before_handoff(tmp_path):
+    from agent.chat_execution_context import bind_chat_execution, observe_tool_before_execution
+    store = ChatExecutionStore(tmp_path)
+    generation = store.start_local_worker("desktop-chat", "actual-desktop-session")
+    assert generation == 1
+    assert store.start_local_worker("desktop-chat", "competing-session") is None
+    with bind_chat_execution(tmp_path, "desktop-chat", generation):
+        assert observe_tool_before_execution()
+    assert store.worker_finished("desktop-chat", generation)
+    receipt = store.retire_for_handoff("desktop-chat", generation, "handoff")
+    assert receipt["status"] == "retired"
+    assert receipt["session_id"] == "actual-desktop-session"
+    assert receipt["effects"] == "unknown"
+    assert store.start_local_worker("desktop-chat", "late-session") is None
+
+
 def test_retirement_cannot_be_reused_as_execution_recovery(tmp_path):
     store = ChatExecutionStore(tmp_path)
     assert store.start("old-chat", 1, "session-1")

@@ -86,9 +86,14 @@ def _records(caplog, needle):
 SECRETISH_PROMPT = "please rotate QDRANT_API_KEY=hunter2-super-secret now"
 
 def test_accepted_and_finished_records_on_success(turn_env, caplog):
+    from tools.registry import _current_tool_invocation_context
+    user_messages = []
+    def run_conversation(*_args, **_kwargs):
+        user_messages.append(_current_tool_invocation_context().user_message)
+        return {"final_response": "done"}
     agent = types.SimpleNamespace(
         session_id="agent-sid-1",
-        run_conversation=lambda *a, **k: {"final_response": "done"},
+        run_conversation=run_conversation,
         clear_interrupt=lambda: None,
     )
     session = _session(agent=agent, running=True)
@@ -108,6 +113,32 @@ def test_accepted_and_finished_records_on_success(turn_env, caplog):
 
     fin = finished[0].getMessage()
     assert "hunter2" not in fin
+    assert user_messages == [""]  # an unstamped or synthetic turn cannot authorize a transfer
+
+
+def test_desktop_turn_binds_real_journal_and_authenticated_user_instruction(turn_env, monkeypatch, tmp_path):
+    from agent.chat_execution_context import observe_tool_before_execution
+    from gateway.chat_execution_recovery import ChatExecutionStore
+    from tools.registry import _current_tool_invocation_context
+
+    seen = []
+    def run_conversation(*_args, **_kwargs):
+        context = _current_tool_invocation_context()
+        seen.append((context.session_key, context.session_id, context.run_generation,
+                     context.user_message, observe_tool_before_execution()))
+        return {"final_response": "done"}
+
+    agent = types.SimpleNamespace(session_id="actual-desktop-session", run_conversation=run_conversation,
+                                  clear_interrupt=lambda: None)
+    session = _session(agent=agent, running=True, profile_home=tmp_path, source="desktop")
+    monkeypatch.setitem(server._sessions, "ui-sid", session)
+    text = "Transfer ABC-1 to this chat"
+    server._run_prompt_submit("rid", "ui-sid", session, text,
+                              approval_origin=("basic:alice", "turn-id", None, text, None))
+    assert seen == [("gw-session-key", "actual-desktop-session", 1, text, True)]
+    receipt = ChatExecutionStore(tmp_path).retire_for_handoff("gw-session-key", 1, "transfer-id")
+    assert receipt["status"] == "retired"
+    assert receipt["effects"] == "unknown"
 
 
 @pytest.mark.parametrize("settle_info_raises", [False, True])

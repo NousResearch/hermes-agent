@@ -16,6 +16,9 @@ from __future__ import annotations
 
 import base64
 import json
+from pathlib import Path
+import subprocess
+import sys
 import threading
 import time
 
@@ -68,12 +71,16 @@ def _rows(home) -> dict:
     return {r["id"]: r for r in _store(home)["credential_pool"]["openai-codex"]}
 
 
-def _peer_rewrites_row(home, row_id: str, at: str, rt: str) -> None:
+def _peer_rewrites_row(home, row_id: str, at: str, rt: str, stamp=_iso(NOW)) -> None:
     """Another process rotated / re-authed *row_id* after this pool loaded."""
     store = _store(home)
     for row in store["credential_pool"]["openai-codex"]:
         if row["id"] == row_id:
-            row.update(access_token=at, refresh_token=rt, last_refresh=_iso(NOW))
+            row.update(access_token=at, refresh_token=rt)
+            if stamp is None:
+                row.pop("last_refresh", None)
+            else:
+                row["last_refresh"] = stamp
     (home / "auth.json").write_text(json.dumps(store), encoding="utf-8")
 
 
@@ -94,15 +101,14 @@ def home(tmp_path, monkeypatch):
 
 @pytest.fixture
 def token_endpoint(monkeypatch):
-    """Stubbed refresh POST: ``dead`` refresh tokens get a terminal invalid_grant, ``flaky`` ones a
-    transient timeout, others rotate."""
+    """Single-use refresh POST: dead or spent grants fail, flaky ones time out, others rotate."""
     calls = {"posted": [], "dead": set(), "flaky": set()}
 
     def fake(access_token, refresh_token):
         calls["posted"].append(refresh_token)
         if refresh_token in calls["flaky"]:
             raise TimeoutError("token endpoint timed out")
-        if refresh_token in calls["dead"]:
+        if refresh_token in calls["dead"] or refresh_token in calls["posted"][:-1]:
             raise AuthError("Codex token refresh failed: refresh token revoked",
                             provider="openai-codex", code="invalid_grant", relogin_required=True)
         return {"access_token": _jwt("rotated", refresh_token, FRESH), "refresh_token": f"{refresh_token}-next",
@@ -298,7 +304,8 @@ def test_peer_rotated_alias_is_not_reverted_to_a_legacy_singleton(home, token_en
     assert _store(home)["providers"]["openai-codex"]["tokens"] == {"access_token": old_at, "refresh_token": "rt-A"}
 
 
-def test_failing_row_rotated_by_a_peer_is_adopted_not_replayed(home, token_endpoint):
+@pytest.mark.parametrize("stamp", [_iso(NOW), None, _iso(NOW - 7200)], ids=["now", "missing", "earlier"])
+def test_failing_row_rotated_by_a_peer_is_adopted_not_replayed(home, token_endpoint, stamp):
     """Another process already rotated account B (its old refresh token is consumed): this process must
     adopt B's new pair instead of replaying the consumed token, and must neither retire B nor touch A."""
     a_at = _jwt("acct-A", "user-A", FRESH)
@@ -306,16 +313,18 @@ def test_failing_row_rotated_by_a_peer_is_adopted_not_replayed(home, token_endpo
         _row("default", "device_code", 0, a_at, "rt-A"),
         _row("acct-b", "manual:device_code", 1, _jwt("acct-B", "user-B", EXPIRING), "rt-B"),
     ])
-    token_endpoint["dead"].add("rt-B")  # consumed by the peer's rotation
     pool = load_pool("openai-codex")
-    b2_at = _jwt("acct-B", "user-B", FRESH)
-    _peer_rewrites_row(home, "acct-b", b2_at, "rt-B2")
+    peer = load_pool("openai-codex")
+    rotated = peer._refresh_entry(next(e for e in peer.entries() if e.id == "acct-b"), force=True)
+    assert rotated is not None and rotated.refresh_token is not None
+    b2_at = rotated.access_token
+    _peer_rewrites_row(home, "acct-b", b2_at, rotated.refresh_token, stamp)
 
     assert pool.select().id == "default"
 
-    assert "rt-B" not in token_endpoint["posted"]
+    assert token_endpoint["posted"] == ["rt-B"]  # only the peer spent the old grant
     rows = _rows(home)
-    assert (rows["acct-b"]["access_token"], rows["acct-b"]["refresh_token"]) == (b2_at, "rt-B2")
+    assert (rows["acct-b"]["access_token"], rows["acct-b"]["refresh_token"]) == (b2_at, rotated.refresh_token)
     assert rows["acct-b"].get("last_status") != STATUS_DEAD
     assert (rows["default"]["access_token"], rows["default"]["refresh_token"]) == (a_at, "rt-A")
     assert {e.id for e in pool.entries()} == {"default", "acct-b"}
@@ -375,3 +384,109 @@ def test_dead_grant_clears_access_only_singleton_with_same_bearer(home, token_en
     state = _store(home)["providers"]["openai-codex"]
     assert state["tokens"] == {}
     assert state["last_auth_error"]["relogin_required"] is True
+
+
+def test_stale_pool_flush_preserves_rotation_for_all_readers(home, token_endpoint):
+    """An unrelated flush cannot roll back disk; existing and newly loaded readers never replay."""
+    a_at = _jwt("acct-A", "user-A", FRESH)
+    _write(home, {"access_token": a_at, "refresh_token": "rt-A"}, [
+        _row("default", "device_code", 0, a_at, "rt-A"),
+        _row("manual", "manual:device_code", 1, _jwt("acct-M", "user-M", EXPIRING), "rt-M"),
+    ])
+    first, stale = load_pool("openai-codex"), load_pool("openai-codex")
+    selected = first.select()
+    assert selected is not None and selected.id == "default"
+    fresh = next(e for e in first.entries() if e.id == "manual")
+    stale._persist()  # ordinary status/snapshot flush, not a refresh or forced sync
+    assert _rows(home)["manual"]["refresh_token"] == fresh.refresh_token
+    for reader in (first, stale, load_pool("openai-codex")):
+        entry = next(e for e in reader.entries() if e.id == "manual")
+        assert reader._refresh_entry(entry, force=True) is not None
+    assert len(token_endpoint["posted"]) == len(set(token_endpoint["posted"]))
+    assert _rows(home)["manual"]["last_status"] != STATUS_DEAD
+    # A fresh interpreter must also read the latest durable pair, not a parent's module cache.
+    child = subprocess.run([sys.executable, "-c", '''
+import json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+sys.path.insert(0, str(root))
+from agent import credential_pool as cp
+import hermes_cli.auth as auth
+assert Path(cp.__file__).resolve() == root / 'agent/credential_pool.py'
+spent = json.loads(sys.argv[2])
+def refresh(at, rt):
+    assert rt not in spent, 'consumed token replayed in fresh interpreter'
+    return {'access_token': at, 'refresh_token': rt + '-child'}
+auth.refresh_codex_oauth_pure = refresh
+pool = cp.load_pool('openai-codex')
+assert pool.select() is not None
+entry = next(e for e in pool.entries() if e.id == 'manual')
+assert pool._refresh_entry(entry, force=True) is not None
+''', str(Path(cp.__file__).resolve().parents[1]), json.dumps(token_endpoint["posted"])],
+        capture_output=True, text=True, timeout=30, check=False)
+    assert child.returncode == 0, child.stdout + child.stderr
+    assert _rows(home)["manual"]["refresh_token"].endswith("-child")
+
+
+@pytest.mark.parametrize("borrowed", [False, True], ids=["owned", "borrowed-root"])
+@pytest.mark.parametrize("retire_sibling", [False, True], ids=["next-refresh", "sibling-retirement"])
+def test_unpersisted_rotation_is_not_replaced_by_unchanged_disk(
+    home, token_endpoint, monkeypatch, borrowed, retire_sibling, caplog,
+):
+    """A failed save leaves a fresh pair in memory, including during another grant's reconciliation."""
+    a_at = _jwt("acct-A", "user-A", FRESH)
+    _write(home, {"access_token": a_at, "refresh_token": "rt-A"}, [
+        _row("default", "device_code", 0, a_at, "rt-A"),
+        _row("manual", "manual:device_code", 1, _jwt("acct-M", "user-M", EXPIRING), "rt-M"),
+        _row("dead", "manual:device_code", 2, _jwt("acct-D", "user-D", FRESH), "rt-D"),
+    ])
+    profile = home / "profiles" / "borrower"
+    if borrowed:
+        profile.mkdir(parents=True)
+        (profile / "config.yaml").write_text("model: {}\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+    pool = load_pool("openai-codex")
+    if borrowed:
+        assert not cp._profile_owns_pool_provider("openai-codex")
+        assert cp._borrowed_single_use_pool_root() == home / "auth.json"
+        assert "manual" in pool._borrowed_root_ids
+    failures = []
+    # Keep persist_pool_entries and _update_root_pool_rows real. Fail the actual store write once.
+    write_name = "_save_auth_store" if borrowed else "write_credential_pool"
+    real_write = getattr(cp, write_name)
+
+    def fail_once(*args, **kwargs):
+        if not failures:
+            failures.append(kwargs.get("target_path"))
+            raise OSError("synthetic one-shot store failure")
+        return real_write(*args, **kwargs)
+
+    with monkeypatch.context() as saving:
+        saving.setattr(cp, write_name, fail_once)
+        if borrowed:
+            selected = pool.select()
+            assert selected is not None and selected.id == "default"
+            assert failures == [home / "auth.json"]
+            assert "write-through of borrowed root grant failed" in caplog.text
+        else:
+            with pytest.raises(OSError, match="synthetic one-shot"):
+                pool.select()
+            assert failures == [None]
+    fresh = next(e for e in pool.entries() if e.id == "manual")
+    assert fresh.refresh_token == "rt-M-next"
+    assert _rows(home)["manual"]["refresh_token"] == "rt-M"
+    if retire_sibling:
+        token_endpoint["dead"].add("rt-D")
+        dead = next(e for e in pool.entries() if e.id == "dead")
+        assert pool._refresh_entry(dead, force=True) is None
+        assert next(e for e in pool.entries() if e.id == "manual").refresh_token == fresh.refresh_token
+    live = next(e for e in pool.entries() if e.id == "manual")
+    assert pool._refresh_entry(live, force=True) is not None
+    assert token_endpoint["posted"].count("rt-M") == 1
+    assert len(token_endpoint["posted"]) == len(set(token_endpoint["posted"]))
+    assert _rows(home)["manual"]["refresh_token"] == "rt-M-next-next"
+    assert _rows(home)["manual"]["last_status"] != STATUS_DEAD
+    assert _rows(home)["default"]["refresh_token"] == "rt-A"
+    if borrowed:
+        local = json.loads((profile / "auth.json").read_text(encoding="utf-8")) if (profile / "auth.json").exists() else {}
+        assert not local.get("credential_pool", {}).get("openai-codex")

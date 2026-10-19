@@ -5,6 +5,7 @@ and its processes are bounded and removed even when an assertion fails.
 """
 
 import hashlib
+from importlib import import_module
 import subprocess
 import sys
 import uuid
@@ -22,10 +23,6 @@ def test_real_system_task_stops_and_restarts_with_its_original_principal(tmp_pat
     from hermes_cli.gateway_windows_task_control import process_is_system
     from hermes_cli.update_windows_tasks import definition_matches_home, task_operation
 
-    if not gateway_windows._is_running_as_admin():
-        pytest.skip(
-            "Requires a disposable administrator Windows runner; never requests UAC"
-        )
     name = "Hermes_Gateway_fixture_" + uuid.uuid4().hex
     service = tmp_path / "gateway-service"
     service.mkdir()
@@ -47,18 +44,28 @@ def test_real_system_task_stops_and_restarts_with_its_original_principal(tmp_pat
     xml_path = tmp_path / "task.xml"
     xml_path.write_text(
         '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">'
-        '<Principals><Principal id="system"><UserId>S-1-5-18</UserId><LogonType>ServiceAccount</LogonType>'
+        '<Principals><Principal id="system"><UserId>S-1-5-18</UserId>'
         "<RunLevel>HighestAvailable</RunLevel></Principal></Principals>"
         "<Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><ExecutionTimeLimit>PT2M</ExecutionTimeLimit></Settings>"
         '<Actions Context="system"><Exec><Command>cmd.exe</Command>'
         f'<Arguments>/c "{escape(str(script))}"</Arguments></Exec></Actions></Task>',
         encoding="utf-16",
     )
+    # Validate even on a non-admin host. TASK_VALIDATE_ONLY (1) registers nothing.
+    scheduler = import_module("win32com.client").Dispatch("Schedule.Service")
+    scheduler.Connect()
+    scheduler.GetFolder("\\").RegisterTask(
+        name, xml_path.read_text(encoding="utf-16"), 1, "SYSTEM", None, 5
+    )
+    if not gateway_windows._is_running_as_admin():
+        pytest.skip(
+            "XML validated; SYSTEM execution requires a disposable administrator runner"
+        )
     owned = []
     created = False
     try:
         code, out, err = gateway_windows._exec_schtasks(
-            ["/Create", "/TN", name, "/XML", str(xml_path)]
+            ["/Create", "/TN", name, "/XML", str(xml_path), "/RU", "SYSTEM"]
         )
         assert code == 0, (out, err)
         created = True

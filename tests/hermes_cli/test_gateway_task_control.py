@@ -1,6 +1,7 @@
 """Bounded Task Scheduler operations and UAC result/handle propagation (#63743)."""
 
 import ctypes
+import subprocess
 from types import SimpleNamespace
 import uuid
 
@@ -99,6 +100,25 @@ def test_task_operation_elevates_only_denial_and_propagates_failure(
         with pytest.raises(RuntimeError, match="failed"):
             tasks.task_operation("Hermes_Gateway_ops", "stop", "a" * 64)
     assert len(elevated_calls) == (1 if initial == 5 else 0)
+
+
+@pytest.mark.platforms("windows")
+def test_task_timeout_remains_uncertain_and_does_not_retry_or_elevate(monkeypatch):
+    attempts = []
+
+    def timeout(command, **kwargs):
+        attempts.append(command)
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    def no_prompt(*_a, **_k):
+        pytest.fail("A timed-out task operation attempted UAC")
+
+    monkeypatch.setattr(tasks.subprocess, "run", timeout)
+    monkeypatch.setattr(native, "_shell_execute_elevated_and_wait", no_prompt)
+    with pytest.raises(tasks.TaskOperationError, match="timed out") as failure:
+        tasks.task_operation("Hermes_Gateway_timeout", "stop", "a" * 64)
+    assert not failure.value.not_started
+    assert len(attempts) == 1
 
 
 @pytest.mark.platforms("windows")

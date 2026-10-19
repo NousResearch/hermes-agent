@@ -16,7 +16,7 @@ import queue
 import threading
 import time
 
-from hermes_cli.gateway_client import DEFAULT_RPC_TIMEOUT, GatewayClientError
+from hermes_cli.gateway_client import DEFAULT_RPC_TIMEOUT, RESUME_KEY_MISMATCH, GatewayClientError, GatewayRPCError
 
 logger = logging.getLogger(__name__)
 
@@ -26,10 +26,27 @@ DISCONNECTED = ("Gateway disconnected; turn outcome is unknown. Resume the print
 NOT_SENT = "Gateway disconnected before the request was sent; nothing was sent."
 # Resume refusals meaning the session itself is gone for this viewer (gateway/session_controls).
 _GONE = frozenset({"not_found", "permission_denied", "profile_mismatch"})
+# Keyed-resume refusals a plain resume answers as main did: the key does not apply to this session
+# (``rebind_launch_key``: keyless or non-local, another key held, another fingerprint), or the viewer
+# lacks the ``session:control`` a rebind needs but may still read. Any other refusal is the resume's.
+_KEY_NOT_TAKEN = frozenset({"admission_conflict", "permission_denied"})
 
 
 class CallStopped(GatewayClientError):
     """The caller stopped waiting (:meth:`GatewayConnection.call_until`); the request was sent."""
+
+
+def _resume_plain(exc, session_id, typed):
+    """A keyed ``session.resume`` the owner refused with ``exc``: returns when the caller resumes plain,
+    else raises. Only a refusal in ``_KEY_NOT_TAKEN`` resumes plain (a keyed startup alias on a Desktop/TUI
+    session); any other is raised, not hidden by a keyless attach whose first turn fails. ``typed`` (a typed
+    ``--api-key`` the user resumes with) never resumes plain: ``admission_conflict`` is the thin client's
+    refusal."""
+    if typed and str(exc) == "admission_conflict":
+        raise GatewayClientError(RESUME_KEY_MISMATCH) from None
+    if typed or str(exc) not in _KEY_NOT_TAKEN:
+        raise exc
+    logger.debug("session.resume %s: launch key not taken (%s); resuming without it", session_id, exc)
 
 
 def lost_before(frame, epoch) -> bool:
@@ -61,6 +78,27 @@ class SessionState:
         self.request_listeners: list = []
         # A gateway-admitted notification turn the idle CLI queued a header for (gateway_tools_notify).
         self.admitted_turn: dict | None = None
+        # The owner's pending admissions as last published (snapshot or ``session.info``), and the
+        # ``/queue`` inputs this viewer admitted there (``admission_id -> text``), so the turn the owner
+        # runs for one is painted like a typed turn (``gateway_tools_notify.queue_admitted_turn``).
+        self.pending: list = []
+        self.queued_inputs: dict = {}
+        # Started ``/queue`` admissions waiting for their turn (``admission_id -> receipt-like``), and the
+        # one whose item the input loop just took (``gateway_tools_notify.arm_adopted``).
+        self.adopted: dict = {}
+        self.armed_admission: str | None = None
+        # Each pending list the owner published (or a snapshot carried) bumps ``pending_seq``; a
+        # ``/queue`` admission whose ``message.start`` this viewer dropped unpainted (a local turn's
+        # drain or pump) is in ``missed``. Both make the idle tick read its receipt (``recover_queued``).
+        self.pending_seq = 0
+        # ``admission_id -> pending_seq`` when this viewer queued it: the dock shows it only until the
+        # owner publishes a list after that (``gateway_queue.published_queue``).
+        self.queued_at: dict = {}
+        self.recovered_seq = 0
+        self.missed: set = set()
+        # ``session.replay_gap``s seen, and how many a re-attach covered: the owner retired this viewer's
+        # subscription on overflow, so its frames stop until ``GatewayConnection.reattach``.
+        self.gaps = self.attached_gaps = 0
 
     def adopt_snapshot(self, snapshot):
         self.info = dict(snapshot.get("info") or {})
@@ -68,12 +106,24 @@ class SessionState:
         self.subscription_id = snapshot.get("subscription_id", self.subscription_id)
         self.execution_generation = snapshot.get("execution_generation", self.execution_generation)
         self.messages = list(snapshot.get("messages") or [])
+        if isinstance(snapshot.get("pending"), list):
+            self.pending = list(snapshot["pending"])
+            self.pending_seq += 1  # a (re)attach replays no frames: the idle tick checks this viewer's /queue rows
         if self.info.get("title"):
             self.title = self.info["title"]
+
+    def runs_route(self, model, provider=""):
+        """Whether the session runs ``model`` (and ``provider``, when both sides name one)."""
+        current, current_provider = self.info.get("model"), self.info.get("provider")
+        return bool(current) and model == current and not (
+            provider and current_provider and provider != current_provider)
 
     def apply_event(self, kind, payload):
         if kind in ("session.info", "session.updated") and isinstance(payload, dict):
             self.info.update({k: v for k, v in payload.items() if k != "session_id"})
+            if isinstance(payload.get("pending"), list):
+                self.pending = list(payload["pending"])
+                self.pending_seq += 1
             if payload.get("title"):
                 self.title = payload["title"]
         elif kind == "todo.updated" and isinstance(payload, dict):
@@ -87,6 +137,8 @@ class SessionState:
         elif kind == "request.cancel" and isinstance(payload, dict):
             for listener in list(self.request_listeners):
                 listener(payload)
+        elif kind == "session.replay_gap":
+            self.gaps += 1
 
     def apply_usage(self, usage):
         """One session-cumulative usage dict (``session.usage`` payload or ``session.stats`` result)."""
@@ -126,6 +178,12 @@ class GatewayConnection:
         self._side_lock = threading.Lock()
         # The wake events of :meth:`call_until` commands in flight, each on its own socket.
         self._commands: set[threading.Event] = set()
+        # This CLI's launch-only key (``--api-key`` or a keyed startup alias), set by the session store:
+        # an owner restart revokes it, so every resume re-supplies it (the owner's ``rebind_launch_key``).
+        self.launch_api_key = None
+        # True when that key is the typed ``--api-key`` (not a keyed startup alias's): a startup resume the
+        # owner will not bind it to is refused as the thin client refuses it, never attached plain.
+        self.launch_api_key_typed = False
 
     @classmethod
     def shared(cls):
@@ -237,12 +295,35 @@ class GatewayConnection:
             if state.subscription_id is None:
                 continue
             try:
-                state.adopt_snapshot(await client.rpc("session.resume", session_id=session_id))
+                state.adopt_snapshot(await self._resume(client, session_id))
             except GatewayClientError as exc:
                 if str(exc) not in _GONE:
                     raise
                 logger.debug("session.resume %s after reconnect: %s", session_id, exc)
                 state.subscription_id = None
+
+    def resume(self, call, session_id, *, typed=False):
+        """``session.resume`` through ``call`` (the store's attach), re-supplying :attr:`launch_api_key`;
+        a refusal of the keyed resume is :func:`_resume_plain`'s to decide. ``typed``: the user resumes with
+        a typed ``--api-key``."""
+        key = self.launch_api_key
+        if key:
+            try:
+                return call("session.resume", session_id=session_id, api_key=key)
+            except GatewayRPCError as exc:
+                _resume_plain(exc, session_id, typed)
+        return call("session.resume", session_id=session_id)
+
+    async def _resume(self, client, session_id):
+        """:meth:`resume` for :meth:`_resubscribe`, awaited on this loop so a cancelled reconnect cancels
+        its request. A reconnect types nothing: never ``typed``."""
+        key = self.launch_api_key
+        if key:
+            try:
+                return await client.rpc("session.resume", session_id=session_id, api_key=key)
+            except GatewayRPCError as exc:
+                _resume_plain(exc, session_id, typed=False)
+        return await client.rpc("session.resume", session_id=session_id)
 
     async def _pump(self, client):
         while True:
@@ -309,8 +390,17 @@ class GatewayConnection:
             return False
         return True
 
-    def call(self, method, *, timeout=None, **params):
-        return self.call_tagged(method, timeout=timeout, **params)[0]
+    def call(self, method, *, timeout=None, abandon=None, **params):
+        return self.call_tagged(method, timeout=timeout, abandon=abandon, **params)[0]
+
+    def reattach(self, session_id, abandon=None):
+        """``session.resume`` after a replay gap; its snapshot names the subscription to detach."""
+        state = self.state(session_id)
+        gaps = state.gaps
+        snapshot = self.call("session.resume", session_id=session_id, abandon=abandon)
+        state.adopt_snapshot(snapshot)
+        state.attached_gaps = gaps  # a gap during this resume (or a wait given up) still owes one
+        return snapshot
 
     def _send(self, method, budget, params):
         """``(future, epoch)`` of one request sent on the live socket (see :meth:`call_tagged`)."""
@@ -383,13 +473,21 @@ class GatewayConnection:
             wake.set()  # ends the watcher above
             await asyncio.gather(stop, return_exceptions=True)
 
-    def call_tagged(self, method, *, timeout=None, **params):
+    def call_tagged(self, method, *, timeout=None, abandon=None, **params):
         """``(result, epoch)``: the epoch of the socket that carried the request, so work it admitted
-        is tied to that gateway life even if another caller redials before this one reads ``epoch``."""
+        is tied to that gateway life even if another caller redials before this one reads ``epoch``.
+        ``abandon`` (polled) true stops the wait with :class:`CallStopped`; the answer is dropped."""
+        from concurrent.futures import wait
         budget = DEFAULT_RPC_TIMEOUT if timeout is None else timeout
+        if abandon is not None and abandon():
+            raise CallStopped(method)
         future, epoch = self._send(method, budget, params)
+        deadline = time.monotonic() + budget + 5
         try:
-            return future.result(budget + 5), epoch
+            while abandon is not None and not wait([future], 0.1).done and time.monotonic() < deadline:
+                if abandon():
+                    raise CallStopped(method)
+            return future.result(max(deadline - time.monotonic(), 0)), epoch
         except TimeoutError as exc:
             future.cancel()
             raise GatewayClientError(f"Gateway did not answer {method}") from exc

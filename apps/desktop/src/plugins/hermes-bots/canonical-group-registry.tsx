@@ -9,7 +9,10 @@ export const $canonicalGroupBindings = atom<Record<string, CanonicalGroupBinding
 
 export function registerCanonicalGroup(route: CanonicalGroupRoute, room: CanonicalRoom): string {
   const key = `canonical:${encodeURIComponent(route.connectionId)}:${encodeURIComponent(route.profile)}:${room.room_id}`
-  $canonicalGroupBindings.set({ ...$canonicalGroupBindings.get(), [key]: { ...route, roomId: room.room_id, roomName: room.name } })
+  $canonicalGroupBindings.set({
+    ...$canonicalGroupBindings.get(),
+    [key]: { ...route, roomId: room.room_id, roomName: room.name }
+  })
 
   return key
 }
@@ -24,7 +27,10 @@ export function registerCanonicalGroup(route: CanonicalGroupRoute, room: Canonic
 export type CanonicalGroupOrigin = 'key' | 'name'
 
 /** The route `group` names when it is a key: null for a name, whatever its shape. */
-export function canonicalGroupKeyRoute(group: string, origin: CanonicalGroupOrigin): ReturnType<typeof parseCanonicalGroupKey> {
+export function canonicalGroupKeyRoute(
+  group: string,
+  origin: CanonicalGroupOrigin
+): ReturnType<typeof parseCanonicalGroupKey> {
   return origin === 'name' ? null : parseCanonicalGroupKey(group)
 }
 
@@ -33,7 +39,9 @@ export function canonicalGroupKeyRoute(group: string, origin: CanonicalGroupOrig
 export function parseCanonicalGroupKey(key: string): (CanonicalGroupRoute & { roomId: string }) | null {
   const match = /^canonical:([^:]*):([^:]*):(.+)$/.exec(key)
 
-  if (!match) {return null}
+  if (!match) {
+    return null
+  }
 
   try {
     return { connectionId: decodeURIComponent(match[1]), profile: decodeURIComponent(match[2]), roomId: match[3] }
@@ -91,7 +99,9 @@ export function publishCanonicalGroup(
 ): void {
   const key = registerCanonicalGroup(resolved.authority, resolved.room)
 
-  if (origin === 'key' && key === group) {return}
+  if (origin === 'key' && key === group) {
+    return
+  }
   const binding = { ...resolved.authority, roomId: resolved.room.room_id, roomName: resolved.room.name }
   const alias = canonicalGroupKeyRoute(group, origin) ? group : canonicalGroupAliasKey(route, group)
   $canonicalGroupBindings.set({ ...$canonicalGroupBindings.get(), [alias]: binding })
@@ -112,15 +122,31 @@ export function CanonicalGroupList({ onOpen }: { onOpen: (key: string, origin: C
       const route = captureCanonicalGroupRoute()
       const result = await discoverCanonicalGroups(route)
 
-      if (!cancelled) {setRooms(result.rooms.map(room => ({ key: registerCanonicalGroup(route, room), name: room.name })))}
-    })().catch(e => { if (!cancelled) {setError(e instanceof Error ? e.message : String(e))} })
+      if (!cancelled) {
+        setRooms(result.rooms.map(room => ({ key: registerCanonicalGroup(route, room), name: room.name })))
+      }
+    })().catch(e => {
+      if (!cancelled) {
+        setError(e instanceof Error ? e.message : String(e))
+      }
+    })
 
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+    }
   }, [connectionId, profile, refresh])
 
-  return <div className="grid gap-1 px-2">
-    <Button onClick={() => setRefresh(value => value + 1)} variant="ghost">{labels.refreshGroups}</Button>
-    {error && <p role="alert">{error}</p>}
-    {rooms.map(room => <Button key={room.key} onClick={() => onOpen(room.key, 'key')} variant="ghost">{room.name}</Button>)}
-  </div>
+  return (
+    <div className="grid gap-1 px-2">
+      <Button onClick={() => setRefresh(value => value + 1)} variant="ghost">
+        {labels.refreshGroups}
+      </Button>
+      {error && <p role="alert">{error}</p>}
+      {rooms.map(room => (
+        <Button key={room.key} onClick={() => onOpen(room.key, 'key')} variant="ghost">
+          {room.name}
+        </Button>
+      ))}
+    </div>
+  )
 }

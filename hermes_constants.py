@@ -17,6 +17,10 @@ _profile_fallback_warned: bool = False
 _UNSET = object()
 _HERMES_HOME_OVERRIDE: ContextVar[str | object] = ContextVar("_HERMES_HOME_OVERRIDE", default=_UNSET)
 
+# Whether this ``hermes`` process inherited ``HERMES_AGENT`` (an agent started it); None until
+# hermes_cli.main._advertise_agent_env records it. Process-local on purpose: agent/estop.py reads it.
+inherited_agent_marker: bool | None = None
+
 # TUI busy-indicator styles (CLI /indicator, TUI gateway config, /help registry).
 # Keep in sync with INDICATOR_STYLES / DEFAULT_INDICATOR_STYLE in ui-tui/src/app/interfaces.ts.
 INDICATOR_STYLES: tuple[str, ...] = ("ascii", "emoji", "kaomoji", "unicode")

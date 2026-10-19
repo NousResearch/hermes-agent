@@ -8,15 +8,20 @@ operation resumes on the next tick — no restart. Ported from gastownhall/gasto
 from __future__ import annotations
 
 import argparse
+import sys
 
 
 def cmd_pause(args: argparse.Namespace) -> int:
     """Engage the global emergency stop."""
-    from agent.estop import engage, get_state, is_engaged
+    from agent.estop import EstopRefused, engage, get_state, is_engaged
 
     reason = getattr(args, "reason", None)
     already = is_engaged()
-    path = engage(reason=reason)
+    try:
+        path = engage(reason=reason)
+    except EstopRefused as exc:
+        print(f"🚫  {exc}", file=sys.stderr)
+        return 1
     state = get_state() or {}
     verb = "Still paused" if already else "Hermes paused"
     detail = f" — reason: {state['reason']}" if state.get("reason") else ""
@@ -30,9 +35,14 @@ def cmd_pause(args: argparse.Namespace) -> int:
 
 def cmd_resume(args: argparse.Namespace) -> int:
     """Disengage the global emergency stop."""
-    from agent.estop import disengage, sentinel_path
+    from agent.estop import EstopRefused, disengage, sentinel_path
 
-    if disengage():
+    try:
+        lifted = disengage()
+    except EstopRefused as exc:
+        print(f"🚫  {exc}", file=sys.stderr)
+        return 1
+    if lifted:
         print("▶️  Hermes resumed — dispatch picks up on the next tick.")
     else:
         print(f"Hermes is not paused (no sentinel at {sentinel_path()}).")

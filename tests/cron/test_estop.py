@@ -14,6 +14,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shlex
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -364,3 +369,278 @@ def test_profile_gateway_honors_canonical_root_estop(tmp_path, monkeypatch):
     assert estop.is_engaged() is True  # still held by profile sentinel
     estop.disengage()
     assert estop.is_engaged() is False
+
+
+# ── authority: only an operator may engage or lift the stop ─────────────────
+#
+# An agent that runs `hermes pause` from its terminal tool halts every profile: engage()
+# writes the caller's home (the fleet root for the default profile, and for any remote
+# backend whose shell lands there) and disengage() removes the fleet-root sentinel too,
+# so an agent that can call either can stop or silently un-stop every profile.
+
+# One marker per kind of agent/automation context; each alone must refuse.
+_AGENT_CONTEXT_MARKERS = [
+    ("HERMES_CRON_SESSION", "1"),               # cron job
+    ("HERMES_KANBAN_TASK", "t_0000"),           # kanban worker
+    ("HERMES_SINGLE_QUERY_SESSION", "1"),       # hermes chat -q
+    ("HERMES_SESSION_PLATFORM", "telegram"),    # gateway turn / child of one
+    ("HERMES_SESSION_ID", "20260101_000000_ab"),  # any agent session / child of one
+    ("HERMES_GATEWAY_SESSION", "1"),            # TUI gateway
+    ("HERMES_AGENT", "true"),                   # any process a Hermes agent started
+]
+
+_REPO_ROOT = str(Path(__file__).resolve().parents[2])
+
+
+@pytest.fixture
+def operator_env(monkeypatch):
+    """A plain operator shell: no agent marker, and no `hermes` entry point has run here."""
+    import hermes_constants
+
+    # raising=False: on a base without the marker the tests still run and fail on their assertions.
+    monkeypatch.setattr(hermes_constants, "inherited_agent_marker", None, raising=False)
+    return monkeypatch
+
+
+def _cli(*args):
+    return [sys.executable, "-m", "hermes_cli.main", *args]
+
+
+@pytest.mark.parametrize("name,value", _AGENT_CONTEXT_MARKERS)
+def test_agent_context_cannot_engage(hermes_home, operator_env, name, value):
+    operator_env.setenv(name, value)
+    with pytest.raises(estop.EstopRefused) as exc:
+        estop.engage(reason="agent decided")
+    assert not (hermes_home / "ESTOP").exists()
+    assert estop.is_engaged() is False
+    # The refusal must not hand the caller a way around it.
+    assert "HERMES_" not in str(exc.value)
+
+
+@pytest.mark.parametrize("name,value", _AGENT_CONTEXT_MARKERS)
+def test_agent_context_cannot_lift_operator_stop(hermes_home, operator_env, name, value):
+    estop.engage(reason="operator")
+    operator_env.setenv(name, value)
+    with pytest.raises(estop.EstopRefused) as exc:
+        estop.disengage()
+    assert (hermes_home / "ESTOP").exists()
+    assert "/pause off" in str(exc.value)  # the chat command that lifts it, not /pause
+
+
+def test_operator_can_engage_and_lift(hermes_home, operator_env):
+    estop.engage(reason="operator")
+    assert estop.is_engaged() is True
+    assert estop.disengage() is True
+    assert estop.is_engaged() is False
+
+
+def test_hermes_that_set_its_own_agent_marker_is_an_operator(hermes_home, operator_env):
+    """`hermes pause` from a plain shell: the entry point advertised HERMES_AGENT itself."""
+    import hermes_constants
+
+    operator_env.setenv("HERMES_AGENT", "true")
+    operator_env.setattr(hermes_constants, "inherited_agent_marker", False)
+    estop.engage(reason="operator")
+    assert estop.disengage() is True
+    operator_env.setattr(hermes_constants, "inherited_agent_marker", True)
+    with pytest.raises(estop.EstopRefused):
+        estop.engage(reason="agent decided")
+
+
+def test_profile_agent_cannot_lift_fleet_root_stop(tmp_path, operator_env):
+    root = tmp_path / "hermes-root"
+    profile = root / "profiles" / "worker"
+    profile.mkdir(parents=True)
+    operator_env.setenv("HERMES_HOME", str(root))
+    estop.engage(reason="fleet halt")
+    operator_env.setenv("HERMES_HOME", str(profile))
+    operator_env.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    with pytest.raises(estop.EstopRefused):
+        estop.disengage()
+    assert (root / "ESTOP").exists()
+    assert estop.is_engaged() is True
+
+
+def test_unclassifiable_context_fails_closed(hermes_home, operator_env):
+    from tools import approval_context
+
+    def _boom():
+        raise RuntimeError("session context unavailable")
+
+    operator_env.setattr(approval_context, "_is_cron_approval_context", _boom)
+    with pytest.raises(estop.EstopRefused):
+        estop.engage()
+    assert not (hermes_home / "ESTOP").exists()
+
+
+def test_agent_terminal_tool_cannot_pause_end_to_end(hermes_home, operator_env):
+    """`hermes pause` run for real through the agent's terminal tool is refused."""
+    from tools.environments.local import LocalEnvironment
+
+    # cwd = checkout so ``-m`` resolves even where the terminal tool strips Hermes' PYTHONPATH.
+    env = LocalEnvironment(cwd=_REPO_ROOT, timeout=120)
+    try:
+        result = env.execute(shlex.join(_cli("pause", "--reason", "agent decided")), timeout=120)
+    finally:
+        env.cleanup()
+    assert not (hermes_home / "ESTOP").exists(), result
+    assert result["returncode"] == 1, result
+    assert "refusing" in result["output"].lower()
+
+
+def _execute_code_env(hermes_home):
+    from tools.code_execution_env import _build_child_env
+
+    env = _build_child_env(rpc_endpoint="unused", rpc_token="unused", tmpdir=str(hermes_home),
+                           child_python=sys.executable)
+    return {**env, "PYTHONPATH": _REPO_ROOT}
+
+
+def _mcp_stdio_env(hermes_home):
+    from tools.mcp_tool_config import _build_safe_env
+
+    return {**_build_safe_env({"HERMES_HOME": str(hermes_home)}), "PYTHONPATH": _REPO_ROOT}
+
+
+@pytest.mark.parametrize("build_env", [_execute_code_env, _mcp_stdio_env], ids=["execute_code", "mcp_stdio"])
+def test_scrubbed_agent_child_cannot_pause_end_to_end(hermes_home, operator_env, build_env):
+    """The execute_code sandbox and stdio MCP servers get an allowlisted env and are marked as
+    agent-started even when the parent never advertised HERMES_AGENT (e.g. the ACP entry point),
+    so `hermes pause` started from them is refused."""
+    env = build_env(hermes_home)
+    assert env.get("HERMES_HOME") == str(hermes_home)  # never the real ~/.hermes
+    paused = subprocess.run(_cli("pause"), env=env, capture_output=True, text=True, timeout=120,
+                            cwd=_REPO_ROOT, stdin=subprocess.DEVNULL)
+    assert paused.returncode == 1, paused.stdout + paused.stderr
+    assert "refusing" in paused.stderr.lower()
+    assert not (hermes_home / "ESTOP").exists()
+
+
+def test_cli_bang_command_is_the_operators(hermes_home, operator_env):
+    """`!hermes pause` typed in the interactive CLI after its agent started a session."""
+    from hermes_cli.bang_shell import _bang_env
+    from hermes_cli.main import _advertise_agent_env
+
+    for name in ("AI_AGENT", "HERMES_AGENT"):
+        operator_env.setenv(name, "x")  # recorded, so monkeypatch restores it at teardown
+        operator_env.delenv(name)
+    _advertise_agent_env()  # the operator's `hermes` CLI
+    # Once its agent exists the CLI mirrors the session id into os.environ (set_current_session_id).
+    operator_env.setenv("HERMES_SESSION_ID", "20260101_000000_ab")
+    env = {**_bang_env(), "PYTHONPATH": _REPO_ROOT}
+    paused = subprocess.run(_cli("pause"), env=env, capture_output=True, text=True, timeout=120,
+                            cwd=_REPO_ROOT, stdin=subprocess.DEVNULL)
+    assert paused.returncode == 0, paused.stdout + paused.stderr
+    assert (hermes_home / "ESTOP").exists()
+
+
+def test_operator_cli_can_pause_and_resume_end_to_end(hermes_home, operator_env):
+    env = {k: v for k, v in os.environ.items() if k != "HERMES_AGENT"}
+    paused = subprocess.run(_cli("pause", "--reason", "ops"), env=env, capture_output=True,
+                            text=True, timeout=120, cwd=_REPO_ROOT, stdin=subprocess.DEVNULL)
+    assert paused.returncode == 0, paused.stdout + paused.stderr
+    assert (hermes_home / "ESTOP").exists()
+    resumed = subprocess.run(_cli("resume"), env=env, capture_output=True, text=True, timeout=120,
+                             cwd=_REPO_ROOT, stdin=subprocess.DEVNULL)
+    assert resumed.returncode == 0, resumed.stdout + resumed.stderr
+    assert not (hermes_home / "ESTOP").exists()
+
+
+# ── chat /pause: a person's command, governed by security.estop_chat_control ──
+
+
+@pytest.mark.asyncio
+async def test_gateway_pause_allowed_by_default_inside_gateway(hermes_home, operator_env):
+    """The gateway process carries session markers; /pause sent by an authorized person is
+    still a human command and works by default (behaviour unchanged)."""
+    from gateway.run import GatewayRunner
+
+    operator_env.setenv("HERMES_SESSION_ID", "20260101_000000_ab")
+    operator_env.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    runner = object.__new__(GatewayRunner)
+    reply = await runner._handle_pause_command(_FakePauseEvent("deploy"))
+    assert "paused" in reply.lower()
+    assert estop.is_engaged() is True
+    reply = await runner._handle_pause_command(_FakePauseEvent("off"))
+    assert "resumed" in reply.lower()
+    assert estop.is_engaged() is False
+
+
+def _from_bot(event):
+    event.source.is_bot = True
+
+
+def _internal(event):
+    event.internal = True
+
+
+def _from_webhook(event):
+    from gateway.config import Platform
+
+    event.source.platform = Platform.WEBHOOK
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("make_automated", [_from_bot, _internal, _from_webhook],
+                         ids=["bot", "internal", "webhook"])
+async def test_gateway_pause_refused_from_automated_sender(hermes_home, operator_env, make_automated):
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    event = _FakePauseEvent("agent decided")
+    make_automated(event)
+    reply = await runner._handle_pause_command(event)
+    assert "hermes pause" in reply
+    assert not (hermes_home / "ESTOP").exists()
+
+    estop.engage(reason="operator")
+    event = _FakePauseEvent("off")
+    make_automated(event)
+    reply = await runner._handle_pause_command(event)
+    assert "hermes resume" in reply
+    assert (hermes_home / "ESTOP").exists()
+
+
+@pytest.mark.asyncio
+async def test_gateway_pause_refused_when_chat_control_disabled(hermes_home, operator_env):
+    from gateway.run import GatewayRunner
+
+    (hermes_home / "config.yaml").write_text("security:\n  estop_chat_control: false\n", encoding="utf-8")
+    runner = object.__new__(GatewayRunner)
+    reply = await runner._handle_pause_command(_FakePauseEvent("deploy"))
+    assert "hermes pause" in reply
+    assert not (hermes_home / "ESTOP").exists()
+
+    estop.engage(reason="operator")  # an operator at a terminal
+    reply = await runner._handle_pause_command(_FakePauseEvent("off"))
+    assert "hermes resume" in reply
+    assert (hermes_home / "ESTOP").exists()
+
+
+def test_profile_chat_cannot_lift_a_root_that_disabled_chat_control(tmp_path, operator_env):
+    """Lifting removes the fleet-root sentinel, so the root's `false` binds every profile."""
+    root = tmp_path / "hermes-root"
+    profile = root / "profiles" / "worker"
+    profile.mkdir(parents=True)
+    (root / "config.yaml").write_text("security:\n  estop_chat_control: false\n", encoding="utf-8")
+    operator_env.setenv("HERMES_HOME", str(root))
+    estop.engage(reason="fleet halt")
+    operator_env.setenv("HERMES_HOME", str(profile))
+    with pytest.raises(estop.EstopRefused):
+        estop.disengage(from_chat=True)
+    assert (root / "ESTOP").exists()
+
+
+def test_unreadable_chat_control_engages_but_never_lifts(hermes_home, operator_env):
+    """The brake still works when the setting cannot be read; lifting fails closed."""
+    import hermes_cli.config
+
+    def _boom():
+        raise OSError("config unreadable")
+
+    operator_env.setattr(hermes_cli.config, "load_config_readonly", _boom)
+    estop.engage(reason="chat", from_chat=True)
+    assert estop.is_engaged() is True
+    with pytest.raises(estop.EstopRefused):
+        estop.disengage(from_chat=True)
+    assert (hermes_home / "ESTOP").exists()

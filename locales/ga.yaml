@@ -445,6 +445,9 @@ gateway:
     state_no: "Níl"
     queued: "**Tascanna i scuaine:** {count}"
     platforms: "**Ardáin Cheangailte:** {platforms}"
+  discard:
+    nothing: "Níl aon rud le caitheamh amach: níl aon seal caillte ag an gcomhrá seo i n-atosú."
+    done: "🗑️ Caitheadh amach {count} seal caillte; níor ritheadh arís iad. Freagrófar do theachtaireachtaí sábháilte anois."
   stop:
     stopped_pending: "⚡ Stoptha. Ní raibh an gníomhaire tosaithe fós — is féidir leat leanúint leis an seisiún seo."
     stopped: "⚡ Stoptha. Is féidir leat leanúint leis an seisiún seo."
@@ -1530,6 +1533,8 @@ slash:
     description: "Iompórtáil cartlann próifíle roinnte mar phróifíl nua"
   stop:
     description: "Maraigh gach próiseas cúlra atá ag rith"
+  discard:
+    description: "Caith amach seal a cailleadh nuair a atosaíodh Hermes ionas go ritheann scuaine an chomhrá seo arís"
   pause:
     description: "Cuir obair nua ar sos go domhanda (stop éigeandála); atosaíonn '/pause off' í"
   deny:
@@ -3004,6 +3009,10 @@ cli:
       usage_disconnect: "disconnect   Fill ar inneall brabhsálaí réamhshocraithe"
       usage_status: "status       Taispeáin mód reatha an bhrabhsálaí"
       usage_use: "use [off]    Athraigh go mód Browser Use (CLI 3.0) / ar ais go huirlisí ionsuite"
+      remote_gateway: "Bainistíonn /browser connect agus /browser disconnect brabhsálaí Chromium ar óstach an gheata — ar fáil ach amháin le geata áitiúil."
+      checking: "Ag seiceáil dífhabhtú cianda an bhrabhsálaí Chromium ag {url}..."
+      new_sessions_only: "Baineann sé le seisiúin nua — coinníonn an ceann seo a uirlisí reatha (/new chun ceann a thosú)."
+      status_gateway_default: "🌐 Brabhsálaí: inneall réamhshocraithe brabhsálaí an gheata (gan nasc beo CDP)"
     heartbeat:
       label: "Buillí croí"
       paused: "⏸ Buille croí curtha ar sos: {prompt}"

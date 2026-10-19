@@ -1650,12 +1650,12 @@ DEFAULT_CONFIG = {
             # Bot API 10.1 native rich messages (tables/task lists/math). Off = legacy MarkdownV2,
             # since rich messages are hard to copy as plain text.
             "rich_messages": False,
-            # Experimental rich draft previews while streaming DMs; off because Telegram
-            # Desktop/macOS can overlay draft frames until the chat redraws.
+            # Experimental rich DM stream previews; off: Telegram Desktop/macOS overlays draft frames.
             "rich_drafts": False,
             # CJK stays on legacy MarkdownV2 (Telegram Desktop/macOS garbles rich CJK, #47653);
             # set True on an unaffected client to get native rich tables for CJK.
             "allow_cjk_rich_messages": False,
+            "dm_topic_auto_transfer": False,  # /topic mode: root-DM message opens a fresh topic
         },
     },
 

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_constants import hermes_home_key
 from tools.browser_tool_origin import origin as _bt
 from tools import browser_tool_cdp as _cdp
 from tools import browser_tool_cloud as _cloud
@@ -420,6 +421,7 @@ def _get_session_info(task_id: Optional[str] = None) -> dict[str, Any]:
         session_info = dict(session_info)
         session_info.setdefault("session_key", task_id)
         session_info.setdefault("owner_task_id", _bt._bare_task_id_for_session_key(task_id))
+        session_info.setdefault("home_key", hermes_home_key())  # the profile reaped on /browser connect
         _bt._active_sessions[task_id] = session_info
         _bt._suspect_browser_sessions.pop(task_id, None)  # brand-new session is healthy by definition
 

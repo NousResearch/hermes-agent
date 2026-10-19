@@ -24,6 +24,9 @@ export const enNotices = {
       'This chat is busy: the MCP change applies once its turn finishes and MCP reloads again, or when you reopen the chat',
     mcpReloadNotInChat: server => `${server} is not enabled in this chat`,
     mcpReloadUnavailable: servers => `Did not connect: ${servers}`,
+    compactedTurnUnavailable:
+      "That message was summarized when the chat was compressed, so it can't be restored or edited anymore.",
+    staleTurnUnavailable: "That message is no longer in this chat's history.",
     sessionCommands: enSessionCommands
   },
   keepAwakeOffer: {

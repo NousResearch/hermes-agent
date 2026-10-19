@@ -445,6 +445,9 @@ gateway:
     state_no: "Hayır"
     queued: "**Sıradaki devam:** {count}"
     platforms: "**Bağlı platformlar:** {platforms}"
+  discard:
+    nothing: "Atılacak bir şey yok: bu sohbette yeniden başlatmada kaybolan bir tur yok."
+    done: "🗑️ Kaybolan {count} tur atıldı; yeniden çalıştırılmadı. Kaydedilen mesajların şimdi yanıtlanacak."
   stop:
     stopped_pending: "⚡ Durduruldu. Ajan henüz başlamamıştı — bu oturuma devam edebilirsin."
     stopped: "⚡ Durduruldu. Bu oturuma devam edebilirsin."
@@ -1530,6 +1533,8 @@ slash:
     description: "Paylaşılan bir profil arşivini yeni profil olarak içe aktar"
   stop:
     description: "Çalışan tüm arka plan süreçlerini sonlandır"
+  discard:
+    description: "Hermes yeniden başlarken kaybolan bir turu at, böylece bu sohbetin kuyruğu yeniden çalışsın"
   pause:
     description: "Yeni işleri genel olarak duraklat (acil durdurma); '/pause off' devam ettirir"
   deny:
@@ -3004,6 +3009,10 @@ cli:
       usage_disconnect: "disconnect   Varsayılan tarayıcı arka ucuna geri döner"
       usage_status: "status       Geçerli tarayıcı modunu gösterir"
       usage_use: "use [off]    Browser Use moduna (CLI 3.0) geçer / yerleşik araçlara döner"
+      remote_gateway: "/browser connect ve /browser disconnect ağ geçidi ana makinesindeki bir Chromium tarayıcısını yönetir — yalnızca yerel ağ geçidine bağlıyken kullanılabilir."
+      checking: "{url} adresinde Chromium tarayıcısı uzaktan hata ayıklaması denetleniyor..."
+      new_sessions_only: "Yeni oturumlara uygulanır — bu oturum mevcut araçlarını korur (/new ile yeni başlatın)."
+      status_gateway_default: "🌐 Tarayıcı: ağ geçidinin varsayılan tarayıcı arka ucu (canlı CDP bağlantısı yok)"
     heartbeat:
       label: "Heartbeat'ler"
       paused: "⏸ Heartbeat duraklatıldı: {prompt}"

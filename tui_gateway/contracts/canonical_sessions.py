@@ -6,6 +6,7 @@ from typing import Literal
 
 from .base import JsonValue, Params, Result
 from .common import ProfileParams, TranscriptMessage
+from .connectors_operation import ConnectionRequestPayload
 from .canonical import AdmissionStatus, CanonicalSessionRef, PromptResponseResult, SessionInventoryFields
 from .registry import canonical_method
 
@@ -113,6 +114,7 @@ class CanonicalSnapshotInfo(SessionInventoryFields):
     profile_id: str | None = None
     profile_name: str | None = None
     cwd: str | None = None
+    edit_approval_policy: Literal['ask', 'workspace_session', 'session'] | None = None
     launch_request: dict[str, JsonValue] | None = None
     reasoning_effort: str | None = None
     reasoning_effort_wire: str | None = None
@@ -146,6 +148,8 @@ class CanonicalSnapshot(Result):
     pending: list[CanonicalPendingAdmission]
     prompts: list[CanonicalPendingPrompt]
     info: CanonicalSnapshotInfo
+    # The open ``manage_connections`` card, so a resume restores it while the tool waits.
+    pending_connection: ConnectionRequestPayload | None = None
 
 
 class CanonicalListParams(ProfileParams):
@@ -188,6 +192,9 @@ class CanonicalTurnAuthor(Params):
 class CanonicalModelOverride(Params):
     model: str
     provider: str | None = None
+    # ``/model B --once --reasoning X``: this admission alone runs level X. The owner refuses a level
+    # ``parse_reasoning_effort`` cannot read (``gateway/session_cli_turn.py``).
+    reasoning: str | None = None
 
 
 class CanonicalSubmitParams(CanonicalSessionParams):

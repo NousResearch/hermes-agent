@@ -594,10 +594,18 @@ def test_busy_submit_claims_attached_image_for_queued_turn(monkeypatch):
 def test_busy_image_prompts_keep_b_and_c_attachments_in_submission_order(monkeypatch):
     """A later paste must not replace the image already claimed by B."""
     monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
+    submitted_claims = []
+    submitted_keys = []
+
+    def record_dispatch(rid, sid, _session, text, **kwargs):
+        submitted_claims.append(kwargs.pop("chat_submit_ids"))
+        submitted_keys.append(kwargs.pop("chat_submit_key"))
+        dispatched.append((rid, sid, text, kwargs))
+
     monkeypatch.setattr(
         server,
         "_run_prompt_submit",
-        lambda rid, sid, _session, text, **kwargs: dispatched.append((rid, sid, text, kwargs)),
+        record_dispatch,
     )
     agent = types.SimpleNamespace(
         _supports_active_turn_redirect=True,
@@ -638,6 +646,10 @@ def test_busy_image_prompts_keep_b_and_c_attachments_in_submission_order(monkeyp
             {"image_paths": ["/tmp/c.png"], "queued_prompt_generation": 0, "approval_origin": None},
         ),
     ]
+    assert len(submitted_claims) == 2
+    assert all(len(ids) == 1 and ids[0] for ids in submitted_claims)
+    assert submitted_claims[0] != submitted_claims[1]
+    assert submitted_keys == ["session-key", "session-key"]
 
 
 # ── _drain_queued_prompt ───────────────────────────────────────────────────

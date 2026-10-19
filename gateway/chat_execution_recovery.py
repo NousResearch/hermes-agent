@@ -32,6 +32,9 @@ class ChatExecutionStore:
             db.execute("""CREATE TABLE IF NOT EXISTS session_fences (
                 session_key TEXT PRIMARY KEY, generation INTEGER NOT NULL,
                 recovery_id TEXT NOT NULL, state TEXT NOT NULL, receipt TEXT)""")
+            db.execute("""CREATE TABLE IF NOT EXISTS pending_submits (
+                session_key TEXT NOT NULL, submit_id TEXT NOT NULL,
+                PRIMARY KEY(session_key, submit_id))""")
             db.execute("""CREATE TABLE IF NOT EXISTS concurrent_tool_resources (
                 session_key TEXT NOT NULL, generation INTEGER NOT NULL, resource_id TEXT NOT NULL,
                 session_id TEXT NOT NULL, kind TEXT NOT NULL, state TEXT NOT NULL,
@@ -62,6 +65,49 @@ class ChatExecutionStore:
             row = db.execute("SELECT MAX(generation) AS g FROM executions WHERE session_key=?", (session_key,)).fetchone()
             return int(row["g"] or 0)
 
+    def begin_submit(self, session_key, submit_id):
+        """Reserve a real incoming turn before any pre-worker transcript mutation."""
+        if not session_key or not submit_id:
+            return False
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            fence = db.execute("SELECT state FROM session_fences WHERE session_key=?", (session_key,)).fetchone()
+            if fence and fence["state"] == "fenced":
+                db.rollback(); return False
+            db.execute("INSERT INTO pending_submits VALUES (?, ?)", (session_key, submit_id))
+            db.commit(); return True
+
+    def abandon_submit(self, session_key, submit_id):
+        if not session_key or not submit_id:
+            return False
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            source = db.execute("SELECT 1 FROM pending_submits WHERE session_key=? AND submit_id=?",
+                                (session_key, submit_id)).fetchone()
+            if not source:
+                db.rollback(); return False
+            db.execute("DELETE FROM pending_submits WHERE submit_id=?", (submit_id,))
+            db.commit(); return True
+
+    def submit_claims_active(self, session_key, submit_ids, *, source_key=None):
+        """Check a staged turn; bridge a real session-key rotation without a fence gap."""
+        submit_ids = tuple(submit_ids)
+        source_key = source_key or session_key
+        if not session_key or not source_key or not submit_ids:
+            return False
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            fences = db.execute("SELECT session_key FROM session_fences WHERE state='fenced' AND session_key IN (?, ?)",
+                                (session_key, source_key)).fetchall()
+            owned = {row["submit_id"] for row in db.execute(
+                "SELECT submit_id FROM pending_submits WHERE session_key=?", (source_key,))}
+            if fences or not set(submit_ids) <= owned:
+                db.rollback(); return False
+            if source_key != session_key:
+                db.executemany("INSERT OR IGNORE INTO pending_submits VALUES (?, ?)",
+                               ((session_key, submit_id) for submit_id in submit_ids))
+            db.commit(); return True
+
     def start(self, session_key, generation, session_id):
         if not self._valid_generation(generation) or not session_key or not session_id:
             return False
@@ -77,7 +123,7 @@ class ChatExecutionStore:
             db.commit()
             return True
 
-    def start_local_worker(self, session_key, session_id):
+    def start_local_worker(self, session_key, session_id, submit_ids=()):
         """Atomically admit a Desktop/TUI turn with its actual Agent session id."""
         if not session_key or not session_id:
             return None
@@ -86,13 +132,21 @@ class ChatExecutionStore:
             fence = db.execute("SELECT state FROM session_fences WHERE session_key=?", (session_key,)).fetchone()
             pending = db.execute("SELECT 1 FROM executions WHERE session_key=? AND worker!='completed' LIMIT 1",
                                  (session_key,)).fetchone()
-            if (fence and fence["state"] == "fenced") or pending:
+            submit_ids = tuple(submit_ids)
+            owned = {row["submit_id"] for row in db.execute(
+                "SELECT submit_id FROM pending_submits WHERE session_key=?", (session_key,))}
+            if ((fence and fence["state"] == "fenced") or pending
+                    or any(submit_id not in owned for submit_id in submit_ids)):
                 db.rollback(); return None
             latest = db.execute("SELECT MAX(generation) FROM executions WHERE session_key=?",
                                 (session_key,)).fetchone()[0] or 0
             generation = latest + 1
             db.execute("INSERT INTO executions VALUES (?, ?, ?, 'pending', 1, 'unknown', 0)",
                        (session_key, generation, session_id))
+            for submit_id in submit_ids:
+                # Aliases for a rotating session stay fenced until this exact
+                # physical worker is admitted, then settle in one transaction.
+                db.execute("DELETE FROM pending_submits WHERE submit_id=?", (submit_id,))
             db.commit()
             return generation
 
@@ -317,11 +371,13 @@ class ChatExecutionStore:
             row = db.execute("SELECT * FROM executions WHERE session_key=? AND generation=?", (session_key, generation)).fetchone()
             unresolved = db.execute("SELECT 1 FROM executions WHERE session_key=? AND (worker!='completed' OR worker_started!=1 OR effects!='none' OR tool_observed!=0) LIMIT 1", (session_key,)).fetchone()
             unresolved_resource = db.execute("SELECT 1 FROM concurrent_tool_resources WHERE session_key=? AND state!='finished' LIMIT 1", (session_key,)).fetchone()
+            unresolved_submit = db.execute("SELECT 1 FROM pending_submits WHERE session_key=? LIMIT 1",
+                                           (session_key,)).fetchone()
         if row is None:
             return self._unknown(session_key, generation)
         if not row["session_id"]:
             return self._unknown(session_key, generation)
-        return {"version": VERSION, "session_id": row["session_id"], "session_key": session_key, "run_generation": generation, "worker": row["worker"], "effects": "unknown" if unresolved or unresolved_resource else row["effects"]}
+        return {"version": VERSION, "session_id": row["session_id"], "session_key": session_key, "run_generation": generation, "worker": row["worker"], "effects": "unknown" if unresolved or unresolved_resource or unresolved_submit else row["effects"]}
 
     @staticmethod
     def _unknown(session_key, generation):
@@ -354,6 +410,10 @@ class ChatExecutionStore:
                     return receipt if receipt.get("kind") == "chat-retirement/v1" and receipt.get("claim_generation") == claim_generation else {**denied, "status": "stale"}
             latest = db.execute("SELECT * FROM executions WHERE session_key=? ORDER BY generation DESC LIMIT 1",
                                 (session_key,)).fetchone()
+            submitting = db.execute("SELECT 1 FROM pending_submits WHERE session_key=? LIMIT 1",
+                                    (session_key,)).fetchone()
+            if submitting:
+                db.rollback(); return denied
             if not fence:
                 db.execute("INSERT INTO session_fences VALUES (?, ?, ?, 'fenced', NULL)",
                            (session_key, latest["generation"], recovery_id))
@@ -416,7 +476,8 @@ class ChatExecutionStore:
             fence = db.execute("SELECT * FROM session_fences WHERE session_key=?", (session_key,)).fetchone()
             row = db.execute("SELECT * FROM executions WHERE session_key=? AND generation=?", (session_key, generation)).fetchone()
             pending_resource = db.execute("SELECT 1 FROM concurrent_tool_resources WHERE session_key=? AND state!='finished' LIMIT 1", (session_key,)).fetchone()
-            if not fence or fence["generation"] != generation or fence["recovery_id"] != recovery_id or fence["state"] != "fenced" or not row or row["worker"] != "completed" or row["effects"] != "none" or row["tool_observed"] or pending_resource:
+            pending_submit = db.execute("SELECT 1 FROM pending_submits WHERE session_key=? LIMIT 1", (session_key,)).fetchone()
+            if not fence or fence["generation"] != generation or fence["recovery_id"] != recovery_id or fence["state"] != "fenced" or not row or row["worker"] != "completed" or row["effects"] != "none" or row["tool_observed"] or pending_resource or pending_submit:
                 db.rollback(); return {**transfer_proof, "status": "blocked"}
             db.execute("UPDATE session_fences SET state='committed', receipt=? WHERE session_key=?", (json.dumps(receipt), session_key))
             db.commit()

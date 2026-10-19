@@ -1101,7 +1101,24 @@ def _run_prompt_submit(
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
     turn_author: dict | None = None, approval_origin=None, approval_reservations=None,
-    approval_completion_events=None) -> bool:
+    approval_completion_events=None, chat_submit_ids: tuple[str, ...] = (),
+    chat_submit_key: str | None = None) -> bool:
+    from gateway.chat_execution_recovery import ChatExecutionStore
+    from hermes_constants import get_process_hermes_home
+    import uuid
+    chat_submit_ids = tuple(chat_submit_ids)
+    submit_key = str(session.get("session_key") or sid)
+    submit_store = ChatExecutionStore(session.get("profile_home") or get_process_hermes_home())
+    if chat_submit_ids:
+        if not submit_store.submit_claims_active(
+                submit_key, chat_submit_ids, source_key=chat_submit_key):
+            return False
+    else:
+        submit_id = uuid.uuid4().hex
+        if not submit_store.begin_submit(submit_key, submit_id):
+            return False
+        chat_submit_ids = (submit_id,)
+        session.setdefault("_chat_pending_submit_ids", set()).add(submit_id)
     # Every dispatch binds the session's own row (session_key, real source) before the turn writes:
     # the synthesized turns that enter here directly (crash auto-continue, queued-prompt drain,
     # wake-ups) bypass prompt.submit's persist, and a row-less turn is otherwise materialized by
@@ -1193,16 +1210,17 @@ def _run_prompt_submit(
             from agent.chat_execution_context import bind_chat_execution
             from hermes_constants import get_process_hermes_home
             home = str(session.get("profile_home") or get_process_hermes_home())
-            key = str(session.get("session_key") or "")
+            key = str(session.get("session_key") or sid)
             execution_store = ChatExecutionStore(home)
 
             def admit_worker(agent):
                 nonlocal generation, execution_started, execution_scope
                 from gateway.session_context import set_session_run_generation
                 actual_session_id = str(getattr(agent, "session_id", "") or "")
-                generation = execution_store.start_local_worker(key, actual_session_id)
+                generation = execution_store.start_local_worker(key, actual_session_id, chat_submit_ids)
                 if generation is None:
                     raise RuntimeError("Durable Desktop/TUI worker admission refused")
+                session.get("_chat_pending_submit_ids", set()).difference_update(chat_submit_ids)
                 execution_started = True
                 st.chat_execution_generation = generation
                 execution_scope = bind_chat_execution(home, key, generation)
@@ -1257,6 +1275,12 @@ def _run_prompt_submit(
                         logger.error("Durable Desktop/TUI worker completion refused for %s/%s", key, generation)
                 except Exception:
                     logger.exception("Durable Desktop/TUI worker completion uncertain for %s/%s", key, generation)
+            elif st.terminal_callback is not None and st.receipt_committed:
+                # A hosted delivery has a durable failed terminal receipt and no
+                # physical worker. Its reserved submit can settle with that receipt.
+                for submit_id in chat_submit_ids:
+                    submit_store.abandon_submit(submit_key, submit_id)
+                session.get("_chat_pending_submit_ids", set()).difference_update(chat_submit_ids)
             _release_turn_scopes(sid, session, st)
             try:  # a raising settle step must not skip the trim / HERMES_HOME reset
                 _current_runtime_session_record.reset(runtime_session_token)

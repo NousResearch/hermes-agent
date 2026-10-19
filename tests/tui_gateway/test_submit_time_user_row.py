@@ -50,6 +50,64 @@ def test_user_message_is_durable_at_submit_before_any_agent_turn(monkeypatch, tm
         db.close()
 
 
+def test_retired_desktop_predecessor_refuses_registered_submit_before_transcript_write(monkeypatch, tmp_path):
+    from gateway.chat_execution_recovery import ChatExecutionStore
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    session["profile_home"] = str(tmp_path)
+    db.create_session(key, "desktop")
+    db.append_message(key, "user", content="original")
+    store = ChatExecutionStore(tmp_path)
+    assert store.start_local_worker(key, key) == 1
+    assert store.worker_finished(key, 1)
+    assert store.retire_for_handoff(key, 1, "transfer-1")["status"] == "retired"
+    try:
+        response = server.handle_request({"id": "p", "method": "prompt.submit", "params": {
+            "session_id": sid, "text": "continue the old work"}})
+        assert response["error"]["code"] == 4090
+        assert [(row["role"], row["content"]) for row in db.get_messages_as_conversation(key)] == [
+            ("user", "original")]
+        assert session["running"] is False
+        response = server.handle_request({"id": "rewind", "method": "prompt.submit", "params": {
+            "session_id": sid, "text": "rewrite", "truncate_before_user_ordinal": 0,
+            "confirm_truncate": True}})
+        assert response["error"]["code"] == 4090
+        assert [(row["role"], row["content"]) for row in db.get_messages_as_conversation(key)] == [
+            ("user", "original")]
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
+def test_queued_desktop_submit_blocks_handoff_then_registered_stop_cancels_claim(monkeypatch, tmp_path):
+    from gateway.chat_execution_recovery import ChatExecutionStore
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    session["profile_home"] = str(tmp_path)
+    store = ChatExecutionStore(tmp_path)
+    assert store.start_local_worker(key, key) == 1
+    try:
+        session["running"] = True
+        response = server.handle_request({"id": "queue", "method": "prompt.submit", "params": {
+            "session_id": sid, "text": "queued work", "queued": True}})
+        assert response["result"]["status"] == "queued"
+        assert session["queued_prompt"]["text"] == "queued work"
+        assert store.worker_finished(key, 1)
+        assert store.retire_for_handoff(key, 1, "handoff")["status"] == "blocked"
+        stop = server.handle_request({"id": "stop", "method": "session.interrupt", "params": {
+            "session_id": sid}})
+        assert stop["result"]["status"] == "interrupted"
+        assert session.get("queued_prompt") is None
+        assert store.retire_for_handoff(key, 1, "handoff")["status"] == "retired"
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
 def test_submit_ack_binds_the_written_row_even_if_worker_consumes_staging(monkeypatch, tmp_path):
     db = SessionDB(db_path=tmp_path / "state.db")
     sid, key = _desktop_session(monkeypatch, db)

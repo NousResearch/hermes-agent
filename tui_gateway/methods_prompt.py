@@ -680,7 +680,7 @@ def _approval_origin_for_direct_submit(session, text, raw_text, *, internal_host
 
 def _run_after_agent_ready(
     rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author=None,
-    approval_origin=None,
+    approval_origin=None, chat_submit_ids=(), chat_submit_key=None,
 ):
     """Turn thread body: patient wait for a deferred build (a slow build must not eat the
     accepted in-flight message), then run."""
@@ -712,7 +712,8 @@ def _run_after_agent_ready(
     _run_prompt_submit(
         rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata,
         terminal_callback=hosted_terminal_callback, turn_author=turn_author,
-        approval_origin=approval_origin)
+        approval_origin=approval_origin, chat_submit_ids=chat_submit_ids,
+        chat_submit_key=chat_submit_key)
 
 
 _TRUNCATION_PARAMS = (
@@ -824,6 +825,33 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4090, str(limit_message), {"reason": reason} if reason else None)
     if (ownership_error := _session_attachment_error(rid, session, current_transport())) is not None:
         return ownership_error
+    from gateway.chat_execution_recovery import ChatExecutionStore
+    from hermes_constants import get_process_hermes_home
+    import uuid
+    key = str(session.get("session_key") or sid)
+    store = ChatExecutionStore(session.get("profile_home") or get_process_hermes_home())
+    submit_id = uuid.uuid4().hex
+    if not store.begin_submit(key, submit_id):
+        return _err(rid, 4090, "session retired for chat ownership handoff")
+    try:
+        response = _submit_after_chat_claim(
+            rid, params, sid, session, text, raw_text, display_kind, display_metadata,
+            raw_author, turn_author, hosted_task, hosted_terminal_callback, internal_hosted_submit,
+            submit_id, store, key)
+    except BaseException:
+        # A failure may have occurred after a rewind or submit-time row commit.
+        # Retain the claim for reconciliation instead of asserting no effects.
+        raise
+    # A direct or queued worker owns the durable claim until native admission.
+    if submit_id not in session.get("_chat_pending_submit_ids", set()):
+        store.abandon_submit(key, submit_id)
+    return response
+
+
+def _submit_after_chat_claim(
+    rid, params, sid, session, text, raw_text, display_kind, display_metadata,
+    raw_author, turn_author, hosted_task, hosted_terminal_callback, internal_hosted_submit,
+    submit_id, store, key):
     # Rewritten every submit: a session alternates app window / HUD / live voice; a stale value misinforms.
     session["client_surface"] = params.get("surface") if params.get("surface") in _CLIENT_SURFACES else ""
     # Live-voice delegations carry the recent spoken transcript for the MODEL INPUT only (the persisted
@@ -873,14 +901,18 @@ def _(rid, params: dict) -> dict:
             display_kind=display_kind, approval_origin=_approval_origin_for_direct_submit(
                 session, text, raw_text, internal_hosted_submit=internal_hosted_submit, raw_author=raw_author,
                 display_kind=display_kind, turn_isolation=turn_isolation, transport=t or busy_transport,
-                queued=True))
+                queued=True), chat_submit_id=submit_id)
         if busy_response is not None:
             return busy_response
     requested_rebind_ids = _requested_rebind_ids(params.get("rebind_survivor_row_ids"))
+    # A rewind may commit before returning an error; preserve its claim.
+    if has_truncation:
+        session.setdefault("_chat_pending_submit_ids", set()).add(submit_id)
     err, survivor_fields = _lock_in_submit_turn(
         rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind)
     if err is not None:
         return err
+    session.setdefault("_chat_pending_submit_ids", set()).add(submit_id)
     approval_origin = _approval_origin_for_direct_submit(
         session, text, raw_text, internal_hosted_submit=internal_hosted_submit, raw_author=raw_author,
         display_kind=display_kind, turn_isolation=turn_isolation)
@@ -896,7 +928,8 @@ def _(rid, params: dict) -> dict:
         # this path). Best-effort like the helper: a failed read never blocks the send.
         _reopen_before_isolated_submit(session, sid)
         isolated_response = _submit_prompt_to_compute_host(
-            rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata)
+            rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata,
+            chat_submit_id=submit_id, chat_submit_key=key)
         if not isolated_response.get("error"):
             # The truncation already happened inline above (memory + DB).
             isolated_response["result"].update(survivor_fields)
@@ -924,10 +957,11 @@ def _(rid, params: dict) -> dict:
     run_thread = threading.Thread(
         target=lambda: _run_after_agent_ready(
             rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author,
-            approval_origin),
+            approval_origin, (submit_id,), key),
         daemon=True)
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     session["_run_thread"] = run_thread
+    session.setdefault("_chat_pending_submit_ids", set()).add(submit_id)
     run_thread.start()
     return _ok(rid, {"status": "streaming", **survivor_fields})
 

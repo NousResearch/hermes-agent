@@ -53,6 +53,7 @@ def _recover_unreachable_compute_host_turn(sid: str, session: dict, inflight_at_
         pending = True
     with session["history_lock"]:
         session["_turn_cancel_requested"] = True
+        _abandon_queued_chat_submits(session)
         session["queued_prompt"] = None
         session.pop("queued_prompts", None)
         session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1

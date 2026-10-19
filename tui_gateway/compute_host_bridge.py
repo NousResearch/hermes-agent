@@ -288,11 +288,20 @@ def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -
 def _submit_prompt_to_compute_host(
     rid: str, sid: str, session: dict, text: Any, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None, display_kind: str | None = None,
-    display_metadata: dict | None = None) -> dict:
+    display_metadata: dict | None = None, chat_submit_id: str | None = None,
+    chat_submit_ids: tuple[str, ...] = (), chat_submit_key: str | None = None) -> dict:
+    claim_ids = (*chat_submit_ids, *((chat_submit_id,) if chat_submit_id else ()))
+    if claim_ids:
+        session.setdefault("_chat_pending_submit_ids", set()).update(claim_ids)
     cfg = _load_dashboard_process_isolation_config()
     frame = _compute_host_turn_frame(rid, sid, session, text, image_paths=image_paths,
                                      queued_prompt_generation=queued_prompt_generation,
                                      display_kind=display_kind, display_metadata=display_metadata)
+    # The parent reserved these against the same profile journal before rewinding
+    # or reopening its transcript. The child consumes them with its real worker id.
+    if claim_ids:
+        frame["_chat_submit_ids"] = list(claim_ids)
+        frame["_chat_submit_key"] = chat_submit_key or str(session.get("session_key") or sid)
     # Caller JSON-RPC ids may repeat across sockets and turns. Use an opaque
     # dispatch lifetime token, installed before a fast child can send activity.
     turn_id = frame["turn_id"] = frame["request_id"] = uuid.uuid4().hex
@@ -310,9 +319,12 @@ def _submit_prompt_to_compute_host(
                 session.pop("_compute_host_turn_id", None)
                 session.pop("_compute_host_activity_ns", None)
             _on_compute_host_turn_done(rid, sid, session, done)
+            session.get("_chat_pending_submit_ids", set()).difference_update(claim_ids)
     try:
         _get_compute_host_supervisor(cfg).submit_turn(frame, on_complete=_complete)
     except Exception as exc:
+        for claim_id in claim_ids:
+            session.get("_chat_pending_submit_ids", set()).discard(claim_id)
         with session["history_lock"]:
             if session.get("_compute_host_turn_id") == turn_id:
                 session.pop("_compute_host_turn_id", None)

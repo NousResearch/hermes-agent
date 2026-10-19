@@ -41,6 +41,59 @@ def test_desktop_turn_uses_real_session_and_tool_observation_before_handoff(tmp_
     assert store.start_local_worker("desktop-chat", "late-session") is None
 
 
+def test_pending_desktop_submit_blocks_retirement_until_real_worker_settles(tmp_path):
+    store = ChatExecutionStore(tmp_path)
+    first = store.start_local_worker("desktop-chat", "actual-session-1")
+    assert first == 1
+    assert store.worker_finished("desktop-chat", first)
+    assert store.begin_submit("desktop-chat", "accepted-rpc")
+    # Retirement must leave the door open for the already accepted submit to
+    # reach native admission, while refusing to claim the chat is quiescent.
+    assert store.retire_for_handoff("desktop-chat", first, "handoff")["status"] == "blocked"
+    second = store.start_local_worker("desktop-chat", "actual-session-2", ("accepted-rpc",))
+    assert second == 2
+    assert store.inspect("desktop-chat", second)["session_id"] == "actual-session-2"
+    assert store.worker_finished("desktop-chat", second)
+    assert store.retire_for_handoff("desktop-chat", first, "handoff")["status"] == "retired"
+    assert not store.begin_submit("desktop-chat", "late-rpc")
+    assert store.start_local_worker("desktop-chat", "late-session") is None
+
+
+def test_unresolved_submit_preserves_stronger_recovery_refusal(tmp_path):
+    store = ChatExecutionStore(tmp_path)
+    assert store.start("desktop-chat", 1, "actual-session")
+    assert store.worker_started("desktop-chat", 1)
+    assert store.effects_none("desktop-chat", 1)
+    assert store.worker_finished("desktop-chat", 1)
+    assert store.begin_submit("desktop-chat", "accepted-rpc")
+    called = []
+    result = store.recover("desktop-chat", 1, "recovery", lambda proof: called.append(proof))
+    assert result["status"] == "blocked"
+    assert result["effects"] == "unknown"
+    assert called == []
+
+
+def test_rotated_pending_submit_fences_both_keys_until_real_worker_admission(tmp_path):
+    store = ChatExecutionStore(tmp_path)
+    assert store.start_local_worker("old-key", "actual-old") == 1
+    assert store.worker_finished("old-key", 1)
+    assert store.begin_submit("old-key", "accepted-rpc")
+    assert store.submit_claims_active("new-key", ("accepted-rpc",), source_key="old-key")
+    assert store.retire_for_handoff("old-key", 1, "old-handoff")["status"] == "blocked"
+    assert store.start_local_worker("new-key", "actual-new", ("accepted-rpc",)) == 1
+    assert store.worker_finished("new-key", 1)
+    assert store.retire_for_handoff("old-key", 1, "old-handoff")["status"] == "retired"
+    assert store.retire_for_handoff("new-key", 1, "new-handoff")["status"] == "retired"
+
+
+def test_cancelled_rotated_submit_settles_both_key_aliases(tmp_path):
+    store = ChatExecutionStore(tmp_path)
+    assert store.begin_submit("old-key", "cancelled-rpc")
+    assert store.submit_claims_active("new-key", ("cancelled-rpc",), source_key="old-key")
+    assert store.abandon_submit("old-key", "cancelled-rpc")
+    assert not store.submit_claims_active("new-key", ("cancelled-rpc",), source_key="old-key")
+
+
 def test_retirement_cannot_be_reused_as_execution_recovery(tmp_path):
     store = ChatExecutionStore(tmp_path)
     assert store.start("old-chat", 1, "session-1")

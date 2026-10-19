@@ -144,6 +144,21 @@ def _ac_inflight_original(session: dict) -> str:
     return str(turn.get("user") or "").strip() if isinstance(turn, dict) else ""
 
 
+def _abandon_queued_chat_submits(session: dict) -> None:
+    """Settle claims for queued turns cancelled before they can be dispatched."""
+    from gateway.chat_execution_recovery import ChatExecutionStore
+    from hermes_constants import get_process_hermes_home
+    store = ChatExecutionStore(session.get("profile_home") or get_process_hermes_home())
+    key = str(session.get("session_key") or "")
+    entries = ([session.get("queued_prompt")] if session.get("queued_prompt") else [])
+    entries.extend(session.get("queued_prompts") or [])
+    for entry in entries:
+        if isinstance(entry, dict):
+            for submit_id in entry.get("_chat_submit_ids") or ():
+                store.abandon_submit(str(entry.get("_chat_submit_key") or key), submit_id)
+                session.get("_chat_pending_submit_ids", set()).discard(submit_id)
+
+
 def _enqueue_prompt(session: dict, text: Any, transport: Any, image_paths: list[str] | None = None,
                     turn_author: dict | None = None, approval_origin=None) -> dict | None:
     """Queue a message for the next turn. Text-only arrivals share a slot and merge losslessly (like the
@@ -167,6 +182,8 @@ def _enqueue_prompt(session: dict, text: Any, transport: Any, image_paths: list[
     if (existing and text_only and not turn_author and not approval_origin
             and not existing.get("approval_origin") and isinstance(existing.get("text"), str)
             and not existing.get("image_paths") and not existing.get("turn_author")
+            and (not existing.get("_chat_submit_key")
+                 or existing["_chat_submit_key"] == str(session.get("session_key") or ""))
             and not session.get("queued_prompts")):
         prev = existing["text"]
         existing["text"] = f"{prev}\n\n{text}" if prev and text else (prev or text)
@@ -401,7 +418,7 @@ def _replace_queued_user_row_for_turn(session: dict, queued: dict, is_dispatchin
 
 def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any, queued: bool = False,
                         turn_author: dict | None = None, display_kind: str | None = None,
-                        approval_origin=None) -> dict | None:
+                        approval_origin=None, chat_submit_id: str | None = None) -> dict | None:
     """Apply ``display.busy_input_mode`` to a mid-turn prompt instead of rejecting it (rejection made clients busy-retry
     and drop sends): ``interrupt`` (default) → redirect, falling back to hard interrupt + queue; ``queue`` → queue only;
     ``steer`` → inject after the current atomic action. ``queued=True`` (client queue drain) forces queue mode: a "run
@@ -444,6 +461,10 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
         # Durable AT ACCEPT (not when the turn runs): a cold resume sees the queued message and a
         # backend restart cannot lose it. Lives on the envelope, never the shared session slot.
         if envelope is not None:
+            if chat_submit_id:
+                envelope.setdefault("_chat_submit_ids", []).append(chat_submit_id)
+                envelope.setdefault("_chat_submit_key", str(session.get("session_key") or sid))
+                session.setdefault("_chat_pending_submit_ids", set()).add(chat_submit_id)
             _persist_queued_user_row(session, envelope, display_kind)
         session["last_active"] = time.time()
     # Attachments need their own model invocation: queue without cancelling so the user gets both results in order.
@@ -485,6 +506,9 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
             session["running"] = False
             return True
     kwargs: dict = {"queued_prompt_generation": queue_generation}
+    if queued.get("_chat_submit_ids"):
+        kwargs["chat_submit_ids"] = tuple(queued["_chat_submit_ids"])
+        kwargs["chat_submit_key"] = queued.get("_chat_submit_key")
     if queued.get("image_paths"):
         kwargs["image_paths"] = queued["image_paths"]
     # Re-place the accept-time rows (if any) at the transcript END before the turn's rows follow

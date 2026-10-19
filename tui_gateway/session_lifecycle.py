@@ -749,6 +749,7 @@ def _interrupt_session_turn(
         session["_turn_cancel_requested"] = True
         for task_lease in list(session.get("_approval_task_leases", ())):
             task_lease.revoke()
+        _abandon_queued_chat_submits(session)
         session["queued_prompt"] = None
         session.pop("queued_prompts", None)
         session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1

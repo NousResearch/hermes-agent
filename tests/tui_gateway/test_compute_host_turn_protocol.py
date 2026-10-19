@@ -116,6 +116,32 @@ def test_turn_start_streams_deltas_then_turn_end_with_history_identity(turn_env)
     assert "ended_ns" in end
 
 
+def test_isolated_turn_consumes_parent_submit_claim_with_real_worker(turn_env, tmp_path):
+    from gateway.chat_execution_recovery import ChatExecutionStore
+
+    store = ChatExecutionStore(tmp_path)
+    assert store.begin_submit("s1-key", "parent-accepted-rpc")
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, heartbeat_secs=0)
+    sid = "s1"
+    session = _session(_agent(["done"]))
+    session["profile_home"] = str(tmp_path)
+    server._sessions[sid] = session
+    try:
+        host.handle_frame({"type": "turn.start", "sid": sid, "request_id": "turn",
+                           "prompt": "hello", "profile_home": str(tmp_path),
+                           "_chat_submit_ids": ["parent-accepted-rpc"],
+                           "_chat_submit_key": "s1-key"})
+        assert _wait(out, lambda frame: frame["type"] == "turn.end")["request_id"] == "turn"
+    finally:
+        server._sessions.pop(sid, None)
+        host.close()
+    proof = store.inspect("s1-key", 1)
+    assert proof["session_id"] == "s1-key"
+    assert proof["worker"] == "completed"
+    assert store.retire_for_handoff("s1-key", 1, "handoff")["status"] == "retired"
+
+
 def test_turn_start_without_sid_is_a_turn_error(turn_env):
     out = io.StringIO()
     host = ComputeHost(stdout=out, heartbeat_secs=0)

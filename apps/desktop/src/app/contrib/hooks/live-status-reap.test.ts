@@ -11,6 +11,7 @@ import {
   publishSessionState,
   reconcileBusyStatesOnReconnect
 } from '@/store/session-states'
+import { isMessagingCompletion } from '@/store/session-unread'
 
 import { rehydrateLiveSessionStatuses } from './use-background-sync'
 
@@ -68,6 +69,16 @@ describe('rehydrateLiveSessionStatuses — reaping vanished runtimes', () => {
     rehydrateLiveSessionStatuses({ sessions: [] })
 
     expect($unreadFinishedSessionIds.get()).toEqual([])
+  })
+
+  it("keeps another profile's same-id local completion lit when only this profile polled a messaging source", () => {
+    rehydrateLiveSessionStatuses(
+      { sessions: [{ id: 'runtime-alpha', session_key: 'shared', source: 'telegram', status: 'idle' }] },
+      Date.now(),
+      'alpha'
+    )
+    expect(isMessagingCompletion('shared', 'beta')).toBe(false)
+    expect(isMessagingCompletion('shared', 'alpha')).toBe(true)
   })
 
   // A turn that started just before the socket dropped was never polled, so

@@ -183,6 +183,22 @@ describe('unread dot for a messaging turn Desktop sent', () => {
     expect($unreadFinishedMarkers.get()).toEqual({})
   })
 
+  it("does not mark another profile's same-id compressed conversation read", () => {
+    // Opening alpha's local `tg-tip` must not stamp beta's root: its held completion still lights.
+    $sessions.set([makeSessionInfo({ id: 'tg-tip', source: 'desktop', profile: 'alpha' })])
+    $messagingSessions.set([
+      makeSessionInfo({ id: 'tg-tip', source: 'telegram', _lineage_root_id: 'tg-root', profile: 'beta' })
+    ])
+    complete('beta-late', 'tg-root', 'beta')
+    $activeGatewayProfile.set('alpha')
+    setSelectedStoredSessionId('tg-tip')
+    setSelectedStoredSessionId(null)
+    expect($lastReadAtBySessionId.get()['tg-root']).toBeUndefined()
+    admit('beta-late')
+    expect($unreadFinishedSessionIds.get()).toContain('tg-tip')
+    expect(Object.keys($unreadFinishedMarkers.get())).toEqual(['beta'])
+  })
+
   it('marks the listed segment of a compressed conversation', () => {
     $messagingSessions.set([makeSessionInfo({ id: 'tg-tip', source: 'telegram', _lineage_root_id: 'tg-root' })])
     noteDesktopAdmission('compressed-turn')

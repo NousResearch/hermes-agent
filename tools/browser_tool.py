@@ -1613,7 +1613,7 @@ def _extension_screenshot_result(raw: Any) -> Any:
 # Registry
 # ---------------------------------------------------------------------------
 from tools.registry import registry, tool_error
-from tools.browser_extension_router import TURN_ON_HERMES_CONTROL, extension_lane_configured, routed_browser_handler
+from tools.browser_extension_router import extension_lane_configured, routed_browser_handler
 from tools.browser_tool_extension_landing import (
     extension_landing_guard as _extension_landing_guard, extension_withheld_guard as _extension_withheld_guard,
 )
@@ -1630,11 +1630,27 @@ def _extension_call_guard(action: str, args: dict[str, Any], route=None) -> tupl
     return (args, refusal) if refusal is not None else _extension_url_guard(action, args)
 
 
+# Last cloud-probe failure check_browser_routed_requirements logged; the gate runs per routed tool, so an
+# unchanged failure is logged once rather than once per tool per probe.
+_last_cloud_probe_warning: Optional[str] = None
+
+
 def check_browser_routed_requirements() -> bool:
-    """Availability gate for tools that can use either browser backend. A session whose requests can bind an
-    extension controller is offered the tools whether or not one is attached at the moment (a call with nothing
-    attached fails closed), so the answer never flips mid-conversation."""
-    return _install.check_browser_requirements() or extension_lane_configured()
+    """Availability gate for tools that can use either browser backend. A browser extension session is offered
+    the tools whether or not a controller is attached at the moment (a call with nothing attached fails closed),
+    so the answer does not flip mid-conversation."""
+    global _last_cloud_probe_warning
+    try:
+        if _install.check_browser_requirements():
+            return True
+    except Exception as exc:
+        # A cloud-provider probe that raises (for example browser.cloud_provider naming a disabled plugin) takes
+        # down only the built-in path; the extension controller stays reachable.
+        if str(exc) != _last_cloud_probe_warning:
+            _last_cloud_probe_warning = str(exc)
+            logger.warning("browser cloud-provider probe raised; routed browser tools are limited to the "
+                           "browser extension controller: %s", exc, exc_info=True)
+    return extension_lane_configured()
 
 
 def _fallback_call(fn_name: str, arg_defaults: dict[str, Any], extra_kw: tuple = ()):
@@ -1705,11 +1721,6 @@ def _routed_handler(name: str, fallback):
         return finish(result) if finish else result
 
     def run_built_in(args, kw):
-        if extension_lane_configured() and not _install.check_browser_requirements():
-            # No controller has registered for this session and there is no built-in browser to use instead.
-            return _dumps(_err(
-                f"{name}: no browser is connected to this session. {TURN_ON_HERMES_CONTROL}",
-                code="controller_unavailable"))
         # Only the extension lane can pick a tab; the built-in browser refuses rather than ignore the argument.
         if name in _extension_schemas.TAB_TARGETING_TOOLS and args.get("tab_id") is not None:
             return _dumps(_err(

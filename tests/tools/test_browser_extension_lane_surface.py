@@ -1,10 +1,11 @@
-"""Who is offered the browser extension's tool surface, and that it never changes inside a session.
+"""Who is offered the browser extension's tool surface, and that it does not change back inside a session.
 
-A session whose requests can bind a browser extension controller (``browser.extension_control.enabled`` plus the
-server-bound principal and transport) is offered the extension surface: the tab and action tools only the
-extension runs, ``tab_id`` and the extension wording on the long-standing tools. Every other session gets the
-browser tools as they were. The choice must come from the session, not from what is attached at the moment: a
-tool block that changes between two requests of one conversation loses the provider's prompt cache.
+A browser extension session (``browser.extension_control.enabled``, the server-bound principal and transport,
+and a controller the extension registered for the session) is offered the extension surface: the tab and action
+tools only the extension runs, ``tab_id`` and the extension wording on the long-standing tools. Every other
+session gets the browser tools as they were, including an API client of the same profile that never registers a
+controller. Once a session has it, the surface stays whatever is attached later: a tool block that changes
+between two requests of one conversation loses the provider's prompt cache.
 """
 
 import json
@@ -103,6 +104,25 @@ def test_a_session_that_cannot_bind_a_controller_gets_the_stock_browser_surface(
     assert tools["browser_scroll"]["parameters"]["properties"]["direction"]["enum"] == ["up", "down"]
 
 
+def test_an_api_client_the_extension_never_registered_for_gets_the_stock_surface(broker):
+    """With extension control on, api_server binds a principal and transport on every request, so the flag and
+    the identity alone would hand the extension surface to a chat UI that never attaches a browser."""
+    _attach(broker, session_id="session-other")  # the extension works in another session of the same principal
+
+    tools = _by_name(_bound_definitions())
+
+    assert set(tools) == STOCK_BROWSER_TOOLS
+    assert [n for n in LONG_STANDING if EXTENSION_WORDING.search(tools[n]["description"])] == []
+
+
+def test_without_a_built_in_browser_an_unregistered_api_client_is_offered_no_routed_browser_tools(broker, monkeypatch):
+    monkeypatch.setattr(bt_install, "check_browser_requirements", lambda: False)
+
+    tools = _by_name(_bound_definitions())
+
+    assert set(tools).isdisjoint({*LONG_STANDING, *lane.EXTENSION_ONLY_TOOLS})
+
+
 def test_none_of_the_extension_tools_is_offered_without_the_lane(broker, monkeypatch):
     monkeypatch.setattr(broker_mod, "browser_control_enabled", lambda *a: False)
 
@@ -119,7 +139,9 @@ def test_none_of_the_extension_tools_is_offered_without_the_lane(broker, monkeyp
 # --- sessions with the lane get the whole extension surface -------------------------------------------------------
 
 
-def test_a_session_that_can_bind_a_controller_gets_the_extension_surface_with_nothing_attached(broker):
+def test_a_session_the_extension_registered_for_gets_the_extension_surface(broker):
+    _attach(broker)
+
     tools = _by_name(_bound_definitions())
 
     assert set(tools) == STOCK_BROWSER_TOOLS | lane.EXTENSION_ONLY_TOOLS
@@ -131,35 +153,53 @@ def test_a_session_that_can_bind_a_controller_gets_the_extension_surface_with_no
     assert [n for n in LONG_STANDING if STALE_ADVICE.search(tools[n]["description"])] == []
 
 
-def test_the_tool_block_is_identical_before_and_after_a_controller_attaches_and_leaves(broker):
-    """The reviewer's probe: attaching or detaching Hermes Control must not rewrite the tools of a session."""
-    before = _bound_definitions()
+def test_the_tool_block_is_identical_while_the_controller_goes_offline_leaves_and_comes_back(broker):
+    """The first reviewer's probe: pausing Hermes Control or a reconnect must not rewrite the tools of a session."""
     scope = _attach(broker)
-    attached = _bound_definitions()
+    registered = _bound_definitions()
     assert broker.disconnect_owner("socket-fixture") == 1
     offline = _bound_definitions()
     broker.detach(scope)
     detached = _bound_definitions()
+    _attach(broker)
+    back = _bound_definitions()
 
-    assert json.dumps(before, sort_keys=True) == json.dumps(attached, sort_keys=True)
-    assert json.dumps(before, sort_keys=True) == json.dumps(offline, sort_keys=True)
-    assert json.dumps(before, sort_keys=True) == json.dumps(detached, sort_keys=True)
+    for later in (offline, detached, back):
+        assert json.dumps(later, sort_keys=True) == json.dumps(registered, sort_keys=True)
 
 
-def test_a_controller_that_advertises_fewer_actions_does_not_change_the_tool_block(broker):
+def test_a_chat_that_started_before_hermes_control_changes_once_and_never_back(broker):
+    """A session's surface switches on the first time the extension registers for it (the person turned Hermes
+    Control on in that chat), and stays on."""
     before = _bound_definitions()
+    scope = _attach(broker)
+    after = _bound_definitions()
+    broker.detach(scope)
+
+    assert set(_by_name(before)) == STOCK_BROWSER_TOOLS
+    assert set(_by_name(after)) == STOCK_BROWSER_TOOLS | lane.EXTENSION_ONLY_TOOLS
+    assert _bound_definitions() == after
+
+
+def test_a_controller_that_advertises_fewer_actions_gets_the_same_tool_block(broker):
+    _attach(broker, session_id="session-full")
+    full = _bound_definitions("session-full")
     _attach(broker, capabilities={"browser_snapshot"})
 
-    assert _bound_definitions() == before
+    assert _bound_definitions() == full
 
 
-def test_one_process_serves_a_lane_session_and_a_stock_session_without_leaking_either(broker):
+def test_one_process_serves_a_lane_session_and_stock_sessions_without_leaking_either(broker):
+    _attach(broker, session_id="session-bound")
     stock = _definitions("session-cli")
     assert set(_by_name(stock)) == STOCK_BROWSER_TOOLS
+    chat_ui = _bound_definitions("session-chat-ui")
+    assert set(_by_name(chat_ui)) == STOCK_BROWSER_TOOLS
     laned = _bound_definitions("session-bound")
     assert set(_by_name(laned)) == STOCK_BROWSER_TOOLS | lane.EXTENSION_ONLY_TOOLS
 
     assert _definitions("session-cli") == stock
+    assert _bound_definitions("session-chat-ui") == chat_ui
     assert _bound_definitions("session-bound") == laned
 
 
@@ -205,6 +245,7 @@ def test_extension_only_tools_are_registered_allowlisted_and_never_in_the_stock_
 
 
 def test_the_vault_note_and_the_retrieval_hint_still_compose_with_the_lane_form(broker):
+    _attach(broker)
     stock = {s["name"]: s for s in browser_tool.BROWSER_TOOL_SCHEMAS}
     defs = [{"type": "function", "function": dict(stock[n])} for n in ("browser_navigate", "browser_type")]
     defs += [{"type": "function", "function": {"name": n, "description": "", "parameters": {}}}
@@ -223,6 +264,7 @@ def test_the_vault_note_and_the_retrieval_hint_still_compose_with_the_lane_form(
 
 @pytest.mark.parametrize("tool", ("browser_type", "browser_fill", "browser_batch"))
 def test_every_tool_that_types_text_carries_the_vault_note_when_the_vault_is_available(broker, tool):
+    _attach(broker)
     schemas = {s["name"]: s for s in (*browser_tool.BROWSER_TOOL_SCHEMAS, *lane.EXTENSION_ONLY_SCHEMAS)}
     defs = [{"type": "function", "function": dict(schemas[tool])},
             {"type": "function", "function": {"name": "browser_vault", "description": "", "parameters": {}}}]
@@ -237,7 +279,7 @@ def test_every_tool_that_types_text_carries_the_vault_note_when_the_vault_is_ava
     assert "Never type a password" not in without_vault
 
 
-# --- nothing attached: calls fail closed and say what to ask for ---------------------------------------------------
+# --- nothing attached: calls fail closed and say what to ask for, or keep the built-in browser ---------------------
 
 
 def _call(tool, args=None):
@@ -258,18 +300,24 @@ def test_a_call_after_the_controller_went_offline_fails_closed_and_asks_for_herm
     assert "turn on Hermes Control" in out["error"]
 
 
-def test_a_call_with_no_controller_and_no_built_in_browser_asks_for_hermes_control(broker, monkeypatch):
-    monkeypatch.setattr(bt_install, "check_browser_requirements", lambda: False)
+@pytest.mark.parametrize("built_in", (True, False), ids=("built-in-browser", "no-built-in-browser"))
+def test_a_session_the_extension_registered_for_never_falls_back_to_the_built_in_browser(broker, monkeypatch, built_in):
+    """Its tools describe the extension (the page already open, refs from the attached snapshot), which a headless
+    browser starting on about:blank does not match, so with the controller gone the call fails closed."""
+    monkeypatch.setattr(bt_install, "check_browser_requirements", lambda: built_in)
+    ran = []
+    monkeypatch.setattr(browser_tool, "browser_snapshot", lambda **kw: ran.append(kw) or json.dumps({"success": True}))
+    scope = _attach(broker)
+    _bound_definitions()
+    broker.detach(scope)  # the person turned Hermes Control off: the lane has no controller at all now
 
-    for tool, args in (("browser_snapshot", {}), ("browser_tabs", {}), ("browser_batch", {"actions": [{"action": "back"}]})):
-        out = _call(tool, args)
+    out = _call("browser_snapshot")
 
-        assert out["success"] is False and out["code"] == "controller_unavailable", tool
-        assert out["error"].startswith(f"{tool}: no browser is connected to this session.")
-        assert "turn on Hermes Control" in out["error"]
+    assert "ControllerUnavailable" in out["error"] and "turn on Hermes Control" in out["error"]
+    assert ran == []
 
 
-def test_the_built_in_browser_still_answers_a_lane_session_that_never_had_a_controller(broker, monkeypatch):
+def test_the_built_in_browser_still_answers_a_bound_session_the_extension_never_registered_for(broker, monkeypatch):
     ran = []
     monkeypatch.setattr(browser_tool, "browser_snapshot", lambda **kw: ran.append(kw) or json.dumps({"success": True}))
 

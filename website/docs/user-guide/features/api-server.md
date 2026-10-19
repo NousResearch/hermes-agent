@@ -432,16 +432,21 @@ the extension refuses an id it does not own with `lease_not_owned`.
 
 The model is offered this extended surface (the tools above, `tab_id`, the extension
 wording on the long-standing tools, and the six tab tools that only an extension can
-run) only when `browser.extension_control.enabled` is on and the request can bind a
-controller, which every API server request does through its server-bound principal and
-transport family. The decision belongs to the session, never to what is attached at that
-moment: the same tools are sent on every request of the session whether or not a
-controller is attached, so turning Hermes Control on or off, or an extension
-reconnecting, never changes the tool block and costs the conversation its prompt cache.
-With a controller registered but offline, a call fails closed with an error that asks
-the person to turn on Hermes Control and attach a tab. Without the setting, and for every
-CLI and messaging session, the browser tools are exactly the ones documented for the
-built-in browser, with no `tab_id` and none of the tools above that are new. Before a
+run) only in a browser extension session: `browser.extension_control.enabled` is on, the
+request carries its server-bound principal and transport family, and the extension has
+registered a controller for that session (with Hermes Control on, the side panel does
+this before the session's first turn). Another API client of the same profile that never
+registers one, such as a chat UI, keeps the stock tools and pays nothing for these. Once
+a session has the surface it keeps it: pausing Hermes Control, turning it off or an
+extension reconnecting never changes the tool block and costs the conversation its prompt
+cache. A chat that started before Hermes Control was turned on gains the surface once, at
+that moment. With no controller attached, a call fails closed with an error that asks the
+person to turn on Hermes Control and attach a tab; it never falls back to the built-in
+browser. `browser_drag`, `browser_tab_activate`, `browser_tab_group` and
+`browser_tab_ungroup` are deferred behind [tool search](tool-search.md) by default.
+Without the setting, and for every CLI and messaging session, the browser tools are
+exactly the ones documented for the built-in browser, with no `tab_id` and none of the
+tools above that are new. Before a
 `browser_navigate`, `browser_tab_create` or `browser_batch` navigate step is sent,
 Hermes refuses a URL that carries a secret or targets a cloud metadata address or a
 host the operator's website blocklist rules out; the controller never sees it.

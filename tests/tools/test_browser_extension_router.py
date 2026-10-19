@@ -328,37 +328,50 @@ def test_routeable_browser_tools_are_available_for_a_session_that_can_bind_a_con
     assert browser_tool.check_browser_click_requirements() is True
 
 
-def test_extension_availability_requires_exact_scope_and_capability(monkeypatch):
+@pytest.mark.parametrize("registered", (True, False))
+def test_the_extension_lane_is_the_session_the_extension_registered_for_and_stays_pinned(monkeypatch, registered):
     from gateway import browser_control_broker
     from gateway.session_context import clear_session_vars, set_session_vars
     from tools import browser_extension_router
 
-    broker = FakeBroker(scope="scope-fixture", selected="connection-fixture")
+    broker = FakeBroker(registered=registered)
     monkeypatch.setattr(browser_control_broker, "browser_control_enabled", lambda: True)
-    monkeypatch.setattr(
-        browser_control_broker, "get_browser_control_broker", lambda: broker
-    )
+    monkeypatch.setattr(browser_control_broker, "get_browser_control_broker", lambda: broker)
     tokens = set_session_vars(
         session_id="session-fixture",
         browser_control_principal="principal-fixture",
         browser_control_transport_family="local-api",
     )
     try:
-        assert browser_extension_router.extension_controller_available("browser_snapshot") is True
+        assert browser_extension_router.extension_lane_configured() is registered
+        broker.registered = not registered  # the controller leaves, or registers late
+        assert browser_extension_router.extension_lane_configured() is True
     finally:
         clear_session_vars(tokens)
 
-    assert broker.calls == [
-        (
-            "scope",
-            {
-                "session_id": "session-fixture",
-                "principal_id": "principal-fixture",
-                "transport_family": "local-api",
-            },
-        ),
-        ("select", "scope-fixture", "browser_snapshot"),
-    ]
+    identity = {"session_id": "session-fixture", "principal_id": "principal-fixture", "transport_family": "local-api"}
+    # a pinned lane does not ask the broker again; an unpinned one asks on every request
+    assert broker.calls == [("lane_registered", identity)] * (1 if registered else 2)
+
+
+def test_the_extension_lane_needs_the_flag_and_the_whole_identity(monkeypatch):
+    from gateway import browser_control_broker
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tools import browser_extension_router
+
+    broker = FakeBroker(registered=True)
+    monkeypatch.setattr(browser_control_broker, "get_browser_control_broker", lambda: broker)
+    monkeypatch.setattr(browser_control_broker, "browser_control_enabled", lambda: False)
+    full = dict(session_id="s", browser_control_principal="p", browser_control_transport_family="local-api")
+    for identity, enabled in ((full, False), ({**full, "browser_control_principal": ""}, True),
+                              ({**full, "session_id": ""}, True)):
+        monkeypatch.setattr(browser_control_broker, "browser_control_enabled", lambda e=enabled: e)
+        tokens = set_session_vars(**identity)
+        try:
+            assert browser_extension_router.extension_lane_configured() is False, identity
+        finally:
+            clear_session_vars(tokens)
+    assert broker.calls == []
 
 
 def test_bound_controller_disappearing_after_schema_build_never_falls_back(monkeypatch):
@@ -396,9 +409,7 @@ def test_bound_controller_disappearing_after_schema_build_never_falls_back(monke
     )
     fallbacks = []
     try:
-        assert browser_extension_router.extension_controller_available(
-            "browser_snapshot"
-        ) is True
+        assert browser_extension_router.extension_lane_configured() is True
         assert broker.disconnect_owner("socket-fixture") == 1
         with pytest.raises(ControllerUnavailable, match="browser_snapshot"):
             routed_browser_handler(
@@ -460,15 +471,20 @@ def test_bound_identity_without_extension_control_keeps_cache_scope(monkeypatch)
         clear_session_vars(tokens)
 
 
-def test_registry_advertises_browser_tools_to_a_bound_session_when_legacy_backend_is_down_and_nothing_is_attached(
-    monkeypatch,
+@pytest.mark.parametrize("registered", (True, False))
+def test_registry_advertises_browser_tools_with_the_legacy_backend_down_only_to_a_session_the_extension_registered(
+    monkeypatch, registered,
 ):
+    """A session the extension registered for keeps its tools while the controller is offline (calls fail closed);
+    another API client of the same principal, which never registered one, is offered no routed browser tool."""
     from gateway import browser_control_broker
     from gateway.session_context import clear_session_vars, set_session_vars
     from tools.registry import registry
 
+    broker = FakeBroker(registered=registered)
     monkeypatch.setattr(bt_install, "check_browser_requirements", lambda: False)
     monkeypatch.setattr(browser_control_broker, "browser_control_enabled", lambda: True)
+    monkeypatch.setattr(browser_control_broker, "get_browser_control_broker", lambda: broker)
     tokens = set_session_vars(
         session_id="session-fixture",
         browser_control_principal="principal-fixture",
@@ -479,9 +495,8 @@ def test_registry_advertises_browser_tools_to_a_bound_session_when_legacy_backen
     finally:
         clear_session_vars(tokens)
 
-    assert sorted(definition["function"]["name"] for definition in definitions) == [
-        "browser_click", "browser_snapshot",
-    ]
+    assert sorted(definition["function"]["name"] for definition in definitions) == (
+        ["browser_click", "browser_snapshot"] if registered else [])
 
 
 def test_batch_steps_reach_the_controller_in_one_dispatch_and_are_never_mutated():

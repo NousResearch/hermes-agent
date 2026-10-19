@@ -151,6 +151,9 @@ or agent task-completion evidence. Native compaction defaults remain unchanged.
 Frozen files contain conversation data: keep them outside Git, just like source
 transcripts. Publish only aggregate results for private sessions.
 
+The [synthetic pipeline smoke](results/SCORECARD-2026-10-19-evidence.md) completed
+all pairs but hit 100% baseline recall, so it demonstrates no quality gain.
+
 ## Repeated-compaction simulation (`scripts/jev_cycles.py`)
 
 A one-shot recall score misses the failure mode of "decide, don't summarise"

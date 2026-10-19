@@ -98,16 +98,30 @@ _RENDERER_GLOBAL = re.compile(rf"^(?:{_RENDERER_GLOBAL_NAMES})$")
 _OWN_DECLARATION = r"(?:\bclass\s+{0}\b[^{{]*|\bfunction\s*\*?\s*{0}\s*\([^)]*\)\s*)\{{"
 # ``var X = class {...}`` / ``X = function () {...}``: what bundlers emit; binds ``X`` in its block.
 _ASSIGNED_DECLARATION = (r"(?<![\w$.]){0}\s*=\s*(?:class\b[^{{]*|function\s*\*?\s*[\w$]*\s*\([^)]*\)\s*)\{{")
-_REBINDING = r"(?<![\w$.]){0}\s*=(?![=>])|(?:\b(?:let|const|var|class|function)\s+|[(,{{]\s*(?:\.\.\.)?){0}\s*[,)=}}:]"
+# What can make ``X`` name something else: ``X = …``, ``let/const/var/class/function X``, a
+# destructuring declaration naming ``X``, or a parameter called ``X`` (function, method, arrow,
+# catch). A reference (``register(X)``, ``[X, Y]``) is not a binding. Scanned with strings and regex
+# literals masked, so ``"X = vector"`` in a label is not one either.
+_REBINDING = (
+    r"(?<![\w$.]){0}\s*=(?![=>])"
+    r"|\b(?:let|const|var|class|function\s*\*?)\s+{0}(?![\w$])"
+    r"|\b(?:let|const|var)\s*[{{\[][^;=]*?(?<![\w$.]){0}(?![\w$])[^;=]*?[}}\]]\s*="
+    r"|(?:\bfunction\s*\*?\s*[\w$]*|(?<![\w$.])(?!(?:if|for|while|switch|with|return|typeof|await)\b)[\w$]+)"
+    r"\s*\([^()]*?(?<![\w$.]){0}(?![\w$])[^()]*\)\s*\{{"
+    r"|\(([^()]*?(?<![\w$.]){0}(?![\w$])[^()]*)\)\s*=>|(?<![\w$.]){0}\s*=>"
+    r"|\bcatch\s*\(\s*{0}\s*\)")
 _STRING_OR_REGEX = re.compile(_JS_STRING + r"|`(?:[^`\\]|\\.)*`|" + _REGEX_LITERAL.pattern)
 
 
-def _brace_pairs(source: str) -> dict[int, int]:
-    """``{`` offset -> matching ``}`` offset, ignoring braces inside strings and regex literals."""
-    masked = _STRING_OR_REGEX.sub(lambda m: " " * len(m.group(0)), source)
+def _mask_literals(source: str) -> str:
+    return _STRING_OR_REGEX.sub(lambda m: " " * len(m.group(0)), source)
+
+
+def _brace_pairs(code: str) -> dict[int, int]:
+    """``{`` offset -> matching ``}`` offset in literal-masked *code*."""
     pairs: dict[int, int] = {}
     stack: list[int] = []
-    for i, ch in enumerate(masked):
+    for i, ch in enumerate(code):
         if ch == "{":
             stack.append(i)
         elif ch == "}" and stack:
@@ -149,10 +163,11 @@ def _own_class_write(source: str, name: str, at: int, pairs: dict[int, int]) -> 
 
 def _foreign_prototype_writes(source: str) -> list[int]:
     """Offsets of ``X.prototype.y =`` that are not provably on ``X``'s own class (see above)."""
-    writes = [(m.start(), m.group(1)) for m in _PROTOTYPE_WRITE.finditer(source)]
-    pairs = _brace_pairs(source) if writes else {}
+    code = _mask_literals(source)  # offsets unchanged; literal text never reads as code
+    writes = [(m.start(), m.group(1)) for m in _PROTOTYPE_WRITE.finditer(code)]
+    pairs = _brace_pairs(code) if writes else {}
     return [at for at, name in writes
-            if _RENDERER_GLOBAL.match(name) or not _own_class_write(source, name, at, pairs)]
+            if _RENDERER_GLOBAL.match(name) or not _own_class_write(code, name, at, pairs)]
 
 
 def desktop_surface_findings(source: str) -> list[tuple[str, int]]:

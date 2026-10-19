@@ -57,7 +57,7 @@ def _stub_create_agent_runtime(monkeypatch, fake_agent_cls):
     monkeypatch.setattr("gateway.run._resolve_runtime_agent_kwargs", lambda: {
         "provider": "openrouter", "api_key": "sk-test", "base_url": "https://openrouter.ai/api/v1",
         "api_mode": "chat_completions"})
-    monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "global/model")
+    monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda *a, **k: "global/model")
     monkeypatch.setattr("gateway.run._load_gateway_config", dict)
     monkeypatch.setattr("gateway.run.GatewayRunner._load_reasoning_config", staticmethod(lambda model="": {}))
     monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))

@@ -629,6 +629,90 @@ def relaunch_command(
     return [str(python), *options, "-I", "-c", prefix + body]
 
 
+# The relaunched interpreter's job (see call_relaunched): never closed, so the handle closes only
+# when this process dies, ending the relaunched child with it -- the launcher's own lifetime rule.
+_RELAUNCH_JOBS: list[int] = []
+_CREATE_SUSPENDED = 0x00000004
+
+
+def call_relaunched(command: list[str]) -> int:
+    """Windows: ``subprocess.call(command)`` for the relaunch, in a job like the one hermes.exe gave us.
+
+    The launcher runs this interpreter in a KILL_ON_JOB_CLOSE | SILENT_BREAKAWAY_OK job, so a plain
+    child silently breaks away into the nearest enclosing job that forbids silent breakaway (an IDE or
+    agent host, the Multica daemon, the logon session). A process whose own job lacks breakaway cannot
+    spawn with CREATE_BREAKAWAY_FROM_JOB, so a relaunched client's detached gateway start failed with
+    WinError 5 (``windows_breakaway_unavailable``) where an un-relaunched one succeeds: every
+    per-task home a borrowing launch syncs is relaunched. An identical job restores what the launcher
+    gives an un-relaunched interpreter (detached spawns work, plain children still escape) and its
+    lifetime (it ends with this process). If the job cannot be made, the child runs unbound, exactly
+    as ``subprocess.call`` runs it.
+    """
+    from hermes_cli.update_lock import resume_suspended_child
+
+    job = _launcher_equivalent_job()
+    with subprocess.Popen(command, creationflags=_CREATE_SUSPENDED if job else 0) as proc:
+        try:
+            if job:
+                _assign_to_job(job, proc)  # a refusal leaves it unbound, as subprocess.call runs it
+                resume_suspended_child(proc)
+            # health: allow HX006 -- unbounded by design: the child is this launch's client, as under subprocess.call
+            return proc.wait()
+        except BaseException:
+            proc.kill()
+            raise
+
+
+def _launcher_equivalent_job() -> int | None:
+    if _RELAUNCH_JOBS:
+        return _RELAUNCH_JOBS[0]
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _Basic(ctypes.Structure):
+            _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+                        ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                        ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                        ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD),
+                        ("SchedulingClass", wintypes.DWORD)]
+
+        class _Extended(ctypes.Structure):
+            _fields_ = [("BasicLimitInformation", _Basic), ("IoInfo", ctypes.c_ulonglong * 6),
+                        ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                        ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        kernel32.SetInformationJobObject.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        job = kernel32.CreateJobObjectW(None, None)  # unnamed, non-inheritable: only we hold it
+        if not job:
+            return None
+        limits = _Extended()
+        # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK, as the launcher sets
+        limits.BasicLimitInformation.LimitFlags = 0x2000 | 0x1000
+        if not kernel32.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+            kernel32.CloseHandle(job)
+            return None
+    except (OSError, AttributeError):
+        return None
+    _RELAUNCH_JOBS.append(job)
+    return job
+
+
+def _assign_to_job(job: int, proc: subprocess.Popen) -> bool:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+    return bool(kernel32.AssignProcessToJobObject(job, int(proc._handle)))
+
+
 def main(argv: list | None = None) -> int:
     parser = argparse.ArgumentParser(prog="hermes_cli.venv_sync")
     parser.add_argument("--project-root", default=None)

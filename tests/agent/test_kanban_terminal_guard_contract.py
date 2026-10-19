@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
-"""TDD: the kanban exit reconciliation must run when a worker ends without a terminal call.
+"""Contract for `agent/kanban_terminal_guard.py`.
 
-These tests define the contract for `agent/kanban_terminal_guard.py`:
-
-  1. It is a no-op when HERMES_KANBAN_TASK is unset (never touch non-worker runs).
-  2. It does nothing when the worker already called kanban_complete/kanban_block.
-  3. It records a `protocol_violation` event when the worker is still `running`
-     and its own exit path never reached the in-loop nudge (the 27 early returns).
-  4. It never raises — a guard failure must not swallow the worker's exit code.
-  5. It reports which action it took so the caller can log it.
+The board is the authority: a worker that is still `running` at process exit
+gets a `protocol_violation` even if it *attempted* a terminal kanban call that
+did not land. A worker whose task left `running` is left alone. The guard never
+raises, and it reports `error` when its write did not commit instead of
+claiming `recorded`.
 """
-import os
+import contextlib
+import json
 
 import pytest
 
@@ -21,6 +19,36 @@ def clean_env(monkeypatch):
                 "KANBAN_EXIT_RECONCILE"):
         monkeypatch.delenv(var, raising=False)
     return monkeypatch
+
+
+def _make_task(tmp_path, monkeypatch, status):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+
+    db = tmp_path / "kanban.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db))
+    kbc.init_db(db)
+    with kbc.connect_closing(db) as conn:
+        task_id = kb.create_task(conn, title="probe", assignee="worker-test")
+        conn.execute("UPDATE tasks SET status=? WHERE id=?", (status, task_id))
+        conn.commit()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    return db, task_id
+
+
+def _events(db, task_id):
+    import sqlite3
+
+    conn = sqlite3.connect(db)
+    try:
+        rows = conn.execute(
+            "SELECT kind, payload FROM task_events WHERE task_id=? ORDER BY id",
+            (task_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [{"kind": kind, "payload": json.loads(payload) if payload else None}
+            for kind, payload in rows]
 
 
 def test_noop_without_task_env(clean_env):
@@ -36,10 +64,11 @@ def test_noop_when_disabled(clean_env):
     assert reconcile_worker_exit(completed=False, result=None) == "skipped"
 
 
-def test_noop_when_session_already_terminal(clean_env):
-    """If the conversation history already shows a terminal kanban tool call, do nothing."""
+def test_noop_when_task_left_running(clean_env, tmp_path):
+    """A landed terminal call moves the task; the funnel must not double-report."""
     from agent.kanban_terminal_guard import reconcile_worker_exit
-    clean_env.setenv("HERMES_KANBAN_TASK", "t_test")
+
+    _make_task(tmp_path, clean_env, "completed")
     result = {
         "messages": [
             {"role": "assistant", "tool_calls": [
@@ -47,26 +76,98 @@ def test_noop_when_session_already_terminal(clean_env):
             {"role": "tool", "name": "kanban_complete", "content": "ok"},
         ],
     }
-    assert reconcile_worker_exit(completed=True, result=result) == "skipped"
+    assert reconcile_worker_exit(completed=True, result=result) == "not_running"
 
 
 def test_records_violation_when_still_running(clean_env, tmp_path):
     """The core case: worker still running, no terminal call -> record the event."""
+    from agent.kanban_terminal_guard import reconcile_worker_exit
+
+    db, task_id = _make_task(tmp_path, clean_env, "running")
+    result = {"messages": [{"role": "assistant", "content": "I will write the report now."}]}
+    assert reconcile_worker_exit(completed=False, result=result) == "recorded"
+
+    events = [e for e in _events(db, task_id) if e["kind"] == "protocol_violation"]
+    assert len(events) == 1
+    payload = events[0]["payload"]
+    assert payload["exit_reconcile"] is True
+    assert payload["session_called_terminal"] is False
+    assert payload["completed_flag"] is False
+    assert "without a terminal kanban call" in payload["reason"]
+
+
+def test_attempted_terminal_call_that_did_not_land_is_recorded(clean_env, tmp_path):
+    """An attempted (but unlanded) terminal call must not suppress reconciliation."""
+    from agent.kanban_terminal_guard import reconcile_worker_exit
+
+    db, task_id = _make_task(tmp_path, clean_env, "running")
+    result = {
+        "messages": [
+            {"role": "assistant", "tool_calls": [
+                {"function": {"name": "kanban_complete", "arguments": "{}"}}]},
+        ],
+    }
+    assert reconcile_worker_exit(completed=False, result=result) == "recorded"
+
+    events = [e for e in _events(db, task_id) if e["kind"] == "protocol_violation"]
+    assert len(events) == 1
+    payload = events[0]["payload"]
+    assert payload["session_called_terminal"] is True
+    assert "did not land" in payload["reason"]
+
+
+def test_fallback_connection_when_connect_closing_unavailable(clean_env, tmp_path, monkeypatch):
+    """Older runtime layout: `kanban_db.connect`, no `kanban_db_connect`."""
+    import sqlite3
+
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
     from agent.kanban_terminal_guard import reconcile_worker_exit
 
-    db = tmp_path / "kanban.db"
-    clean_env.setenv("HERMES_KANBAN_DB", str(db))
-    kbc.init_db(db)
-    with kbc.connect_closing(db) as conn:
-        task_id = kb.create_task(conn, title="probe", assignee="worker-test")
-        conn.execute("UPDATE tasks SET status='running' WHERE id=?", (task_id,))
-        conn.commit()
+    db, task_id = _make_task(tmp_path, clean_env, "running")
+    monkeypatch.delattr(kbc, "connect_closing", raising=False)
 
-    clean_env.setenv("HERMES_KANBAN_TASK", task_id)
-    result = {"messages": [{"role": "assistant", "content": "I will write the report now."}]}
-    assert reconcile_worker_exit(completed=False, result=result) == "recorded"
+    closed = []
+
+    class _Proxy:
+        def __init__(self, real):
+            self._real = real
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+        def close(self):
+            closed.append(True)
+            self._real.close()
+
+    monkeypatch.setattr(kb, "connect", lambda: _Proxy(sqlite3.connect(db)), raising=False)
+    assert reconcile_worker_exit(completed=False, result={"messages": []}) == "recorded"
+    assert closed == [True]
+    assert any(e["kind"] == "protocol_violation" for e in _events(db, task_id))
+
+
+def test_commit_failure_is_error_not_recorded(clean_env, tmp_path, monkeypatch):
+    """A failed commit must not be reported as a recorded violation."""
+    import agent.kanban_terminal_guard as guard
+
+    _make_task(tmp_path, clean_env, "running")
+
+    class _FakeConn:
+        def execute(self, *args, **kwargs):
+            return self
+
+        def fetchone(self):
+            return {"status": "running"}
+
+        def commit(self):
+            raise RuntimeError("disk full")
+
+    @contextlib.contextmanager
+    def _fake_board():
+        yield _FakeConn()
+
+    monkeypatch.setattr(guard, "_board_connection", _fake_board)
+    assert guard.reconcile_worker_exit(completed=False, result={"messages": []}) == "error"
 
 
 def test_never_raises(clean_env):
@@ -74,12 +175,11 @@ def test_never_raises(clean_env):
     from agent.kanban_terminal_guard import reconcile_worker_exit
     clean_env.setenv("HERMES_KANBAN_TASK", "t_test")
     clean_env.setenv("HERMES_KANBAN_DB", "/nonexistent/dir/kanban.db")
-    # must return a string, not raise
     assert isinstance(reconcile_worker_exit(completed=False, result={}), str)
 
 
-def test_returns_action_string(clean_env):
+def test_returns_action_string(clean_env, tmp_path):
     from agent.kanban_terminal_guard import reconcile_worker_exit
-    clean_env.setenv("HERMES_KANBAN_TASK", "t_test")
+    _make_task(tmp_path, clean_env, "running")
     out = reconcile_worker_exit(completed=False, result={"messages": []})
     assert out in {"skipped", "recorded", "not_running", "error"}

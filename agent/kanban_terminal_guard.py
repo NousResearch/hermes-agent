@@ -34,6 +34,10 @@ done would be worse than the bug. It records an explicit
 
 Safety: never raises. A guard that crashes would swallow the worker's real exit
 code and turn a diagnosable failure into an opaque one.
+
+Result-less exits (interrupt, credentials/init failure) are intentionally NOT
+reconciled: they have no settled turn result and recording a violation there
+would be a false positive. Those paths keep their own failure reporting.
 """
 
 from __future__ import annotations
@@ -79,7 +83,11 @@ def _tool_name(tc: Any) -> str:
 
 
 def session_called_terminal_tool(result: Optional[dict]) -> bool:
-    """True if the conversation already invoked kanban_complete / kanban_block."""
+    """True if the conversation *attempted* kanban_complete / kanban_block.
+
+    Diagnostic only: an attempt may have failed and left the task `running`, so
+    the board status decides whether a violation is recorded.
+    """
     if not isinstance(result, dict):
         return False
     for msg in result.get("messages") or []:
@@ -95,7 +103,8 @@ def session_called_terminal_tool(result: Optional[dict]) -> bool:
     return False
 
 
-def _exit_reason(completed: bool, result: Optional[dict]) -> str:
+def _exit_reason(completed: bool, result: Optional[dict], *,
+                 terminal_attempted: bool = False) -> str:
     """Human-meaningful reason, so the board says WHY rather than 'violation'."""
     if isinstance(result, dict):
         err = result.get("error")
@@ -104,6 +113,10 @@ def _exit_reason(completed: bool, result: Optional[dict]) -> str:
         if result.get("partial"):
             return ("run ended partial (truncation / budget / compression) "
                     "without a terminal kanban call")
+    if terminal_attempted:
+        return ("a terminal kanban call did not land; the task is still running"
+                if not completed else
+                "run reported completed but no terminal kanban call landed")
     return ("run ended without a terminal kanban call"
             if not completed else "run reported completed but no terminal kanban call")
 
@@ -147,12 +160,14 @@ def reconcile_worker_exit(
     try:
         if not _enabled():
             return SKIPPED
-        if session_called_terminal_tool(result):
-            return SKIPPED
 
         tid = (task_id or os.environ.get("HERMES_KANBAN_TASK") or "").strip()
         if not tid:
             return SKIPPED
+
+        # The board is the authority: an *attempted* terminal call that did not
+        # land leaves the task `running` and must still be reported.
+        terminal_attempted = session_called_terminal_tool(result)
 
         from hermes_cli import kanban_db as kb
 
@@ -167,16 +182,17 @@ def reconcile_worker_exit(
                 # kanban_complete/kanban_block (or a reclaim) already moved it.
                 return NOT_RUNNING
 
-            reason = _exit_reason(completed, result)
+            reason = _exit_reason(completed, result, terminal_attempted=terminal_attempted)
             payload = {
                 "exit_reconcile": True,
-                "session_called_terminal": False,
+                "session_called_terminal": terminal_attempted,
                 "completed_flag": bool(completed),
                 "reason": reason,
             }
             kb._append_event(conn, tid, "protocol_violation", payload)
-            with contextlib.suppress(Exception):
-                conn.commit()
+            # A failed commit is not a recorded violation: fall through to the
+            # outer handler so the caller sees `error`, never a false `recorded`.
+            conn.commit()
             logger.info(
                 "kanban exit reconcile: recorded protocol_violation task=%s completed=%s "
                 "reason=%s", tid, completed, reason[:120],

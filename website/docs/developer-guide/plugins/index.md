@@ -877,6 +877,7 @@ config_schema:
 name and whether a value is set; the Desktop stores the value through the same
 credential route as provider API keys (`PUT /api/env`), and your plugin reads it
 with `get_secret("MY_PLUGIN_API_KEY")` from `agent.secret_scope` — exactly like a `requires_env` entry.
+`required: true` on a secret is checked against that `.env` variable at load, never against `settings`.
 Never read `.env`, `auth.json` or another tool's credential files yourself (catalog rule 11).
 The `plugins.manage settings` action refuses secret keys and any value whose type
 or `choices` disagree with the schema.

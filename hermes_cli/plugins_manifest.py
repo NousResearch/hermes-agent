@@ -184,6 +184,30 @@ def _parse_manifest_v2_fields(data: Mapping, key: str) -> dict[str, Any]:
     }
 
 
+def _unset_required_warning(plugin_id: str, skey: str, spec: Mapping, settings: Mapping) -> Optional[str]:
+    """Warning for a required key with no value where the plugin reads it; None once it is set.
+
+    A ``type: secret`` value never lives in ``settings``: it is judged like the Desktop form's
+    ``has_value`` (same ``.env`` name, same scope-aware read). Under multiplexing with no secret scope
+    bound (the cron worker discovers before binding one) ``get_secret`` raises, so the value cannot be
+    judged here and nothing is reported rather than failing discovery.
+    """
+    from hermes_cli.plugins_settings import _field_type, secret_env_name
+    if _field_type(spec) != "secret":
+        if skey in settings:
+            return None
+        return f"plugins.entries.{plugin_id}.settings.{skey} is required by the plugin's config_schema but is not set"
+    from agent.secret_scope import UnscopedSecretError
+    from hermes_cli.config import get_env_value
+    env = secret_env_name(plugin_id, skey, spec)
+    try:
+        if get_env_value(env) is not None:
+            return None
+    except UnscopedSecretError:
+        return None
+    return f"secret {skey} is required by the plugin's config_schema but {env} is not set in .env"
+
+
 def validate_config_schema(plugin_id: str, schema: Mapping, settings: Mapping) -> list[str]:
     """Return actionable warning strings for settings vs config_schema mismatches (never raises).
 
@@ -195,12 +219,11 @@ def validate_config_schema(plugin_id: str, schema: Mapping, settings: Mapping) -
     for skey, spec in schema.items():
         if not isinstance(spec, Mapping):
             continue
+        if spec.get("required") and "default" not in spec:
+            unset = _unset_required_warning(plugin_id, skey, spec, settings)
+            if unset:
+                warnings.append(unset)
         if skey not in settings:
-            if spec.get("required") and "default" not in spec:
-                warnings.append(
-                    f"plugins.entries.{plugin_id}.settings.{skey} is required "
-                    "by the plugin's config_schema but is not set"
-                )
             continue
         stype = spec.get("type")
         expected = _CONFIG_SCHEMA_TYPES.get(str(stype).lower()) if stype else None

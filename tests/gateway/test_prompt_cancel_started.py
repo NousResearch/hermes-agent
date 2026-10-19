@@ -9,6 +9,13 @@ import asyncio
 
 import pytest
 
+# Pre-import at collection time, before the home-I/O guard fixture installs: the drain's first
+# lazy `from gateway.session_managed_worker import ManagedExecutionUnknown` otherwise imports
+# hermes_bootstrap mid-test, whose module-level _settle_interrupted_update() probes the checkout
+# root — inside a linked worktree that resolves into the guarded real home and kills the drain
+# (this is also why tests/gateway/test_canonical_stop_hard_cancel.py fails when run alone).
+import gateway.session_managed_worker
+
 from tests.gateway.test_canonical_stop_hard_cancel import Agent
 from tests.gateway.test_session_authority_cancel_settlement import (
     REF, _authority, _submit, _wire_turn_agent)

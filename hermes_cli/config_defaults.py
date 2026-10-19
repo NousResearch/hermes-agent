@@ -865,8 +865,8 @@ DEFAULT_CONFIG = {
         "tui_agents_nudge": True,
         "bell_on_complete": False,
         "bell_on_prompt": False,   # bell when a blocking prompt opens (clarify/approval/sudo)
-        # Stream reasoning live before the response; otherwise thinking models show only a spinner
-        # for tens of seconds.
+        "program_status": True,    # OSC 7501 idle/working/blocked/done/error for terminals that track it
+        # Stream reasoning live before the response; otherwise thinking models show a bare spinner.
         "show_reasoning": True,
         # Post-response "Reasoning" recap collapses to 10 lines; true prints it all (live streaming
         # is always full).

@@ -17,12 +17,18 @@ import json
 import os
 import re
 import sys
+from base64 import b64encode
 
 _C0_AND_DEL = re.compile(r"[\x00-\x1f\x7f]")
 _WARP_PROTOCOL_VERSION = 1
 # Last Warp release per channel that set WARP_CLI_AGENT_PROTOCOL_VERSION but could not render
 # structured payloads (Warp's should-use-structured.sh). Bash compares lexicographically; so do we.
 _WARP_LAST_BROKEN = {"stable": "v0.2026.03.25.08.24.stable_05", "preview": "v0.2026.03.25.08.24.preview_05"}
+_PROGRAM_STATES = frozenset({"idle", "working", "done", "blocked", "error"})
+_PROGRAM_KINDS = frozenset({"permission", "question", "auth"})
+_PROGRAM_MESSAGE_LIMIT = 2048
+# OSC 7501 discards a whole report whose decoded msg holds C0, DEL or C1 controls.
+_PROGRAM_MSG_CONTROLS = re.compile(r"[\x00-\x1f\x7f-\x9f]+")
 
 
 def write_tty(seq: str) -> None:
@@ -43,6 +49,24 @@ def write_tty(seq: str) -> None:
 def osc9(body: str) -> str:
     """OSC 9 sequence with C0 controls and DEL stripped from the body."""
     return f"\x1b]9;{_C0_AND_DEL.sub('', body)}\x07"
+
+
+def program_status_sequence(state: str, *, kind: str = "", message: str = "") -> str:
+    """Encode one OSC 7501 Program Status Protocol report for Hermes' root record."""
+    if state not in _PROGRAM_STATES:
+        raise ValueError(f"unsupported program status state: {state}")
+    if kind and (state != "blocked" or kind not in _PROGRAM_KINDS):
+        raise ValueError(f"unsupported program status kind: {kind}")
+    pairs = [f"state={state}", "app=hermes"]
+    if kind:
+        pairs.append(f"kind={kind}")
+    clean_message = " ".join(_PROGRAM_MSG_CONTROLS.sub(" ", message).split())
+    if clean_message:
+        message_bytes = clean_message.encode("utf-8")[:_PROGRAM_MESSAGE_LIMIT]
+        clean_message = message_bytes.decode("utf-8", "ignore")
+        encoded = b64encode(clean_message.encode("utf-8")).decode("ascii")
+        pairs.append(f"msg={encoded}")
+    return f"\x1b]7501;{':'.join(pairs)}\x1b\\"
 
 
 def warp_supported(env=None) -> bool:

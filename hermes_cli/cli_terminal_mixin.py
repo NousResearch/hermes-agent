@@ -132,6 +132,10 @@ class CLITerminalMixin:
         """
         if getattr(self, "_terminal_io_broken", False):
             return
+        # Every modal open/close/phase change repaints through here: the OSC 7501 state follows it.
+        sync_status = getattr(self, "_sync_program_status", None)
+        if sync_status is not None:
+            sync_status()
         monitor = getattr(self, "_subagent_monitor", None)
         if monitor is not None:
             monitor.invalidate()

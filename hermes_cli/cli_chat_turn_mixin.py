@@ -23,6 +23,18 @@ from agent.i18n import t
 from hermes_cli.cli_agent_setup_mixin import _retire_agent
 
 
+def _program_outcome(result, response):
+    """OSC 7501 (state, msg) for a finished turn. No result = the monitor gave up on a still-running
+    agent, so claim no outcome (None reads as idle); a cancelled turn is idle per the spec."""
+    if not result:
+        return None
+    if result.get("interrupted"):
+        return ("idle", "")
+    if result.get("failed"):
+        return ("error", str(result.get("error") or ""))
+    return ("done", response)
+
+
 class CLIChatTurnMixin:
     """chat() and its per-turn phase helpers."""
 
@@ -30,6 +42,67 @@ class CLIChatTurnMixin:
     # response string, so one-shot callers that must map an outcome onto a
     # process exit code (see cli._run_single_query_mode) read this instead.
     _last_turn_result = None
+
+    def _report_program_status(self, state: str, *, kind: str = "", message: str = "") -> None:
+        """OSC 7501 Program Status report (idle/working/blocked/done/error) on an interactive terminal only."""
+        if not getattr(self, "program_status_enabled", True) or getattr(self, "_terminal_io_broken", False):
+            return
+        if not sys.stdout.isatty():
+            return
+        from hermes_cli.terminal_notify import program_status_sequence, write_tty
+        try:
+            seq = program_status_sequence(state, kind=kind, message=message)
+        except (TypeError, ValueError, UnicodeError):
+            return
+        app = getattr(self, "_app", None)
+        if app is None or not getattr(app, "_is_running", False):
+            write_tty(seq)
+            return
+        from hermes_cli.cli_terminal_mixin import _run_on_app_loop, _write_terminal_sequence
+
+        def _emit() -> None:
+            try:
+                _write_terminal_sequence(app, seq)
+            except (OSError, ValueError):
+                pass
+
+        _run_on_app_loop(app, _emit)
+
+    # (state, msg) of the last finished turn; None = no outcome to show (fresh, early return, lost result).
+    _program_turn_outcome = None
+    _program_status_last = None
+
+    def _program_prompt_status(self):
+        """(kind, msg) for the blocking prompt on screen, or None. Connection cards block only while
+        they wait on the user (form, browser link, retry), never while the backend works."""
+        approval = getattr(self, "_approval_state", None)
+        if approval:
+            return "permission", str(approval.get("command") or "")
+        clarify = getattr(self, "_clarify_state", None)
+        if clarify:
+            return "question", str(clarify.get("question") or "")
+        if getattr(self, "_sudo_state", None) or getattr(self, "_secret_state", None):
+            return "auth", ""
+        connection = getattr(self, "_connection_state", None)
+        if connection and connection.get("phase") in {"form", "url", "failed"}:
+            return "auth", ""
+        return None
+
+    def _sync_program_status(self) -> None:
+        """Report what the screen shows: a blocking prompt, else a running turn, else the last turn's
+        outcome (idle when none). One owner, called on every modal repaint and turn boundary, so no
+        prompt or exit path has to remember its own transition."""
+        prompt = self._program_prompt_status()
+        if prompt:
+            key = ("blocked", prompt[0], prompt[1])
+        elif getattr(self, "_agent_running", False):
+            key = ("working", "", "")
+        else:
+            state, message = self._program_turn_outcome or ("idle", "")
+            key = (state, "", message)
+        if key != self._program_status_last:
+            self._program_status_last = key
+            self._report_program_status(key[0], kind=key[1], message=key[2])
 
     def _sync_fallback_chain_with_config(self, agent) -> None:
         """Adopt ``fallback_providers`` edits made while this chat is open (#95066) — the same
@@ -126,6 +199,8 @@ class CLIChatTurnMixin:
                 self._chat_settle_turn(turn)
                 return self._chat_render_turn(turn, agent_thread, interrupt_msg)
             except Exception as e:
+                self._program_turn_outcome = ("error", str(e))
+                self._sync_program_status()
                 _cprint(t("gateway.model.error_prefix", error=e))
                 return None
             finally:
@@ -538,6 +613,8 @@ class CLIChatTurnMixin:
         except Exception:
             pass
 
+        self._program_turn_outcome = _program_outcome(turn.result, response)
+        self._sync_program_status()
         self._ring_bell(context=t("cli.modal.bell_turn_complete"))  # propagates over SSH
         if turn.result and not turn.result.get("completed") and not turn.result.get("interrupted"):
             _api_calls = turn.result.get("api_calls", 0)

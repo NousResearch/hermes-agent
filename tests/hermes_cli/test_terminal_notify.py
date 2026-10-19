@@ -34,6 +34,62 @@ def test_osc9_body_emitted_and_sanitized_only_when_flag_on(monkeypatch):
     assert _ring(monkeypatch, flag_on=False, env={}, context="approval") == ""
 
 
+def test_program_status_uses_st_and_encodes_safe_message():
+    # Controls (C0, DEL, C1) collapse to one space: the spec drops a whole report whose msg holds one.
+    seq = terminal_notify.program_status_sequence("blocked", kind="permission", message="Allow\ncommand?\x85 x")
+    assert seq == "\x1b]7501;state=blocked:app=hermes:kind=permission:msg=QWxsb3cgY29tbWFuZD8geA==\x1b\\"
+
+
+def test_program_status_rejects_invalid_state_or_kind():
+    with pytest.raises(ValueError):
+        terminal_notify.program_status_sequence("clear")
+    with pytest.raises(ValueError):
+        terminal_notify.program_status_sequence("working", kind="permission")
+
+
+def test_program_status_follows_the_screen_through_one_owner(monkeypatch):
+    """Prompt on screen -> blocked; prompt closed mid-turn -> working (no per-prompt bookkeeping);
+    a connection card working in the background is not blocked; a lost result claims no outcome."""
+    written = []
+    monkeypatch.setattr(terminal_notify, "write_tty", written.append)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.program_status_enabled, cli._agent_running = True, True
+
+    def states():
+        out = [s.split(";", 1)[1].removesuffix("\x1b\\").split(":msg=")[0].replace(":app=hermes", "") for s in written]
+        written.clear()
+        return out
+
+    cli._approval_state = {"command": "rm -rf build"}
+    cli._sync_program_status()
+    cli._approval_state = None
+    cli._connection_state = {"phase": "waiting"}
+    cli._sync_program_status()
+    cli._connection_state = {"phase": "url"}
+    cli._sync_program_status()
+    cli._sync_program_status()  # unchanged: no repeat report
+    assert states() == ["state=blocked:kind=permission", "state=working", "state=blocked:kind=auth"]
+
+    cli._connection_state, cli._agent_running = None, False
+    cli._program_turn_outcome = None  # monitor gave up on a still-running agent
+    cli._sync_program_status()
+    assert states() == ["state=idle"]
+
+
+def test_display_program_status_false_from_config_writes_nothing(monkeypatch):
+    from tests.hermes_cli.test_cli_init import _make_cli
+
+    cli = _make_cli(config_overrides={"display": {"compact": False, "program_status": False}})
+    assert cli.program_status_enabled is False
+    written = []
+    monkeypatch.setattr(terminal_notify, "write_tty", written.append)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    cli._approval_state = {"command": "x"}
+    cli._sync_program_status()
+    assert written == []
+
+
 def test_warp_osc777_only_under_supported_warp_build(monkeypatch):
     out = _ring(monkeypatch, flag_on=True, env=_WARP_OK, context="approval", detail="rm -rf build")
     prefix = "\x1b]777;notify;warp://cli-agent;"

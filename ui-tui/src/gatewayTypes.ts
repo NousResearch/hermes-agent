@@ -117,6 +117,8 @@ export interface ConfigDisplayConfig {
   battery?: boolean
   bell_on_complete?: boolean
   bell_on_prompt?: boolean
+  /** OSC 7501 Program Status reports (default on). */
+  program_status?: boolean
   busy_input_mode?: string
   details_mode?: string
   /** Focus view (/focus) — display-only reduced-output mode. */

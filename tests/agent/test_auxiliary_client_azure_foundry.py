@@ -326,7 +326,7 @@ class TestResolveProviderClientAzureFoundry:
             "auth_mode": "entra_id",
             "default": "gpt-4o",
         })
-        main_token_provider = lambda: "main-session-jwt"  # noqa: E731
+        main_token_provider = lambda: "main-session-jwt"
         client, resolved, effective = _aux._resolve_auto_route(main_runtime={
             "provider": "azure-foundry", "model": "gpt-4o", "api_mode": "chat_completions",
             "base_url": "https://r.openai.azure.com/openai/v1", "api_key": main_token_provider,

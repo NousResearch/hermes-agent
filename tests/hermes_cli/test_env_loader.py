@@ -6,7 +6,7 @@ from hermes_cli.env_loader import load_hermes_dotenv
 
 def test_recovered_update_retry_skips_external_secret_sources(tmp_path, monkeypatch):
     """The post-recovery updater must not remap native vault dependencies."""
-    import hermes_cli.env_loader as env_loader
+    from hermes_cli import env_loader
     from hermes_cli import _early_recovery
 
     home = tmp_path / "hermes"
@@ -205,8 +205,8 @@ def test_utf16_le_bom_preserves_non_ascii_values(tmp_path, monkeypatch):
     assert os.getenv("CJK_LABEL") == "日本語"
     after = env_file.read_bytes()
     assert after.decode("utf-8")  # strict
-    assert "café".encode("utf-8") in after
-    assert "日本語".encode("utf-8") in after
+    assert "café".encode() in after
+    assert "日本語".encode() in after
     assert b"\xef\xbf\xbd" not in after
 
 
@@ -245,7 +245,7 @@ def test_utf32_warning_fires_once_per_path(tmp_path, caplog, monkeypatch):
     """
     import logging
 
-    import hermes_cli.env_loader as env_loader
+    from hermes_cli import env_loader
     from hermes_cli.env_loader import _sanitize_env_file_if_needed
 
     # Isolate process-level seen-set so other tests' paths don't leak in.

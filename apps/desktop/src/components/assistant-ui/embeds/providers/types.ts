@@ -22,8 +22,6 @@ interface BaseEmbed extends EmbedLayout {
   id: string
   /** Human-facing provider name (e.g. "YouTube"). */
   label: string
-  /** Optional image shown before the user consents to load the full embed. */
-  previewUrl?: string
   provider: EmbedProvider
   renderer: EmbedRenderer
   /** Canonical URL opened in the system browser from the card. */
@@ -37,7 +35,7 @@ export interface FrameEmbed extends BaseEmbed {
   renderer: 'frame'
 }
 
-/** Twitter/X ships no iframe URL — only a widget script (see social-embed.tsx). */
+/** Twitter/X: the iframe URL is built from the id and theme (see social-embed.tsx). */
 export interface TweetEmbed extends BaseEmbed {
   renderer: 'tweet'
   tweetId: string

@@ -31,8 +31,8 @@ from hermes_cli.fallback_config import get_fallback_chain
 from utils import is_truthy_value
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner  # noqa: F401
-    from gateway.run_turn_runner import TurnRunner  # noqa: F401
+    from gateway.run import GatewayRunner
+    from gateway.run_turn_runner import TurnRunner
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -57,7 +57,7 @@ class GatewayConfigLoadersMixin:
         return os.getenv(env_var, "").strip() or cls._cfg_str(section, key)
 
     @staticmethod
-    def _load_prefill_messages() -> List[Dict[str, Any]]:
+    def _load_prefill_messages() -> list[dict[str, Any]]:
         """Load ephemeral prefill messages from config or env var.
 
         HERMES_PREFILL_MESSAGES_FILE env wins, then top-level prefill_messages_file in config.yaml,
@@ -91,9 +91,11 @@ class GatewayConfigLoadersMixin:
 
     @staticmethod
     def _load_ephemeral_system_prompt() -> str:
-        """HERMES_EPHEMERAL_SYSTEM_PROMPT env first, then ``display.personality`` / ``agent.system_prompt``."""
+        """HERMES_EPHEMERAL_SYSTEM_PROMPT env first (a local session's: its client's), then
+        ``display.personality`` / ``agent.system_prompt``."""
+        from agent.session_client_env import session_env
         from gateway.run import _load_gateway_config
-        prompt = os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "")
+        prompt = session_env("HERMES_EPHEMERAL_SYSTEM_PROMPT")
         if prompt:
             return prompt
         return resolve_ephemeral_system_prompt_from_config(_load_gateway_config())
@@ -186,34 +188,24 @@ class GatewayConfigLoadersMixin:
             _r_state = self._peek_session_state(resolved_session_key)
             if _r_state is not None and _r_state.conversation.reasoning_override is not None:
                 return _r_state.conversation.reasoning_override
+        from gateway.session_setting_commands import local_policy
+        if (policy := local_policy(self, source)) is not None:
+            return policy.current_reasoning_config(self, resolved_session_key)
         config = getattr(self, "config", None)
         if config and source is not None:
-            try:
-                from gateway.run import _get_channel_override_field
-                channel_effort = _get_channel_override_field(
-                    config,
-                    source.platform,
-                    str(source.chat_id) if source.chat_id else "",
-                    "reasoning_effort",
-                    thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
-                    parent_id=(
-                        str(source.parent_chat_id)
-                        if getattr(source, "parent_chat_id", None)
-                        else None
-                    ),
-                )
-                if channel_effort is not None:
-                    from hermes_constants import parse_reasoning_effort
-                    parsed = parse_reasoning_effort(channel_effort)
-                    if parsed is not None:
-                        return parsed
-                    if str(channel_effort).strip():
-                        logger.warning(
-                            "Unknown channel reasoning_effort '%s', using global default",
-                            channel_effort,
-                        )
-            except Exception:
-                logger.debug("Failed to resolve channel reasoning override", exc_info=True)
+            from gateway.channel_override_fields import _get_channel_override_field
+            from hermes_constants import parse_reasoning_effort
+            channel_effort = _get_channel_override_field(
+                config, source.platform, str(source.chat_id) if source.chat_id else "", "reasoning_effort",
+                thread_id=str(source.thread_id) if source.thread_id else None,
+                parent_id=str(source.parent_chat_id) if source.parent_chat_id else None,
+            )
+            if channel_effort is not None:
+                parsed = parse_reasoning_effort(channel_effort)
+                if parsed is not None:
+                    return parsed
+                if str(channel_effort).strip():
+                    logger.warning("Unknown channel reasoning_effort '%s', using configured default", channel_effort)
         return self._load_reasoning_config(model)
 
     def _has_scoped_reasoning_override(
@@ -227,7 +219,7 @@ class GatewayConfigLoadersMixin:
                 return True
         if source is None or getattr(self, "config", None) is None:
             return False
-        from gateway.run import _get_channel_override_field
+        from gateway.channel_override_fields import _get_channel_override_field
         from hermes_constants import parse_reasoning_effort
         value = _get_channel_override_field(
             self.config,
@@ -259,6 +251,10 @@ class GatewayConfigLoadersMixin:
             _t_state = self._peek_session_state(resolved_session_key)
             if _t_state is not None and _t_state.conversation.service_tier_override is not _SERVICE_TIER_UNSET:
                 return _t_state.conversation.service_tier_override
+        from gateway.session_setting_commands import local_live_for_route, local_policy
+        live = local_live_for_route(self, resolved_session_key)
+        if live is not None and (policy := local_policy(self, live.source)) is not None:
+            return policy.current_service_tier(self, resolved_session_key)  # its frozen tier, not config.yaml's
         return self._load_service_tier()
 
     def _set_session_service_tier_override(self, session_key: str, service_tier, clear: bool = False) -> None:
@@ -489,7 +485,7 @@ class GatewayConfigLoadersMixin:
 
     @classmethod
     def _load_cron_drain_timeout(cls) -> float:
-        """The cron-only floor under the stop()/drain wait.
+        """The cron and api_server (/v1) floor under the stop()/drain wait.
 
         See #82161.
         """

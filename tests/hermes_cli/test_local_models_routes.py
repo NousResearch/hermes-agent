@@ -18,14 +18,17 @@ from fastapi.testclient import TestClient
 
 # The real loopback range server (shared with tests/pm): importing the
 # fixture name at module scope registers it for these tests too.
-from tests.pm._range_server import dl_server, url as _srv_url  # noqa: F401
+from tests.pm._range_server import dl_server, url as _srv_url
 
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     from hermes_cli import web_server
+    from hermes_cli.local_runtime import catalog
 
+    # The first catalog request after start is due a GitHub fetch; tests serve the packaged copy.
+    monkeypatch.setattr(catalog, "refresh_catalog_soon", lambda: None)
     test_client = TestClient(web_server.app)
     # Same auth pattern as the git-route tests: present the session token.
     test_client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
@@ -84,6 +87,18 @@ def test_status_lists_staged_models_with_labels(client, tmp_path):
     assert row["size_label"].endswith("GB")
 
 
+def test_status_sizes_a_split_model_by_all_its_parts(client):
+    """A split's first file can be a metadata stub of a few MB. The row reports the model the user
+    has on disk, so a side-loaded split outside the catalog is every part, not part 1."""
+    from hermes_cli.local_runtime.bootstrap import models_dir
+
+    _write_fake_gguf(models_dir() / "Side-Split-00001-of-00002.gguf", size=1024)
+    _write_fake_gguf(models_dir() / "Side-Split-00002-of-00002.gguf", size=8192)
+    rows = {m["id"]: m for m in client.get("/api/local-models/status").json()["models"]}
+
+    assert rows["Side-Split"]["size_bytes"] == (4 + 1024) + (4 + 8192)
+
+
 def test_status_tracks_preset_spill_and_restored_window(client, tmp_path, monkeypatch):
     from dataclasses import replace
     from types import SimpleNamespace
@@ -109,7 +124,7 @@ def test_status_tracks_preset_spill_and_restored_window(client, tmp_path, monkey
     def router_response(running, route, **kwargs):
         if route == "/models":
             return {"data": [{"id": model_id, "status": {"value": "loaded"}}]}
-        assert route == f"/props?model={model_id}"
+        assert route == f"/props?model={model_id}&autoload=false"
         return {"default_generation_settings": {"n_ctx": server_window}}
 
     monkeypatch.setattr(local_models, "_router_request", router_response)
@@ -200,6 +215,32 @@ def test_calibrated_catalog_and_quickstart_respect_backend(client, monkeypatch, 
     assert local_models._quickstart_target(local_models.QuickstartBody(), budget)[0].id == expected
     explicit = local_models.QuickstartBody(model_id="qwen3.8-27b")
     assert local_models._quickstart_target(explicit, budget)[0].id == "qwen3.8-27b"
+
+
+def test_quickstart_falls_back_past_entries_that_are_never_recommended(monkeypatch):
+    """When the recommended entry can't start, quickstart tries the other recommendable entries.
+    Nemotron 3.5 Bolt is an option only, so the fallback refuses rather than download it."""
+    from fastapi import HTTPException
+
+    from hermes_cli.local_runtime import catalog
+    from hermes_cli.local_runtime.estimator import HardwareBudget
+    from hermes_cli.web_routers import local_models
+
+    budget = HardwareBudget(44 << 30, 48 << 30, 64 << 30, uma=False)
+    bolt = catalog.catalog_by_id()["nemotron-3.5-bolt-74b-a9b"]
+    the_27b = catalog.catalog_by_id()["qwen3.8-27b"]
+    real_select = catalog.select_variant
+    monkeypatch.setattr(local_models, "_engine_too_old", lambda min_engine: False)
+    monkeypatch.setattr(catalog, "recommended_entry", lambda *a, **kw: (the_27b, "best-quality-resident"))
+    monkeypatch.setattr(catalog, "select_variant",
+                        lambda entry, b: real_select(entry, b) if entry.id == bolt.id else None)
+
+    assert real_select(bolt, budget) is not None
+    with pytest.raises(HTTPException) as refused:
+        local_models._quickstart_target(local_models.QuickstartBody(), budget)
+    assert refused.value.status_code == 409
+    explicit = local_models.QuickstartBody(model_id=bolt.id)
+    assert local_models._quickstart_target(explicit, budget)[0].id == bolt.id
 
 
 def test_catalog_never_hides_unaffordable_models(client, monkeypatch):

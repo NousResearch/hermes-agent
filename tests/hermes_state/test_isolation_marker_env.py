@@ -48,6 +48,7 @@ def _spawn_probe(env: dict) -> dict:
         text=True,
         env=env,
         timeout=60,
+        check=False,
     )
     assert proc.returncode == 0, proc.stderr
     return json.loads(proc.stdout.strip().splitlines()[-1])

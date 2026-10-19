@@ -98,6 +98,7 @@ print(json.dumps({canonicalize_name(d.metadata['Name']): d.version
         [str(runtime / marker["python"]), "-I", "-S", "-B", "-c", probe,
          str(runtime / marker["sitePackages"])],
         cwd=tmp_path, env=runtime_environment(), capture_output=True, text=True, timeout=30,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == versions

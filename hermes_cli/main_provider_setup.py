@@ -490,20 +490,29 @@ def _custom_provider_base_url_config_value(provider_info, resolved_base_url=""):
 
 def _save_custom_provider(base_url, api_key="", model="", context_length=None, name=None, api_mode=None,
                           key_env=""):
-    """Save a custom endpoint to ``custom_providers`` in config.yaml, deduplicated by base_url (an
-    existing entry gets model / context_length / api_mode updated). *key_env* set means the caller
-    already wrote the key to ``.env``; the entry references it instead of inlining the secret.
+    """Save a custom endpoint to ``custom_providers`` in config.yaml, deduplicated by canonical
+    slug — the identity the picker/resolver routes by (``custom_provider_slug``). An entry with
+    the same canonical identity gets model / context_length / api_mode / URL / credentials
+    updated; two providers sharing a base URL under *different* identities stay separate
+    entries (#45481). *key_env* set means the caller already wrote the key to ``.env``; the
+    entry references it instead of inlining the secret.
 
     See #69449.
     """
     from hermes_cli.config import load_config, save_config
+    from hermes_cli.providers import custom_provider_slug
+
     cfg = load_config()
     providers = cfg.get("custom_providers") or []
     if not isinstance(providers, list):
         providers = []
-    for entry in providers:
-        if not (isinstance(entry, dict) and entry.get("base_url", "").rstrip("/") == base_url.rstrip("/")):
-            continue
+
+    name = name or _auto_provider_name(base_url)
+    canonical_slug = custom_provider_slug(name)
+
+    def _update_entry(entry: dict) -> bool:
+        """Apply model / context_length / api_mode / URL / credential updates to an existing
+        entry. Returns True when any field changed."""
         changed = False
         if model and entry.get("model") != model:
             entry["model"] = model
@@ -518,16 +527,33 @@ def _save_custom_provider(base_url, api_key="", model="", context_length=None, n
         elif "api_mode" in entry:
             entry.pop("api_mode", None)
             changed = True
+        # Keep the URL and credentials in sync with the latest save: one identity may be
+        # re-registered under a moved endpoint, and stale key_env/api_key state must not
+        # survive a credential-mode switch (#45533 review: mutual exclusivity).
+        if entry.get("base_url", "").rstrip("/") != base_url.rstrip("/"):
+            entry["base_url"] = base_url
+            changed = True
         if key_env and (entry.get("key_env") != key_env or entry.get("api_key")):
             entry["key_env"] = key_env
             entry.pop("api_key", None)
             changed = True
-        if changed:
-            cfg["custom_providers"] = providers
-            save_config(cfg)
-        return  # already saved, updated if needed
+        elif api_key and (entry.get("api_key") != api_key or entry.get("key_env")):
+            entry["api_key"] = api_key
+            entry.pop("key_env", None)
+            changed = True
+        return changed
 
-    name = name or _auto_provider_name(base_url)
+    # Deduplicate by canonical identity, not raw name: "Foo Bar" and "foo-bar" are distinct
+    # display names but produce the same picker slug and would otherwise collide at runtime,
+    # leaving one saved entry unreachable (#45481, #45533 review).
+    for entry in providers:
+        if isinstance(entry, dict) and custom_provider_slug(entry.get("name", "")) == canonical_slug:
+            changed = _update_entry(entry)
+            if changed:
+                cfg["custom_providers"] = providers
+                save_config(cfg)
+            return  # already saved, updated if needed
+
     entry = {"name": name, "base_url": base_url}
     if key_env:
         entry["key_env"] = key_env

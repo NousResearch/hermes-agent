@@ -181,6 +181,12 @@ _CONTEXT_VAR_RESOLVERS = {
     "workspaceFolderBasename": _workspace_basename, "pathSeparator": lambda: os.sep, "/": lambda: os.sep}
 
 
+def _is_unresolved_ref(value: Any) -> bool:
+    """True when *value* is entirely one env ``${VAR}`` / ``${env:VAR}`` placeholder (not a context var)."""
+    match = _ENV_VAR_PATTERN.fullmatch(value) if isinstance(value, str) else None
+    return match is not None and match.group(1).strip() not in _CONTEXT_VAR_RESOLVERS
+
+
 def _build_safe_env(user_env: Optional[dict]) -> dict:
     """Filtered env for stdio subprocesses so API keys/tokens don't leak: the safe baseline
     keys, ``XDG_*``, vars injected by an external secret source (users configured that backend
@@ -201,7 +207,10 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
         if key in os.environ:
             env[key] = os.environ[key]
     if user_env:
-        env.update(user_env)
+        # A value that is still a whole ``${VAR}`` here was unset (or empty) at render time: drop
+        # the key so a plugin can forward an optional var without the child seeing the literal
+        # placeholder (servers that validate it, e.g. as an absolute path, refuse to start).
+        env.update({key: value for key, value in user_env.items() if not _is_unresolved_ref(value)})
     from agent.delegation_context import delegated_child_subprocess_env
     return delegated_child_subprocess_env(env)
 

@@ -8,7 +8,8 @@ import pytest
 
 from agent.turn_context import build_api_messages
 from agent.turn_request_assembly import assemble_api_request
-from gateway.run import _build_gateway_agent_history, _build_replay_entry
+from gateway.replay_entries import _build_replay_entry
+from gateway.run import _build_gateway_agent_history
 from hermes_state import SessionDB
 from run_agent import AIAgent
 

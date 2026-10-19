@@ -17,7 +17,8 @@ const SHORT_LABELS: Record<string, string> = {
 
 /**
  * A pick the route does not send verbatim: `ultra` is a Hermes-internal step
- * that every route clamps to its strongest level (`max` on OpenAI-compatible wires), and the
+ * that routes clamp to their strongest level (`max` on OpenAI-compatible wires; the Codex
+ * app-server sends it verbatim as codex's own mode), and the
  * CLI's `/reasoning` says so ("ultra (sends max on this route)"). The wire
  * level comes from the gateway's `session.info.reasoning_effort_wire`; nothing
  * is inferred client-side, so an unknown ('' — not yet stamped, or an

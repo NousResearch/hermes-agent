@@ -244,7 +244,7 @@ class TestEmittedCommandsSatisfyCliContract:
     """
 
     @staticmethod
-    def _namespace(source: Path, **overrides) -> "argparse.Namespace":
+    def _namespace(source: Path, **overrides) -> argparse.Namespace:
         """The namespace hermes main() produces for `sessions recover`.
 
         Mirrors the registrations in hermes_cli/main.py (sessions_recover

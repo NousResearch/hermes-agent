@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 
-def compat_report(manifests: Any = None, *, force: bool = False) -> Dict[str, List[Any]]:
+def compat_report(manifests: Any = None, *, force: bool = False) -> dict[str, list[Any]]:
     return {}
 
 
@@ -18,5 +18,5 @@ def removal_in_effect(today: Any = None) -> bool:
     return True
 
 
-def summary_lines(report: Any, *, today: Any = None) -> List[str]:
+def summary_lines(report: Any, *, today: Any = None) -> list[str]:
     return []

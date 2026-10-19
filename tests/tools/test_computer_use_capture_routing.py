@@ -10,7 +10,7 @@ perfectly good vision backend was sitting in config waiting to be used.
 This file exercises the integrated ``_capture_response`` flow with
 deterministic stubs for:
 
-* ``should_route_capture_to_aux_vision`` (the policy decision)
+* ``_native_tool_result_images`` (the shared policy decision)
 * ``_run_async`` (sync->async bridge)
 * ``vision_analyze_tool`` (the aux LLM call)
 * ``hermes_constants.get_hermes_dir`` (cache path)
@@ -227,19 +227,62 @@ class TestRoutingDecisionWiring:
                    return_value="openrouter"), \
              patch("agent.auxiliary_client._read_main_model",
                    return_value="tencent/hy3-preview"), \
-             patch("hermes_cli.config.load_config", return_value=cfg):
+             patch("hermes_cli.config.load_config_readonly", return_value=cfg):
             assert cu_tool._should_route_through_aux_vision() is True
 
 
     def test_helper_decision_exception_is_swallowed(self):
         from tools.computer_use import tool as cu_tool
-        from tools.computer_use import vision_routing as vr_mod
 
         with patch("agent.auxiliary_client._read_main_provider",
                    return_value="openrouter"), \
              patch("agent.auxiliary_client._read_main_model",
                    return_value="x"), \
-             patch("hermes_cli.config.load_config", return_value={}), \
-             patch.object(vr_mod, "should_route_capture_to_aux_vision",
-                          side_effect=ValueError("policy bug")):
+             patch("hermes_cli.config.load_config_readonly", return_value={}), \
+             patch("tools.vision_tools._native_tool_result_images",
+                   side_effect=ValueError("policy bug")):
             assert cu_tool._should_route_through_aux_vision() is False
+
+
+def _route(provider, model, cfg, *, catalog, provider_takes_media, veto=False):
+    """The capture route through the real shared gate; only the capability lookups underneath are patched."""
+    from tools.computer_use import tool as cu_tool
+    with patch("agent.auxiliary_client._read_main_provider", return_value=provider), \
+         patch("agent.auxiliary_client._read_main_model", return_value=model), \
+         patch("hermes_cli.config.load_config_readonly", return_value=cfg), \
+         patch("agent.image_routing._lookup_supports_vision", return_value=catalog), \
+         patch("tools.vision_tools._supports_media_in_tool_results", return_value=provider_takes_media), \
+         patch("tools.vision_tools._profile_rejects_tool_media", return_value=veto):
+        return cu_tool._should_route_through_aux_vision()
+
+
+class TestRouteDecision:
+    """True = pre-analyse via auxiliary.vision, False = the multimodal envelope (#115248)."""
+
+    def test_explicit_aux_backend_wins_over_a_vision_main_model(self):
+        """#24015: a configured auxiliary.vision backend is the de-facto image route in auto mode."""
+        cfg = {"auxiliary": {"vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}}}
+        assert _route("anthropic", "claude-opus-4-5", cfg, catalog=True, provider_takes_media=True) is True
+
+    def test_vision_main_model_without_aux_backend_stays_native(self):
+        assert _route("anthropic", "claude-opus-4-5", {}, catalog=True, provider_takes_media=True) is False
+
+    def test_catalog_text_only_model_on_a_media_provider_goes_to_aux(self):
+        """deepseek-v3.2 on OpenRouter: the provider carries tool-result media, the model cannot see. Routing it
+        native made the agent backstop swap the screenshot for a 'switch to a vision model' error."""
+        assert _route("openrouter", "deepseek/deepseek-v3.2", {}, catalog=False, provider_takes_media=True) is True
+
+    def test_unknown_provider_and_model_fail_closed_to_aux(self):
+        assert _route("exotic-provider", "exotic-model", {}, catalog=None, provider_takes_media=False) is True
+
+    def test_image_input_mode_text_keeps_pixels_out(self):
+        cfg = {"agent": {"image_input_mode": "text"}}
+        assert _route("anthropic", "claude-opus-4-5", cfg, catalog=True, provider_takes_media=True) is True
+
+    def test_image_input_mode_native_keeps_a_catalog_unknown_model_native(self):
+        """A proxy alias the catalog does not know: native mode is the user's explicit word for it."""
+        cfg = {"agent": {"image_input_mode": "native"}}
+        assert _route("anthropic", "my-proxy-claude", cfg, catalog=None, provider_takes_media=True) is False
+
+    def test_profile_veto_routes_a_vision_model_to_aux(self):
+        assert _route("xiaomi", "mimo-v2.5", {}, catalog=True, provider_takes_media=False, veto=True) is True

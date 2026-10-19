@@ -1,0 +1,23 @@
+name: tidal
+repo: https://github.com/lEWFkRAD/hermes-plugin-tidal
+sha: "b3ae998c04788fb1287f91605062797bd44ed495"
+version: "0.1.0"
+image: "https://raw.githubusercontent.com/lEWFkRAD/hermes-plugin-tidal/b3ae998c04788fb1287f91605062797bd44ed495/docs/banner.jpg"
+description: >-
+  TIDAL for Hermes Agent: five tools (playback through local mpv, search,
+  playlists, library, mixes) over the unofficial TIDAL API via tidalapi.
+  Login is TIDAL's own PKCE login flow (hermes tidal login) — no developer app
+  needed. Playback runs on the Hermes machine (mpv); TIDAL has no
+  remote-device API like Spotify Connect. Needs a TIDAL subscription (any tier).
+title: TIDAL
+maintainer: lEWFkRAD
+tier: community
+category: tools
+docs_url: https://github.com/lEWFkRAD/hermes-plugin-tidal#readme
+requires_hermes: ">=0.21.6"
+platforms: [linux, macos]
+capabilities:
+  provides_tools: [tidal_playback, tidal_search, tidal_playlists, tidal_library, tidal_mixes]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

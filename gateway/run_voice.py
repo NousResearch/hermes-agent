@@ -396,6 +396,10 @@ class GatewayVoiceMixin:
     async def _deliver_voice_reply(self, event: MessageEvent, audio_paths: List[str]) -> None:
         """Play the files in the connected voice channel, else send them as voice messages."""
         adapter = self._delivery_adapter_for(event.source)
+        if adapter is None:
+            logger.warning("Auto voice reply has no delivery adapter for platform=%s profile=%s",
+                           event.source.platform, getattr(event.source, "profile", None))
+            return
         guild_id = self._get_guild_id(event)
         play = getattr(adapter, "play_in_voice_channel", None)
         is_in_vc = getattr(adapter, "is_in_voice_channel", None)
@@ -404,6 +408,7 @@ class GatewayVoiceMixin:
                 await play(guild_id, path)
             return
         if not callable(send_voice := getattr(adapter, "send_voice", None)):
+            logger.warning("Auto voice reply adapter does not support send_voice")
             return
         reply_anchor = self._reply_anchor_for_event(event)
         # notify=True mirrors the final-text path in platforms/base.py so notification-gating
@@ -411,5 +416,9 @@ class GatewayVoiceMixin:
         thread_meta = dict(self._thread_metadata_for_source(event.source, reply_anchor) or {})
         thread_meta["notify"] = True
         for path in audio_paths:
-            await send_voice(chat_id=event.source.chat_id, audio_path=path, reply_to=reply_anchor,
-                             metadata=thread_meta)
+            result = await send_voice(
+                chat_id=event.source.chat_id, audio_path=path, reply_to=reply_anchor,
+                metadata=thread_meta,
+            )
+            if getattr(result, "success", None) is False:
+                logger.warning("Auto voice reply send_voice failed: %s", getattr(result, "error", None))

@@ -1,6 +1,6 @@
 name: scamgate
 repo: https://github.com/odaiameera/scamgate
-sha: 9c7e2ed309daf16a21fb6386d4de079212cc5b5c
+sha: 7a03486735c6b338586268d9ac8e02fc10142203
 subdir: src/scamgate
 description: "Offline scam gate. Blocks known-bad links and payments before a tool runs, and asks a human when it cannot see the destination. Disclosure — blocks agent tool calls that would edit Hermes config/profiles/plugins/hooks or turn approvals off, and with approvals off turns its \"ask\" into a block (setting when_approvals_off: allow restores asks); keeps its signing key and ask log under ~/.local/state/scamgate and phishing feeds under ~/.cache/scamgate (not per-profile); feeds download only when you run `scamgate update-feeds` (openphish.com, Phishing-Database on GitHub, optional urlhaus); optional SCAMGATE_RDAP=live sends each checked link's domain to its RDAP registry."
 maintainer: odaiameera

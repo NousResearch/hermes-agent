@@ -2,7 +2,6 @@
 import json
 import os
 import subprocess
-import sys
 from datetime import timedelta
 from pathlib import Path
 
@@ -64,8 +63,11 @@ def test_tool_hook_in_a_ticked_job_sees_its_execution_and_none_outside(tmp_path)
         env = {k: v for k, v in os.environ.items()
                if not k.startswith(("HERMES_", "_HERMES_"))
                and not k.endswith(("_API_KEY", "_TOKEN"))}
-        env.update(HERMES_HOME=str(home), PYTHONPATH=str(Path(__file__).resolve().parents[2]))
-        result = subprocess.run([sys.executable, "-c", _TICK], env=env, stdin=subprocess.DEVNULL,
+        env.update(HERMES_HOME=str(home))
+        from hermes_cli._launchers import runtime_command
+
+        command = runtime_command(Path(__file__).resolve().parents[2], code=_TICK, home=home)
+        result = subprocess.run(command, env=env, stdin=subprocess.DEVNULL,
                                 capture_output=True, text=True, timeout=180, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     report = json.loads(result.stdout.strip().splitlines()[-1])

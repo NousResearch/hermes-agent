@@ -3,7 +3,6 @@ import json
 import os
 from pathlib import Path
 import subprocess
-import sys
 
 import pytest
 from datetime import UTC
@@ -47,8 +46,10 @@ def _fire(home, mode):
            if not k.startswith(('HERMES_', '_HERMES_'))
            and not k.endswith(('_API_KEY', '_TOKEN'))}
     env['HERMES_HOME'] = str(home)
-    env['PYTHONPATH'] = str(Path(__file__).resolve().parents[2])
-    result = subprocess.run([sys.executable, '-c', _FIRE, mode], env=env,
+    from hermes_cli._launchers import runtime_command
+
+    command = runtime_command(Path(__file__).resolve().parents[2], [mode], code=_FIRE, home=home)
+    result = subprocess.run(command, env=env,
                             stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=90, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
 

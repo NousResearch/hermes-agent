@@ -6,15 +6,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // be previewed. A remote backend's paths are not on this machine, so remote
 // mode keeps the fabricated fallback the gateway read resolves later.
 
-const { isDesktopFsRemoteMode } = vi.hoisted(() => ({
-  isDesktopFsRemoteMode: vi.fn(() => false)
+const { isDesktopFsRemoteMode, readDesktopFileText } = vi.hoisted(() => ({
+  isDesktopFsRemoteMode: vi.fn(() => false),
+  readDesktopFileText: vi.fn()
 }))
 
 vi.mock('@/lib/desktop-fs', () => ({
   isDesktopFsRemoteMode,
   readDesktopDir: vi.fn(),
   readDesktopFileDataUrl: vi.fn(),
-  readDesktopFileText: vi.fn()
+  readDesktopFileText
 }))
 
 import { normalizeOrLocalPreviewTarget } from './local-preview'
@@ -84,5 +85,44 @@ describe('normalizeOrLocalPreviewTarget non-previewable results', () => {
 
     expect(fabricated?.kind).toBe('file')
     expect(fabricated?.path).toBe('/srv/reports')
+  })
+
+  it('resolves remote relative paths against the remote cwd without consulting the local host', async () => {
+    isDesktopFsRemoteMode.mockReturnValue(true)
+    readDesktopFileText.mockResolvedValue({ language: 'markdown', path: '/srv/report.md', text: 'remote report' })
+    stubNormalization({
+      kind: 'file',
+      path: 'C:/srv/report.md',
+      previewKind: 'text',
+      source: 'report.md'
+    })
+
+    const target = await normalizeOrLocalPreviewTarget('report.md', '/srv')
+
+    expect(target?.path).toBe('/srv/report.md')
+    expect(readDesktopFileText).toHaveBeenCalledWith('/srv/report.md')
+    expect(window.hermesDesktop?.normalizePreviewTarget).not.toHaveBeenCalled()
+  })
+
+  it('does not borrow the type of a same-named local file for a remote preview', async () => {
+    isDesktopFsRemoteMode.mockReturnValue(true)
+    readDesktopFileText.mockResolvedValue({ language: 'markdown', path: '/srv/report.md', text: 'remote report' })
+    stubNormalization({ kind: 'file', path: '/srv/report.md', previewKind: 'image' })
+
+    const target = await normalizeOrLocalPreviewTarget('/srv/report.md')
+
+    expect(target?.previewKind).toBe('text')
+    expect(readDesktopFileText).toHaveBeenCalledWith('/srv/report.md')
+  })
+
+  it('leaves a home-relative remote path for the gateway to expand', async () => {
+    isDesktopFsRemoteMode.mockReturnValue(true)
+    readDesktopFileText.mockResolvedValue({ language: 'markdown', path: '/home/remote/report.md', text: 'remote report' })
+    stubNormalization({ kind: 'file', path: '/client/home/report.md', previewKind: 'text' })
+
+    const target = await normalizeOrLocalPreviewTarget('~/report.md', '/srv')
+
+    expect(target?.path).toBe('~/report.md')
+    expect(readDesktopFileText).toHaveBeenCalledWith('~/report.md')
   })
 })

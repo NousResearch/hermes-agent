@@ -191,6 +191,7 @@ class TestNoninteractiveGitEnv:
             return subprocess.run(
                 ["git", "-C", str(repo), "rev-parse", "HEAD"],
                 capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL,
+                check=False,
             ).returncode
 
         assert _rev_parse(trusted) == 0, "the explicitly trusted repo must stay usable"
@@ -264,6 +265,7 @@ def test_git_clone_against_auth_remote_fails_fast(tmp_path: Path):
             timeout=30,
             stdin=subprocess.DEVNULL,
             env=env,
+            check=False,
         )
         elapsed = time.monotonic() - t0
         assert proc.returncode != 0

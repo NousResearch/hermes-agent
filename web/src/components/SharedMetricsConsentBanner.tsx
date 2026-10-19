@@ -12,7 +12,8 @@ const STORAGE_KEY = "sharedMetricsOfferDismissed";
  * The dashboard's first-run shared-metrics offer: the twin of Desktop's composer strip and the
  * terminal's offer, with the same three equal answers. Shown while the managed profile has no
  * answer in its config.yaml; answering writes it (every surface then stops asking), while the X
- * only hides the banner for this browser session.
+ * only hides the banner for this browser session. A re-ask (``reask``) is the exception: its X
+ * keeps the recorded "No thanks", so nobody is asked a third time.
  */
 export function SharedMetricsConsentBanner() {
   const { t } = useI18n();
@@ -57,6 +58,11 @@ export function SharedMetricsConsentBanner() {
       .finally(() => setSaving(false));
   };
   const dismiss = () => {
+    // A re-ask settles on any response: closing it keeps the recorded "No thanks" for good.
+    if (consent.reask) {
+      answer(false, false);
+      return;
+    }
     try {
       sessionStorage.setItem(STORAGE_KEY, "1");
     } catch {
@@ -79,7 +85,10 @@ export function SharedMetricsConsentBanner() {
       <span className="min-w-0 flex-1 opacity-80">
         {failed
           ? (t.app.sharedMetricsSaveFailed ?? "Couldn't save your choice")
-          : (t.app.sharedMetricsBody ??
+          : consent.reask
+            ? (t.app.sharedMetricsReaskBody ??
+              'Asking once more: an earlier version could save "No thanks" before you saw this question.')
+            : (t.app.sharedMetricsBody ??
             "Shared metrics are bounded counters, never prompts, files, paths or error text. Collection stays on this machine; sending to Nous is a separate choice.")}{" "}
         <a href={DOCS_URL} target="_blank" rel="noreferrer" className="underline">
           {t.app.sharedMetricsDetails ?? "Details"}

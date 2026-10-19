@@ -13,7 +13,7 @@ from __future__ import annotations
 import hermes_yaml as yaml
 import pytest
 
-import tui_gateway.server as server
+from tui_gateway import server
 from tui_gateway.methods_profiles import _save_toolset_pin
 
 LAUNCH_PIN = ["web", "browser", "terminal"]

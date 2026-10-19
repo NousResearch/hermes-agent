@@ -21,34 +21,11 @@ load before the environment it checks for exists.
 Activating from the shebang
 ---------------------------
 
-A POSIX script can activate for itself, so ``./scripts/foo.py`` works from any
-cwd with no manual ``source``. The shebang points at ``scripts/_hermes-python``,
-a real repo script that sources ``activate`` and execs the interpreter on the
-same file::
-
-    #!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/_hermes-python" "$0" "$@"'
-
-The kernel appends the invoking script as the last argument, and ``bash -c``
-binds it to ``$0`` — so the prologue finds the target relative to itself and
-the shebang stays independent of the cwd. ``$BASH`` for the second hop keeps it
-free of both the exec bit and a ``PATH`` lookup.
-
-Activation is not re-run when the inherited environment is still current. pm
-records one stamp per dependency input (``uv.lock``, ``pyproject.toml``,
-``pm/lock.json``) beside the installed-state file that ``__HERMES_ACTIVATED``
-names, each carrying the exact mtime that input had when the install was last
-verified against it (``pm.environments.record_activation_inputs``). The
-prologue re-activates when any input's mtime *differs* from its stamp: newer
-or older, since switching branches can move it either way. ``[ -nt ]`` and
-``[ -ot ]`` are bash builtins, so the check costs no process spawn. Every
-successful activation records again, including no-op syncs, so a checkout that
-touches an input without changing it costs one re-activation and then settles.
-
-Two constraints worth knowing: the line is 83 bytes (a shebang must stay under
-127), and ``/usr/bin/env -S`` is GNU and newer-BSD — verify it if an older
-macOS or BSD is a target. macOS's stock bash 3.2 compares whole seconds, so an
-input rewritten within the same second as its recorded mtime goes unnoticed
-there. Windows keeps using ``python scripts\\foo.py`` with the guard.
+A POSIX script can run itself in the environment, so ``./scripts/foo.py`` works
+from any cwd with no manual ``source``: its shebang hands the file to
+``scripts/run-in-hermes-env`` (the line, staleness rules and portability limits
+are documented there). Windows keeps using ``python scripts\\foo.py`` with the
+guard.
 """
 
 from __future__ import annotations

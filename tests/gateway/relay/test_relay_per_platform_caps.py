@@ -105,7 +105,7 @@ async def test_transport_descriptor_map_resets_on_redial(monkeypatch):
         async def close(self):  # pragma: no cover - not called
             pass
 
-    sent: List[str] = []
+    sent: list[str] = []
 
     async def _fake_connect(url, **kwargs):
         return _FakeWs()

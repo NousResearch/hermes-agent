@@ -12,7 +12,7 @@ import pytest
 from agent.portal_tags import reset_conversation_context, set_conversation_context
 from hermes_cli import lifecycle
 from hermes_cli.observability import relay_shared_metrics
-from tests.hermes_cli.test_relay_shared_metrics_runtime import (  # noqa: F401 - fixture
+from tests.hermes_cli.test_relay_shared_metrics_runtime import (
     _stored_values,
     direct_runtime,
 )
@@ -202,7 +202,7 @@ def test_tui_switch_before_first_prompt_blames_the_configured_route(
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.yaml").write_text(
         f"model:\n  provider: {provider}\n  default: {model}\n" + (f"  base_url: {base_url}\n" if base_url else ""))
-    import tui_gateway.server as server
+    from tui_gateway import server
 
     monkeypatch.setattr(server, "_hermes_home", home)  # captured at first import
     result = SimpleNamespace(

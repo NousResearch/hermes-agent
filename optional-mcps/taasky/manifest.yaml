@@ -33,7 +33,6 @@ post_install: |
   The first negotiation returns a Telegram link: open it once so you can
   approve moves. Nothing is agreed until you tap Approve there.
 
-  Optional skill with the full flow:
-    mkdir -p ~/.hermes/skills/taasky
-    curl -fsSL -o ~/.hermes/skills/taasky/SKILL.md \
-      "https://docs.taasky.ai/.well-known/agent-skills/taasky/SKILL.md?v=0.3.2"
+  Optional skill with the full flow, from ClawHub through the Hermes
+  skills hub (scanned by Skills Guard on install):
+    hermes skills install clawhub/taasky

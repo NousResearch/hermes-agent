@@ -336,6 +336,7 @@ async def test_post_turn_watch_drain_refused_event_backs_off_then_drops(monkeypa
 
     from gateway import run_notifications
     from gateway.run_notifications import (
+        _COMPLETION_INJECTION_RETRY_MAX_DELAY,
         _MAX_COMPLETION_INJECTION_ATTEMPTS,
         _WATCH_INJECTION_RETRY_BASE_DELAY,
     )
@@ -360,10 +361,10 @@ async def test_post_turn_watch_drain_refused_event_backs_off_then_drops(monkeypa
             break
 
     assert len(attempt_times) == _MAX_COMPLETION_INJECTION_ATTEMPTS
-    # Backoff, not one attempt per drain tick: successive retries are >= the base delay apart.
+    # Backoff, not one attempt per drain tick: each retry waits twice the last, up to the cap.
     gaps = [b - a for a, b in itertools.pairwise(attempt_times)]
-    assert gaps
-    assert all(gap >= _WATCH_INJECTION_RETRY_BASE_DELAY for gap in gaps)
+    assert gaps == [min(_WATCH_INJECTION_RETRY_BASE_DELAY * 2 ** n, _COMPLETION_INJECTION_RETRY_MAX_DELAY)
+                    for n in range(_MAX_COMPLETION_INJECTION_ATTEMPTS - 1)]
     assert completion_queue.empty()
     drops = [r for r in caplog.records
              if r.levelno >= logging.WARNING and "dropping the queued event" in r.message]

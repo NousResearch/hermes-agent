@@ -6,21 +6,19 @@ import time
 
 
 class ModuleClock:
-    """``time`` for one module: ``monotonic()`` returns ``now``, advanced by ``step`` per read."""
+    """``time`` for one module, except that ``monotonic()`` returns ``now``."""
 
-    def __init__(self, now: float, step: float):
-        self.now, self.step = now, step
+    def __init__(self, now: float):
+        self.now = now
 
     def monotonic(self) -> float:
-        value = self.now
-        self.now += self.step
-        return value
+        return self.now
 
     def __getattr__(self, name):
         return getattr(time, name)
 
 
-def install_module_clock(monkeypatch, module, *, now: float = 1000.0, step: float = 0.0) -> ModuleClock:
-    clock = ModuleClock(now, step)
+def install_module_clock(monkeypatch, module, *, now: float = 1000.0) -> ModuleClock:
+    clock = ModuleClock(now)
     monkeypatch.setattr(module, "time", clock)
     return clock

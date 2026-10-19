@@ -177,6 +177,25 @@ async def test_unproven_refusal_requeues_with_backoff_until_the_cap(monkeypatch,
 
 
 @pytest.mark.asyncio
+async def test_unpinned_refusal_requeues(monkeypatch, caplog):
+    """A notice that names no pinned session proves nothing gone: its refusal is retried."""
+    runner, authority, entry = await _gateway(monkeypatch)
+    try:
+        notice = _notice(entry, '')
+        pending = queue.Queue()
+        pending.put(notice)
+
+        with caplog.at_level(logging.WARNING, logger='gateway.run'):
+            await runner._drain_watch_notifications(pending)
+
+        assert pending.get_nowait() is notice
+        assert notice['_watch_injection_attempts'] == 1
+        assert not [r for r in caplog.records if 'permanently gone' in r.getMessage()]
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
 async def test_unproven_heartbeat_refusal_requeues_the_original_tick(monkeypatch, caplog):
     """A liveness tick keeps its own lifecycle: a refusal the pre-flight cannot prove permanent puts
     the original tick back (a later tick folds from it); only a gone pin drops it."""

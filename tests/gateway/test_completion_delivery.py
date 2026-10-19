@@ -18,8 +18,8 @@ import pytest
 from gateway import run_notifications
 from gateway.config import Platform
 from gateway.run import GatewayRunner
-from tools.process_registry import ProcessRegistry, ProcessSession
 from tests.module_clock import install_module_clock
+from tools.process_registry import ProcessRegistry, ProcessSession
 
 
 class AdmittingHandler(AsyncMock):
@@ -988,8 +988,14 @@ def test_watch_drain_retries_transport_failure(monkeypatch, isolated_registry):
     evt = dict(_completion_event(started_at=1), type="watch_match", pattern="READY", output="READY")
     isolated_registry.completion_queue.put(evt)
     _stop_after_sleeps(monkeypatch, runner, count=3)
-    # The refused event backs off (#140899); each read is a minute later, so the retry is due.
-    install_module_clock(monkeypatch, run_notifications, step=60)
+    # The refused event backs off (#140899): each watcher tick is a minute later, so the retry is due.
+    clock = install_module_clock(monkeypatch, run_notifications)
+    bounded_sleep = asyncio.sleep
+
+    async def minute_later(delay):
+        clock.now += 60
+        await bounded_sleep(delay)
+    monkeypatch.setattr(asyncio, "sleep", minute_later)
     asyncio.run(runner._async_delegation_watcher(interval=0))
     assert adapter.handle_message.await_count == 2
     assert isolated_registry.completion_queue.empty()

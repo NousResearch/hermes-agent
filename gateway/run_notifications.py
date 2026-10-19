@@ -751,7 +751,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 else:
                     logger.warning(
                         "Watch notification for %s chat=%s (type=%s session_id=%s) was refused "
-                        "%d times; dropping the queued event",
+                        "%d times; dropping the queued event (output remains available via "
+                        "process(action='log'))",
                         evt.get("platform") or "?", evt.get("chat_id") or "?",
                         evt.get("type") or "?", evt.get("session_id", "unknown"), attempts,
                     )

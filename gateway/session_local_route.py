@@ -23,7 +23,8 @@ def resolve_launch_route(params: dict, config: dict) -> dict:
     route = resolve_startup_model_route(
         model, explicit_provider=explicit_provider,
         current_provider=(explicit_provider or str(model_cfg.get('provider') or '')).strip().lower(),
-        user_providers=config.get('providers'), custom_providers=config.get('custom_providers'))
+        user_providers=config.get('providers'), custom_providers=config.get('custom_providers'),
+        alias_config=config)  # this snapshot's aliases, not a cache keyed on config.yaml alone
     if route is None:
         return params
     resolved = dict(params, model=route.model)

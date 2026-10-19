@@ -314,6 +314,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
     updateSessionState: (sessionId, updater) => sessionTileDelegate()!.updateSession(sessionId, updater),
     scope: {
       removeAttachments: attachments => scope.attachments.removeOccurrences(attachments),
+      patchAttachment: (expected, patch) => void scope.attachments.updateIfCurrent(expected, patch),
       readAttachments: () => scope.attachments.$attachments.get(),
       // Busy/messages flow through updateSession -> the tile's state slice;
       // the primary view atoms must never see a tile turn.

@@ -386,6 +386,12 @@ def _get_session_info(task_id: Optional[str] = None) -> dict[str, Any]:
 
     with _bt._cleanup_lock:
         existing_session = _bt._active_sessions.get(task_id)
+        if _bt._cleanup_reservations.get(task_id) is existing_session:
+            # The janitor captured this record for teardown.  Remove only that
+            # record so this command creates a replacement instead of borrowing
+            # a browser that is about to be closed.
+            _bt._active_sessions.pop(task_id, None)
+            existing_session = None
 
     def _replacement_after_teardown() -> Optional[dict[str, Any]]:
         # Teardown removes the activity entry; re-touch so the reaper tracks the
@@ -905,6 +911,7 @@ def _run_browser_command(
     args: list[str] | None = None,
     timeout: Optional[int] = None,
     _engine_override: Optional[str] = None,
+    _session_info: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Run one agent-browser CLI command against the task's session; returns its parsed JSON.
     ``timeout=None`` reads ``browser.command_timeout``; ``_engine_override`` forces an engine
@@ -919,11 +926,14 @@ def _run_browser_command(
     browser_cmd = preflight["browser_cmd"]
 
     for attempt in range(2):
-        try:
-            session_info = _get_session_info(task_id)
-        except Exception as e:
-            _bt.logger.warning("Failed to create browser session for task=%s: %s", task_id, e)
-            return {"success": False, "error": f"Failed to create browser session: {e!s}"}
+        if _session_info is None:
+            try:
+                session_info = _get_session_info(task_id)
+            except Exception as e:
+                _bt.logger.warning("Failed to create browser session for task=%s: %s", task_id, e)
+                return {"success": False, "error": f"Failed to create browser session: {e!s}"}
+        else:
+            session_info = _session_info
         engine, result = run_fenced_pair(session_info, lambda: _dispatch_browser_command(
             task_id, session_info, browser_cmd, command, args, timeout, _engine_override))
         if result.get("code") == "human_has_control":

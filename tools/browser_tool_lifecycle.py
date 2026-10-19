@@ -97,6 +97,7 @@ def _emergency_cleanup_all_sessions():
                 _bt._session_last_activity.clear()
                 _bt._session_owner_homes.clear()
                 _bt._cleanup_failures.clear()
+                _bt._cleanup_reservations.clear()
                 _bt._recording_sessions.clear()
     # Lightpanda servers we spawned that fell out of ``_active_sessions``.
     _best_effort("Lightpanda cleanup on exit", _stop_all_lightpanda)
@@ -133,9 +134,12 @@ def _session_owner_scope(task_id: str):
         reset_hermes_home_override(home_token)
 
 
-def _forget_session_tracking(task_id: str, *, activity: bool = True, session: bool = False) -> None:
+def _forget_session_tracking(task_id: str, *, activity: bool = True, session: bool = False,
+                             expected_session: Optional[dict[str, Any]] = None) -> None:
     """Drop the janitor's bookkeeping (and optionally the session entry) for ``task_id``."""
     with _bt._cleanup_lock:
+        if expected_session is not None and _bt._active_sessions.get(task_id) is not expected_session:
+            return
         if session:
             _bt._active_sessions.pop(task_id, None)
         if activity:
@@ -165,12 +169,20 @@ def _cleanup_inactive_browser_sessions():
                 # A human took the bot's screen (login, 2FA) — the agent is idle BECAUSE they are working.
                 _update_session_activity(task_id)
                 continue
-        elapsed = int(current_time - _bt._session_last_activity.get(task_id, current_time))
+        with _bt._cleanup_lock:
+            last_activity = _bt._session_last_activity.get(task_id)
+            if (last_activity is None
+                    or current_time - last_activity <= _bt.BROWSER_SESSION_INACTIVITY_TIMEOUT):
+                continue
+            session_info = _bt._active_sessions.get(task_id)
+            if session_info is not None:
+                _bt._cleanup_reservations[task_id] = session_info
+        elapsed = int(current_time - (last_activity or current_time))
         _bt.logger.info("Cleaning up inactive session for task: %s (inactive for %ss)", task_id, elapsed)
         try:
             with _session_owner_scope(task_id):
-                cleanup_browser(task_id)
-            _forget_session_tracking(task_id)
+                cleanup_browser(task_id, session_info=session_info)
+            _forget_session_tracking(task_id, expected_session=session_info)
         except Exception as e:
             with _bt._cleanup_lock:
                 failures = _bt._cleanup_failures[task_id] = _bt._cleanup_failures.get(task_id, 0) + 1
@@ -187,6 +199,10 @@ def _cleanup_inactive_browser_sessions():
                 _bt.logger.error("Force-reap of browser session %s failed: %s", task_id, reap_exc)
             finally:
                 _forget_session_tracking(task_id, activity=False)
+        finally:
+            with _bt._cleanup_lock:
+                if _bt._cleanup_reservations.get(task_id) is session_info:
+                    _bt._cleanup_reservations.pop(task_id, None)
 
 
 def _human_holds_shared_browser(task_id: str) -> bool:
@@ -615,7 +631,7 @@ def _drop_last_active_binding(task_id: str) -> None:
         _bt._last_active_session_key.pop(bare_task_id, None)
 
 
-def cleanup_browser(task_id: Optional[str] = None) -> None:
+def cleanup_browser(task_id: Optional[str] = None, *, session_info: Optional[dict[str, Any]] = None) -> None:
     """Clean up browser session(s) for a task: a bare task id reaps BOTH the primary
     session and any hybrid local sidecar; a ``::local`` key reaps only that one."""
     if task_id is None:
@@ -627,8 +643,10 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
         if not _bt._is_local_sidecar_key(task_id) and sidecar_key in _bt._active_sessions:
             session_keys.append(sidecar_key)
     for session_key in session_keys:
-        _cleanup_single_browser_session(session_key)
-    _drop_last_active_binding(task_id)
+        _cleanup_single_browser_session(
+            session_key, session_info=session_info if session_key == task_id else None)
+    if session_info is None:
+        _drop_last_active_binding(task_id)
 
 
 def _kill_verified_daemon(socket_dir: str, session_name: str) -> bool:
@@ -652,7 +670,8 @@ def _kill_verified_daemon(socket_dir: str, session_name: str) -> bool:
         return False
 
 
-def _release_session_resources(task_id: str, session_info: dict[str, Any]) -> None:
+def _release_session_resources(task_id: str, session_info: dict[str, Any],
+                               *, expected_session: Optional[dict[str, Any]] = None) -> None:
     """Untrack ``task_id``, close its cloud provider session, kill its daemon — the
     unconditional tail of a teardown, and the whole of the janitor's force-reap path.
 
@@ -661,7 +680,7 @@ def _release_session_resources(task_id: str, session_info: dict[str, Any]) -> No
     must still release the cloud session and the local Chromium.
     """
     bb_session_id = session_info.get("bb_session_id", "unknown")
-    _forget_session_tracking(task_id, session=True)
+    _forget_session_tracking(task_id, session=True, expected_session=expected_session)
 
     if bb_session_id:  # cloud only — local sidecars have bb_session_id=None
         provider = _cloud._get_cloud_provider()
@@ -694,7 +713,7 @@ def _force_reap_browser_session(task_id: str) -> None:
     _drop_last_active_binding(task_id)
 
 
-def _cleanup_single_browser_session(task_id: str) -> None:
+def _cleanup_single_browser_session(task_id: str, *, session_info: Optional[dict[str, Any]] = None) -> None:
     """Reap a single browser session by its exact session key."""
     _cdp._stop_cdp_supervisor(task_id)  # close our WebSocket BEFORE the backend tears down the endpoint
 
@@ -712,7 +731,7 @@ def _cleanup_single_browser_session(task_id: str) -> None:
 
     # Look up but don't remove yet — _run_browser_command needs the entry for ``close``.
     with _bt._cleanup_lock:
-        session_info = _bt._active_sessions.get(task_id)
+        session_info = session_info or _bt._active_sessions.get(task_id)
 
     if not session_info:
         _bt.logger.debug("No active session found for task_id: %s", task_id)
@@ -733,12 +752,12 @@ def _cleanup_single_browser_session(task_id: str) -> None:
         _bt.logger.debug("Skipping agent-browser close for expired session %s", task_id)
     else:
         try:
-            _session._run_browser_command(task_id, "close", [], timeout=10)
+            _session._run_browser_command(task_id, "close", [], timeout=10, _session_info=session_info)
             _bt.logger.debug("agent-browser close command completed for task %s", task_id)
         except Exception as e:
             _bt.logger.warning("agent-browser close failed for task %s: %s", task_id, e)
 
-    _release_session_resources(task_id, session_info)
+    _release_session_resources(task_id, session_info, expected_session=session_info)
     _bt.logger.debug("Removed task %s from active sessions", task_id)
 
 

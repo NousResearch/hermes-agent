@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Mapping
 
 from utils import safe_json_loads
-from agent.tool_result_classification import file_mutation_result_landed, is_guardrail_refusal
+from agent.tool_result_classification import file_mutation_result_landed, has_failure_marker, is_guardrail_refusal
 
 
 IDEMPOTENT_TOOL_NAMES = frozenset({
@@ -237,8 +237,7 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
         data = safe_json_loads(result)
         if isinstance(data, dict) and data.get("success") is False and "exceed the limit" in data.get("error", ""):
             return True, " [full]"
-    lower = result[:500].lower()
-    return (True, " [error]") if '"error"' in lower or '"failed"' in lower or result.startswith("Error") else (False, "")
+    return (True, " [error]") if has_failure_marker(result) else (False, "")
 
 
 # Guardrail verdict text injected into the conversation, keyed by decision code.

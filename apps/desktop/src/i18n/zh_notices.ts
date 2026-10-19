@@ -1,4 +1,5 @@
 import type { TranslationOverrides } from './define-locale'
+import { zhDesktopCommands } from './zh_desktop_commands'
 import { zhSessionCommands } from './zh_session_commands'
 
 // Shell notices (remote-display toast, butterbar, keep-awake offer), spread into zh.ts.
@@ -23,7 +24,8 @@ export const zhNotices = {
     mcpReloadUnavailable: servers => `未能连接：${servers}`,
     compactedTurnUnavailable: '这条消息在压缩对话时已被概括，无法再恢复或编辑。',
     staleTurnUnavailable: '这条消息已不在此对话的历史记录中。',
-    sessionCommands: zhSessionCommands
+    sessionCommands: zhSessionCommands,
+    desktopCommands: zhDesktopCommands
   },
   keepAwakeOffer: {
     title: '电脑在 Hermes 工作时进入了睡眠',

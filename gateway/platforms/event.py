@@ -112,9 +112,15 @@ class MessageEvent:
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.
     _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
+    # Message IDs coalesced into this event, including the original ID, so each accepted ingress
+    # can settle its own lifecycle even when the gateway combines text into one turn.
+    merged_message_ids: list[str] = field(default_factory=list, init=False, repr=False, compare=False)
 
     def absorb_reply_expected(self, other: "MessageEvent") -> None:
-        """One turn now answers *other* too: an addressed message wins, then an unknown one."""
+        """One turn now answers both inputs; retain every ID when the gateway coalesces messages."""
+        for message_id in (self.message_id, other.message_id, *other.merged_message_ids):
+            if message_id and message_id not in self.merged_message_ids:
+                self.merged_message_ids.append(str(message_id))
         if self.reply_expected is not True and other.reply_expected is not False:
             self.reply_expected = other.reply_expected
 

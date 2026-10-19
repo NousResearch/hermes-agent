@@ -3,7 +3,7 @@ import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo } from 'react'
 
-import { type NewSessionSplitHandler, startNewSessionDrag } from '@/app/chat/new-session-drag'
+import type { NewSessionSplitHandler } from '@/app/chat/new-session-drag'
 import { SidebarPanelLabel } from '@/app/shell/sidebar-label'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { SidebarGroup, SidebarGroupContent } from '@/components/ui/sidebar'
@@ -41,10 +41,10 @@ import {
   SidebarWorkspaceGroup,
   type SidebarWorkspaceTree
 } from './projects'
-import { WorkspaceAddButton } from './projects/workspace-header'
 import { ReorderableList, useSortableBindings } from './reorderable-list'
 import { SidebarSessionSkeletons } from './section-states'
 import { SidebarSessionRow } from './session-row'
+import { SessionsDividerAction } from './sessions-section-divider-action'
 import { VirtualSessionList } from './virtual-session-list'
 
 export const VIRTUALIZE_THRESHOLD = 25
@@ -324,32 +324,15 @@ export function SidebarSessionsSection({
     ]
   )
 
-  // Date dividers head a group the same way a repo header does, so they carry
-  // the same hover-revealed "+". Only for dates: "new session in WORKING" is
-  // not a thing. The divider "+" is a drag source too (the same gesture as the
-  // nav's "New session" row): drag it onto a chat zone to create the session
-  // exactly there; a sub-threshold release stays the ordinary click. The ONE
-  // element here feeds both the plain and the virtualized list paths, so this
-  // single wiring covers every date-divider "+" on screen.
-  const dividerAction =
-    grouping === 'date' && onNewSessionInWorkspace ? (
-      <WorkspaceAddButton
-        label={t.sidebar.nav['new-session']}
-        onClick={() => onNewSessionInWorkspace(null)}
-        onPointerDown={
-          onNewSessionSplit
-            ? event => {
-                startNewSessionDrag(placement => {
-                  onNewSessionSplit(placement.dir, {
-                    anchor: placement.anchor,
-                    before: placement.before
-                  })
-                }, event)
-              }
-            : undefined
-        }
-      />
-    ) : null
+  // The ONE divider "+" element feeds both the plain and the virtualized list
+  // paths, so this single wiring covers every date-divider "+" on screen.
+  const dividerAction = (
+    <SessionsDividerAction
+      grouping={grouping}
+      onNewSessionInWorkspace={onNewSessionInWorkspace}
+      onNewSessionSplit={onNewSessionSplit}
+    />
+  )
 
   const dividerToggle = useMemo(
     () => ({

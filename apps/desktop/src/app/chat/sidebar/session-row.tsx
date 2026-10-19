@@ -27,7 +27,7 @@ import { coarseElapsed } from '@/lib/time'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { $sidebarRowMeta } from '@/store/layout'
-import { normalizeProfileKey, profileNameFor, $profiles } from '@/store/profile'
+import { normalizeProfileKey } from '@/store/profile'
 import { $projects } from '@/store/projects'
 import { $pullRequestsByBranch, sessionPrKey } from '@/store/pull-requests'
 import { sessionPinId } from '@/store/session'
@@ -51,8 +51,10 @@ import {
 } from './chrome'
 import { shellOwnsPress } from './reorderable-list'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
+import { SessionCardFooter } from './session-card-footer'
 import { sessionRowDetails } from './session-row-details'
 import { resolveSessionRowClick } from './session-row-gesture'
+import { useOwningProfileName } from './session-row-profile-name'
 import { SessionRowSlot } from './session-row-slots'
 import { useProfilePrewarm } from './use-profile-prewarm'
 
@@ -160,27 +162,10 @@ function SidebarSessionRowImpl({
   const title = sessionTitle(session)
   const density = useStore($sessionListDensity)
   const fmt = t.sidebar
-  // The default profile has no mark worth spending a row slot on — a chip on
-  // every row that says "the normal one" is noise. Named profiles only.
-  const hasProfileTag = normalizeProfileKey(session.profile) !== 'default'
-  // #89888: a list that merges profiles must say whose chat each row is. The
-  // name comes from the live roster (Bot Mode title → display_name → slug);
-  // until that roster lands — or for a profile it no longer lists — the owning
-  // key names itself, since that key IS the profile's name.
-  const profileKey = showProfileName && hasProfileTag ? normalizeProfileKey(session.profile) : null
-  const rosterName = useStoreSelector($profiles, profiles =>
-    profileKey ? profileNameFor(profiles, profileKey) : null
-  )
-  const owningProfileName = profileKey ? (rosterName ?? profileKey) : null
-
-  const details = sessionRowDetails(
-    session,
-    {
-      messageCount: fmt.messageCount,
-      toolCallCount: fmt.toolCallCount
-    },
-    { profileName: owningProfileName }
-  )
+  // #89888: a list that merges profiles must say whose chat each row is.
+  const owningProfileName = useOwningProfileName(session, showProfileName)
+  const formats = { messageCount: fmt.messageCount, toolCallCount: fmt.toolCallCount }
+  const details = sessionRowDetails(session, formats, { profileName: owningProfileName })
 
   const timestamp = session.last_active || session.started_at
   const age = formatAge(timestamp, r)
@@ -194,6 +179,9 @@ function SidebarSessionRowImpl({
   // Pinned metadata occupies the actions slot and swaps out for the kebab on
   // hover, so the row reserves the same width either way and never reflows.
   const pinnedAge = rowMeta.includes('updated')
+  // The default profile has no mark worth spending a row slot on — a chip on
+  // every row that says "the normal one" is noise. Named profiles only.
+  const hasProfileTag = normalizeProfileKey(session.profile) !== 'default'
   const pinnedProfile = hasProfileTag && rowMeta.includes('profile')
   // The branch's PR, if the row was asked to show one. A selector, not a plain
   // useStore: a repo's PRs land as a single map write, and only the rows on
@@ -297,17 +285,14 @@ function SidebarSessionRowImpl({
     card ? (sessionProjectLabel(session, projects) ?? (pathLeaf(session.cwd) || t.sidebar.projects.home)) : null
   )
 
-  // Card footer line: which model worked on it and how big it got. Rendered
-  // as separate spans with a flex gap — a joined string can't put real space
-  // between them (HTML collapses runs of whitespace to one). In a list that
-  // merges profiles the owner leads the line, same as the metadata line does
-  // for one-line rows (#89888) — the card has no metadata line to carry it.
-  const owner = card ? owningProfileName : null
+  // Card footer line: which model worked on it, how big it got, and — in a
+  // list that merges profiles — whose chat it is (#89888).
   const model = card && session.model ? displayModelName(session.model) : ''
   const size = card && session.message_count > 0 ? r.messageCount(session.message_count) : ''
   // Live plan progress ("3/7"), far right of the footer. A selector keyed to
   // this row: only rows whose own fraction changes repaint on todo events.
   const todoProgress = useStoreSelector($todoProgressBySession, progress => (card ? progress[session.id] : undefined))
+  const cardFooter = { card, model, owner: owningProfileName, size, todoProgress, todoTitle: r.todoProgress }
 
   // An archived session has no live status to paint, so the archive glyph takes
   // the lead slot the dot would occupy instead of adding a column of its own.
@@ -676,23 +661,7 @@ function SidebarSessionRowImpl({
                     </span>
                   ) : null}
                 </div>
-                {owner || model || size || todoProgress ? (
-                  <span
-                    className={cn(
-                      'flex min-w-0 items-baseline gap-2 text-[0.625rem] text-(--ui-text-tertiary)',
-                      SIDEBAR_TRUNCATED_LEADING
-                    )}
-                  >
-                    {owner ? <span className="min-w-0 truncate text-(--ui-text-quaternary)">{owner}</span> : null}
-                    {model ? <span className="min-w-0 truncate">{model}</span> : null}
-                    {size ? <span className="shrink-0 tabular-nums">{size}</span> : null}
-                    {todoProgress ? (
-                      <span className="ml-auto shrink-0 tabular-nums" title={r.todoProgress}>
-                        {todoProgress}
-                      </span>
-                    ) : null}
-                  </span>
-                ) : null}
+                <SessionCardFooter {...cardFooter} />
               </>
             )
           })()}

@@ -80,8 +80,11 @@ def test_pruning_only_handoff_window_commits_without_losing_live_work():
     assert compressor._structural_no_op_backoff_until == 0
 
 
-@pytest.mark.parametrize("in_place,fail_commit", [(True, False), (False, False), (True, True)])
-def test_prune_candidate_survives_database_reload(tmp_path, in_place, fail_commit):
+@pytest.mark.parametrize("in_place,fail_commit,drop_carried", [
+    (True, False, False), (False, False, False), (True, True, False), (True, False, True),
+])
+@pytest.mark.parametrize("include_row_ids", [False, True])
+def test_prune_candidate_survives_database_reload(tmp_path, in_place, fail_commit, drop_carried, include_row_ids):
     from hermes_state import SessionDB
     from run_agent import AIAgent
 
@@ -100,10 +103,18 @@ def test_prune_candidate_survives_database_reload(tmp_path, in_place, fail_commi
     )
     messages = _messages()
     agent._flush_messages_to_session_db(messages)
+    messages = db.get_messages_as_conversation(agent.session_id, include_row_ids=include_row_ids)
     persisted_before = db.get_messages_as_conversation(agent.session_id)
     assert len(persisted_before) == len(messages)
     commit = patch.object(db, "archive_and_compact", side_effect=RuntimeError("database is locked")) if fail_commit else nullcontext()
-    with commit, patch.object(agent.context_compressor, "_generate_summary") as summarize:
+    import agent.conversation_compression as compression
+    original_salvage = compression._salvage_or_refuse_grown_transcript
+    def discard_carried_pair(*args, **kwargs):
+        candidate, prompt = original_salvage(*args, **kwargs)
+        return [row for row in candidate if row.get("tool_call_id") != "call-18"
+                and not any(call.get("id") == "call-18" for call in row.get("tool_calls") or [])], prompt
+    salvage = patch.object(compression, "_salvage_or_refuse_grown_transcript", side_effect=discard_carried_pair) if drop_carried else nullcontext()
+    with commit, salvage, patch.object(agent.context_compressor, "_generate_summary") as summarize:
         result, _ = compress_context(agent, messages, "system", approx_tokens=74_000)
     summarize.assert_not_called()
     reopened = SessionDB(db_path=path)
@@ -115,7 +126,12 @@ def test_prune_candidate_survives_database_reload(tmp_path, in_place, fail_commi
             assert not agent.context_compressor._verify_compaction_cleared_threshold
         else:
             assert estimate_messages_tokens_rough(restored) < estimate_messages_tokens_rough(messages) / 2
-        assert len(restored) == len(messages)
+            if in_place:
+                assert len(reopened.search_messages('"verify all results at the end"', role_filter=["user"])) == 1
+                assert len(reopened.search_messages('"Verified file 19"', role_filter=["tool"])) == 1
+                assert len(reopened.search_messages('"Archived audit output"', role_filter=["tool"])) == 8
+                assert len(reopened.search_messages('"Verified file 18"', role_filter=["tool"])) == 1
+        assert len(restored) == len(messages) - (2 if drop_carried else 0)
     finally:
         reopened.close()
         db.close()
@@ -143,16 +159,16 @@ def test_structural_exits_keep_pruning_and_second_pass_is_noop(has_summary):
     )
 
 
-def test_in_place_pruning_recalls_unchanged_rows_once(tmp_path):
+def test_repeated_pruning_carries_only_durable_unchanged_rows(tmp_path):
+    """Fresh tool rows must not hide old output; later pruning must not multiply recall hits."""
     from hermes_state import SessionDB
     from run_agent import AIAgent
 
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session("prune-recall", source="cli")
+    db = SessionDB(db_path=tmp_path / "repeated.db")
+    db.create_session("repeat-prune", source="cli")
     agent = AIAgent(
         api_key="test-key", base_url="https://example.invalid/v1", model="test/model",
-        quiet_mode=True, session_db=db, session_id="prune-recall",
-        skip_context_files=True, skip_memory=True,
+        quiet_mode=True, session_db=db, session_id="repeat-prune", skip_context_files=True, skip_memory=True,
     )
     agent._compression_feasibility_checked = True
     agent.compression_in_place = True
@@ -160,19 +176,47 @@ def test_in_place_pruning_recalls_unchanged_rows_once(tmp_path):
         model="test/model", config_context_length=65_536, threshold_tokens_cap=32_768, quiet_mode=True,
     )
     messages = _messages()
-    messages[2]["content"] += " Headmarker."
-    messages[-1]["content"] += " Tailmarker."
     agent._flush_messages_to_session_db(messages)
-    pruned_before = db.search_messages("Archived", role_filter=["tool"], limit=50)
+    messages = db.get_messages_as_conversation(agent.session_id, include_row_ids=True)
+
+    def append_fresh_tools(rows, start, count):
+        for index in range(start, start + count):
+            rows.extend([
+                {"role": "assistant", "content": "Fresh check", "tool_calls": [{
+                    "id": f"fresh-{index}", "type": "function", "function": {
+                        "name": "read_file", "arguments": "{}"}}]},
+                {"role": "tool", "tool_call_id": f"fresh-{index}", "content": f"Fresh durable sentinel {index}."},
+            ])
+
     try:
-        with patch.object(agent.context_compressor, "_generate_summary") as summarize:
+        append_fresh_tools(messages, 0, 1)  # not flushed: no durable original exists
+        with patch.object(agent.context_compressor, "_generate_summary", side_effect=AssertionError("Unexpected summary")):
             result, _ = compress_context(agent, messages, "system", approx_tokens=74_000)
-        summarize.assert_not_called()
         assert estimate_messages_tokens_rough(result) < estimate_messages_tokens_rough(messages) / 2
-        assert len(db.search_messages("Headmarker", role_filter=["user"])) == 1
-        assert len(db.search_messages("Tailmarker", role_filter=["tool"])) == 1
-        # Pruned originals stay recallable from compacted history.
-        pruned_after = db.search_messages("Archived", role_filter=["tool"], limit=50)
-        assert {m["id"] for m in pruned_before} <= {m["id"] for m in pruned_after}
+        assert len(db.search_messages('"Fresh durable sentinel 0"', role_filter=["tool"])) == 1
+        assert len(db.search_messages('"verify all results at the end"', role_filter=["user"])) == 1
+        assert len(db.search_messages('"Verified file 19"', role_filter=["tool"])) == 1
+        assert len(db.search_messages('"Archived audit output"', role_filter=["tool"])) == 8
+
+        # Persist another large audit block so this boundary reclaims bytes rather than retrying a no-op.
+        for index in range(20):
+            db.append_message(agent.session_id, role="assistant", content="Next audit", tool_calls=[{
+                "id": f"next-{index}", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}])
+            db.append_message(agent.session_id, role="tool", tool_call_id=f"next-{index}",
+                              content="Second audit output.\n" * 1500 if index < 8 else f"Next verified {index}.")
+        again = db.get_messages_as_conversation(agent.session_id, include_row_ids=True)
+        append_fresh_tools(again, 1, 1)
+        second_before = estimate_messages_tokens_rough(again)
+        with patch.object(agent.context_compressor, "_generate_summary", side_effect=AssertionError("Unexpected summary")):
+            second, _ = compress_context(agent, again, "system", approx_tokens=74_000, force=True)
+        assert estimate_messages_tokens_rough(second) < second_before / 2
+        assert len(db.search_messages('"verify all results at the end"', role_filter=["user"])) == 1
+        assert len(db.search_messages('"Verified file 19"', role_filter=["tool"])) == 1
+        assert len(db.search_messages('"Fresh durable sentinel 0"', role_filter=["tool"])) == 1
+        assert len(db.search_messages('"Fresh durable sentinel 1"', role_filter=["tool"])) == 1
+        assert len(db.search_messages('"Archived audit output"', role_filter=["tool"])) == 8
+        assert len(db.search_messages('"Second audit output"', role_filter=["tool"])) == 8
+        assert [row["content"] for row in db.get_messages_as_conversation(agent.session_id)] == [
+            row["content"] for row in second]
     finally:
         db.close()

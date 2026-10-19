@@ -83,6 +83,9 @@ class LiveSession:
     # The background-review guard of a cold ``/refine`` (gateway/session_refine.py): its side agent is
     # per call, so the run token lives here; a second /refine joins it and the next turn cancels it.
     review: SimpleNamespace = field(default_factory=SimpleNamespace)
+    # Revision of the last ``session.control.update`` (gateway/session_control_actions.publish): a tool
+    # completion republishes only when a tool actually moved the goal/loop/heartbeat state.
+    control_revision: str = ""
 
     def __post_init__(self):
         self.controls = PendingControls(self.event_stream)

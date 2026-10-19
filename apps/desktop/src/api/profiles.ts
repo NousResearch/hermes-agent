@@ -16,7 +16,9 @@ export function getProfiles(scope?: ProfileScope): Promise<ProfilesResponse> {
   })
 }
 
-export function createProfile(body: ProfileCreatePayload): Promise<{ name: string; ok: boolean; path: string; soul_set?: boolean }> {
+export function createProfile(
+  body: ProfileCreatePayload
+): Promise<{ name: string; ok: boolean; path: string; soul_set?: boolean }> {
   return hermesApi<{ name: string; ok: boolean; path: string; soul_set?: boolean }>({
     path: '/api/profiles',
     method: 'POST',

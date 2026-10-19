@@ -118,6 +118,25 @@ async def _git_rpc(ws, method, **params):
                 return reply
 
 
+@pytest.mark.platforms("linux")
+def test_session_export_keeps_the_assistant_reply_and_refuses_a_client_path(tmp_path):
+    """T11: the JSON export carries the assistant's reply, and a client cannot steer a gateway-side
+    write with ``path`` (unknown params are refused; the client alone picks where the file goes)."""
+    with owner(tmp_path) as (home, _peer, desc):
+        async def probe():
+            async with websocket(home, desc) as ws:
+                sid = (await rpc(ws, 'session.create', request_id='export', source='tui', toolsets=[]))['result']['session_id']
+                await rpc(ws, 'prompt.submit', session_id=sid, input_id='first', text='EXPORT_ME')
+                await settled(home)
+                exported = (await rpc(ws, 'session.export', session_id=sid, format='json'))['result']
+                contents = [m.get('content') for m in json.loads(exported['content'])['messages']]
+                assert 'CONTROL_ACK' in contents, contents
+                refused = await rpc(ws, 'session.export', session_id=sid, format='md', path='/etc/x')
+                assert refused['error']['message'] == 'invalid_params', refused
+                assert not (home / 'sessions' / 'saved').exists(), 'session.export must not write on the gateway host'
+        asyncio.run(probe())
+
+
 def _checkpoint(home, cwd, reason):
     """A checkpoint in the owner profile's shared store (what the agent takes before a write)."""
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override

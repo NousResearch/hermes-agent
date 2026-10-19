@@ -157,6 +157,39 @@ describe('applyDisplay', () => {
 })
 
 describe('normalizeStatusBar', () => {
+  it('uses display.statusbar before tui_statusbar and accepts classic CLI hidden aliases', () => {
+    const setBell = vi.fn()
+
+    applyDisplay(
+      {
+        config: {
+          display: {
+            statusbar: 'hidden',
+            tui_statusbar: 'bottom'
+          }
+        }
+      },
+      setBell
+    )
+
+    expect($uiState.get().statusBar).toBe('off')
+
+    applyDisplay({ config: { display: { tui_statusbar: 'bottom' } } }, setBell)
+
+    expect($uiState.get().statusBar).toBe('bottom')
+
+    for (const value of ['hidden', 'no', 'false', '0', 'off']) {
+      expect(normalizeStatusBar(value)).toBe('off')
+    }
+
+    expect(normalizeStatusBar(false)).toBe('off')
+
+    // Match classic CLI's dict.get(): an explicitly present null is authoritative,
+    // rather than falling back to the legacy value.
+    applyDisplay({ config: { display: { statusbar: null, tui_statusbar: 'bottom' } } }, setBell)
+    expect($uiState.get().statusBar).toBe('top')
+  })
+
   it('maps legacy bool + on alias to top/off', () => {
     expect(normalizeStatusBar(true)).toBe('top')
     expect(normalizeStatusBar(false)).toBe('off')

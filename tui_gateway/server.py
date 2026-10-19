@@ -1350,7 +1350,6 @@ def _write_config_key(key_path: str, value):
     _save_cfg(cfg)
 
 
-_STATUSBAR_MODES = frozenset({"off", "top", "bottom"})
 _APPROVAL_MODES = frozenset({"manual", "smart", "off"})
 
 # Appearance switches the renderer owns but the AGENT must see (each gates a tool's `check_fn`). `config.set`

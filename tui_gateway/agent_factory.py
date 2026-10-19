@@ -243,12 +243,6 @@ def _load_approval_mode() -> str:
     return mode if mode in _APPROVAL_MODES else "manual"
 
 
-def _coerce_statusbar(raw) -> str:
-    if raw is False:
-        return "off"
-    return s if isinstance(raw, str) and (s := raw.strip().lower()) in _STATUSBAR_MODES else "top"
-
-
 _MOUSE_TRACKING_ALIASES = {
     "0": "off", "1": "all", "all": "all", "any": "all", "button": "buttons", "buttons": "buttons",
     "click": "buttons", "false": "off", "full": "all", "no": "off", "off": "off", "on": "all",

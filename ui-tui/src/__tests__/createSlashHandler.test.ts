@@ -11,6 +11,13 @@ import * as ClipboardModule from '../lib/clipboard.js'
 import * as Osc52Module from '../lib/osc52.js'
 import * as TerminalSetupModule from '../lib/terminalSetup.js'
 
+// The command registry loads built-in widgets on import. Keep their real
+// registration, but don't scan or watch the user's widget directory in tests.
+vi.mock('../sdk/userWidgets.js', () => ({
+  loadUserWidgets: vi.fn().mockResolvedValue({ added: [], errors: [], loaded: [], removed: [] }),
+  watchUserWidgets: vi.fn()
+}))
+
 // DASHBOARD_TUI_MODE resolves once at module load from HERMES_TUI_DASHBOARD,
 // so toggling process.env in a test body can't move it. Mock just that one
 // export (everything else stays real) and flip the holder per test.
@@ -195,6 +202,24 @@ describe('createSlashHandler', () => {
     await vi.waitFor(() => {
       expect(ctx.transcript.page).toHaveBeenCalledWith('Hermes TUI Status', t('slashCmd.core.status.pageTitle'))
     })
+  })
+
+  it.each(['hidden', 'no', 'false', '0'])('normalizes /statusbar %s to canonical off before RPC', async value => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)(`/statusbar ${value}`)).toBe(true)
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', { key: 'statusbar', value: 'off' })
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('status bar off')
+    })
+  })
+
+  it('rejects an unknown /statusbar value without calling the RPC', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/statusbar sideways')).toBe(true)
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('usage: /statusbar [on|off|top|bottom|toggle]')
   })
 
   it('keeps typed /model switches session-scoped by default', async () => {

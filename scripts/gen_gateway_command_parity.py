@@ -31,7 +31,8 @@ NOT_A_LOCAL_READ = {
     "platform": "messaging adapters; `pause`/`resume` mutate them",
     "sessions": "messaging origin-scoped listing (`/sessions all` needs a messaging admin)",
     "debug": "uploads logs to a public paste",
-    "save": "writes an export file on the gateway host",
+    "save": "the gateway handler writes its file on the gateway host; Desktop saves `session.export` text "
+            "through its own dialog",
     "rollback": "restores filesystem checkpoints",
     "resume": "switches the messaging chat's session; local clients resume by id",
 }

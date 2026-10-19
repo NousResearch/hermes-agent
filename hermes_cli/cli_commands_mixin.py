@@ -38,6 +38,7 @@ from hermes_cli.cli_commands_session_tools import (
 from hermes_cli.browser_connect import (
     DEFAULT_BROWSER_CDP_URL, discover_local_cdp_url, find_free_debug_port, is_browser_debug_ready,
     launch_chrome_debug, local_port_in_use, manual_chrome_debug_command)
+from hermes_cli.cli_browser_gateway import _normalize_cdp_url
 
 
 # Output helpers. Slash-command text is user-visible: every literal below is load-bearing.
@@ -354,26 +355,6 @@ def _browser_use(cli, arg: str) -> None:
     headline = _t("browser.use_enabled" if arg == "on" else "browser.use_disabled")
     cli.new_session()
     _say_block(headline, f"   {_t('browser.session_reset')}")
-
-
-def _normalize_cdp_url(cdp_url: str):
-    """Validate a /browser connect URL: ``(cdp_url, port)`` or None after printing the error.
-    A ``/devtools/browser/<id>`` path is kept verbatim; anything else is reduced to the origin."""
-    parsed = urlparse(cdp_url if "://" in cdp_url else f"http://{cdp_url}")
-    if parsed.scheme not in {"http", "https", "ws", "wss"}:
-        _say_block(f"   {_t('browser.unsupported_scheme', scheme=parsed.scheme or _t('browser.scheme_missing'))}")
-        return None
-    try:
-        port = parsed.port or (443 if parsed.scheme in {"https", "wss"} else 80)
-    except ValueError:
-        _say_block(f"   {_t('browser.invalid_port', url=cdp_url)}")
-        return None
-    if not parsed.hostname:
-        _say_block(f"   {_t('browser.missing_host', url=cdp_url)}")
-        return None
-    if parsed.path.startswith("/devtools/browser/"):
-        return parsed.geturl(), port
-    return parsed._replace(path="", params="", query="", fragment="").geturl(), port
 
 
 def _launch_default_cdp_browser(port: int):
@@ -1845,6 +1826,10 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
                 _t("browser.usage"), "",
                 *(f"   {_t(f'browser.usage_{sub}')}" for sub in ("connect", "disconnect", "status", "use")))
             return
+        from hermes_cli.gateway_side import connection_for
+        if (connection := connection_for(self)) is not None:
+            from hermes_cli.cli_browser_gateway import gateway_browser
+            return gateway_browser(self, connection, word, rest.strip())
         handler(self, rest.strip())
 
     # ---- /heartbeat, /refine, /review -----------------------------------------------------
@@ -2264,7 +2249,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             setattr(self, attr, value)
             if attr == "show_reasoning" and self.agent:
                 self.agent.reasoning_callback = self._current_reasoning_callback()
-            _save(f"display.{attr}", value)
+            _save("display.platforms.cli.show_reasoning" if attr == "show_reasoning" else f"display.{attr}", value)  # T7
             _cp(_accent_line(_t("reasoning.display_saved", headline=_t(f"reasoning.{headline_key}"))))
             if note_key:
                 _cp(_dim_line(f"  {_t(f'reasoning.{note_key}')}"))

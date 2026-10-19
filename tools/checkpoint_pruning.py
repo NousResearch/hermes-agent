@@ -115,7 +115,12 @@ class Pruner:
         against an unchanging pack once flattened every project to a single snapshot."""
         if cap_bytes <= 0:
             return False
-        if self.gc_pending():
+        # Reclaim only when the raw measurement is over cap: trim() marks .gc-pending
+        # on every chain rewrite (every take at the snapshot budget), so an
+        # unconditional reclaim paid a full git gc under the store lock on every take.
+        # Under cap the marker stays for the periodic prune; packing only shrinks
+        # dir_size, so the post-gc judgment still keeps #138039 fixed.
+        if self.gc_pending() and self.dir_size(self.store) > cap_bytes:
             self.reclaim()
         if self.dir_size(self.store) <= cap_bytes:
             return False

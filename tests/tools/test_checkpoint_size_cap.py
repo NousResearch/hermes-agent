@@ -74,6 +74,44 @@ def test_snapshot_over_cap_drops_one_round_and_leaves_the_gc_to_the_prune(histor
     assert (project / "small.txt").read_text(encoding="utf-8") == "4"
 
 
+def test_take_with_a_pending_gc_marker_does_not_reclaim_under_cap(history):
+    """A pending gc marker must not turn every take into a full git gc (review on #140864).
+
+    trim() marks .gc-pending on every chain rewrite — every take at the snapshot
+    budget — so the reclaim is gated on the raw measurement: an under-cap store
+    keeps the marker for the periodic prune instead of paying a git gc per take,
+    while an over-cap store still compacts before any snapshot is dropped.
+    """
+    from tools.checkpoint_pruning import GC_PENDING_NAME
+
+    base, project, manager = history
+    store = checkpoints._store_path(base)
+    manager.max_total_size_mb = 1
+    # One over-cap take: drops a round and marks the store gc-pending.
+    (project / "new.txt").write_text("new snapshot", encoding="utf-8")
+    manager.new_turn()
+    manager.ensure_checkpoint(str(project), "newest")
+    assert (store / GC_PENDING_NAME).exists()
+
+    # Raise the cap so the raw measurement fits; takes must stay gc-free.
+    manager.max_total_size_mb = 10
+    gc_calls = []
+    original = checkpoints._run_git
+
+    def count_gc(args, *rest, **kwargs):
+        if args[0] == "gc":
+            gc_calls.append(args)
+        return original(args, *rest, **kwargs)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(checkpoints, "_run_git", count_gc)
+        (project / "newer.txt").write_text("newer snapshot", encoding="utf-8")
+        manager.new_turn()
+        assert manager.ensure_checkpoint(str(project), "newest-2")
+    assert gc_calls == [], "an under-cap take paid a full git gc with the marker pending"
+    assert (store / GC_PENDING_NAME).exists(), "the marker must stay for the periodic prune"
+
+
 def test_reclaim_stops_before_touching_another_projects_history(history):
     base, first, manager = history
     # Real ref sorting chooses the first victim. Pick the other project so

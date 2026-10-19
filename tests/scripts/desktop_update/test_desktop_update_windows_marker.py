@@ -13,11 +13,12 @@ import subprocess
 import sys
 import time
 
+import psutil
 import pytest
 
 from tests.installation_launcher_fixture import publish_fixture_launcher
 from tests.scripts.desktop_update.legacy_desktop_reader import legacy_read
-from tests.scripts.desktop_update.windows_handoff_support import _HeldLock
+from tests.scripts.desktop_update.windows_handoff_support import _HeldLock, _creation_time
 
 ROOT = Path(__file__).resolve().parent.parent.parent.parent
 SCRIPT = ROOT / 'scripts/desktop-update/windows.ps1'
@@ -44,17 +45,6 @@ def sleeper():
     proc.wait()
 
 
-def _creation_time(pid: int) -> str:
-    # Limited query rights (what Python/Rust readers use): works for every process.
-    out = subprocess.run(
-        ['powershell', '-NoProfile', '-Command',
-         f"$c = (Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CreationDate; "
-         "[DateTimeOffset]::new($c.ToUniversalTime()).ToUnixTimeMilliseconds().ToString()"],
-        capture_output=True, text=True, timeout=60, check=True,
-    ).stdout.strip()
-    return f'{int(out) / 1000:.3f}'
-
-
 def _protected_pid() -> int:
     """A live pid that grants only limited query rights (a SYSTEM/protected service): what
     Get-Process .StartTime needs is denied, what CIM/GetProcessTimes need is granted."""
@@ -62,13 +52,10 @@ def _protected_pid() -> int:
     k32 = ctypes.windll.kernel32
     k32.OpenProcess.restype = ctypes.c_void_p
     names = ('csrss.exe', 'smss.exe', 'wininit.exe', 'services.exe', 'lsass.exe', 'MsMpEng.exe')
-    rows = subprocess.run(
-        ['powershell', '-NoProfile', '-Command',
-         'Get-CimInstance Win32_Process | ForEach-Object { \'{0} {1}\' -f $_.ProcessId, $_.Name }'],
-        capture_output=True, text=True, timeout=60, check=True,
-    ).stdout.splitlines()
-    for row in rows:
-        pid, _, name = row.strip().partition(' ')
+    rows = []
+    for process in psutil.process_iter(['pid', 'name'], ad_value=None):
+        pid, name = process.info['pid'], process.info['name']
+        rows.append(f'{pid} {name}')
         if name not in names:
             continue
         full = k32.OpenProcess(0x0400, False, int(pid))         # PROCESS_QUERY_INFORMATION
@@ -298,12 +285,7 @@ def _marker_lines(path: Path) -> list[str]:
 
 
 def _parent_pid(pid: int) -> int:
-    out = subprocess.run(
-        ['powershell', '-NoProfile', '-Command',
-         f"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').ParentProcessId"],
-        capture_output=True, text=True, timeout=60, check=True,
-    ).stdout.strip()
-    return int(out or 0)
+    return psutil.Process(pid).ppid()
 
 
 @pytest.mark.platforms('windows')

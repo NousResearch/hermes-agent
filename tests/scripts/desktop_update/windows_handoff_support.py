@@ -10,6 +10,7 @@ import time
 
 import pytest
 
+from hermes_cli.update_lock import _FILETIME_UNIX_EPOCH, _windows_create_filetime
 
 ROOT = Path(__file__).resolve().parent.parent.parent.parent
 SCRIPT = ROOT / 'scripts/desktop-update/windows.ps1'
@@ -36,15 +37,13 @@ if __name__ == '__main__':
 """
 
 
-def _ps(command: str, timeout: int = 60) -> str:
-    return subprocess.run([POWERSHELL, '-NoProfile', '-Command', command],
-                          capture_output=True, text=True, timeout=timeout, check=True).stdout.strip()
-
-
 def _creation_time(pid: int) -> str:
-    out = _ps(f"$c = (Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CreationDate; "
-              "[DateTimeOffset]::new($c.ToUniversalTime()).ToUnixTimeMilliseconds().ToString()")
-    return f'{int(out) / 1000:.3f}'
+    # The Python reader already queries limited-rights FILETIME natively. Match
+    # CIM's integer milliseconds without another PowerShell/WMI query per fixture.
+    ticks = _windows_create_filetime(pid)
+    assert ticks is not None, f'cannot read native creation time of pid {pid}'
+    milliseconds = (ticks - _FILETIME_UNIX_EPOCH) // 10_000
+    return f'{milliseconds // 1000}.{milliseconds % 1000:03d}'
 
 
 def _alive(pid: int) -> bool:

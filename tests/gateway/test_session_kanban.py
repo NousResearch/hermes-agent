@@ -131,7 +131,7 @@ def test_claim_reclaimed_before_admission_marker_is_refused(tmp_path, monkeypatc
             kb.claim_task(conn, task_id)
         return SimpleNamespace(session_id='owner-session', profile_id=str(tmp_path))
     monkeypatch.setattr('gateway.session_local.create_local_session', create_local_session)
-    async def submit(actor, submission):
+    async def submit(actor, submission, **kwargs):
         calls.append(('submit', submission))
     async def resume(ref, params):
         calls.append(('resume', ref))

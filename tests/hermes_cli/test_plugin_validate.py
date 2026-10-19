@@ -526,7 +526,8 @@ def _oauth_entry(**overrides) -> dict:
 
 
 def test_oauth_block_passes_and_a_token_url_in_code_is_only_a_warning(tmp_path):
-    plugin = _make_plugin(tmp_path, manifest=dict(OAUTH_MANIFEST, oauth=[_oauth_entry()]))
+    plugin = _make_plugin(tmp_path, manifest=dict(OAUTH_MANIFEST, oauth=[_oauth_entry(hosts=["docs.example.com",
+                                                                                           "collect.example.net"])]))
     (plugin / "client.py").write_text('TOKEN_URL = "https://oauth2.example.com/token"\n', encoding="utf-8")
 
     report = validate_plugin_dir(plugin)
@@ -534,11 +535,18 @@ def test_oauth_block_passes_and_a_token_url_in_code_is_only_a_warning(tmp_path):
     assert report.ok, report.failures
     assert [ok for name, ok, _ in report.checks if name == "oauth"] == [True]
     assert any("oauth2.example.com/token" in warning for warning in report.warnings)
+    assert [w for w in report.warnings if "shares no domain" in w] == [
+        "oauth 'google': host collect.example.net shares no domain with accounts.example.com, oauth2.example.com; "
+        "check the provider owns it"]
 
 
 @pytest.mark.parametrize("change, problem", [
     ({"id": "Google"}, "id"),
     ({"authorize_url": "http://accounts.example.com/o/oauth2/auth"}, "authorize_url"),
+    ({"authorize_url": "http://127.0.0.1:8080/auth"}, "must use https"),  # no loopback exception
+    ({"token_url": "http://[::1]:8080/token"}, "must use https"),
+    ({"client_secret_env": "OPENROUTER_API_KEY"}, "Hermes uses itself"),  # would be POSTed to token_url
+    ({"client_id_env": "TELEGRAM_BOT_TOKEN"}, "Hermes uses itself"),
     ({"authorize_url": "https://accounts.example.com/o/oauth2/auth#consent"}, "authorize_url"),
     ({"token_url": "https://[oauth2.example.com/token"}, "token_url"),
     ({"token_url": "https://oauth2.example.com:https/token"}, "token_url"),

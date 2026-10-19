@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import ssl
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -102,13 +103,13 @@ def _auth(action: str, provider: str = KEY):
 
 
 def _grant(key: str = KEY) -> dict | None:
-    store = json.loads((_home() / "auth.json").read_text(encoding="utf-8"))
+    store = json.loads((_home() / "auth.json").read_text(encoding="utf-8-sig"))
     return (store.get("plugin_oauth") or {}).get(key)
 
 
 def _set_grant(key: str = KEY, **fields) -> None:
     path = _home() / "auth.json"
-    store = json.loads(path.read_text(encoding="utf-8"))
+    store = json.loads(path.read_text(encoding="utf-8-sig"))
     store["plugin_oauth"][key].update(fields)
     path.write_text(json.dumps(store), encoding="utf-8")
 
@@ -118,16 +119,19 @@ def _refreshes(idp: FakeIdP) -> int:
 
 
 @pytest.fixture
-def idp(monkeypatch):
+def idp(monkeypatch, tmp_path):
     monkeypatch.setenv("VOICE_CLIENT_ID", CLIENT_ID)
     monkeypatch.setenv("VOICE_CLIENT_SECRET", SECRET)
-    server = FakeIdP().start()
+    server = FakeIdP().start(tls_dir=tmp_path / "idp-ca")  # https: plugin OAuth endpoints are https-only
+    trust = ssl.create_default_context(cafile=str(server.ca_pem))
+    monkeypatch.setattr("hermes_cli.auth._default_verify", lambda: trust)
     server.opened = []
 
     def browser(url: str) -> bool:
+        # A real browser runs beside Hermes; the fake IdP 302s straight to the loopback callback.
         server.opened.append(url)
-        with urlopen(url, timeout=5) as response:  # the fake IdP 302s straight to the loopback callback
-            return response.status == 200
+        threading.Thread(target=lambda: urlopen(url, timeout=10, context=trust).close(), daemon=True).start()
+        return True
 
     monkeypatch.setattr(pkce.webbrowser, "open", browser)
     monkeypatch.setattr("hermes_cli.auth_device_flow._can_open_graphical_browser", lambda: True)
@@ -153,8 +157,11 @@ def _signed_in(idp: FakeIdP, **entry_overrides):
 
 
 def test_sign_in_stores_the_grant_then_status_refresh_and_logout(idp, capsys):
+    from hermes_cli import auth_commands
+
     _plugin(oauth=[_entry(idp)])
-    assert _auth("add") is True
+    args = SimpleNamespace(provider=KEY, no_browser=False, timeout=None)
+    auth_commands.auth_add_command(args)
 
     assert "access_type=offline" in idp.opened[-1] and "prompt=consent" in idp.opened[-1]
     exchange = idp.token_requests[-1]
@@ -162,13 +169,15 @@ def test_sign_in_stores_the_grant_then_status_refresh_and_logout(idp, capsys):
     assert (exchange["client_id"], exchange["client_secret"]) == (CLIENT_ID, SECRET)
     grant = _grant()
     assert grant["refresh_token"] in idp.refresh_tokens and grant["access_token"] and grant["expires_at_ms"]
-    assert SECRET not in (_home() / "auth.json").read_text(encoding="utf-8")
+    assert SECRET not in (_home() / "auth.json").read_text(encoding="utf-8-sig")
 
-    assert _auth("status") is True
-    assert _auth("refresh") is True and _refreshes(idp) == 1
-    assert _auth("logout") is True and _grant() is None
+    auth_commands.auth_status_command(args)
+    auth_commands.auth_refresh_command(args)
+    assert _refreshes(idp) == 1
+    auth_commands.auth_logout_command(args)
+    assert _grant() is None
     out = capsys.readouterr()
-    assert "logged in" in out.out and SECRET not in out.out + out.err
+    assert "voice:google: logged in" in out.out and SECRET not in out.out + out.err
 
 
 def test_bearer_reaches_the_declared_host_and_never_the_plugin(idp, api):
@@ -406,7 +415,7 @@ def test_grant_belongs_to_one_profile(idp, api, monkeypatch, tmp_path):
 def test_client_secret_stays_out_of_config_repr_logs_and_errors(idp, api, caplog, capsys):
     allowed, _ = api
     plugin = _signed_in(idp)
-    manifest = json.loads((_home() / "plugins" / "voice" / "plugin.yaml").read_text(encoding="utf-8"))
+    manifest = json.loads((_home() / "plugins" / "voice" / "plugin.yaml").read_text(encoding="utf-8-sig"))
     client = plugin_oauth.parse_oauth_clients(manifest)[0][0]
     assert SECRET not in repr(plugin_oauth._pkce_config(client, KEY))
 
@@ -444,11 +453,7 @@ def test_install_notice_and_repin_delta_name_the_oauth_entry(idp, tmp_path):
     lines = surface_delta_lines(surface_delta(plugin_surface(manifest, tmp_path), plugin_surface(widened, tmp_path)))
     assert len(lines) == 1 and lines[0].startswith("your OAuth sign-in for") and "collect.example.net" in lines[0]
 
-
-def test_repin_delta_names_a_changed_authorize_host(idp, tmp_path):
-    from hermes_cli.plugins_cmd_catalog import plugin_surface, surface_delta, surface_delta_lines
-
-    installed = plugin_surface({"name": "voice", "oauth": [_entry(idp)]}, tmp_path)
+    installed = plugin_surface(manifest, tmp_path)
     moved = {"name": "voice", "oauth": [_entry(idp, authorize_url="https://signin.example.net/authorize")]}
     lines = surface_delta_lines(surface_delta(installed, plugin_surface(moved, tmp_path)))
     assert len(lines) == 1 and "signin.example.net" in lines[0]
@@ -460,7 +465,7 @@ def test_repin_delta_names_a_changed_authorize_host(idp, tmp_path):
 def test_the_notice_command_finds_a_plugin_whose_name_differs_from_its_directory(idp, api):
     allowed, _ = api
     plugin = _plugin("voice-dir", oauth=[_entry(idp)], display="gemini-voice")
-    manifest = json.loads((_home() / "plugins" / "voice-dir" / "plugin.yaml").read_text(encoding="utf-8"))
+    manifest = json.loads((_home() / "plugins" / "voice-dir" / "plugin.yaml").read_text(encoding="utf-8-sig"))
     assert "hermes auth add gemini-voice:google" in ppr.requires_auth_notice(manifest)
 
     assert _auth("add", "gemini-voice:google") is True
@@ -468,17 +473,72 @@ def test_the_notice_command_finds_a_plugin_whose_name_differs_from_its_directory
     assert plugin.call("google", allowed.url).status == 200
 
 
-def test_hermes_auth_commands_route_a_plugin_grant(idp, capsys):
-    from hermes_cli import auth_commands
+# ── Security invariants (review of #139985) ─────────────────────────────────────────────────────────
 
+
+def _reachable_text(exc: BaseException) -> str:
+    """Everything plugin code can read off a caught exception: repr, chain, httpx request, frame locals."""
+    import traceback
+
+    parts, seen = [], set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        parts.append("".join(traceback.TracebackException.from_exception(exc, capture_locals=True).format()))
+        try:
+            request = exc.request  # httpx errors carry the request they sent
+        except (AttributeError, RuntimeError):
+            request = None
+        if request is not None:
+            parts += [repr(dict(request.headers)), request.content.decode("utf-8", "replace")]
+        exc = exc.__cause__ or exc.__context__
+    return "\n".join(parts)
+
+
+def test_errors_raised_to_the_plugin_carry_no_token_refresh_token_or_secret(idp, api):
+    """A failed API call or refresh hands the plugin an exception; nothing in it may lead back to a credential."""
+    allowed, _ = api
+    plugin = _signed_in(idp)
+    token = _grant()["access_token"]
+    allowed.close()  # the API host is down: httpx raises with the request it tried to send
+    exc = _caught(lambda: plugin.call("google", allowed.url + "/v1"))
+    assert type(exc).__name__ == "ConnectError" and token not in _reachable_text(exc)
+
+    refresh = _grant()["refresh_token"]
+    _set_grant(expires_at_ms=0)
+    idp.stop()  # the token endpoint is down mid-refresh
+    exc = _caught(lambda: plugin.call("google", allowed.url + "/v1"))
+    assert isinstance(exc, AuthError) and exc.code == "oauth_refresh_failed"
+    text = _reachable_text(exc)
+    assert refresh not in text and SECRET not in text
+
+
+def _caught(fn) -> BaseException:
+    try:
+        fn()
+    except Exception as exc:  # what plugin code would catch
+        return exc
+    raise AssertionError("expected an error")
+
+
+def test_revoked_grant_keeps_no_tokens_and_uninstall_drops_the_grant(idp, api):
+    allowed, _ = api
+    plugin = _signed_in(idp)
+    idp.refresh_tokens.clear()
+    _set_grant(expires_at_ms=0)
+    with pytest.raises(ppr.ProviderNotSignedIn, match="revoked"):
+        plugin.call("google", allowed.url)
+    assert set(_grant()) == {"dead", "fingerprint"}
+
+    from hermes_cli.plugins_cmd_remove import _remove_user_plugin
+
+    assert _auth("add") is True and _grant()["access_token"]
+    _remove_user_plugin(_home() / "plugins", "voice", _home() / "plugins" / "voice")
+    assert _grant() is None  # a later plugin installed as "voice" does not inherit the sign-in
+
+
+def test_sign_in_is_refused_where_nobody_can_answer_the_browser(idp, monkeypatch):
     _plugin(oauth=[_entry(idp)])
-    args = SimpleNamespace(provider=KEY, no_browser=False, timeout=None)
-
-    auth_commands.auth_add_command(args)
-    assert _grant()["refresh_token"] in idp.refresh_tokens
-    auth_commands.auth_status_command(args)
-    auth_commands.auth_refresh_command(args)
-    auth_commands.auth_logout_command(args)
-
-    assert _grant() is None and _refreshes(idp) == 1
-    assert "voice:google: logged in" in capsys.readouterr().out
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+    with pytest.raises(SystemExit, match="your own terminal"):
+        _auth("add")
+    assert idp.token_requests == [] and idp.opened == []

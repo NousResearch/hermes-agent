@@ -1,3 +1,7 @@
+# health: allow FILE_LINES -- the kanban notification keys (wake_event_kinds,
+# quiet_progress_notifications) are documented inline as the user-facing config docs; the
+# growth is only those comment rows, and extracting the kanban block from DEFAULT_CONFIG is a
+# separate data-module refactor.
 """Default configuration data for Hermes Agent: DEFAULT_CONFIG and OPTIONAL_ENV_VARS.
 
 Pure-data leaf module — must not import from hermes_cli.config. Comments are the user-facing
@@ -1913,6 +1917,12 @@ DEFAULT_CONFIG = {
         # the passive ping is enough and only a block needs the agent to react,
         # e.g. ["blocked", "block_loop_detected"]. Unknown names are ignored.
         "wake_event_kinds": [],
+        # Opt-in and separate from wake_event_kinds: quiet the automatically-continuing progress
+        # events (crash/timeout retries, automated review handoffs) from BOTH the passive ping and
+        # the wake leg. Absent/false keeps today's behaviour; only a literal `true` enables it. It
+        # only ever removes a delivery when the embedded dispatcher continues the card by itself, so
+        # real blockers, completions and exhausted retries stay visible.
+        "quiet_progress_notifications": False,
         # Run the dispatcher inside the gateway process (~300µs per idle tick). False only if you
         # run it as a separate unit or don't want the gateway spawning workers.
         "dispatch_in_gateway": True,

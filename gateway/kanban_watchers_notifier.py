@@ -58,6 +58,99 @@ def diagnostic_event(ev) -> bool:
         return (ev.payload or {}).get("kind") != "needs_input"
     return ev.kind == "status" and (ev.payload or {}).get("status") in {"blocked", "triage"}
 
+
+# Progress kinds the dispatcher carries forward BY ITSELF: a retry after a crash/timeout, and an
+# automated review handoff. ``kanban.quiet_progress_notifications`` may drop these from BOTH delivery
+# legs when continuation is established — never ``completed`` (the card's outcome is the news),
+# ``gave_up`` (retries exhausted is a decision point), ``blocked``/``block_loop_detected`` (a blocker
+# or a loop is exactly what a human must see), or bookkeeping kinds.
+#
+# This list is orthogonal to ``diagnostic_event()`` above, on purpose. That function answers the
+# platform's DELIVERY CATEGORY question — "is this infrastructure attention or an explicit owner
+# decision" (it feeds ``present_notification(diagnostic=...)``). The quiet policy answers a different
+# question — "does the dispatcher continue this card by itself" (deliverability) — so neither list
+# can be derived from the other: ``gave_up`` is diagnostic AND terminal, and must stay visible, while
+# ``review_requested`` is not diagnostic today yet is the exact redundant case operators report.
+_PROGRESS_KINDS = ("crashed", "timed_out", "review_requested", "changes_requested")
+
+
+def continuation_established(runner: Any, task: Any, kind: str) -> bool:
+    """True only when THIS process's dispatcher will carry the card forward by itself.
+
+    Conservative on purpose and fail-open in every unknown: a notification dropped on a guess is
+    silence in place of work. It is an eligibility check, not proof that a worker starts (an
+    assigned, dispatchable card may still sit in the queue) — which is why every leg of it must be
+    readable before anything is suppressed.
+    """
+    # The lock handle IS the proof that the embedded dispatcher owns spawning in this process;
+    # ``kanban.dispatch_in_gateway`` is deliberately not read here (a second config read would only
+    # invent a second truth: dispatch may run elsewhere, or nowhere).
+    if getattr(runner, "_kanban_dispatcher_lock_handle", None) is None:
+        return False
+    try:
+        from gateway.kanban_watchers_common import _kanban_dispatch_allowed
+    except ImportError:
+        return False
+    if not _kanban_dispatch_allowed():  # global `hermes pause` estop engaged
+        return False
+    if task is None:
+        return False
+    assignee = getattr(task, "assignee", None)
+    if not assignee or not str(assignee).strip():
+        return False
+    # The dispatcher's OWN spawnability predicate, so ``kanban.dispatch_profiles`` is honoured too.
+    try:
+        from hermes_cli.kanban_db_dispatch import _profile_exists_fn
+    except ImportError:
+        return False
+    predicate = _profile_exists_fn()
+    if predicate is None:
+        return False
+    try:
+        if not predicate(assignee):
+            return False
+    except Exception:  # health: allow BLE001 -- an unreadable predicate keeps the notification (fail open)
+        return False
+    status = getattr(task, "status", None)
+    if kind == "review_requested":
+        # Manual review (``kanban.review_dispatch`` off) is a decision for the owner, not progress.
+        try:
+            from hermes_cli.kanban_db_dispatch import review_dispatch_enabled
+        except ImportError:
+            return False
+        if not review_dispatch_enabled():
+            return False
+        return status == "review"
+    if kind in _PROGRESS_KINDS:
+        return status == "ready"
+    return False
+
+
+def quiet_progress_enabled(cfg: Optional[dict] = None) -> bool:
+    """``kanban.quiet_progress_notifications`` — only a literal ``True`` opts in."""
+    if cfg is None:
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+        except Exception:  # health: allow BLE001 -- an unreadable config never enables a suppression
+            return False
+    try:
+        kanban_cfg = (cfg or {}).get("kanban") or {}
+        return kanban_cfg.get("quiet_progress_notifications") is True
+    except Exception:  # health: allow BLE001 -- a non-dict/malformed config never enables a suppression
+        return False
+
+
+def _resolve_quiet_progress() -> bool:
+    """``kanban.quiet_progress_notifications`` read in the notifier's own profile scope."""
+    try:
+        from hermes_cli.config import load_config
+        return quiet_progress_enabled(load_config())
+    except Exception:  # health: allow BLE001 -- a config read must never break delivery (or suppress)
+        logger.debug("kanban notifier: quiet-progress config unreadable; keeping notifications", exc_info=True)
+        return False
+
+
 # ``kanban.wake_event_kinds`` narrows the tuple above. Some stacks want the passive
 # ping for every terminal event but a synthetic wake turn (a full agent turn in the
 # origin session) only for the kinds that genuinely need a decision, e.g.
@@ -80,7 +173,7 @@ def _resolve_wake_kinds() -> tuple:
     try:
         from hermes_cli.config import load_config
         return wake_kinds_from_config(load_config())
-    except Exception:  # a config read must never break delivery
+    except Exception:  # health: allow BLE001 -- a config read must never break delivery
         logger.debug("kanban notifier: wake-kind config unreadable; using the default kinds", exc_info=True)
         return _WAKE_KINDS
 
@@ -554,6 +647,9 @@ class _KanbanNotification:
         # Allowed wake kinds, resolved per delivery in the notifier's own scope
         # (``kanban.wake_event_kinds``); defaults to every _WAKE_KINDS entry.
         self.wake_kinds_allowed: tuple = _WAKE_KINDS
+        # ``kanban.quiet_progress_notifications``, resolved per delivery in the same scope. Opt-in:
+        # False keeps today's behaviour (a ping and a wake for every terminal event).
+        self.quiet_progress: bool = False
 
     # -- cursor / subscription ops (blocking, run in a fresh-context thread) --
 
@@ -600,6 +696,36 @@ class _KanbanNotification:
         if review_detail is not None:
             self.wake_review_detail = review_detail
         return msg
+
+    def apply_quiet_progress_policy(self) -> None:
+        """Drop the automatically-continuing progress events from BOTH legs before either renders.
+
+        Runs once per delivery on the claimed batch, before `_send_pings()` (and therefore before the
+        wake groups are built from `self.d["events"]`). It removes an event from delivery only: the
+        durable event history and the cursor are untouched (`advance()` still consumes the claim), so
+        a suppressed transition is not replayed after a restart, and a mixed batch keeps delivering
+        its visible terminal events.
+        """
+        if not self.quiet_progress:
+            return
+        kept = []
+        dropped = []
+        for ev in self.d["events"]:
+            if self._quiet_progress_event(ev):
+                dropped.append(ev.kind)
+            else:
+                kept.append(ev)
+        if not dropped:
+            return
+        logger.info(
+            "kanban notifier: quieted progress %s for %s on %s (dispatcher continues the card)",
+            ", ".join(dict.fromkeys(dropped)), self.task_id, self.platform_str,
+        )
+        self.d = {**self.d, "events": kept}
+
+    def _quiet_progress_event(self, ev: Any) -> bool:
+        """True when this event is redundant because the dispatcher continues the card itself."""
+        return ev.kind in _PROGRESS_KINDS and continuation_established(self.runner, self.task, ev.kind)
 
     def build_wake_text(self) -> None:
         """Set ``wake_kinds`` / ``session_key`` / ``synth`` for the wake paths."""
@@ -798,10 +924,14 @@ class _KanbanNotification:
         # the root config) and never inside _owner_scope() — the subscriber's own config must
         # not decide, or the same task would wake or not depending on who owns the chat.
         self.wake_kinds_allowed = _resolve_wake_kinds()
+        # Same scope and place as the wake kinds; the quiet policy must be applied ahead of BOTH
+        # delivery legs, so a suppressed wake cannot leave an equivalent progress ping behind.
+        self.quiet_progress = _resolve_quiet_progress()
 
         # Pings, artifact uploads (media policy) and the wake text (display.language) all read the
         # SUBSCRIBER profile's config; the notifier thread itself runs in the launch profile's scope.
         async with self._owner_scope():
+            self.apply_quiet_progress_policy()
             if not await self._send_pings():
                 return
             # All text pings delivered (or skipped for non-push / wake-only).

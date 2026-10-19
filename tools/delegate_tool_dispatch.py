@@ -247,10 +247,11 @@ def _resolve_async_wake_sid(origin_wake_sid: str, origin_session_history_deliver
     continuation must read that row, not an authoritative caller-owned snapshot."""
     from gateway.session_context import get_session_env
 
-    # Finite chat owns no later turn to consume a detached result. Reuse its
-    # approval/lifecycle marker without disabling terminal notify completions:
-    # those have their own bounded exit linger and durable result receipts.
-    if get_session_env("HERMES_SINGLE_QUERY_SESSION") == "1":
+    # Finite consumers need the result in this tool round. Owner admission scope
+    # wins over legacy standalone launch markers, without changing terminal delivery.
+    from gateway.session_finite import finite_turn_required
+    finite = finite_turn_required()
+    if finite is True or (finite is None and get_session_env("HERMES_SINGLE_QUERY_SESSION") == "1"):
         return None
 
     try:
@@ -397,7 +398,9 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
         # Call-wide goals: completion formatting indexes them by task_index.
         goals=[t["goal"] for t in unit.task_list], context=unit.context,
         toolsets=None,  # metadata for the completion block only; subagents inherit the parent's toolsets
-        role=unit.top_role, model=unit.creds["model"],
+        # creds["model"] is None when delegation.model is blank (children inherit): report what the child runs on.
+        role=unit.top_role, model=unit.creds["model"] or next(
+            (getattr(c, "model", None) for c in child_agents if getattr(c, "model", None)), None),
         runner=lambda: _execute_and_aggregate(unit, honor_parent_interrupt=False),
         interrupt_fn=_interrupt, delegation_id=unit_id, slot_key=slot_key,
         task_indexes=[i for (i, _, _) in unit.children] if len(unit.children) < len(unit.task_list) else None,

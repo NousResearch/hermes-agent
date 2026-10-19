@@ -353,8 +353,8 @@ class TestDesktopSurface:
         also declares as a class, including a minifier-reused one-letter name, and a parameter
         shadowing the class, a destructuring assignment, and writes hidden in a template ``${}`` or
         between divisions. Passing the class around (``register(Q)``, ``{ Array: Q }``,
-        ``registry[F.name] = F``) or text in a string, template or regex literal (including a regex
-        statement after ``if (…)``) is not a rebinding."""
+        ``registry[F.name] = F``) or text in a string, template or regex literal is not a
+        rebinding. Ambiguous text never hides code: a ``/`` after ``)`` is division."""
         d = self._desktop_plugin(tmp_path, (
             "var Vector2 = class _Vector2 { constructor() { _Vector2.prototype.isVector2 = true } }\n"
             "function Track() {}\nTrack.prototype.ValueTypeName = 'vector'\n"
@@ -372,8 +372,10 @@ class TestDesktopSurface:
             "const label = `${Storage.prototype.setItem = spy}`\n"
             "const n = 1 / (Storage.prototype.setItem = spy, 2) / 3\n"
             "function E() {}\nconst re = /E = x/, t = `E = ${1}`; E.prototype.isE = 1\n"
-            "function F() {}\nregistry[F.name] = F; if (ready) /F = x/.test(label); F.prototype.isF = 1\n"
+            "function F() {}\nregistry[F.name] = F; F.prototype.isF = 1\n"
             "function G() {}\nlet {a: G} = window; G.prototype.setItem = spy\n"
+            "function J() {}\ntrue ? [J] = [window.Storage] : null; J.prototype.setItem = spy\n"
+            "const m = Number(\"if (\") / (Storage.prototype.setItem = spy, 2) / 3\n"
         ))
         assert desktop_surface_hits(d) == [
             "prototype patching (desktop/plugin.js:5)",
@@ -388,6 +390,8 @@ class TestDesktopSurface:
             "prototype patching (desktop/plugin.js:29)",
             "prototype patching (desktop/plugin.js:30)",
             "prototype patching (desktop/plugin.js:36)",
+            "prototype patching (desktop/plugin.js:38)",
+            "prototype patching (desktop/plugin.js:39)",
         ]
 
     def test_node_sidecar_and_test_mjs_outside_desktop_are_not_the_surface(self, tmp_path):

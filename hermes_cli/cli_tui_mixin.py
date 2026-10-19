@@ -1483,11 +1483,9 @@ class CLITuiMixin:
     def _tui_enter_while_busy(self, text: str, images: list, payload, mode: str | None = None) -> None:
         """Route a submission typed while the agent runs, per ``busy_input_mode``.
 
-        steer → agent.steer(text) mid-run (images can't ride along and a missing/rejecting
-        steer() falls back to queue so nothing is lost). interrupt → agent.redirect() when the
-        agent supports active-turn redirect, else the legacy interrupt queue (older agents,
-        multimodal follow-ups, or a turn that finished in the race). queue → next turn.
-        """
+        steer → agent.steer(text) mid-run (images can't ride along; a missing/rejecting steer() falls back
+        to queue). interrupt → agent.redirect() when supported, else the legacy interrupt queue. queue →
+        next turn: text-only on the gateway's session is a ``/queue`` FIFO admission (#134889 N5)."""
         from cli import CLI_CONFIG, _ACCENT, _DIM, _RST, _cprint, _hermes_home
         _effective_mode = mode or self.busy_input_mode
         redirected = False
@@ -1507,7 +1505,9 @@ class CLITuiMixin:
                     _cprint(f"  {_ACCENT}{t('cli.tui.steered', preview=preview)}{_RST}")
                 else:
                     _effective_mode = "queue"
-        if _effective_mode == "queue":
+        if _effective_mode == "queue" and text and not images and self._gateway_queue_store() is not None:
+            self._queue_enqueue(text)
+        elif _effective_mode == "queue":
             self._pending_input.put(payload)
             preview = text if text else _tn("cli.tui.images_attached_preview", len(images))
             preview = preview[:80] + ('...' if len(preview) > 80 else '')

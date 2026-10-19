@@ -2386,6 +2386,14 @@ cli:
     move_out_of_range: "Movimento na fila fora do intervalo. Tamanho atual: {size}"
     moved: "Item {source} da fila movido para {destination}."
     usage_add: "Uso: /queue add <prompt>"
+    gateway_refused: "O gateway não o enfileirou: {error}. Nada foi enfileirado; envie novamente quando o turno terminar."
+    submit_unknown: "O gateway não respondeu ({error}), então o prompt pode já estar na fila. Confira /queue list antes de enviá-lo de novo."
+    move_gateway_fifo: "O gateway executa prompts enfileirados na ordem de envio; edite ou remova um em vez disso."
+    remove_refused: "Não foi possível remover o item {index} da fila: {error}"
+    edit_refused: "Não foi possível editar o item {index} da fila: {error}"
+    already_started: "O item {index} da fila já começou; ele roda como foi enviado."
+    started_stopped: "O item {index} da fila já tinha começado; o gateway o parou."
+    change_unknown: "O gateway não respondeu sobre o item {index} da fila ({error}); confira /queue list antes de tentar de novo."
   reload:
     env_reloaded: ".env recarregado ({count} variável(is) atualizada(s))"
   steer:

@@ -119,6 +119,7 @@ def _desktop_prompt(db, session, monkeypatch, text: str = "continue on desktop")
     seen = {}
 
     class _Agent:
+        session_id = session["session_key"]
         def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
             seen["history"] = list(conversation_history or [])
             return {"final_response": "ok", "messages": [

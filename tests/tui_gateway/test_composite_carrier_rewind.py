@@ -45,6 +45,7 @@ def carrier_session(tmp_path):
             )
         durable = db.get_messages_as_conversation(session_key)
         agent = SimpleNamespace(
+            session_id=session_key,
             _session_messages=list(durable),
             _last_flushed_db_idx=len(durable),
             _db_flush_scan_prefix=list(durable),
@@ -460,6 +461,7 @@ def test_prompt_row_id_rewind_preserves_scaffold_before_regeneration(
     seen = {}
 
     class _Agent:
+        session_id = session_key
         _session_messages = list(session["history"])
         _last_flushed_db_idx = len(_session_messages)
         _db_flush_scan_prefix = list(_session_messages)

@@ -4900,8 +4900,11 @@ def test_startup_runtime_does_not_call_network_detector(monkeypatch):
 
 
 def _session(agent=None, **extra):
+    agent = agent if agent is not None else types.SimpleNamespace()
+    with contextlib.suppress(AttributeError, TypeError):
+        agent.session_id = getattr(agent, "session_id", None) or extra.get("session_key", "session-key")
     return {
-        "agent": agent if agent is not None else types.SimpleNamespace(),
+        "agent": agent,
         "session_key": "session-key",
         "history": [],
         "history_lock": threading.Lock(),
@@ -4919,7 +4922,6 @@ def _session(agent=None, **extra):
 
 def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
     calls = {"hooks": []}
-
     agent = types.SimpleNamespace(session_id="session-key")
     agent.commit_memory_session = lambda history: calls.setdefault("history", history)
     server._sessions["sid"] = _session(
@@ -4930,7 +4932,6 @@ def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
         "_notify_session_boundary",
         lambda event, session_id, *_args: calls["hooks"].append((event, session_id)),
     )
-
     try:
         resp = server.handle_request(
             {"id": "1", "method": "session.close", "params": {"session_id": "sid"}}
@@ -4947,7 +4948,6 @@ def test_session_close_releases_resume_lock_before_slow_teardown(monkeypatch):
     teardown_started = threading.Event()
     release_teardown = threading.Event()
     response = {}
-
     def _slow_teardown(_session, *, end_reason="tui_close"):
         assert end_reason == "tui_close"
         teardown_started.set()

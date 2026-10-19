@@ -1131,6 +1131,20 @@ describe('selectConnection', () => {
     expect($showAllProfiles.get()).toBe(false)
   })
 
+  it('a boot-time restore of the last-used source leaves "All profiles" on', async () => {
+    list.mockResolvedValueOnce({ ...registry, lastUsed: 'homelab', launchMode: 'last-used' })
+    // Main opens the local backend before the registry settles, so a source is
+    // already published when the restore runs. The old null-id inference read
+    // that as a user-initiated switch and collapsed the browse view on restart.
+    $connection.set({ connectionId: 'local', mode: 'local' })
+    $showAllProfiles.set(true)
+
+    await initializeConnectionsRegistry()
+
+    expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'default', expect.anything())
+    expect($showAllProfiles.get()).toBe(true)
+  })
+
   it('restores the last-used profile on switch-back even when the primary local descriptor is profile-less', async () => {
     // The pair is remembered while the primary local descriptor is honest
     // about its profile (boot publication).

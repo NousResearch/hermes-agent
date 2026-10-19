@@ -24,6 +24,9 @@ export const deNotices = {
       'Dieser Chat ist beschäftigt: Die MCP-Änderung gilt, sobald sein Durchlauf endet und MCP erneut geladen wird, oder wenn du den Chat wieder öffnest',
     mcpReloadNotInChat: server => `${server} ist in diesem Chat nicht aktiviert`,
     mcpReloadUnavailable: servers => `Keine Verbindung: ${servers}`,
+    compactedTurnUnavailable:
+      'Diese Nachricht wurde beim Komprimieren des Chats zusammengefasst und kann nicht mehr wiederhergestellt oder bearbeitet werden.',
+    staleTurnUnavailable: 'Diese Nachricht ist nicht mehr im Verlauf dieses Chats.',
     sessionCommands: deSessionCommands
   },
   keepAwakeOffer: {

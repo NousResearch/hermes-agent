@@ -17,4 +17,5 @@ ENV_OVERRIDES = (
 AUTHZ = {
     "allowed_users_env": "EMAIL_ALLOWED_USERS",
     "allow_all_env": "EMAIL_ALLOW_ALL_USERS",
+    "allowlist_suppresses_pairing": True,
 }

@@ -142,3 +142,38 @@ class TestDreamingCallback:
         query.answer.assert_called_once()
         assert query.answer.call_args[1]["text"] == unauthorized_action_notice("telegram")
         query.edit_message_text.assert_not_called()
+
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad", ["--force", "../etc/passwd", "a b", "x" * 65, "-rf"])
+    async def test_malformed_rec_id_rejected_without_invoking_script(self, bad):
+        query = _make_query(f"dr:accept:{bad}")
+        adapter, go = _run_dispatch(query)
+
+        with patch("pathlib.Path.exists", return_value=True), \
+             patch("asyncio.create_subprocess_exec", AsyncMock()) as mock_exec:
+            await go()
+            mock_exec.assert_not_called()
+
+        query.answer.assert_called_once()
+        assert "Invalid" in query.answer.call_args[1]["text"]
+        query.edit_message_text.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_user_rejected_before_data_validation(self):
+        query = _make_query("dr:accept", user_id="999")  # malformed AND unauthorized
+        update = MagicMock()
+        update.callback_query = query
+        adapter = _make_adapter()
+
+        class _DenyRunner:
+            async def _handle_message(self, event):
+                return None
+            def _is_user_authorized(self, source):
+                return False
+
+        adapter._message_handler = _DenyRunner()._handle_message
+        await adapter._handle_callback_query(update, MagicMock())
+
+        query.answer.assert_called_once()
+        assert query.answer.call_args[1]["text"] == unauthorized_action_notice("telegram")

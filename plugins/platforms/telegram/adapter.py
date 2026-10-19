@@ -4973,12 +4973,17 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
 
     async def _handle_dreaming_callback(self, query, data: str, cb: Dict[str, Any]) -> None:
         """Dispatch a dreaming-engine inline-button callback (dr:verb:rec_id)."""
+        if not await self._callback_authorized(query, cb, _unauthorized()):
+            return
         parts = data.split(":", 2)
         if len(parts) != 3:
             await query.answer(text="Invalid dreaming-engine data.")
             return
         verb, rec_id = parts[1], parts[2]
-        if not await self._callback_authorized(query, cb, _unauthorized()):
+        # rec_id is handed to a user-supplied script as argv; constrain it so a
+        # crafted payload (e.g. "--force" or a path) can't reach the script.
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", rec_id) or rec_id.startswith("-"):
+            await query.answer(text="Invalid dreaming-engine data.")
             return
         entry = self._DR_VERB_DISPATCH.get(verb)
         if not entry:

@@ -33,7 +33,10 @@ H requests `max(12, int(allowance * 0.8**attempt))` tokens and at most
 `max(18, int(requested_budget * 0.35))` words. Accept only bodies within the
 original allowance; a failed generation is recorded, never replaced with Full.
 
-Jev sees the original task and tool-result evidence bodies, in batches of ten,
+Evidence units are tool-result body blocks with paths and exact source offsets;
+long results are grouped by related events or text segments. Top N counts these
+blocks, not complete tool calls. Jev sees the original task and evidence bodies,
+in batches of ten,
 but never summaries, exam questions or gold answers. Rank by descending
 probability, break ties by ID and restore source order. Select strict Top N
 without thresholds, skipped units or partial blocks. One ranking is shared by
@@ -79,7 +82,7 @@ python -m evals.compaction.study --live \
   --out /path/to/new/study-output
 ```
 
-The output includes the protocol, source units, exact model requests/responses,
+The output includes the protocol, source units, auxiliary request arguments, resolved routes and responses,
 frozen contexts, selections, every answer and rule check, usage, and aggregates.
 This small synthetic panel can establish an information-retention effect under
 the stated conditions. Without other selectors or an equally long summary

@@ -118,4 +118,3 @@ def grade(case, prediction):
             value, expected = sorted(value, key=str), sorted(expected, key=str)
         checks[key] = exact_match(value, expected)
     return checks
-

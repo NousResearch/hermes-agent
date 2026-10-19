@@ -131,9 +131,9 @@ one 200K run was stuck after 0.42M tokens of work, one transcript never fit.
   engine as production). A bare policy name (`current`) is closed-book — the
   summary with its recovery pointer unused — and scores 30+ pts lower on
   needle questions. Use it only when you specifically want that floor.
-# Summary and evidence study
+
+## Summary and evidence study
 
 For the separate fixture-based paired study, see [STUDY.md](STUDY.md).
 Run it with `python -m evals.compaction.study`; it freezes summaries and Jev
 rankings before evaluating exact fields from the same fourteen-task corpus.
-

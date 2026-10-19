@@ -7,6 +7,7 @@ imported late here, never at module level).
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -52,7 +53,14 @@ def cmd_list(args: Any | None = None) -> None:
     from hermes_cli import plugins_cmd_catalog as catalog
     # Source shows catalog provenance (``catalog:<tier>@<sha8>``) or a ``--ref`` pin
     # (``git pinned@<sha8>``) so a team can eyeball that everyone runs the same commit.
-    pins = _pc()._read_install_metadata()
+    try:
+        pins = _pc()._read_install_metadata()
+    except _pc().PluginOperationError as exc:
+        # The listing is how a user diagnoses a broken install: show it without pin annotations
+        # (warning on stderr so ``--json``/``--plain`` stdout stays parseable).
+        print(f"Warning: {exc} (pin info hidden; install/update/remove refuse until the file is fixed)",
+              file=sys.stderr)
+        pins = {}
     # One kill-list resolution for the whole listing: resolving per row costs a live-catalog
     # fetch per installed plugin when the catalog host is slow or unreachable.
     removed_entries = catalog.resolved_removed_entries()

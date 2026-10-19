@@ -1660,7 +1660,13 @@ def _plugin_rows() -> list[dict]:
     # pins power the desktop's "Update to <pin>" affordance; titles are the server-sentence display
     # names. One live-catalog resolution for the whole listing (see ``catalog_rows_maps``).
     pins, versions, titles = cat.catalog_rows_maps()
-    ref_pins = pc._read_install_metadata()  # ``--ref`` installs: pinned_sha so the desktop can show the pin
+    try:  # ``--ref`` installs: pinned_sha so the desktop can show the pin
+        ref_pins = pc._read_install_metadata()
+    except pc.PluginOperationError as exc:
+        # One unreadable sidecar must not blank the whole inventory (or fail a toggle that already
+        # applied); install/update/remove still refuse on it.
+        logger.warning("Plugin list without pin info: %s", exc)
+        ref_pins = {}
     out = []
     active = pc._category_active_names()
     for name, version, desc, source, _dir, key in sorted(pc._discover_all_plugins()):

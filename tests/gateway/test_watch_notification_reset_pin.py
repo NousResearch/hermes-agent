@@ -113,17 +113,38 @@ async def test_notice_pinned_to_a_compression_ancestor_still_admits(monkeypatch,
 
         assert pending.empty()
         assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
-        assert _queued_admissions(authority, parent) + _queued_admissions(authority, child)
+        admitted = _queued_admissions(authority, parent) + _queued_admissions(authority, child)
+        assert [row['status'] for row in admitted] == ['queued']
     finally:
         authority.db.close()
 
 
-async def _foreign_pin(runner, adapter_source_chat='43'):
+@pytest.mark.asyncio
+async def test_durable_caller_still_gets_the_refusal_for_a_gone_pin(monkeypatch, caplog):
+    """Completion and delegation callers refund their claim on ``WakeNotAccepted`` after their own
+    pre-flight; the gone-pin drop is the watch drain's alone and never swallows that refusal."""
+    from gateway.wake import WakeNotAccepted
+    runner, authority, entry = await _gateway(monkeypatch)
+    try:
+        retired = entry.session_id
+        runner.session_store.reset_session(entry.session_key)
+
+        with caplog.at_level(logging.WARNING, logger='gateway.run'):
+            with pytest.raises(WakeNotAccepted, match='admission_conflict'):
+                await runner._inject_watch_notification(
+                    'notice', _notice(entry, retired), raise_not_accepted=True)
+
+        assert not [r for r in caplog.records if 'permanently gone' in r.getMessage()]
+    finally:
+        authority.db.close()
+
+
+async def _foreign_pin(runner):
     """A live session of another chat: the authority refuses the notice, but nothing proves the pin
     gone, so the refusal stays retryable."""
     from gateway.config import Platform
     adapter = runner.adapters[Platform.DISCORD]
-    other = adapter.build_source(chat_id=adapter_source_chat, chat_type='dm', user_id='42')
+    other = adapter.build_source(chat_id='43', chat_type='dm', user_id='42')
     return runner.session_store.get_or_create_session(other).session_id
 
 

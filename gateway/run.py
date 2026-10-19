@@ -3993,10 +3993,10 @@ class GatewayRunner(
             source_profile = getattr(self, "_configured_runtime_profile_name", None) or ""
         # #98619: an admitted API turn carries its session-id provenance in the admission settings,
         # and its rebound browser-controller identity; every other platform leaves both undeclared.
-        from gateway.session_api_turn import api_session_vars
+        from gateway.session_api_turn import api_session_vars, bind_api_transfer_session
         _api_vars = api_session_vars()
         _history_delivery = _api_vars.pop("session_history_delivery", None)
-        return set_session_vars(
+        return bind_api_transfer_session(set_session_vars(
             platform=context.source.platform.value,
             chat_id=context.source.chat_id,
             chat_type=str(context.source.chat_type) if context.source.chat_type else "",
@@ -4014,7 +4014,7 @@ class GatewayRunner(
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=source_profile,
             async_delivery=_async_delivery,
-            cron_session="", session_history_delivery=_history_delivery, **_api_vars)
+            cron_session="", session_history_delivery=_history_delivery, **_api_vars), context)
 
     def _set_turn_session_env(self, context: SessionContext, run_generation: int) -> list:
         """Bind ordinary tool identity and the originating logical Stop generation together."""

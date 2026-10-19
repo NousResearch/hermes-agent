@@ -54,12 +54,13 @@ def check_api_turn(authority, ref, payload):
     if 'api_turn_v1' in payload:
         data = payload['api_turn_v1']
         if (set(data) - {'history', 'settings', 'turn_author', 'media', 'run_owner_scope', 'browser_control',
-                         'relay_metadata'}
+                         'transfer_auth', 'relay_metadata'}
                 or not {'history', 'settings'} <= set(data)
                 or not isinstance(data.get('relay_metadata', {}), dict)
                 or (data['history'] is not None and not isinstance(data['history'], list))
                 or ('run_owner_scope' in data and not _valid_owner_scope(data['run_owner_scope']))
-                or ('browser_control' in data and not _valid_browser_control(data['browser_control']))):
+                or ('browser_control' in data and not _valid_browser_control(data['browser_control']))
+                or ('transfer_auth' in data and not _valid_browser_control(data['transfer_auth']))):
             raise RuntimeStoreError('invalid_params')
         if set(data['settings']) - set(_SETTING_KEYS):
             raise RuntimeStoreError('invalid_params')
@@ -116,6 +117,26 @@ def api_session_vars():
     return {'session_history_delivery': current['settings'].get('session_history_delivery') or '',
             'browser_control_principal': bound.get('principal', ''),
             'browser_control_transport_family': bound.get('transport_family', '')}
+
+
+def api_transfer_context():
+    """Return only a still-valid bearer admission's exact user instruction."""
+    current = api_execution.get()
+    if current is None or not isinstance(current.get('content'), str):
+        return '', '', ''
+    bound = current.get('transfer_auth') or {}
+    return bound.get('principal', ''), bound.get('transport_family', ''), current['content']
+
+
+def bind_api_transfer_session(tokens, context):
+    """Pair the selected native API session with its revalidated admission."""
+    if context.source.platform.value == 'api_server' and context.session_id:
+        principal, family, instruction = api_transfer_context()
+        if principal and family and instruction:
+            from gateway.session_context import set_api_transfer_identity, set_turn_user_message
+            set_turn_user_message(instruction)
+            set_api_transfer_identity(principal, family, context.session_id)
+    return tokens
 
 
 def check_api_settings(adapter, settings):
@@ -211,6 +232,11 @@ def admit_api_steps(adapter, **kwargs):
         # Server-derived like the owner scope: the admission keeps the identity the legacy
         # path bound for its executor, so execution and recovery can rebind it.
         payload['api_turn_v1']['browser_control'] = browser_control
+    from gateway.platforms.api_server_transfer import current as current_transfer_auth
+    transfer_principal, transfer_family = current_transfer_auth()
+    transfer_auth = {'principal': transfer_principal, 'transport_family': transfer_family}
+    if _valid_browser_control(transfer_auth):
+        payload['api_turn_v1']['transfer_auth'] = transfer_auth
     # Refuse a foreign-surface target before committing any media for it (a refused
     # admission otherwise retains its image bytes under native-inputs/ forever).
     existing = authority.db.get_session(sid)
@@ -464,7 +490,9 @@ def prepare_api_execution(authority, ref, payload):
     return {'adapter': adapter, 'settings': settings, 'history': data['history'] if data else None,
             'content': content, 'turn_author': data.get('turn_author') if data else None,
             'relay_metadata': data.get('relay_metadata') if data else None,
-            'browser_control': _rebind_browser_control(adapter, data)}
+            'browser_control': _rebind_browser_control(adapter, data),
+            'transfer_auth': _rebind_browser_control(
+                adapter, {'browser_control': data['transfer_auth']}) if data and data.get('transfer_auth') else None}
 
 
 def _api_observers(authority, session_id):

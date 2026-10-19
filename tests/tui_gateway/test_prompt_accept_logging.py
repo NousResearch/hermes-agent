@@ -130,7 +130,9 @@ def test_desktop_turn_binds_real_journal_and_authenticated_user_instruction(turn
 
     agent = types.SimpleNamespace(session_id="actual-desktop-session", run_conversation=run_conversation,
                                   clear_interrupt=lambda: None)
-    session = _session(agent=agent, running=True, profile_home=tmp_path, source="desktop")
+    peer = types.SimpleNamespace(auth_identity={"provider": "basic", "user_id": "alice"})
+    session = _session(agent=agent, running=True, profile_home=tmp_path, source="desktop",
+                       transport_owner=("basic", "alice"), transport=peer)
     monkeypatch.setitem(server._sessions, "ui-sid", session)
     text = "Transfer ABC-1 to this chat"
     server._run_prompt_submit("rid", "ui-sid", session, text,
@@ -139,6 +141,30 @@ def test_desktop_turn_binds_real_journal_and_authenticated_user_instruction(turn
     receipt = ChatExecutionStore(tmp_path).retire_for_handoff("gw-session-key", 1, "transfer-id")
     assert receipt["status"] == "retired"
     assert receipt["effects"] == "unknown"
+
+
+def test_stdio_submit_cannot_borrow_attached_desktop_transfer_identity(turn_env, monkeypatch, tmp_path):
+    from tools.registry import _current_tool_invocation_context
+
+    seen = []
+    def run_conversation(*_args, **_kwargs):
+        ctx = _current_tool_invocation_context()
+        seen.append((ctx.browser_control_provider, ctx.browser_control_subject, ctx.user_message))
+        return {"final_response": "done"}
+
+    agent = types.SimpleNamespace(session_id="actual-desktop-session", run_conversation=run_conversation,
+                                  clear_interrupt=lambda: None)
+    peer = types.SimpleNamespace(auth_identity={"provider": "basic", "user_id": "alice"})
+    session = _session(agent=agent, running=True, profile_home=tmp_path, source="desktop",
+                       transport_owner=("basic", "alice"), transport=peer)
+    monkeypatch.setitem(server._sessions, "ui-sid", session)
+    text = "Transfer ABC-1 to this chat"
+    origin = server._approval_origin_for_direct_submit(
+        session, text, text, internal_hosted_submit=False, raw_author=None,
+        display_kind=None, turn_isolation=False, transport=server._stdio_transport)
+    assert origin is not None and origin[0] == "local:stdio"
+    server._run_prompt_submit("rid", "ui-sid", session, text, approval_origin=origin)
+    assert seen == [("basic", "alice", "")]
 
 
 @pytest.mark.parametrize("settle_info_raises", [False, True])

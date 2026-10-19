@@ -914,7 +914,7 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
                 set_turn_user_message(run.user_message)
                 set_api_transfer_identity(run.api_transfer_principal,
                                           run.browser_control_transport_family,
-                                          run.gateway_session_key or run.session_id)
+                                          run.session_id)
             if run.agent_kwargs["room_dispatch"] is not None:
                 policy = RoomExecutionPolicy.from_mapping(run.agent_kwargs["room_execution_policy"] or {})
                 resets.append((bind_room_execution_policy(policy), reset_room_execution_policy))

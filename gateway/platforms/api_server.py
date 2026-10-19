@@ -139,6 +139,7 @@ from gateway.display_config import resolve_display_setting
 from gateway.platforms import api_server_room_dispatch as _room_dispatch
 from gateway.platforms import api_server_room_grants as _room_grants
 from gateway.platforms import api_server_runs as _api_runs
+from gateway.platforms import api_server_transfer as _transfer
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
 from gateway.platforms.api_server_memory_sessions import ApiServerMemorySessions
 from gateway.platforms.base import (
@@ -840,6 +841,7 @@ def _admit_api_agent_request(handler):
         draining = self._draining_response()
         if draining is not None:
             return draining
+        transfer_token = _transfer.bind_authenticated_request(self, request, _api_request_profile.get())
         reservation = {"active": True}
         token = _api_agent_request_reservation.set(reservation)
         self._pending_agent_requests += 1
@@ -848,6 +850,7 @@ def _admit_api_agent_request(handler):
         finally:
             _release_pending_api_work(self, reservation)
             _api_agent_request_reservation.reset(token)
+            _transfer.clear_authenticated_request(transfer_token)
     return _wrapped
 
 
@@ -2677,17 +2680,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return f"principal:{profile}:{digest[:32]}"
 
     def _browser_control_transport_family(self, request: web.Request) -> str:
-        """``local-api`` for a loopback peer, else ``remote-api``; the broker treats the family as
-        part of exact identity, so a remote controller never satisfies a local-only dispatch."""
-        host = None
-        with suppress(Exception):
-            transport = request.transport
-            peer = transport.get_extra_info("peername") if transport is not None else None
-            if isinstance(peer, tuple) and peer:
-                host = peer[0]
-            elif isinstance(peer, str):
-                host = peer
-        return "local-api" if host in ("127.0.0.1", "::1", "localhost") else "remote-api"
+        return _transfer.browser_control_transport_family(request)
 
     def _browser_control_developer_mode(self) -> bool:
         """Broker Developer Mode gate for ``browser_evaluate`` / raw CDP; tests monkeypatch this."""
@@ -4201,6 +4194,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         request_profile = _api_request_profile.get()
         request_browser_control_principal = _api_request_browser_control_principal.get()
         request_browser_control_transport_family = _api_request_browser_control_transport_family.get()
+        transfer_auth = _transfer.current()
 
         def _run():
             from gateway.session_context import clear_session_vars
@@ -4211,6 +4205,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     browser_control_principal=request_browser_control_principal,
                     browser_control_transport_family=request_browser_control_transport_family,
                     session_history_delivery=session_history_delivery)
+                _transfer.bind_legacy_turn(transfer_auth, user_message, session_id)
                 agent = None
                 from agent.notification_presentation import notification_turn
                 from gateway.warning_notifications import diagnostic_turn_muted

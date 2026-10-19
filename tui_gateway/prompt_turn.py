@@ -1209,7 +1209,13 @@ def _run_prompt_submit(
                 return
             prompt, run_message, cols, streamer = prepared
             from gateway.session_context import set_turn_user_message
-            set_turn_user_message(text if approval_origin is not None and isinstance(text, str) else "")
+            owner = session.get("transport_owner")
+            requester = approval_origin[0] if approval_origin else ""
+            # A local stdio submit may address an attached Desktop session, but its
+            # instruction is not the authenticated Desktop owner's instruction.
+            owner_matches = (isinstance(owner, tuple) and len(owner) == 2
+                             and requester == f"{owner[0]}:{owner[1]}")
+            set_turn_user_message(text if owner_matches and isinstance(text, str) else "")
             _invoke_agent(
                 sid, session, st, prompt, run_message, streamer, images, display_kind,
                 display_metadata, turn_author, text)

@@ -205,13 +205,13 @@ def worker_history(db, conn, sid, payload):
 
 
 
-def archive_on_connection(db, conn, session_id: str, compacted_messages: list[dict[str, Any]], model_config_patch: Optional[dict[str, Any]]=None, watermark: Optional[int]=None, lock_holder: Optional[str]=None, tail_count: int=0, carried_messages: Optional[list[dict[str, Any]]]=None, covered_ids: Optional[list[int]]=None, unresolved_held: Optional[list[dict[str, Any]]]=None):
+def archive_on_connection(db, conn, session_id: str, compacted_messages: list[dict[str, Any]], model_config_patch: Optional[dict[str, Any]]=None, watermark: Optional[int]=None, lock_holder: Optional[str]=None, tail_count: int=0, carried_messages: Optional[list[dict[str, Any]]]=None, covered_ids: Optional[list[int]]=None, unresolved_held: Optional[list[dict[str, Any]]]=None, held_for_cas: Optional[list[dict[str, Any]]]=None):
     # The owner's in-place compaction body, on this receipt's connection: one implementation, so
     # main's coverage/merge/timestamp/display-order fixes reach worker and mutation verbs too.
     return db._archive_and_compact_on_conn(conn, session_id, compacted_messages,
         model_config_patch=model_config_patch, watermark=watermark, lock_holder=lock_holder,
         tail_count=tail_count, carried_messages=carried_messages, covered_ids=covered_ids,
-        unresolved_held=unresolved_held)
+        unresolved_held=unresolved_held, held_for_cas=held_for_cas)
 
 def publish_on_connection(db, conn, *, parent_session_id: str, child_session_id: str, source: str, messages: list[dict[str, Any]], model: str | None=None, model_config: dict[str, Any] | None=None, system_prompt: str | None=None, cwd: str | None=None, profile_name: str | None=None, compression_lock_holder: str | None=None, require_compression_lease: bool=True, require_lease_refresh: bool=False, lease_ttl_seconds: float=300.0, watermark: Optional[int]=None, watermark_ceiling: Optional[int]=None):
     # The owner's rotation body (lease, closure, child row, timestamps, tail clone, local target,
@@ -251,7 +251,7 @@ def _watermarks(payload):
 def worker_archive(db, conn, sid, payload):
     from hermes_state_worker_context import SIDECAR_KEYS
     _fields(payload, ('messages', 'model_config_patch', 'watermark', 'lock_holder', 'tail_count'),
-            optional=('carried_messages', 'covered_ids', 'unresolved_held'))
+            optional=('carried_messages', 'covered_ids', 'unresolved_held', 'held_for_cas'))
     _handoff_messages(conn, sid, payload['messages'])
     carried = payload.get('carried_messages') or []
     if not isinstance(carried, list) or any(not isinstance(m, dict) for m in carried):
@@ -264,6 +264,12 @@ def worker_archive(db, conn, sid, payload):
     if unresolved is not None and (not isinstance(unresolved, list)
                                    or any(not isinstance(m, dict) for m in unresolved)):
         raise RuntimeStoreError('invalid_params')
+    # The lease-less CAS fence (#124102): dicts projected to the closed handoff fields plus the
+    # persistence marker the owner's compare reads; validated like the other held-row payloads.
+    cas = payload.get('held_for_cas')
+    if cas is not None and (not isinstance(cas, list)
+                            or any(not isinstance(m, dict) for m in cas)):
+        raise RuntimeStoreError('invalid_params')
     _watermarks(payload)
     # Micro-compaction and proactive prune archive in place without a lease, like the owner path.
     if payload['lock_holder'] is not None:
@@ -275,7 +281,7 @@ def worker_archive(db, conn, sid, payload):
         raise RuntimeStoreError('invalid_params')
     value = archive_on_connection(db, conn, sid, payload['messages'], model_config_patch=patch,
         watermark=payload['watermark'], lock_holder=payload['lock_holder'], tail_count=payload['tail_count'],
-        carried_messages=carried, covered_ids=covered, unresolved_held=unresolved)
+        carried_messages=carried, covered_ids=covered, unresolved_held=unresolved, held_for_cas=cas)
     from hermes_state_runtime import row_annotations
     return {'value': value, 'annotations': row_annotations(payload['messages'])}
 

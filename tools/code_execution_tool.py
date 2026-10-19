@@ -60,7 +60,8 @@ def _truncate_stdout_text(stdout_text: str, *, omitted: int = 0,
     omitted middle is spilled to cache/exec and the result carries the path (recover-don't-rerun).
     ``omitted`` > 0: a bounded capture upstream (the session kernel's raw fd output) already dropped
     that many bytes between ``stdout_text`` and ``after_gap``; that middle was never kept, so the
-    spill (written only when ``stdout_text`` alone outgrows the head) holds the rest around it."""
+    spill (written only when ``stdout_text``, the cell's ``print()`` output plus the kept raw
+    head, outgrows the head) holds the rest around it."""
     stdout_bytes, after_bytes = (part.encode("utf-8", errors="replace") for part in (stdout_text, after_gap))
     total = len(stdout_bytes) + omitted + len(after_bytes)
     tail_source = after_bytes if omitted else stdout_bytes

@@ -555,7 +555,9 @@ class CLILoopsMixin:
             except Exception as exc:
                 _cprint(f"  {t('cli.steer.failed', error=exc)}")
             else:
-                if accepted:
+                if accepted == "voice_stopped":  # TUI-26: the owner ended the voice chat; consumed
+                    pass
+                elif accepted:
                     _cprint(f"  {t('cli.steer.queued', preview=_preview(payload))}")
                 else:
                     _cprint(f"  {t('cli.steer.rejected_empty')}")
@@ -605,6 +607,11 @@ class CLILoopsMixin:
             return None
         return self._session_bound_manager(
             attr, label, (lambda: lambda sid: remote(sid, connection)) if gateway else local)
+
+    def _mark_automation_stale(self) -> None:
+        """Agent thread: the gateway published this session's goal/loop state mid-turn (a tool moved it).
+        The dock re-reads the mirrored managers on its next spinner-thread poll (``cli_session_dock``)."""
+        self._automation_stale = True
 
     def _get_goal_manager(self):
         """GoalManager bound to the current session_id (see ``_session_bound_manager``)."""

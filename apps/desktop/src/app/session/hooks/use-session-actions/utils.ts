@@ -69,6 +69,7 @@ import type { SessionCreateResponse, SessionInfo, SessionResumeResult, SessionRu
 
 import type { ClientSessionState } from '../../../types'
 
+import { latestInflightUserRun } from './inflight-user-run'
 import {
   acknowledgedTranscriptBoundary,
   conflictingTranscriptIdentity,
@@ -1226,27 +1227,10 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
   // same turn — older identical prompts must not hide a newly accepted repeat.
   // A mid-turn redirect gives that turn a RUN of user rows (prompt +
   // corrections). Arrival order seals already-streamed output BETWEEN those
-  // rows (#73793), so collect the run by walking back over the live tail:
-  // user rows count, live-tail assistant rows are skipped, and a committed
-  // assistant reply ends the turn.
+  // rows (#73793). Persisted tool rounds also separate them; only a completed
+  // assistant reply ends the turn (#141351).
   const latestUserIndex = messages.map(message => message.role).lastIndexOf('user')
-  const latestUserRun: ChatMessage[] = []
-
-  for (let index = latestUserIndex; index >= 0; index -= 1) {
-    const candidate = messages[index]
-
-    if (candidate.role === 'user') {
-      latestUserRun.unshift(candidate)
-
-      continue
-    }
-
-    if (candidate.role === 'assistant' && isLiveTailRow(candidate)) {
-      continue
-    }
-
-    break
-  }
+  const latestUserRun = latestInflightUserRun(messages, latestUserIndex, projection.turn_started_at)
 
   const persistedInLatestRun = (text: string): boolean =>
     latestUserRun.some(

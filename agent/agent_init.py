@@ -1966,7 +1966,10 @@ def _compressor_max_tokens(agent):
         _gemini_provider = str(agent.provider or "").strip().lower() in {
             "gemini", "google", "google-gemini", "google-ai-studio",
         }
-        if _gemini_provider or is_native_gemini_base_url(agent.base_url):
+        from agent.opencode_go_gemini import is_opencode_go_gemini_route
+        if (_gemini_provider or is_native_gemini_base_url(agent.base_url)
+                or is_opencode_go_gemini_route(getattr(agent, "provider", ""), getattr(agent, "model", ""),
+                                               agent.base_url)):
             return GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
     return None
 

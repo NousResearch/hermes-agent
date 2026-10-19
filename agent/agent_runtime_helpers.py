@@ -1959,13 +1959,23 @@ def _ensure_copilot_headers(client_kwargs: dict) -> None:
 def _gemini_native_client(agent, client_kwargs: dict, httpx_verify, *, reason: str, shared: bool):
     """Native Gemini client when the base_url is the Gemini API, else None."""
     from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
+    from agent.opencode_go_gemini import is_opencode_go_gemini_route, with_session_header
     base_url = str(client_kwargs.get("base_url", "") or "")
-    if not is_native_gemini_base_url(base_url):
+    _provider = str(getattr(agent, "provider", "") or "")
+    if _provider == "custom":
+        _provider = str(getattr(agent, "requested_provider", "") or _provider)
+    _model = str(getattr(agent, "model", "") or "")
+    _go_gemini = is_opencode_go_gemini_route(_provider, _model, base_url)
+    if not (_go_gemini or is_native_gemini_base_url(base_url)):
         return None
     safe_kwargs = {
         k: v for k, v in client_kwargs.items()
         if k in {"api_key", "base_url", "default_headers", "timeout", "http_client"}
     }
+    if _go_gemini:
+        # The Go relay rejects any request without a stable conversation id, on every wire.
+        safe_kwargs["default_headers"] = with_session_header(
+            safe_kwargs.get("default_headers"), _provider, base_url)
     if "http_client" not in safe_kwargs:
         keepalive_http = agent._build_keepalive_http_client(base_url, verify=httpx_verify)
         if keepalive_http is not None:
@@ -2037,7 +2047,13 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
         )
         return provider_client
     from agent.auxiliary_client import _GEMINI_NATIVE_PROVIDER_NAMES
-    if agent.provider in _GEMINI_NATIVE_PROVIDER_NAMES:
+    from agent.opencode_go_gemini import is_opencode_go_gemini_route
+    _go_gemini_provider = str(getattr(agent, "provider", "") or "")
+    if _go_gemini_provider == "custom":
+        _go_gemini_provider = str(getattr(agent, "requested_provider", "") or _go_gemini_provider)
+    _go_gemini_route = is_opencode_go_gemini_route(
+        _go_gemini_provider, getattr(agent, "model", ""), str(client_kwargs.get("base_url", "") or ""))
+    if agent.provider in _GEMINI_NATIVE_PROVIDER_NAMES or _go_gemini_route:
         client = _gemini_native_client(agent, client_kwargs, httpx_verify, reason=reason, shared=shared)
         if client is not None:
             return client

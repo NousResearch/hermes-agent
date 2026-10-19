@@ -5309,6 +5309,14 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
             client = GeminiNativeClient(api_key=api_key, base_url=base_url)
             logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
             return _route_client(req, client, final_model)
+    from agent.opencode_go_gemini import is_opencode_go_gemini_route, with_session_header
+    if is_opencode_go_gemini_route(provider, final_model, base_url):
+        from agent.gemini_native_adapter import GeminiNativeClient as _GoGeminiClient
+        client = _GoGeminiClient(
+            api_key=api_key, base_url=base_url,
+            default_headers=with_session_header(_profile_default_headers(provider), provider, base_url))
+        logger.debug("resolve_provider_client: %s (%s, Go Gemini native)", provider, final_model)
+        return _route_client(req, client, final_model)
     headers = _endpoint_default_headers(base_url, provider, is_vision=req.is_vision, xai=True)
     client = _create_openai_client(api_key=api_key, base_url=base_url, **({"default_headers": headers} if headers else {}))
     # Copilot GPT-5+ models (except gpt-5-mini) are only reachable via the Responses API;
@@ -6562,7 +6570,7 @@ _NVIDIA_PROVIDER_NAMES = {"nvidia", "nvidia-nim", "nim", "build-nvidia", "nemotr
 _GEMINI_NATIVE_PROVIDER_NAMES = {"gemini", "google", "google-gemini", "google-ai-studio"}
 
 
-def _is_gemini_native_route(provider_norm: str, effective_base: str) -> bool:
+def _is_gemini_native_route(provider_norm: str, effective_base: str, model: str = "") -> bool:
     """Gemini native by provider name, else (best-effort) by base URL shape."""
     if provider_norm in _GEMINI_NATIVE_PROVIDER_NAMES:
         return True
@@ -6570,7 +6578,9 @@ def _is_gemini_native_route(provider_norm: str, effective_base: str) -> bool:
         return False
     try:
         from agent.gemini_native_adapter import is_native_gemini_base_url
-        return is_native_gemini_base_url(effective_base)
+        from agent.opencode_go_gemini import is_opencode_go_gemini_route
+        return (is_native_gemini_base_url(effective_base)
+                or is_opencode_go_gemini_route(provider_norm, model, effective_base))
     except Exception:
         return False
 
@@ -6590,7 +6600,7 @@ def _forwards_max_tokens(provider: str, provider_norm: str, model: str, effectiv
         or provider_norm in _NVIDIA_PROVIDER_NAMES
         or base_url_host_matches(effective_base, "integrate.api.nvidia.com")
         or str(task) == "moa_reference"
-        or _is_gemini_native_route(provider_norm, effective_base)
+        or _is_gemini_native_route(provider_norm, effective_base, model)
         or provider_norm == "openrouter"
         or base_url_host_matches(effective_base, "openrouter.ai")
         or _is_managed_local_endpoint(effective_base)

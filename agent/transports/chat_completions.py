@@ -675,7 +675,10 @@ class ChatCompletionsTransport(ProviderTransport):
             # The native client reads only thinking_config and the long-decode budget.
             try:
                 from agent.gemini_native_adapter import is_native_gemini_base_url
-                _native_gemini = is_native_gemini_base_url(params.get("base_url"))
+                from agent.opencode_go_gemini import is_opencode_go_gemini_route
+                _native_gemini = is_native_gemini_base_url(params.get("base_url")) or is_opencode_go_gemini_route(
+                    params.get("provider_name") or getattr(profile, "name", ""), model,
+                    params.get("base_url"))
             except Exception:
                 _native_gemini = False
             if _native_gemini:

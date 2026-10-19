@@ -1,11 +1,13 @@
-"""Schemas for the browser tool surface that exists only on the extension lane.
+"""Schemas for the browser tools beyond main's: ``browser_batch``, and the surface only the extension lane has.
 
-A session whose requests can bind a browser extension controller (``browser.extension_control.enabled`` plus a
-server-bound principal and transport) is offered this surface: the tools below and the extension form of the
-seven long-standing browser tools. Every other session keeps the browser tools exactly as they were, with no
-``tab_id``, no approval or background-tab wording and none of these tools. The choice is made per session in
-``model_tools._rewrite_for_extension_lane``, from something fixed for the session, so the tool block stays
-byte-identical for the whole conversation whatever is attached right now (a changing block would lose the
+Every browser session gets ``browser_batch`` (:data:`BATCH_SCHEMA`): several steps in one call, and the way the
+built-in browser fills a field, picks an option, hovers, drags or scrolls an element into view, through the
+same handlers as the single tools. A browser extension session (``browser.extension_control.enabled``, a
+server-bound principal and transport, and a controller the extension registered for the session) also gets the
+tools below and the extension form of the long-standing tools and of ``browser_batch`` (``tab_id``, approval
+and background-tab wording). Every other session keeps main's seven browser tools exactly as they were. The
+choice is made per session in ``model_tools._rewrite_for_extension_lane`` and stays the same for the whole
+conversation, so the tool block does not change whatever is attached later (a changing block would lose the
 provider's prompt cache).
 """
 
@@ -26,55 +28,58 @@ _TAB_ID_PROPERTY = {
                    "Refs belong to the tab they came from.",
 }
 
-EXTENSION_ONLY_SCHEMAS = [
-    {
-        "name": "browser_batch",
-        "description": "Run several browser actions in order as one call and get the page back as it is after the last step. Prefer browser_batch when you can predict two or more steps ahead (for example click a field, type, press Enter): each step saved is a model turn saved. A step takes the same arguments as the single tool of the same name. Refs come from the latest snapshot or action result; a step that changes the page (a navigation, a form that re-renders) can invalidate the refs later steps use, so end the batch there. Steps run one at a time. With stop_on_error (default true) the batch stops at the first step that fails; with false it carries on, but it always stops when the person declines an approval or the page moves away. Where the person approves actions (a coordinate click, Enter, a drag, a click on a submit or delete button), each such step asks separately and the batch waits, so keep batches that need approvals short. Returns status (completed, completed_with_errors or stopped), one entry per step with its outcome or error, and the counts completed and remaining.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "actions": {
-                    "type": "array",
-                    "minItems": 1,
-                    "maxItems": 20,
-                    "description": "The steps to run in order (1-20).",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "action": {
-                                "type": "string",
-                                "enum": ["back", "click", "drag", "fill", "hover", "navigate", "press", "scroll", "scroll_to", "select", "type"],
-                                "description": "What this step does"
-                            },
-                            "ref": {"type": "string", "description": "Element ref (e.g. '@e5') for click, type, fill, select, hover, scroll_to; the dragged element for drag"},
-                            "to_ref": {"type": "string", "description": "drag: the element to drop on"},
-                            "text": {"type": "string", "description": "type: the text to type"},
-                            "value": {"type": "string", "description": "fill: the text to enter; select: the option's text or value"},
-                            "clear": {"type": "boolean", "description": "type: clear the field first (default true)"},
-                            "url": {"type": "string", "description": "navigate: the URL to open"},
-                            "key": {"type": "string", "description": "press: the key (e.g. 'Enter', 'Tab', or a combo such as 'Control+a')"},
-                            "modifiers": {
-                                "type": "array",
-                                "items": {"type": "string", "enum": ["Alt", "Control", "Meta", "Shift"]},
-                                "description": "press: modifier keys held with the key"
-                            },
-                            "direction": {"type": "string", "enum": ["up", "down", "left", "right"], "description": "scroll: which way"},
-                            "amount": {"type": "integer", "minimum": 100, "maximum": 5000, "description": "scroll: pixels (default about 85% of the viewport)"},
-                            "x": {"type": "number", "description": "click: horizontal position in CSS pixels, used with y instead of ref"},
-                            "y": {"type": "number", "description": "click: vertical position in CSS pixels, used with x instead of ref"}
+# browser_batch, as every browser session gets it. The extension lane swaps in _LANE_FORMS['browser_batch'] and
+# adds tab_id; the steps and their fields are the same on both lanes.
+BATCH_SCHEMA = {
+    "name": "browser_batch",
+    "description": "Run several browser actions in order as one call; returns each step's outcome and the page after the last step. Use it when you can predict two or more steps (for example click a field, type, press Enter): each step saved is a model turn saved. It is also how to fill a field, pick an option in a dropdown, hover, drag one element onto another or scroll an element into view: send a batch of that one step. A click, type, scroll, press or navigate step takes the arguments of the tool of the same name, plus the step fields below. A step that changes the page (a navigation, a form that re-renders) can invalidate the refs later steps use, so end the batch there. A step this browser cannot run is reported on that step.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "actions": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 20,
+                "description": "The steps, in order (1-20).",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["back", "click", "drag", "fill", "hover", "navigate", "press", "scroll", "scroll_to", "select", "type"],
+                            "description": "What this step does"
                         },
-                        "required": ["action"]
-                    }
-                },
-                "stop_on_error": {
-                    "type": "boolean",
-                    "default": True,
-                    "description": "Stop at the first step that fails (default true). When false, later steps still run."
+                        "ref": {"type": "string", "description": "Element ref (e.g. '@e5'); for drag, the element dragged"},
+                        "to_ref": {"type": "string", "description": "drag: the element to drop on"},
+                        "text": {"type": "string", "description": "type: the text"},
+                        "value": {"type": "string", "description": "fill: the text; select: the option's text or value"},
+                        "clear": {"type": "boolean", "description": "type: false adds to the field instead of replacing it (default true)"},
+                        "url": {"type": "string", "description": "navigate: the URL"},
+                        "key": {"type": "string", "description": "press: the key, e.g. 'Enter' or 'Control+a'"},
+                        "modifiers": {
+                            "type": "array",
+                            "items": {"type": "string", "enum": ["Alt", "Control", "Meta", "Shift"]},
+                            "description": "press: keys held with the key"
+                        },
+                        "direction": {"type": "string", "enum": ["up", "down", "left", "right"], "description": "scroll: which way"},
+                        "amount": {"type": "integer", "minimum": 100, "maximum": 5000, "description": "scroll: pixels (100-5000)"},
+                        "x": {"type": "number", "description": "click: x in CSS pixels, with y, instead of ref"},
+                        "y": {"type": "number", "description": "click: y in CSS pixels, with x, instead of ref"}
+                    },
+                    "required": ["action"]
                 }
             },
-            "required": ["actions"]
-        }
+            "stop_on_error": {
+                "type": "boolean",
+                "default": True,
+                "description": "Stop at the first failing step (default true); false runs the rest."
+            }
+        },
+        "required": ["actions"]
     },
+}
+
+EXTENSION_ONLY_SCHEMAS = [
     {
         "name": "browser_fill",
         "description": "Set a text field's value in one step: the field is focused, its contents are replaced with value, and the page is told it changed. Prefer it over browser_type for plain text inputs and textareas; use browser_type when the page needs real keystrokes. With the browser extension, password, payment-card, one-time-code and other credential fields, and text that looks like a secret, are refused: ask the person to enter those themselves. Works on a background tab. Refs come from the latest snapshot or action result.",
@@ -217,12 +222,15 @@ EXTENSION_ONLY_SCHEMAS = [
 _REFS_SENTENCE = ("Refs come from the page snapshot attached to the turn (or the most recent one in this "
                   "conversation) or from the latest action result.")
 
-# The long-standing tools in their extension-lane form. A description that is a plain string replaces the main
+# The long-standing tools and browser_batch in their extension-lane form. A description that is a plain string replaces the main
 # one; a (legacy sentence, extension sentence) pair rewrites only that sentence, so the long shared text of
 # browser_navigate and browser_snapshot stays single-sourced. ``properties`` are added to (or replace) the main
 # schema's, ``required`` replaces its list. tests/tools/test_browser_extension_lane_surface.py asserts every
 # pair still applies, so a reworded main schema cannot leave stale advice behind.
 _LANE_FORMS: dict[str, dict[str, Any]] = {
+    "browser_batch": {
+        "description": "Run several browser actions in order as one call and get the page back as it is after the last step. Prefer browser_batch when you can predict two or more steps ahead (for example click a field, type, press Enter): each step saved is a model turn saved. A step takes the same arguments as the single tool of the same name. Refs come from the latest snapshot or action result; a step that changes the page (a navigation, a form that re-renders) can invalidate the refs later steps use, so end the batch there. Steps run one at a time. With stop_on_error (default true) the batch stops at the first step that fails; with false it carries on, but it always stops when the person declines an approval or the page moves away. Where the person approves actions (a coordinate click, Enter, a drag, a click on a submit or delete button), each such step asks separately and the batch waits, so keep batches that need approvals short. Returns status (completed, completed_with_errors or stopped), one entry per step with its outcome or error, and the counts completed and remaining.",
+    },
     "browser_navigate": {
         "description": (
             "Must be called before other browser tools.",
@@ -280,7 +288,7 @@ _LANE_FORMS: dict[str, dict[str, Any]] = {
     },
 }
 LANE_TOOLS = frozenset(_LANE_FORMS)
-#: Every tool name the extension lane adds; a session without the lane is never offered one.
+#: Every tool name only the extension lane has; a session without the lane is never offered one.
 EXTENSION_ONLY_TOOLS = frozenset(schema["name"] for schema in EXTENSION_ONLY_SCHEMAS)
 
 for _schema in EXTENSION_ONLY_SCHEMAS:
@@ -289,7 +297,7 @@ for _schema in EXTENSION_ONLY_SCHEMAS:
 
 
 def lane_description(name: str, description: str) -> str:
-    """The extension-lane description of a long-standing browser tool, given its main description."""
+    """The extension-lane description of a long-standing browser tool or browser_batch, given its stock description."""
     form = _LANE_FORMS[name]["description"]
     if isinstance(form, str):
         return form
@@ -300,7 +308,7 @@ def lane_description(name: str, description: str) -> str:
 
 
 def lane_schema(base: dict[str, Any]) -> dict[str, Any]:
-    """Extension-lane form of the long-standing browser tool schema ``base`` (not modified)."""
+    """Extension-lane form of the browser tool schema ``base`` (a long-standing tool or browser_batch; not modified)."""
     name = base["name"]
     form = _LANE_FORMS[name]
     schema = copy.deepcopy(base)

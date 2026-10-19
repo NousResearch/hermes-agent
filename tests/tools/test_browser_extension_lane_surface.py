@@ -2,9 +2,9 @@
 
 A browser extension session (``browser.extension_control.enabled``, the server-bound principal and transport,
 and a controller the extension registered for the session) is offered the extension surface: the tab and action
-tools only the extension runs, ``tab_id`` and the extension wording on the long-standing tools. Every other
-session gets the browser tools as they were, including an API client of the same profile that never registers a
-controller. Once a session has it, the surface stays whatever is attached later: a tool block that changes
+tools only the extension runs, ``tab_id`` and the extension wording on the long-standing tools and on
+``browser_batch``. Every other session gets the browser tools as they were plus ``browser_batch`` in its stock
+form, including an API client of the same profile that never registers a controller. Once a session has it, the surface stays whatever is attached later: a tool block that changes
 between two requests of one conversation loses the provider's prompt cache.
 """
 
@@ -26,7 +26,7 @@ LONG_STANDING = (
     "browser_press",
 )
 # What the browser toolset offers a stock session here (get_images and console wait on the built-in CLI itself).
-STOCK_BROWSER_TOOLS = {*LONG_STANDING, "browser_vault"}
+STOCK_BROWSER_TOOLS = {*LONG_STANDING, "browser_batch", "browser_vault"}
 EXTENSION_WORDING = re.compile(r"extension|approv|background tab|tab_id|Hermes Control", re.IGNORECASE)
 STALE_ADVICE = re.compile(r"Requires browser_navigate|called before other browser tools|to be called first|navigate first")
 IDENTITY = dict(browser_control_principal="principal-fixture", browser_control_transport_family="local-api")
@@ -98,7 +98,8 @@ def test_a_session_that_cannot_bind_a_controller_gets_the_stock_browser_surface(
         assert tools[name]["description"].startswith(stock[name]["description"]), name
     for name, function in tools.items():
         assert "tab_id" not in json.dumps(function), name
-    assert [n for n in LONG_STANDING if EXTENSION_WORDING.search(tools[n]["description"])] == []
+    assert [n for n in (*LONG_STANDING, "browser_batch") if EXTENSION_WORDING.search(tools[n]["description"])] == []
+    assert tools["browser_batch"]["parameters"] == lane.BATCH_SCHEMA["parameters"]
     assert set(tools["browser_click"]["parameters"]["properties"]) == {"ref"}
     assert set(tools["browser_type"]["parameters"]["properties"]) == {"ref", "text"}
     assert tools["browser_scroll"]["parameters"]["properties"]["direction"]["enum"] == ["up", "down"]
@@ -120,7 +121,7 @@ def test_without_a_built_in_browser_an_unregistered_api_client_is_offered_no_rou
 
     tools = _by_name(_bound_definitions())
 
-    assert set(tools).isdisjoint({*LONG_STANDING, *lane.EXTENSION_ONLY_TOOLS})
+    assert set(tools).isdisjoint({*LONG_STANDING, "browser_batch", *lane.EXTENSION_ONLY_TOOLS})
 
 
 def test_none_of_the_extension_tools_is_offered_without_the_lane(broker, monkeypatch):
@@ -207,16 +208,31 @@ def test_one_process_serves_a_lane_session_and_stock_sessions_without_leaking_ei
 
 
 def test_every_long_standing_browser_tool_has_an_extension_form_that_applies_to_its_current_text():
-    stock = {s["name"]: s for s in browser_tool.BROWSER_TOOL_SCHEMAS}
+    stock = {s["name"]: s for s in (*browser_tool.BROWSER_TOOL_SCHEMAS, lane.BATCH_SCHEMA)}
     table = {name for name, _emoji, check_fn, *_ in browser_tool._BROWSER_TOOL_TABLE if check_fn is None}
 
-    assert set(LONG_STANDING) <= table
-    assert lane.LANE_TOOLS == set(LONG_STANDING)
-    for name in LONG_STANDING:
+    assert {*LONG_STANDING, "browser_batch"} <= table
+    assert lane.LANE_TOOLS == {*LONG_STANDING, "browser_batch"}
+    for name in lane.LANE_TOOLS:
         form = lane.lane_schema(stock[name])  # raises when a rewritten sentence is no longer in the main text
         assert form["description"] != stock[name]["description"], name
         assert not STALE_ADVICE.search(form["description"]), name
         assert form["description"].strip() == form["description"] and "  " not in form["description"], name
+
+
+def test_browser_batch_is_offered_to_every_browser_session_in_the_form_its_browser_runs(broker):
+    """The built-in browser runs fill, select, hover, drag and scroll_to only as batch steps, so its form says so;
+    the extension lane has those tools and approvals, so its form describes them and takes tab_id."""
+    stock = _by_name(_definitions("session-cli"))["browser_batch"]
+    _attach(broker)
+    extension = _by_name(_bound_definitions())["browser_batch"]
+
+    assert "send a batch of that one step" in stock["description"]
+    assert not EXTENSION_WORDING.search(stock["description"]) and "tab_id" not in stock["parameters"]["properties"]
+    assert "approves" in extension["description"] and "send a batch of that one step" not in extension["description"]
+    assert extension["parameters"]["properties"]["tab_id"]["type"] == "integer"
+    assert {**stock["parameters"]["properties"], "tab_id": extension["parameters"]["properties"]["tab_id"]} == \
+        extension["parameters"]["properties"]
 
 
 def test_a_reworded_main_description_fails_loudly_instead_of_keeping_stale_advice():
@@ -265,7 +281,7 @@ def test_the_vault_note_and_the_retrieval_hint_still_compose_with_the_lane_form(
 @pytest.mark.parametrize("tool", ("browser_type", "browser_fill", "browser_batch"))
 def test_every_tool_that_types_text_carries_the_vault_note_when_the_vault_is_available(broker, tool):
     _attach(broker)
-    schemas = {s["name"]: s for s in (*browser_tool.BROWSER_TOOL_SCHEMAS, *lane.EXTENSION_ONLY_SCHEMAS)}
+    schemas = {s["name"]: s for s in (*browser_tool.BROWSER_TOOL_SCHEMAS, lane.BATCH_SCHEMA, *lane.EXTENSION_ONLY_SCHEMAS)}
     defs = [{"type": "function", "function": dict(schemas[tool])},
             {"type": "function", "function": {"name": "browser_vault", "description": "", "parameters": {}}}]
     tokens = set_session_vars(session_id="session-1", **IDENTITY)
@@ -328,10 +344,11 @@ def test_the_built_in_browser_still_answers_a_bound_session_the_extension_never_
 # --- string values for the lane arguments of the long-standing tools ---------------------------------------------
 
 
-def test_string_values_for_the_lane_arguments_are_coerced_on_the_long_standing_tools(monkeypatch):
-    """The registry coerces against the registered schema, which for these seven tools is main's (no tab_id,
-    clear, amount, ...), so their handler coerces against the extension form the model was shown."""
+def test_string_values_for_the_lane_arguments_are_coerced_on_the_long_standing_tools_and_the_batch(monkeypatch):
+    """The registry coerces against the registered schema, which for these eight tools is the stock one (no
+    tab_id, clear, amount, ...), so their handler coerces against the extension form the model was shown."""
     sent = []
+    monkeypatch.setattr(browser_tool, "extension_lane_configured", lambda: True)  # tab_id is the extension form's
     monkeypatch.setattr(browser_tool, "routed_browser_handler",
                         lambda name, args, **kw: sent.append((name, args)) or json.dumps({"success": True}))
     calls = (
@@ -339,6 +356,8 @@ def test_string_values_for_the_lane_arguments_are_coerced_on_the_long_standing_t
         ("browser_type", {"ref": "@e1", "text": "x", "clear": "false"}, {"ref": "@e1", "text": "x", "clear": False}),
         ("browser_scroll", {"direction": "down", "amount": "300"}, {"direction": "down", "amount": 300}),
         ("browser_press", {"key": "a", "modifiers": '["Control"]'}, {"key": "a", "modifiers": ["Control"]}),
+        # registered in its stock form (no tab_id), so only this coercion against the extension form converts it
+        ("browser_batch", {"actions": [{"action": "back"}], "tab_id": "57"}, {"actions": [{"action": "back"}], "tab_id": 57}),
     )
     for name, args, _ in calls:
         assert json.loads(registry.dispatch(name, args, task_id="task-1")) == {"success": True}, name
@@ -365,5 +384,6 @@ def test_the_rarely_used_extension_tools_are_deferred_behind_tool_search(broker)
 
     names = set(_by_name(laned))
     assert "tool_search" in names and cold.isdisjoint(names)
-    assert (lane.EXTENSION_ONLY_TOOLS - cold) <= names
+    assert (lane.EXTENSION_ONLY_TOOLS - cold) | {"browser_batch"} <= names  # a batch saves turns only if it is direct
+    assert "browser_batch" in _by_name(stock)
     assert not [name for name in lane.EXTENSION_ONLY_TOOLS if name in json.dumps(stock)]

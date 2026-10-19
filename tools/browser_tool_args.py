@@ -6,7 +6,9 @@ reads the arguments its table declares. Checking here, before a call reaches eit
 argument into one clear error the model can act on instead of a silent no-op, and an approval card is
 never raised for a call that could not have run.
 
-``invalid_arguments(tool, args)`` is the entry point; tools without a check pass through untouched.
+``invalid_arguments(tool, args, extension_lane=...)`` is the entry point; tools without a check pass through
+untouched. ``extension_lane`` says whether the session was shown the extension form, which takes ``tab_id``: a
+refusal never points a session at an argument its own form does not have.
 """
 
 from __future__ import annotations
@@ -152,7 +154,7 @@ def _fields_error(action: str, fields: dict[str, Any], allowed: dict[str, str], 
     return check(fields) if check else None
 
 
-def step_error(index: int, step: Any) -> Optional[str]:
+def step_error(index: int, step: Any, extension_lane: bool = True) -> Optional[str]:
     """Why batch step ``index`` (zero-based) cannot run, or ``None``."""
     label = f"step {index + 1}"
     if not isinstance(step, dict):
@@ -165,26 +167,27 @@ def step_error(index: int, step: Any) -> Optional[str]:
     label = f"{label} ({action})"
     unknown = sorted(set(step) - set(allowed) - {"action"})
     if unknown:
-        hint = " (tab_id goes on the batch itself, not on a step)" if "tab_id" in unknown else ""
+        hint = " (tab_id goes on the batch itself, not on a step)" if "tab_id" in unknown and extension_lane else ""
         return f"{label} does not take {', '.join(unknown)}{hint}; it takes {', '.join(allowed) or 'no arguments'}"
     detail = _fields_error(action, step, allowed, required)
     return f"{label}: {detail}" if detail else None
 
 
-def batch_error(args: dict[str, Any]) -> Optional[str]:
+def batch_error(args: dict[str, Any], extension_lane: bool = True) -> Optional[str]:
     actions = args.get("actions")
     if not isinstance(actions, list) or not actions:
         return "'actions' must be a non-empty list of steps, each an object with an 'action'"
     if len(actions) > BATCH_MAX_STEPS:
         return f"a batch holds at most {BATCH_MAX_STEPS} steps, got {len(actions)}; split it into several calls"
-    unknown = sorted(set(args) - _BATCH_ARGS)
+    accepted = _BATCH_ARGS if extension_lane else _BATCH_ARGS - {"tab_id"}
+    unknown = sorted(set(args) - accepted)
     if unknown:
-        return f"does not take {', '.join(unknown)}; it takes {', '.join(sorted(_BATCH_ARGS))}"
+        return f"does not take {', '.join(unknown)}; it takes {', '.join(sorted(accepted))}"
     stop = args.get("stop_on_error")
     if stop is not None and not isinstance(stop, bool):
         return f"'stop_on_error' must be true or false, got {stop!r}"
     for index, step in enumerate(actions):
-        error = step_error(index, step)
+        error = step_error(index, step, extension_lane)
         if error:
             return error
     return None
@@ -204,12 +207,14 @@ _TOOL_CHECKS: dict[str, Callable[[dict[str, Any]], Optional[str]]] = {
 }
 
 
-def invalid_arguments(tool: str, args: dict[str, Any]) -> Optional[str]:
+def invalid_arguments(tool: str, args: dict[str, Any], *, extension_lane: bool = True) -> Optional[str]:
     """Error text for a call to ``tool`` that cannot run as given, or ``None`` when it may proceed."""
     check = _TOOL_CHECKS.get(tool)
     tab_id = args.get("tab_id")  # any routed tool may name the tab it acts on
     if tab_id is not None and not _TYPE_CHECKS["tab"](tab_id):
         detail = f"'tab_id' must be {_TYPE_NAMES['tab']}, got {tab_id!r}"
+    elif tool == "browser_batch":
+        detail = batch_error(args, extension_lane)
     else:
         detail = check(args) if check else None
     return f"{tool}: {detail}" if detail else None

@@ -719,6 +719,25 @@ Supported keys: `Enter`, `Tab`, `Escape`, `ArrowDown`, `ArrowUp`, and more.
 
 Navigate back to the previous page in browser history.
 
+### `browser_batch`
+
+Run several actions in order as one call, then return the page as it is after the last step. Use it when you can predict two or more steps ahead, such as clicking a field, typing, and pressing Enter: each step saved is a model turn saved.
+
+```
+browser_batch(actions=[
+  {"action": "click", "ref": "@e3"},
+  {"action": "type", "ref": "@e3", "text": "hermes agent"},
+  {"action": "press", "key": "Enter"}
+])
+```
+
+- A batch holds 1 to 20 steps. The step actions are `back`, `click`, `drag`, `fill`, `hover`, `navigate`, `press`, `scroll`, `scroll_to`, `select`, and `type`. A click, type, scroll, press or navigate step takes the arguments of the tool of the same name, plus `x`/`y` (click a point), `clear: false` (add to what a field holds), `left`/`right` and `amount` (scroll) and `modifiers` (keys held with press). A call with more than 20 steps, an unknown step action, or a missing or unknown step argument is refused with an error naming the step.
+- It is also how the built-in browser fills a field (`fill`), picks an option in a `<select>` (`select`), hovers (`hover`), drags one element onto another (`drag`) or scrolls an element into view (`scroll_to`): a batch of that one step. With the browser extension these are also tools of their own (see [below](#browser_fill-browser_select-browser_hover-browser_drag-browser_scroll_to)).
+- With `stop_on_error` (default `true`) the batch stops at the first step that fails; with `false` it carries on.
+- The result lists every step's outcome or error, plus `status` (`completed`, `completed_with_errors`, or `stopped`), `completed`, and `remaining`, and the page after the last step. A step the active browser cannot run (Camofox has no fill, select, hover, drag or scroll-into-view) is reported on that step, never skipped silently.
+- A step that changes the page (a navigation, a form that re-renders) can invalidate the refs later steps use, so end the batch there.
+- On the built-in browser the steps run one by one through the same code as the single tools, with one snapshot at the end. With the browser extension the whole batch travels in one command, a step that needs the person's approval asks on its own while the batch waits, and the batch also stops when the person declines an approval or the page moves away.
+
 ### `browser_get_images`
 
 List all images on the current page with their URLs and alt text. Useful for finding images to analyze.
@@ -831,7 +850,7 @@ Responds to a native JS dialog (`alert` / `confirm` / `prompt` / `beforeunload`)
 
 ## Browser extension surface
 
-With the [Hermes Browser Extension](api-server.md#browser-extension-control) the model works in your own browser, and it is offered a larger set of browser tools than the built-in browser needs. That set is offered only to browser extension sessions: `browser.extension_control.enabled` is on, the request carries a server-bound principal and transport, and the extension has registered a controller for that session (the side panel does this before the first turn when Hermes Control is on). The CLI, the messaging platforms, API sessions without the setting, and API clients that never register a controller get the browser tools described above, exactly as before: no `tab_id`, no approval wording, and none of the tools below. Once a session has the set it keeps it, whatever is attached later, so the tool block does not change mid-conversation.
+With the [Hermes Browser Extension](api-server.md#browser-extension-control) the model works in your own browser, and it is offered a larger set of browser tools than the built-in browser needs. That set is offered only to browser extension sessions: `browser.extension_control.enabled` is on, the request carries a server-bound principal and transport, and the extension has registered a controller for that session (the side panel does this before the first turn when Hermes Control is on). The CLI, the messaging platforms, API sessions without the setting, and API clients that never register a controller get the browser tools described above, `browser_batch` in its stock form included: no `tab_id`, no approval wording, and none of the tools below. Once a session has the set it keeps it, whatever is attached later, so the tool block does not change mid-conversation.
 
 The choice belongs to the session, never to whether a controller is attached at that moment. The same tools are sent on every request of the session, so turning Hermes Control on or off, or an extension reconnecting, does not change the tool block and cost the conversation its prompt cache. With nothing attached, or the controller offline, a call fails closed with an error asking the person to turn on Hermes Control and attach a tab; where no controller has ever registered for the session, the built-in browser answers instead if one is installed.
 
@@ -845,24 +864,6 @@ The choice belongs to the session, never to whether a controller is attached at 
 
 A redirect, a clicked link or a submitted form can land on a different address than the one requested, so the address the extension reports after a call is checked again against the cloud metadata floor and the website blocklist: after `browser_navigate`, `browser_back`, `browser_tab_create`, `browser_batch`, `browser_snapshot` and every action that can change the page (click, type, fill, select, press, hover, scroll), and for each tab in `browser_tabs`. A new tab is read back until it has an address before it is checked. If a page fails, the result is an error that says the page landed on a blocked address and names the host; its snapshot, title and text are not returned. The extension cannot blank a tab, so the tab stays on that page: Hermes takes it back one step when the call moved it there, and otherwise refuses every call on that tab (`tab_withheld`) until it goes to another page with `browser_navigate` or `browser_back` or is closed. A `browser_batch` is checked once, on the page it ends on, not at each step.
 
-### `browser_batch`
-
-Run several actions in order as one call, then return the page as it is after the last step. Use it when you can predict two or more steps ahead, such as clicking a field, typing, and pressing Enter: each step saved is a model turn saved.
-
-```
-browser_batch(actions=[
-  {"action": "click", "ref": "@e3"},
-  {"action": "type", "ref": "@e3", "text": "hermes agent"},
-  {"action": "press", "key": "Enter"}
-])
-```
-
-- A batch holds 1 to 20 steps. A step uses the same arguments as the single tool of the same name; the step actions are `back`, `click`, `drag`, `fill`, `hover`, `navigate`, `press`, `scroll`, `scroll_to`, `select`, and `type`. A call with more than 20 steps, an unknown step action, or a missing or unknown step argument is refused with an error naming the step.
-- With `stop_on_error` (default `true`) the batch stops at the first step that fails; with `false` it carries on. Either way it stops when the person declines an approval or the page moves away.
-- The result lists every step's outcome or error, plus `status` (`completed`, `completed_with_errors`, or `stopped`), `completed`, and `remaining`.
-- A step that changes the page (a navigation, a form that re-renders) can invalidate the refs later steps use, so end the batch there.
-- The whole batch travels to the browser in one command, and a step that needs the person's approval asks on its own while the batch waits.
-
 ### `browser_fill`, `browser_select`, `browser_hover`, `browser_drag`, `browser_scroll_to`
 
 | Tool | What it does |
@@ -873,7 +874,7 @@ browser_batch(actions=[
 | `browser_drag(ref, to_ref)` | Drags one element onto another. The extension asks the person to approve every drag, and no page is returned afterwards: take a snapshot to see the result. |
 | `browser_scroll_to(ref)` | Scrolls an element into view. |
 
-`browser_hover` and `browser_drag` fail with `tab_hidden` in a background tab; the other three work there.
+`browser_hover` and `browser_drag` fail with `tab_hidden` in a background tab; the other three work there. On the built-in browser the same actions are [`browser_batch`](#browser_batch) steps.
 
 ### `browser_tabs`, `browser_tab_activate`, `browser_tab_create`, `browser_tab_close`, `browser_tab_group`, `browser_tab_ungroup`
 
@@ -980,7 +981,7 @@ If paid features aren't available on your plan, Hermes automatically falls back 
 
 ## Limitations
 
-- **Text-based interaction** — relies on accessibility tree, not pixel coordinates
+- **Text-based interaction** — relies on the accessibility tree; a pixel-coordinate click is only for a target no ref reaches (a `browser_batch` click step with `x` and `y`)
 - **Snapshot size** — large pages are truncated at `browser.snapshot_threshold` (default 15,000 characters, matching `web_extract`; no LLM summarization); the complete snapshot is saved to `~/.hermes/cache/web/` and the output points at it for `read_file` paging
 - **Session timeout** — cloud sessions expire based on your provider's plan settings
 - **Cost** — cloud sessions consume provider credits; sessions are automatically cleaned up when the conversation ends or after inactivity. Use `/browser connect` for free local browsing.

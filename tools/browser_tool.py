@@ -941,7 +941,7 @@ def _unsupported_here(tool: str, cause: str, remedy: str) -> str:
 _NEEDS_EXTENSION = "Ask the person to turn on Hermes Control in the Hermes Browser Extension and attach a tab to use it."
 
 
-def _camofox_lacks(tool: str, what: str, instead: str = _NEEDS_EXTENSION) -> str:
+def _camofox_lacks(tool: str, what: str, instead: str) -> str:
     return _unsupported_here(tool, f"the Camofox backend has no {what}", instead)
 
 
@@ -1016,7 +1016,8 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None, clear: bool
         return bad
     if _is_camofox_mode():
         if clear is False:
-            return _camofox_lacks("browser_type", "way to add to a field without clearing it")
+            return _camofox_lacks("browser_type", "way to add to a field without clearing it",
+                                  "Type the whole value instead, leaving clear on.")
         return _camofox("camofox_type", ref, text, task_id)
     return _enter_text("browser_type", ref, text, task_id, "typed", append=clear is False)
 
@@ -1024,7 +1025,7 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None, clear: bool
 def browser_fill(ref: str, value: str, task_id: Optional[str] = None) -> str:
     """Replace the contents of the field ``ref`` with ``value``."""
     if _is_camofox_mode():
-        return _camofox_lacks("browser_fill", "fill command", "Use browser_type, or connect the Hermes Browser Extension.")
+        return _camofox_lacks("browser_fill", "fill command", "Use browser_type instead.")
     return _enter_text("browser_fill", ref, value, task_id, "filled")
 
 
@@ -1039,7 +1040,8 @@ def browser_select(ref: str, value: str, task_id: Optional[str] = None) -> str:
 def browser_hover(ref: str, task_id: Optional[str] = None) -> str:
     """Move the pointer over the element ``ref``."""
     if _is_camofox_mode():
-        return _camofox_lacks("browser_hover", "hover command")
+        return _camofox_lacks("browser_hover", "hover command",
+                              "Click the element instead, or use another browser backend for menus that open on hover.")
     ref = _at_ref(ref)
     return _guarded_action(task_id, "hover", "hover", [ref], {"hovered": ref}, f"Failed to hover {ref}")
 
@@ -1047,7 +1049,7 @@ def browser_hover(ref: str, task_id: Optional[str] = None) -> str:
 def browser_drag(ref: str, to_ref: str, task_id: Optional[str] = None) -> str:
     """Drag the element ``ref`` onto ``to_ref``."""
     if _is_camofox_mode():
-        return _camofox_lacks("browser_drag", "drag command")
+        return _camofox_lacks("browser_drag", "drag command", "Use another browser backend to drag.")
     ref, to_ref = _at_ref(ref), _at_ref(to_ref)
     return _guarded_action(task_id, "drag", "drag", [ref, to_ref], {"dragged": ref, "dropped_on": to_ref}, f"Failed to drag {ref} onto {to_ref}")
 
@@ -1138,6 +1140,13 @@ def _batch_step_failure(index: int, action: str, code: str, message: str) -> dic
     return {"index": index, "action": action, "error": code, "message": message}
 
 
+# What a single tool's result says about the browser rather than the page (an engine fallback that may not have
+# reached the real session, a bot-protection page, a profile that could not be used, where a navigation landed).
+# A batch keeps it on the step that said it, so nothing the single tool would have told the model is lost.
+_BATCH_STEP_NOTES = ("url", "title", "fallback_warning", "browser_engine", "browser_engine_fallback",
+                     "bot_detection_warning", "stealth_warning", "real_profile_unavailable")
+
+
 def _run_builtin_batch_step(index: int, step: dict[str, Any], task_id: Optional[str]) -> dict[str, Any]:
     """One batch step through the built-in browser's own handler; ``{index, action, status}`` or
     ``{index, action, error, message}`` like the extension's per-step entries. Step fields carry the same names
@@ -1150,14 +1159,21 @@ def _run_builtin_batch_step(index: int, step: dict[str, Any], task_id: Optional[
     except (TypeError, ValueError):
         return _batch_step_failure(index, action, "command_error", f"{handler_name} returned an unreadable result.")
     if outcome.get("success") is False:
-        return _batch_step_failure(index, action, str(outcome.get("code") or "command_error"),
-                                   str(outcome.get("error") or "The step failed."))
-    return {"index": index, "action": action, "status": "ok"}
+        message = str(outcome.get("error") or "The step failed.")
+        if message.startswith(f"{handler_name} "):  # "browser_hover is not available ..." names a tool, not the step
+            message = f"The {action} step{message[len(handler_name):]}"
+        entry = _batch_step_failure(index, action, str(outcome.get("code") or "command_error"), message)
+    else:
+        entry = {"index": index, "action": action, "status": "ok"}
+    entry.update({key: outcome[key] for key in _BATCH_STEP_NOTES if outcome.get(key)})
+    return entry
 
 
 def browser_batch(actions: list, stop_on_error: bool = True, task_id: Optional[str] = None) -> str:
     """Run ``actions`` in order through the single-action handlers; JSON shaped like the extension's batch
-    result (per-step entries, ``completed``/``remaining``) plus one closing snapshot of the page."""
+    result (per-step entries, ``completed``/``remaining``) plus one closing snapshot of the page. A null
+    ``stop_on_error`` is the default (stop), as for every optional argument."""
+    stop_on_error = stop_on_error is not False
     results: list[dict[str, Any]] = []
     stopped_reason = ""
     for index, step in enumerate(actions):
@@ -1176,6 +1192,11 @@ def browser_batch(actions: list, stop_on_error: bool = True, task_id: Optional[s
         "completed": completed,
         "remaining": len(actions) - len(results),
     }
+    first_failure = next((entry for entry in results if "error" in entry), None)
+    if first_failure is not None:  # a top-level error, so the failure is seen as one (display, loop guardrails)
+        response["error"] = (f"Step {first_failure['index'] + 1} ({first_failure['action']}) failed: "
+                             f"{first_failure['message']} "
+                             + ("The batch stopped there." if stopped_reason else "The other steps ran."))
     if completed:  # one read of the page for the whole batch, as the extension does
         try:
             page = json.loads(browser_snapshot(task_id=task_id))
@@ -1183,6 +1204,7 @@ def browser_batch(actions: list, stop_on_error: bool = True, task_id: Optional[s
             page = {}
         if page.get("success"):
             response.update({key: page[key] for key in ("snapshot", "element_count") if key in page})
+            _lp._copy_fallback_warning(response, page)
         else:
             response["page_error"] = str(page.get("error") or "The page could not be read after the batch.")
     return _dumps(response)
@@ -1557,24 +1579,12 @@ def _screenshot_tool_result(screenshot_path: Path) -> str | dict[str, Any]:
     })
 
 
-def browser_screenshot(ref: Optional[str] = None, task_id: Optional[str] = None) -> str | dict[str, Any]:
-    """Screenshot the current page and hand it to the model (no question, no auxiliary vision call)."""
-    if _is_camofox_mode():
-        return _camofox_lacks("browser_screenshot", "plain screenshot command", "Use browser_vision.")
-    if ref:
-        return _unsupported_here("browser_screenshot", "the built-in browser cannot capture a single element",
-                                 "Call it without ref for the whole page, or connect the Hermes Browser Extension.")
-    import uuid as uuid_mod
-    effective_task_id = _last_session_key(task_id or "default")
-    blocked = _blocked_private_page_content(effective_task_id)
-    if blocked is not None:
-        return blocked
-    screenshots_dir = _screenshots_dir()
-    screenshots_dir.mkdir(parents=True, exist_ok=True)
-    _lifecycle._cleanup_old_screenshots(screenshots_dir, max_age_hours=24)
-    _result, screenshot_path, error = _capture_vision_screenshot(
-        effective_task_id, False, screenshots_dir / f"browser_screenshot_{uuid_mod.uuid4().hex}.png", False)
-    return error if error is not None else _screenshot_tool_result(screenshot_path)
+def browser_screenshot(ref: Optional[str] = None, task_id: Optional[str] = None) -> str:
+    """The legacy function every routed tool has. Only extension sessions are offered browser_screenshot; a call
+    that lands here anyway (extension control turned off mid-conversation, or a call without the session's
+    identity) is told to use browser_vision, which shows the page on the built-in browser."""
+    return _unsupported_here("browser_screenshot", "the built-in browser shows the page through browser_vision",
+                             "Use browser_vision to see the page.")
 
 
 _PNG_DATA_URL_PREFIX = "data:image/png;base64,"
@@ -1584,8 +1594,8 @@ _MAX_EXTENSION_SCREENSHOT_CHARS = 1_500_000
 
 def _extension_screenshot_result(raw: Any) -> Any:
     """The extension answers a screenshot with a ``data:`` URL inside its JSON. Save it as a file and give the
-    model what the built-in browser gives, so raw base64 never lands in the text context. Anything else (an
-    error, the built-in browser's own result) passes through untouched."""
+    model what browser_vision gives, so raw base64 never lands in the text context. Anything else (an
+    error, or a result that is not a screenshot) passes through untouched."""
     if not isinstance(raw, str):
         return raw
     try:
@@ -1621,9 +1631,11 @@ from tools.browser_tool_extension_landing import (
     extension_landing_guard as _extension_landing_guard, extension_withheld_guard as _extension_withheld_guard,
 )
 
-# The extension-lane tools are registered with their own schemas but offered only to sessions that can bind a
-# controller (model_tools._rewrite_for_extension_lane), so BROWSER_TOOL_SCHEMAS above stays the stock surface.
-_BROWSER_SCHEMA_MAP = {s["name"]: s for s in (*BROWSER_TOOL_SCHEMAS, *_extension_schemas.EXTENSION_ONLY_SCHEMAS)}
+# browser_batch is registered in the form every browser session gets; the extension-lane tools are registered
+# with their own schemas but offered only to browser extension sessions (model_tools._rewrite_for_extension_lane),
+# so BROWSER_TOOL_SCHEMAS above stays main's surface.
+_BROWSER_SCHEMA_MAP = {s["name"]: s for s in (
+    *BROWSER_TOOL_SCHEMAS, _extension_schemas.BATCH_SCHEMA, *_extension_schemas.EXTENSION_ONLY_SCHEMAS)}
 
 
 def _extension_call_guard(action: str, args: dict[str, Any], route=None) -> tuple[dict[str, Any], Optional[str]]:
@@ -1705,13 +1717,13 @@ def _routed_check_fn(name: str):
     return check
 
 
-# Reshapes a routed tool's result on the way back to the model (the built-in browser's own results pass through).
+# Reshapes a routed tool's result on the way back to the model (anything that is not an extension screenshot passes through).
 _ROUTED_RESULT_FILTERS = {"browser_screenshot": _extension_screenshot_result}
 
 
 @functools.cache
 def _lane_form_schema(name: str) -> Optional[dict[str, Any]]:
-    """The extension-lane schema of a long-standing browser tool, or ``None`` for any other tool."""
+    """The extension-lane schema of a long-standing browser tool or browser_batch, or ``None`` for any other tool."""
     return _extension_schemas.lane_schema(_BROWSER_SCHEMA_MAP[name]) if name in _extension_schemas.LANE_TOOLS else None
 
 
@@ -1723,7 +1735,7 @@ def _routed_handler(name: str, fallback):
             # Dispatch coerced string values against the registered schema, which is the stock one for these
             # tools, so "57" for tab_id or "false" for clear would reach the checks below unconverted.
             args = coerce_tool_args(name, args, schema=lane_form)
-        invalid = _args.invalid_arguments(name, args)
+        invalid = _args.invalid_arguments(name, args, extension_lane=extension_lane_configured())
         if invalid:  # refused before either lane sees it: no approval card, no silently dropped argument
             return _dumps(_err(invalid))
         result = record_browser_call(lambda legacy: routed_browser_handler(
@@ -1738,7 +1750,7 @@ def _routed_handler(name: str, fallback):
         if name in _extension_schemas.TAB_TARGETING_TOOLS and args.get("tab_id") is not None:
             return _dumps(_err(
                 f"{name}: tab_id is not available in this browser: the built-in browser works in one tab per task. "
-                f"Leave tab_id out, or connect the Hermes Browser Extension to choose a tab.",
+                f"Leave tab_id out.",
                 code="unsupported_in_this_browser"))
         return fallback(args, kw)
     return handler

@@ -1,7 +1,8 @@
-"""The browser tools and arguments the extension controller already supports, on the built-in browser.
+"""The browser tools and arguments the extension controller supports, and what the built-in browser does with them.
 
-One schema serves both lanes. Where the built-in browser (agent-browser) can do an action it does, through the
-same registry handler the agent calls; where it cannot, the call returns a clear "not available in this
+Where the built-in browser (agent-browser) can do an action it does, through the same registry handler the
+agent calls: every browser session reaches fill, select, hover, drag, scroll_to and the new click, type, scroll
+and press arguments as browser_batch steps. Where it cannot, the call returns a clear "not available in this
 browser" error naming the cause and the remedy. Nothing is dropped or ignored silently.
 """
 
@@ -12,6 +13,7 @@ import pytest
 
 from gateway.browser_control_broker import BROWSER_CONTROL_CAPABILITIES
 from tools import browser_tool
+from tools import browser_tool_args as bt_args
 from tools import browser_tool_extension_schemas as extension_schemas
 from tools import browser_tool_eval_policy as bt_eval_policy
 from tools import browser_tool_install as bt_install
@@ -46,7 +48,7 @@ def browser(monkeypatch):
 
 def _lane_schemas():
     """Every browser tool schema as a session that can bind an extension controller is offered it."""
-    stock = {s["name"]: s for s in browser_tool.BROWSER_TOOL_SCHEMAS}
+    stock = {s["name"]: s for s in (*browser_tool.BROWSER_TOOL_SCHEMAS, extension_schemas.BATCH_SCHEMA)}
     lane = {name: extension_schemas.lane_schema(stock[name]) for name in extension_schemas.LANE_TOOLS}
     return {**stock, **lane, **{s["name"]: s for s in extension_schemas.EXTENSION_ONLY_SCHEMAS}}
 
@@ -173,7 +175,6 @@ def test_a_ref_wins_over_coordinates_and_clicks_the_element(browser):
         ("browser_tab_close", {"tab_id": 3}),
         ("browser_tab_group", {"tab_ids": [3, 4]}),
         ("browser_tab_ungroup", {"tab_ids": [3, 4]}),
-        ("browser_screenshot", {"ref": "@e1"}),
     ],
 )
 def test_what_the_built_in_browser_cannot_do_is_a_clear_error_never_a_silent_no_op(browser, tool, args):
@@ -200,7 +201,6 @@ def test_the_active_backend_that_cannot_do_something_says_so_instead_of_dropping
         ("browser_hover", {"ref": "@e1"}),
         ("browser_drag", {"ref": "@e1", "to_ref": "@e2"}),
         ("browser_scroll_to", {"ref": "@e1"}),
-        ("browser_screenshot", {}),
     ]:
         out = _call(tool, args)
         assert out["success"] is False and "Camofox" in out["error"], (tool, out)
@@ -342,17 +342,45 @@ def test_an_oversized_extension_screenshot_is_refused_and_writes_no_file(tmp_pat
     assert not shots.exists()
 
 
-def test_the_built_in_browser_screenshot_goes_through_the_same_native_path(browser, monkeypatch, tmp_path):
-    shot = tmp_path / "shot.png"
-    shot.write_bytes(PNG)
-    monkeypatch.setattr("tools.vision_tools._should_use_native_vision_fast_path", lambda: True)
-    monkeypatch.setattr(browser_tool, "_blocked_private_page_content", lambda task_id: None)
-    monkeypatch.setattr(browser_tool, "_capture_vision_screenshot", lambda task_id, annotate, path, lp: ({}, shot, None))
+@pytest.mark.parametrize("args", ({}, {"ref": "@e1"}))
+def test_the_built_in_browser_answers_a_screenshot_with_browser_vision(browser, args):
+    """browser_vision already shows the page on the built-in browser, so browser_screenshot is the extension's."""
+    out = _call("browser_screenshot", args)
 
-    result = registry.get_entry("browser_screenshot").handler({}, task_id="task-1")
+    assert out["success"] is False and out["code"] == "unsupported_in_this_browser"
+    assert "Use browser_vision" in out["error"]
+    assert browser == []
 
-    assert isinstance(result, dict) and result["_multimodal"] is True
-    assert result["meta"]["screenshot_path"] == str(shot)
+
+_JSON_TYPES = {"str": "string", "number": "number", "int": "integer", "bool": "boolean", "list": "array"}
+
+
+def test_the_batch_step_schema_declares_exactly_what_the_checks_and_the_built_in_runner_take():
+    """For a session without the extension the batch step schema is the only place the model learns about
+    scroll_to, drag, clear, amount, modifiers and x/y, so it must not drift from what the checks accept."""
+    items = extension_schemas.BATCH_SCHEMA["parameters"]["properties"]["actions"]["items"]
+    properties = items["properties"]
+
+    assert properties["action"]["enum"] == list(bt_args.BATCH_STEP_ACTIONS)
+    for action, (fields, _required) in bt_args._STEP_ARGS.items():
+        assert callable(getattr(browser_tool, f"browser_{action}")), action
+        for field, kind in fields.items():
+            assert properties[field]["type"] == _JSON_TYPES[kind], (action, field)
+    declared = set(properties) - {"action"}
+    assert declared == {field for fields, _ in bt_args._STEP_ARGS.values() for field in fields}
+
+
+def test_a_refusal_points_only_at_arguments_the_session_was_shown(monkeypatch):
+    """The stock browser_batch has no tab_id, so its refusals do not mention it; the extension form's do."""
+    unknown = {"actions": [{"action": "back"}], "foo": 1}
+    on_a_step = {"actions": [{"action": "back", "tab_id": 3}]}
+
+    assert _call("browser_batch", unknown)["error"] == "browser_batch: does not take foo; it takes actions, stop_on_error"
+    assert "tab_id" not in _call("browser_batch", on_a_step)["error"].split("does not take tab_id")[1]
+
+    monkeypatch.setattr(browser_tool, "extension_lane_configured", lambda: True)
+    assert _call("browser_batch", unknown)["error"].endswith("it takes actions, stop_on_error, tab_id")
+    assert "(tab_id goes on the batch itself, not on a step)" in _call("browser_batch", on_a_step)["error"]
 
 
 # --- choosing a tab (tab_id) ---------------------------------------------------------------------------------
@@ -386,13 +414,21 @@ _VALID_ARGS = {
 }
 
 
-@pytest.mark.parametrize("tool", TAB_TARGETING)
+@pytest.mark.parametrize("tool", [name for name in TAB_TARGETING if name != "browser_batch"])
 def test_the_built_in_browser_refuses_a_tab_id_instead_of_ignoring_it(browser, tool):
     out = _call(tool, {**_VALID_ARGS[tool], "tab_id": 4})
 
     assert out["success"] is False and out["code"] == "unsupported_in_this_browser"
-    assert out["error"].startswith(f"{tool}: tab_id is not available in this browser")
-    assert "one tab per task" in out["error"] and "Extension" in out["error"]
+    assert out["error"] == (f"{tool}: tab_id is not available in this browser: the built-in browser works in one "
+                            f"tab per task. Leave tab_id out.")
+    assert browser == []
+
+
+def test_the_stock_batch_refuses_a_tab_id_as_an_argument_it_does_not_take(browser):
+    out = _call("browser_batch", {**_VALID_ARGS["browser_batch"], "tab_id": 4})
+
+    assert out["success"] is False
+    assert out["error"] == "browser_batch: does not take tab_id; it takes actions, stop_on_error"
     assert browser == []
 
 

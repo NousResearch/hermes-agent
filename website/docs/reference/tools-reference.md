@@ -8,7 +8,7 @@ description: "Authoritative reference for Hermes built-in tools, grouped by tool
 
 This page documents Hermes' built-in tools, grouped by toolset. Availability varies by platform, credentials, and enabled toolsets.
 
-**Quick counts (current registry):** ~100 tools — 10 browser tools (core) + 2 CDP-gated browser tools + 5 browser-vault tools + `browser_exec`, 4 file tools, 2 terminal tools (`terminal`, `process_manage`), 11 desktop-GUI tools (`read_terminal`, `close_terminal`, `desktop_preview`, `drive_preview`, `annotate_preview`, `read_window_below`, `focus_pane`, `react_to_message`, `gui_tour`, `show_tip`, `set_theme` — desktop-app sessions only), 2 web tools, 5 Feishu tools, 5 Yuanbao tools, 14 kanban tools (registered when the kanban dispatcher spawns the agent), 1 project tool (`desktop_project`; desktop/GUI sessions), 2 Discord tools, 3 video tools (`video_generate`, `xai_video_edit`, `xai_video_extend`), and a handful of standalone tools (`memory`, `clarify`, `delegate_task`, `execute_code`, `cronjob_manage`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `vision_analyze`, `video_analyze`, `todo_list`, `computer_use`, `x_search`).
+**Quick counts (current registry):** ~100 tools — 11 browser tools (core) + 2 CDP-gated browser tools + 5 browser-vault tools + `browser_exec`, 4 file tools, 2 terminal tools (`terminal`, `process_manage`), 11 desktop-GUI tools (`read_terminal`, `close_terminal`, `desktop_preview`, `drive_preview`, `annotate_preview`, `read_window_below`, `focus_pane`, `react_to_message`, `gui_tour`, `show_tip`, `set_theme` — desktop-app sessions only), 2 web tools, 5 Feishu tools, 5 Yuanbao tools, 14 kanban tools (registered when the kanban dispatcher spawns the agent), 1 project tool (`desktop_project`; desktop/GUI sessions), 2 Discord tools, 3 video tools (`video_generate`, `xai_video_edit`, `xai_video_extend`), and a handful of standalone tools (`memory`, `clarify`, `delegate_task`, `execute_code`, `cronjob_manage`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `vision_analyze`, `video_analyze`, `todo_list`, `computer_use`, `x_search`).
 
 :::tip MCP Tools
 In addition to built-in tools, Hermes can load tools dynamically from MCP servers. MCP tools appear with the prefix `mcp__<server>__` (e.g., `mcp__github__create_issue` for the `github` MCP server). See [MCP Integration](../user-guide/features/mcp.md) for configuration.
@@ -19,6 +19,7 @@ In addition to built-in tools, Hermes can load tools dynamically from MCP server
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
 | `browser_back` | Navigate back to the previous page in browser history. Requires browser_navigate to be called first. | — |
+| `browser_batch` | Run 1 to 20 browser actions in order as one call and get the page back after the last step. Also how the built-in browser fills a field, picks a dropdown option, hovers, drags or scrolls an element into view: a batch of that one step. | — |
 | `browser_click` | Click on an element identified by its ref ID from the snapshot (e.g., '@e5'). The ref IDs are shown in square brackets in the snapshot output. Requires browser_navigate and browser_snapshot to be called first. | — |
 | `browser_console` | Get browser console output and JavaScript errors from the current page. Returns console.log/warn/error/info messages and uncaught JS exceptions. Use this to detect silent JavaScript errors, failed API calls, and application warnings. Requi… | — |
 | `browser_get_images` | Get a list of all images on the current page with their URLs and alt text. Useful for finding images to analyze with the vision tool. Requires browser_navigate to be called first. | — |
@@ -31,11 +32,10 @@ In addition to built-in tools, Hermes can load tools dynamically from MCP server
 
 ## `browser` toolset (extension lane)
 
-Offered only to Hermes Browser Extension sessions: `browser.extension_control.enabled` is on, the request carries a server-bound principal and transport (API server sessions), and the extension has registered a controller for the session. Once a session has the set it keeps it, whatever is attached later. CLI and messaging sessions, API sessions without the setting, and API clients that never register a controller never see these tools, and the seven tools above keep the descriptions shown there (no `tab_id`, no approval wording). With the setting on, those seven also gain `tab_id` and the extension wording, and `browser_click`, `browser_type`, `browser_scroll` and `browser_press` take `x`/`y`, `clear`, `amount` and `modifiers`. See [Browser Automation](../user-guide/features/browser.md#browser-extension-surface).
+Offered only to Hermes Browser Extension sessions: `browser.extension_control.enabled` is on, the request carries a server-bound principal and transport (API server sessions), and the extension has registered a controller for the session. Once a session has the set it keeps it, whatever is attached later. CLI and messaging sessions, API sessions without the setting, and API clients that never register a controller never see these tools, and the eight tools above keep the descriptions shown there (no `tab_id`, no approval wording). In an extension session, those eight also gain `tab_id` and the extension wording, and `browser_click`, `browser_type`, `browser_scroll` and `browser_press` take `x`/`y`, `clear`, `amount` and `modifiers`. See [Browser Automation](../user-guide/features/browser.md#browser-extension-surface).
 
 | Tool | Description |
 |------|-------------|
-| `browser_batch` | Run 1 to 20 browser actions in order as one call and get the page back as it is after the last step. |
 | `browser_fill` | Replace a text field's contents in one step. |
 | `browser_select` | Choose an option in a dropdown. |
 | `browser_hover` | Move the pointer over an element. |

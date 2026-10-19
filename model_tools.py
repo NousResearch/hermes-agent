@@ -453,15 +453,17 @@ def _rewrite_input_tool_for_vault(td: dict[str, Any], available: set) -> Optiona
 
 
 def _rewrite_for_extension_lane(td: dict[str, Any], available: set) -> Optional[dict[str, Any]]:
-    """The browser extension lane's tool surface, for sessions that can bind an extension controller.
+    """The browser extension lane's tool surface, for browser extension sessions.
 
-    Such a session (``browser.extension_control.enabled`` plus a server-bound principal and transport) is
-    offered the tab and action tools only the extension runs and the extension form of the long-standing
-    browser tools (``tab_id``, approval and background-tab wording, no "navigate first" advice). Every other
-    session keeps the stock browser schemas, with none of the extension tools. The answer comes from the session,
-    never from what is attached at the moment, so the tool block does not change between requests of one
-    conversation and the provider's prompt cache survives Hermes Control being turned on, off or reconnected.
-    The bound-identity path bypasses the definition memo and the check_fn cache, so one process serves both."""
+    Such a session (``browser.extension_control.enabled``, a server-bound principal and transport, and a
+    controller the extension registered for it: ``extension_lane_configured``) is offered the tab and action
+    tools only the extension runs and the extension form of the long-standing browser tools and of
+    browser_batch (``tab_id``, approval and background-tab wording, no "navigate first" advice). Every other
+    session keeps the stock browser schemas and browser_batch's stock form, with none of the extension tools.
+    Once a session has the lane it keeps it, so the tool block does not change between requests of one
+    conversation and the provider's prompt cache survives Hermes Control being paused, turned off or
+    reconnected. The bound-identity path bypasses the definition memo and the check_fn cache, so one process
+    serves both."""
     from tools.browser_extension_router import extension_lane_configured
 
     configured = extension_lane_configured()

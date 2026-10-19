@@ -330,7 +330,9 @@ function ConfigSettingsInner({
       return
     }
 
-    const element = document.getElementById(`setting-field-${targetField}`)
+    const element = document.getElementById(
+      `setting-field-${targetField === DELEGATION_ROUTE_COMPANION_KEY ? 'delegation.model' : targetField}`
+    )
 
     if (!element) {
       return
@@ -387,7 +389,7 @@ function ConfigSettingsInner({
   const renderPage = (children: ReactNode) => (
     <SettingsContent>
       <SettingsProfileScope className="mb-5" />
-      {activeSectionId === 'model' && subpage !== 'delegation' && (
+      {activeSectionId === 'model' && (
         <div className={showModelSettings ? 'mb-6' : undefined}>
           <ModelSettings onMainModelChanged={onMainModelChanged} scopeProfile={scopeProfile} subpage={subpage} />
         </div>

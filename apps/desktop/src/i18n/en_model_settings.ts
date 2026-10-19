@@ -68,7 +68,7 @@ export const enModelSettings: ModelSettingsTranslations = {
     customProviderLabel: 'Custom subagent provider',
     parentModel: 'Use parent model',
     parentModelWarning:
-      'The chosen provider must support the parent model. A provider-only route can fail if the model is incompatible.',
+      'The chosen provider must support the parent model. A provider-only route can fail if the model is incompatible. If that provider sets its own default model, subagents use that one instead.',
     directActive:
       'A direct endpoint is active and takes precedence over the saved provider. Its endpoint and credentials are kept while this mode is selected.',
     directClear: 'Applying this route clears the direct endpoint and its stored key. Other request settings are kept.',

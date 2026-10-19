@@ -74,7 +74,7 @@ export const deModelSettings: TranslationOverride<ModelSettingsTranslations> = {
     customProviderLabel: 'Eigener Subagent-Anbieter',
     parentModel: 'Modell des Hauptagenten verwenden',
     parentModelWarning:
-      'Der gewählte Anbieter muss das Modell des Hauptagenten unterstützen. Eine reine Anbieter-Route kann bei inkompatiblem Modell fehlschlagen.',
+      'Der gewählte Anbieter muss das Modell des Hauptagenten unterstützen. Eine reine Anbieter-Route kann bei inkompatiblem Modell fehlschlagen. Legt dieser Anbieter ein eigenes Standardmodell fest, verwenden Subagents stattdessen dieses.',
     directActive:
       'Ein direkter Endpunkt ist aktiv und hat Vorrang vor dem gespeicherten Anbieter. Endpunkt und Zugangsdaten bleiben erhalten, solange dieser Modus gewählt ist.',
     directClear:

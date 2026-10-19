@@ -155,6 +155,26 @@ describe('delegation route regressions', () => {
       resetDirectEndpoint: false
     })
   })
+  it('returning to the direct endpoint drops a provider picked meanwhile', async () => {
+    const { onChange } = mount('old-model', 'openai', undefined, 'https://endpoint.invalid/v1')
+    await provider('Anthropic')
+    await model('claude-sonnet-4-6')
+    await provider('Direct endpoint override')
+    expect(screen.queryByRole('button', { name: 'Apply' })).toBeNull()
+    expect(onChange).not.toHaveBeenCalled()
+  })
+  it('applies a listed model whose id has spaces (MoA preset)', async () => {
+    getGlobalModelOptions.mockResolvedValue({ providers: [{ name: 'MoA', slug: 'moa', models: ['Cheap workers'] }] })
+    const { onChange } = mount('', '')
+    await provider('MoA')
+    await model('Cheap workers')
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
+    expect(onChange).toHaveBeenCalledExactlyOnceWith({
+      model: 'Cheap workers',
+      provider: 'moa',
+      resetDirectEndpoint: true
+    })
+  })
   it('isolates connection catalogs and late responses', async () => {
     let resolveA!: (value: typeof catalog) => void
     getGlobalModelOptions.mockImplementation((_opts, owner) =>

@@ -67,7 +67,8 @@ export const zhModelSettings: TranslationOverride<ModelSettingsTranslations> = {
     customProvider: '自定义提供商...',
     customProviderLabel: '自定义子智能体提供商',
     parentModel: '使用主智能体模型',
-    parentModelWarning: '所选提供商必须支持主智能体模型。模型不兼容时，仅覆盖提供商的路由可能失败。',
+    parentModelWarning:
+      '所选提供商必须支持主智能体模型。模型不兼容时，仅覆盖提供商的路由可能失败。若该提供商设置了自己的默认模型，子智能体会改用该模型。',
     directActive: '直接端点已启用，优先于保存的提供商。选择此模式会保留其端点和凭证。',
     directClear: '应用此路由会清除直接端点及其保存的密钥。其他请求设置保持不变。',
     catalogFailed: '模型目录不可用。请手动输入提供商和模型，或重试。',

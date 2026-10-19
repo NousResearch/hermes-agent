@@ -76,7 +76,7 @@ export const frModelSettings: TranslationOverride<ModelSettingsTranslations> = {
     customProviderLabel: 'Fournisseur personnalisé des sous-agents',
     parentModel: "Utiliser le modèle de l'agent principal",
     parentModelWarning:
-      "Le fournisseur choisi doit prendre en charge le modèle de l'agent principal. Une route limitée au fournisseur peut échouer si le modèle est incompatible.",
+      "Le fournisseur choisi doit prendre en charge le modèle de l'agent principal. Une route limitée au fournisseur peut échouer si le modèle est incompatible. Si ce fournisseur définit son propre modèle par défaut, les sous-agents utilisent celui-ci.",
     directActive:
       'Un point de terminaison direct est actif et prime sur le fournisseur enregistré. Son adresse et ses identifiants sont conservés tant que ce mode est sélectionné.',
     directClear:

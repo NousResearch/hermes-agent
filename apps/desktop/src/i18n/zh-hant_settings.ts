@@ -1089,7 +1089,8 @@ export const zhHantSettings = {
         customProvider: '自訂提供方...',
         customProviderLabel: '自訂子代理提供方',
         parentModel: '使用主代理模型',
-        parentModelWarning: '所選提供方必須支援主代理模型。模型不相容時，僅指定提供方的路由可能失敗。',
+        parentModelWarning:
+          '所選提供方必須支援主代理模型。模型不相容時，僅指定提供方的路由可能失敗。若該提供方設定了自己的預設模型，子代理會改用該模型。',
         directActive: '直接端點已啟用，優先於已儲存的提供方。選擇此模式時會保留其端點與憑證。',
         directClear: '套用此路由會清除直接端點及其儲存的金鑰。其他請求設定維持不變。',
         catalogFailed: '模型目錄無法使用。請手動輸入提供方與模型，或重試。',

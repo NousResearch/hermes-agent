@@ -39,6 +39,12 @@ vi.mock('@/store/projects', () => ({
 const selectedProfile = $settingsRequestProfile as unknown as { set: (value: string) => void }
 const activeConnection = $activeConnectionId as unknown as { set: (value: string) => void }
 const requests: HermesApiRequest[] = []
+
+// The Model page controller stays mounted on Subagents and reads the same owner's catalog, so assert owners, not counts.
+const catalogOwners = () => [
+  ...new Set(requests.filter(r => r.path.startsWith('/api/model/options')).map(r => `${r.connectionId}/${r.profile}`))
+]
+
 const saves: HermesApiRequest[] = []
 let config: HermesConfigRecord
 let catalogError = false
@@ -89,6 +95,15 @@ beforeEach(() => {
             { name: owner, slug: owner, models: ['fixture-model'] }
           ]
         }
+      }
+
+      // The Model page's own controller stays mounted on Subagents; answer it with empty shapes.
+      if (request.path === '/api/model/moa') {
+        return { default_preset: 'default', presets: { default: { reference_models: [], aggregator: null } } }
+      }
+
+      if (request.path === '/api/model/auxiliary') {
+        return { tasks: [] }
       }
 
       if (request.path === '/api/config' && request.method === 'PUT') {
@@ -148,9 +163,7 @@ describe('real settings route and autosave integration', () => {
       connectionId: 'connection-A',
       body: { config: { delegation: { model: 'claude-sonnet-4-6', provider: 'anthropic' } } }
     })
-    expect(requests.filter(r => r.path.startsWith('/api/model/options'))).toEqual([
-      expect.objectContaining({ profile: 'B', connectionId: 'connection-A' })
-    ])
+    expect(catalogOwners()).toEqual(['connection-A/B'])
   })
   it.each(['Inherit from main agent', 'Custom model (use parent credentials)', 'Anthropic'])(
     'switches away from a direct endpoint via %s and preserves request settings',
@@ -203,13 +216,7 @@ describe('real settings route and autosave integration', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
     await waitFor(() => expect(saves).toHaveLength(1))
     expect(saves[0]).toMatchObject({ connectionId: 'connection-B', profile: 'B' })
-    expect(requests.filter(r => r.path.startsWith('/api/model/options')).map(r => [r.connectionId, r.profile])).toEqual(
-      [
-        ['connection-A', 'B'],
-        ['connection-A', 'C'],
-        ['connection-B', 'B']
-      ]
-    )
+    expect(catalogOwners()).toEqual(['connection-A/B', 'connection-A/C', 'connection-B/B'])
   })
   it('saves a manual route after catalog failure and preserves it across retry', async () => {
     catalogError = true
@@ -220,8 +227,9 @@ describe('real settings route and autosave integration', () => {
     await pick('Subagent Model', 'Custom model…')
     fireEvent.change(screen.getByLabelText('Subagent Model'), { target: { value: 'lab-model' } })
     catalogError = false
+    const before = requests.length
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
-    await waitFor(() => expect(requests.filter(r => r.path.startsWith('/api/model/options'))).toHaveLength(2))
+    await waitFor(() => expect(requests.slice(before).some(r => r.path.startsWith('/api/model/options'))).toBe(true))
     expect((screen.getByLabelText('Custom subagent provider') as HTMLInputElement).value).toBe('custom:lab')
     expect((screen.getByLabelText('Subagent Model') as HTMLInputElement).value).toBe('lab-model')
     fireEvent.click(screen.getByRole('button', { name: 'Apply' }))

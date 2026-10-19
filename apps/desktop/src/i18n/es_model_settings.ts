@@ -75,7 +75,7 @@ export const esModelSettings: TranslationOverride<ModelSettingsTranslations> = {
     customProviderLabel: 'Proveedor personalizado de subagentes',
     parentModel: 'Usar el modelo del agente principal',
     parentModelWarning:
-      'El proveedor elegido debe admitir el modelo del agente principal. Una ruta solo de proveedor puede fallar si el modelo no es compatible.',
+      'El proveedor elegido debe admitir el modelo del agente principal. Una ruta solo de proveedor puede fallar si el modelo no es compatible. Si ese proveedor define su propio modelo predeterminado, los subagentes usan ese.',
     directActive:
       'Hay un endpoint directo activo que tiene prioridad sobre el proveedor guardado. Su endpoint y credenciales se conservan mientras este modo esté seleccionado.',
     directClear:

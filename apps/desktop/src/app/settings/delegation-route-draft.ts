@@ -52,10 +52,13 @@ function routeComplete(
   providers: readonly ModelOptionProvider[]
 ): boolean {
   const providerless = [INHERIT_VALUE, MODEL_ONLY_VALUE, DIRECT_VALUE].includes(draft.mode)
-  const providerKnown = Boolean(findCatalogProvider(providers, draft.provider) || customModelSlug(nextProvider))
+  const listed = findCatalogProvider(providers, draft.provider)
+  const providerKnown = Boolean(listed || customModelSlug(nextProvider))
   const modelInherited = draft.mode === INHERIT_VALUE || draft.useParentModel
+  // A catalog row may list ids a user could never type (MoA preset names carry spaces).
+  const modelKnown = Boolean(listed?.models?.includes(nextModel) || customModelSlug(nextModel))
 
-  return (providerless || providerKnown) && (modelInherited || Boolean(customModelSlug(nextModel)))
+  return (providerless || providerKnown) && (modelInherited || modelKnown)
 }
 
 /** The route an Apply would write, and whether Apply is allowed. */
@@ -105,6 +108,10 @@ export function useDelegationRouteDraft(saved: SavedRoute, providers: readonly M
 
     if (value === INHERIT_VALUE) {
       setModel('')
+    } else if (value === DIRECT_VALUE) {
+      // The endpoint keeps its own saved route; a provider picked meanwhile must not ride along.
+      setProvider(saved.provider)
+      setModel(saved.model)
     } else if (value === CUSTOM_PROVIDER_VALUE) {
       setProvider('')
       setModel('')

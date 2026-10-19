@@ -10,6 +10,7 @@ import contextvars
 import inspect
 import json
 import logging
+import os
 import re
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor, wait
@@ -231,10 +232,32 @@ class MemoryManager:
         self._tool_to_provider: dict[str, MemoryProvider] = {}
         self._external_prefetch_spill_config: Optional[dict[str, Any]] = None
         self._has_external: bool = False
-        timeout = external_prefetch_timeout
-        timeout = _EXTERNAL_PREFETCH_TIMEOUT_S if timeout is None else float(timeout)
-        if timeout <= 0:
-            raise ValueError("external_prefetch_timeout must be positive")
+        if external_prefetch_timeout is not None:
+            # An explicit constructor argument wins over the env var and keeps the
+            # historical validation: a non-positive value is a programming error.
+            timeout = float(external_prefetch_timeout)
+            if timeout <= 0:
+                raise ValueError("external_prefetch_timeout must be positive")
+        else:
+            # No explicit argument: honor HERMES_EXTERNAL_MEMORY_PREFETCH_TIMEOUT, else the
+            # 8.0 default. An unset/empty/whitespace-only value is treated as unset; a value
+            # that is not a positive finite number of seconds (non-numeric, <= 0, NaN, or
+            # inf) is ignored with a warning so a typo can never crash agent startup or hang
+            # the reply path forever.
+            raw = os.environ.get("HERMES_EXTERNAL_MEMORY_PREFETCH_TIMEOUT", "").strip()
+            timeout = _EXTERNAL_PREFETCH_TIMEOUT_S
+            if raw:
+                try:
+                    candidate = float(raw)
+                except ValueError:
+                    candidate = None
+                if candidate is not None and candidate == candidate and candidate != float("inf") and candidate > 0:
+                    timeout = candidate
+                else:
+                    logger.warning(
+                        "HERMES_EXTERNAL_MEMORY_PREFETCH_TIMEOUT=%r is not a positive finite "
+                        "number of seconds; falling back to %.1fs", raw, _EXTERNAL_PREFETCH_TIMEOUT_S,
+                    )
         self._external_prefetch_timeout = timeout
         self._external_prefetch_threads: dict[str, threading.Thread] = {}
         self._external_prefetch_lock = threading.Lock()

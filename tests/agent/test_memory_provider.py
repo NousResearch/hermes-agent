@@ -495,6 +495,47 @@ class TestMemoryManager:
         assert external.name not in mgr._external_prefetch_threads
 
 
+class TestExternalPrefetchTimeoutEnv:
+    """The external-prefetch cap is configurable via HERMES_EXTERNAL_MEMORY_PREFETCH_TIMEOUT.
+
+    Precedence: an explicit ``external_prefetch_timeout`` constructor argument wins over the
+    env var; the env var wins over the 8.0 default. An unset/empty/whitespace-only env value is
+    treated as unset; a value that is not a positive finite number of seconds falls back to the
+    8.0 default rather than crashing agent startup.
+    """
+
+    def test_env_var_1800(self, monkeypatch):
+        monkeypatch.setenv("HERMES_EXTERNAL_MEMORY_PREFETCH_TIMEOUT", "1800")
+        assert MemoryManager()._external_prefetch_timeout == 1800.0
+
+    def test_env_var_unset_defaults_to_8(self, monkeypatch):
+        monkeypatch.delenv("HERMES_EXTERNAL_MEMORY_PREFETCH_TIMEOUT", raising=False)
+        assert MemoryManager()._external_prefetch_timeout == 8.0
+
+    def test_env_var_empty_or_whitespace_defaults_to_8(self, monkeypatch):
+        for value in ("", "   ", "\t\n"):
+            monkeypatch.setenv("HERMES_EXTERNAL_MEMORY_PREFETCH_TIMEOUT", value)
+            assert MemoryManager()._external_prefetch_timeout == 8.0
+
+    @pytest.mark.parametrize("bad", ["abc", "0", "-5", "nan", "inf", "-inf", "1e999999"])
+    def test_env_var_invalid_falls_back_to_8(self, monkeypatch, bad):
+        monkeypatch.setenv("HERMES_EXTERNAL_MEMORY_PREFETCH_TIMEOUT", bad)
+        assert MemoryManager()._external_prefetch_timeout == 8.0
+
+    def test_env_var_fractional(self, monkeypatch):
+        monkeypatch.setenv("HERMES_EXTERNAL_MEMORY_PREFETCH_TIMEOUT", "2.5")
+        assert MemoryManager()._external_prefetch_timeout == 2.5
+
+    def test_explicit_arg_wins_over_env(self, monkeypatch):
+        monkeypatch.setenv("HERMES_EXTERNAL_MEMORY_PREFETCH_TIMEOUT", "1800")
+        assert MemoryManager(external_prefetch_timeout=0.01)._external_prefetch_timeout == 0.01
+
+    def test_explicit_nonpositive_still_raises(self, monkeypatch):
+        monkeypatch.setenv("HERMES_EXTERNAL_MEMORY_PREFETCH_TIMEOUT", "1800")
+        with pytest.raises(ValueError):
+            MemoryManager(external_prefetch_timeout=0.0)
+
+
 class TestPluginMemoryDiscovery:
     """Memory providers are discovered from plugins/memory/ directory."""
 

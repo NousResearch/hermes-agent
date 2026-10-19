@@ -1532,6 +1532,8 @@ export interface LocalRuntimeJob {
   model_id: string | null
   status: 'done' | 'error' | 'paused' | 'running'
   phase: string
+  /** The setup step stays stable while its transport retries or waits. */
+  setup_stage?: 'engine' | 'model' | 'finish'
   detail: string
   total_bytes: number | null
   done_bytes: number

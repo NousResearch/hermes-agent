@@ -34,15 +34,17 @@ def _run_setup(job):
     from hermes_cli.web_routers import local_models as lm
 
     intent = job["setup"]
-    body = lm.QuickstartBody(model_id=intent["model_id"])
+    body = lm.QuickstartBody(model_id=intent.get("requested_model_id", intent["model_id"]))
     with lm._config_profile_scope(intent["profile"]):
         lm._check_job_pause(job)
-        entry = lm.catalog.catalog_by_id().get(intent["model_id"])
+        entry = lm.catalog.catalog_by_id().get(job["model_id"])
         plan = job["download_plan"]
         missing_engine = lm.binaries.installed_engine(intent["backend"]) is None
+        job["setup_stage"] = "engine" if missing_engine else "model"
         _save(job, plan)
         if missing_engine:
             lm._install_engine_job(job, intent["backend"])
+            job["setup_stage"] = "model"
         if intent["variant"] is None:
             entry, variant = lm._quickstart_target(body, lm.hardware.probe_budget(planning=True))
             job.update(target=entry.display_name, model_id=entry.id)
@@ -54,6 +56,7 @@ def _run_setup(job):
             if job["phase"] not in lm._MODEL_DOWNLOAD_PHASES:
                 job.update(done_bytes=0, total_bytes=None, ranges={})
             lm._run_download_plan(job, plan, job["target"], entry)
+        job["setup_stage"] = "finish"
         lm._step(job, "starting-server", "Starting the local server")
         lm._ensure_server(job, lm._set_runtime_enabled(True), intent["variant"],
                           fail_detail="The local server could not start — open Local Models for details",
@@ -123,7 +126,8 @@ def begin(body, profile):
         if job.get("plan_saved"):
             job["adopted_plan"] = job["plan_key"]
         job["setup"] = {"model_id": entry.id, "profile": owner, "backend": backend,
-                        "variant": None if need_runtime else variant.model_id}
+                        "variant": None if need_runtime else variant.model_id,
+                        "requested_model_id": body.model_id}
         job["download_key"] = download_plans.plan_key(plan)
         job["download_plan"] = plan
         job["plan_key"] = download_plans.plan_key(plan, job["setup"])
@@ -159,11 +163,16 @@ def restore(key, record, plan):
     kind = "runtime-install" if record["setup"]["model_id"] is None else "quickstart"
     if kind == "quickstart" and not lm._QUICKSTART_LOCK.acquire(blocking=False):
         return
-    job = lm._job(kind, record["target"], model_id=record["setup"]["model_id"])
+    job = lm._job(kind, record["target"], model_id=record["model_id"])
     job.update(setup=record["setup"], plan_key=key, download_plan=plan,
                download_key=download_plans.plan_key(plan), plan_saved=True,
                partial_urls=tuple(record.get("partial_urls", ())), phase="interrupted",
                detail="Setup interrupted. Resume to finish setup")
+    if kind == "quickstart":
+        with lm._config_profile_scope(record["setup"]["profile"]):
+            missing_engine = lm.binaries.installed_engine(record["setup"]["backend"]) is None
+        pending_model = record["setup"]["variant"] is None or any(not dest.is_file() for _, dest, _ in plan)
+        job["setup_stage"] = "engine" if missing_engine else "model" if pending_model else "finish"
     for name in ("done_bytes", "total_bytes", "ranges", "restart_runtime"):
         if name in record.get("state", {}):
             job[name] = record["state"][name]

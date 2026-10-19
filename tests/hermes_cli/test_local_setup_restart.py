@@ -43,6 +43,7 @@ def test_restart_retains_the_complete_setup(client, engine_download, monkeypatch
     original_id = response.json()["job_id"]
     parked = poll(client, original_id)
     assert parked["status"] == "paused", parked
+    assert parked["setup_stage"] == stage
 
     # Lose every process-local callback and lock. Only disk state can restore setup.
     monkeypatch.setattr(lm, "_JOBS", {})
@@ -54,6 +55,7 @@ def test_restart_retains_the_complete_setup(client, engine_download, monkeypatch
     job = restored[0]
     assert job["job_id"] != original_id and job["kind"] == "quickstart"
     assert job["can_resume"] and job["can_discard"]
+    assert job["setup_stage"] == stage
     if stage == "engine":
         assert job["done_bytes"] == 1 << 20
     if action == "discard":
@@ -126,6 +128,56 @@ def test_restored_setup_keeps_the_profile_that_requested_it(client, engine_downl
     finished = poll(client, restored["job_id"], until=("done", "error"))
     assert finished["status"] == "done", finished
     assert owners == [profile]
+
+
+@pytest.mark.parametrize("stage", ["engine", "model"])
+def test_automatic_setup_reprices_after_engine_install_and_keeps_the_choice_after_restart(
+        client, engine_download, monkeypatch, stage):
+    fixture = engine_download
+    lm = fixture.lm
+    before, after = fixture.entries
+
+    def choose(body, budget):
+        selected = (lm.catalog.catalog_by_id()[body.model_id] if body.model_id
+                    else after if lm.binaries.installed_engine("cpu") else before)
+        return selected, selected.variants[0]
+
+    monkeypatch.setattr(lm, "_quickstart_target", choose)
+    fixture.state["outage"] = stage == "engine"
+    model_outage = {"active": stage == "model"}
+    original_get = RangeHandler.do_GET
+
+    def respond(handler):
+        if handler.path in {"/0", "/1"} and model_outage["active"]:
+            handler.send_response(503)
+            handler.send_header("Content-Length", "0")
+            handler.end_headers()
+            return
+        return original_get(handler)
+
+    monkeypatch.setattr(RangeHandler, "do_GET", respond)
+    response = client.post("/api/local-models/quickstart", json={})
+    assert response.status_code == 200, response.text
+    parked = poll(client, response.json()["job_id"])
+    assert parked["status"] == "paused", parked
+    monkeypatch.setattr(lm, "_JOBS", {})
+    monkeypatch.setattr(lm, "_RUNNING", {})
+    monkeypatch.setattr(lm, "_QUICKSTART_LOCK", threading.Lock())
+    lm._restore_download_plans()
+    restored = client.get("/api/local-models/jobs").json()["jobs"]
+    assert len(restored) == 1, restored
+    fixture.state["outage"] = model_outage["active"] = False
+    if stage == "model":
+        monkeypatch.setattr(lm, "_quickstart_target", lambda *args: pytest.fail("the chosen model was recalculated"))
+    job_id = restored[0]["job_id"]
+    assert client.post("/api/local-models/download/resume", json={"job_id": job_id}).json()["resumed"]
+    finished = poll(client, job_id, until=("done", "error"))
+    assert finished["status"] == "done", finished
+    assert (finished["model_id"], finished["target"]) == (after.id, after.display_name)
+    assert fixture.plans[after.id][0][1].read_bytes() == b"other"
+    assert not fixture.plans[before.id][0][1].exists()
+    assert fixture.calls == [("server", after.variants[0].model_id), ("default", after.variants[0].model_id)]
+    assert not list(lm.download_plans._root().glob("*.json"))
 
 
 @pytest.mark.parametrize("action", ["resume", "discard"])

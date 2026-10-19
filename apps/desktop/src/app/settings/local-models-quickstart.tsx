@@ -28,10 +28,16 @@ export function LocalModelsQuickstart({
 }: LocalModelsQuickstartProps): ReactElement {
   const scope: LocalModelsActionScope = useLocalModelsActionScope()
   const { copy, owner } = scope
-  // Stage rail derived from the job phase: engine -> model -> finish.
+  // The backend owns the setup step; a transport phase can mean retrying or waiting.
   const phase = qJob?.phase ?? ''
 
-  const stageIndex = ['starting-server', 'setting-default'].includes(phase) ? 2 : phase === 'downloading' ? 1 : 0
+  const stageIndex = qJob?.setup_stage
+    ? { engine: 0, model: 1, finish: 2 }[qJob.setup_stage]
+    : ['starting-server', 'setting-default'].includes(phase)
+      ? 2
+      : phase === 'downloading'
+        ? 1
+        : 0
 
   const stages = [copy.quickstartStageEngine, copy.quickstartStageModel, copy.quickstartStageFinish]
 
@@ -81,6 +87,7 @@ export function LocalModelsQuickstart({
               <div className="mt-5 flex items-center justify-center gap-5">
                 {stages.map((label, i) => (
                   <span
+                    aria-current={i === stageIndex ? 'step' : undefined}
                     className={cn(
                       'inline-flex items-center gap-1.5 text-[0.72rem]',
                       i < stageIndex && 'text-(--ui-text-tertiary)',
@@ -92,7 +99,11 @@ export function LocalModelsQuickstart({
                     {i < stageIndex ? (
                       <CheckCircle2 className="size-3.5 text-primary" />
                     ) : i === stageIndex ? (
-                      <Loader2 className="size-3.5 animate-spin" />
+                      qJob.status === 'paused' ? (
+                        <Pause className="size-3.5" />
+                      ) : (
+                        <Loader2 className="size-3.5 animate-spin" />
+                      )
                     ) : (
                       <span className="size-1.5 rounded-full bg-current" />
                     )}

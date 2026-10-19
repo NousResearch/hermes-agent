@@ -493,8 +493,33 @@ describe('quickstart', () => {
     // detail is only the lead when there are no bytes to report yet.
     expect(await screen.findByText('Qwen3.6 27B')).toBeTruthy()
     expect(await screen.findByText(/^Downloading · /)).toBeTruthy()
+    expect(screen.getByText('Model', { exact: true }).getAttribute('aria-current')).toBe('step')
     // One job, one view: no setup or model-choice buttons while it runs.
     expect(screen.queryByRole('button', { name: /set up for me/i })).toBeNull()
+  })
+
+  it.each([
+    ['engine', 'Engine'],
+    ['model', 'Model'],
+    ['finish', 'Finish']
+  ] as const)('keeps the %s setup step after interruption', async (stage, label) => {
+    queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [
+      {
+        job_id: 'restored',
+        kind: 'quickstart',
+        target: FITTING_MODEL.display_name,
+        model_id: FITTING_MODEL.id,
+        status: 'paused',
+        phase: 'interrupted',
+        setup_stage: stage,
+        detail: 'Setup interrupted',
+        total_bytes: 100,
+        done_bytes: 30,
+        error: null
+      }
+    ])
+    renderPane()
+    expect((await screen.findByText(label, { exact: true })).getAttribute('aria-current')).toBe('step')
   })
 
   it('skips the card entirely once a model is staged', async () => {

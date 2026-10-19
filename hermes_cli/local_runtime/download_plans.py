@@ -78,9 +78,10 @@ def has_plan(key: str) -> bool:
 
 
 def _valid_setup(setup) -> bool:
-    return (isinstance(setup, dict) and set(setup) == {"model_id", "profile", "backend", "variant"}
+    return (isinstance(setup, dict) and set(setup) - {"requested_model_id"} == {"model_id", "profile", "backend", "variant"}
             and isinstance(setup["profile"], str) and isinstance(setup["backend"], str)
-            and all(value is None or isinstance(value, str) for value in (setup["model_id"], setup["variant"])))
+            and all(value is None or isinstance(value, str)
+                    for value in (setup["model_id"], setup["variant"], setup.get("requested_model_id"))))
 
 
 def pending_plans():

@@ -157,3 +157,46 @@ def test_detach_fails_pending_work_closed_and_late_completion_is_ignored():
     assert isinstance(outcome.get("error"), ControllerCancelled)
     assert broker.complete(command_id[0], ok=True, result={}) is False
     assert broker.pending_count == 0
+
+
+def test_batch_reaches_the_controller_as_one_frame_carrying_every_step():
+    broker = BrowserControlBroker(command_timeout=1.0)
+    scope = _scope(capabilities=frozenset({"controller.noop", "browser_batch"}))
+    frames = []
+
+    def send(frame):
+        frames.append(frame)
+        broker.complete(frame["params"]["command_id"], ok=True, result={"status": "completed", "steps": []})
+
+    broker.attach(scope, send)
+    steps = [
+        {"action": "click", "ref": "@e1"},
+        {"action": "type", "ref": "@e1", "text": "hello"},
+        {"action": "press", "key": "Enter"},
+    ]
+
+    result = broker.dispatch(
+        scope, action="browser_batch", arguments={"actions": steps, "stop_on_error": False}, tool_call_id="call-1",
+    )
+
+    assert result == {"status": "completed", "steps": []}
+    assert len(frames) == 1
+    assert frames[0]["params"]["action"] == "browser_batch"
+    assert frames[0]["params"]["arguments"] == {"actions": steps, "stop_on_error": False}
+    assert frames[0]["params"]["tool_call_id"] == "call-1"
+
+
+def test_a_controller_that_did_not_advertise_batch_is_never_sent_one():
+    """An older extension keeps working: only what the controller negotiated is routed to it."""
+    from gateway.browser_control_broker import ControllerUnavailable
+
+    broker = BrowserControlBroker(command_timeout=1.0)
+    scope = _scope(capabilities=frozenset({"controller.noop", "browser_click"}))
+    frames = []
+    broker.attach(scope, frames.append)
+
+    assert broker.select(scope, "browser_click") is not None
+    assert broker.select(scope, "browser_batch") is None
+    with pytest.raises(ControllerUnavailable):
+        broker.dispatch(scope, action="browser_batch", arguments={"actions": [{"action": "back"}]})
+    assert frames == []

@@ -1,0 +1,113 @@
+{
+  "description": "Run several browser actions in order as one call and get the page back as it is after the last step. Prefer browser_batch when you can predict two or more steps ahead (for example click a field, type, press Enter): each step saved is a model turn saved. A step takes the same arguments as the single tool of the same name. Refs come from the latest snapshot or action result; a step that changes the page (a navigation, a form that re-renders) can invalidate the refs later steps use, so end the batch there. Steps run one at a time. With stop_on_error (default true) the batch stops at the first step that fails; with false it carries on, but it always stops when the person declines an approval or the page moves away. Where the person approves actions (a coordinate click, Enter, a drag, a click on a submit or delete button), each such step asks separately and the batch waits, so keep batches that need approvals short. Returns status (completed, completed_with_errors or stopped), one entry per step with its outcome or error, and the counts completed and remaining.",
+  "name": "browser_batch",
+  "parameters": {
+    "properties": {
+      "actions": {
+        "description": "The steps to run in order (1-20).",
+        "items": {
+          "properties": {
+            "action": {
+              "description": "What this step does",
+              "enum": [
+                "back",
+                "click",
+                "drag",
+                "fill",
+                "hover",
+                "navigate",
+                "press",
+                "scroll",
+                "scroll_to",
+                "select",
+                "type"
+              ],
+              "type": "string"
+            },
+            "amount": {
+              "description": "scroll: pixels (default about 85% of the viewport)",
+              "maximum": 5000,
+              "minimum": 100,
+              "type": "integer"
+            },
+            "clear": {
+              "description": "type: clear the field first (default true)",
+              "type": "boolean"
+            },
+            "direction": {
+              "description": "scroll: which way",
+              "enum": [
+                "up",
+                "down",
+                "left",
+                "right"
+              ],
+              "type": "string"
+            },
+            "key": {
+              "description": "press: the key (e.g. 'Enter', 'Tab', or a combo such as 'Control+a')",
+              "type": "string"
+            },
+            "modifiers": {
+              "description": "press: modifier keys held with the key",
+              "items": {
+                "enum": [
+                  "Alt",
+                  "Control",
+                  "Meta",
+                  "Shift"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "ref": {
+              "description": "Element ref (e.g. '@e5') for click, type, fill, select, hover, scroll_to; the dragged element for drag",
+              "type": "string"
+            },
+            "text": {
+              "description": "type: the text to type",
+              "type": "string"
+            },
+            "to_ref": {
+              "description": "drag: the element to drop on",
+              "type": "string"
+            },
+            "url": {
+              "description": "navigate: the URL to open",
+              "type": "string"
+            },
+            "value": {
+              "description": "fill: the text to enter; select: the option's text or value",
+              "type": "string"
+            },
+            "x": {
+              "description": "click: horizontal position in CSS pixels, used with y instead of ref",
+              "type": "number"
+            },
+            "y": {
+              "description": "click: vertical position in CSS pixels, used with x instead of ref",
+              "type": "number"
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "type": "object"
+        },
+        "maxItems": 20,
+        "minItems": 1,
+        "type": "array"
+      },
+      "stop_on_error": {
+        "default": true,
+        "description": "Stop at the first step that fails (default true). When false, later steps still run.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "actions"
+    ],
+    "type": "object"
+  }
+}

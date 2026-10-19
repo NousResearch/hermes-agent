@@ -16,7 +16,7 @@ _HERMES_CORE_TOOLS = [
     "skills_list", "skill_view", "skill_manage",
     "browser_navigate", "browser_snapshot", "browser_click",
     "browser_type", "browser_scroll", "browser_back",
-    "browser_press", "browser_get_images",
+    "browser_press", "browser_batch", "browser_get_images",
     "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
     "browser_vault",  # rides with the browser; deferred by default (tools.tool_search.defer)
     "browser_exec",  # replaces the other browser tools when browser.backend is "browser-use"

@@ -616,9 +616,58 @@ BROWSER_TOOL_SCHEMAS = [
             "required": []
         }
     },
+    {
+        "name": "browser_batch",
+        "description": "Run several browser actions in order as one call and get the page back as it is after the last step. Prefer browser_batch when you can predict two or more steps ahead (for example click a field, type, press Enter): each step saved is a model turn saved. A step takes the same arguments as the single tool of the same name. Refs come from the latest snapshot or action result; a step that changes the page (a navigation, a form that re-renders) can invalidate the refs later steps use, so end the batch there. Steps run one at a time. With stop_on_error (default true) the batch stops at the first step that fails; with false it carries on, but it always stops when the person declines an approval or the page moves away. Where the person approves actions (a coordinate click, Enter, a drag, a click on a submit or delete button), each such step asks separately and the batch waits, so keep batches that need approvals short. Returns status (completed, completed_with_errors or stopped), one entry per step with its outcome or error, and the counts completed and remaining.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "actions": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 20,
+                    "description": "The steps to run in order (1-20).",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": ["back", "click", "drag", "fill", "hover", "navigate", "press", "scroll", "scroll_to", "select", "type"],
+                                "description": "What this step does"
+                            },
+                            "ref": {"type": "string", "description": "Element ref (e.g. '@e5') for click, type, fill, select, hover, scroll_to; the dragged element for drag"},
+                            "to_ref": {"type": "string", "description": "drag: the element to drop on"},
+                            "text": {"type": "string", "description": "type: the text to type"},
+                            "value": {"type": "string", "description": "fill: the text to enter; select: the option's text or value"},
+                            "clear": {"type": "boolean", "description": "type: clear the field first (default true)"},
+                            "url": {"type": "string", "description": "navigate: the URL to open"},
+                            "key": {"type": "string", "description": "press: the key (e.g. 'Enter', 'Tab', or a combo such as 'Control+a')"},
+                            "modifiers": {
+                                "type": "array",
+                                "items": {"type": "string", "enum": ["Alt", "Control", "Meta", "Shift"]},
+                                "description": "press: modifier keys held with the key"
+                            },
+                            "direction": {"type": "string", "enum": ["up", "down", "left", "right"], "description": "scroll: which way"},
+                            "amount": {"type": "integer", "minimum": 100, "maximum": 5000, "description": "scroll: pixels (default about 85% of the viewport)"},
+                            "x": {"type": "number", "description": "click: horizontal position in CSS pixels, used with y instead of ref"},
+                            "y": {"type": "number", "description": "click: vertical position in CSS pixels, used with x instead of ref"}
+                        },
+                        "required": ["action"]
+                    }
+                },
+                "stop_on_error": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Stop at the first step that fails (default true). When false, later steps still run."
+                }
+            },
+            "required": ["actions"]
+        }
+    },
 ]
 
 from tools import browser_tool_snapshot as _snapshot
+from tools import browser_tool_args as _args
 
 # ----------------------------------------------------------------------------
 # Browser Tool Functions
@@ -685,6 +734,39 @@ def evaluate_url_safety(url: str, *, auto_local: bool = False) -> Optional[dict]
     hybrid local sidecar) relaxes only the private-address floor, never the cloud-metadata one."""
     url, err = _secret_url_error_normalized(url)
     return err or _url_policy_error(url, auto_local=auto_local)
+
+
+def _extension_url_error(url: str) -> tuple[str, Optional[dict]]:
+    """``(url to send, error or None)`` for a URL the browser extension is about to open. The extension only
+    refuses bad schemes and embedded credentials, so Hermes' own checks run first: a secret in the URL, the
+    cloud-metadata floor and the operator's website policy. The extension drives the person's own browser, which
+    is how local and private addresses are reached on purpose, so that one rule is skipped (``auto_local``)."""
+    url, err = _secret_url_error_normalized(url)
+    return url, err or _url_policy_error(url, auto_local=True)
+
+
+def _extension_url_guard(action: str, args: dict[str, Any]) -> tuple[dict[str, Any], Optional[str]]:
+    """Router guard for the extension lane: ``(args to dispatch, refusal JSON or None)``. Covers every call that
+    opens a URL (navigate and each navigate step of a batch). The URL that was checked is the URL
+    sent, and one refused step refuses the whole batch before anything runs."""
+    if action == "browser_navigate":
+        url = args.get("url")
+        if not isinstance(url, str):  # the argument checks and the extension report a missing or odd url
+            return args, None
+        url, err = _extension_url_error(url)
+        return ({**args, "url": url}, None) if err is None else (args, _dumps(err))
+    if action != "browser_batch" or not isinstance(args.get("actions"), list):
+        return args, None
+    steps = []
+    for index, step in enumerate(args["actions"]):
+        if _args.step_action(step) == "navigate" and isinstance(step.get("url"), str):
+            url, err = _extension_url_error(step["url"])
+            if err is not None:
+                err = {**err, "error": f"browser_batch: step {index + 1} (navigate): {err['error']} Nothing was run."}
+                return args, _dumps(err)
+            step = {**step, "url": url}
+        steps.append(step)
+    return {**args, "actions": steps}, None
 
 
 _BOT_DETECTION_TITLE_PATTERNS = (
@@ -955,6 +1037,80 @@ def browser_press(key: str, task_id: Optional[str] = None) -> str:
     if _is_camofox_mode():
         return _camofox("camofox_press", key, task_id)
     return _guarded_action(task_id, "press", "press", [key], {"pressed": key}, f"Failed to press {key}")
+
+
+# Built-in handler and the step fields it takes, per batch step action. A step field outside its tuple, and a
+# step action without a row, is reported on that step; the built-in browser never drops an argument silently.
+_BATCH_BUILTIN_STEPS = {
+    "navigate": ("browser_navigate", ("url",)),
+    "click": ("browser_click", ("ref",)),
+    "type": ("browser_type", ("ref", "text")),
+    "scroll": ("browser_scroll", ("direction",)),
+    "back": ("browser_back", ()),
+    "press": ("browser_press", ("key",)),
+}
+
+
+def _batch_step_failure(index: int, action: str, code: str, message: str) -> dict[str, Any]:
+    return {"index": index, "action": action, "error": code, "message": message}
+
+
+def _run_builtin_batch_step(index: int, step: dict[str, Any], task_id: Optional[str]) -> dict[str, Any]:
+    """One batch step through the built-in browser's own handler; ``{index, action, status}`` or
+    ``{index, action, error, message}`` like the extension's per-step entries."""
+    action = _args.step_action(step)
+    row = _BATCH_BUILTIN_STEPS.get(action)
+    if row is None:
+        return _batch_step_failure(index, action, "unsupported_action",
+                                   f"The built-in browser cannot run {action} steps. Connect the Hermes Browser "
+                                   f"Extension, or do this outside a batch.")
+    handler_name, fields = row
+    unsupported = sorted(set(step) - set(fields) - {"action"})
+    if unsupported:
+        return _batch_step_failure(index, action, "unsupported_argument",
+                                   f"The built-in browser does not support {', '.join(unsupported)} on a {action} step. "
+                                   f"Connect the Hermes Browser Extension, or leave it out.")
+    raw = globals()[handler_name](**{field: step[field] for field in fields if field in step}, task_id=task_id)
+    try:
+        outcome = json.loads(raw) if isinstance(raw, str) else dict(raw)
+    except (TypeError, ValueError):
+        return _batch_step_failure(index, action, "command_error", f"{handler_name} returned an unreadable result.")
+    if outcome.get("success") is False:
+        return _batch_step_failure(index, action, "command_error", str(outcome.get("error") or "The step failed."))
+    return {"index": index, "action": action, "status": "ok"}
+
+
+def browser_batch(actions: list, stop_on_error: bool = True, task_id: Optional[str] = None) -> str:
+    """Run ``actions`` in order through the single-action handlers; JSON shaped like the extension's batch
+    result (per-step entries, ``completed``/``remaining``) plus one closing snapshot of the page."""
+    results: list[dict[str, Any]] = []
+    stopped_reason = ""
+    for index, step in enumerate(actions):
+        entry = _run_builtin_batch_step(index, step, task_id)
+        results.append(entry)
+        if "error" in entry and stop_on_error:
+            stopped_reason = entry["error"]
+            break
+    completed = sum(1 for entry in results if "status" in entry)
+    failed = completed < len(results)
+    response: dict[str, Any] = {
+        "success": not failed and not stopped_reason,
+        "status": "stopped" if stopped_reason else ("completed_with_errors" if failed else "completed"),
+        **({"stopped_reason": stopped_reason} if stopped_reason else {}),
+        "steps": results,
+        "completed": completed,
+        "remaining": len(actions) - len(results),
+    }
+    if completed:  # one read of the page for the whole batch, as the extension does
+        try:
+            page = json.loads(browser_snapshot(task_id=task_id))
+        except (TypeError, ValueError):
+            page = {}
+        if page.get("success"):
+            response.update({key: page[key] for key in ("snapshot", "element_count") if key in page})
+        else:
+            response["page_error"] = str(page.get("error") or "The page could not be read after the batch.")
+    return _dumps(response)
 
 
 def _blocked_private_page_json(blocked_url: str, why: str) -> str:
@@ -1345,6 +1501,7 @@ _BROWSER_TOOL_TABLE = (
     ("browser_scroll", "📜", None, {"direction": "down"}),
     ("browser_back", "◀️", None, {}),
     ("browser_press", "⌨️", None, {"key": ""}),
+    ("browser_batch", "⚡", None, {"actions": [], "stop_on_error": True}),
     ("browser_get_images", "🖼️", _install.check_browser_requirements, {}),
     ("browser_vision", "👁️", _install.check_browser_vision_requirements, {"question": "", "annotate": False}),
     ("browser_console", "🖥️", _install.check_browser_requirements, {"clear": False, "expression": None}),
@@ -1361,9 +1518,12 @@ def _routed_check_fn(name: str):
 
 def _routed_handler(name: str, fallback):
     def handler(args, **kw):
+        invalid = _args.invalid_arguments(name, args)
+        if invalid:  # refused before either lane sees it: no approval card, no silently dropped argument
+            return _dumps(_err(invalid))
         return record_browser_call(lambda legacy: routed_browser_handler(
             name, args, fallback=lambda: legacy(lambda: fallback(args, kw)),
-            task_id=kw.get("task_id"), session_id=kw.get("session_id"),
+            task_id=kw.get("task_id"), session_id=kw.get("session_id"), guard=_extension_url_guard,
         ), _cloud.browser_backend_name)
     return handler
 

@@ -397,6 +397,7 @@ protocol version, transport names, and the exact capability allowlist:
 ```text
 controller.noop
 browser_back
+browser_batch
 browser_click
 browser_navigate
 browser_press

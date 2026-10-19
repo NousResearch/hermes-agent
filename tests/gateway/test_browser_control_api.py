@@ -23,6 +23,7 @@ API_KEY = "-".join(("fixture", "neutral", "api", "key", "123"))
 CONTROL_PROTOCOL = "hermes-browser-control-v1"
 REAL_BROWSER_CAPABILITIES = {
     "browser_back",
+    "browser_batch",
     "browser_click",
     "browser_navigate",
     "browser_press",

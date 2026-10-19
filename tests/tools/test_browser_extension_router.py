@@ -487,3 +487,38 @@ def test_registry_advertises_snapshot_through_extension_when_legacy_backend_is_d
     assert [definition["function"]["name"] for definition in definitions] == [
         "browser_snapshot"
     ]
+
+
+def test_batch_steps_reach_the_controller_in_one_dispatch_and_are_never_mutated():
+    steps = [
+        {"action": "click", "ref": "@e1"},
+        {"action": "type", "ref": "@e1", "text": "hello"},
+        {"action": "press", "key": "Enter"},
+    ]
+    args = {"actions": steps, "stop_on_error": False}
+    snapshot = {"actions": [dict(step) for step in steps], "stop_on_error": False}
+    broker = FakeBroker(scope="scope-fixture", selected="connection-fixture", result={"status": "completed"})
+
+    result = route_browser_tool(
+        "browser_batch", args, fallback=lambda: pytest.fail("a selected controller never falls back"),
+        broker=broker, enabled=True, session_id="session-fixture", principal_id="principal-fixture",
+        transport_family="local-api", tool_call_id="tool-call-fixture",
+    )
+
+    assert result == '{"status": "completed"}'
+    assert args == snapshot
+    dispatches = [call for call in broker.calls if call[0] == "dispatch"]
+    assert dispatches == [("dispatch", "scope-fixture", "browser_batch", snapshot, "tool-call-fixture")]
+
+
+def test_bound_controller_without_batch_fails_closed_instead_of_running_steps_elsewhere():
+    from gateway.browser_control_broker import ControllerUnavailable
+
+    broker = FakeBroker(scope="scope-fixture", selected=None)
+    with pytest.raises(ControllerUnavailable, match="browser_batch"):
+        route_browser_tool(
+            "browser_batch", {"actions": [{"action": "back"}]},
+            fallback=lambda: pytest.fail("the extension lane fails closed"),
+            broker=broker, enabled=True, session_id="session-fixture", principal_id="principal-fixture",
+            transport_family="local-api",
+        )

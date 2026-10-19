@@ -658,6 +658,8 @@ Navigate to a URL. Must be called before any other browser tool. Initializes the
 Navigate to https://github.com/NousResearch
 ```
 
+With the [Hermes Browser Extension](api-server.md#browser-extension-control) the page opens in your own browser, so private and local addresses stay reachable. Hermes still refuses a URL that carries an API key or token, a cloud metadata address, and any host your [website blocklist](../security.md#website-access-policy) rules out, before the request is sent. The same checks apply to a `navigate` step in `browser_batch`: one refused URL refuses the whole batch and nothing runs.
+
 :::tip
 For simple information retrieval, prefer `web_search` or `web_extract` — they are faster and cheaper. Use browser tools when you need to **interact** with a page (click buttons, fill forms, handle dynamic content).
 :::
@@ -714,6 +716,24 @@ Press Enter to submit the form
 ```
 
 Supported keys: `Enter`, `Tab`, `Escape`, `ArrowDown`, `ArrowUp`, and more.
+
+### `browser_batch`
+
+Run several actions in order as one call, then return the page as it is after the last step. Use it when you can predict two or more steps ahead, such as clicking a field, typing, and pressing Enter: each step saved is a model turn saved.
+
+```
+browser_batch(actions=[
+  {"action": "click", "ref": "@e3"},
+  {"action": "type", "ref": "@e3", "text": "hermes agent"},
+  {"action": "press", "key": "Enter"}
+])
+```
+
+- A batch holds 1 to 20 steps. A step uses the same arguments as the single tool of the same name; the step actions are `back`, `click`, `drag`, `fill`, `hover`, `navigate`, `press`, `scroll`, `scroll_to`, `select`, and `type`. A call with more than 20 steps, an unknown step action, or a missing or unknown step argument is refused with an error naming the step.
+- With `stop_on_error` (default `true`) the batch stops at the first step that fails; with `false` it carries on. Either way it stops when the person declines an approval or the page moves away.
+- The result lists every step's outcome or error, plus `status` (`completed`, `completed_with_errors`, or `stopped`), `completed`, and `remaining`.
+- A step that changes the page (a navigation, a form that re-renders) can invalidate the refs later steps use, so end the batch there.
+- With the [Hermes Browser Extension](api-server.md#browser-extension-control) the whole batch travels to the browser in one command, and a step that needs the person's approval asks on its own while the batch waits. With the built-in browser the steps run one after another through the same handlers as the single tools, and a step the built-in browser cannot run is reported on that step instead of being skipped.
 
 ### `browser_back`
 

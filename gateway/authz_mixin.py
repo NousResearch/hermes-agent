@@ -16,7 +16,6 @@ from typing import Optional
 
 from gateway.bot_loop_guard import BotLoopGuard
 from gateway.config import Platform
-from gateway.pairing import _PLATFORM_ALLOWLIST_ENV
 from gateway.session import SessionSource
 from gateway.whatsapp_identity import (
     expand_whatsapp_aliases as _expand_whatsapp_auth_aliases,
@@ -29,22 +28,11 @@ _TRUTHY = frozenset({"true", "1", "yes"})
 _BOT_LOOP_GUARD_INIT_LOCK = threading.Lock()
 logger = logging.getLogger(__name__)
 
-# Platform -> ``<PLATFORM>_ALLOWED_USERS`` / ``<PLATFORM>_ALLOW_ALL_USERS``. Shared with the pairing
-# store's allowlist mirror (single source of truth); plugin platforms are added per-call from the registry.
-_ALLOWED_USERS_ENV = {Platform(k): v for k, v in _PLATFORM_ALLOWLIST_ENV.items()}
-_ALLOW_ALL_ENV = {p: v.replace("_ALLOWED_USERS", "_ALLOW_ALL_USERS") for p, v in _ALLOWED_USERS_ENV.items()}
+# ``<PLATFORM>_ALLOWED_USERS`` / ``<PLATFORM>_ALLOW_ALL_USERS``, the group-chat allowlist env and
+# whether an allowlist suppresses pairing come from each platform's ``PlatformEntry``
+# (``allowed_users_env`` / ``allow_all_env`` / ``group_allowed_chats_env`` /
+# ``allowlist_suppresses_pairing``), so a plugin platform declares them like a bundled one.
 _GROUP_USER_ENV = {Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS"}
-_GROUP_CHAT_ENV = {Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS", Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS"}
-_ALLOW_BOTS_ENV = {
-    # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466). Checked before the
-    # no-user-id guard below: some platforms deliver bot/automation traffic with no user_id at all -- e.g.
-    # Slack Workflow Builder posts arrive as subtype=bot_message with user=None -- so deferring past the
-    # guard would reject them outright (the same reason the chat-scoped allowlist above runs early).
-    Platform.DISCORD: "DISCORD_ALLOW_BOTS",
-    Platform.FEISHU: "FEISHU_ALLOW_BOTS",
-    Platform.TELEGRAM: "TELEGRAM_ALLOW_BOTS",
-    Platform.SLACK: "SLACK_ALLOW_BOTS",
-}
 
 
 # Gate reads use the shared per-profile isolated reader (allowlist leak under multiplex, #72348).
@@ -57,10 +45,27 @@ def _env_truthy(name: str) -> bool:
     return _auth_env(name).lower() in _TRUTHY
 
 
+def authz_field(name, field, entry):
+    """Late-bound :func:`gateway.platform_env.authz_field` (entry field, else the bundled declaration)."""
+    from gateway.platform_env import authz_field as _field
+    return _field(name, field, entry)
+
+
+def _group_chat_env(platform, entry=None) -> str:
+    """The platform's group-chat allowlist env name (``PlatformEntry.group_allowed_chats_env``), or ""."""
+    if platform is None:
+        return ""
+    return authz_field(platform.value, "group_allowed_chats_env", entry or _registry_entry(platform)) or ""
+
+
 def _registry_entry(platform):
-    """Platform-registry entry for a (plugin) platform, or None."""
+    """Platform-registry entry for a (plugin) platform, or None. Discovers first (idempotent): the
+    allowlist env names live only on the entry, so an undiscovered process must not read "no list"."""
     if platform is None:
         return None
+    with contextlib.suppress(Exception):
+        from hermes_cli.plugins import discover_plugins
+        discover_plugins()
     with contextlib.suppress(Exception):
         from gateway.platform_registry import platform_registry
 
@@ -276,7 +281,12 @@ class GatewayAuthorizationMixin:
         platform = getattr(source, "platform", None)
         from gateway.session_identity import identity_of
         identity = identity_of(source)
-        if identity is not None and identity.multiplexed:
+        # A LOCAL session has no receiving bot.  Its default transport is inferred as the
+        # primary profile, but the policy and delivery adapter belong to the session authority.
+        # Let the delivery fallback resolve that profile instead of treating a lazily-created
+        # primary LocalSessionAdapter as the receiver (#139060).
+        if (identity is not None and identity.multiplexed
+                and not (platform == Platform.LOCAL and identity.transport_inferred)):
             return self._adapters_for_profile(identity.transport_profile).get(platform) if platform else None
         if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
             return self._primary_adapters().get(platform) if platform else None
@@ -492,7 +502,7 @@ class GatewayAuthorizationMixin:
             # under multiplex only the default profile's list reaches the env (first-writer-wins
             # bridge), so read the live adapter's.
             entry = _registry_entry(source.platform)
-            if entry and entry.allowed_users_env:
+            if authz_field(source.platform.value, "allowed_users_env", entry):
                 # Buzz) carry the same operator-configured allowlist in
                 # ``PlatformConfig.extra.allowed_users``. An absent/empty entry changes nothing here — the
                 # default-deny below still applies. See #82871, #98738.
@@ -542,7 +552,7 @@ class GatewayAuthorizationMixin:
         # Chat-scoped group allowlists must work with ``user_id is None`` (anonymous admins,
         # sender_chat posts, channel broadcasts).
         if is_group and source.chat_id:
-            chat_allowlist_env = _GROUP_CHAT_ENV.get(source.platform, "")
+            chat_allowlist_env = _group_chat_env(source.platform)
             if chat_allowlist_env and _allows(_coerce_allow_set(_auth_env(chat_allowlist_env)), source.chat_id):
                 return True
             # config.yaml fallback (``extra.group_allowed_chats``): Telegram observe-unmentioned mode
@@ -551,11 +561,18 @@ class GatewayAuthorizationMixin:
                 adapter_group_allowed = self._adapter_extra_for_source(source).get("group_allowed_chats")
                 if adapter_group_allowed and _allows(_coerce_allow_set(adapter_group_allowed), source.chat_id):
                     return True
-        # Bots admitted by {PLATFORM}_ALLOW_BOTS (scoped env → the routed adapter's YAML ``allow_bots`` →
-        # none) bypass the human allowlist (Slack Workflow Builder posts arrive with user=None). The YAML
-        # rung is what a secondary profile has: its config is never bridged into the process env.
+        # Bots admitted by the platform's ``allow_bots_env`` (scoped env → the routed adapter's YAML
+        # ``allow_bots`` → none) bypass the human allowlist (#4466). Checked here, before the no-user-id
+        # guard: Slack Workflow Builder posts arrive as subtype=bot_message with user=None. The YAML rung
+        # is what a secondary profile has: its config is never bridged into the process env. No entry
+        # (plugin not loaded) = no bypass: fails closed.
         if getattr(source, "is_bot", False):
-            allow_bots_var = _ALLOW_BOTS_ENV.get(source.platform)
+            # Idempotent: the env name lives on the plugin's entry, so a runner that never ran the
+            # config passes (which discover) must still see it rather than silently deny.
+            with contextlib.suppress(Exception):
+                from hermes_cli.plugins import discover_plugins
+                discover_plugins()
+            allow_bots_var = authz_field(source.platform.value, "allow_bots_env", _registry_entry(source.platform)) or ""
             if allow_bots_var:
                 extra = {}
                 with contextlib.suppress(Exception):
@@ -628,6 +645,11 @@ class GatewayAuthorizationMixin:
 
     def _principal_authorized(self, source: SessionSource, *, allow_adapter_delegation: bool) -> bool:
         """The allowlist verdict alone, before the bot loop guard."""
+        from gateway.session_local import authorize_local_source
+        local_verdict = authorize_local_source(self, source)
+        if local_verdict is not None:
+            return local_verdict
+
         # Webhook events are HMAC-verified; a ``trusted_inbound`` platform's events come from the
         # service its adapter authenticated to (no human sender to allowlist).
         if source.platform == Platform.WEBHOOK or getattr(_registry_entry(source.platform), "trusted_inbound", False) is True:
@@ -642,13 +664,9 @@ class GatewayAuthorizationMixin:
         if not user_id:
             return False
 
-        platform_allow_env = _ALLOWED_USERS_ENV.get(source.platform, "")
-        platform_allow_all_var = _ALLOW_ALL_ENV.get(source.platform, "")
-        if source.platform not in _ALLOWED_USERS_ENV:
-            entry = _registry_entry(source.platform)
-            with contextlib.suppress(Exception):
-                platform_allow_env = getattr(entry, "allowed_users_env", "") or platform_allow_env
-                platform_allow_all_var = getattr(entry, "allow_all_env", "") or platform_allow_all_var
+        entry = _registry_entry(source.platform)
+        platform_allow_env = authz_field(source.platform.value, "allowed_users_env", entry) or ""
+        platform_allow_all_var = authz_field(source.platform.value, "allow_all_env", entry) or ""
         if platform_allow_all_var and _env_truthy(platform_allow_all_var):
             return True
         # Adapter-verified role auth (Discord DISCORD_ALLOWED_ROLES). ``is True``: no MagicMock pass.
@@ -662,7 +680,7 @@ class GatewayAuthorizationMixin:
 
         platform_allowlist = _auth_env(platform_allow_env)
         group_user_allowlist = _auth_env(_GROUP_USER_ENV.get(source.platform, "")) if is_group_or_forum else ""
-        group_chat_allowlist = _auth_env(_GROUP_CHAT_ENV.get(source.platform, "")) if is_group_or_forum else ""
+        group_chat_allowlist = _auth_env(_group_chat_env(source.platform, entry)) if is_group_or_forum else ""
         global_allowlist = _auth_env("GATEWAY_ALLOWED_USERS")
 
         if not (platform_allowlist or group_user_allowlist or group_chat_allowlist or global_allowlist):
@@ -730,9 +748,11 @@ class GatewayAuthorizationMixin:
                 return "pair"
             if dm_policy in {"allowlist", "disabled"}:
                 return "ignore"
-            # Historical: Yuanbao is absent from this allowlist-aware default.
-            env_key = "" if platform == Platform.YUANBAO else _ALLOWED_USERS_ENV.get(platform, "")
-            allowlist_keys = [env_key, _GROUP_USER_ENV.get(platform), _GROUP_CHAT_ENV.get(platform), *allowlist_keys]
+            entry = _registry_entry(platform)
+            # A group allowlist alone must not silence DM pairing: only platforms that opt in.
+            if authz_field(platform.value, "allowlist_suppresses_pairing", entry):
+                allowlist_keys = [authz_field(platform.value, "allowed_users_env", entry) or "",
+                                  _GROUP_USER_ENV.get(platform), _group_chat_env(platform, entry), *allowlist_keys]
         if any(key and _auth_env(key).strip() for key in allowlist_keys):
             return "ignore"
         return "pair"

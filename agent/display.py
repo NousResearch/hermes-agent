@@ -127,6 +127,24 @@ def get_tool_preview_max_len() -> int:
     return _tool_preview_max_len
 
 
+_JSON_ESCAPE_RE = re.compile(r"\\(.)")
+
+
+def verbose_tool_args_text(args: dict, max_len: int, code_block: bool) -> str:
+    """Verbose tool-progress args: compact JSON (capped at ``max_len``; 0 = no cap). On markdown
+    platforms it goes in a code block so the formatter keeps it verbatim (``**x**``/``a_b`` are
+    otherwise rendered as markup), with JSON's ``\\n``/``\\t`` shown as real line breaks. Args
+    holding ``` stay plain: Slack and Discord end a code block at any ``` inside it."""
+    import json
+    text = json.dumps(args, ensure_ascii=False, default=str)
+    if max_len > 0 and len(text) > max_len:
+        text = text[:max_len - 3] + "..."
+    if not code_block or "```" in text:
+        return text
+    decoded = _JSON_ESCAPE_RE.sub(lambda m: {"n": "\n", "t": "\t"}.get(m.group(1), m.group(0)), text)
+    return f"```\n{decoded}\n```"
+
+
 def set_friendly_tool_labels(enabled: bool) -> None:
     """Toggle friendly human-phrased tool labels (display.friendly_tool_labels)."""
     global _friendly_tool_labels
@@ -423,9 +441,9 @@ def _preview_memory(args: dict, _max_len: int) -> str:
     action, target = args.get("action", ""), args.get("target", "")
     if action == "add":
         return f"+{target}: \"{_clip(_oneline(args.get('content', '')), 25)}\""
-    if action in ("replace", "remove"):
+    if action in ("replace", "patch", "remove"):
         old = _oneline(args.get("old_text") or "") or t("display.preview.missing_old_text")
-        return f"{'~' if action == 'replace' else '-'}{target}: \"{old[:20]}\""
+        return f"{'-' if action == 'remove' else '~'}{target}: \"{old[:20]}\""
     return action
 
 
@@ -1093,9 +1111,9 @@ def _cute_memory(a: dict, _r) -> str:
     action, target = a.get("action", "?"), a.get("target", "")
     if action == "add":
         return _cute_row("🧠", "memory", f"+{target}: \"{_cute_trunc(a.get('content', ''))}\"")
-    if action in ("replace", "remove"):
+    if action in ("replace", "patch", "remove"):
         old = a.get("old_text") or t("display.preview.missing_old_text")
-        return _cute_row("🧠", "memory", f"{'~' if action == 'replace' else '-'}{target}: \"{_cute_trunc(old)}\"")
+        return _cute_row("🧠", "memory", f"{'-' if action == 'remove' else '~'}{target}: \"{_cute_trunc(old)}\"")
     return _cute_row("🧠", "memory", str(action))
 
 

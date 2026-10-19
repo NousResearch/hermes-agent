@@ -8,17 +8,21 @@
 import type { ErrorCodeKey } from '@/lib/error-surface'
 import type { TipId } from '@/lib/tips/catalog'
 
-import type { AppTourTranslations, HandoffTourTranslations } from './types_app_tour'
-import type { AuxTaskCopyMap } from './types_aux_tasks'
+import type { AppTourTranslations } from './types_app_tour'
 import type { BillingTranslations } from './types_billing'
 import type { BootTranslations } from './types_boot'
 import type { CatalogInstallTranslations } from './types_catalog_install'
+import type { ClarifyCopy } from './types_clarify'
 import type { ConnectorAccountsTranslations, ConnectorCardTranslations } from './types_connectors'
+import type { GatewayGroupOpenCopy, SkillDeepLinkCopy } from './types_deep_links'
+import type { FirstRunCopy } from './types_first_run'
 import type { ModelMenuTranslations } from './types_model_menu'
+import type { ModelSettingsTranslations } from './types_model_settings'
 import type { NoticeTranslations } from './types_notices'
 import type { OnboardingTranslations } from './types_onboarding'
 import type { SidebarProjectsTranslations } from './types_projects'
 import type { SharedMetricsTranslations } from './types_shared_metrics'
+import type { ThemePickerCopy } from './types_theme_picker'
 import type { UninstallSectionTranslations } from './types_uninstall_section'
 import type { UpdateChannelCopy } from './types_update_channel'
 
@@ -56,8 +60,6 @@ export type ToolTitleKey =
   | 'read_file'
   | 'search_files'
   | 'session_search_recall'
-  | 'setup_choose'
-  | 'start_chat'
   | 'terminal'
   | 'todo'
   | 'vision_analyze'
@@ -80,6 +82,7 @@ export interface Translations extends NoticeTranslations {
   /** Shared-metrics consent: first-run dialog + Settings › Safety toggles. */
   sharedMetrics: SharedMetricsTranslations
   appTour: AppTourTranslations
+  firstRun: FirstRunCopy
   externalOpenFailed: {
     title: string
     message: string
@@ -636,15 +639,22 @@ export interface Translations extends NoticeTranslations {
         title: string
         description: string
         repoLabel: string
+        verified: string
+        unverified: string
+        reviewedByNous: string
+        installsAndEnables: (profile: string) => string
+        installsOnly: (profile: string) => string
+        advanced: string
+        versionLabel: string
+        reviewedPin: (sha: string) => string
+        latestCommit: string
+        nothingToInstall: string
         includesHeading: string
         agentLabel: string
         desktopLabel: string
         profileLabel: string
         agentTargetLocal: (profile: string, dir: string) => string
         agentTargetRemote: (profile: string) => string
-        catalogPinned: (name: string, sha: string) => string
-        reviewedHeading: string
-        reviewedIntro: string
         toolsConnected: (n: number) => string
         skillsReady: (names: string[]) => string
         nextChat: string
@@ -655,12 +665,10 @@ export interface Translations extends NoticeTranslations {
         desktopTargetFromPackage: string
         desktopOnlyNote: string
         insecureWarning: string
-        securityHeading: string
         securityIntro: string
         sourceHeading: string
         viewRepository: string
         viewPluginFiles: string
-        gitCloneLabel: string
         enableAgent: string
         forceReinstall: string
         pinToCommit: string
@@ -922,12 +930,6 @@ export interface Translations extends NoticeTranslations {
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>
     uninstallSection: UninstallSectionTranslations
-    poolLimits: {
-      warmBotBackendsAria: string
-      warmBotBackendsTitle: string
-      backendIdleTimeoutAria: string
-      backendIdleTimeoutTitle: string
-    }
     customEndpoints: {
       active: string
       apiKeySet: string
@@ -1004,11 +1006,6 @@ export interface Translations extends NoticeTranslations {
       disableF12Desc: string
       alwaysExternalLinksTitle: string
       alwaysExternalLinksDesc: string
-      developerTitle: string
-      resetOnboardingTitle: string
-      resetOnboardingDesc: string
-      resetOnboardingAction: string
-      resetOnboardingFailed: string
       attachmentSizeTitle: string
       attachmentSizeDesc: string
       attachmentSizeUnit: string
@@ -1336,63 +1333,7 @@ export interface Translations extends NoticeTranslations {
       deepLinkErrorUrl: string
       deepLinkErrorTooLarge: string
     }
-    model: {
-      setupProviderFallback: string
-      setUpProvider: (name: string) => string
-      staleAuxBefore: (count: number, names: string) => string
-      staleAuxAfter: string
-      staleAuxOtherProviders: string
-      moaEnabled: string
-      moaSetDefault: string
-      moaNewPresetPlaceholder: string
-      moaAddPreset: string
-      customModel: string
-      customModelPlaceholder: string
-      chooseFromList: string
-      moaDefault: string
-      moaReferenceToggle: (enabled: boolean, index: number) => string
-      moaReferenceTitle: (index: number) => string
-      moaAddReference: string
-      loading: string
-      appliesDesc: string
-      provider: string
-      model: string
-      applying: string
-      mainAppliedTitle: string
-      mainAppliedMessage: (model: string) => string
-      defaultsLabel: string
-      reasoning: string
-      reasoningOff: string
-      speed: string
-      speedStandard: string
-      defaultsFailed: string
-      loadFailed: string
-      restartRequired: string
-      restartBackend: string
-      restartingBackend: string
-      restartFailed: string
-      auxiliaryTitle: string
-      resetAllToMain: string
-      staleAuxDismiss: string
-      auxiliaryDesc: string
-      setToMain: string
-      change: string
-      autoUseMain: string
-      inheritMainEffort: string
-      inheritsFrom: (task: string) => string
-      followTask: (task: string) => string
-      providerDefault: string
-      fallbackAdd: string
-      fallbackEmpty: string
-      notInCatalog: string
-      moaTitle: string
-      moaPreset: string
-      moaDescription: string
-      moaAggregator: string
-      moaAggregatorBilled: string
-      moaReferenceHint: string
-      tasks: AuxTaskCopyMap
-    }
+    model: ModelSettingsTranslations
     localModels: {
       connectionChanged: string
       title: string
@@ -1889,17 +1830,7 @@ export interface Translations extends NoticeTranslations {
     }
   }
 
-  skillDeepLink: {
-    installTitle: (name: string) => string
-    installDescription: string
-    installTo: string
-    thisComputer: string
-    installing: string
-    installComplete: (name: string) => string
-    destinationChanged: string
-    installed: string
-    source: string
-  }
+  skillDeepLink: SkillDeepLinkCopy
   skills: {
     tabSkills: string
     tabToolsets: string
@@ -1999,8 +1930,6 @@ export interface Translations extends NoticeTranslations {
       catalogProvenance: (sha: string) => string
       pinnedProvenance: (sha: string) => string
       pinnedBadge: (sha: string) => string
-      tierOfficial: string
-      tierCommunity: string
       updateToPin: (sha: string) => string
       updateFailed: (name: string) => string
       updated: (name: string) => string
@@ -2113,6 +2042,7 @@ export interface Translations extends NoticeTranslations {
     importedBadge: string
     resetToMine: string
   }
+  gatewayGroupOpen: GatewayGroupOpenCopy
   agents: {
     extendedTranscript: string
     transcriptTruncated: string
@@ -2962,6 +2892,7 @@ export interface Translations extends NoticeTranslations {
     openDirective: string
     queueMessage: string
     steer: string
+    redirect: string
     stop: string
     send: string
     speaking: string
@@ -3024,6 +2955,11 @@ export interface Translations extends NoticeTranslations {
     queueSend: string
     queueSteer: string
     queueDelete: string
+    queueLostNote: string
+    restoreImageDraft: string
+    queueCancelFailed: string
+    queueLostDiscard: string
+    queueLostDiscardTip: string
     queueResume: string
     queueResumeTip: string
     queueStuckTitle: string
@@ -3185,7 +3121,7 @@ export interface Translations extends NoticeTranslations {
       heartbeatEveryHours: (hours: number) => string
       heartbeatEverySeconds: (seconds: number) => string
       heartbeatNext: (time: string) => string
-      heartbeatDueWaitingForIdle: string
+      dueWaitingForIdle: string
       heartbeatActions: string
       pauseHeartbeat: string
       resumeHeartbeat: string
@@ -3388,7 +3324,6 @@ export interface Translations extends NoticeTranslations {
     versionDetailsUncommittedChanges: string
   }
 
-  handoffTour: HandoffTourTranslations
   install: {
     stageStates: Record<string, string>
     oneTimeTitle: string
@@ -4104,42 +4039,8 @@ export interface Translations extends NoticeTranslations {
       alwaysDescription: (pattern: string) => string
       alwaysAllow: string
     }
-    clarify: {
-      notReady: string
-      gatewayDisconnected: string
-      sendFailed: string
-      loadingQuestion: string
-      other: string
-      placeholder: string
-      skip: string
-      skipped: string
-      noAnswer: string
-      confirmAndContinueLabel: string
-      singleSelectHint: string
-      multiSelectHint: string
-      oneQuestion: string
-      questionProgress: (answered: number, total: number) => string
-      notDelivered: string
-    }
-    setupChoose: {
-      kinds: Record<'accent' | 'connectors' | 'layout' | 'plugins' | 'theme', string>
-      loading: string
-      unavailable: string
-      findApp: string
-      customColor: string
-      plugin: string
-      startsLater: string
-    }
-    startChat: {
-      starting: (title: string) => string
-      startingUntitled: string
-      untitled: string
-      notStarted: string
-      retry: string
-      inProfile: (profile: string) => string
-      open: string
-      openFailed: string
-    }
+    clarify: ClarifyCopy
+    themePicker: ThemePickerCopy
     catalogInstall: CatalogInstallTranslations
     mcpSetup: {
       installTitle: string

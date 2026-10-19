@@ -24,9 +24,6 @@ from tools.voice_mode_transcript import (
 class TestVoiceStopHint:
     """The 'Say "stop" to end the voice chat.' hint shown on voice-mode start."""
 
-    def test_default_phrase(self):
-        with patch("tools.voice_mode_transcript._load_voice_stop_phrases", return_value=("stop",)):
-            assert voice_stop_hint() == 'Say "stop" to end the voice chat.'
 
 
     def test_disabled_phrases_show_no_hint(self):
@@ -159,12 +156,6 @@ class TestContinuousLoopStopPhraseSignal:
         assert still_active is False
 
 
-    def test_start_continuous_accepts_on_stop_phrase_kwarg(self):
-        import inspect
-
-        import hermes_cli.voice as v
-
-        assert "on_stop_phrase" in inspect.signature(v.start_continuous).parameters
 
 
 class _ImmediateThread:

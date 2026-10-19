@@ -29,19 +29,19 @@ def _coerce_number(value: Any, cast, default=None, *, positive: bool = False):
     """Coerce ``value`` with ``cast`` (float/int); ``default`` when unset/blank/invalid.
 
     ``int`` also accepts float-looking strings ("3.0"). With ``positive`` the result must be > 0
-    (and finite for floats) or ``default`` is returned."""
+    or ``default`` is returned. Non-finite floats always fall back to ``default``."""
     if value is None or value == "":
         return default
     try:
         number = cast(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         if cast is not int:
             return default
         try:
             number = int(float(value))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return default
-    if positive and (number <= 0 or (cast is float and not math.isfinite(number))):
+    if (cast is float and not math.isfinite(number)) or (positive and number <= 0):
         return default
     return number
 
@@ -152,11 +152,7 @@ def _clean_slot(slot: Any, *, include_enabled: bool = False) -> dict[str, Any] |
     effort = _clean_reasoning_effort(slot.get("reasoning_effort"))
     if effort:
         clean["reasoning_effort"] = effort
-    # Optional per-slot max_tokens overrides the preset-level reference_max_tokens for this
-    # advisor; None (default) = no cap.
-    slot_mt = _coerce_number(slot.get("max_tokens"), int, positive=True)
-    if slot_mt is not None:
-        clean["max_tokens"] = slot_mt
+
     if include_enabled:
         clean["enabled"] = _coerce_bool(slot.get("enabled"), True)
     return clean
@@ -230,10 +226,7 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
         "reference_timeout": _coerce_reference_timeout(raw.get("reference_timeout")),
         # Failed-advisor disclosure policy; unknown values fail loud.
         "degraded_reference_policy": policy if policy in {"loud", "silent"} else "loud",
-        "max_tokens": _coerce_number(raw.get("max_tokens"), int, 4096),
-        # Per-turn cap on each reference ADVISOR (never the acting aggregator). None = uncapped;
-        # advisor generation dominates MoA latency, so e.g. 600 roughly halves wall time.
-        "reference_max_tokens": _coerce_number(raw.get("reference_max_tokens"), int, positive=True),
+
         # "user_turn" (default, cheapest): advisors run ONCE per user turn; "per_iteration": every
         # tool iteration; "every_n:<N>": first iteration of each turn and every Nth after.
         "fanout": _coerce_fanout(raw.get("fanout"))}
@@ -241,7 +234,7 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
 
 _FLAT_PRESET_KEYS = (
     "reference_models", "aggregator", "reference_temperature", "aggregator_temperature",
-    "reference_timeout", "degraded_reference_policy", "max_tokens", "reference_max_tokens",
+    "reference_timeout", "degraded_reference_policy",
     "fanout", "enabled")
 
 
@@ -298,6 +291,37 @@ def resolve_moa_preset(config: Any, name: str | None = None) -> dict[str, Any]:
     return deepcopy(preset)
 
 
+def skip_deep_merge(prefix: str, key: str) -> bool:
+    """True when the generic missing-config recursion must NOT descend into this section key.
+
+    ``moa.presets`` is a named map; a present-but-partial user map is authoritative
+    (see :func:`apply_user_moa_presets`), so the new-key probe must not imply a
+    union into it.
+    """
+    return prefix == "moa" and key == "presets"
+
+
+def apply_user_moa_presets(merged: dict[str, Any], raw: Any) -> None:
+    """Treat an explicit user MoA preset map as authoritative.
+
+    ``moa.presets`` is a named map. Generic default merging must not union the
+    schema's built-in names into a user map, because that resurrects presets
+    the user deleted. An omitted ``moa.presets`` key still receives defaults;
+    an explicit empty map remains empty. Called by the config load/merge paths
+    right after ``_deep_merge``.
+    """
+    raw_moa = raw.get("moa") if isinstance(raw, dict) else None
+    if not isinstance(raw_moa, dict) or "presets" not in raw_moa:
+        return
+    raw_presets = raw_moa.get("presets")
+    if not isinstance(raw_presets, dict):
+        return
+    merged_moa = merged.get("moa")
+    if not isinstance(merged_moa, dict):
+        return
+    merged_moa["presets"] = deepcopy(raw_presets)
+
+
 def exact_moa_preset_name(config: Any, text: str) -> str | None:
     """Return the preset name iff ``text`` exactly matches an *enabled* preset.
 
@@ -329,37 +353,3 @@ def decode_moa_turn(message: Any) -> tuple[str, dict[str, Any] | None]:
 
 def moa_usage() -> str:
     return "Usage: /moa <prompt>  (runs one prompt through the default MoA preset, then restores your model; pick a preset from the model picker to switch for the session)"
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def encode_moa_turn(prompt: str, config: Any = None, preset: str | None = None) -> str:
-    """Encode a /moa one-shot turn for frontends that can only send text."""
-    payload = {
-        "prompt": str(prompt or ""),
-        "config": resolve_moa_preset(config or {}, preset),
-    }
-    encoded = base64.urlsafe_b64encode(
-        json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    ).decode("ascii")
-    return f"{MOA_MARKER_PREFIX}{encoded}"
-
-def build_moa_turn_prompt(user_prompt: str, config: Any = None, preset: str | None = None) -> str:
-    """Build the hidden one-shot payload used by TUI/gateway routing."""
-    return encode_moa_turn(user_prompt, config, preset=preset)
-
-def list_moa_presets(config: Any) -> list[str]:
-    cfg = normalize_moa_config(config)
-    return list(cfg["presets"].keys())
-
-def set_active_moa_preset(config: Any, name: str | None) -> dict[str, Any]:
-    cfg = normalize_moa_config(config)
-    clean = str(name or "").strip()
-    if clean and clean not in cfg["presets"]:
-        raise KeyError(clean)
-    cfg["active_preset"] = clean
-    return cfg
-# ---- END PLUGIN-COMPAT ----

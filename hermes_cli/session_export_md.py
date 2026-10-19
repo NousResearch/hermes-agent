@@ -10,9 +10,11 @@ import hashlib
 import json
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any
+
+from hermes_cli.timefmt import coerce_epoch
 
 EXPORTER_VERSION = "hermes sessions export (md/qmd) v1"
 _SHA_LINE_RE = re.compile(r"- SHA256 of exported body: `([0-9a-f]{64})`")
@@ -23,11 +25,9 @@ _VERIFICATION_HEADING = "## Export verification"
 def _iso_timestamp(value: Any) -> str:
     if value is None or value == "":
         return ""
-    try:
-        ts = float(value)
-    except (TypeError, ValueError):
-        return str(value)
-    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+    if (ts := coerce_epoch(value)) is None:
+        return str(value)  # corrupt cell: odd-looking date, not an aborted export
+    return datetime.fromtimestamp(ts, tz=UTC).isoformat().replace("+00:00", "Z")
 
 
 def _frontmatter_line(key: str, value: Any) -> str:
@@ -152,7 +152,7 @@ def file_sha256(path: Path | str) -> str:
 def verify_export_file(path: Path | str, session: dict[str, Any]) -> tuple[bool, str]:
     if not Path(path).exists():
         return False, "file missing"
-    text = Path(path).read_text(encoding="utf-8")
+    text = Path(path).read_text(encoding="utf-8-sig")
     match = _SHA_LINE_RE.search(text)
     if not match:
         return False, "sha256 marker missing"

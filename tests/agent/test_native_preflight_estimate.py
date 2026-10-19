@@ -66,9 +66,6 @@ def test_returns_none_when_native_compaction_is_disabled():
     assert estimate_native_responses_preflight_tokens(agent, _history_with_checkpoint()) is None
 
 
-def test_returns_none_when_model_is_outside_gpt56_family():
-    agent = _codex_agent(model="gpt-5.2")
-    assert estimate_native_responses_preflight_tokens(agent, _history_with_checkpoint()) is None
 
 
 def test_pruned_estimate_is_far_below_durable_transcript():

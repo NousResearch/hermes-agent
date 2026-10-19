@@ -1,9 +1,9 @@
-import { authMcpServer, cancelMcpOAuthFlow, getMcpOAuthFlow, listMcpServers } from '@/hermes'
+import { listMcpServers } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { completeMcpDesktopOAuth, McpOAuthCancelled } from '@/lib/mcp-dashboard-oauth'
+import { McpReloadDeferred, reloadMcpFor } from '@/lib/mcp-reload'
 import { prettyName } from '@/lib/text'
 import { type ComposerSuggestion, offerSuggestions } from '@/store/composer-suggestions'
-import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 
 /**
@@ -40,22 +40,15 @@ async function reconnect(server: string, sessionId: string | null, cancelled: ()
   try {
     await completeMcpDesktopOAuth({
       serverName: server,
-      start: authMcpServer,
-      status: getMcpOAuthFlow,
-      cancelled,
-      cancel: cancelMcpOAuthFlow,
-      openExternal: url => window.hermesDesktop.openExternal(url)
+      cancelled
     })
 
-    // Fresh tokens reach the live session before the pill claims success.
-    await $gateway
-      .get()
-      ?.request('reload.mcp', { confirm: true, session_id: sessionId ?? undefined })
-      .catch(() => {})
-
+    // The offer stays until the chat runs the reconnected server: a deferred
+    // change or a server that still did not connect keeps it.
+    await reloadMcpFor(server, sessionId)
     clearMcpFailure(sessionId, server)
   } catch (error) {
-    if (!(error instanceof McpOAuthCancelled)) {
+    if (!(error instanceof McpOAuthCancelled || error instanceof McpReloadDeferred)) {
       notifyError(error, translateNow('composer.repairSuggestions.failed', prettyName(server)))
     }
 

@@ -23,9 +23,13 @@ _fuzzy_cache: dict[str, tuple[float, list[str]]] = {}
 
 def _git_repo_files(root: str):
     """Yield ``git ls-files`` paths (tracked + untracked) relative to ``root``; empty outside a
-    repo or on git failure/timeout. Entries above ``root`` are skipped (Cmd-P workspace scope)."""
-    from hermes_cli._subprocess_compat import windows_hide_flags
-    run_kw = dict(capture_output=True, timeout=2.0, check=False, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
+    repo or on git failure/timeout. Entries above ``root`` are skipped (Cmd-P workspace scope).
+
+    :func:`noninteractive_git_env` (GHSA-7x36-8jrh-v4pw): runs on a keystroke in the session cwd,
+    and ``ls-files`` reads the index, which executes a repo-configured ``core.fsmonitor``."""
+    from hermes_cli._subprocess_compat import noninteractive_git_env, windows_hide_flags
+    run_kw = dict(capture_output=True, timeout=2.0, check=False, stdin=subprocess.DEVNULL,
+                  creationflags=windows_hide_flags(), env=noninteractive_git_env())
     try:
         top_result = subprocess.run(["git", "-C", root, "rev-parse", "--show-toplevel"], **run_kw)
         if top_result.returncode != 0:
@@ -70,6 +74,10 @@ def _list_repo_files(root: str) -> list[str]:
     if not files:
         files = list(islice(_walk_repo_files(root), _FUZZY_CACHE_MAX_FILES))
     with _fuzzy_cache_lock:
+        # The TTL is only consulted on read, so a root that stops being queried (one .worktrees/<id>
+        # root per worktree flow, MBs each) would stay pinned for the process lifetime (#62950).
+        for stale in [r for r, (ts, _) in _fuzzy_cache.items() if now - ts >= _FUZZY_CACHE_TTL_S]:
+            del _fuzzy_cache[stale]
         _fuzzy_cache[root] = (now, files)
     return files
 
@@ -118,48 +126,6 @@ def _abs_completion_prefix_exists(path_part: str) -> bool:
         return any(e.lower().startswith(tail_lower) for e in os.listdir(parent))
     except OSError:
         return False
-
-
-_DETAILS_SECTIONS = ("thinking", "tools", "subagents", "activity")
-_DETAILS_MODES = ("hidden", "collapsed", "expanded")
-
-
-def _details_root_meta(candidate: str) -> str:
-    if candidate in _DETAILS_SECTIONS:
-        return "section override"
-    return "cycle global mode" if candidate == "cycle" else "global mode"
-
-
-def _details_completions(text: str) -> list[dict] | None:
-    """Argument completions for ``/details [section] [mode]``; None when ``text`` is not that command."""
-    if not text.lower().startswith("/details"):
-        return None
-    stripped = text.strip()
-    if stripped and not "/details".startswith(stripped.lower().split()[0]):
-        return None
-    body = text[len("/details") :].removeprefix(" ")
-    parts = body.split()
-    trailing = text.endswith(" ")
-    root_candidates = (*_DETAILS_MODES, "cycle", *_DETAILS_SECTIONS)
-    if not body or (not parts and trailing):
-        lead = "" if trailing else " "
-        return [_item(f"{lead}{c}", _details_root_meta(c)) for c in root_candidates]
-    if len(parts) == 1 and not trailing:
-        prefix = parts[0].lower()
-        return [_item(c, _details_root_meta(c)) for c in root_candidates if c.startswith(prefix) and c != prefix]
-    section = parts[0].lower() if parts else ""
-    if section not in _DETAILS_SECTIONS:
-        return []
-
-    def section_meta(candidate: str) -> str:
-        return f"clear {section} override" if candidate == "reset" else f"set {section}"
-    mode_candidates = (*_DETAILS_MODES, "reset")
-    if len(parts) == 1:  # trailing space after the section
-        return [_item(c, section_meta(c)) for c in mode_candidates]
-    if len(parts) == 2 and not trailing:
-        prefix = parts[1].lower()
-        return [_item(c, section_meta(c)) for c in mode_candidates if c.startswith(prefix) and c != prefix]
-    return []
 
 
 def _model_picker_context(agent):

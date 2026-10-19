@@ -99,8 +99,8 @@
     font-size: 11px;
     color: var(--foreground);
   }
-  body.done #loader, body.error #loader { display: none; }
-  body.done #glyph, body.error #glyph { display: flex; }
+  body.done #loader, body.error #loader, body.disconnected #loader { display: none; }
+  body.done #glyph, body.error #glyph, body.disconnected #glyph { display: flex; }
 </style>
 </head>
 <body>
@@ -205,6 +205,7 @@
   const glyphEl = document.getElementById('glyph')
   const defaultLine = lineEl.textContent   /* what a stage-less run says */
   let settled = false
+  let failures = 0
 
   const elapsedText = s =>
     s < 60 ? `${s}s elapsed` : `${Math.floor(s / 60)}m ${s % 60}s elapsed`
@@ -226,7 +227,8 @@
     } else if (state.status === 'done') {
       settle('done')
       glyphEl.textContent = '\u2713'
-      lineEl.textContent = 'Opening Hermes\u2026'
+      titleEl.textContent = 'Update complete'
+      lineEl.textContent = 'Opening Hermes\u2026\nYou can close this window.'
     } else if (state.status === 'manual') {
       // Update landed but Hermes will NOT reopen itself (package skew,
       // sandbox helper, launch rejected). The orchestrator leaves this
@@ -243,13 +245,43 @@
     }
   }
 
+  async function request(url, options = {}) {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 5000)
+    try {
+      const response = await fetch(url, { ...options, cache: 'no-store', signal: controller.signal })
+      if (!response.ok) throw new Error('Progress request failed')
+      // Keep the deadline active while reading the body too: receiving
+      // headers alone does not prove that the progress server is responsive.
+      return options.method === 'POST' ? null : await response.json()
+    } finally {
+      clearTimeout(timeout)
+    }
+  }
+
   async function poll() {
     try {
-      const res = await fetch('/progress', { cache: 'no-store' })
-      if (res.ok) apply(await res.json())
+      const state = await request('/progress')
+      if (!state || !['running', 'done', 'manual', 'error'].includes(state.status)) {
+        throw new Error('Invalid progress response')
+      }
+      failures = 0
+      apply(state)
+      // The Windows server can now wait for delivery instead of guessing
+      // that one polling interval was enough. Older/POSIX servers omit this
+      // receipt. Apply first so a failed acknowledgement cannot hide a result.
+      if (settled && typeof state.receipt === 'string' && state.receipt) {
+        await request(`/ack/${encodeURIComponent(state.receipt)}`, { method: 'POST' })
+      }
     } catch {
-      // Server gone: hold the last known state. The orchestrator owns
-      // closing this window; the relaunched Desktop owns the result.
+      if (!settled && ++failures >= 3) {
+        // A vanished server is not evidence of success OR failure. Leave an
+        // honest, finite state even if the browser refuses the close request.
+        settle('disconnected')
+        glyphEl.textContent = '!'
+        titleEl.textContent = 'Update status unavailable'
+        lineEl.textContent = 'The progress connection was lost.\nCheck Hermes for the update result. You can close this window.'
+      }
     }
     if (!settled) setTimeout(poll, 400)
   }

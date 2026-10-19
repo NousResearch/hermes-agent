@@ -1,4 +1,4 @@
-"""agent/periodic_scheduler: one shared thread runs every periodic timer."""
+"""agent/periodic_scheduler: one timer thread dispatches isolated callbacks."""
 
 import threading
 import time
@@ -24,18 +24,18 @@ def test_two_intervals_fire_proportionally_and_cancel_stops_one():
 
     assert _wait_until(lambda: len(slow) >= 3)
     assert len(fast) > len(slow)  # 5x interval ratio -> clearly more fast ticks
-    # Both ran on this scheduler's single thread, not on new threads.
-    before = threading.active_count()
-    sched.schedule(lambda: None, 0.01).cancel()
-    assert threading.active_count() == before
     assert sched._thread is not None and sched._thread.is_alive()
 
-    h_fast.cancel()
+    h_fast.cancel(wait=1.0)
     n_fast = len(fast)
     time.sleep(0.1)
     assert len(fast) == n_fast, "cancelled callback kept firing"
     assert len(slow) > 3, "sibling callback stopped when another was cancelled"
-    h_slow.cancel()
+    h_slow.cancel(wait=1.0)
+    # With every handle quiesced, scheduling + cancelling adds no persistent thread.
+    before = threading.active_count()
+    sched.schedule(lambda: None, 0.01).cancel(wait=1.0)
+    assert threading.active_count() == before
 
 
 def test_raising_callback_is_rescheduled_and_does_not_kill_sibling():
@@ -81,12 +81,75 @@ def test_module_level_schedule_uses_shared_default():
     hits = []
     h = schedule(lambda: hits.append(1), 0.01)
     assert _wait_until(lambda: hits)
-    h.cancel()
+    h.cancel(wait=1.0)
     thread = periodic_scheduler._DEFAULT._thread
     assert thread is not None and thread.name == "hermes-periodic-scheduler"
-    # Scheduling more timers on the shared default adds no OS threads.
+    # Scheduling more timers on the shared default adds no persistent OS threads.
     before = threading.active_count()
     handles = [schedule(lambda: None, 0.01) for _ in range(20)]
-    assert threading.active_count() == before
     for handle in handles:
-        handle.cancel()
+        handle.cancel(wait=1.0)
+    assert threading.active_count() == before
+
+
+def test_blocked_callback_does_not_stall_due_sibling(monkeypatch):
+    scheduler = PeriodicScheduler()
+    monkeypatch.setattr(periodic_scheduler, "_DEFAULT", scheduler)
+    blocker_entered = threading.Event()
+    release_blocker = threading.Event()
+    sibling_ran = threading.Event()
+
+    def blocker():
+        blocker_entered.set()
+        release_blocker.wait(5.0)
+        return False
+
+    def sibling():
+        sibling_ran.set()
+        return False
+
+    blocker_handle = schedule(blocker, 0.01)
+    assert blocker_entered.wait(2.0)
+    sibling_handle = schedule(sibling, 0.01)
+    try:
+        # Ordering, not a wall-clock bound: the sibling must fire WHILE the blocker still holds
+        # its worker. On main the sibling only runs after the blocker's 5 s wait expires.
+        assert sibling_ran.wait(2.0) and not release_blocker.is_set(), (
+            "a blocked periodic callback stalled an unrelated due callback"
+        )
+    finally:
+        release_blocker.set()
+        blocker_handle.cancel(wait=1.0)
+        sibling_handle.cancel(wait=1.0)
+
+
+def test_worker_start_failure_keeps_timer(monkeypatch):
+    sched = PeriodicScheduler()
+    fired: list = []
+    real_thread = threading.Thread
+    attempts = {"n": 0}
+
+    def flaky(*args, **kwargs):
+        # Only this scheduler's own callback worker fails, once; a leaked handle on the shared
+        # _DEFAULT scheduler must not be the one that consumes the single Boom.
+        # Bound methods are fresh objects per access: compare with ==, never `is`.
+        if kwargs.get("target") == sched._run_callback and attempts["n"] == 0:
+            attempts["n"] += 1
+
+            class Boom:
+                def start(self):
+                    raise RuntimeError("no threads")
+
+            return Boom()
+        return real_thread(*args, **kwargs)
+
+    monkeypatch.setattr(periodic_scheduler.threading, "Thread", flaky)
+    handle = sched.schedule(lambda: fired.append(1), 0.01)
+    try:
+        assert _wait_until(lambda: bool(fired), timeout=3.0), (
+            "worker-start failure silently retired the timer"
+        )
+        assert attempts["n"] == 1, "the fake never intercepted the callback worker"
+        assert not handle.cancelled
+    finally:
+        handle.cancel(wait=1.0)

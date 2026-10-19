@@ -9,8 +9,8 @@
  *  - **fps budget** — paints are skipped until `1000 / fps` elapsed; the loop
  *    still rides rAF so Chromium can align and pause it natively.
  *  - **observability pause** — wired to `createRendererLoopPauseController`:
- *    the loop cancels while the window is hidden, minimized, or unfocused and
- *    resumes when observable.
+ *    the loop cancels while the window is hidden or minimized and resumes
+ *    when visible, even if another window has focus.
  *  - **idle dormancy** — when `idleWhen()` returns true after a draw, the loop
  *    parks (zero pending frames, zero timers) until `wake()` is called. This
  *    is the piece every hand-rolled loop forgot: "nothing visible to animate"
@@ -43,7 +43,7 @@ export interface BudgetedLoopOptions {
    *  animation finished). Checked after every draw; when true the loop parks
    *  until `wake()`. Omit for loops that should run whenever observable. */
   idleWhen?: () => boolean
-  /** Forwarded to the pause controller. Default true (pause on blur). */
+  /** Forwarded to the pause controller. Default false (animate while visible). */
   pauseWhenUnfocused?: boolean
 }
 
@@ -60,7 +60,7 @@ export interface BudgetedLoop {
 
 export function createBudgetedLoop(
   draw: (now: number) => void,
-  { fps = 15, idleWhen, pauseWhenUnfocused = true }: BudgetedLoopOptions = {}
+  { fps = 15, idleWhen, pauseWhenUnfocused = false }: BudgetedLoopOptions = {}
 ): BudgetedLoop {
   const frameInterval = 1000 / fps
   let frame = 0

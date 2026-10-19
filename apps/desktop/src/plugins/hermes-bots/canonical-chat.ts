@@ -10,8 +10,10 @@
 
 import * as sdk from '@hermes/plugin-sdk'
 import { host } from '@hermes/plugin-sdk'
+import type { SessionListRow } from '@hermes/plugin-sdk'
 
 import { $botMeta, botMetaKey, botOwner, persistBotMetaSnapshot } from './data'
+import { botsText } from './i18n'
 import { backendTargetProfile, botConnectionRoute, botRosterMeta, botWorkspaceOwnerKey, requestForBot } from './routing'
 import type { RpcErrorLike } from './routing'
 import { getPluginCtx } from './shared'
@@ -53,7 +55,34 @@ export const CANONICAL_CHAT_TITLE = 'Bot Chat'
  *  read through an aliased guard, which TS only narrows for immutable
  *  properties. */
 interface CanonicalChatRow extends CanonicalSession {
-  readonly message_count?: number
+  readonly message_count?: SessionListRow['message_count']
+  /** Absent on older gateways, which only report the denormalized total. */
+  readonly live_message_count?: SessionListRow['live_message_count']
+}
+
+/** A Bot Chat tile left on an old compression segment: titled as the canonical
+ *  chat but keyed to none of the lineage ids the owner currently resolves to. */
+export const isStaleBotChatTile =
+  (canonicalIds: readonly string[]) => (tile: { storedSessionId: string; workspaceTabTitle?: string }) =>
+    tile.workspaceTabTitle === CANONICAL_CHAT_TITLE && !canonicalIds.includes(String(tile.storedSessionId))
+
+/** Should the open wait for a painted transcript? The paintable row count
+ *  decides when the gateway reports it; the denormalized total is the only
+ *  fallback older gateways offer, and no count at all means the row is
+ *  guesswork anyway — wait, so an empty paint still surfaces as an error
+ *  instead of a silent blank chat. */
+export function resolveExpectHistory(
+  summary: null | undefined | Pick<SessionListRow, 'live_message_count' | 'message_count'>
+): boolean {
+  if (typeof summary?.live_message_count === 'number' && Number.isFinite(summary.live_message_count)) {
+    return summary.live_message_count > 0
+  }
+
+  if (typeof summary?.message_count === 'number' && Number.isFinite(summary.message_count)) {
+    return summary.message_count > 0
+  }
+
+  return true
 }
 
 /** Is the chat on screen the given bot's forever-chat?
@@ -78,10 +107,19 @@ export function isCanonicalChatOnScreen(
   return [canonical.id, canonical.resolved_id].filter(Boolean).map(String).includes(String(storedSessionId))
 }
 
+interface OpenStoredBotChatOptions {
+  /** Background re-resume: thread refreshInPlace to host.openSession so the
+   *  refresh never navigates (issue 121874). Await the transcript refresh
+   *  only for explicit opens — a background wake resolves once the resume
+   *  is requested, never blocking on a cold backend. */
+  background?: boolean
+}
+
 async function openStoredBotChat(
   owner: RosterRow | string,
   storedId: string,
-  summary: CanonicalChatRow
+  summary: CanonicalChatRow,
+  { background = false }: OpenStoredBotChatOptions = {}
 ): Promise<string> {
   if (!storedId || typeof host.openSession !== 'function') {
     throw new Error('This Hermes Desktop version cannot open stored sessions')
@@ -89,8 +127,11 @@ async function openStoredBotChat(
 
   const { bot, name, route } = botOwner(owner)
   const ownerKey = botWorkspaceOwnerKey(bot)
-  const hasAuthoritativeCount = typeof summary?.message_count === 'number' && Number.isFinite(summary.message_count)
-  const expectHistory = hasAuthoritativeCount ? summary.message_count > 0 : true
+  // Paintable rows decide the wait, not the denormalized total: a chat whose rows
+  // are all folded (orphaned compaction marks, a full rewind) paints nothing, and
+  // demanding its history wedges the open for the whole hydration budget before
+  // failing closed. Older gateways report only the total — keep trusting it there.
+  const expectHistory = resolveExpectHistory(summary)
 
   // Current SDKs export the Bot-specific budget. The fallback preserves
   // compatibility with older hosts and isolated plugin test harnesses.
@@ -112,6 +153,16 @@ async function openStoredBotChat(
   // previous time this bot was open — which left the pane showing old messages
   // until an app restart (hermes-agent#93604). A resume is cheap and
   // idempotent, so on this explicit user navigation we always request one.
+  //
+  // Compression rotates the tip while tiles stay keyed by segment, and hidden
+  // Bot Chats never reach the sidebar listing the lineage guard reads, so the
+  // old-segment tile is discarded here or it survives beside the tip
+  // (hermes-agent#120810). Same owner-scoped probe the roster click runs, but
+  // discard-only (`[]` fronts nothing): a background refresh must never take
+  // the tab strip (#121874), and the openSession below fronts explicit opens.
+  const canonicalIds = [...new Set([summary?.id, storedId].filter(Boolean).map(String))]
+  host.focusOpenWorkspaceSession?.(ownerKey, isStaleBotChatTile(canonicalIds), [])
+
   await host.openSession(storedId, {
     ...(route
       ? {
@@ -127,11 +178,12 @@ async function openStoredBotChat(
     // the reason this stopped being `main`); it just loads into main instead of
     // minting a second tab when there is nothing to front.
     intent: 'in-place',
-    awaitHydration: true,
+    awaitHydration: !background,
     expectHistory,
     forceResume: true,
     hydrationTimeoutMs,
     keepAllProfilesScope: true,
+    ...(background ? { refreshInPlace: true } : {}),
     workspaceMode: 'bots',
     workspaceOwnerKey: ownerKey,
     retryHydrationTimeoutOnce: true,
@@ -157,19 +209,63 @@ function botModeGatewayNeedsUpdate(error: unknown) {
   return /(?:method not found|no handler for|unknown method|unsupported rpc)/i.test(message)
 }
 
-export function notifyBotOpenFailure(error: unknown, bot: RosterRow, fallbackMessage: string) {
+/** The one deep link to the Gateways settings tab (the route
+ *  profile-switcher.tsx reaches via SETTINGS_ROUTE; plugins don't import app
+ *  routes, so the literal lives here). */
+const GATEWAY_SETTINGS_PATH = '/settings?tab=gateway'
+
+/** Raw error text for the toast's muted `detail` line — never the body. */
+function errorDetail(error: unknown): string | undefined {
+  const text = String((error as RpcErrorLike)?.message || error || '').trim()
+
+  return text || undefined
+}
+
+/** What the caller was doing when the open failed: `'reach'` — activating
+ *  the bot's connection (a failure here means the computer the bot runs on
+ *  could not be reached); `'open'` — resolving/opening the forever-chat. */
+export type BotOpenStep = 'open' | 'reach'
+
+/** Toast a failed bot open. Titles and bodies come from the plugin bundle and
+ *  say what happened + what to do; the raw RPC/connection error only ever
+ *  rides in `detail`. Every toast offers the Gateways settings tab. */
+export function notifyBotOpenFailure(error: unknown, bot: RosterRow, step: BotOpenStep, botName?: string) {
+  const b = botsText().bot
+  const action = { label: b.openGateways, onClick: () => host.navigate(GATEWAY_SETTINGS_PATH) }
+  const detail = errorDetail(error)
+
   if (botModeGatewayNeedsUpdate(error)) {
-    const gateway = bot.connectionLabel || bot.connectionId || 'this gateway'
+    const connectionLabel = bot.connectionLabel || bot.connectionId || 'Hermes'
     host.notify?.({
       kind: 'error',
-      title: 'Update this gateway to use Bot Mode',
-      message: `Update ${gateway}, then try again.`
+      title: b.openNeedsUpdateTitle,
+      message: b.openNeedsUpdateMessage(connectionLabel),
+      ...(detail ? { detail } : {}),
+      action
     })
 
     return
   }
 
-  host.notifyError?.(error, fallbackMessage)
+  if (step === 'reach') {
+    host.notify?.({
+      kind: 'error',
+      title: b.openUnreachableTitle,
+      message: b.openUnreachableMessage,
+      ...(detail ? { detail } : {}),
+      action
+    })
+
+    return
+  }
+
+  host.notify?.({
+    kind: 'error',
+    title: b.openChatFailedTitle(botName || bot.name),
+    message: b.openChatFailedMessage,
+    ...(detail ? { detail } : {}),
+    action
+  })
 }
 
 /** THE identity lookup: the profile's session titled exactly "Bot Chat",
@@ -197,12 +293,22 @@ async function findExistingCanonicalChat(owner: RosterRow | string): Promise<Can
   let res: { sessions?: CanonicalChatRow[] }
 
   try {
-    res = await requestForBot<{ sessions?: CanonicalChatRow[] }>(bot, 'session.list', {
-      profile: backendTargetProfile(route, name),
-      title: CANONICAL_CHAT_TITLE,
-      limit: PROFILE_SESSION_LIST_LIMIT,
-      include_hidden: true
-    })
+    // Every caller is a user gesture (roster click, Create Bot), and this is
+    // the FIRST RPC of the gesture — the one that cold-spawns the bot's
+    // backend on a local pool. Dial foreground so the click is not queued
+    // behind background roster hydration on a saturated pool (#105104: roster
+    // click, zero backend activity, "try again" toast).
+    res = await requestForBot<{ sessions?: CanonicalChatRow[] }>(
+      bot,
+      'session.list',
+      {
+        profile: backendTargetProfile(route, name),
+        title: CANONICAL_CHAT_TITLE,
+        limit: PROFILE_SESSION_LIST_LIMIT,
+        include_hidden: true
+      },
+      { spawnPriority: 'foreground' }
+    )
   } catch (error) {
     // Plugin tests and host bridges can return Error-like values from another
     // JS realm, where `instanceof Error` is false. Preserve the provider/RPC
@@ -236,6 +342,18 @@ async function findExistingCanonicalChat(owner: RosterRow | string): Promise<Can
 
 interface CreateCanonicalChatOptions {
   kickoff?: boolean
+  openingStillCurrent?: (() => boolean) | null
+}
+
+interface OpenCanonicalChatOptions {
+  /** Re-resolve and REFRESH the open chat without any navigation: the wake
+   *  was triggered by a background event (session.reclaimed, roster
+   *  activity), and a background event must never take the route or the
+   *  foreground away from whatever the user is reading (issue 121874 —
+   *  /kanban was replaced by the Bot Chat route). Threaded to
+   *  host.openSession's refreshInPlace; without an SDK that supports it the
+   *  open degrades to the old navigating shape. */
+  background?: boolean
   openingStillCurrent?: (() => boolean) | null
 }
 
@@ -345,22 +463,29 @@ export function createCanonicalChat(
       return existing.id
     }
 
-    const res = await requestForBot<{ session_id?: string; stored_session_id?: string }>(bot, 'session.create', {
-      profile: backendTargetProfile(route, name),
-      title: CANONICAL_CHAT_TITLE,
-      // Always born hidden from the global sidebar — Bot Mode sessions are
-      // plugin-owned. Core applies this via the generic `hidden` flag
-      // (deferred as pending_hidden until the row exists); older gateways
-      // ignore the unknown param and it stays visible.
-      hidden: true,
-      // Explicit contract (PR #97008): this session's runtime always follows
-      // the member profile's CURRENT config. Resume must NOT restore the
-      // stored model/provider pin from an old row — that left bot DMs stuck
-      // on a stale/dead provider after a profile switch. Older gateways
-      // ignore the unknown param; the server's exact-title backfill then
-      // covers the legacy path.
-      follow_profile_config: true
-    })
+    // Same click gesture as the foreground lookup above: a first-ever open
+    // has no row to find and mints one, still on the user's dial.
+    const res = await requestForBot<{ session_id?: string; stored_session_id?: string }>(
+      bot,
+      'session.create',
+      {
+        profile: backendTargetProfile(route, name),
+        title: CANONICAL_CHAT_TITLE,
+        // Always born hidden from the global sidebar — Bot Mode sessions are
+        // plugin-owned. Core applies this via the generic `hidden` flag
+        // (deferred as pending_hidden until the row exists); older gateways
+        // ignore the unknown param and it stays visible.
+        hidden: true,
+        // Explicit contract (PR #97008): this session's runtime always follows
+        // the member profile's CURRENT config. Resume must NOT restore the
+        // stored model/provider pin from an old row — that left bot DMs stuck
+        // on a stale/dead provider after a profile switch. Older gateways
+        // ignore the unknown param; the server's exact-title backfill then
+        // covers the legacy path.
+        follow_profile_config: true
+      },
+      { spawnPriority: 'foreground' }
+    )
 
     const sid = res?.stored_session_id
     const runtime = res?.session_id
@@ -484,7 +609,7 @@ export function createCanonicalChat(
  *  bot's chat opens without re-homing Desktop's chrome. */
 export async function openBotCanonicalChat(
   owner: RosterRow | string,
-  openingStillCurrent: (() => boolean) | null = null
+  { background = false, openingStillCurrent = null }: OpenCanonicalChatOptions = {}
 ): Promise<{ openedId: string; registryId: string } | null> {
   const existing = await findExistingCanonicalChat(owner)
 
@@ -494,7 +619,7 @@ export async function openBotCanonicalChat(
     }
 
     const openedId = existing.resolved_id || existing.id
-    await openStoredBotChat(owner, openedId, existing)
+    await openStoredBotChat(owner, openedId, existing, { background })
 
     // Both identities matter downstream: the durable registry row names the
     // chat; the resolved lineage tip is what actually takes session focus.
@@ -504,6 +629,13 @@ export async function openBotCanonicalChat(
       registryId: String(existing.id),
       openedId: String(openedId)
     }
+  }
+
+  // A background re-resume never MINTS: it fires while nobody asked for this
+  // bot, so a resolution miss keeps whatever the user is looking at instead
+  // of creating a fresh forever-chat under their feet.
+  if (background) {
+    return null
   }
 
   const created = await createCanonicalChat(owner, {

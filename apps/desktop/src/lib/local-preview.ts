@@ -1,6 +1,7 @@
 import DOMPurify from 'dompurify'
 
 import { isDesktopFsRemoteMode, readDesktopFileDataUrl, readDesktopFileText } from '@/lib/desktop-fs'
+import { isWindowsAbsolutePath } from '@/lib/path-compare'
 import type { PreviewTarget } from '@/store/preview'
 
 const HTML_EXTENSIONS = new Set(['.htm', '.html'])
@@ -56,12 +57,32 @@ function extension(value: string) {
   return idx >= 0 ? clean.slice(idx).toLowerCase() : ''
 }
 
+// Collapses `.`/`..` so a note's `../other.md` lands on the sibling, not on a
+// path the fs bridge rejects. Never climbs above the root of `base`.
 function joinPath(base: string, rel: string) {
   if (!base) {
     return rel
   }
 
-  return `${base.replace(/\/+$/, '')}/${rel.replace(/^\.?\//, '')}`
+  const normalizedBase = base.replace(/\\/g, '/')
+  const root = normalizedBase.match(/^(?:\/\/|(?:[A-Za-z]:)?\/)/)?.[0] ?? ''
+  const parts = normalizedBase.slice(root.length).split('/').filter(Boolean)
+
+  for (const part of rel.replace(/\\/g, '/').split('/')) {
+    if (!part || part === '.') {
+      continue
+    }
+
+    if (part === '..') {
+      parts.pop()
+
+      continue
+    }
+
+    parts.push(part)
+  }
+
+  return `${root}${parts.join('/')}`
 }
 
 function pathToFileUrl(path: string) {
@@ -78,6 +99,30 @@ function pathToFileUrl(path: string) {
   }
 
   return `file://${encoded.startsWith('/') ? encoded : `/${encoded}`}`
+}
+
+/** Loopback hosts — "this machine". The one address family an agent's dev
+ *  server lives on, and the one whose meaning changes with WHICH machine loads
+ *  it (a remote gateway's `localhost` is not ours). */
+const LOOPBACK_HOST_RE = /^(localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|::1)$/
+
+export function isLoopbackPreviewUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      return false
+    }
+
+    return LOOPBACK_HOST_RE.test(
+      url.hostname
+        .toLowerCase()
+        .replace(/^\[|\]$/g, '')
+        .replace(/\.$/, '')
+    )
+  } catch {
+    return false
+  }
 }
 
 export function validatedRemoteHtmlDataUrl(value: string): string | null {
@@ -197,7 +242,7 @@ export function localPreviewTarget(rawTarget: string, cwd?: string | null): Prev
     } catch {
       path = raw.replace(/^file:\/\//i, '')
     }
-  } else if (!raw.startsWith('/') && cwd) {
+  } else if (!raw.startsWith('/') && !isWindowsAbsolutePath(raw) && cwd) {
     path = joinPath(cwd, raw)
   }
 
@@ -265,7 +310,27 @@ export async function normalizeOrLocalPreviewTarget(
     const normalized = await window.hermesDesktop?.normalizePreviewTarget?.(rawTarget, cwd || undefined)
 
     if (normalized) {
+      // Directories and dead links arrive as typed non-previewable results
+      // (#101683). Locally they must not fall through to the renderer's blind
+      // classification below, which would fabricate a text tab for a path
+      // that cannot be previewed. A remote backend's paths are not on this
+      // machine, so remote mode keeps the fabricated fallback the gateway
+      // read resolves later.
+      if (normalized.previewKind === 'directory' || normalized.previewKind === 'missing') {
+        return isDesktopFsRemoteMode() ? enrichPreviewTarget(localPreviewTarget(rawTarget, cwd)) : null
+      }
+
       return enrichPreviewTarget(normalized)
+    }
+
+    // The main process resolved the target against the real filesystem and
+    // found nothing openable (`null`); an absent bridge yields `undefined` from
+    // the optional call above instead. In local mode the main process's answer
+    // is authoritative — the fallback below can only fabricate a broken
+    // preview tab (#101683). Remote-backend paths, and a dev server without
+    // the bridge, keep it.
+    if (!isDesktopFsRemoteMode() && normalized === null) {
+      return null
     }
   } catch {
     // Running Electron may still have the old HTML-only preview IPC. Fall

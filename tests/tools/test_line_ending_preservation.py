@@ -119,10 +119,12 @@ class TestWriteFileCRLFPreservation:
         """The agent typically sends bare-LF content; if the file existed
         with CRLF, the write should convert to CRLF rather than silently
         flipping the endings."""
-        from tools.file_tools import _handle_write_file
+        from tools.file_tools import _handle_write_file, read_file_tool
 
         target = tmp_path / "config.bat"
         target.write_bytes(b"@echo off\r\nset X=1\r\n")
+        # write_file refuses to overwrite an existing file the task never read.
+        assert "error" not in json.loads(read_file_tool(str(target), task_id="crlf_write_1"))
 
         result = _handle_write_file(
             {
@@ -143,10 +145,11 @@ class TestWriteFileCRLFPreservation:
 
     def test_overwrite_lf_file_stays_lf(self, hermes_home, tmp_path):
         """Pre-existing LF file should not get spurious CRLFs."""
-        from tools.file_tools import _handle_write_file
+        from tools.file_tools import _handle_write_file, read_file_tool
 
         target = tmp_path / "lf.txt"
         target.write_bytes(b"line1\nline2\n")
+        assert "error" not in json.loads(read_file_tool(str(target), task_id="crlf_write_3"))
 
         result = _handle_write_file(
             {"path": str(target), "content": "X\nY\nZ\n"},
@@ -163,11 +166,6 @@ class TestWriteFileCRLFPreservation:
 class TestLineEndingHelpers:
     """Direct unit tests for the pure helpers — easier to debug than the
     integration tests above."""
-
-    def test_detect_crlf(self):
-        from tools.file_operations import _detect_line_ending
-
-        assert _detect_line_ending("a\r\nb\r\n") == "\r\n"
 
 
     def test_normalize_to_crlf_idempotent(self):

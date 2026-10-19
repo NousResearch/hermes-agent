@@ -25,7 +25,7 @@ DEFAULT_MAX_LEASES = 512
 DEFAULT_LEASE_WAIT = 5.0
 
 
-def _holder_desc(holder: Optional["TurnLeaseToken"]) -> tuple:
+def _holder_desc(holder: "Optional[TurnLeaseToken]") -> tuple:
     return (holder.owner_key, holder.generation) if holder else ("?", "?")
 
 
@@ -43,11 +43,14 @@ class TurnLeaseToken:
     """Held-lease handle from :meth:`SessionTurnLeaseRegistry.acquire`; ``released`` makes
     release idempotent."""
 
-    __slots__ = ("session_id", "owner_key", "generation", "released")
+    __slots__ = ("generation", "lease", "owner_key", "released", "session_id")
 
-    def __init__(self, session_id: str, owner_key: str, generation: int) -> None:
+    def __init__(self, session_id: str, owner_key: str, generation: int, lease: "_SessionLease") -> None:
         self.session_id, self.owner_key, self.generation = session_id, owner_key, generation
         self.released = False
+        # The concrete lease, so release resolves by identity even after a rotation re-aliases
+        # ``session_id`` (both ids map to this same lease).
+        self.lease = lease
 
     def __repr__(self) -> str:  # pragma: no cover - debug aid
         return (f"TurnLeaseToken(session_id={self.session_id!r}, owner_key={self.owner_key!r}, "
@@ -55,7 +58,7 @@ class TurnLeaseToken:
 
 
 class _SessionLease:
-    __slots__ = ("lock", "holder", "acquired_at", "last_used", "pending_acquires")
+    __slots__ = ("acquired_at", "holder", "last_used", "lock", "pending_acquires")
 
     def __init__(self) -> None:
         self.lock = asyncio.Lock()
@@ -73,7 +76,7 @@ class SessionTurnLeaseRegistry:
     visibility scope as the routing-key guards it extends); call only from the gateway loop."""
 
     def __init__(self, max_entries: int = DEFAULT_MAX_LEASES) -> None:
-        self._leases: Dict[str, _SessionLease] = {}
+        self._leases: dict[str, _SessionLease] = {}
         self._max_entries = max(1, int(max_entries))
 
     def _get_or_create(self, session_id: str) -> _SessionLease:
@@ -100,8 +103,8 @@ class SessionTurnLeaseRegistry:
         if not session_id:
             return None
         wait = float(timeout) if timeout and timeout > 0 else DEFAULT_LEASE_WAIT
-        token = TurnLeaseToken(session_id, owner_key, int(generation))
         lease = self._get_or_create(session_id)
+        token = TurnLeaseToken(session_id, owner_key, int(generation), lease=lease)
         if lease.lock.locked():
             logger.warning(
                 "turn lease contention on session %s: routing key %s (gen %s) waiting behind "
@@ -117,7 +120,7 @@ class SessionTurnLeaseRegistry:
         lease.pending_acquires += 1
         try:
             await asyncio.wait_for(lease.lock.acquire(), timeout=wait)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.error(
                 "turn lease wait timed out after %.0fs on session %s (waiter: routing key %s gen "
                 "%s; holder: routing key %s gen %s) — failing closed: refusing to run this turn "
@@ -141,7 +144,8 @@ class SessionTurnLeaseRegistry:
         if (token is None or token.released or not new_session_id
                 or new_session_id == token.session_id):
             return False
-        if (lease := self._leases.get(token.session_id)) is None or lease.holder is not token:
+        lease = token.lease
+        if lease.holder is not token:
             return False
         existing = self._leases.get(new_session_id)
         if existing is not None and existing is not lease and not existing.idle:
@@ -164,8 +168,7 @@ class SessionTurnLeaseRegistry:
         if token is None or token.released:
             return False
         token.released = True
-        if (lease := self._leases.get(token.session_id)) is None:
-            return False
+        lease = token.lease
         if lease.holder is not token:
             logger.debug("turn lease release skipped on session %s: token (key %s gen %s) is not "
                          "the current holder", token.session_id, token.owner_key, token.generation)

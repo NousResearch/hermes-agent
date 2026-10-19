@@ -68,17 +68,22 @@ def whatsapp_bridge(monkeypatch):
 
     from gateway.config import Platform
     from hermes_cli.plugins import discover_plugins
+    from plugins.platforms.whatsapp.adapter import _bridge_auth_proof
 
+    token = "standalone-test-token-0123456789abcdef"
     calls = []
     state = {"supports_mentions": True}
 
     class BridgeResponse:
         status = 200
 
-        def __init__(self, *, health=False):
+        def __init__(self, *, health=False, proof=None):
             self.health = health
+            self.proof = proof
 
         async def json(self):
+            if self.proof is not None:
+                return {"authProof": self.proof}
             if self.health:
                 return {"capabilities": {"outboundMentions": state["supports_mentions"]}}
             return {"messageId": f"m{len(calls)}"}
@@ -99,7 +104,9 @@ def whatsapp_bridge(monkeypatch):
         async def __aexit__(self, *_args):
             return False
 
-        def get(self, url, *, timeout):
+        def get(self, url, *, timeout, headers=None):
+            if url.endswith("/auth-proof"):
+                return BridgeResponse(proof=_bridge_auth_proof(token, headers["X-Hermes-Bridge-Challenge"]))
             return BridgeResponse(health=True)
 
         def post(self, url, *, json, timeout):
@@ -112,6 +119,11 @@ def whatsapp_bridge(monkeypatch):
         get_home_channel=lambda _platform: None,
     )
     monkeypatch.setattr(send_cmd, "_load_hermes_env", lambda: None)
+    # Standalone senders only READ the token the gateway persisted beside the session.
+    from hermes_constants import get_hermes_home
+    session_dir = get_hermes_home() / "platforms" / "whatsapp" / "session"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    (session_dir / ".bridge-token").write_text(token)
     monkeypatch.setattr("gateway.config.load_gateway_config", lambda: config)
     monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
     monkeypatch.setattr("model_tools._run_async", lambda coro: asyncio.run(coro))

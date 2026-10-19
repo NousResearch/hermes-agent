@@ -106,7 +106,7 @@ from tools.interrupt import set_interrupt as _set_interrupt
 from tools.browser_tool_lifecycle import cleanup_browser
 from tools.connectors.turn import agent_connection_surface, scoped_connection_surface
 
-from agent.memory_provider import is_trivial_prompt
+from agent.memory_provider import is_trivial_prompt, is_synthetic_notification_turn as _is_synthetic_notification_turn
 from agent.client_lifecycle import ClientLifecycleMixin
 from agent.stream_delivery import StreamDeliveryMixin
 from agent.status_output import StatusOutputMixin
@@ -903,6 +903,12 @@ class AIAgent(
         fire against stale context. See #15218.
         """
         if interrupted or not (self._memory_manager and final_response and original_user_message):
+            return
+        # System-injected turns (background-process completions/heartbeats/watch matches, async
+        # delegation and subagent completions) are not the user talking: syncing them makes the
+        # backend extract tool chatter as "facts" ("Background process proc_x completed ...") and
+        # burns extraction LLM time on it. Skip both the sync and the recall prefetch.
+        if _is_synthetic_notification_turn(original_user_message):
             return
         # Flatten multimodal parts to text (newline-joined for memory).
         user_text = _summarize_user_message_for_log(original_user_message, sep="\n")

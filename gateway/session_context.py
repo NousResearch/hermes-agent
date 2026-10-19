@@ -178,6 +178,7 @@ def set_session_vars(
     cannot grant wake authority."""
     global _session_context_engaged
     _session_context_engaged = True
+    _TURN_USER_MESSAGE.set("")
     values = (
         platform, source, chat_id, chat_type, chat_name, thread_id, user_id, user_id_alt,
         user_name, scope_id, session_key, session_id, ui_session_id, message_id, profile,
@@ -214,6 +215,7 @@ def reset_session_vars() -> None:
     are reset explicitly too."""
     for var in _VAR_MAP.values():
         var.set(_UNSET)
+    _TURN_USER_MESSAGE.set("")
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
     _SESSION_HISTORY_DELIVERY.set(_UNSET)
     _runtime_cwd("clear_session_cwd")

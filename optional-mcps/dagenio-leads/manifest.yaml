@@ -1,0 +1,43 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: dagenio-leads
+description: >-
+  Dagenio Leads CRM — manage leads, contacts, companies, teams, follow-ups,
+  qualifications, templates and salutations from your Dagenio workspace.
+source: https://www.npmjs.com/package/@inotec.digital/dagenio-leads-mcp
+
+# Local stdio server, installed from the public npm package (version pinned).
+# Runs on the user's machine; talks to the Dagenio Leads V2 API with their token.
+transport:
+  type: stdio
+  command: npx
+  args: ["-y", "@inotec.digital/dagenio-leads-mcp@1.0.0"]
+
+# Customer's Dagenio API token (from their dashboard) + instance base URL.
+auth:
+  type: api_key
+  env:
+    - name: DAGENIO_TOKEN
+      prompt: "Dagenio Leads API token"
+      required: true
+      secret: true
+    - name: DAGENIO_BASE_URL
+      prompt: "Dagenio Leads instance base URL"
+      required: true
+      secret: false
+
+# Composer-suggestion triggers (desktop one-click "Add" pill).
+suggest:
+  keywords:
+    - dagenio
+  hosts:
+    - dagenio.cloud
+    - dagenio.de
+
+post_install: |
+  Get your API token from your Dagenio dashboard (Settings > API), then
+  restart the session so the tools load.
+  New here? Start free: https://dagenio.de
+  Re-run the tool checklist: hermes mcp configure dagenio-leads

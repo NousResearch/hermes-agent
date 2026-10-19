@@ -4917,9 +4917,7 @@ class TestRunConversation:
         agent.context_compressor.context_length = 200_000
         agent.context_compressor.should_compress = MagicMock(return_value=False)
 
-        # Huge API-only system prompt (~175K tokens); persisted messages are tiny. It stays
-        # under the send-time window guard's budget (window - 8K answer reserve - 5% margin):
-        # a prompt that cannot even leave that much room is never sent at all.
+        # Huge API-only system prompt (~175K tokens, under the send-time guard's window budget).
         agent._cached_system_prompt = "S" * 700_000
 
         error_msg = (

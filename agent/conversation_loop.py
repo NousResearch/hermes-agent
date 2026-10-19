@@ -54,7 +54,8 @@ from agent.turn_iteration_prep import (
 )
 from agent.turn_loop_errors import handle_outer_loop_error
 from agent.turn_preflight_gate import run_preflight_gate
-from agent.turn_request_assembly import RequestExceedsContextWindowError, assemble_api_request
+from agent.conversation_compression_wire_fit import RequestExceedsContextWindowError
+from agent.turn_request_assembly import assemble_api_request
 from agent.turn_response_check import check_api_response
 from agent.turn_response_intake import normalize_model_response
 from agent.turn_tool_round import run_tool_round
@@ -1527,7 +1528,6 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[dict[str, Any]]:
             return None
         try:
             try:
-                # Runs the send-time window guard (turn_request_assembly._ensure_request_fits_window).
                 _run_phase(build_api_request, agent, s)
             except RequestExceedsContextWindowError as _too_big:
                 return _request_exceeds_window_result(agent, s, _too_big)

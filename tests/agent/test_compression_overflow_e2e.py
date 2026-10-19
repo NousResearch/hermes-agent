@@ -1,13 +1,13 @@
-"""End-to-end replay of run_9e549b82 (qwen3.8-flash at llama.cpp, 131,072 window, no max_tokens):
+"""End-to-end replay of an observed overflow (local model at llama.cpp, 131,072 window, no max_tokens):
 no request over the model window may ever be SENT.
 
-Production (gateway restarted onto 43a92b33b0): the engineer profile is driven over the gateway
+Observed path: a profile driven over the gateway
 API (``POST /v1/runs``) -> ``api_server_runs`` -> ``APIServerAdapter._create_agent()`` ->
 ``AIAgent.run_conversation()`` -> ``agent.conversation_loop._run_conversation_turn`` ->
 ``_run_api_retry_loop`` -> ``build_api_request`` -> ``perform_api_call``. Two compressions aborted
 (the summary reasoning stream looped), the cooldown blocked the threshold trigger, and the wire
 fit check (char/4 estimate) priced the final request at 113,292 tokens while the provider counted
-131,808 (dense Swift sources tokenize ~1.17x the estimate): it "fit" the 116,327 budget, was sent,
+131,808 (dense source files tokenize ~1.17x the estimate): it "fit" the 116,327 budget, was sent,
 and got HTTP 400 "prompt (131808 tokens) leaves no room to answer".
 
 This test builds the agent with the SAME factory the gateway API uses (``_create_agent``, platform
@@ -35,18 +35,18 @@ from pathlib import Path
 import pytest
 
 # Import the lazy chain at collection time so the home-I/O guard never sees bootstrap reads.
-import agent.conversation_loop  # noqa: F401
-import agent.process_bootstrap  # noqa: F401
+import agent.conversation_loop
+import agent.process_bootstrap
 
 from tests.fakes.fake_llm_provider import MODEL_ID, Error, FakeLLMServer, Text, ToolCall
 
 WINDOW = 131_072
-# Provider-side density measured on request_dump_run_9e549b82...: 469,949 JSON chars = 131,808 tokens.
+# Provider-side density measured on the failed request: 469,949 JSON chars = 131,808 tokens.
 JSON_CHARS_PER_TOKEN = 3.56
-# read_file result sizes (chars) from run_9e549b82, in order, then small reads (6K/5K/1K/16K files).
+# read_file result sizes (chars) from the observed session, in order, then small reads (6K/5K/1K/16K files).
 LARGE_READS = [44_397, 29_347, 16_620, 45_642, 41_991, 51_160, 21_610, 47_860, 10_668, 36_210]
 SMALL_READS = [6_068, 5_191, 1_188, 6_098, 4_996] * 4
-LOOP_LINE = "Wait, let me re-check the CardLists.swift findings before writing the summary.\n"
+LOOP_LINE = "Wait, let me re-check the parser.py findings before writing the summary.\n"
 
 
 def provider_tokens(body: dict) -> int:

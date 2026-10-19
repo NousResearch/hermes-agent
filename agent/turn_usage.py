@@ -139,9 +139,9 @@ def record_response_usage(
     # introduced images, the residual is their real per-image cost (learned before re-anchoring).
     calibrate_from_usage(agent, messages, context_prompt_tokens or aggregator_usage.prompt_tokens)
     # Same reading calibrates the send-time window guard's char/4 wire estimate (dense code
-    # tokenizes ~1.2x its estimate; run_9e549b82 sent 131,808 tokens "estimated" at 113,292).
+    # tokenizes up to ~1.2x its estimate: a 131,808-token request was "estimated" at 113,292).
     with suppress(Exception):
-        from agent.conversation_compression import calibrate_wire_estimate_from_usage
+        from agent.conversation_compression_wire_fit import calibrate_wire_estimate_from_usage
 
         calibrate_wire_estimate_from_usage(agent, context_prompt_tokens or aggregator_usage.prompt_tokens)
     _new_anchor = capture_usage_anchor(

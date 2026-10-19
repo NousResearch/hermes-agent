@@ -121,7 +121,7 @@ def build_api_request(
     # fit window - answer reserve - margin by the provider-calibrated measure, else the oldest
     # tool outputs are cleared; RequestExceedsContextWindowError (never sent) when even that
     # cannot make it fit. Compression already had its chance in the preflight gate.
-    from agent.turn_request_assembly import _ensure_request_fits_window
+    from agent.conversation_compression_wire_fit import _ensure_request_fits_window
 
     api_messages = _ensure_request_fits_window(agent, api_messages, tools_for_api)
     observe_request_tools(agent, tools_for_api)

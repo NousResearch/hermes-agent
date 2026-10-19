@@ -1,12 +1,12 @@
-"""Focused unit tests for the context-overflow compression fixes (A/B/C).
+"""Focused unit tests for the context-overflow compression fixes.
 
-C: a summary stream that never ends (repetition loop) is aborted by the aux stream
+Runaway summary: a summary stream that never ends (repetition loop) is aborted by the aux stream
    accumulator's generous runaway-output bound — the wire request still carries NO
    max_tokens cap, so the rule comment stays honoured.
-B: an aborted/failed compression followed by growing context re-enters compression
+Re-entry: an aborted/failed compression followed by growing context re-enters compression
    (wire-proven overflow bypasses the summary-failure cooldown) instead of giving
    up for the rest of the run.
-A: a prompt one token over the window gets its oldest tool outputs cleared with
+Send-time guard: a prompt one token over the window gets its oldest tool outputs cleared with
    _PRUNED_TOOL_PLACEHOLDER until it fits; system prompt and latest user message
    are never touched.
 """
@@ -18,22 +18,19 @@ from types import SimpleNamespace
 
 # Import the lazy chain at collection time so the home-I/O guard (installed at test
 # session start) never sees the bootstrap manifest read during a test body.
-import agent.conversation_loop  # noqa
-import agent.process_bootstrap  # noqa
+import agent.conversation_loop
+import agent.process_bootstrap
 
-from agent.auxiliary_client import (
-    _ChatStreamAccumulator,
-    _aggregate_chat_stream,
-    _summary_runaway_output_bound_chars,
-)
+from agent.auxiliary_client import _ChatStreamAccumulator, _aggregate_chat_stream
+from agent.auxiliary_summary_stream_guard import summary_runaway_output_bound_chars
 from agent.chat_completion_helpers import estimate_request_context_tokens
 from agent.context_compressor import _PRUNED_TOOL_PLACEHOLDER
-from agent.turn_request_assembly import _ensure_request_fits_window
+from agent.conversation_compression_wire_fit import _ensure_request_fits_window
 from agent.turn_preflight import compress_after_tool_results
 
 
 # ---------------------------------------------------------------------------
-# C: runaway summary stream (never ends)
+# Runaway summary stream (never ends)
 # ---------------------------------------------------------------------------
 
 
@@ -46,17 +43,17 @@ def _chunk(text: str):
 
 def test_summary_runaway_bound_is_generous_and_compression_only():
     # Hard bound ~100K tokens: the old 4 x _SUMMARY_TOKENS_CEILING (160K chars) aborted
-    # legitimate summaries (run_29371f18); loops are caught earlier by the tail check.
-    assert _summary_runaway_output_bound_chars("compression") == 100_000 * 4
-    assert _summary_runaway_output_bound_chars(None) is None
-    assert _summary_runaway_output_bound_chars("other_task") is None
+    # legitimate summaries of a ~100K-token conversation; loops are caught earlier by the tail check.
+    assert summary_runaway_output_bound_chars("compression") == 100_000 * 4
+    assert summary_runaway_output_bound_chars(None) is None
+    assert summary_runaway_output_bound_chars("other_task") is None
 
 
 def test_runaway_summary_stream_is_aborted():
     """A summary stream that keeps producing past the generous bound raises TimeoutError
     phrased 'timed out' so the existing failed-attempt fallback + cooldown machinery routes it."""
-    bound = _summary_runaway_output_bound_chars("compression")
-    acc = _ChatStreamAccumulator(model="m", output_bound_chars=bound)
+    bound = summary_runaway_output_bound_chars("compression")
+    acc = _ChatStreamAccumulator(model="m", task="compression")
     piece = "x" * 4000
     produced = 0
     with pytest.raises(TimeoutError) as exc_info:
@@ -65,13 +62,12 @@ def test_runaway_summary_stream_is_aborted():
             produced += len(piece)
     assert "timed out" in str(exc_info.value)
     # The stream is bounded, not the wire request: no max_tokens involved.
-    assert acc._output_bound_chars == bound
+    assert acc._runaway.bound_chars == bound
 
 
 def test_normal_summary_stream_unaffected():
     """A healthy summary under the bound aggregates normally."""
-    bound = _summary_runaway_output_bound_chars("compression")
-    acc = _ChatStreamAccumulator(model="m", output_bound_chars=bound)
+    acc = _ChatStreamAccumulator(model="m", task="compression")
     acc.feed(_chunk("a short healthy summary"))
     resp = acc.finish()
     assert resp.choices[0].message.content == "a short healthy summary"
@@ -80,13 +76,12 @@ def test_normal_summary_stream_unaffected():
 def test_non_compression_tasks_keep_no_bound():
     """The bound is scoped to the compression task; other aux streams are untouched."""
     chunks = iter([_chunk("y" * 50_000)] * 10)
-    resp = _aggregate_chat_stream(chunks, model="m", total_ceiling=None,
-                                  output_bound_chars=_summary_runaway_output_bound_chars(None))
+    resp = _aggregate_chat_stream(chunks, model="m", total_ceiling=None, task="title_generation")
     assert len(resp.choices[0].message.content) == 500_000
 
 
 # ---------------------------------------------------------------------------
-# B: aborted compression then growing context → re-entry, not give-up
+# Aborted compression then growing context → re-entry, not give-up
 # ---------------------------------------------------------------------------
 
 
@@ -160,7 +155,7 @@ def test_fitting_request_under_cooldown_still_defers():
 
 
 # ---------------------------------------------------------------------------
-# A: prompt one token over the window → deterministic placeholder fallback
+# Prompt one token over the window → deterministic placeholder fallback
 # ---------------------------------------------------------------------------
 
 
@@ -217,10 +212,10 @@ def test_fitting_request_untouched():
 
 def _realistic_reasoning_session(n_rounds: int = 30):
     """A custom-provider session as persisted in memory: every assistant row carries
-    ``reasoning`` AND ``reasoning_content`` (~7.6K chars each, as in run_1f2d6ad9…),
+    ``reasoning`` AND ``reasoning_content`` (~7.6K chars each, as observed with a local reasoning model),
     plus api_content/display bookkeeping. None of that stale thinking reaches the wire."""
-    msgs = [{"role": "user", "content": "TASK: review the Bluetooth trading code " + "t" * 2000,
-             "api_content": "TASK: review the Bluetooth trading code " + "t" * 2000,
+    msgs = [{"role": "user", "content": "TASK: review the networking code " + "t" * 2000,
+             "api_content": "TASK: review the networking code " + "t" * 2000,
              "timestamp": 1.0}]
     for i in range(n_rounds):
         think = f"thinking {i} " + "r" * 7600
@@ -248,7 +243,7 @@ def _custom_provider_agent(calls: list):
     agent.max_tokens = None  # no max_tokens in the config
     agent.tools = _realistic_tools()
     agent.api_mode, agent.provider = "chat_completions", "custom"
-    agent.model, agent.base_url = "qwen3.8-flash-next-iq2_xs", "http://127.0.0.1:8082/v1"
+    agent.model, agent.base_url = "local-model", "http://127.0.0.1:8082/v1"
     return agent
 
 
@@ -256,7 +251,7 @@ def test_reasoning_heavy_session_under_window_does_not_force_compression():
     """False positive seen live: a ~25K-token wire request (131K window, no max_tokens) was
     judged 'cannot fit' because stale reasoning/bookkeeping fields were priced, forcing
     cooldown-bypassing compressions over and over. It must NOT force re-entry."""
-    from agent.conversation_compression import wire_request_cannot_fit
+    from agent.conversation_compression_wire_fit import wire_request_cannot_fit
     from agent.model_metadata import estimate_request_tokens_rough
 
     calls: list = []
@@ -298,13 +293,13 @@ def test_reasoning_heavy_session_truly_over_window_still_forces_compression():
 
 
 # ---------------------------------------------------------------------------
-# Regression run_29371f18: no max_tokens, 130,902-token request in a 131,072 window
+# Regression: no max_tokens, 130,902-token request in a 131,072 window
 # ---------------------------------------------------------------------------
 
 
 def _near_full_window_request(target_tokens: int = 130_902):
     """Assembled api_messages (system + user + many tool rows) whose wire estimate is
-    ``target_tokens`` — the request run_29371f18 sent into its 131,072 window."""
+    ``target_tokens`` — the size of a request that was sent into a 131,072 window."""
     msgs = [{"role": "system", "content": "s" * 8000}, {"role": "user", "content": "review the app"}]
     i = 0
     while estimate_request_context_tokens(msgs) < target_tokens - 3000:
@@ -320,7 +315,7 @@ def _near_full_window_request(target_tokens: int = 130_902):
 
 
 def test_budget_leaves_room_to_answer_without_max_tokens():
-    from agent.conversation_compression import (
+    from agent.conversation_compression_wire_fit import (
         _MIN_ANSWER_RESERVE_TOKENS, request_input_budget)
 
     agent = _mk_agent(131_072, None)
@@ -334,10 +329,10 @@ def test_budget_leaves_room_to_answer_without_max_tokens():
 
 
 def test_no_max_tokens_near_full_window_request_is_never_sent_as_is():
-    """run_29371f18: two aborted compressions, then a 130,902-token request went into the
+    """Observed: two aborted compressions, then a 130,902-token request went into the
     131,072 window with no max_tokens; the fit check said it fit (budget == window) and the
     provider stopped with 'Context window full ... leaving no room to answer'."""
-    from agent.conversation_compression import request_input_budget, wire_request_cannot_fit
+    from agent.conversation_compression_wire_fit import request_input_budget, wire_request_cannot_fit
 
     agent = _mk_agent(131_072, None)
     msgs = _near_full_window_request()
@@ -395,7 +390,7 @@ def test_send_time_fit_check_runs_on_every_send():
 
 
 # ---------------------------------------------------------------------------
-# Regression run_29371f18: a long legitimate summary must not be aborted
+# Regression: a long legitimate summary must not be aborted
 # ---------------------------------------------------------------------------
 
 
@@ -432,11 +427,11 @@ def _stream(acc, text, field, step=400):
 
 
 def test_long_legitimate_summary_is_not_aborted():
-    """run_29371f18: both summaries of a ~100K conversation were aborted at exactly 160,000
+    """Observed: both summaries of a ~100K conversation were aborted at exactly 160,000
     chars (reasoning + content). A 240K-char reasoning stream plus a 40K-char summary with no
     loop (~70K tokens, beyond the old bound) must complete."""
     acc = _ChatStreamAccumulator(
-        model="m", output_bound_chars=_summary_runaway_output_bound_chars("compression"))
+        model="m", task="compression")
     _stream(acc, _varied_text(240_000, 1), "reasoning")
     _stream(acc, _varied_text(40_000, 2), "content")
     resp = acc.finish()
@@ -448,67 +443,67 @@ def test_looping_summary_is_stopped_well_before_hard_bound():
     """A stream that degenerates into a verbatim loop after a legitimate start is stopped
     shortly after the soft size, long before the ~100K-token hard bound."""
     acc = _ChatStreamAccumulator(
-        model="m", output_bound_chars=_summary_runaway_output_bound_chars("compression"))
+        model="m", task="compression")
     _stream(acc, _varied_text(150_000, 3), "reasoning")
-    unit = "Wait, let me re-check the trade session state handling once more before writing.\n"
+    unit = "Wait, let me re-check the session state handling once more before writing.\n"
     with pytest.raises(TimeoutError) as exc_info:
         _stream(acc, unit * 5000, "reasoning")
     assert "timed out" in str(exc_info.value) and "repetition loop" in str(exc_info.value)
-    assert acc._content_chars < 250_000
+    assert acc._runaway.chars < 250_000
 
 
 def test_true_runaway_without_verbatim_loop_hits_hard_bound():
     """Even a non-verbatim runaway (>100K tokens) is stopped by the hard bound."""
-    bound = _summary_runaway_output_bound_chars("compression")
-    acc = _ChatStreamAccumulator(model="m", output_bound_chars=bound)
+    bound = summary_runaway_output_bound_chars("compression")
+    acc = _ChatStreamAccumulator(model="m", task="compression")
     with pytest.raises(TimeoutError) as exc_info:
         _stream(acc, _varied_text(bound + 10_000, 4), "content", step=4000)
     assert "hard" in str(exc_info.value) and "timed out" in str(exc_info.value)
 
 
 def test_summary_abort_logs_check_and_stream_tail_at_info(caplog):
-    """run_9e549b82: every abort was only visible as summary_generation_aborted; the log must
+    """Observed: every abort was only visible as summary_generation_aborted; the log must
     say which check fired and show what the model was emitting."""
     import logging
 
     acc = _ChatStreamAccumulator(
-        model="m", output_bound_chars=_summary_runaway_output_bound_chars("compression"))
-    unit = "Wait, let me re-check the CardLists.swift findings before writing the summary.\n"
-    with caplog.at_level(logging.INFO, logger="agent.auxiliary_client"):
+        model="m", task="compression")
+    unit = "Wait, let me re-check the parser.py findings before writing the summary.\n"
+    with caplog.at_level(logging.INFO, logger="agent.auxiliary_summary_stream_guard"):
         with pytest.raises(TimeoutError):
             _stream(acc, unit * 3000, "reasoning", step=4000)
     rec = [r for r in caplog.records if "Compression summary stream aborted" in r.getMessage()]
     assert len(rec) == 1 and rec[0].levelno == logging.INFO
     msg = rec[0].getMessage()
     assert "check=repetition_loop:reasoning" in msg
-    assert "re-check the CardLists.swift findings" in msg, "tail of the looping stream logged"
+    assert "re-check the parser.py findings" in msg, "tail of the looping stream logged"
 
 
 def test_summary_abort_logging_is_compression_only(caplog):
     import logging
 
     acc = _ChatStreamAccumulator(model="m", total_ceiling=0.0)
-    with caplog.at_level(logging.INFO, logger="agent.auxiliary_client"):
+    with caplog.at_level(logging.INFO, logger="agent.auxiliary_summary_stream_guard"):
         with pytest.raises(TimeoutError):
             acc.feed(_delta_chunk(content="x"))
     assert not [r for r in caplog.records if "summary stream aborted" in r.getMessage()]
 
 
 # ---------------------------------------------------------------------------
-# Regression run_9e549b82: the char/4 wire estimate under-counts dense code ~1.17x
+# Regression: the char/4 wire estimate under-counts dense code ~1.17x
 # ---------------------------------------------------------------------------
 
 
 def _calibrated_agent(window=131_072):
     a = _mk_agent(window, None)
-    a.provider, a.model, a.api_mode = "custom", "qwen3.8-flash-next-iq2_xs", "chat_completions"
+    a.provider, a.model, a.api_mode = "custom", "local-model", "chat_completions"
     return a
 
 
 def test_provider_usage_calibrates_the_fit_check():
     """Request #33: estimate 100,376, provider 117,523 (budget 116,327). Uncalibrated the next,
     equally dense request 'fits'; after the provider priced the previous one it does not."""
-    from agent.conversation_compression import (
+    from agent.conversation_compression_wire_fit import (
         calibrate_wire_estimate_from_usage, note_wire_estimate_sent, request_input_budget,
         wire_estimate_calibration, wire_request_cannot_fit, wire_request_tokens,
     )
@@ -542,7 +537,7 @@ def test_provider_usage_calibrates_the_fit_check():
 
 
 def test_calibration_does_not_carry_over_to_another_model():
-    from agent.conversation_compression import (
+    from agent.conversation_compression_wire_fit import (
         calibrate_wire_estimate_from_usage, note_wire_estimate_sent, wire_estimate_calibration,
     )
 
@@ -555,8 +550,8 @@ def test_calibration_does_not_carry_over_to_another_model():
 
 
 def test_guard_records_sent_estimate_and_never_sends_unfittable():
-    from agent.conversation_compression import wire_request_tokens
-    from agent.turn_request_assembly import RequestExceedsContextWindowError
+    from agent.conversation_compression_wire_fit import wire_request_tokens
+    from agent.conversation_compression_wire_fit import RequestExceedsContextWindowError
 
     agent = _calibrated_agent(window=10_000)
     fitting = [{"role": "system", "content": "s" * 400}, {"role": "user", "content": "u" * 400}]

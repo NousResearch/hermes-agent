@@ -19,7 +19,14 @@ class CanonicalSessionParams(ProfileParams):
 
 class CanonicalCreateParams(ProfileParams):
     request_id: str | None = None
-    source: Literal['cli', 'tui', 'gui', 'acp', 'tool', 'oneshot'] = 'cli'
+    # The session row's source (agent/session_source.py), free-form as on the legacy wire:
+    # UI transports (tui/desktop/gui), the CLI family (cli/oneshot), ACP, a tool-spawned
+    # child, or an automation source the runtime injects (kanban/cron/...). The v0.22.2
+    # 6-value Literal closed this open vocabulary and refused every kanban-launched turn
+    # (HERMES_SESSION_SOURCE=kanban from hermes_cli/kanban_db_dispatch.py), the Desktop
+    # app's ``source: 'desktop'``, and cron with a bare invalid_params (#134889). The
+    # closed set is the KEY set; the row store owns what a source label means.
+    source: str | None = 'cli'
     cwd: str | None = None
     # The sessions-row ``cwd`` when it differs from the execution ``cwd`` (the classic CLI records
     # main's stamp: the launch dir, ``""`` = none); ``cwd`` stays where the tools run.

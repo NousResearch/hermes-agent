@@ -74,8 +74,13 @@ _ACTIVE_POLICY: ContextVar = ContextVar('local_session_policy', default=None)
 _TURN_PROFILE: ContextVar = ContextVar('follow_profile_read', default=None)  # (policy, live) for a turn
 # Creation label -> agent surface. ``tool`` (third-party integrations, ``hermes chat --source tool``) and
 # ``oneshot`` (finite ``chat -q`` / ``-z`` runs) run as the CLI but keep their own stored label, so human
-# pickers hide them (INTERNAL_LISTING_SOURCES).
-SURFACES = {'cli': 'cli', 'tui': 'tui', 'gui': 'desktop', 'acp': 'acp', 'tool': 'cli', 'oneshot': 'cli'}
+# pickers hide them (INTERNAL_LISTING_SOURCES). The automation sources mirror ``restore_policy`` below:
+# ``kanban`` (the dispatcher's subprocess worker, HERMES_SESSION_SOURCE=kanban) runs as the CLI, while
+# ``cron`` and ``bot_room`` keep their own platform label. A session's source is a row LABEL, not a
+# capability grant — execution authz is the separate ``session:create`` capability / kanban claim, so
+# the create gate must accept exactly the labels the row store (and restore) already accept.
+SURFACES = {'cli': 'cli', 'tui': 'tui', 'gui': 'desktop', 'acp': 'acp', 'tool': 'cli', 'oneshot': 'cli',
+            'kanban': 'cli', 'cron': 'cron', 'bot_room': 'bot_room'}
 
 
 def _refuse(field, detail=None):
@@ -929,7 +934,11 @@ def restore_policy(data):
     try:
         policy = LocalSessionPolicy(**data)
         from gateway.session_a2a import is_forward_policy
-        surfaces = {**SURFACES, 'cron': 'cron', 'kanban': 'cli', 'bot_room': 'bot_room'}
+        # ``SURFACES`` is the single source of truth for every accepted source label: the create gate
+        # (``build_policy``) and this restore validation must agree, or a source one accepts and the
+        # other refuses is a restore loop (the v0.22.2 kanban wall — create refused 'kanban' while this
+        # line accepted it).
+        surfaces = SURFACES
         if ((not is_forward_policy(policy) and
              (policy.source not in surfaces or policy.platform != surfaces[policy.source]))
                 or not isinstance(policy.cwd, str) or not Path(policy.cwd).is_absolute()

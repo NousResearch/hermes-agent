@@ -4904,7 +4904,7 @@ export interface GroupsDiscardResult {
 export interface CanonicalCreateParams {
   profile?: string | null
   request_id?: string | null
-  source?: 'cli' | 'tui' | 'gui' | 'acp' | 'tool' | 'oneshot'
+  source?: string | null
   cwd?: string | null
   row_cwd?: string | null
   model?: string | null

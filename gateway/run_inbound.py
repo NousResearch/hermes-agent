@@ -1649,7 +1649,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
 
     async def _prepare_inbound_message_text(
         self, *, event: MessageEvent, source: SessionSource, history: list[dict[str, Any]],
-        session_key: Optional[str] = None,
+        session_key: Optional[str] = None, reload_observed_tail: bool = False,
     ) -> Optional[str]:
         """Prepare inbound event text for the agent. Shared by the normal inbound and queued
         follow-up paths so attribution, image enrichment, STT, document notes, reply context and
@@ -1666,6 +1666,11 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
 
         message_text = self._prefix_inbound_sender_context(event, source, message_text)
         image_paths, audio_paths, audio_file_paths, video_paths = self._classify_inbound_media(event, _pending_stt_prepared)
+        from gateway.observed_images import collect_observed_image_paths, history_with_observed_tail
+        if reload_observed_tail:
+            history = await history_with_observed_tail(self, history, source)
+        if source.platform == Platform.TELEGRAM and source.chat_type == "group":
+            image_paths = collect_observed_image_paths(history) + image_paths
         if image_paths:
             message_text = await self._enrich_inbound_images(source, session_key, message_text, image_paths)
         if audio_paths:
@@ -1682,11 +1687,13 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
 
     async def _prepare_profile_scoped_inbound_message_text(
         self, *, event: MessageEvent, source: SessionSource, history: list[dict[str, Any]],
-        session_key: Optional[str] = None,
+        session_key: Optional[str] = None, reload_observed_tail: bool = False,
     ) -> Optional[str]:
         """Run inbound preprocessing under the routed profile when multiplexed."""
         from gateway.run import _async_profile_runtime_scope
         kwargs = dict(event=event, source=source, history=history, session_key=session_key)
+        if reload_observed_tail:
+            kwargs["reload_observed_tail"] = True
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
             async with _async_profile_runtime_scope(self._resolve_profile_home_for_source(source)):
                 return await self._prepare_inbound_message_text(**kwargs)

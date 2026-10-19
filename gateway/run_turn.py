@@ -1893,8 +1893,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                     session_key or "?",
                 )
                 return result
-            # Resolve the follow-up's session key BEFORE preparing the inbound text: native image
-            # paths are buffered under the key given and consumed under next_session_key.
+            # Buffer queued photos under the same resolved key consumed by the next turn.
             try:
                 next_session_key = self._session_key_for_source(next_source)
             except Exception:
@@ -1903,7 +1902,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                     session_key or "?", exc_info=True,
                 )
             next_message = await self._prepare_profile_scoped_inbound_message_text(
-                event=pending_event, source=next_source, history=updated_history, session_key=next_session_key,
+                event=pending_event, source=next_source, history=updated_history, session_key=next_session_key, reload_observed_tail=True,
             )
             if next_message is None:
                 return result

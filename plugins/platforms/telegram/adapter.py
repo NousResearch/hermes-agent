@@ -181,6 +181,7 @@ _MEDIA_KIND_KEYS = {
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
+from plugins.platforms.telegram.telegram_observed_images import TelegramObservedImagesMixin
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, parse_send_target, parse_telegram_message_id
 from plugins.platforms.telegram.telegram_topic_transfer import TopicTransferFn, apply_root_dm_topic_transfer
 from plugins.platforms.telegram.telegram_network import (
@@ -513,7 +514,7 @@ class _PollingStallError(RuntimeError):
     """
 
 
-class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+class TelegramAdapter(TelegramObservedImagesMixin, TelegramHeldInboundMixin, BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
     # Bound for the per-(chat_id, status_key) status-message cache; FIFO half-trim on overflow.
@@ -6339,30 +6340,6 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                 f"[The user attempted to send a {kind}{named} but it could not be downloaded ({exc.__class__.__name__}); they have been asked to retry.]"
                 if notice else f"[The user attempted to send a {kind}{named} but it could not be downloaded.]",
             )
-
-    def _observe_unmentioned_group_message(
-        self, message: Message, msg_type: MessageType, update_id: Optional[int] = None, event: Optional[MessageEvent] = None) -> None:
-        """Append skipped group chatter to the target session without dispatching."""
-        store = getattr(self, "_session_store", None)
-        if not store:
-            return
-        adapter_name = getattr(self, "name", "telegram")
-        try:
-            event = event or self._build_message_event(message, msg_type, update_id=update_id)
-            session_entry = store.get_or_create_session(self._telegram_group_observe_shared_source(event.source))
-            entry = {
-                "role": "user", "content": self._telegram_group_observe_attributed_text(event),
-                "timestamp": datetime.now(tz=UTC).isoformat(), "observed": True}
-            if event.message_id:
-                entry["message_id"] = str(event.message_id)
-            self._accept_update()
-            store.append_to_transcript(session_entry.session_id, entry)
-            logger.info(
-                "[%s] Telegram group message observed (no bot trigger): chat=%s from=%s", adapter_name,
-                getattr(getattr(message, "chat", None), "id", "unknown"), event.source.user_id or "unknown")
-        except Exception as exc:
-            self._fail_update_preparation()
-            logger.warning("[%s] Failed to observe Telegram group message: %s", adapter_name, exc)
 
     def _is_own_message(self, message: Message) -> bool:
         """True when sent by this bot itself (echoed getUpdates must not count as incoming unread)."""

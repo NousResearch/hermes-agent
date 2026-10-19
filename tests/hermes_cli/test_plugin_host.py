@@ -291,6 +291,45 @@ def test_hosted_memory_provider_stays_live_across_a_host_crash(tmp_path, monkeyp
         host.shutdown()
 
 
+@pytest.mark.platforms("posix")
+def test_retired_hosted_provider_cannot_reload_into_reused_profile(tmp_path, monkeypatch):
+    from plugins.memory import load_memory_provider
+    from hermes_cli.plugin_host_wire import PluginHostUnavailable
+    from hermes_cli.plugins_lifecycle import unload_plugin_manager_for_home
+
+    home = _home_with_plugins(tmp_path, monkeypatch, {})
+    provider_dir = home / "plugins" / "memprobe"
+    provider_dir.mkdir(parents=True)
+    (provider_dir / "__init__.py").write_text(MEMORY_PLUGIN, encoding="utf-8")
+    manager = plugins_mod.get_plugin_manager()
+    host = manager._plugin_host()
+    successor_marker = home / "successor-loaded"
+    successor = None
+    try:
+        provider: Any = load_memory_provider("memprobe", register_skills=False)
+        assert provider is not None
+        assert provider.whoami() == host.pid != os.getpid()
+
+        assert unload_plugin_manager_for_home(home)
+        successor = plugins_mod.get_plugin_manager()
+        assert successor is not manager
+        (provider_dir / "__init__.py").write_text(
+            f"from pathlib import Path\nPath({str(successor_marker)!r}).write_text('loaded')\n"
+            + MEMORY_PLUGIN,
+            encoding="utf-8",
+        )
+
+        with pytest.raises(PluginHostUnavailable, match="retired"):
+            provider.whoami()
+
+        assert not successor_marker.exists()
+        assert host.pid is None
+        assert getattr(successor, "_plugin_host_instance", None) is None
+    finally:
+        host.shutdown()
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
 @pytest.mark.platforms("any")
 def test_host_plugin_can_launch_status_and_steer_subagent(tmp_path, monkeypatch):
     import threading

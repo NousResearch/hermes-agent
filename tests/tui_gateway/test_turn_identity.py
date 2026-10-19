@@ -345,6 +345,17 @@ def test_turn_status_requires_a_valid_id(registry, sessions):
     assert _status("y" * 181)["error"]["code"] == 4001
 
 
+def test_the_same_id_under_two_profiles_is_two_turns(registry):
+    """One serve process hosts several profile homes: a client id names a turn per profile."""
+    first, first_replay = turn_identity.begin(
+        profile="/homes/a", session_id="s", client_turn_id="ct", text="hi")
+    second, second_replay = turn_identity.begin(
+        profile="/homes/b", session_id="s", client_turn_id="ct", text="hi")
+
+    assert first_replay is False and second_replay is False
+    assert second is not first and second.server_turn_id != first.server_turn_id
+
+
 def test_registry_caps_entries_and_drops_the_oldest():
     bounded = turn_identity.TurnRegistry(max_entries=2)
     for index in range(3):

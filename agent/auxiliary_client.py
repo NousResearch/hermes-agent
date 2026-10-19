@@ -824,7 +824,7 @@ _API_KEY_PROVIDER_AUX_MODELS_FALLBACK: dict[str, str] = {
     "gemini": "gemini-3.6-flash", "zai": "glm-4.5-flash", "kimi-coding": "kimi-k2-turbo-preview",
     "stepfun": "step-3.5-flash", "kimi-coding-cn": "kimi-k2-turbo-preview",
     "gmi": "google/gemini-3.1-flash-lite-preview", "anthropic": "claude-haiku-4-5-20251001",
-    "ai-gateway": "google/gemini-3-flash", "opencode-zen": "gemini-3-flash", "opencode-go": "glm-5",
+    "ai-gateway": "google/gemini-3-flash", "opencode-zen": "gemini-3-flash", "opencode-go": "glm-5.3-flash",
     "kilocode": "google/gemini-3.6-flash", "ollama-cloud": "nemotron-3-nano:30b",
     "tencent-tokenhub": "hy4-preview", "tencent-tokenplan": "hy4-preview",
     # No "deepinfra": its aux model lives on the ProviderProfile (read first).

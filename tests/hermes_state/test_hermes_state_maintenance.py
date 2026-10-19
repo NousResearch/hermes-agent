@@ -6,20 +6,7 @@ from pathlib import Path
 import pytest
 
 
-@pytest.fixture(autouse=True)
-def private_db_no_foreign_holders(db, monkeypatch):
-    """Policy tests own this private DB; unrelated host processes are not an input.
-
-    Real foreign/in-process holder refusal and release controls run separately in
-    test_auto_vacuum_holder_gate.py and test_auto_vacuum_in_process_holder_gate.py.
-    """
-    import hermes_state_holders
-
-    def scan_owned_db(path):
-        assert Path(path).resolve() == db.db_path.resolve()
-        return []
-
-    monkeypatch.setattr(hermes_state_holders, "foreign_state_db_holders", scan_owned_db)
+pytestmark = pytest.mark.usefixtures("private_db_no_foreign_holders")
 
 
 class TestVacuum:

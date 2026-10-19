@@ -233,6 +233,38 @@ def test_the_dispatching_thread_does_not_end_a_turn_it_just_dispatched(registry,
     assert len(turns) == 1
 
 
+def test_a_retry_during_the_run_replays_as_running(registry, sessions, monkeypatch):
+    """The case the whole feature exists for: the socket dropped mid-turn and the client retries."""
+    monkeypatch.setattr(server.threading, "Thread", _REAL_THREAD)
+    release, started = threading.Event(), threading.Event()
+    turns: list = []
+
+    def blocking_run(*a, **k):
+        turns.append(a)
+        started.set()
+        release.wait(timeout=10)
+        return {"final_response": "done"}
+
+    agent = types.SimpleNamespace(session_id=KEY, clear_interrupt=lambda: None,
+                                  run_conversation=blocking_run)
+    _install(sessions, agent)
+    first = _submit(text="hello", client_turn_id="ct-midflight")["result"]
+    try:
+        assert started.wait(timeout=10)
+        retry = _submit(text="hello", client_turn_id="ct-midflight")["result"]
+        assert retry["status"] == "replayed"
+        assert retry["duplicate"] is True
+        assert retry["server_turn_id"] == first["server_turn_id"]
+        assert retry["state"] == "running"
+        assert "outcome" not in retry
+    finally:
+        release.set()
+    deadline = time.time() + 10
+    while time.time() < deadline and _status("ct-midflight")["result"]["state"] != "terminal":
+        time.sleep(0.02)
+    assert len(turns) == 1, "a mid-flight retry must not start a second agent turn"
+
+
 def test_a_redirected_submit_ends_with_the_turn_it_joined(registry, sessions):
     """A steer/redirect has no turn of its own: its id ends when the live turn does."""
     turns: list = []

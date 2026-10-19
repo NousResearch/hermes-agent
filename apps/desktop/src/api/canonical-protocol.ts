@@ -9,6 +9,17 @@ export const canonicalProfile = (profile: unknown): string =>
 export const canonicalSessionKey = (sessionId: unknown, profile?: unknown): string =>
   JSON.stringify([canonicalProfile(profile), sessionId])
 
+/** Live events and retained snapshots must describe the same answerable card. */
+export function canonicalPromptParams(kind: unknown, sessionId: string, prompt: Record<string, unknown>): Record<string, unknown> {
+  const choices = Array.isArray(prompt.choices) ? prompt.choices : []
+
+  return kind === 'clarify'
+    ? { session_id: sessionId, answers: prompt.answers,
+        questions: Array.isArray(prompt.questions) ? prompt.questions : [{ qid: prompt.prompt_id, question: prompt.question, choices, multi_select: prompt.multi_select }] }
+    : { session_id: sessionId, request_id: prompt.prompt_id, command: prompt.command, description: prompt.description, choices,
+        allow_permanent: choices.includes('always'), edit: prompt.edit }
+}
+
 // Only the authenticated adapter can establish this renderer-side provenance;
 // a JSON-RPC payload's ordinary `profile` property cannot impersonate it.
 const canonicalOwners = new WeakMap<object, string>()
@@ -71,10 +82,6 @@ function mutationSummary(operation: string, value: Record<string, unknown>): str
 // stored parent id; the authority has ONE branch, a `branch` mutation on the parent, whose child
 // is a local route the authority can restore (a legacy-minted child has no local policy and every
 // resume on it answers not_found).
-// The socket is bound to a profile already; only a sibling the host multiplexes rides as `profile`.
-export function siblingRoute(profile: unknown): string | null {
-  return typeof profile === 'string' && profile && profile !== 'default' ? profile : null
-}
 
 // A message-level branch (`count` = the selected prefix) keeps rows through `through_message_id`.
 // Without that durable id the authority would copy the whole history, so it refuses instead.
@@ -137,7 +144,16 @@ export function splitRewindSubmit(params: Record<string, unknown>): { rewind: Re
 // Session verbs only the legacy sidecar implements: it looks the session up in its own table,
 // which never holds an owner session, and answers `session not found` (read by the renderer as a
 // reaped runtime). Refused by name until the owner serves them.
-const SIDECAR_SESSION_VERBS = new Set(['handoff.request', 'handoff.state', 'handoff.fail', 'preview.restart'])
+// `preview.restart` is served by the owner (gateway/session_tui_side.py).
+const SIDECAR_SESSION_VERBS = new Set(['handoff.request', 'handoff.state', 'handoff.fail'])
+
+// The manage_connections card's calls the owner serves for a session-owned operation (gateway/session_connections.py); any other session-owned connector call stays refused.
+const OWNER_CONNECTION_VERBS = new Set([
+  'connection.respond',
+  'connectors.operation.status',
+  'connectors.operation.wake',
+  'connectors.connect'
+])
 
 // `config.set` keys the owner serves (tui_gateway/contracts/canonical_projections.py::CanonicalConfigSetParams;
 // gateway/session_tui_config.py), with the keys that take a `scope` (`reasoning --global`, the
@@ -158,7 +174,12 @@ function canonicalProducerFrame(method: string, params: Record<string, unknown>)
     throw new Error(`Changing ${params.key}${'scope' in params ? ` (${params.scope})` : ''} is not available on the shared gateway yet`)
   }
 
-  if (SIDECAR_SESSION_VERBS.has(method) || (method.startsWith('connect') && (params.owner as { type?: unknown } | undefined)?.type === 'session')) {
+  const sessionConnector =
+    method.startsWith('connect') &&
+    (params.owner as { type?: unknown } | undefined)?.type === 'session' &&
+    !OWNER_CONNECTION_VERBS.has(method)
+
+  if (SIDECAR_SESSION_VERBS.has(method) || sessionConnector) {
     throw new Error(`${method} is not available on the shared gateway yet`)
   }
 
@@ -194,7 +215,9 @@ const POLICY_EDIT_METHODS = new Set(['slash.exec', 'config.set', 'session.worksp
 const BRANCH_METHODS = new Set(['session.branch', 'session.branch_stored', 'session.branch_whole'])
 // Value-setting mutations: re-applying one is harmless, so a later acknowledged edit retires it.
 const VALUE_OPERATIONS = new Set(['rename', 'archive', 'model', 'reasoning', 'workspace'])
-const MUTATION_METHODS = new Set(['session.title', 'session.archive', 'session.compress', 'session.rewind', ...BRANCH_METHODS])
+// `session.model`: a whole canonical model selection (model / provider / reasoning) plus the owner's
+// token, as the owner asked it (a deferred pick's confirmation): the same request the TUI resends.
+const MUTATION_METHODS = new Set(['session.title', 'session.archive', 'session.compress', 'session.rewind', 'session.model', ...BRANCH_METHODS])
 
 export class CanonicalDesktopProtocol {
   private creates = new Map<string, string>()
@@ -224,11 +247,32 @@ export class CanonicalDesktopProtocol {
     if (typeof reason === 'string') { this.settleModelConfirmation(params) }
 
     // A typed busy refusal of a rewind or a move wrote nothing either; the retry is a new request at the new revision.
-    if (reason !== 'revision_conflict' && !(reason === 'session_busy' && ['rewind', 'workspace'].includes(params.operation as string))) { return }
+    if (reason !== 'revision_conflict' && reason !== 'stale_generation' && !(reason === 'session_busy' && ['rewind', 'workspace'].includes(params.operation as string))) { return }
 
-    // A confirmed CAS refusal did not mutate. Ambiguous transport failures keep
+    // A confirmed fence refusal did not mutate. Ambiguous transport failures keep
     // the original revision/id so a retry cannot overwrite another user's edit.
     for (const [key, mutation] of this.mutations) { if (mutation.request_id === params.request_id) { this.mutations.delete(key) } }
+    // The owner names its current fences on the refusal: adopt them so the next attempt presents them.
+    const data = (error as { data?: { revision?: unknown; execution_generation?: unknown } })?.data
+    const owner = canonicalSessionKey(params.session_id, params.profile)
+
+    // An older request's refusal can arrive after a newer edit committed: never move the fences backwards.
+    if (typeof data?.revision === 'number' && data.revision > (this.revisions.get(owner) ?? -1)) { this.revisions.set(owner, data.revision) }
+
+    if (typeof data?.execution_generation === 'number' && data.execution_generation > (this.generations.get(owner) ?? -1)) {
+      this.generations.set(owner, data.execution_generation)
+    }
+  }
+
+  // A fence refusal of a value pick (model / reasoning) that named fresh fences is retried once at them:
+  // re-applying the same value is harmless, unlike a CAS edit of shared metadata. Only while it is still the
+  // session's current retained request: a newer pick retired it, and re-preparing it would undo that pick.
+  retryableFence(params: Record<string, unknown>, error: unknown): boolean {
+    const data = (error as { data?: { reason?: unknown; revision?: unknown } })?.data
+    const current = [...this.mutations.values()].some(mutation => mutation.request_id === params.request_id)
+
+    return current && ['model', 'reasoning'].includes(params.operation as string) && typeof data?.revision === 'number'
+      && (data.reason === 'revision_conflict' || data.reason === 'stale_generation')
   }
 
   // Wire method for a prepared request: composer metadata, branch and the
@@ -337,6 +381,12 @@ export class CanonicalDesktopProtocol {
 
     if (fenced) { return this.retainedMutation(params.session_id, params.profile, fenced.operation, fenced.payload, true) }
 
+    if (method === 'session.model') {
+      const payload = { ...(params.payload as Record<string, unknown>), ...(typeof params.confirm === 'string' ? { confirm: params.confirm } : {}) }
+
+      return this.retainedMutation(params.session_id, params.profile, 'model', payload, true)
+    }
+
     if (method === 'session.branch_stored' || method === 'session.branch_whole') {
       // The stored-parent form names the parent as `parent_session_id`; the live form as `session_id`.
       const parent = params.parent_session_id ?? params.session_id
@@ -417,8 +467,10 @@ export class CanonicalDesktopProtocol {
 
     if (unsupported.length) { throw new Error(`Canonical gateway does not support explicit session options: ${unsupported.join(', ')}`) }
 
+    // RT-26: the picked profile always rides, `default` included: a socket launched as a named
+    // profile (active-profile.json) reads an omitted profile as its own launch profile.
     const result = Object.fromEntries(Object.entries(params).filter(([key, value]) =>
-      ['request_id', 'cwd', 'model', 'provider', 'toolsets', 'reasoning', 'title', 'hidden', 'follow_profile_config', 'service_tier', 'cwd_explicit'].includes(key) || (key === 'profile' && siblingRoute(value))))
+      ['request_id', 'cwd', 'model', 'provider', 'toolsets', 'reasoning', 'title', 'hidden', 'follow_profile_config', 'service_tier', 'cwd_explicit'].includes(key) || (key === 'profile' && typeof value === 'string' && value !== '')))
 
     const key = JSON.stringify(result)
     const requestId = params.request_id ?? this.creates.get(key) ?? crypto.randomUUID()
@@ -495,6 +547,13 @@ export class CanonicalDesktopProtocol {
     if (Array.isArray(payload.pending)) { this.reconcileUnknownAdmissions(sid, profile, payload.pending) }
 
     this.adoptEventRevision(event.type, sid, profile, payload)
+
+    // A pick deferred during a turn asked at the boundary (a guarded target): keep the owner's token, so
+    // the user's confirmed resend of that target carries it exactly like an idle pick's confirmation.
+    if (event.type === 'session.updated' && payload.operation === 'model' && payload.status === 'confirmation_required'
+        && typeof payload.confirm === 'string' && payload.payload && typeof payload.payload === 'object') {
+      this.modelConfirmations.set(this.modelConfirmationKey({ session_id: sid, profile }, payload.payload as Record<string, unknown>), { token: payload.confirm, sent: false })
+    }
 
     if (typeof payload.prompt_id === 'string') {
       if (event.type.endsWith('.settled')) { this.prompts.delete(canonicalSessionKey(payload.prompt_id, profile));
@@ -579,6 +638,9 @@ export class CanonicalDesktopProtocol {
 
     if (method === 'slash.exec') { return { ...value, type: 'exec', output: mutationSummary(params.operation as string, value) } }
 
+    // A pick on a running session is recorded for the next turn (the legacy `deferred` answer).
+    if (params.operation === 'model' && value.status === 'deferred') { return { ...value, ok: true, deferred: true } }
+
     // The legacy config.set answer every reasoning caller reads (`result.value`).
     return params.operation === 'reasoning' ? { ...value, ok: true, value: value.effort } : { ...value, ok: true }
   }
@@ -613,7 +675,11 @@ export class CanonicalDesktopProtocol {
       return projected
     })
 
-    return { ...value, pending_approval: prompts.find((p: any) => p.kind === 'approval'), pending_clarify: prompts.find((p: any) => p.kind === 'clarify'), info: { ...value.info, stored_session_id: value.stored_session_id, pending_submissions: value.pending_submissions, replay_epoch: value.replay_epoch, last_sequence: value.last_sequence, execution_generation: value.execution_generation, running: value.running } }
+    const open_requests = prompts.map((prompt: Record<string, unknown>) => ({
+      id: prompt.prompt_id, method: prompt.kind, params: canonicalPromptParams(prompt.kind, sid, prompt)
+    }))
+
+    return { ...value, open_requests, pending_approval: prompts.find((p: any) => p.kind === 'approval'), pending_clarify: prompts.find((p: any) => p.kind === 'clarify'), info: { ...value.info, stored_session_id: value.stored_session_id, pending_submissions: value.pending_submissions, replay_epoch: value.replay_epoch, last_sequence: value.last_sequence, execution_generation: value.execution_generation, running: value.running } }
   }
 
   // The canonical compress receipt carries counts, not the retained transcript;

@@ -1,7 +1,6 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
-import { esAuxTasks } from './es_aux_tasks'
 import { esBoot } from './es_boot'
 import { esClarify } from './es_clarify'
 import { esConnectorAccounts } from './es_connector_accounts'
@@ -9,6 +8,7 @@ import { esConnectorCard } from './es_connector_card'
 import { esFirstRun } from './es_first_run'
 import { esLocalModels } from './es_local_models'
 import { esModelMenu } from './es_model_menu'
+import { esModelSettings } from './es_model_settings'
 import { esNotices } from './es_notices'
 import { esOnboarding } from './es_onboarding'
 import { esProjects } from './es_projects'
@@ -1936,70 +1936,7 @@ export const esOverrides = {
       deepLinkErrorUrl: 'Solo se permiten URL de servidor http:// y https://.',
       deepLinkErrorTooLarge: 'La configuración supera el límite de 32 KB.'
     },
-    model: {
-      setupProviderFallback: 'proveedor',
-      setUpProvider: name => `Configurar ${name}`,
-      staleAuxBefore: (count, names) =>
-        count === 1
-          ? `${count} tarea auxiliar (${names}) todavía se ejecuta en `
-          : `${count} tareas auxiliares (${names}) todavía se ejecutan en `,
-      staleAuxAfter: ', no en tu modelo principal.',
-      staleAuxOtherProviders: 'otros proveedores',
-      moaEnabled: 'Activado',
-      moaSetDefault: 'Establecer como predeterminado',
-      moaNewPresetPlaceholder: 'nuevo preajuste',
-      moaAddPreset: 'Añadir preajuste',
-      customModel: 'Modelo personalizado…',
-      customModelPlaceholder: 'ID del modelo',
-      chooseFromList: 'Elegir de la lista',
-      moaDefault: 'Predeterminado:',
-      moaReferenceToggle: (enabled, index) => `${enabled ? 'Desactivar' : 'Activar'} la referencia ${index}`,
-      moaReferenceTitle: index => `Referencia ${index}`,
-      moaAddReference: 'Añadir modelo de referencia',
-      loading: 'Cargando configuración de modelo...',
-      appliesDesc:
-        'Se aplica a sesiones nuevas. Usa el selector de modelo en el compositor para cambiar el chat activo.',
-      provider: 'Proveedor',
-      model: 'Modelo',
-      applying: 'Aplicando...',
-      mainAppliedTitle: 'Modelo principal actualizado',
-      mainAppliedMessage: model => `Las sesiones nuevas usarán ${model}.`,
-      defaultsLabel: 'Valores predeterminados',
-      reasoning: 'Razonamiento',
-      reasoningOff: 'Desactivado',
-      speed: 'Velocidad',
-      speedStandard: 'Estándar',
-      defaultsFailed: 'No se pudieron guardar los valores predeterminados del modelo',
-      loadFailed: 'No se pudieron cargar los modelos',
-      restartRequired:
-        'Este backend ejecuta código antiguo tras una actualización. Reinícialo para cargar el código nuevo.',
-      restartBackend: 'Reiniciar backend',
-      restartingBackend: 'Reiniciando backend...',
-      restartFailed: 'No se pudo reiniciar el backend',
-      auxiliaryTitle: 'Modelos auxiliares',
-      resetAllToMain: 'Restablecer todos al principal',
-      staleAuxDismiss: 'No volver a mostrar',
-      auxiliaryDesc:
-        'Las tareas auxiliares usan el modelo principal de forma predeterminada. Asigna un modelo dedicado a cualquier tarea para anularlo.',
-      setToMain: 'Usar principal',
-      change: 'Cambiar',
-      autoUseMain: 'auto · usar modelo principal',
-      inheritMainEffort: 'heredar · esfuerzo del modelo principal',
-      inheritsFrom: task => `hereda de ${task}`,
-      followTask: task => `Seguir ${task}`,
-      providerDefault: '(predeterminado del proveedor)',
-      fallbackAdd: 'Añadir respaldo',
-      fallbackEmpty: 'No hay modelos de respaldo; se usa el modelo predeterminado salvo que falle.',
-      notInCatalog: 'no está en la lista de modelos de este proveedor; las llamadas pueden recurrir a un respaldo.',
-      moaTitle: 'Mixture of Agents',
-      moaPreset: 'Preajuste',
-      moaDescription:
-        'Configura preajustes con nombre que aparecen como modelos del proveedor Mixture of Agents. El agregador es el modelo que actúa: ejecuta cada paso del bucle de herramientas, y casi todo el coste de la ejecución se factura a su proveedor. Por defecto, las referencias solo asesoran una vez por turno del usuario.',
-      moaAggregator: 'Agregador',
-      moaAggregatorBilled: 'modelo que actúa · se factura por la ejecución',
-      moaReferenceHint: 'asesora una vez por turno por defecto',
-      tasks: esAuxTasks
-    },
+    model: esModelSettings,
     localModels: esLocalModels,
     billing: {
       perMonth: (amount: string) => `${amount}/mes`,
@@ -2581,8 +2518,6 @@ export const esOverrides = {
       pinnedProvenance: (sha: string) =>
         `Fijado al commit ${sha}. Las actualizaciones se rechazan hasta que se reinstale con un nuevo commit fijado.`,
       pinnedBadge: (sha: string) => `fijado @ ${sha}`,
-      tierOfficial: 'oficial',
-      tierCommunity: 'comunidad',
       updateToPin: (sha: string) => `Actualizar a ${sha}`,
       updateFailed: (name: string) => `No se pudo actualizar ${name}`,
       updated: (name: string) =>
@@ -5256,10 +5191,7 @@ export const esOverrides = {
         plugin: 'plugin',
         skill: 'skill'
       },
-      tier: {
-        official: 'oficial',
-        community: 'comunidad'
-      },
+      tier: { official: 'oficial', verified: 'verificado', community: 'comunidad' },
       targetProfile: (profile: string) => `Se instala en tu perfil ${profile}`,
       sendFailed: 'No se pudo enviar tu respuesta. Vuelve a intentarlo.',
       commitLabel: 'Commit',

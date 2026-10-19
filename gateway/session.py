@@ -949,8 +949,11 @@ class SessionStore(
         checks = None
         if not force_new and observed is not None:
             sid = observed.session_id
+            # A local route the authority holds by receipt is never stale: a stamped row is
+            # reopened by its next admitted turn, never replaced (#140642).
             checks = _RouteChecks(
-                sid, self._compression_tip_for_session_id(sid), self._is_session_ended_in_db(sid),
+                sid, self._compression_tip_for_session_id(sid),
+                self._is_session_ended_in_db(sid) and self._local_receipt_target(observed) is None,
                 self._route_reset_reason(observed),
             )
         # Phase 2 (lock): apply the decisions to _entries.

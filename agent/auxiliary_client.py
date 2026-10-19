@@ -24,6 +24,8 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple, TYPE_CHECKING, Union
 from urllib.parse import urlparse, parse_qs, urlunparse
 
+from agent.local_prompt_progress import (
+    PromptReadingClock, current_prompt_reading_hook, prompt_progress, prompt_reading_hook, with_prompt_progress)
 from agent.error_classifier import (
     _BILLING_PATTERNS,
     _OVERLOADED_PATTERNS,
@@ -31,6 +33,7 @@ from agent.error_classifier import (
     is_reasoning_field_rejection,
     is_reasoning_required_rejection,
 )
+from agent.auxiliary_managed_local import _is_managed_local_endpoint
 from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
 from agent.auxiliary_structured_output import _route_key, _without_structured_output_format, remember_structured_output_rejection
 from agent.codex_headers import (
@@ -117,6 +120,7 @@ def aux_probe_mode():
 
 
 from agent.credential_pool import load_pool
+from agent.custom_entry_pool import entry_scoped_pool, pool_for_aux_provider
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
 from hermes_cli.config import get_hermes_home
 from hermes_cli.config_providers import _canonical_api_mode
@@ -411,12 +415,13 @@ def aux_progress_hook(hook):
 
 
 def _current_aux_stream_deadline() -> Optional[float]:
-    """The waiting host's absolute monotonic deadline, if one is installed."""
-    return getattr(_aux_stream_deadline, "value", None)
+    """The waiting host's absolute monotonic deadline, if one is installed (read live from a callable)."""
+    value = getattr(_aux_stream_deadline, "value", None)
+    return value() if callable(value) else value
 
 
 @contextlib.contextmanager
-def aux_stream_deadline(deadline: Optional[float]):
+def aux_stream_deadline(deadline: float | Callable[[], float | None] | None):
     """Publish the host's absolute ``time.monotonic()`` deadline to the stream consumer.
 
     ``None`` is a passthrough; re-entrant-safe. Host->worker return leg of the progress hook:
@@ -430,7 +435,7 @@ def aux_stream_deadline(deadline: Optional[float]):
     session that compression never managed to shrink. See #99692.
     """
     previous = getattr(_aux_stream_deadline, "value", None)
-    _aux_stream_deadline.value = deadline if isinstance(deadline, (int, float)) else previous
+    _aux_stream_deadline.value = deadline if isinstance(deadline, (int, float)) or callable(deadline) else previous
     try:
         yield
     finally:
@@ -458,7 +463,8 @@ def _run_protected_sync_provider_call(callback: Callable[[dict[str, Any]], Any],
     progress_hook = getattr(_aux_progress, "hook", None)
     dispatch_hook = getattr(_aux_dispatch, "hook", None)
     provider_response_hook = getattr(_aux_provider_response, "hook", None)
-    host_deadline = _current_aux_stream_deadline()
+    host_deadline = getattr(_aux_stream_deadline, "value", None)
+    reading_hook = current_prompt_reading_hook()
     # #99692: the stream is consumed on the daemon below, and thread-locals do not cross that boundary — an
     # owner-thread-only deadline would leave the fix inert on exactly the path large-session compression
     # takes (protected call + hard-cancel source installed).
@@ -472,7 +478,7 @@ def _run_protected_sync_provider_call(callback: Callable[[dict[str, Any]], Any],
                 aux_progress_hook(progress_hook),
                 _aux_thread_local_hook(_aux_dispatch, dispatch_hook),
                 _aux_thread_local_hook(_aux_provider_response, provider_response_hook),
-                aux_stream_deadline(host_deadline),
+                aux_stream_deadline(host_deadline), prompt_reading_hook(reading_hook),
                 aux_interrupt_protection(cancel_check=cancel_check),
             ):
                 outcome["result"] = callback(kwargs)
@@ -3678,8 +3684,8 @@ def _recoverable_pool_provider(
                     "endpoint mismatch, not a dead key; skipping credential rotation",
                     normalized, base_url_hostname(base), base_url_hostname(rt_base))
         return None
-    if normalized not in {"", "auto", "custom"}:
-        return normalized
+    if normalized not in {"", "auto", "custom"}:  # a pinned ``custom:<name>`` keeps its entry's identity
+        return pinned if (pinned := str(resolved_provider or "").strip().lower()).startswith("custom:") else normalized
     known = _provider_for_host(base, _POOL_PROVIDER_BY_HOST)
     if known is not None:
         return known
@@ -3710,7 +3716,7 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
     """
     normalized = _normalize_aux_provider(provider)
     try:
-        pool = load_pool(normalized)
+        pool = pool_for_aux_provider(provider, normalized, load_pool)
     except Exception as load_exc:
         logger.debug("Auxiliary client: could not load pool for %s recovery: %s", normalized, load_exc)
         return False
@@ -4002,13 +4008,13 @@ def _fallback_destination(
 def _replan_synchronous_cache_sections(
     messages: list, tools: Optional[list], *, destination: _FallbackDestination
 ) -> tuple[list, list]:
-    """Strip source decoration and plan one synchronous destination locally."""
+    """Plan one destination at the configured TTL (1h must not regress to 5m); one-shots never cache."""
     from agent.agent_runtime_helpers import configured_cache_ttl, plan_cache_sections_for_destination
+    from agent.prompt_caching import is_one_shot_request
     return plan_cache_sections_for_destination(
         messages, tools, provider=destination.provider, base_url=destination.base_url,
-        api_mode=destination.api_mode or "", model=destination.model or "",
-        # Operator's configured TTL so fallbacks don't regress 1h → 5m default (no live agent here; read config).
-        cache_ttl=configured_cache_ttl(),
+        api_mode=destination.api_mode or "", model=destination.model or "", cache_ttl=configured_cache_ttl(),
+        cache_disabled=True if is_one_shot_request(messages, tools) else None,
     )
 
 
@@ -4778,10 +4784,9 @@ def _named_custom_api_key(custom_entry: dict[str, Any], provider: str, custom_ba
                     pool = load_pool(pool_key)
                 except Exception:
                     continue
-                if not pool.has_credentials():
+                if (pool := entry_scoped_pool(pool, pool_key, custom_entry)) is None or not pool.has_credentials():
                     continue
-                pool_entry = pool.select()
-                if pool_entry is None:
+                if (pool_entry := pool.select()) is None:
                     continue
                 pool_api_key = getattr(pool_entry, "runtime_api_key", None) or getattr(pool_entry, "access_token", "") or ""
                 if str(pool_api_key).strip():
@@ -5106,11 +5111,11 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
         final_model = _normalize_resolved_model(
             model or (main_runtime.get("model") if main_runtime else None) or "gpt-4o-mini", provider,
         )
-        extra = {}
         _clean_base, _dq = _extract_url_query_params(custom_base)
-        if _dq:
-            extra["default_query"] = _dq
-        _custom_headers = _endpoint_default_headers(custom_base, provider, is_vision=req.is_vision)
+        extra = {"default_query": _dq} if _dq else {}
+        from hermes_cli.config import get_custom_provider_extra_headers  # this endpoint's entry, as agent_init
+        _custom_headers = {**(_endpoint_default_headers(custom_base, provider, is_vision=req.is_vision) or {}),
+                           **get_custom_provider_extra_headers(custom_base)}
         if _custom_headers:
             extra["default_headers"] = _custom_headers
         client = _create_openai_client(api_key=custom_key, base_url=_clean_base, **extra)
@@ -6040,11 +6045,11 @@ def _get_cached_client(
             del _client_cache[cache_key]
     # Build outside the lock. For pool-backed providers derive the key from the pool entry:
     # resolve_api_key_provider_credentials prefers env vars, which would bypass pool rotation
-    # and retry an exhausted key.
+    # and retry an exhausted key. A pinned ``custom:<name>`` peeks only its entry's rows.
     effective_api_key = api_key
     if not effective_api_key:
-        _pe = _peek_pool_entry(_normalize_aux_provider(provider))
-        if _pe is not None:
+        _pool = pool_for_aux_provider(provider, _normalize_aux_provider(provider), lambda k: _load_pool_with_credentials(k, " (peek)"))
+        if _pool is not None and (_pe := _peek_pool_entry(provider, _pool)) is not None:
             effective_api_key = _pool_runtime_api_key(_pe) or api_key
     client, default_model = resolve_provider_client(
         provider, model, async_mode, explicit_base_url=base_url, explicit_api_key=effective_api_key,
@@ -7003,43 +7008,6 @@ def _client_streams_internally(client: Any) -> bool:
     return isinstance(client, (CodexAuxiliaryClient, AnthropicAuxiliaryClient, BedrockAuxiliaryClient))
 
 
-_MANAGED_LOCAL_STATE_TTL_S = 15.0
-_managed_local_cache: tuple[float, str] = (0.0, "")
-
-
-def _managed_local_netloc() -> str:
-    """host:port of the managed local llama-server ("" when none), read with a short TTL from
-    the supervisor state file provider resolution also uses (exact match)."""
-    global _managed_local_cache
-    now = time.monotonic()
-    ts, cached = _managed_local_cache
-    if now - ts < _MANAGED_LOCAL_STATE_TTL_S:
-        return cached
-    try:
-        from hermes_cli.local_runtime.supervisor import state_path
-
-        raw = state_path().read_text(encoding="utf-8-sig")
-        base = str((json.loads(raw) or {}).get("base_url", ""))
-        netloc = urlparse(base).netloc.lower()
-    except Exception:
-        netloc = ""
-    _managed_local_cache = (now, netloc)
-    return netloc
-
-
-def _is_managed_local_endpoint(base_url: Optional[str]) -> bool:
-    """True when *base_url* targets the llama-server this Hermes manages."""
-    if not base_url:
-        return False
-    managed = _managed_local_netloc()
-    if not managed:
-        return False
-    try:
-        return urlparse(str(base_url)).netloc.lower() == managed
-    except Exception:
-        return False
-
-
 def _provider_requires_stream(provider: str, base_url: Optional[str]) -> bool:
     """Providers that only accept streaming (non-stream = 400): Tencent Copilot, any
     ``auxiliary.stream_only_base_urls`` substring, and the managed local llama-server
@@ -7111,11 +7079,15 @@ def _create_with_progress(
         return _create_with_progress_once(client, retry_kwargs, task, force_stream=force_stream)
 
 
-def _stream_request_plan(kwargs: dict[str, Any]) -> tuple[dict[str, Any], str, float]:
-    """(stream kwargs, model name, total ceiling) for a streamed re-aggregation."""
+def _stream_request_plan(kwargs: dict[str, Any], client: Any = None) -> tuple[dict[str, Any], str, float]:
+    """(stream kwargs, model name, total ceiling) for a streamed re-aggregation. Requests to the
+    managed llama-server also ask for prompt-reading progress, which keeps the watchdogs fed
+    through a long prefill."""
     stream_kwargs = dict(kwargs)
     stream_kwargs["stream"] = True
     stream_kwargs["stream_options"] = {"include_usage": True}
+    if _is_managed_local_endpoint(str(getattr(client, "base_url", "") or "")):
+        stream_kwargs = with_prompt_progress(stream_kwargs)
     return (stream_kwargs, str(kwargs.get("model") or ""),
             _aux_stream_total_ceiling(kwargs.get("timeout")))
 
@@ -7149,7 +7121,7 @@ def _create_with_progress_once(
         if not _client_streams_internally(client):
             _notify_aux_provider_response()
         return response
-    stream_kwargs, model, total_ceiling = _stream_request_plan(kwargs)
+    stream_kwargs, model, total_ceiling = _stream_request_plan(kwargs, client)
     try:
         chunks = client.chat.completions.create(**stream_kwargs)
     except Exception as exc:
@@ -7184,7 +7156,7 @@ def _aggregate_chat_stream(
     ``_is_timeout_error`` matches) past *total_ceiling* or the *no_progress* windows (#100501)."""
     from agent.auxiliary_stream_watchdog import _close_chunk_stream, consume_chat_stream
     acc = _ChatStreamAccumulator(
-        model=model, total_ceiling=total_ceiling, host_deadline=_current_aux_stream_deadline())
+        model=model, total_ceiling=total_ceiling, host_deadline=_current_aux_stream_deadline)
     try:
         consume_chat_stream(chunks, acc, no_progress)
     finally:
@@ -7200,8 +7172,10 @@ class _ChatStreamAccumulator:
     """Shared per-chunk accumulation so sync and async aggregation cannot drift."""
 
     def __init__(self, model: str = "", total_ceiling: Optional[float] = None,
-                 host_deadline: Optional[float] = None):
+                 host_deadline: float | Callable[[], float | None] | None = None):
         self._started = time.monotonic()
+        # llama-server prompt reading doesn't count toward the ceiling (``local_prompt_progress``).
+        self._prompt_reading = PromptReadingClock(self._started)
         self._total_ceiling = total_ceiling
         # Absolute instant the waiting host gives up; checked alongside (not instead of) the
         # ceiling, and unaffected by pre-construction dispatch/TTFT.
@@ -7220,10 +7194,11 @@ class _ChatStreamAccumulator:
     def _check_deadlines(self) -> None:
         """Raise TimeoutError past the total ceiling or the host deadline."""
         now = time.monotonic()
-        if self._total_ceiling is not None and (now - self._started) >= self._total_ceiling:
+        if self._total_ceiling is not None and (now - self._started - self._prompt_reading.seconds) >= self._total_ceiling:
             raise TimeoutError(f"Auxiliary streamed call timed out after {self._total_ceiling:.0f}s "
                                "total ceiling (stream still open but over budget)")
-        if self._host_deadline is not None and now >= self._host_deadline:
+        host_deadline = self._host_deadline() if callable(self._host_deadline) else self._host_deadline
+        if host_deadline is not None and now >= host_deadline:
             raise TimeoutError("Auxiliary streamed call timed out at the host compression "
                                f"deadline after {time.monotonic() - self._started:.0f}s "
                                "(the caller already stopped waiting; streaming on would only "
@@ -7270,12 +7245,22 @@ class _ChatStreamAccumulator:
         # Every frame records transport timing (TTFP); only a substantive payload ticks the
         # forward-progress hook that keeps compression alive (and is reported as True).
         _notify_aux_timing_response()
+        progress = prompt_progress(chunk)
+        # Count the reading before the deadline check it extends.
+        read_more = progress is not None and self._prompt_reading.tick(progress)
         self._check_deadlines()
         self.resp_id = getattr(chunk, "id", None) or self.resp_id
         self.resp_model = getattr(chunk, "model", None) or self.resp_model
         chunk_usage = getattr(chunk, "usage", None)
         if chunk_usage:
             self.usage = chunk_usage
+        if progress is not None:
+            # llama-server is still reading the prompt: new tokens read keep the compression fence
+            # alive. It is no first token, so the stream watchdog keeps its pre-token patience: a
+            # busy server reports a batch every minute or more.
+            if read_more:
+                _notify_aux_progress()
+            return False
         choices = getattr(chunk, "choices", None) or []
         if not choices:
             return False
@@ -7327,7 +7312,7 @@ async def _aggregate_chat_stream_async(
 ) -> Any:
     """Async mirror of :func:`_aggregate_chat_stream` (AsyncOpenAI streams need ``async for``)."""
     acc = _ChatStreamAccumulator(
-        model=model, total_ceiling=total_ceiling, host_deadline=_current_aux_stream_deadline())
+        model=model, total_ceiling=total_ceiling, host_deadline=_current_aux_stream_deadline)
     try:
         async for chunk in chunks:
             acc.feed(chunk)
@@ -7342,7 +7327,7 @@ async def _aggregate_chat_stream_async(
 
 async def _acreate_with_stream(client: Any, kwargs: dict[str, Any], task: Optional[str] = None) -> Any:
     """Async create() for stream-only providers: ``stream=True`` + aggregate the async chunks."""
-    stream_kwargs, model, total_ceiling = _stream_request_plan(kwargs)
+    stream_kwargs, model, total_ceiling = _stream_request_plan(kwargs, client)
     chunks = await client.chat.completions.create(**stream_kwargs)
     if hasattr(chunks, "choices"):  # shims may hand back a complete response despite stream=True
         return chunks
@@ -7367,7 +7352,7 @@ async def _acreate_with_progress(
         if not _async_client_streams_internally(client):
             _notify_aux_provider_response()
         return response
-    stream_kwargs, model, total_ceiling = _stream_request_plan(kwargs)
+    stream_kwargs, model, total_ceiling = _stream_request_plan(kwargs, client)
     try:
         chunks = await client.chat.completions.create(**stream_kwargs)
     except Exception as exc:
@@ -7507,7 +7492,7 @@ def _prepare_aux_request(
     )
     request_provider = effective_provider or resolved_provider
     if not async_mode:
-        compression_config = _get_auxiliary_task_config("compression") if task == "compression" else {}
+        compression_config = _get_auxiliary_task_config(task) if task == "compression" else {}  # authoritative: no aux route
         _, effective_extra_body = _compression_fast_lane_controls(
             task, actual_provider=request_provider, actual_model=final_model,
             requested_provider=provider, requested_model=model, route_config=compression_config,
@@ -7913,9 +7898,10 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     # Ordered walk: a candidate that returns None was quarantined (dead credential or a capacity
     # error such as a quota 429) and is now unhealthy, so re-walking the CONFIGURED chains first
     # lands on the next entry, then discovery where the selection policy allows it (#106367).
-    # Bounded by construction: every pass quarantines its candidate and the walk stops as soon as
-    # re-selection hands back a lane already tried, so each lane is attempted at most once.
+    # Bounded: each pass quarantines its candidate and a re-selected lane ends the walk (≤1 try each).
+    # Candidates overwrite route_info; on exhaustion the PRIMARY error is raised, so restore its route.
     tried_lanes: set = set()
+    primary_route = dict(route.route_info) if route.route_info is not None else None
     while fb_client is not None:
         lane = (fb_label, fb_model, str(getattr(fb_client, "base_url", "") or ""))
         if lane in tried_lanes:
@@ -7928,13 +7914,12 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
         fb_client, fb_model, fb_label = _next_fallback_after_quarantine(
             task, resolved_provider, is_auto, route, _chain_failed_model, _chain_failure_scope,
             task_chain_only=explicit_auth_with_task_chain)
-    # All fallback layers exhausted — one user-visible warning, then re-raise.
+    # All fallback layers exhausted: one user-visible warning (#26882), then the caller re-raises.
     logger.warning("Auxiliary %s%s: %s on %s and all fallbacks exhausted "
-                   # All fallback layers exhausted — emit a single user-visible warning so the operator
-                   # knows aux task is about to fail. (#26882) The error itself is re-raised below.
-                   # (#26882)
                    "(fallback_chain + main agent model). Raising the primary error.",
                    task or "call", tag, reason, resolved_provider)
+    if primary_route is not None and route.route_info is not None:
+        route.route_info.update(primary_route)
     return None
 
 

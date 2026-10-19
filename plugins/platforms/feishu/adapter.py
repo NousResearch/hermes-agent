@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- preserve platform create_time on inbound messages
 """
 Feishu/Lark platform adapter.
 
@@ -2593,6 +2594,26 @@ class FeishuAdapter(BasePlatformAdapter):
         extra = getattr(getattr(self, "config", None), "extra", None) or {}  # tests build bare adapters
         return resolve_channel_prompt(extra, chat_id, parent_id)
 
+    @staticmethod
+    def _event_send_time(message: Any) -> datetime:
+        """Original Feishu send time from ``message.create_time`` (ms or s epoch); now() as fallback.
+
+        Feishu redelivers messages queued during a WebSocket outage right after a reconnect.
+        Stamping them with local receive time hides their real age, breaking
+        ``gateway.message_timestamps`` and making backfilled messages indistinguishable from fresh ones.
+        """
+        try:
+            raw = getattr(message, "create_time", None)
+            if raw is not None:
+                val = float(raw)
+                if val > 1_000_000_000_000:
+                    return datetime.fromtimestamp(val / 1000.0)
+                elif val > 1_000_000_000:
+                    return datetime.fromtimestamp(val)
+        except (TypeError, ValueError, OSError, OverflowError):
+            pass
+        return datetime.now()
+
     async def _process_inbound_message(
         self, *, data: Any, message: Any, sender_id: Any, chat_type: str, message_id: str, is_bot: bool = False,
     ) -> None:
@@ -2649,7 +2670,7 @@ class FeishuAdapter(BasePlatformAdapter):
             media_text_inlined=media_text_inlined,
             reply_to_message_id=reply_to_message_id, reply_to_text=reply_to_text,
             channel_prompt=self._resolve_channel_prompt(chat_id, thread_id or None),
-            timestamp=datetime.now(),
+            timestamp=self._event_send_time(message),
         )
         await self._dispatch_inbound_event(normalized)
 

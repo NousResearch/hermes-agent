@@ -12,6 +12,7 @@ SKILL_MD = SKILL_DIR / 'SKILL.md'
 SETUP_SH = SKILL_DIR / 'scripts' / 'setup.sh'
 MCP_REF = SKILL_DIR / 'references' / 'mcp-integration.md'
 PIPELINE_REF = SKILL_DIR / 'references' / 'multimodal-pipeline-examples.md'
+APPS_REF = SKILL_DIR / 'references' / 'apps-and-cloud.md'
 
 
 @pytest.fixture(scope='module')
@@ -175,25 +176,46 @@ class TestSupportFiles:
         assert 'mcp_servers:' in text, 'MCP reference must contain mcp_servers: config.yaml entry'
         assert 'mcpServers' not in text, 'MCP reference must not use mcpServers'
         assert 'pixeltable' in text.lower(), 'MCP reference must mention pixeltable'
-        assert 'git+https://github.com/pixeltable/mcp-server-pixeltable-developer' in text, \
-            'MCP reference must install the server from git (not bare PyPI uvx)'
+        assert 'uvx' in text and 'mcp-server-pixeltable-developer' in text, \
+            'MCP reference must install the PyPI server via uvx'
+        assert 'git+https://github.com/pixeltable/mcp-server-pixeltable-developer' not in text, \
+            'MCP reference must not install the retired git server'
+        assert 'PIXELTABLE_MCP_PROJECT_ROOT' in text, \
+            'MCP reference must set PIXELTABLE_MCP_PROJECT_ROOT in env'
+        assert 'PIXELTABLE_HOME' in text, 'MCP reference must set PIXELTABLE_HOME in env'
 
     def test_mcp_reference_uses_hermes_tool_prefix(self) -> None:
         text = MCP_REF.read_text()
-        # Live MCP tools are mostly pixeltable_*; Hermes server key pixeltable → double prefix.
-        assert 'mcp_pixeltable_pixeltable_create_table' in text, \
-            'MCP reference must document Hermes name mcp_pixeltable_pixeltable_create_table'
-        assert 'mcp_pixeltable_execute_python' in text, \
-            'MCP reference must document Hermes name mcp_pixeltable_execute_python'
+        # Hermes registers mcp__<server>__<tool>. Server key pixeltable keeps its underscores.
+        assert 'mcp__pixeltable__pixeltable_schema_update' in text, \
+            'MCP reference must document Hermes name mcp__pixeltable__pixeltable_schema_update'
+        assert 'mcp__pixeltable__pixeltable_insert_rows' in text, \
+            'MCP reference must document Hermes name mcp__pixeltable__pixeltable_insert_rows'
+        assert 'mcp_pixeltable_pixeltable_create_table' not in text, \
+            'MCP reference must not keep the retired single-underscore create_table name'
+        assert 'mcp_pixeltable_execute_python' not in text, \
+            'MCP reference must not keep the retired execute_python name'
         assert 'Agent uses: pixeltable_' not in text, \
-            'Examples must not call MCP tools without the Hermes mcp_ prefix'
+            'Examples must not call MCP tools without the Hermes mcp__ prefix'
         assert '`pixeltable_create_table`' not in text, \
             'Do not document bare MCP tool names as Hermes-callable tools'
 
-    def test_setup_emits_git_mcp_install(self) -> None:
+    def test_setup_emits_pypi_mcp_install(self) -> None:
         text = SETUP_SH.read_text()
-        assert 'git+https://github.com/pixeltable/mcp-server-pixeltable-developer' in text, \
-            'setup.sh must emit git+ uvx args for the MCP server'
+        assert 'mcp-server-pixeltable-developer' in text, \
+            'setup.sh must emit the PyPI MCP server'
+        assert 'git+https://github.com/pixeltable/mcp-server-pixeltable-developer' not in text, \
+            'setup.sh must not emit the retired git+ uvx install'
+        assert 'PIXELTABLE_MCP_PROJECT_ROOT' in text
+        assert '3.11' in text, 'setup.sh must require Python 3.11+'
+
+    def test_apps_reference_exists(self) -> None:
+        assert APPS_REF.exists(), 'references/apps-and-cloud.md must exist'
+        text = APPS_REF.read_text()
+        assert 'pxt secret set' in text, 'apps reference must document pxt secret set'
+        assert '--no-wait' in text, 'apps reference must document hosted --no-wait'
+        assert 'pxt service update' in text and 'no `--no-wait`' in text, \
+            'apps reference must say pxt service update has no --no-wait'
 
     def test_pipeline_reference_has_examples(self) -> None:
         text = PIPELINE_REF.read_text()
@@ -249,3 +271,30 @@ class TestApiCorrectness:
             'SKILL.md must warn that ColumnRef query helpers were removed (use t.select)'
         assert 't.count()' in skill_text, \
             'SKILL.md must document t.count() for row counts'
+
+    def test_image_url_is_the_column(self, skill_text: str) -> None:
+        code_blocks = re.findall(r'```python\n(.*?)```', skill_text, re.DOTALL)
+        code_text = '\n'.join(code_blocks)
+        assert "{'url':" not in code_text, \
+            "SKILL.md must pass the image column as image_url, not {'url': ...}"
+        assert "'image_url': frames.frame" in code_text
+        pipeline = PIPELINE_REF.read_text()
+        assert "{'url':" not in pipeline
+        assert "'image_url': frames.frame" in pipeline
+
+    def test_no_retired_home_variable(self) -> None:
+        for path in (SETUP_SH, MCP_REF, PIPELINE_REF):
+            assert 'PXT_HOME' not in path.read_text(), f'{path.name} must not mention PXT_HOME'
+        for path in (SKILL_MD, APPS_REF):
+            text = path.read_text()
+            assert 'PXT_HOME=' not in text, f'{path.name} must not tell the user to set PXT_HOME'
+            assert 'set `PXT_HOME`' not in text
+            assert 'PIXELTABLE_HOME' in text
+
+    def test_python_311_and_upstream_guidance(self, skill_text: str) -> None:
+        assert '3.11' in skill_text, 'SKILL.md must require Python 3.11+'
+        assert 'references/apps-and-cloud.md' in skill_text
+        apps = APPS_REF.read_text()
+        assert 'Retry-After' in apps or 'retry' in skill_text.lower()
+        assert 'pxt secret set' in apps
+        assert 'CLIENT_OUTDATED' in apps and 'is not raised' in apps

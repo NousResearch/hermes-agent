@@ -1,6 +1,16 @@
 # Multimodal Pipeline Examples
 
-Copy-paste recipes for common Pixeltable workflows. Run each via `terminal`.
+Copy-paste notebook recipes. Run each via `terminal` with Python 3.11 or newer. For an `app.py` plus `pxt schema` / `pxt service`, use `references/apps-and-cloud.md`.
+
+Shared rules:
+
+- Pass `if_exists='ignore'` on `create_*` and `add_*`. It does not update an expression that already exists. Change one with `alter_computed_column`.
+- Call `.where()` once. Combine predicates with `&` and `|`.
+- `similarity` takes `string=`, `image=`, `audio=`, `video=`, `document=`, or `vector=`.
+- Extra provider fields go in `model_kwargs={}`. Anthropic `messages` still needs top-level `max_tokens=`. Whisper `language` is a `model_kwargs` entry, not a top-level argument.
+- Provider calls retry on their own (10 times for OpenAI, Anthropic, and Gemini rate limits; 3 times otherwise). Do not wrap them in another retry loop.
+- `frame_iterator` columns are `frame` and `frame_attrs`. Pass the image column itself as `image_url`. Pixeltable serializes it. Do not wrap the column in a url field.
+- `document_splitter(..., separators='token_limit')` needs `tiktoken`. `separators='sentence'` needs spaCy.
 
 ## 1. Document RAG with Semantic Search
 
@@ -64,15 +74,15 @@ videos = pxt.create_table('video.raw', {
 # Extract frames at 1 fps
 frames = pxt.create_view(
     'video.frames', videos,
-    iterator=frame_iterator(videos.video, fps=1),
+    iterator=frame_iterator(videos.video, fps=1.0),
     if_exists='ignore'
 )
 
-# Auto-caption every frame with GPT-4 Vision
+# Auto-caption every frame. image_url is the image column; Pixeltable serializes it.
 frames.add_computed_column(
     caption=chat_completions(
         messages=[{'role': 'user', 'content': [
-            {'type': 'image_url', 'image_url': {'url': frames.frame}},
+            {'type': 'image_url', 'image_url': frames.frame},
             {'type': 'text', 'text': 'Describe this frame in one sentence.'}
         ]}],
         model='gpt-4.1-mini'
@@ -136,9 +146,11 @@ recordings = pxt.create_table('audio.recordings', {
     'speaker': pxt.String
 }, if_exists='ignore')
 
-# Auto-transcribe every audio file with Whisper
+# Auto-transcribe every audio file. language belongs in model_kwargs, not as its own argument.
 recordings.add_computed_column(
-    transcript=transcriptions(audio=recordings.audio, model='whisper-1').text,
+    transcript=transcriptions(
+        audio=recordings.audio, model='whisper-1', model_kwargs={'language': 'en'}
+    ).text,
     if_exists='ignore'
 )
 

@@ -79,12 +79,12 @@ hermes profile create <name> [options]
 | 参数 / 选项 | 描述 |
 |-------------------|-------------|
 | `<name>` | 新 profile 的名称。必须是合法的目录名（字母数字、连字符、下划线）。 |
-| `--clone` | 从当前 profile 复制 `config.yaml`、`.env` 和 `SOUL.md`。 |
-| `--clone-all` | 从当前 profile 复制所有内容（config、memories、skills、sessions、state）。 |
-| `--clone-from <profile>` | 从指定 profile 克隆，而非当前 profile。与 `--clone` 或 `--clone-all` 配合使用。 |
+| `--clone` | 从当前 profile 复制 `config.yaml`、`.env`、`SOUL.md` 和 skills。 |
+| `--clone-all` | 从当前 profile 复制所有内容（config、memories、skills、cron、plugins）。会排除每个 profile 自己的历史数据：sessions、`state.db`、backups、state-snapshots、checkpoints。 |
+| `--clone-from <profile>` | 从指定 profile 克隆 config/skills/SOUL，而非当前 profile。除非与 `--clone-all` 配合使用，否则会隐含 `--clone`。 |
 | `--no-alias` | 跳过 wrapper 脚本创建。 |
 | `--description "<text>"` | 一到两句话描述该 profile 的用途。供 kanban 编排器根据角色而非仅凭 profile 名称来路由任务。可跳过，稍后通过 `hermes profile describe` 添加。持久化保存在 `<profile_dir>/profile.yaml` 中。 |
-| `--no-skills` | 创建一个**空** profile，不启用任何内置 skill。会在 profile 目录中写入 `.no-skills` 标记，使后续 `hermes update` 不再重新植入内置 skill 集，且拒绝与 `--clone` / `--clone-all` 组合使用（因为后者会复制 skill）。适用于不应继承完整 skill 目录的窄化编排器 profile 或沙箱 profile。 |
+| `--no-skills` | 创建一个**空** profile，不启用任何内置 skill。会在 profile 目录中写入 `.no-bundled-skills` 标记，使后续 `hermes update` 不再重新植入内置 skill 集，且拒绝与 `--clone`、`--clone-from` 或 `--clone-all` 组合使用（因为这些选项会复制 skill）。适用于不应继承完整 skill 目录的窄化编排器 profile 或沙箱 profile。 |
 
 创建 profile **不会**将该 profile 目录设为终端命令的默认项目/工作目录。如需让某个 profile 从特定项目目录启动，请在该 profile 的 `config.yaml` 中设置 `terminal.cwd`。
 
@@ -101,7 +101,10 @@ hermes profile create work --clone
 hermes profile create backup --clone-all
 
 # 从指定 profile 克隆 config
-hermes profile create work2 --clone --clone-from work
+hermes profile create work2 --clone-from work
+
+# 从指定 profile 克隆所有内容
+hermes profile create work2-backup --clone-from work --clone-all
 ```
 
 ## `hermes profile describe`
@@ -223,7 +226,7 @@ hermes profile alias work --remove
 hermes profile rename <old-name> <new-name>
 ```
 
-重命名 profile，同时更新目录和 shell alias。
+重命名 profile，同时更新目录和 shell alias。以旧名称安装的网关服务（`hermes -p <old-name> gateway install`）无论网关是否在运行都会被移除，因为它会在下次登录时启动旧名称；请用 `hermes -p <new-name> gateway install` 重新安装。在 Docker 镜像内，s6 网关槽位会迁移到新名称。
 
 | 参数 | 描述 |
 |----------|-------------|
@@ -394,7 +397,7 @@ distribution_owned:   # optional; defaults to SOUL.md, config.yaml,
 
 `hermes_requires` 支持 `>=`、`<=`、`==`、`!=`、`>`、`<`，或裸版本号（视为 `>=`）。若当前 Hermes 版本不满足规格，安装将失败并给出明确错误。
 
-`distribution_owned` 为可选项。若设置，更新时仅替换这些路径；profile 中的其他内容保持用户所有。若省略，则应用上述默认值。
+`distribution_owned` 为可选项。若设置，更新时仅更新这些路径；profile 中的其他内容保持用户所有。技能目录（如 `skills/`，或 `skills/research/` 这样的分类）按技能逐个合并：发行版附带的技能会被替换，你自己在其中添加的技能会保留。作者之后从发行版中移除的技能，更新时不会被删除（与顶层 `skills/` 相同）。若省略，则应用上述默认值。
 
 ### 发布发行版
 

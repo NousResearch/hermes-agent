@@ -16,6 +16,10 @@ All three are **drop-in at runtime**: no repo clone, no `npm run build`, no patc
 
 If you just want to use the dashboard, see [Web Dashboard](./web-dashboard). If you want to reskin the terminal CLI (not the web dashboard), see [Skins & Themes](./skins) — the CLI skin system is unrelated to dashboard themes.
 
+:::note Not the desktop app
+This page covers the **web dashboard** (`hermes dashboard`) plugin system — `window.__HERMES_PLUGIN_SDK__`, a `manifest.json`, and a pre-built JS bundle. The **native desktop app** (`hermes desktop`) has its own, unrelated SDK — `@hermes/plugin-sdk`, a single ESM file, no build step — documented at [Desktop Plugin SDK](../../developer-guide/desktop-plugin-sdk.md). Only the backend `plugin_api.py` namespace (`/api/plugins/<name>`) is shared between them.
+:::
+
 :::note How the pieces compose
 Themes and plugins are independent but synergistic. A theme can stand alone (just a YAML file). A plugin can stand alone (just a tab). Together they let you build a complete visual reskin with custom HUDs — the example `strike-freedom-cockpit` demo (lives in the `hermes-example-plugins` companion repo — see [Combined theme + plugin demo](#combined-theme--plugin-demo) for install steps) does exactly that.
 :::
@@ -130,6 +134,22 @@ typography:
   lineHeight: "1.5"
   letterSpacing: "0.04em"
 ```
+
+##### Changing the font from the UI (no YAML)
+
+The theme picker in the dashboard header has a **Font** section below the
+theme list. Pick any font there and it overrides the body font of whatever
+theme is active — the choice is independent of the theme and persists across
+theme switches (stored in `config.yaml` under `dashboard.font`). Choose
+**Theme default** to clear the override and fall back to the active theme's
+own `fontSans`.
+
+The picker offers a curated catalog (system stacks plus a set of Google-Fonts
+families across sans / serif / mono). It deliberately does **not** accept a
+free-text font URL — the font's stylesheet is injected as a `<link>`, so the
+catalog keeps the injected origins fixed. For a fully custom face, set
+`fontSans` + `fontUrl` in a theme YAML as shown above. The theme's `fontMono`
+(code blocks, terminal) is always left untouched by the UI override.
 
 #### Layout
 
@@ -727,7 +747,18 @@ Routes are mounted under `/api/plugins/<name>/`, so the above becomes:
 - `GET  /api/plugins/my-plugin/data`
 - `POST /api/plugins/my-plugin/action`
 
-Plugin API routes bypass session-token authentication since the dashboard server binds to localhost by default. **Don't expose the dashboard on a public interface with `--host 0.0.0.0` if you run untrusted plugins** — their routes become reachable too.
+Plugin API routes sit behind the dashboard's normal auth gate — unauthenticated requests get a `401` before the plugin route runs, and requests to a disabled plugin's routes are rejected at request time. Still, **don't expose the dashboard on a public interface with `--host 0.0.0.0` if you run untrusted plugins** — an authenticated session can reach their routes too.
+
+#### Don't block the event loop
+
+With the default `plugins.isolation: in_process`, API handlers run on the gateway's event loop, the same
+loop that answers every other dashboard, Desktop and chat request. A handler that blocks (`time.sleep`, a
+synchronous HTTP client, a long file scan) holds all of them until it returns: a handler sleeping 3 s
+delays an unrelated `/api/status` by seconds and can time out Desktop's connection. Use `async def` with
+async I/O, or move blocking work off the loop with `await asyncio.to_thread(...)` (a plain `def` handler
+also runs in a worker thread). `plugins.isolation: host` runs the handlers in a separate process
+([plugin host](plugins.md#running-plugins-out-of-process-pluginsisolation)): a slow handler there
+delays only that profile's hosted plugin requests, and one with no answer after 60 s gets HTTP 504.
 
 #### Accessing Hermes internals
 
@@ -792,6 +823,13 @@ The dashboard scans three directories for `dashboard/manifest.json`:
 | 2 | `<repo>/plugins/memory/<name>/dashboard/` | `bundled` |
 | 2 | `<repo>/plugins/<name>/dashboard/` | `bundled` |
 | 3 | `./.hermes/plugins/<name>/dashboard/` | `project` — only when `HERMES_ENABLE_PROJECT_PLUGINS` is set |
+
+On a gateway serving several profiles, a request for a profile other than the one the gateway started
+with sees that profile's own `plugins/<name>/dashboard/`, then the root `~/.hermes/plugins/<name>/dashboard/`
+(as a standalone `hermes --profile <name> dashboard` did; the profile's own copy wins a same-name
+conflict), then the bundled ones, gated by that profile's `plugins.enabled` / `plugins.disabled`. Its
+plugin API, a root plugin's included, runs in that profile's [plugin host](plugins.md#running-plugins-out-of-process-pluginsisolation),
+never inside the gateway.
 
 Discovery results are cached per dashboard process. After adding a new plugin, either:
 

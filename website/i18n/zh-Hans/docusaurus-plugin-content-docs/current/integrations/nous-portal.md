@@ -1,7 +1,7 @@
 ---
 sidebar_position: 1
 title: "Nous Portal"
-description: "一个订阅，300+ 前沿模型，Tool Gateway，以及 Nous Chat —— 运行 Hermes Agent 的推荐方式"
+description: "一个订阅，300+ 前沿模型，以及 Tool Gateway —— 运行 Hermes Agent 的推荐方式"
 ---
 
 # Nous Portal
@@ -14,7 +14,7 @@ description: "一个订阅，300+ 前沿模型，Tool Gateway，以及 Nous Chat
 hermes setup --portal
 ```
 
-这条命令会完成 Portal OAuth 认证，在 `config.yaml` 中将 Nous 设为推理提供商，并开启 Tool Gateway。完成后即可立即运行 `hermes chat`。
+这条命令会完成 Portal OAuth 认证，让你选择一个 Nous 模型，在 `config.yaml` 中将 Nous 设为推理提供商，并开启 Tool Gateway。完成后即可立即运行 `hermes chat`。
 
 还没有订阅？前往 [portal.nousresearch.com/manage-subscription](https://portal.nousresearch.com/manage-subscription) 注册，然后回来运行上面的命令。
 
@@ -38,27 +38,27 @@ Portal 代理了来自整个生态系统的精选 agentic 模型目录——统�
 | **Hermes** | Hermes-4-70B、Hermes-4-405B（对话，见[下方说明](#a-note-on-hermes-4)） |
 | **+ 其他所有模型** | 240+ 额外模型——完整的 agentic 前沿生态 |
 
-底层路由通过 OpenRouter 实现，因此模型可用性和故障转移行为与使用 OpenRouter 密钥一致——只是计费走你的 Nous 订阅。在会话中途用 `/model` 即可在 Claude Sonnet 4.6（适合代码）和 Gemini 2.5 Pro（适合长上下文）之间切换——无需新凭证，无需充值，不会遇到余额为零的意外报错。
+底层上，Portal 会为每个模型选择最合适的后端——部分模型通过 OpenRouter 路由，其他模型则通过专有或备用提供商，且某个模型的路由方式可能随时间调整。所有用量都统一计入你的 Nous 订阅。在会话中途用 `/model` 即可在 Claude Sonnet 4.6（适合代码）和 Gemini 2.5 Pro（适合长上下文）之间切换——无需新凭证，无需充值，不会遇到余额为零的意外报错。
+
+:::note
+由于路由是按模型进行的，并非总是经过 OpenRouter，OpenRouter 专有的请求扩展（如 `provider` 路由偏好、`session_id` 粘性路由或顶层 `cache_control`）不属于 Portal 的 API 契约，可能会被忽略，具体取决于该模型由哪个后端提供服务。
+:::
 
 ### Nous Tool Gateway
 
-同一订阅还解锁了 [Tool Gateway](/user-guide/features/tool-gateway)，将 Hermes Agent 的工具调用路由至 Nous 托管的基础设施。五个后端，一次登录：
+同一订阅还解锁了 [Tool Gateway](../user-guide/features/tool-gateway.md)，将 Hermes Agent 的工具调用路由至 Nous 托管的基础设施。五个后端，一次登录：
 
 | 工具 | 合作方 | 功能说明 |
 |------|---------|--------------|
-| **网页搜索与抓取** | Firecrawl | Agent 级搜索与整页内容提取。无需 Firecrawl API 密钥，无需管理速率限制。 |
+| **网页搜索与抓取** | Nous 托管 | Agent 级搜索与整页内容提取。无需搜索 API 密钥，无需管理速率限制。 |
 | **图像生成** | FAL | 单一端点下的九个模型：FLUX 2 Klein 9B、FLUX 2 Pro、Z-Image Turbo、Nano Banana Pro（Gemini 3 Pro Image）、GPT Image 1.5、GPT Image 2、Ideogram V3、Recraft V4 Pro、Qwen Image。 |
-| **文字转语音** | OpenAI TTS | 无需独立 OpenAI 密钥的高质量 TTS。在各消息平台上启用[语音模式](/user-guide/features/voice-mode)。 |
+| **文字转语音** | OpenAI TTS | 无需独立 OpenAI 密钥的高质量 TTS。在各消息平台上启用[语音模式](../user-guide/features/voice-mode.md)。 |
 | **云端浏览器自动化** | Browser Use | 用于 `browser_navigate`、`browser_click`、`browser_type`、`browser_vision` 的无头 Chromium 会话。无需 Browserbase 账号。 |
 | **云端终端沙箱** | Modal | 用于代码执行的无服务器终端沙箱（可选附加项）。 |
 
-不使用 gateway 的话，接入上述每项服务意味着：一个 Firecrawl 账号、一个 FAL 账号、一个 Browser Use 账号、一个 OpenAI 密钥、一个 Modal 账号——五次独立注册、五个独立控制台、五套独立充值流程。使用 gateway 后，所有内容通过一个订阅统一路由。
+不使用 gateway 的话，接入上述每项服务意味着：一个网页搜索账号、一个 FAL 账号、一个 Browser Use 账号、一个 OpenAI 密钥、一个 Modal 账号——五次独立注册、五个独立控制台、五套独立充值流程。使用 gateway 后，所有内容通过一个订阅统一路由。
 
 你也可以只启用特定的 gateway 工具（例如只开启网页搜索，不开启图像生成）——详见下方[将 gateway 与自有后端混用](#mixing-the-gateway-with-your-own-backends)。
-
-### Nous Chat
-
-你的 Portal 账号同样覆盖 [chat.nousresearch.com](https://chat.nousresearch.com)——Nous Research 的网页对话界面，使用相同的模型目录。适合离开终端时使用，或用于非 agent 的普通对话场景。
 
 ### 凭证不落入 dotfiles
 
@@ -66,13 +66,13 @@ Portal 代理了来自整个生态系统的精选 agentic 模型目录——统�
 
 ### 跨平台一致性
 
-[原生 Windows](/user-guide/windows-native) 仍处于早期 beta 阶段，逐个配置 API 密钥是其最大痛点——在 Windows 上分别安装 Firecrawl 账号、FAL 账号、Browser Use 账号、OpenAI 密钥，是整个 agent 配置过程中摩擦最高的部分。Portal 订阅消除了这一问题：一次 OAuth 覆盖模型和所有 gateway 工具，Windows 用户无需手动配置四个后端，即可获得与 macOS/Linux 相同的体验。
+[原生 Windows](../user-guide/windows-native.md) 上，逐个配置 API 密钥是其最大痛点——在 Windows 上分别安装网页搜索账号、FAL 账号、Browser Use 账号、OpenAI 密钥，是整个 agent 配置过程中摩擦最高的部分。Portal 订阅消除了这一问题：一次 OAuth 覆盖模型和所有 gateway 工具，Windows 用户无需手动配置四个后端，即可获得与 macOS/Linux 相同的体验。
 
 ## 关于 Hermes 4 的说明
 
 Nous Research 自家的 **Hermes 4** 系列（Hermes-4-70B、Hermes-4-405B）通过 Portal 提供，享有大幅折扣。这些是**前沿混合推理对话模型**——在数学、科学、指令遵循、schema 遵从、角色扮演和长文写作方面表现出色。
 
-但**不建议在 Hermes Agent 内部使用它们**。Hermes 4 针对对话和推理进行了调优，而非 agent 所依赖的高频工具调用循环。请将它们用于 [Nous Chat](https://chat.nousresearch.com)、研究工作流，或通过[订阅代理](/user-guide/features/subscription-proxy)从其他工具调用——但在 agent 场景下，请从目录中选择前沿 agentic 模型：
+但**不建议在 Hermes Agent 内部使用它们**。Hermes 4 针对对话和推理进行了调优，而非 agent 所依赖的高频工具调用循环。请将它们用于研究工作流，或通过[订阅代理](../user-guide/features/subscription-proxy.md)从其他工具调用——但在 agent 场景下，请从目录中选择前沿 agentic 模型：
 
 ```bash
 /model anthropic/claude-sonnet-4.6     # 最佳通用 agentic 模型
@@ -95,9 +95,10 @@ hermes setup --portal
 
 1. 打开浏览器跳转至 portal.nousresearch.com 进行 OAuth 登录
 2. 将 refresh token 存储至 `~/.hermes/auth.json`
-3. 在 `~/.hermes/config.yaml` 中将 Nous 设为推理提供商
-4. 开启 Tool Gateway（网页、图像、TTS、浏览器路由）
-5. 返回终端，即可运行 `hermes chat`
+3. 让你从精选列表中选择一个 Nous 模型（也可跳过以保留当前模型）
+4. 在 `~/.hermes/config.yaml` 中将 Nous 设为推理提供商（当你选择模型时）
+5. 开启 Tool Gateway（网页、图像、TTS、浏览器路由）
+6. 返回终端，即可运行 `hermes chat`
 
 如果还没有订阅，请先在 [portal.nousresearch.com/manage-subscription](https://portal.nousresearch.com/manage-subscription) 注册。
 
@@ -115,23 +116,26 @@ hermes model
 
 ### 无头环境 / SSH / 远程配置
 
-OAuth 需要浏览器，但回调的 loopback 运行在 Hermes 所在的机器上。对于远程主机，请参阅 [OAuth over SSH / 远程主机](/guides/oauth-over-ssh)——与其他基于 OAuth 的提供商相同的方式同样适用于 Portal（`ssh -L` 端口转发，或在 Cloud Shell / Codespaces 等纯浏览器环境中使用 `--manual-paste`）。
+OAuth 需要浏览器，但回调的 loopback 运行在 Hermes 所在的机器上。对于远程主机，请参阅 [OAuth over SSH / 远程主机](../guides/oauth-over-ssh.md)——与其他基于 OAuth 的提供商相同的方式同样适用于 Portal（`ssh -L` 端口转发）。
 
-### Profile 配置
+### Profile 配置 {#profile-setup}
 
-如果你使用 [Hermes profiles（配置文件）](/user-guide/profiles)，Portal 的 refresh token 会通过共享令牌存储自动在所有 profile 间共享。在任意 profile 上登录一次，其余 profile 自动获取——无需为每个 profile 重复 OAuth 流程。
+如果你使用 [Hermes profiles（配置文件）](../user-guide/profiles.md)，Portal 的 refresh token 会通过共享令牌存储自动在所有 profile 间共享。在任意 profile 上登录一次，其余 profile 自动获取——无需为每个 profile 重复 OAuth 流程。
 
 ## 日常使用 Portal
 
 ### 查看当前配置状态
 
 ```bash
-hermes portal status     # 登录状态、订阅信息、模型与 gateway 路由
+hermes portal            # 登录 Nous Portal 并完成配置（一键引导）
+hermes portal info       # 登录状态、订阅信息、模型与 gateway 路由
 hermes portal tools      # 详细的 Tool Gateway 目录及每个工具的路由信息
 hermes portal open       # 在浏览器中打开订阅管理页面
 ```
 
-`hermes portal status`（或直接 `hermes portal`）给出高层概览：
+`hermes portal`（不带子命令）是 `hermes auth add nous --type oauth` 的易记别名——它会登录、让你选择 Nous 模型、把 Nous 设为推理服务商，并提供 Tool Gateway 启用选项（与 `hermes setup --portal` 等价，与首次快速设置走的是同一套 Nous 流程）。
+
+`hermes portal info` 给出高层概览：
 
 ```
   Nous Portal
@@ -184,7 +188,7 @@ hermes tools
 # → TTS            → "Nous Subscription"
 ```
 
-Tool Gateway 是按工具单独选择启用的，而非全部或全不。完整的每工具配置矩阵请参阅 [Tool Gateway 文档](/user-guide/features/tool-gateway)。
+Tool Gateway 是按工具单独选择启用的，而非全部或全不。完整的每工具配置矩阵请参阅 [Tool Gateway 文档](../user-guide/features/tool-gateway.md)。
 
 ### 订阅管理
 
@@ -230,12 +234,12 @@ Hermes 在每次推理调用时从存储的 Portal refresh token 生成短期 JW
 
 ## 故障排查
 
-### `hermes portal status` 显示"not logged in"
+### `hermes portal info` 显示"not logged in"
 
 你尚未完成 OAuth 流程，或 refresh token 已被清除。运行：
 
 ```bash
-hermes auth add nous --type oauth
+hermes portal
 ```
 
 或使用 `hermes model` 重新选择 Nous Portal。
@@ -246,7 +250,7 @@ hermes auth add nous --type oauth
 
 ### 想使用 Portal 未暴露的特定提供商模型
 
-Portal 通过 OpenRouter 代理，因此 OpenRouter 支持的所有模型通常都可用。如果某个模型未出现在 `/model` 中，可直接尝试 OpenRouter 风格的 slug：
+Portal 会为每个模型选择合适的后端——部分模型通过 OpenRouter 路由，其他模型则通过专有或备用提供商——因此 OpenRouter 支持的大多数模型通常都可用。如果某个模型未出现在 `/model` 中，可直接尝试 OpenRouter 风格的 slug：
 
 ```bash
 /model anthropic/claude-opus-4.6
@@ -256,13 +260,13 @@ Portal 通过 OpenRouter 代理，因此 OpenRouter 支持的所有模型通常�
 
 ### 账单未出现在我的 Portal 账号中
 
-先检查 `hermes portal status`——如果显示你正在使用其他提供商（`Model: currently openrouter` 而非 `using Nous as inference provider`），说明本地配置已偏离。运行 `hermes model`，选择 Nous Portal，下一次请求将通过你的订阅路由。
+先检查 `hermes portal info`——如果显示你正在使用其他提供商（`Model: currently openrouter` 而非 `using Nous as inference provider`），说明本地配置已偏离。运行 `hermes model`，选择 Nous Portal，下一次请求将通过你的订阅路由。
 
 ## 另请参阅
 
-- **[Tool Gateway](/user-guide/features/tool-gateway)** —— 每个 gateway 工具的完整详情、每工具配置及定价
-- **[订阅代理](/user-guide/features/subscription-proxy)** —— 在非 Hermes 工具（其他 agent、脚本、第三方客户端）中使用你的 Portal 订阅
-- **[语音模式](/user-guide/features/voice-mode)** —— 使用 Portal 的 OpenAI TTS 进行语音对话
-- **[AI 提供商](/integrations/providers)** —— 完整提供商目录，供对比参考
-- **[OAuth over SSH](/guides/oauth-over-ssh)** —— 从远程主机或纯浏览器环境登录
-- **[Profiles](/user-guide/profiles)** —— 多个 Hermes 配置共享一个 Portal 登录
+- **[Tool Gateway](../user-guide/features/tool-gateway.md)** —— 每个 gateway 工具的完整详情、每工具配置及定价
+- **[订阅代理](../user-guide/features/subscription-proxy.md)** —— 在非 Hermes 工具（其他 agent、脚本、第三方客户端）中使用你的 Portal 订阅
+- **[语音模式](../user-guide/features/voice-mode.md)** —— 使用 Portal 的 OpenAI TTS 进行语音对话
+- **[AI 提供商](./providers.md)** —— 完整提供商目录，供对比参考
+- **[OAuth over SSH](../guides/oauth-over-ssh.md)** —— 从远程主机或纯浏览器环境登录
+- **[Profiles](../user-guide/profiles.md)** —— 多个 Hermes 配置共享一个 Portal 登录

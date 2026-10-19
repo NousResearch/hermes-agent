@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { handleMouseEvent } from './components/App.js'
-import { createSelectionState, startSelection, updateSelection } from './selection.js'
+import { createSelectionState, hasSelection, startSelection, updateSelection } from './selection.js'
 
 const makeApp = () => {
   const selection = createSelectionState()
@@ -37,6 +37,39 @@ describe('handleMouseEvent right-click selection behavior', () => {
     expect(app.props.onCopySelectionNoClear).toHaveBeenCalledOnce()
     expect(app.props.onMouseDownAt).not.toHaveBeenCalled()
     expect(app.clickCount).toBe(0)
+  })
+
+  it('clears the highlight after a successful right-click copy', async () => {
+    const app = makeApp()
+
+    startSelection(app.props.selection, 0, 0)
+    updateSelection(app.props.selection, 4, 0)
+    expect(hasSelection(app.props.selection)).toBe(true)
+
+    handleMouseEvent(app, { action: 'press', button: 2, col: 3, kind: 'mouse', row: 1, sequence: '' })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    // Deliberate copy clears the selection (visual confirmation + a follow-up
+    // right-click on empty space pastes rather than re-copying a stale range).
+    expect(hasSelection(app.props.selection)).toBe(false)
+    expect(app.props.onSelectionChange).toHaveBeenCalled()
+  })
+
+  it('keeps the highlight when right-click copy fails (no clipboard path)', async () => {
+    const app = makeApp()
+    app.props.onCopySelectionNoClear.mockResolvedValue('')
+
+    startSelection(app.props.selection, 0, 0)
+    updateSelection(app.props.selection, 4, 0)
+
+    handleMouseEvent(app, { action: 'press', button: 2, col: 3, kind: 'mouse', row: 1, sequence: '' })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    // Copy didn't land, so the highlight must survive (and we fall back to the
+    // right-click paste handler instead).
+    expect(hasSelection(app.props.selection)).toBe(true)
   })
 
   it('falls back to right-click handlers when selection copy has no clipboard path', async () => {

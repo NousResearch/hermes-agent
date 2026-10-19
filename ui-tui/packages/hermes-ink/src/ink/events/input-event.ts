@@ -2,8 +2,20 @@ import { nonAlphanumericKeys, type ParsedKey } from '../parse-keypress.js'
 
 import { Event } from './event.js'
 
-const inputForSpecialSequence = (name: string): string =>
-  name === 'space' ? ' ' : name === 'return' || name === 'escape' ? '' : name
+const inputForSpecialSequence = (name: string, shift: boolean): string => {
+  const input = name === 'space' ? ' ' : name === 'return' || name === 'escape' ? '' : name
+
+  // Extended-key protocols (CSI u / xterm modifyOtherKeys) report printable
+  // letters as their lowercase keycode, so Shift+R arrives as name 'r' with
+  // shift=true. Re-apply shift to a single lowercase letter so the composer
+  // receives 'R', not 'r'. Keybinding consumers still see the lowercase
+  // canonical name via key.name — only the inserted text is case-restored.
+  if (shift && input.length === 1 && input >= 'a' && input <= 'z') {
+    return input.toUpperCase()
+  }
+
+  return input
+}
 
 export type Key = {
   upArrow: boolean
@@ -83,17 +95,10 @@ function parseKey(keypress: ParsedKey): [Key, string] {
     input = ''
   }
 
-  // Suppress ESC-less SGR mouse fragments. When a heavy React commit blocks
-  // the event loop past App's 50ms NORMAL_TIMEOUT flush, a CSI split across
-  // stdin chunks gets its buffered ESC flushed as a lone Escape key, and the
-  // continuation arrives as a text token with name='' — which falls through
-  // all of parseKeypress's ESC-anchored regexes and the nonAlphanumericKeys
-  // clear below (name is falsy). The fragment then leaks into the prompt as
-  // literal `[<64;74;16M`. This is the same defensive sink as the F13 guard
-  // above; the underlying tokenizer-flush race is upstream of this layer.
-  if (!keypress.name && /^\[<\d+;\d+;\d+[Mm]/.test(input)) {
-    input = ''
-  }
+  // (SGR mouse-report fragments used to be scrubbed here. They no longer reach
+  // this layer: the tokenizer keeps an incomplete CSI buffered across a
+  // watchdog flush and reassembles it on the next feed instead of force-
+  // emitting the partial as input. See termio/tokenize.ts.)
 
   // Strip meta if it's still remaining after `parseKeypress`
   // TODO(vadimdemedes): remove this in the next major version.
@@ -119,7 +124,7 @@ function parseKey(keypress: ParsedKey): [Key, string] {
       // so the raw "[57358u" doesn't leak into the prompt. See #38781.
       input = ''
     } else {
-      input = inputForSpecialSequence(keypress.name)
+      input = inputForSpecialSequence(keypress.name, keypress.shift)
     }
 
     processedAsSpecialSequence = true
@@ -137,7 +142,7 @@ function parseKey(keypress: ParsedKey): [Key, string] {
       // guards against future terminal behavior.
       input = ''
     } else {
-      input = inputForSpecialSequence(keypress.name)
+      input = inputForSpecialSequence(keypress.name, keypress.shift)
     }
 
     processedAsSpecialSequence = true
@@ -167,7 +172,25 @@ function parseKey(keypress: ParsedKey): [Key, string] {
   return [key, input]
 }
 
+/**
+ * A ctrl chord is never typed text — but `parseKeypress` names a C0 control
+ * byte after the letter it encodes (0x0c → 'l'), an extended-protocol chord
+ * (kitty CSI u / xterm modifyOtherKeys `ESC [ 108 ; 5 u`) after its keycode,
+ * and `parseKey` above hands that name to `input` so bindings can still match
+ * ctrl+<letter>. Text inserters must not read the name as input: the dashboard
+ * writes the PTY force-redraw byte Ctrl+L (0x0c, `hermes_cli/pty_session.py`
+ * TUI_FORCE_REDRAW) into the TUI's stdin on every re-attach, which typed a
+ * solitary `l` into the composer after a session resume / tab switch / window
+ * restore (#115284). Bracketed pastes are text even when a control byte rides
+ * inside them, so they are never a chord.
+ */
+function isControlChord(keypress: ParsedKey): boolean {
+  return keypress.ctrl && !keypress.isPasted
+}
+
 export class InputEvent extends Event {
+  /** `input` is a ctrl chord's binding name, not text the user typed. */
+  readonly isControlChord: boolean
   readonly keypress: ParsedKey
   readonly key: Key
   readonly input: string
@@ -176,6 +199,7 @@ export class InputEvent extends Event {
     super()
     const [key, input] = parseKey(keypress)
 
+    this.isControlChord = isControlChord(keypress)
     this.keypress = keypress
     this.key = key
     this.input = input

@@ -29,7 +29,7 @@ proxy when you just want **the model** through your subscription.
 ### 1. Log into your provider (one-time)
 
 ```bash
-hermes auth add nous
+hermes portal
 ```
 
 This opens your browser for the Nous Portal OAuth flow. Hermes stores
@@ -88,10 +88,10 @@ Hermes proxy upstream adapters
   [nous    ] Nous Portal — ready (bearer expires 2026-05-15T06:43:21Z)
 ```
 
-If you see `not logged in`, run `hermes auth add nous`. If you see
+If you see `not logged in`, run `hermes portal`. If you see
 `credentials need attention`, your refresh token was revoked (rare —
 happens if you signed out from the Portal web UI) — just re-run
-`hermes auth add nous`.
+`hermes portal`.
 
 ## Allowed paths
 
@@ -161,15 +161,22 @@ OpenAI-compatible client.
 
 ## Exposing on LAN
 
-By default the proxy binds `127.0.0.1` (localhost only). To let other
-machines on your network use it:
+By default the proxy binds `127.0.0.1` (localhost only). It refuses requests
+whose `Host` header is not its own address (`localhost`, `127.0.0.1`, `[::1]`
+or the bound IP) and any browser request from another site (an `Origin` other
+than its own, or a `Sec-Fetch-Site` of `cross-site`/`same-site`), so a web page
+open in your browser cannot use it. Clients such as SDKs and `curl` send
+neither header and are unaffected. To let other machines on your
+network use it:
 
 ```bash
 hermes proxy start --host 0.0.0.0 --port 8645
 ```
 
 ⚠ **Be aware:** anyone on your network can now use your Portal
-subscription. The proxy has no auth of its own — it accepts any bearer.
+subscription. A wildcard bind skips the `Host` check (any name may reach it),
+so it refuses every request a web page makes (any `Origin`, or a
+`Sec-Fetch-Site` other than `none`): browsers cannot use a wildcard-bound proxy. The proxy has no auth of its own — it accepts any bearer.
 Use a firewall, VPN, or reverse proxy with proper auth if you expose
 this beyond your trusted network.
 

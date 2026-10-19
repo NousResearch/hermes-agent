@@ -1,0 +1,40 @@
+# Rust / Cargo
+/src-tauri/target/
+/src-tauri/Cargo.lock
+
+# Vite / build output
+/dist/
+/dist-ssr/
+*.local
+
+# TypeScript build info + tsc emit (we don't ship .js for the
+# vite.config.ts; Vite reads it directly via ts-node-style loader).
+*.tsbuildinfo
+vite.config.d.ts
+vite.config.js
+
+# Tauri generated artifacts (regenerated on each build)
+/src-tauri/gen/schemas/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Node
+node_modules/
+
+# Internal placeholder (re-create if needed)
+.tauri-note

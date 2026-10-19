@@ -20,15 +20,23 @@ status display, gateway setup, and more.
   (and an optional `home_channel` dict) from env vars BEFORE the adapter is
   constructed.  Without this, env-only setups don't surface in
   `hermes gateway status` or `get_connected_platforms()` until the SDK
-  instantiates.
+  instantiates.  Build it from a `(ENV_VAR, extra_key, conv)` table with
+  `gateway.platforms._shared.seed_extra_from_env(spec, home_env=...)`; every
+  read goes through `_shared.get_scoped_secret` (multiplex-safe, never
+  `os.getenv`).
 - `apply_yaml_config_fn: (yaml_cfg, platform_cfg) -> Optional[dict]` —
-  translate this platform's `config.yaml` keys into env vars and/or seed
-  `PlatformConfig.extra` directly.  Lets a plugin own its YAML schema
-  instead of growing core `gateway/config.py` boilerplate per platform.
-  Mutating `os.environ` is allowed (use `not os.getenv(...)` guards to
-  preserve env > YAML precedence); the returned dict is merged into
-  `PlatformConfig.extra`.  Called during `load_gateway_config()` after
-  the generic shared-key loop and before `_apply_env_overrides()`.
+  translate this platform's `config.yaml` keys into env vars and seed
+  `PlatformConfig.extra`.  Lets a plugin own its YAML schema instead of
+  growing core `gateway/config.py` boilerplate per platform.  Declare a
+  `(yaml_key, ENV_VAR, kind)` table and return
+  `_shared.apply_yaml_bridge(platform_cfg, TABLE)`: it writes env only when
+  unset (env > YAML), never under a multiplexed secondary profile's scope,
+  and returns the same values for `extra` (read `extra` first in the adapter
+  via `_shared.extra_or_secret`).  Called during `load_gateway_config()`
+  after the generic shared-key loop and before `_apply_env_overrides()`.
+- `is_connected: (config) -> bool` — for env-only platforms use
+  `_shared.env_is_connected("YOUR_TOKEN_VAR", ...)` instead of a hand-rolled
+  `get_env_value` check.
 - `cron_deliver_env_var: str` — name of the `*_HOME_CHANNEL` env var.  When
   set, `deliver=<name>` cron jobs route to this var without editing
   `cron/scheduler.py`'s hardcoded sets.
@@ -52,12 +60,35 @@ for the full pattern (Template Buttons postback at 45s, `RequestCache`
 state machine, `interrupt_session_activity` override for `/stop`
 orphans) and the developer-guide page for the prose walkthrough.
 
+**Sibling adapters that share behavior.** When a single platform has
+two transport modes the user picks between — unofficial vs official
+APIs, polling vs websocket, library A vs library B — the right
+structure is two adapters that share a behavior mixin. WhatsApp does
+this: `plugins/platforms/whatsapp/adapter.py` (Baileys bridge) and
+`plugins/platforms/whatsapp_cloud/adapter.py` (Meta Cloud API) both inherit
+from `WhatsAppBehaviorMixin` in `gateway/platforms/whatsapp_common.py`.
+The mixin owns gating, allow-lists, mention parsing, broadcast
+filters, and the WhatsApp-flavored markdown conversion — everything
+that's platform-protocol-agnostic. Each adapter owns its transport.
+Both register distinct `Platform.*` enum values so the gateway can run
+both simultaneously against different phone numbers. The mixin must
+come **first** in the bases list — `class WhatsAppAdapter(Mixin,
+BasePlatformAdapter)` — so the mixin's `format_message` overrides
+`BasePlatformAdapter`'s generic default.
+
 See `plugins/platforms/irc/`, `plugins/platforms/teams/`, and
 `plugins/platforms/google_chat/` for complete working examples, and
 `website/docs/developer-guide/adding-platform-adapters.md` for the full
 plugin guide with code examples and hook documentation.
 
 ---
+
+Plugin-registered native handlers (`ctx.register_platform_handler(<platform>, factory)`): call
+`self._wire_plugin_handlers(native_client)` once in `connect()` before your own catch-all handlers. The base
+class then handles plugins that load mid-run — the runner calls `rewire_plugin_handlers()` on every
+plugin-loaded event and only factories not yet wired on that native client run. Override it only when your
+adapter keeps a second plugin registry (Slack action handlers) or dispatches by registration order with a
+catch-all last (Telegram hoists late handlers ahead of core); see `gateway/run_plugin_rewire.py`.
 
 ## Built-in Path (Core Contributors Only)
 
@@ -94,6 +125,20 @@ The adapter is a subclass of `BasePlatformAdapter` from `gateway/platforms/base.
 | `send_animation(chat_id, path, caption)` | Send a GIF/animation |
 | `send_image_file(chat_id, path, caption)` | Send image from local file |
 
+### Interactive UX (recommended if your platform supports tappable buttons)
+
+If your platform supports interactive button/menu messages, implement these for a more polished agent experience. They all degrade gracefully to plain text when not overridden:
+
+| Method | Purpose |
+|--------|---------|
+| `send_clarify(chat_id, question, choices, clarify_id, session_key, ...)` | Render the `clarify` tool's multi-choice question as tappable buttons. Pair with inbound dispatch that routes button taps to `tools.clarify_gateway.resolve_gateway_clarify`. |
+| `_send_exec_approval_prompt(prompt: ExecApprovalPrompt)` | Render a dangerous-command approval as native buttons. `send_exec_approval` is a base template method: it builds the shared text (`_format_exec_approval`, tune via the `_EA_*` class attrs) and the choice set (`prompt.actions` = `(label, choice, style)` rows, choices `once`/`session`/`always`/`deny`) — you only map those rows to widgets. Inbound dispatch routes to `tools.approval.resolve_gateway_approval`. |
+| `send_slash_confirm(chat_id, title, message, session_key, confirm_id, ...)` | Render slash-command confirmations (e.g. `/reload-mcp`) as Once/Always/Cancel buttons. Inbound dispatch routes to `tools.slash_confirm.resolve`. |
+| `send_model_picker(...)` | Interactive `/model` picker. Used by Telegram, Discord, and Slack (Socket Mode). |
+| `send_choice_picker(...)` | Flat single-level picker for finite-choice commands (`/reasoning`, `/fast`). Implemented by Telegram (inline keyboard), Discord (select menu), and Matrix (reactions). Platforms without it fall back to the text status card automatically. |
+
+See `plugins/platforms/telegram/adapter.py`, `plugins/platforms/discord/adapter.py`, and `plugins/platforms/whatsapp_cloud/adapter.py` for reference implementations. The button-callback id convention (`cl:<id>:<idx>`, `appr:<id>:<choice>`, `sc:<choice>:<id>`) is shared across adapters — match it so the gateway-side resolvers work without modification.
+
 ### Required function
 
 ```python
@@ -103,11 +148,18 @@ def check_<platform>_requirements() -> bool:
 
 ### Key patterns to follow
 
-- Use `self.build_source(...)` to construct `SessionSource` objects
+- Use `self.build_source(...)` to construct `SessionSource` objects (never `SessionSource(...)`
+  directly — the transport provenance and profile route are stamped there)
+- Derive every adapter-side session key (batching, per-chat queues, busy detection) through
+  `self._event_session_key(event)` / `self._source_session_key(source)`, never the free
+  `build_session_key()` — the seam keys in the owning profile's namespace under a multiplexed
+  gateway; the advisory lint (`scripts/check_profile_scope_patterns.py`, pattern P32) flags both
 - Call `self.handle_message(event)` to dispatch inbound messages to the gateway
-- Use `MessageEvent`, `MessageType`, `SendResult` from base
+- Use `MessageEvent`, `MessageType` from `gateway.platforms.event` and `SendResult` from base
 - Use `cache_image_from_bytes`, `cache_audio_from_bytes`, `cache_document_from_bytes` for attachments
 - Filter self-messages (prevent reply loops)
+- Drop redelivered inbound IDs with `MessageDeduplicator` (`gateway/platforms/helpers.py`) held as an adapter
+  attribute; the runner's reconnect copies its live IDs into the rebuilt adapter, a hand-rolled cache starts empty
 - Filter sync/echo messages if the platform has them
 - Redact sensitive identifiers (phone numbers, tokens) in all log output
 - Implement reconnection with exponential backoff + jitter for streaming connections
@@ -125,26 +177,37 @@ class Platform(Enum):
     YOUR_PLATFORM = "your_platform"
 ```
 
-Add env var loading in `_apply_env_overrides()`:
+Env credentials reach the config through the plugin's own `gateway_env.py` (the template is
+`plugins/platforms/telegram/gateway_env.py`), passed to `ctx.register_platform` as
+`env_overrides=gateway_env.ENV_OVERRIDES` and `env_enable_credentials=gateway_env.ENV_ENABLE_CREDENTIALS`.
+Steps run in order; `EnvCred` (`gateway/platform_env.py`) enables the platform when the named env
+vars resolve and copies them into `extra`. Import only `gateway.*` there: core reads the file
+directly, without the adapter, when the plugin is not loaded.
 
 ```python
-# Your Platform
-your_token = os.getenv("YOUR_PLATFORM_TOKEN")
-if your_token:
-    if Platform.YOUR_PLATFORM not in config.platforms:
-        config.platforms[Platform.YOUR_PLATFORM] = PlatformConfig()
-    config.platforms[Platform.YOUR_PLATFORM].enabled = True
-    config.platforms[Platform.YOUR_PLATFORM].token = your_token
+ENV_ENABLE_CREDENTIALS = ("YOUR_PLATFORM_TOKEN",)
+ENV_OVERRIDES = (
+    EnvCred(Platform.YOUR_PLATFORM, ("YOUR_PLATFORM_TOKEN",), token="YOUR_PLATFORM_TOKEN"),
+    home_step(Platform.YOUR_PLATFORM, "YOUR_PLATFORM_HOME_CHANNEL"),
+)
 ```
 
-Update `get_connected_platforms()` if your platform doesn't use token/api_key
-(e.g., WhatsApp uses `enabled` flag, Signal uses `extra` dict).
+Every read goes through `gateway/config.py::_getenv` (the active profile's secret scope when one
+is bound, `os.environ` otherwise). **Never `os.getenv` here and never write `os.environ`**: under
+`gateway.multiplex_profiles` the process env is the DEFAULT profile's, so a raw read enables your
+platform for the wrong profile with the wrong credentials, and a write pins one profile's policy
+process-wide (first profile wins). Adapter-side reads use `gateway.platforms._shared.get_scoped_secret`
+/ `extra_or_secret`.
+
+If your platform is "configured" without a token/api_key (WhatsApp uses the `enabled` flag,
+Signal the `extra` dict), declare `config_connected_fn` on the entry; `get_connected_platforms()`
+reads it.
 
 ---
 
 ## 3. Adapter Factory (`gateway/run.py`)
 
-Add to `_create_adapter()`:
+Add to `_instantiate_adapter()`:
 
 ```python
 elif platform == Platform.YOUR_PLATFORM:
@@ -155,22 +218,31 @@ elif platform == Platform.YOUR_PLATFORM:
     return YourAdapter(config)
 ```
 
+`_create_adapter()` wraps this factory and binds every successful adapter to
+its `GatewayRunner`. Do not construct platform adapters in lifecycle call sites;
+startup and reconnect must keep using the wrapper so profile routing is wired
+before `connect()`.
+
 ---
 
-## 4. Authorization Maps (`gateway/run.py`)
+## 4. Authorization Maps (`gateway/pairing.py`, `gateway/authz_mixin.py`)
 
-Add to BOTH dicts in `_is_user_authorized()`:
+Declare the allowlist names in the plugin's `gateway_env.py` and pass them with
+`**gateway_env.AUTHZ`; pairing, the authz ladder, the dashboard and the startup policy gate read
+them from the entry, and from this file when the entry is missing (safe mode, plugin disabled) or a
+user plugin overriding yours omits them:
 
 ```python
-platform_env_map = {
-    ...
-    Platform.YOUR_PLATFORM: "YOUR_PLATFORM_ALLOWED_USERS",
-}
-platform_allow_all_map = {
-    ...
-    Platform.YOUR_PLATFORM: "YOUR_PLATFORM_ALLOW_ALL_USERS",
+AUTHZ = {
+    "allowed_users_env": "YOUR_PLATFORM_ALLOWED_USERS",
+    "allow_all_env": "YOUR_PLATFORM_ALLOW_ALL_USERS",
+    # optional: "allow_bots_env": "YOUR_PLATFORM_ALLOW_BOTS",
+    # optional, adapters that gate DMs/groups themselves: "own_policy_env": ("..._DM_POLICY", "..._GROUP_POLICY"),
 }
 ```
+
+`_is_user_authorized()` reads every gate through `_shared.platform_gate_env` (`_auth_env`), which
+answers from the routed profile's secret scope under multiplex — never add an `os.getenv` here.
 
 ---
 
@@ -182,18 +254,17 @@ and update `to_dict()`, `from_dict()`, and `build_source()` in base.py.
 
 ---
 
-## 6. System Prompt Hints (`agent/prompt_builder.py`)
+## 6. System Prompt Hints (`platform_hint`)
 
-Add a `PLATFORM_HINTS` entry so the agent knows what platform it's on:
+Declare `platform_hint=` on `ctx.register_platform` (keep the text in a light sibling such as
+`adapter_hint.py`) so the agent knows what platform it's on. `agent/prompt_builder.py::PLATFORM_HINTS`
+holds only core surfaces (CLI, TUI, API server, ...):
 
 ```python
-PLATFORM_HINTS = {
-    ...
-    "your_platform": (
-        "You are on Your Platform. "
-        "Describe formatting capabilities, media support, etc."
-    ),
-}
+PLATFORM_HINT = (
+    "You are on Your Platform. "
+    "Describe formatting capabilities, media support, etc."
+)
 ```
 
 Without this, the agent won't know it's on your platform and may use

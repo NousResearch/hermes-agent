@@ -15,6 +15,7 @@ from .base import JsonValue, Params, Result
 from .common import McpServerStatus, OpenModel, ProjectRef
 from .events import SkinPayload
 from .groups_bot_relay import RoomParams, RoomTaskReceipt
+from .prompt_voice import ClarifyLockParams, ClarifyLockResult
 from .registry import canonical_method
 
 # ── admissions ────────────────────────────────────────────────────────────────────────────────
@@ -126,6 +127,22 @@ canonical_method("session.prune", params=SessionPruneParams, result=SessionPrune
                      "selected, skipping busy sessions and retained reset owners.")
 
 
+class CommandObserveParams(Params):
+    session_id: str
+    name: str
+    arg: str | None = None
+    profile: str | None = None
+
+
+class CommandObserveResult(Result):
+    queued: bool
+
+
+canonical_method("command.observe", params=CommandObserveParams, result=CommandObserveResult,
+                 doc="Fire-only: a recognized command the classic CLI or the TUI runs itself; the gateway fires "
+                     "`pre_command` for it in the session's profile after replying (`queued` false: not fired).")
+
+
 class CanonicalSessionInfoParams(Params):
     session_id: str
 
@@ -152,6 +169,7 @@ class SessionInventoryFields(Result):
     # Classic CLI surface (``source: cli``) only: main's startup lines under the banner (Rich markup).
     tool_availability_warnings: list[str] | None = None
     browser_backend_notice: str | None = None
+    unknown_toolsets: list[str] | None = None  # main's "Unknown toolsets" warning, judged by the gateway
 
 
 class CanonicalSessionInfo(SessionInventoryFields, OpenModel):
@@ -177,6 +195,8 @@ class CanonicalSessionInfo(SessionInventoryFields, OpenModel):
     api_mode: str | None = None
     tool_count: int | None = None
     credential_hint: str | None = None
+    # A session-start notice (the project plugins this gateway does not load).
+    config_warning: str | None = None
 
 
 canonical_method("session.info", params=CanonicalSessionInfoParams, result=CanonicalSessionInfo,
@@ -218,6 +238,30 @@ class SessionStats(Result):
 
 canonical_method("session.stats", params=SessionStatsParams, result=SessionStats,
                  doc="The session.usage dict on demand: what main's classic CLI read off its agent.")
+
+
+class RollbackSessionDiffParams(Params):
+    session_id: str
+    profile: str | None = None
+
+
+class RollbackSessionDiffResult(Result):
+    """``gateway/session_tui_ops.py::_session_diff``: ``CheckpointManager.session_diff`` under the
+    session's frozen checkpoint policy (``enabled: false`` when that policy does not checkpoint).
+    ``diff`` is bounded to fit one frame; ``diff_lines`` counts the whole body."""
+
+    enabled: bool
+    success: bool = False
+    stat: str = ""
+    diff: str = ""
+    diff_lines: int = 0
+    empty: bool = False
+    error: str | None = None
+
+
+canonical_method("rollback.session_diff", params=RollbackSessionDiffParams, result=RollbackSessionDiffResult,
+                 doc="The classic CLI's /diff session: everything changed since the session's earliest "
+                     "retained checkpoint, as data for its terminal renderer.")
 
 
 class SessionAutomationParams(Params):
@@ -297,6 +341,12 @@ class PromptResponseResult(Result):
 
 canonical_method("clarify.respond", params=ClarifyRespondParams, result=PromptResponseResult,
                  doc="Generation-fenced answer to a pending clarify prompt (empty answer = skipped).")
+
+# The owner serves the sidecar's ``clarify.lock`` wire unchanged (``gateway/session_clarify_lock.py``):
+# declaring it here lets the dispatcher refuse a mistyped or unknown key before the handler runs.
+canonical_method("clarify.lock", params=ClarifyLockParams, result=ClarifyLockResult,
+                 doc="Lock one answer of the owner's batch clarify request (editable until every question is "
+                     "locked); only a viewer attached to that session with session:respond may lock.")
 
 
 # ── cron / kanban / a2a producers ─────────────────────────────────────────────────────────────

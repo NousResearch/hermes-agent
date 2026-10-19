@@ -8,8 +8,14 @@ plugin-registered slash commands. Bound onto ``GatewayRunner`` through ``Gateway
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
+import functools
+import inspect
 import logging
+import os
+import signal
+import sys
 from typing import Optional, Tuple
 
 from agent.i18n import t
@@ -18,6 +24,25 @@ from gateway.session import SessionSource, build_session_context
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+# Seconds a ``type: exec`` quick command may run before its whole process tree is killed.
+_EXEC_QUICK_COMMAND_TIMEOUT = 30
+
+
+async def _stop_exec_tree(proc) -> None:
+    """Kill an exec quick command's shell and everything it started, then reap the shell (bounded).
+
+    Killing only the shell leaves ``sleep 120 & wait``'s sleep running. ``kill_process_tree`` reaches
+    descendants (``taskkill /T`` on Windows); on POSIX the group the shell led also catches members
+    that already outlived it."""
+    if proc.returncode is None:
+        from agent.deadline import kill_process_tree
+        await asyncio.to_thread(kill_process_tree, proc.pid)
+    if sys.platform != "win32":
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(proc.pid, signal.SIGKILL)  # windows-footgun: ok — POSIX-only branch; start_new_session made pid the pgid
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(proc.wait(), timeout=5)
 
 
 class GatewayInboundHooksMixin:
@@ -42,7 +67,16 @@ class GatewayInboundHooksMixin:
     ) -> Optional[MessageEvent]:
         """Run the ``pre_gateway_dispatch`` plugin hook; None = drop, else the (maybe rewritten) event.
         Results: ``{"action": "skip"}`` → drop; ``{"action": "rewrite", "text"}`` → replace ``event.text``;
-        ``allow``/None → normal dispatch. Runs BEFORE auth so plugins can handle unauthorized senders."""
+        ``allow``/None → normal dispatch. On the messaging path it runs BEFORE auth so plugins can handle
+        unauthorized senders; on the producer path (webhook/relay, ``admit_producer``) it runs AFTER the
+        delivery's authorization, which preparing its payload performs, so it never sees a refused sender.
+
+        Once per inbound message, at ingress (here, or ``admit_producer`` for webhook/relay), never
+        while an admitted row EXECUTES: a messaging turn already passed it before its commit, and a
+        local CLI/TUI/Desktop turn never fired it on main, so a skip must not drop committed input."""
+        from gateway.session_ingress import executing_admission
+        if executing_admission.get():
+            return event
         try:
             from hermes_cli.lifecycle import ainvoke_hook as _ainvoke_hook
             _hook_results = await _ainvoke_hook(
@@ -68,7 +102,10 @@ class GatewayInboundHooksMixin:
             if _action == "rewrite":
                 _new_text = _result.get("text")
                 if isinstance(_new_text, str):
-                    event = dataclasses.replace(event, text=_new_text)
+                    from gateway.session_ingress_context import carry_callback
+                    rewritten = dataclasses.replace(event, text=_new_text)
+                    carry_callback(event, rewritten)
+                    event = rewritten
                 break
             if _action == "allow":
                 break
@@ -138,22 +175,33 @@ class GatewayInboundHooksMixin:
                     return False, None, event.get_command()
         return False, None, None
 
-    async def _hm_run_exec_quick_command(self, command: str, exec_cmd: str) -> str:
-        """Run a ``type: exec`` quick command in the gateway process (30 s cap, sanitized env — the
-        gateway process has every API key in os.environ; output is redacted too)."""
+    async def _hm_run_exec_quick_command(self, command: str, exec_cmd: str, cwd: Optional[str] = None) -> str:
+        """Run a ``type: exec`` quick command as a host shell of the gateway process: sanitized env
+        (the gateway process has every API key in os.environ), redacted output, its process tree
+        killed after 30 s or when the awaiting task is cancelled (gateway shutdown).
+        ``cwd`` is a local session's folder; None keeps the gateway's own (messaging)."""
+        proc = None
         try:
             from tools.environments.local import build_subprocess_env
             proc = await asyncio.create_subprocess_shell(
                 exec_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                env=build_subprocess_env(),
+                env=build_subprocess_env(), cwd=cwd,
+                # Its own process group, so cleanup can reach what the shell started (POSIX;
+                # Windows ignores it and _stop_exec_tree walks the tree with taskkill /T).
+                start_new_session=True,
             )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=_EXEC_QUICK_COMMAND_TIMEOUT)
             output = (stdout or stderr).decode().strip()
             if output:
                 from agent.redact import redact_sensitive_text
                 output = redact_sensitive_text(output)
             return output or t("gateway.quick_command.no_output")
-        except TimeoutError:
+        except (TimeoutError, asyncio.CancelledError) as stopped:
+            # One cleanup for both: a cancelled await must not leave the command running either.
+            if proc is not None:
+                await asyncio.shield(_stop_exec_tree(proc))
+            if isinstance(stopped, asyncio.CancelledError):
+                raise
             return t("gateway.quick_command.timed_out")
         except Exception as e:  # health: allow BLE001 -- moved unchanged from run_inbound.py (main has the same handler): an operator quick command's failure is its reply
             return t("gateway.quick_command.error", error=e)
@@ -190,30 +238,62 @@ class GatewayInboundHooksMixin:
                 return True, t("gateway.quick_command.no_target", command=command), command
             command = new_command  # Fall through to normal command dispatch below
 
-        # Plugin-registered slash commands. Underscores normalize to hyphens so Telegram's
-        # underscored autocomplete form matches plugin commands registered with hyphens.
+        if not command:
+            return False, None, command
+        return await self._hm_dispatch_plugin_command(event, source, command)
+
+    async def _hm_dispatch_plugin_command(
+        self, event: MessageEvent, source: SessionSource, command: str
+    ) -> tuple[bool, Optional[str], Optional[str]]:
+        """Plugin-registered slash command *command* → ``(handled, result, command)``. No quick
+        commands: a local session resolves those in its own profile before calling this."""
+        # Underscores normalize to hyphens so Telegram's underscored autocomplete form matches
+        # plugin commands registered with hyphens.
         if command:
             try:
                 from hermes_cli.plugins import get_plugin_command_handler
                 plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
                 if plugin_handler:
-                    # The agent-turn path binds HERMES_SESSION_* via _set_session_env; this dispatch
-                    # sits before it, so a handler reading get_session_env() would see an empty or a
-                    # foreign (cron agent's os.environ) session (#108698). No session_entry exists yet,
-                    # so session_key is derived from source. Sync handlers run on the gateway pool
-                    # (contextvars carried), never the loop thread: blocking I/O there starves the
-                    # liveness watchdog and the process exits 75 mid-handler (#105279).
-                    _plugin_context = build_session_context(source, self.config)
-                    _plugin_context.session_key = self._session_key_for_source(source)
-                    user_args = event.get_command_args().strip()
-                    with self._session_env_scope(_plugin_context):
-                        if asyncio.iscoroutinefunction(plugin_handler):
-                            result = await plugin_handler(user_args)
-                        else:
-                            result = await self._run_in_executor_with_context(plugin_handler, user_args)
-                            if asyncio.iscoroutine(result):
-                                result = await result
-                    return True, str(result) if result else None, command
+                    return True, await self._hm_run_plugin_handler(plugin_handler, event, source), command
             except Exception as e:
                 logger.warning("Plugin command dispatch failed: %s", e, exc_info=True)
         return False, None, command
+
+    async def _hm_run_plugin_handler(
+        self, plugin_handler, event: MessageEvent, source: SessionSource, session_entry=None, args=None
+    ) -> Optional[str]:
+        """Run a resolved plugin command handler for *source* → its reply text or None; raises what
+        the handler raises (``gateway/session_commands.py`` resolves the exact registered name).
+        *args* is the argument as typed (a local session's command); otherwise the message's
+        command arguments, with the messaging dash repair of ``get_command_args``."""
+        # The agent-turn path binds HERMES_SESSION_* via _set_session_env; this dispatch
+        # sits before it, so a handler reading get_session_env() would see an empty or a
+        # foreign (cron agent's os.environ) session (#108698). A local session's command
+        # passes its live *session_entry* (key and id, as its turns bind them); a messaging
+        # message has none yet, so session_key is derived from source. Sync handlers run on the
+        # gateway pool (contextvars carried), never the loop thread: blocking I/O there starves
+        # the liveness watchdog and the process exits 75 mid-handler (#105279).
+        if session_entry is None and getattr(self, "session_store", None) is not None:
+            # The chat's current session, if it has one (lookup only: a command never creates one), so
+            # HERMES_SESSION_ID / session_id name what a later /new reports as old_session_id (#123245).
+            session_entry = await self.async_session_store.lookup_by_session_key(
+                self._session_key_for_source(source))
+        _plugin_context = build_session_context(source, self.config, session_entry)
+        if session_entry is None:
+            _plugin_context.session_key = self._session_key_for_source(source)
+        user_args = event.get_command_args().strip() if args is None else args
+        from hermes_cli.plugin_command_dispatch import invoke_plugin_command
+        from gateway.plugin_messages import bind_live_source
+        call = functools.partial(
+            invoke_plugin_command, plugin_handler, user_args, source=source,
+            session_id=_plugin_context.session_id or "", session_key=_plugin_context.session_key or "",
+            platform=source.platform.value)
+        # ctx.post_message from the handler reaches this chat even before its session is stored.
+        with self._session_env_scope(_plugin_context), bind_live_source(source):
+            if inspect.iscoroutinefunction(plugin_handler):
+                result = await call()
+            else:
+                result = await self._run_in_executor_with_context(call)
+                if inspect.isawaitable(result):
+                    result = await result
+        return str(result) if result else None

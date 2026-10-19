@@ -40,7 +40,7 @@ import pytest
 # ---------------------------------------------------------------------------
 
 try:  # pragma: no cover - exercised implicitly by every exception test
-    from botocore.exceptions import (  # noqa: F401
+    from botocore.exceptions import (
         ClientError as _RealClientError,
         ConnectionClosedError as _RealConnectionClosedError,
     )
@@ -265,7 +265,7 @@ class TestConvertMessagesToConverse:
                 }],
             },
         ]
-        system, msgs = convert_messages_to_converse(messages)
+        _system, msgs = convert_messages_to_converse(messages)
         # 3 messages: user, assistant, trailing user (Converse requires last=user)
         assert len(msgs) == 3
         assistant_content = msgs[1]["content"]
@@ -287,13 +287,13 @@ class TestConvertMessagesToConverse:
             }]},
             {"role": "tool", "tool_call_id": "call_1", "content": "file contents here"},
         ]
-        system, msgs = convert_messages_to_converse(messages)
+        _system, msgs = convert_messages_to_converse(messages)
         # Tool result should be in a user-role message
         tool_result_msg = [m for m in msgs if m["role"] == "user" and any(
             "toolResult" in b for b in m["content"]
         )]
         assert len(tool_result_msg) == 1
-        tr = [b for b in tool_result_msg[0]["content"] if "toolResult" in b][0]
+        tr = next(b for b in tool_result_msg[0]["content"] if "toolResult" in b)
         assert tr["toolResult"]["toolUseId"] == "call_1"
         assert tr["toolResult"]["content"][0]["text"] == "file contents here"
 
@@ -850,6 +850,20 @@ class TestCachePointRejectionRecovery:
         first, second = client.converse.call_args_list
         assert CACHE_POINT in first.kwargs["toolConfig"]["tools"]
         assert CACHE_POINT not in second.kwargs["toolConfig"]["tools"]
+
+    def test_call_converse_one_shot_carries_no_cache_point(self):
+        """call_converse is the auxiliary entry point: a system + single-user request with no
+        tools is never read back, so no section may carry a cachePoint (a pure cache write)."""
+        from agent.bedrock_adapter import call_converse
+        client = MagicMock()
+        client.converse.return_value = {
+            "output": {"message": {"role": "assistant", "content": [{"text": "ok"}]}},
+            "stopReason": "end_turn", "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2}}
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client", return_value=client):
+            call_converse(region="us-east-1", model="us.anthropic.claude-sonnet-4-6",
+                          messages=[{"role": "system", "content": "Summarize."},
+                                    {"role": "user", "content": "TRANSCRIPT"}])
+        assert "cachePoint" not in repr(client.converse.call_args.kwargs)
 
     def test_call_converse_reraises_unrelated_errors(self):
         from agent.bedrock_adapter import call_converse

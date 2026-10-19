@@ -207,6 +207,23 @@ describe('materializing the draft profile', () => {
     expect(createCalls()).toHaveLength(1)
   })
 
+  it('creates it once a name is typed AFTER the Capabilities tab was opened nameless', async () => {
+    await renderDialog(true)
+    fireEvent.change(screen.getByPlaceholderText('inbox-triage'), { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
+    await screen.findByText(/Name the bot first/)
+
+    // Mid-word keystrokes must not each mint (and orphan) a draft.
+    fireEvent.change(screen.getByPlaceholderText('inbox-triage'), { target: { value: 'late' } })
+    fireEvent.change(screen.getByPlaceholderText('inbox-triage'), { target: { value: 'late-name' } })
+    // Edited during the debounce: the draft must carry it, not the value from the last name change.
+    fireEvent.change(screen.getByPlaceholderText('Inbox Triage'), { target: { value: 'Late Title' } })
+
+    await waitFor(() => expect(mocks.skillsView.at(-1)).toMatchObject({ fixedProfile: 'late-name' }), { timeout: 3000 })
+    expect(createCalls().map(([, params]) => params.name)).toEqual(['late-name'])
+    expect(createCalls()[0][1].description).toBe('Late Title')
+  })
+
   it('pins a remote-target draft to the TARGET machine, not the active gateway', async () => {
     mocks.connections.mockResolvedValue([
       { id: 'local', label: 'This Mac' },

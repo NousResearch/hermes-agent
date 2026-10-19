@@ -48,7 +48,7 @@ _USAGE = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000, cache_r
 @pytest.fixture
 def models_dev_registry(monkeypatch):
     """A models.dev cache holding the vendors' rate cards; the providers' own /models carry no prices."""
-    import agent.models_dev as models_dev
+    from agent import models_dev
 
     monkeypatch.setattr(models_dev, "_models_dev_cache", _MODELS_DEV_REGISTRY)
     monkeypatch.setattr("agent.usage_pricing.fetch_endpoint_model_metadata", lambda *_a, **_k: {})
@@ -179,8 +179,8 @@ def test_unknown_model_falls_back_to_endpoint_metadata(monkeypatch):
 
     assert entry is not None
     assert entry.source == "provider_models_api"
-    assert entry.input_cost_per_million == Decimal("1")
-    assert entry.output_cost_per_million == Decimal("2")
+    assert entry.input_cost_per_million == Decimal(1)
+    assert entry.output_cost_per_million == Decimal(2)
 
 
 
@@ -421,7 +421,7 @@ class TestFormatCostLabel:
     """Tests for magnitude-scaled cost label formatting."""
 
     def test_zero_renders_as_dollar_zero(self):
-        assert format_cost_label(Decimal("0")) == "$0.00"
+        assert format_cost_label(Decimal(0)) == "$0.00"
 
     def test_sub_cent_renders_4dp(self):
         """Costs below $0.01 render at 4 decimal places (#79220)."""
@@ -477,7 +477,7 @@ class TestSubscriptionIncludedNotes:
             provider="openai-codex",
         )
         assert result.status == "included"
-        assert result.amount_usd == Decimal("0")
+        assert result.amount_usd == Decimal(0)
         assert len(result.notes) > 0
 
 

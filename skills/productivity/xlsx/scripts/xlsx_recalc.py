@@ -84,7 +84,7 @@ def main(argv=None):
             capture_output=True, text=True, encoding="utf-8",
             timeout=args.timeout,
             env={"HOME": tmp, "PATH": Path(soffice).parent.as_posix()
-                 + ":/usr/bin:/bin"})
+                 + ":/usr/bin:/bin"}, check=False)
         produced = Path(tmp) / (src.stem + ".xlsx")
         if proc.returncode != 0 or not produced.exists():
             print(json.dumps({"ok": False,
@@ -106,6 +106,6 @@ def main(argv=None):
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         print(json.dumps({"ok": False, "error": str(exc)}), file=sys.stderr)
         sys.exit(1)

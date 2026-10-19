@@ -4,11 +4,15 @@ These are behavior contracts, not snapshots — they assert WHERE trust comes
 from and that explicit per-provider settings still beat it.
 """
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Any, NamedTuple
 
 import pytest
 
 from agent.ssl_verify import resolve_httpx_verify
+from datetime import UTC
 
 
 @pytest.fixture
@@ -84,20 +88,22 @@ import httpx
 with httpx.Client(verify=resolve_httpx_verify()) as client:
     ctx = client._transport._pool._ssl_context
     assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname
-"""], capture_output=True, text=True, timeout=30)
+"""], capture_output=True, text=True, timeout=30, check=False)
     assert child.returncode == 0, child.stderr
     assert "truststore unavailable" in child.stderr
 
 
-def test_explicit_provider_ca_replaces_platform_trust_on_real_https(tmp_path):
-    """A private endpoint trusts only its provider CA, never a global fallback."""
-    from datetime import datetime, timedelta, timezone
+@contextmanager
+def _private_https_server(tmp_path: Path) -> Iterator[tuple[Any, Path]]:
+    """A TLS server no public certificate store has ever seen.
+
+    Yields ``(server, ca)``: the running server, and the PEM of the CA that signed
+    its certificate — the only bundle that can trust it.
+    """
+    from datetime import datetime, timedelta
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from ipaddress import ip_address
-    import os
     import ssl
-    import subprocess
-    import sys
     import threading
 
     from cryptography import x509
@@ -107,12 +113,18 @@ def test_explicit_provider_ca_replaces_platform_trust_on_real_https(tmp_path):
 
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Private provider")])
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     cert = (x509.CertificateBuilder().subject_name(subject).issuer_name(subject)
             .public_key(key.public_key()).serial_number(x509.random_serial_number())
             .not_valid_before(now - timedelta(days=1)).not_valid_after(now + timedelta(days=1))
             .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
             .add_extension(x509.SubjectAlternativeName([x509.IPAddress(ip_address("127.0.0.1"))]), critical=False)
+            # macOS Security.framework rejects a server cert without these ("not permitted
+            # for this usage"); OpenSSL-backed platforms accept it either way.
+            .add_extension(x509.KeyUsage(digital_signature=True, key_encipherment=True, key_cert_sign=True,
+                                         content_commitment=False, data_encipherment=False, key_agreement=False,
+                                         crl_sign=False, encipher_only=False, decipher_only=False), critical=True)
+            .add_extension(x509.ExtendedKeyUsage([x509.oid.ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
             .sign(key, hashes.SHA256()))
     ca = tmp_path / "provider-ca.pem"
     private = tmp_path / "provider.key"
@@ -137,13 +149,34 @@ def test_explicit_provider_ca_replaces_platform_trust_on_real_https(tmp_path):
     server.socket = context.wrap_socket(server.socket, server_side=True)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
+    try:
+        yield server, ca
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def _child_env(tmp_path: Path) -> dict[str, str]:
+    """A subprocess environment with no inherited TLS overrides."""
+    import os
+
     home = tmp_path / "home"
-    home.mkdir()
+    home.mkdir(exist_ok=True)
     env = os.environ.copy()
     env.update(HOME=str(tmp_path), HERMES_HOME=str(home), NO_PROXY="127.0.0.1")
     for key in ("SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
         env.pop(key, None)
-    script = """
+    return env
+
+
+def test_explicit_provider_ca_replaces_platform_trust_on_real_https(tmp_path):
+    """A private endpoint trusts only its provider CA, never a global fallback."""
+    import subprocess
+    import sys
+
+    with _private_https_server(tmp_path) as (server, ca):
+        script = """
 import httpx, sys
 from agent.ssl_verify import resolve_httpx_verify
 url, ca = sys.argv[1:]
@@ -156,16 +189,11 @@ else:
 response = httpx.get(url, verify=resolve_httpx_verify(ca_bundle=ca), timeout=5)
 assert response.content == b'private provider', response
 """
-    try:
         child = subprocess.run(
             [sys.executable, "-c", script, f"https://127.0.0.1:{server.server_port}/", str(ca)],
-            env=env, capture_output=True, text=True, timeout=30, check=False,
+            env=_child_env(tmp_path), capture_output=True, text=True, timeout=30, check=False,
         )
         assert child.returncode == 0, child.stdout + child.stderr
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=5)
 
 
 def test_explicit_bundle_works_without_truststore():
@@ -183,5 +211,320 @@ ctx = resolve_httpx_verify(ca_bundle=certifi.where())
 assert isinstance(ctx, ssl.SSLContext), ctx
 assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname
 assert ctx.cert_store_stats()['x509_ca'] > 0
-"""], capture_output=True, text=True, timeout=30)
+"""], capture_output=True, text=True, timeout=30, check=False)
     assert child.returncode == 0, child.stderr
+
+
+# ---------------------------------------------------------------------------
+# An install environment replaced under a live process: certifi's path dies
+# ---------------------------------------------------------------------------
+
+
+class _Rotation(NamedTuple):
+    """One install-environment rotation, as the live process sees it."""
+
+    module: Any
+    """The certifi imported from the environment that was then deleted."""
+    stale_package: Path
+    """``env-a/certifi`` — gone from disk, still the path certifi reports."""
+    live_package: Path | None
+    """``env-b/certifi`` when a replacement was installed, else ``None``."""
+
+
+def _stand_in_certifi_env(root: Path, name: str, bundle: bytes) -> Path:
+    """A byte-for-byte copy of the INSTALLED certifi package.
+
+    The stand-in has to be the real package, not a file that recomputes its own path
+    on every call: certifi's ``where`` lives in ``certifi.core`` and caches the
+    resolved path in a module global, and clearing that caching is exactly what a
+    repair has to do. A single-file stand-in passes while the real package stays
+    broken.
+    """
+    import shutil
+
+    import certifi as installed
+
+    package = root / name / "certifi"
+    shutil.copytree(Path(installed.__file__).parent, package,
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    (package / "cacert.pem").write_bytes(bundle)  # a real PEM: contexts must load it
+    return package
+
+
+def _client_ssl_context(client):
+    """The context httpx built for this client's connection pool."""
+    from typing import cast
+
+    return cast(Any, client._transport)._pool._ssl_context
+
+
+def _rotated_certifi(tmp_path: Path, monkeypatch, *, replacement: bool) -> _Rotation:
+    """Delete the environment directory the imported certifi points into.
+
+    The package manager's rotation without a package manager: certifi is imported
+    from ``env-a``, then that directory is removed. ``replacement`` adds the
+    identical package the manager would have installed as ``env-b``.
+    """
+    import importlib
+    import shutil
+    import sys
+
+    import certifi as real_certifi
+    import requests.utils
+
+    bundle = Path(real_certifi.where()).read_bytes()  # a real PEM: contexts must load it
+    stale = _stand_in_certifi_env(tmp_path, "env-a", bundle)
+    live = None
+    if replacement:
+        live = _stand_in_certifi_env(tmp_path, "env-b", bundle)
+        monkeypatch.syspath_prepend(str(live.parent))
+    monkeypatch.syspath_prepend(str(stale.parent))
+    for name in [n for n in sys.modules if n == "certifi" or n.startswith("certifi.")]:
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    importlib.invalidate_caches()
+    stand_in = importlib.import_module("certifi")
+    monkeypatch.setitem(sys.modules, "certifi", stand_in)
+    assert Path(stand_in.where()).parent == stale
+    # requests froze its default bundle path from the same certifi at import.
+    monkeypatch.setattr(requests.utils, "DEFAULT_CA_BUNDLE_PATH", stand_in.where())
+    shutil.rmtree(stale)
+    assert not Path(stand_in.where()).exists()
+    return _Rotation(stand_in, stale, live)
+
+
+def _ssl_verify_warnings(caplog) -> list:
+    return [record for record in caplog.records if record.name == "agent.ssl_verify"]
+
+
+def test_replaced_install_environment_re_resolves_certifi_in_place(tmp_path, monkeypatch, caplog, no_ca_env):
+    """A process that outlives an environment rotation holds certifi's path into the
+    deleted directory, and httpx builds every SSL context through it. The package is
+    re-imported against the live ``sys.path``, so client construction succeeds again
+    for this process and every other certifi consumer in it."""
+    import logging
+    import ssl
+    import sys
+
+    import httpx
+
+    rotation = _rotated_certifi(tmp_path, monkeypatch, replacement=True)
+    stale_core = sys.modules["certifi.core"]
+
+    with caplog.at_level(logging.WARNING, logger="agent.ssl_verify"):
+        verify = resolve_httpx_verify()
+
+    assert verify is True  # httpx's own default, now backed by a bundle that exists
+    with httpx.Client(verify=verify) as client:  # the construction that raised FileNotFoundError
+        assert _client_ssl_context(client).verify_mode == ssl.CERT_REQUIRED
+    # The repair reaches certifi itself, not just this call's return value: httpx
+    # resolves verify=True through certifi.where() at every construction.
+    assert rotation.live_package is not None
+    live_bundle = Path(sys.modules["certifi"].where())
+    assert sys.modules["certifi"] is not rotation.module
+    assert sys.modules["certifi.core"] is not stale_core
+    assert live_bundle.is_file() and live_bundle.parent.resolve() == rotation.live_package.resolve()
+    live_core_file = Path(str(getattr(sys.modules["certifi.core"], "__file__", "")))
+    assert live_core_file.parent.resolve() == rotation.live_package.resolve()
+    logged = _ssl_verify_warnings(caplog)
+    assert len(logged) == 1 and "re-resolved" in logged[0].getMessage()
+    assert str(rotation.stale_package) in logged[0].getMessage()
+
+
+def test_rotation_repair_and_warning_happen_once(tmp_path, monkeypatch, caplog, no_ca_env):
+    """A gateway builds a TLS client per turn, per cron run and per model-metadata
+    fetch: the repair re-executes third-party module code, so it — and the single
+    warning an operator needs — must not repeat per client."""
+    import logging
+
+    from agent import ssl_verify
+
+    _rotated_certifi(tmp_path, monkeypatch, replacement=True)
+    reloads: list[int] = []
+    real_reload = ssl_verify._reload_certifi_bundle
+
+    def counting_reload():
+        reloads.append(1)
+        return real_reload()
+
+    monkeypatch.setattr(ssl_verify, "_reload_certifi_bundle", counting_reload)
+
+    with caplog.at_level(logging.WARNING, logger="agent.ssl_verify"):
+        for _ in range(5):
+            assert ssl_verify.resolve_httpx_verify() is True
+            ssl_verify.requests_verify()
+
+    assert len(reloads) == 1
+    assert len(_ssl_verify_warnings(caplog)) == 1
+
+
+def test_unrecoverable_bundle_hands_over_the_platform_context(tmp_path, monkeypatch, caplog, no_ca_env):
+    """Nothing left to re-resolve: the platform store is handed over instead of
+    raising, which is the difference between a degraded process and a fleet-wide
+    TLS outage that only a restart clears."""
+    import logging
+    import ssl
+
+    import httpx
+
+    from agent import ssl_verify
+
+    _rotated_certifi(tmp_path, monkeypatch, replacement=False)
+    attempts: list[int] = []
+
+    def unrecoverable() -> None:
+        attempts.append(1)  # the answer this stand-in gives is None
+
+    monkeypatch.setattr(ssl_verify, "_reload_certifi_bundle", unrecoverable)
+
+    verify: Any = None
+    with caplog.at_level(logging.WARNING, logger="agent.ssl_verify"):
+        for _ in range(5):
+            verify = resolve_httpx_verify()
+
+    assert isinstance(verify, ssl.SSLContext)
+    assert len(attempts) == 1  # a dead path is not re-probed per client
+    logged = _ssl_verify_warnings(caplog)
+    assert len(logged) == 1 and "could not be re-resolved" in logged[0].getMessage()
+    with httpx.Client(verify=verify) as client:
+        assert _client_ssl_context(client).verify_mode == ssl.CERT_REQUIRED
+
+
+def test_requests_verify_hands_over_a_bundle_that_exists(tmp_path, monkeypatch, no_ca_env):
+    """``requests`` freezes its default bundle path when it is imported, so no reload
+    can reach it: its call sites ask for a live bundle instead."""
+    from agent import ssl_verify
+
+    rotation = _rotated_certifi(tmp_path, monkeypatch, replacement=True)
+
+    verify = ssl_verify.requests_verify()
+
+    assert rotation.live_package is not None
+    assert Path(str(verify)).resolve() == (rotation.live_package / "cacert.pem").resolve()
+    assert Path(str(verify)).is_file()
+
+
+def test_requests_verify_never_hands_over_the_deleted_bundle(tmp_path, monkeypatch, no_ca_env):
+    """With nothing re-resolvable the answer is OpenSSL's own bundle, or requests'
+    own default — never the path the rotation deleted."""
+    from agent import ssl_verify
+
+    rotation = _rotated_certifi(tmp_path, monkeypatch, replacement=False)
+    dead = rotation.module.where()
+    monkeypatch.setattr(ssl_verify, "_reload_certifi_bundle", lambda: None)
+
+    verify = ssl_verify.requests_verify()
+
+    assert str(verify) != dead
+    assert verify is True or Path(str(verify)).exists()
+
+
+def test_rotated_process_keeps_trusting_the_bundle_it_was_configured_with(tmp_path):
+    """End to end over real TLS: a process whose install environment was replaced
+    still builds a client that trusts the CA it was configured with.
+
+    The private server is trusted by the rotated bundle and by nothing else, so a
+    process that fell back to the platform store — or that kept pointing into the
+    deleted directory — cannot complete this request.
+    """
+    import subprocess
+    import sys
+
+    with _private_https_server(tmp_path) as (server, ca):
+        bundle = ca.read_bytes()
+        stale = _stand_in_certifi_env(tmp_path, "env-a", bundle)
+        live = _stand_in_certifi_env(tmp_path, "env-b", bundle)
+        script = """
+import shutil, sys
+from pathlib import Path
+url, env_a, env_b = sys.argv[1:4]
+sys.path.insert(0, env_a)
+import certifi
+assert Path(certifi.where()).parent.resolve() == Path(env_a, 'certifi').resolve(), certifi.where()
+sys.path.insert(0, env_b)
+sys.path.remove(env_a)
+shutil.rmtree(env_a)
+import httpx
+from agent.ssl_verify import resolve_httpx_verify
+response = httpx.get(url, verify=resolve_httpx_verify(), timeout=5)
+assert response.content == b'private provider', response.content
+live = Path(sys.modules['certifi'].where())
+assert live.is_file() and live.parent.resolve() == Path(env_b, 'certifi').resolve(), live
+"""
+        child = subprocess.run(
+            [sys.executable, "-c", script, f"https://127.0.0.1:{server.server_port}/",
+             str(stale.parent), str(live.parent)],
+            env=_child_env(tmp_path), capture_output=True, text=True, timeout=60, check=False,
+        )
+        assert child.returncode == 0, child.stdout + child.stderr
+
+
+def test_requests_verify_keeps_requests_own_ca_overrides(monkeypatch, no_ca_env):
+    """requests reads ``REQUESTS_CA_BUNDLE`` only for ``verify=True``; a healthy install
+    or a configured override must keep it, or a proxy CA stops being trusted."""
+    from agent import ssl_verify
+
+    assert ssl_verify.requests_verify() is True
+    monkeypatch.setenv("REQUESTS_CA_BUNDLE", "/corp/proxy-ca.pem")
+    monkeypatch.setattr("requests.utils.DEFAULT_CA_BUNDLE_PATH", "/gone/cacert.pem")
+    assert ssl_verify.requests_verify() is True
+
+
+
+def test_requests_verify_hands_over_the_platform_store_without_openssl_files(tmp_path, monkeypatch, no_ca_env):
+    """Windows: requests' frozen bundle is gone, certifi cannot be re-derived and OpenSSL has no
+    cafile/capath. ``True`` would make requests raise on the dead path, so the OS store goes over
+    as a PEM bundle that requests accepts."""
+    import ssl
+    from types import SimpleNamespace
+
+    import requests
+
+    from agent import ssl_verify
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("REQUESTS_CA_BUNDLE", raising=False)
+    monkeypatch.delenv("CURL_CA_BUNDLE", raising=False)
+    monkeypatch.setattr(ssl_verify, "_PLATFORM_STORE_BUNDLE", None)
+    monkeypatch.setattr(ssl_verify, "certifi_bundle_path", lambda: None)
+    monkeypatch.setattr("requests.utils.DEFAULT_CA_BUNDLE_PATH", str(tmp_path / "gone" / "cacert.pem"))
+    monkeypatch.setattr(ssl, "get_default_verify_paths", lambda: SimpleNamespace(cafile=None, capath=None))
+    # Windows enumerates its system store into the context; a Linux CA directory loads lazily and
+    # lists nothing. Stand in a store holding one real root so the test means the same everywhere.
+    import certifi
+
+    pem = Path(certifi.where()).read_text().split("-----END CERTIFICATE-----")[0] + "-----END CERTIFICATE-----\n"
+    root_der = ssl.PEM_cert_to_DER_cert(pem[pem.index("-----BEGIN CERTIFICATE-----"):])
+
+    class _WindowsLikeStore(ssl.SSLContext):
+        def get_ca_certs(self, binary_form=False):
+            return [root_der]
+
+    monkeypatch.setattr(ssl_verify, "_stdlib_ssl_context_class", lambda: _WindowsLikeStore)
+
+    verify = ssl_verify.requests_verify()
+    assert isinstance(verify, str) and Path(verify).is_relative_to(tmp_path / "home")
+    assert "BEGIN CERTIFICATE" in Path(verify).read_text()
+    # requests takes the bundle: the request fails on the closed port, not on a missing CA file.
+    with pytest.raises(requests.exceptions.ConnectionError):
+        requests.get("https://127.0.0.1:9/", verify=verify, timeout=2)
+
+
+def test_platform_store_bundle_survives_an_unwritable_home(tmp_path, monkeypatch):
+    """A full or read-only HERMES_HOME leaves requests_verify on its ``True`` fallback
+    instead of raising the disk error out of the requests call site."""
+    from agent import ssl_verify
+
+    import ssl
+
+    class _StoreWithACert(ssl.SSLContext):
+        # A Linux CA directory loads lazily and lists nothing; give the store one cert so the
+        # write (and its failure) is what decides the result.
+        def get_ca_certs(self, binary_form=False):
+            return [b"0"]
+
+    blocker = tmp_path / "home"
+    blocker.write_text("not a directory")  # mkdir(cache) under a file raises OSError
+    monkeypatch.setenv("HERMES_HOME", str(blocker))
+    monkeypatch.setattr(ssl_verify, "_PLATFORM_STORE_BUNDLE", None)
+    monkeypatch.setattr(ssl_verify, "_stdlib_ssl_context_class", lambda: _StoreWithACert)
+    assert ssl_verify._platform_store_bundle() is None

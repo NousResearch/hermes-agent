@@ -96,7 +96,6 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     """
     cfg = cfg if isinstance(cfg, dict) else {}
     compression = cfg.get("compression") if isinstance(cfg.get("compression"), dict) else {}
-    model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
     from agent.agent_init import config_context_length_for_runtime, set_config_context_length
     enabled_raw = compression.get("enabled", True)
     agent.compression_enabled = enabled_raw if isinstance(enabled_raw, bool) else str(enabled_raw).lower() in {"true", "1", "yes"}
@@ -334,14 +333,8 @@ def _sync_session_key_after_compress(
         from tools import approval
         with contextlib.suppress(Exception):
             approval.unregister_gateway_notify(old_key)
-        with contextlib.suppress(Exception):
-            if approval.is_session_yolo_enabled(old_key):
-                approval.enable_session_yolo(new_session_id)
-                approval.disable_session_yolo(old_key)
-                # The toggle persisted the now-ended parent row; carry it onto the continuation (CLI parity).
-                with _session_db(session) as db:
-                    if db is not None:
-                        db.set_session_yolo(new_session_id, True)
+        from tools.approval_yolo import transfer_session_yolo
+        transfer_session_yolo(old_key, new_session_id)
         with contextlib.suppress(Exception):
             approval.register_gateway_notify(new_session_id, lambda data: _emit_approval_request(sid, data))
     # Invalidate any in-flight ``_drain_queued_prompt`` claim taken under the pre-rotation key: a raced

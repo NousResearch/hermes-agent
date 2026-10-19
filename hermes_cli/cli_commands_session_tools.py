@@ -16,7 +16,7 @@ import shlex
 from contextlib import redirect_stdout
 from io import StringIO
 
-from agent.i18n import t  # noqa: F401  module-global seam: _t/_tn/_gt close over it
+from agent.i18n import t
 
 
 def _cp(*lines: str) -> None:
@@ -80,6 +80,17 @@ def _lines(text: str, pad: str = "  ") -> list:
     return [f"{pad}{line}" if line else "" for line in text.splitlines()]
 
 
+def _rollback_kept(result: dict) -> None:
+    """The kept / not-removed path lines of a restore result (in-process CLI and gateway client alike)."""
+    from hermes_cli.cli_commands_mixin import _summarize_paths
+    if skipped := result.get("skipped_user_edits"):
+        _pr(*_lines(_gt("rollback.kept_user_edits", files=_summarize_paths(skipped))))
+    if oversize := result.get("skipped_oversize"):
+        print(f"  {_gt('rollback.kept_oversize', files=_summarize_paths(oversize))}")
+    if failed := result.get("failed_deletes"):
+        print(f"  {_gt('rollback.failed_deletes', files=_summarize_paths(failed))}")
+
+
 def _probe(module: str, name: str, default, *args):
     """``<module>.<name>(*args)`` or ``default`` when the import or the call fails (optional
     subsystems: browser backends, async delegations, wake word, ...)."""
@@ -97,26 +108,30 @@ class CLICommandsSessionToolsMixin:
     # ---- /stop, /agents -------------------------------------------------------------------
     def _handle_stop_command(self):
         """Handle /stop — kill all running background processes and background (async) delegations.
-        Separate from interrupt (stop the current turn), as in Codex.
+        Typed while a turn runs it stops that turn first, as Ctrl+C does (the registry's
+        ``busy_policy="interrupt_then_dispatch"``; the input loop dispatches it inline, on the UI
+        thread). The interrupt is immediate; the background cleanup then runs on a worker thread,
+        since ``kill_all`` waits out each process's stop grace period and would freeze input.
 
         See #14602.
         """
-        from tools.process_registry import process_registry
-        running = [p for p in process_registry.list_sessions() if p.get("status") == "running"]
-        # Background subagents live in their own registry, not the process registry.
-        n_async = _probe("tools.async_delegation", "active_count", 0)
-        if not running and not n_async:
-            return print(f"  {_t('stop.none_running')}")
-        if running:
-            print(f"  {_t('stop.stopping', count=len(running))}")
-            print(f"  {_t('stop.stopped', count=process_registry.kill_all(source='cli.stop'))}")
-        if n_async:
-            from tools.async_delegation import interrupt_all
-            print(f"  {_t('stop.interrupted_delegations', count=interrupt_all(reason='/stop'))}")
+        if not getattr(self, "_agent_running", False):
+            return _stop_background_work()
+        if getattr(self, "agent", None):
+            from agent.interrupt_compat import request_hard_interrupt
+            print(f"  {t('cli.tui.interrupting')}")
+            request_hard_interrupt(self.agent)
+        from agent.memory_provider import spawn_context_thread
+        spawn_context_thread(_stop_background_work, name="cli-stop").start()
 
     def _handle_agents_command(self):
-        """Handle /agents — show background processes and agent status."""
-        from tools.process_registry import format_uptime_short, process_registry
+        """Handle /agents — show background processes and agent status. On the gateway both run there:
+        the session's ``process.list`` and its usage's running-subagent count (no per-delegation rows)."""
+        from hermes_cli.gateway_tools import process_registry as _registry, process_view
+        from tools.process_registry import format_uptime_short
+        process_registry, view = _registry(), process_view()
+        if view is not None:
+            view.refresh(force=True)
         processes = process_registry.list_sessions()
         running = [p for p in processes if p.get("status") == "running"]
         finished = [p for p in processes if p.get("status") != "running"]
@@ -126,36 +141,10 @@ class CLICommandsSessionToolsMixin:
             _cp(f"    {p.get('session_id', '?')} · {up} · {p.get('command', '')[:80]}")
         if finished:
             _cp(f"  {_t('agents.recently_finished', count=len(finished))}")
-        # Background (async) delegations — delegate_task(background=true)
-        delegations = _probe("tools.async_delegation", "list_async_delegations", [])
-        if delegations:
-            running_d = [d for d in delegations if d.get("status") in ("running", "stalling")]
-            _cp(f"  {_t('agents.background_delegations', count=len(running_d))}")
-            for d in delegations:
-                status = d.get("status", "?")
-                line = f"    {d.get('delegation_id', '?')} · {status} · {(d.get('goal') or '')[:60]}"
-                # Live-status detail for in-flight delegations.
-                # See #51690.
-                if status == "stalling":
-                    quiet = d.get("stalled_after_quiet_seconds")
-                    if quiet is not None:
-                        line += _t("agents.no_progress", seconds=f"{quiet:.0f}")
-                elif status == "running":
-                    quiet = d.get("seconds_since_progress")
-                    if quiet is not None and quiet >= 60:
-                        line += _t("agents.quiet", seconds=f"{quiet:.0f}")
-                _cp(line)
-                for i, child in enumerate(d.get("children_activity") or []):
-                    if not isinstance(child, dict):
-                        continue
-                    tool = child.get("current_tool")
-                    doing = _t("agents.in_tool", tool=tool) if tool else _t("agents.between_turns")
-                    part = "      " + _t("agents.child_line", index=i + 1,
-                                         api_calls=child.get("api_calls", "?"), doing=doing)
-                    idle = child.get("seconds_since_activity")
-                    if idle is not None:
-                        part += _t("agents.last_activity", seconds=f"{idle:.0f}")
-                    _cp(part)
+        if view is None:
+            _print_local_delegations()
+        elif n_async := view.active_delegations():
+            _cp(f"  {_t('agents.background_delegations', count=n_async)}")
         agent_running = getattr(self, "_agent_running", False)
         _cp(f"  {_t('agents.agent_running') if agent_running else _t('agents.agent_idle')}")
 
@@ -275,7 +264,7 @@ class CLICommandsSessionToolsMixin:
         self._run_tools_config(tools_action=subcommand, names=names, platform="cli")
         from hermes_cli.tools_config import _get_platform_tools
         from hermes_cli.config import load_config
-        self.enabled_toolsets = _get_platform_tools(load_config(), "cli")
+        self.enabled_toolsets = sorted(_get_platform_tools(load_config(), "cli"))  # plain data for session.create
         self.new_session()
         _cp(_dim(_t("tools.session_reset")))
 
@@ -292,12 +281,89 @@ class CLICommandsSessionToolsMixin:
             tools_disable_enable_command(Namespace(**ns))
         _cp(*buf.getvalue().splitlines())
 
+    def _handle_autoprune_command(self, cmd: str):
+        """/autoprune [on|off|later|status] — the low-disk auto-prune decision."""
+        from hermes_cli.slash_exec import CommandContext, execute_command
+        _say_block(execute_command("autoprune", CommandContext(surface="cli", args=cmd.partition(" ")[2])).text)
+
     def _handle_profile_command(self):
         """Display active profile name and home directory."""
         from hermes_cli.slash_exec import CommandContext, execute_command
         reply = execute_command("profile", CommandContext(surface="cli"))
         _say_block(f"  {_t('profile.profile', profile=reply.data['profile'])}",
                    f"  {_t('profile.home', home=reply.data['home'])}")
+
+
+def _stop_background_work() -> None:
+    """``/stop``'s cleanup: kill the background processes, then interrupt the background (async)
+    delegations. Mid-turn it runs on a worker thread and prints its result from there."""
+    from hermes_cli.gateway_tools import process_registry as _registry, process_view
+    process_registry, view = _registry(), process_view()
+    if view is not None:
+        view.refresh(force=True)
+    running = [p for p in process_registry.list_sessions() if p.get("status") == "running"]
+    # Background subagents live in their own registry, not the process registry.
+    n_async = view.active_delegations() if view is not None else _probe("tools.async_delegation", "active_count", 0)
+    if not running and not n_async:
+        return print(f"  {_t('stop.none_running')}")
+    if running:
+        print(f"  {_t('stop.stopping', count=len(running))}")
+        print(f"  {_t('stop.stopped', count=process_registry.kill_all(source='cli.stop'))}")
+    if n_async:
+        if view is not None:
+            interrupted = view.interrupt_delegations()  # the gateway interrupts this session's own
+        else:
+            from tools.async_delegation import interrupt_all
+            interrupted = interrupt_all(reason='/stop')
+        print(f"  {_t('stop.interrupted_delegations', count=interrupted)}")
+
+
+def print_session_diff(cli, result: dict, stat_only: bool) -> None:
+    """Render a ``CheckpointManager.session_diff`` result (``/diff session``): this process's agent's,
+    or the gateway session's ``rollback.session_diff`` (``diff_lines``: its uncut body's line count)."""
+    if not result.get("success"):
+        return print(f"  {result.get('error') or _t('shared.could_not_generate_diff')}")
+    stat, diff = result.get("stat", ""), result.get("diff", "")
+    if result.get("empty") or (not stat and not diff):
+        return print(f"  {_t('diff.no_session_changes')}")
+    if stat:
+        cli._print_diff_text(f"\n{stat}")
+    if diff and not stat_only:
+        cli._print_diff_body(diff, _t("diff.stat_hint_session"), total=int(result.get("diff_lines") or 0))
+
+
+def _print_local_delegations() -> None:
+    """This process's background (async) delegations — delegate_task(background=true)."""
+    delegations = _probe("tools.async_delegation", "list_async_delegations", [])
+    if not delegations:
+        return
+    running_d = [d for d in delegations if d.get("status") in ("running", "stalling")]
+    _cp(f"  {_t('agents.background_delegations', count=len(running_d))}")
+    for d in delegations:
+        status = d.get("status", "?")
+        line = f"    {d.get('delegation_id', '?')} · {status} · {(d.get('goal') or '')[:60]}"
+        # Live-status detail for in-flight delegations.
+        # See #51690.
+        if status == "stalling":
+            quiet = d.get("stalled_after_quiet_seconds")
+            if quiet is not None:
+                line += _t("agents.no_progress", seconds=f"{quiet:.0f}")
+        elif status == "running":
+            quiet = d.get("seconds_since_progress")
+            if quiet is not None and quiet >= 60:
+                line += _t("agents.quiet", seconds=f"{quiet:.0f}")
+        _cp(line)
+        for i, child in enumerate(d.get("children_activity") or []):
+            if not isinstance(child, dict):
+                continue
+            tool = child.get("current_tool")
+            doing = _t("agents.in_tool", tool=tool) if tool else _t("agents.between_turns")
+            part = "      " + _t("agents.child_line", index=i + 1,
+                                 api_calls=child.get("api_calls", "?"), doing=doing)
+            idle = child.get("seconds_since_activity")
+            if idle is not None:
+                part += _t("agents.last_activity", seconds=f"{idle:.0f}")
+            _cp(part)
 
 
 class _TTYBuf(StringIO):

@@ -1,5 +1,4 @@
-"""``session.create`` composer overrides, the model×provider coherence gate (#96817), and the
-per-session runtime state ``session.resume`` restores from the stored row.
+"""``session.create`` composer overrides and the model×provider coherence gate (#96817).
 
 A composer, script or older client can pin a model the selected provider cannot serve
 (``gpt-5.5`` on ``anthropic``); the session used to be minted fine and the FIRST turn died with
@@ -50,13 +49,3 @@ def create_overrides(params: dict) -> tuple:
     elif "fast" in params:
         service_tier_override = "priority" if is_truthy_value(params.get("fast")) else ""
     return model_override, reasoning_override, service_tier_override
-
-
-def restore_session_yolo(session_key: str, session_meta: dict | None) -> None:
-    """Re-arm a persisted session /yolo on ``session.resume``: a new backend process starts with an empty
-    in-memory approval set. Keyed on the stored id (``ctx.target``), the key approvals are checked under,
-    never the freshly minted runtime sid. Mirrors ``cli_session_mixin._restore_session_yolo``."""
-    from hermes_state import SessionDB
-    from tools.approval import enable_session_yolo
-    if session_key and SessionDB.session_yolo_enabled(session_meta):
-        enable_session_yolo(session_key)

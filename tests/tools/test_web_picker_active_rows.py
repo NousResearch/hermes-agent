@@ -49,7 +49,7 @@ def test_row_active_iff_it_serves_a_capability(web, active, inactive):
 def test_managed_row_active_for_a_nous_capability_pin(monkeypatch):
     """``extract_backend: nous`` (Desktop "Use for Extract" on Nous Subscription): the managed row serves
     extract and must be active alongside the BYOK row serving search; a vendor-only config leaves it off."""
-    import hermes_cli.tools_config as tools_config
+    from hermes_cli import tools_config
 
     monkeypatch.setattr(tools_config, "get_nous_subscription_features", lambda *a, **k: types.SimpleNamespace(
         features={"web": types.SimpleNamespace(managed_by_nous=True)}))
@@ -74,7 +74,7 @@ def _web_rows():
 def test_firecrawl_rows_split_by_the_credential_set(monkeypatch, env, active):
     """Cloud and Self-Hosted rows share ``web_backend: firecrawl``; only the one whose env var is set
     is the configured provider (#112022), so the picker cursor does not land on an unconfigured row."""
-    import hermes_cli.tools_config as tools_config
+    from hermes_cli import tools_config
 
     monkeypatch.setattr(tools_config, "get_env_value", env.get)
     rows = _web_rows()

@@ -157,7 +157,7 @@ def test_completion_runs_under_a_parents_claim_without_releasing_it(tmp_path):
         "sys.exit(subprocess.call([sys.executable, '-c', sys.argv[1]]))\n"
     )
     run = subprocess.run([sys.executable, "-c", parent, tail], capture_output=True, timeout=120,
-                         text=True, encoding="utf-8", errors="replace")
+                         text=True, encoding="utf-8", errors="replace", check=False)
 
     assert run.returncode == 0 and run.stdout.strip().splitlines()[-1:] == ["true"], run.stdout + run.stderr
     assert marker.exists(), "the parent still owns its claim after our tail"
@@ -167,7 +167,7 @@ def _verify_bootstrap_receipt(root: Path) -> subprocess.CompletedProcess:
     """The same verifier the Windows install/update E2E runs after an update."""
     script = Path(__file__).resolve().parents[2] / "scripts" / "verify-bootstrap-version-stamp.py"
     return subprocess.run([sys.executable, "-B", str(script), "--stamp", str(root / ".hermes-bootstrap-complete"),
-                           "--repo", str(root)], capture_output=True, text=True, encoding="utf-8")
+                           "--repo", str(root)], capture_output=True, text=True, encoding="utf-8", check=False)
 
 
 def test_publishing_checkout_identity_moves_an_installer_receipt_to_head(tmp_path):

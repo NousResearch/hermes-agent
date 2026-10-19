@@ -85,7 +85,7 @@ def test_router_efforts_cache_and_base_url_follow_the_active_profile(homes, monk
     """Efforts map + once-only flags are per home under an override (and the warm thread inherits the
     scope), while the unscoped path keeps using the module slots; the base URL comes from the
     profile's .env."""
-    import hermes_cli.urllib_security as urllib_security
+    from hermes_cli import urllib_security
 
     a, b = homes
     profile, mod = _router()
@@ -196,7 +196,7 @@ def test_disk_cleanup_protected_cron_paths_follow_the_active_home(homes):
 def test_yuanbao_active_adapter_resolves_per_profile(homes, monkeypatch):
     """Each profile's turn reads back its own adapter; the unscoped slot still serves single-profile."""
     from gateway.config import PlatformConfig
-    from gateway.platforms.yuanbao import YuanbaoAdapter
+    from plugins.platforms.yuanbao.adapter import YuanbaoAdapter
 
     a, b = homes
     cfg = PlatformConfig(enabled=True, extra={"app_id": "x", "app_secret": "y"})

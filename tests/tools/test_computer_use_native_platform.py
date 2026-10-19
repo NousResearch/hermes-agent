@@ -31,7 +31,7 @@ def backend(monkeypatch):
     ({"action": "list_windows"}, "list_windows"),
 ])
 def test_native_computer_use_dispatches_to_backend(backend, args, expected_call, host_platform):
-    import tools.computer_use_tool  # noqa: F401 - register the real tool handler
+    import tools.computer_use_tool
     from tools.registry import registry
 
     assert sys.platform == host_platform

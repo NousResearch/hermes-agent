@@ -88,7 +88,7 @@ def bake_bytecode(root: Path, python: Path) -> dict:
             [str(python), "-I", "-m", "compileall", "-q",
              "--invalidation-mode", "unchecked-hash", str(source_root)],
             check=True, timeout=30 * 60, stdin=subprocess.DEVNULL)
-        missing, unparseable = _uncovered(source_root)
+        missing, _unparseable = _uncovered(source_root)
         if missing:
             sample = ", ".join(str(m.relative_to(root)) for m in missing[:5])
             raise ValueError(f"{len(missing)} payload modules have no bytecode pyc "

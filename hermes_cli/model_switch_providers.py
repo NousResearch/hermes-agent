@@ -183,7 +183,7 @@ def _credential_pool_is_usable(provider: str, *, raw_pool_present: bool = False,
     return raw_pool_present
 
 
-def prewarm_picker_cache_async() -> Optional["_threading.Thread"]:
+def prewarm_picker_cache_async() -> Optional[_threading.Thread]:
     """Warm ``provider_models_cache.json`` in a daemon thread by running the picker path once.
 
     The first ``/model`` open (or the first after the 1h TTL) otherwise blocks ~1-2s on serial
@@ -219,9 +219,8 @@ def _prefetch_provider_models_parallel(provider_slugs: list[str]) -> None:
     fingerprint-mismatched, or hard-expired entries. TTL-expired non-empty rows are served
     inside the stale-serve window while revalidating off-thread, and an empty local-ollama
     catalog is authoritative inside its own short native TTL, so prefetching either trades a
-    non-blocking serial read for a parallel fetch the picker waits on. Each worker re-persists
-    through the thread-safe ``update_provider_cache_entry`` so concurrent writes cannot
-    clobber each other."""
+    non-blocking serial read for a parallel fetch the picker waits on. Persistence is
+    ``cached_provider_model_ids``'s own locked write; workers add none of their own."""
     from hermes_cli.models import (
         _credential_fingerprint, _disk_serve_tier, _load_provider_models_cache,
         _normalized_cache_slug, cached_provider_model_ids)
@@ -246,12 +245,7 @@ def _prefetch_provider_models_parallel(provider_slugs: list[str]) -> None:
     import concurrent.futures
     def _fetch_one(slug: str) -> None:
         try:
-            models = cached_provider_model_ids(slug, force_refresh=True)
-            # cached_provider_model_ids persists via a non-locked read-modify-write; re-persist
-            # through the locked path so no write is lost under concurrency.
-            if models:
-                from hermes_cli.models import update_provider_cache_entry
-                update_provider_cache_entry(slug, models)
+            cached_provider_model_ids(slug, force_refresh=True)
         except Exception:
             pass  # best-effort; picker falls back to curated list
 
@@ -498,8 +492,10 @@ def _free_tier_nous_row(row: dict) -> dict | None:
     from hermes_cli import anon_auth
     if not anon_auth.has_guest():
         return row
-    if not anon_auth.guest_enabled():
+    if not anon_auth.guest_allowed():
         return None
+    if not anon_auth.free_inference_active():
+        return row  # a guest without the welcome trial here: the row is whatever real Nous login exists
     out = dict(row)
     out["name"] = anon_auth.FREE_TIER_LABEL
     out["models"] = [anon_auth.GUEST_MODEL]
@@ -1222,12 +1218,12 @@ def _build_curated_lists(current_provider: str, current_base_url: str, current_m
 
 
 def list_authenticated_providers(
-    current_provider: str = "", current_base_url: str = "", user_providers: dict = None,
+    current_provider: str = "", current_base_url: str = "", user_providers: dict | None = None,
     custom_providers: list | None = None, *, force_fresh_nous_tier: bool = False,
     max_models: int | None = None, current_model: str = "", refresh: bool = False,
     probe_custom_providers: bool = True, probe_current_custom_provider: bool = False,
     for_picker: bool = False, excluded_providers: list | None = None,
-    non_blocking_catalogs: bool = False, fast_custom_probe: bool | None = None) -> List[dict]:
+    non_blocking_catalogs: bool = False, fast_custom_probe: bool | None = None) -> list[dict]:
     """Detect which providers have credentials and list their curated (not full models.dev) models.
 
     Returns dicts with ``slug`` (the --provider value), ``name``, ``is_current``,
@@ -1345,7 +1341,7 @@ def _finalize_picker_rows(results: list, user_providers, current_model: str) -> 
     return results
 
 
-def _prepend_moa_picker_provider(providers: List[dict], current_provider: str = "") -> List[dict]:
+def _prepend_moa_picker_provider(providers: list[dict], current_provider: str = "") -> list[dict]:
     """Add the virtual MoA provider row used by interactive model pickers.
 
     ``list_authenticated_providers()`` only returns real/auth-backed providers; the CLI inventory
@@ -1362,11 +1358,11 @@ def _prepend_moa_picker_provider(providers: List[dict], current_provider: str = 
 
 
 def list_picker_providers(
-    current_provider: str = "", current_base_url: str = "", user_providers: dict = None,
+    current_provider: str = "", current_base_url: str = "", user_providers: dict | None = None,
     custom_providers: list | None = None, max_models: int | None = None, current_model: str = "",
     include_moa: bool = False, excluded_providers: list | None = None,
     non_blocking_catalogs: bool = False, probe_custom_providers: bool = True,
-    probe_current_custom_provider: bool = False) -> List[dict]:
+    probe_current_custom_provider: bool = False) -> list[dict]:
     """Interactive-picker variant of :func:`list_authenticated_providers`.
 
     OpenRouter's list is replaced with :func:`hermes_cli.models.fetch_openrouter_models` (curated
@@ -1385,7 +1381,7 @@ def list_picker_providers(
     if include_moa:
         providers = _prepend_moa_picker_provider(providers, current_provider=current_provider)
 
-    filtered: List[dict] = []
+    filtered: list[dict] = []
     for p in providers:
         if str(p.get("slug", "")).lower() == "openrouter":
             try:

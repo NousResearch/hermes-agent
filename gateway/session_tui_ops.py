@@ -29,7 +29,8 @@ def handlers(connection):
             'rollback.diff': partial(rollback, connection, kind='diff'),
             'rollback.restore': partial(rollback, connection, kind='restore'),
             'rollback.session_diff': partial(rollback, connection, kind='session_diff'),
-            'session.context_breakdown': partial(context_breakdown, connection)}
+            'session.context_breakdown': partial(context_breakdown, connection),
+            'session.history': partial(session_history, connection)}
 
 
 def _profile_home(authority):
@@ -114,6 +115,21 @@ async def export_session(connection, ref, params):
         return render_session_for_save(data, fmt)
     content = await asyncio.to_thread(render)
     return {'format': fmt, 'filename': default_save_filename(target, fmt), 'content': content}
+
+
+async def session_history(connection, ref, params):
+    """Main's ``session.history``: the display transcript of the conversation's current physical row (compression tip or local receipt entry), ancestors included, each row with its durable ``row_id``; Desktop's edit resolves its turn by it."""
+    _live_ref(connection, ref, params, {'session_id', 'profile'}, 'session:read')
+    authority = connection.authority
+    from gateway.session_local_recovery import transcript_target
+    # On the loop, as ``attach`` resolves it: a local restore publishes the live entry.
+    target = transcript_target(authority, ref)
+
+    def read():
+        from gateway.session_controls import display_projection
+        rows = authority.db.get_messages_as_conversation(target, include_ancestors=True, include_row_ids=True)
+        return {'count': len(rows), 'messages': display_projection(rows, authority.profile_id)}
+    return await asyncio.to_thread(read)
 
 
 async def reload_env(connection, ref, params):

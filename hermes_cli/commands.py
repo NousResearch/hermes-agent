@@ -123,6 +123,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, args_hint="<archive.tar.gz> [--name <name>]"),
     CommandDef("stop", "Kill all running background processes", "Session",
                busy_policy="interrupt_then_dispatch", busy_handler="stop"),
+    CommandDef("discard", "Drop a turn lost when Hermes restarted so this chat's queue runs again", "Session",
+               gateway_only=True, busy_policy="dispatch"),
     CommandDef("pause", "Pause new work globally (emergency stop); '/pause off' resumes", "Session",
                gateway_only=True, args_hint="[reason | off]", busy_policy="dispatch"),
     CommandDef("approve", "Approve a pending dangerous command", "Session",
@@ -238,6 +240,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[queue|steer|interrupt|status]",
                subcommands=("queue", "steer", "interrupt", "status"),
                busy_policy="dispatch", desktop="terminal"),
+    CommandDef("autoprune", "Turn automatic pruning of old sessions on or off", "Configuration",
+               args_hint="[on|off|later|status]", subcommands=("on", "off", "later", "status"),
+               busy_policy="dispatch", execute="autoprune", argument_mode="options"),
 
     # Tools & Skills
     CommandDef("tools", "Manage tools: /tools [list|disable|enable] [name...]", "Tools & Skills",

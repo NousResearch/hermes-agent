@@ -1,6 +1,7 @@
 """Ink's /save, /reload, /agents pause and /rollback on the shared owner (main's sidecar parity)."""
 import asyncio
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -32,6 +33,37 @@ def test_session_save_exports_the_stored_transcript_under_the_profile_home(tmp_p
 
 
 @pytest.mark.platforms("linux")
+def test_session_export_returns_the_rendered_transcript_for_the_client_to_write(tmp_path):
+    """T10/T11: ``session.export`` hands the client the rendered ``/save`` transcript; the gateway
+    writes nothing, so a remote Desktop and a local Ink save to the user's own disk."""
+    with owner(tmp_path) as (home, _peer, desc):
+        async def probe():
+            async with websocket(home, desc) as ws:
+                sid = (await rpc(ws, 'session.create', request_id='exp', source='tui', toolsets=[]))['result']['session_id']
+                await rpc(ws, 'prompt.submit', session_id=sid, input_id='first',
+                          text='EXPORT_ME sk-ant-api03-' + 'a' * 40)
+                await settled(home)
+                saved = home / 'sessions' / 'saved'
+                before = sorted(saved.iterdir()) if saved.exists() else []
+                as_json = (await rpc(ws, 'session.export', session_id=sid))['result']
+                assert as_json['format'] == 'json' and as_json['filename'].endswith('.json'), as_json
+                contents = [m.get('content') for m in json.loads(as_json['content'])['messages']]
+                assert any('EXPORT_ME' in (c or '') for c in contents), contents
+                md = (await rpc(ws, 'session.export', session_id=sid, format='markdown', redact=True))['result']
+                assert md['format'] == 'md' and md['filename'].endswith('.md')
+                assert 'EXPORT_ME' in md['content'] and 'a' * 40 not in md['content']
+                html = (await rpc(ws, 'session.export', session_id=sid, format='html'))['result']
+                assert html['content'].lstrip().lower().startswith('<!doctype html')
+                assert (sorted(saved.iterdir()) if saved.exists() else []) == before  # nothing written
+                for params, reason in [({'session_id': sid, 'format': 'pdf'}, 'invalid_params'),
+                                       ({'session_id': sid, 'redact': 'yes'}, 'invalid_params'),
+                                       ({'session_id': sid, 'profile': 'foreign'}, 'profile_mismatch'),
+                                       ({}, 'invalid_params')]:
+                    assert (await rpc(ws, 'session.export', **params))['error']['message'] == reason, params
+        asyncio.run(probe())
+
+
+@pytest.mark.platforms("linux")
 def test_reload_env_rereads_the_profile_dotenv_for_a_controlled_session(tmp_path):
     with owner(tmp_path) as (home, _peer, desc):
         async def probe():
@@ -42,7 +74,13 @@ def test_reload_env_rereads_the_profile_dotenv_for_a_controlled_session(tmp_path
                 first = await rpc(ws, 'reload.env', session_id=sid)
                 assert first.get('result', {}).get('updated', 0) >= 1, first
                 assert (await rpc(ws, 'reload.env', session_id=sid))['result'] == {'updated': 0}
+                # Same size, same inode, pinned mtime: only the bytes distinguish the versions. On a
+                # kernel with coarse ctime a same-tick rewrite also kept ctime, and a stat-keyed .env
+                # memo served the old value (CI run 39146191939); the memo now keys on content.
+                pinned = env.stat()
                 await asyncio.to_thread(env.write_text, 'TUI_RELOAD_PROBE=two\n')
+                os.utime(env, ns=(pinned.st_atime_ns, pinned.st_mtime_ns))
+                assert env.stat().st_size == pinned.st_size
                 assert (await rpc(ws, 'reload.env', session_id=sid))['result'] == {'updated': 1}
                 # A bare frame never rewrites the shared owner's environment.
                 for params, reason in [({}, 'invalid_params'), ({'session_id': sid, 'profile': 'foreign'}, 'profile_mismatch'),
@@ -151,4 +189,134 @@ def test_rollback_lists_diffs_and_restores_the_session_cwd_and_rewinds_the_last_
                     assert (await rpc(ws, method, **params))['error']['message'] == reason
                 bad = (await _git_rpc(ws, 'rollback.restore', session_id=sid, hash='9'))['result']
                 assert bad['success'] is False and 'Invalid checkpoint number' in bad['error'], bad
+        asyncio.run(probe())
+
+
+def _agent_write(home, path, text):
+    """A file write Hermes made (and recorded in the agent-write ledger that safe restore reads)."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.checkpoint_manager import CheckpointManager
+    path.write_text(text)
+    token = set_hermes_home_override(str(home))
+    try:
+        CheckpointManager(enabled=True).record_agent_write(str(path))
+    finally:
+        reset_hermes_home_override(token)
+
+
+@pytest.mark.platforms("linux")
+def test_rollback_restore_keeps_hand_edits_unless_all(tmp_path):
+    """The RPC's whole-tree restore is main's safe one (the help text's "restores keep your
+    hand-edits"); ``all`` is ``/rollback <N> --all``."""
+    with owner(tmp_path) as (home, _peer, desc):
+        work = tmp_path / 'work'
+        work.mkdir()
+        (work / 'agent.txt').write_text('original\n')
+        (work / 'mine.txt').write_text('original mine\n')
+
+        async def probe():
+            async with websocket(home, desc) as ws:
+                sid = (await rpc(ws, 'session.create', request_id='safe', source='tui', toolsets=[],
+                                 cwd=str(work), checkpoints=True))['result']['session_id']
+                await asyncio.to_thread(_checkpoint, home, work, 'before write_file')
+                [row] = (await _git_rpc(ws, 'rollback.list', session_id=sid))['result']['checkpoints']
+                await asyncio.to_thread(_agent_write, home, work / 'agent.txt', 'agent\n')
+                (work / 'mine.txt').write_text('hand edit\n')
+                assert (await rpc(ws, 'rollback.restore', session_id=sid, hash=row['hash'],
+                                  all='maybe'))['error']['message'] == 'invalid_params'
+                safe = (await _git_rpc(ws, 'rollback.restore', session_id=sid, hash=row['hash']))['result']
+                assert safe['success'] is True and safe['skipped_user_edits'] == ['mine.txt'], safe
+                assert (work / 'agent.txt').read_text() == 'original\n'
+                assert (work / 'mine.txt').read_text() == 'hand edit\n'
+                forced = (await _git_rpc(ws, 'rollback.restore', session_id=sid, hash=row['hash'], all=True))['result']
+                assert forced['success'] is True and not forced.get('skipped_user_edits'), forced
+                assert (work / 'mine.txt').read_text() == 'original mine\n'
+        asyncio.run(probe())
+
+
+@pytest.mark.platforms("linux")
+def test_rollback_restore_reads_a_null_all_as_omitted(tmp_path):
+    """The published contract declares ``all`` nullable (``RollbackRestoreParams``): a client sending
+    its declared default gets the safe restore, like one sending nothing or ``false``."""
+    with owner(tmp_path) as (home, _peer, desc):
+        work = tmp_path / 'work'
+        work.mkdir()
+        (work / 'agent.txt').write_text('original\n')
+        (work / 'mine.txt').write_text('original mine\n')
+        out = {}
+
+        async def probe():
+            async with websocket(home, desc) as ws:
+                sid = (await rpc(ws, 'session.create', request_id='null-all', source='tui', toolsets=[],
+                                 cwd=str(work), checkpoints=True))['result']['session_id']
+                await asyncio.to_thread(_checkpoint, home, work, 'before write_file')
+                [row] = (await _git_rpc(ws, 'rollback.list', session_id=sid))['result']['checkpoints']
+                await asyncio.to_thread(_agent_write, home, work / 'agent.txt', 'agent\n')
+                for case, extra in (('omitted', {}), ('null', {'all': None}), ('false', {'all': False}),
+                                    ('true', {'all': True})):
+                    (work / 'mine.txt').write_text('hand edit\n')
+                    reply = await _git_rpc(ws, 'rollback.restore', session_id=sid, hash=row['hash'], **extra)
+                    out[case] = (reply.get('result', {}).get('skipped_user_edits')
+                                 or reply.get('error', {}).get('message'), (work / 'mine.txt').read_text())
+        asyncio.run(probe())
+    kept = (['mine.txt'], 'hand edit\n')
+    assert out == {'omitted': kept, 'null': kept, 'false': kept, 'true': (None, 'original mine\n')}, out
+
+
+@pytest.mark.platforms("linux")
+def test_config_get_voice_reports_the_sessions_own_voice_mode(tmp_path):
+    """T9: Ink's /voice runs the owner's per-session handler (slash.exec) and reads the mode back
+    with ``config.get key=voice``; the sidecar's process-global HERMES_VOICE is never consulted."""
+    with owner(tmp_path) as (home, _peer, desc):
+        async def probe():
+            async with websocket(home, desc) as ws:
+                sid = (await rpc(ws, 'session.create', request_id='voice', source='tui', toolsets=[]))['result']['session_id']
+                other = (await rpc(ws, 'session.create', request_id='voice2', source='tui', toolsets=[]))['result']['session_id']
+                assert (await rpc(ws, 'config.get', key='voice', session_id=sid))['result']['value'] == 'off'
+                on = await rpc(ws, 'slash.exec', command='voice on', session_id=sid)
+                assert on['result']['type'] == 'exec', on
+                assert (await rpc(ws, 'config.get', key='voice', session_id=sid))['result']['value'] == 'voice_only'
+                assert (await rpc(ws, 'config.get', key='voice', session_id=other))['result']['value'] == 'off'
+                await rpc(ws, 'slash.exec', command='voice off', session_id=sid)
+                assert (await rpc(ws, 'config.get', key='voice', session_id=sid))['result']['value'] == 'off'
+                assert (await rpc(ws, 'config.get', key='voice'))['error']['message'] == 'invalid_params'
+        asyncio.run(probe())
+
+
+@pytest.mark.platforms("linux")
+def test_voice_record_follows_the_sessions_gateway_voice_mode(tmp_path):
+    """T9: push-to-talk (``voice.record``) gates on the session's gateway voice mode, the state
+    Ink's ``/voice on`` sets through slash.exec, not the sidecar's process-global HERMES_VOICE."""
+    with owner(tmp_path) as (home, _peer, desc):
+        async def probe():
+            async with websocket(home, desc) as ws:
+                sid = (await rpc(ws, 'session.create', request_id='rec', source='tui', toolsets=[]))['result']['session_id']
+                off = await rpc(ws, 'voice.record', action='start', session_id=sid)
+                assert off.get('error', {}).get('code') == 4015, off
+                await rpc(ws, 'slash.exec', command='voice on', session_id=sid)
+                on = await rpc(ws, 'voice.record', action='start', session_id=sid)
+                # No microphone in CI: any answer but "voice mode is off" proves the gate passed.
+                assert on.get('error', {}).get('code') != 4015, on
+                await rpc(ws, 'voice.record', action='stop', session_id=sid)
+                await rpc(ws, 'slash.exec', command='voice off', session_id=sid)
+                again = await rpc(ws, 'voice.record', action='start', session_id=sid)
+                assert again.get('error', {}).get('code') == 4015, again
+        asyncio.run(probe())
+
+
+@pytest.mark.platforms("linux")
+def test_cli_only_commands_refuse_with_what_to_use_instead(tmp_path):
+    """T10: the commands a local session cannot run on the shared gateway keep the
+    ``unsupported_command`` reason, and the refusal now names the alternative in ``data.detail``."""
+    with owner(tmp_path) as (home, _peer, desc):
+        async def probe():
+            async with websocket(home, desc) as ws:
+                sid = (await rpc(ws, 'session.create', request_id='refuse', source='tui', toolsets=[]))['result']['session_id']
+                for command, hint in [('export', 'hermes profile export'), ('import x.tar.gz', 'hermes profile import'),
+                                      ('snapshot', 'hermes backup'), ('snap list', 'hermes backup'),
+                                      ('handoff telegram', 'hermes --cli'), ('hatch a cat', 'hermes --cli'),
+                                      ('worktree new', 'hermes -w'), ('palette', 'Type /')]:
+                    refused = (await rpc(ws, 'slash.exec', command=command, session_id=sid))['error']
+                    assert refused['message'] == 'unsupported_command', (command, refused)
+                    assert hint in refused['data'].get('detail', ''), (command, refused)
         asyncio.run(probe())

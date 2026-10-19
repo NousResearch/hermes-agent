@@ -198,7 +198,7 @@ _SESSION_SIGNATURE_FIELDS = (
 )
 # path -> (database/WAL mtime, session-table digest). The mtime guard keeps the
 # normal 0.5 s watch pass stat-only; SQLite is read only after another process
-# actually commits (and for ``_RACY_MTIME_WINDOW_NS`` after it, see _settled_mtime).
+# actually commits (and for ``utils.RACY_MTIME_WINDOW_NS`` after it, see _settled_mtime).
 _sessions_db_sig_cache: dict[str, tuple[object, tuple | None]] = {}
 
 
@@ -264,13 +264,13 @@ def _session_db_content_sig(db_path: Path):
 # SQLite commits in place, so a commit landing in the tick of a read leaves the DB/WAL mtime unchanged.
 # A digest read while the mtime is that fresh must not become a cache hit ("racily clean", as in git's
 # index): it is cached under a key no mtime equals, so the next tick re-reads the rows.
-_RACY_MTIME_WINDOW_NS = 2_000_000_000
 _RACY_MTIME = object()
 
 
 def _settled_mtime(mtime):
     """``mtime`` when it is old enough to trust as a cache key, else a never-matching sentinel."""
-    if mtime is None or time.time_ns() - mtime < _RACY_MTIME_WINDOW_NS:
+    from utils import mtime_is_racy  # function-local: bodies are rebound onto server.py's globals
+    if mtime is None or mtime_is_racy(mtime):
         return _RACY_MTIME
     return mtime
 
@@ -361,6 +361,16 @@ def _bot_relay_outbox_sig():
     return _bot_relay_outbox_seen or None
 
 
+def _skills_sig():
+    """The skill roots' stat signature for every scope a session resolved commands in (each profile
+    home and session repo, not only the launch one: ``agent.skill_commands.published_scopes_signature``):
+    a skill installed or removed from another terminal (``hermes skills install``, a dropped SKILL.md,
+    nested under a category) moves it, and attached clients refetch ``commands.catalog`` from this
+    gateway instead of rescanning disk."""
+    from agent.skill_commands import published_scopes_signature
+    return published_scopes_signature()
+
+
 # event → (check interval, signature fn, payload fn). Signatures are stat-cheap; the interval
 # keeps pricier probes (pet resolves the sheet off disk) off the 0.5s tick. cron/jobs.json
 # moves on edits AND scheduler ticks; gateway_state.json is where the messaging gateway
@@ -375,6 +385,7 @@ _CHANGE_WATCHES: dict[str, tuple[float, Any, Any]] = {
     "platforms.changed": (2.0, lambda: _home_mtime_ns("gateway_state.json"), dict),
     "projects.changed": (2.0, _projects_sig, dict),
     "pairing.changed": (2.0, _pairing_sig, dict),
+    "skills.changed": (2.0, _skills_sig, dict),
     # 1s so a queued DM envelope reaches the Desktop's push-triggered drain fast.
     "bot_relay.outbox.pending": (1.0, _bot_relay_outbox_sig, dict)}
 

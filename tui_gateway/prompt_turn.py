@@ -132,7 +132,7 @@ def _plan_goal_compression_recovery(
 def _admit_prompt_turn(
     sid: str, session: dict, text: Any, image_paths: list[str] | None,
     queued_prompt_generation: int | None, display_kind: str | None,
-    display_metadata: dict | None) -> tuple[list[str], Any] | None:
+    display_metadata: dict | None, *, report_ownership_refusal: bool = True) -> tuple[list[str], Any] | None:
     """Ownership + liveness gate every turn source must cross; ``(images, agent)`` or None.
     Synthesized turns (auto-continue, wake-ups) call ``_run_prompt_submit`` directly — the
     bypass that once let a second backend run a duplicate turn."""
@@ -146,7 +146,8 @@ def _admit_prompt_turn(
         with session["history_lock"]:
             session["running"] = False
             session.pop("_submit_user_row", None)  # no turn runs: the submit-time row stays as the send
-        _emit("error", sid, {"message": str(ownership_refusal)})
+        if report_ownership_refusal:
+            _emit("error", sid, {"message": str(ownership_refusal)})
         return None
     with session["history_lock"]:
         if session.get("_closing") or (
@@ -1107,7 +1108,8 @@ def _run_prompt_submit(
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
-    user_turn: bool = False, turn_author: dict | None = None) -> bool:
+    user_turn: bool = False, turn_author: dict | None = None,
+    report_ownership_refusal: bool = True) -> bool:
     """Only real user entry points set ``user_turn``; automatic wakeups leave it False."""
     # Every dispatch binds the session's own row (session_key, real source) before the turn writes:
     # the synthesized turns that enter here directly (crash auto-continue, queued-prompt drain,
@@ -1118,7 +1120,8 @@ def _run_prompt_submit(
             "prompt dispatch: session store unavailable for %s — this turn may not persist",
             session.get("session_key") or sid)
     admitted = _admit_prompt_turn(
-        sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata)
+        sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata,
+        report_ownership_refusal=report_ownership_refusal)
     if admitted is None:
         return False
     images, agent = admitted

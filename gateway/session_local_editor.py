@@ -7,13 +7,29 @@ from hermes_state_runtime import RuntimeStoreError
 
 
 def validate_editor(source, editor):
+    """The launch's editor policy, or a refusal that names the key it read (create path totality).
+
+    An ACP connection is a viewer; the policy itself lives with execution. Every branch below refuses
+    with its own field, so a rejected editor launch says which key was wrong instead of a bare code.
+    """
     if editor is None:
         return
-    if (source != 'acp' or not isinstance(editor, dict)
-            or set(editor) - {'mcp_servers', 'edit_approval_policy'}
-            or editor.get('edit_approval_policy', 'ask') != 'ask'
-            or not isinstance(editor.get('mcp_servers', []), list)):
-        raise RuntimeStoreError('invalid_params')
+    if source != 'acp':
+        raise RuntimeStoreError('invalid_params', field='editor',
+                                detail=f'an editor policy is only accepted from an ACP launch, not {source}')
+    if not isinstance(editor, dict):
+        raise RuntimeStoreError('invalid_params', field='editor',
+                                detail=f'must be a mapping, got {type(editor).__name__}')
+    unknown = sorted(set(editor) - {'mcp_servers', 'edit_approval_policy'})
+    if unknown:
+        raise RuntimeStoreError('invalid_params', field=f'editor.{unknown[0]}',
+                                detail='unknown editor key')
+    if editor.get('edit_approval_policy', 'ask') != 'ask':
+        raise RuntimeStoreError('invalid_params', field='editor.edit_approval_policy',
+                                detail="must be 'ask': every edit is approved one at a time")
+    if not isinstance(editor.get('mcp_servers', []), list):
+        raise RuntimeStoreError('invalid_params', field='editor.mcp_servers',
+                                detail=f'must be a list, got {type(editor.get("mcp_servers")).__name__}')
     from gateway.session_local_mcp import validate_servers
     validate_servers(editor.get('mcp_servers', []))
 
@@ -36,10 +52,24 @@ def request_editor_edit(proposal):
     return decision.get('resolved') and decision.get('choice') == 'once'
 
 
+def _policy_requester(policy):
+    """The session's edit approval policy in front of the editor's consent (main's ACP modes): Accept
+    Edits / Don't Ask let an edit run unasked; sensitive paths and everything else still ask."""
+    from acp_adapter.edit_approval import should_auto_approve_edit
+    if policy.edit_approval_policy == 'ask':
+        return request_editor_edit
+
+    def request(proposal):
+        if should_auto_approve_edit(proposal, policy.edit_approval_policy, policy.cwd):
+            return True
+        return request_editor_edit(proposal)
+    return request
+
+
 @contextmanager
 def editor_scope(policy):
     from acp_adapter.edit_approval import set_edit_approval_requester, reset_edit_approval_requester
-    token = set_edit_approval_requester(request_editor_edit if policy.source == 'acp' else None)
+    token = set_edit_approval_requester(_policy_requester(policy) if policy.source == 'acp' else None)
     try:
         yield
     finally:

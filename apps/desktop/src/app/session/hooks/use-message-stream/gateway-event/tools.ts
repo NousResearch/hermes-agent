@@ -15,6 +15,7 @@ import { reportMcpToolResult } from '@/store/suggestion-providers/repair'
 import { invalidateSkillSuggestionIndex } from '@/store/suggestion-providers/skill'
 import { restoreSessionTodosFromSnapshot } from '@/store/todos'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
+import { addToolSeconds } from '@/store/turn-breakdown'
 import { notifyWorkspaceChanged, toolChangedPath, toolMayMutateFiles } from '@/store/workspace-events'
 
 import { SUBAGENT_EVENT_TYPES, toTodoPayload } from '../utils'
@@ -132,6 +133,30 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
 
       upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'complete', event.type, occurredAt)
 
+      // Accumulate the call's measured duration for the turn-breakdown
+      // popover (issue #117224). Subagent orchestration tools are skipped —
+      // their `duration_s` double-counts the child tools that also report.
+      if (typeof payload?.duration_s === 'number' && payload?.name !== 'delegate_task') {
+        addToolSeconds(sessionId, payload.duration_s)
+      if (!sessionInterrupted(sessionId) && payload?.name && payload.result !== undefined && event.seq !== undefined) {
+        const { previewTarget, status } = toolPreviewOutcome({
+          type: 'tool-call',
+          toolName: payload.name,
+          args: payload.args ?? {},
+          result: payload.result,
+          toolResultMetadata: payload,
+          completedAt: occurredAt
+        })
+
+        if (status === 'success' && previewTarget && isPreviewableTarget(previewTarget)) {
+          const record = pendingProduction ? reofferPreviewArtifact : recordPreviewArtifact
+          record(sessionId, previewTarget, state?.cwd ?? '', storedSessionIdForRuntimeId(sessionId) ?? sessionId)
+        }
+      }
+
+      // Onboarding's first build paces its check-ins off real work done
+      // (no-op in every other session).
+      reportFirstBuildToolComplete(sessionId)
       noteToolOutcome(ctx, sessionId, state?.cwd ?? '', pendingProduction)
 
       if (isActiveEvent) {

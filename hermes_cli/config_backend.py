@@ -18,6 +18,8 @@ whatever user layer the backend returns.
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import os
 import sys
 import threading
@@ -439,6 +441,30 @@ def keeping_read_base(read):
     finally:
         if held is not None:
             mod._READ_BASE.set(held)
+
+
+# Dotted prefixes a document save in this context must write whole: a lock on a changed key under
+# one refuses the save (ConfigLockedError) instead of being silently omitted from it.
+_REFUSE_LOCKED_OMISSIONS: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar(
+    "config_refuse_locked_omissions", default=())
+
+
+@contextlib.contextmanager
+def refusing_locked_omissions(*prefixes: str):
+    """Within the block, a document save that changes a key under one of *prefixes* (dotted, e.g.
+    ``"model"``) and finds it locked raises :class:`ConfigLockedError` and sends nothing, instead
+    of dropping the locked key and landing the rest (Remote Config bulk-save rule). Checked against
+    the locks the save itself sees, so a lock published after an earlier preflight still refuses;
+    a CAS retry re-checks every key it sends. No-op for the file backend (no locks)."""
+    token = _REFUSE_LOCKED_OMISSIONS.set(_REFUSE_LOCKED_OMISSIONS.get() + tuple(prefixes))
+    try:
+        yield
+    finally:
+        _REFUSE_LOCKED_OMISSIONS.reset(token)
+
+
+def refused_locked_omission_prefixes() -> tuple[str, ...]:
+    return _REFUSE_LOCKED_OMISSIONS.get()
 
 
 def write_changes(config_path: PathLike, changes: Changes) -> None:

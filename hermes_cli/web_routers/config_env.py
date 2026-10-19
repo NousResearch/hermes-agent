@@ -15,9 +15,10 @@ from hermes_cli.web_routers._common import (
     REDACTED_CREDENTIAL_WRITE_DETAIL, http_failure, is_redacted_credential_preview,
     redacted_credential_preview, scoped_to_thread,
 )
+from hermes_cli.config_backend import refusing_locked_omissions
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_config import (
-    _apply_main_model_assignment, _denormalize_config_from_web, _normalize_config_for_web, _schema_with_dynamic_provider_options,
+    _apply_main_model_assignment, _denormalize_config_from_web, drop_model_key, _normalize_config_for_web, _schema_with_dynamic_provider_options,
     _validated_main_model_selection,
 )
 from hermes_cli.web_server_profiles import (
@@ -720,7 +721,7 @@ def _write_custom_endpoint(cfg: dict[str, Any], body: CustomEndpointUpdate) -> t
         cfg["model"] = _apply_main_model_assignment(cfg.get("model", {}), result)
         if entry.get("key_env") and isinstance(cfg["model"], dict):
             cfg["model"]["key_env"] = entry["key_env"]
-            cfg["model"].pop("api_key", None)
+            drop_model_key(cfg["model"], "api_key")
 
     return endpoint_id, entry
 
@@ -751,7 +752,8 @@ def upsert_custom_endpoint(body: CustomEndpointUpdate, profile: Optional[str] = 
             created = _resolve_custom_endpoint_entry(
                 providers if isinstance(providers, dict) else {}, body.id or body.name)[1] is None
             endpoint_id, _entry = _write_custom_endpoint(cfg, body)
-            save_config(cfg)
+            with refusing_locked_omissions("model") if body.make_default else contextlib.nullcontext():
+                save_config(cfg)
             response = _custom_endpoint_response(cfg)
             from hermes_constants import get_hermes_home
             home = get_hermes_home()
@@ -804,7 +806,7 @@ def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
                 cfg.get("model", {}), _validated_main_model_selection(cfg, provider_key, model, base_url))
             if entry.get("key_env"):
                 model_cfg["key_env"] = entry["key_env"]
-                model_cfg.pop("api_key", None)
+                drop_model_key(model_cfg, "api_key")
             elif entry.get("api_key"):
                 # `cfg` is env-expanded, so a raw `${VAR}` api_key would land as
                 # plaintext; copy the raw template when that's what's on disk.
@@ -817,7 +819,8 @@ def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
                 else:
                     model_cfg["api_key"] = entry["api_key"]
             cfg["model"] = model_cfg
-            save_config(cfg)
+            with refusing_locked_omissions("model"):
+                save_config(cfg)
         return {"ok": True, "provider": provider_key, "model": model}
 
 

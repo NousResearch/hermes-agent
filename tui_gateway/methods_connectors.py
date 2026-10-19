@@ -20,25 +20,22 @@ def _connector_rpc_error(rid, code, reason, message):
     return _err(rid, code, message, data={"reason": reason})
 
 
-def _connector_auth_error(rid, exc):
-    from tui_gateway.contracts.connectors import ConnectorErrorReason
+def _refusals():
+    from tui_gateway import connector_refusals
 
-    if exc.code in {"no_access", "ORG_ACCESS_DENIED"}:
-        return _connector_rpc_error(
-            rid, 4030, ConnectorErrorReason.org_access_denied,
-            "This account cannot manage connectors for this organization.",
-        )
-    if exc.status == 401 or exc.code in {"invalid_token", "INVALID_TOKEN", "NO_TOKEN"}:
-        return _connector_rpc_error(rid, 4032, ConnectorErrorReason.needs_nous_auth, "Sign in to use connectors.")
-    return _connector_rpc_error(
-        rid, 4030, ConnectorErrorReason.forbidden_scope, "Connector access is not permitted for this account."
-    )
+    return connector_refusals
+
+
+def _connector_auth_error(rid, exc):
+    from tui_gateway.connector_refusals import auth_refusal
+
+    return _connector_rpc_error(rid, *auth_refusal(exc))
 
 
 def _connector_guard(fn):
     def handler(rid, params):
         from tools.connectors.gateway.errors import GatewayAuthError
-        from tui_gateway.contracts.connectors import ConnectorErrorReason
+        from tui_gateway.connector_refusals import REQUEST_FAILED
 
         try:
             return fn(rid, params)
@@ -47,9 +44,7 @@ def _connector_guard(fn):
         except GatewayAuthError as exc:
             return _connector_auth_error(rid, exc)
         except Exception:
-            return _connector_rpc_error(
-                rid, 5034, ConnectorErrorReason.connector_request_failed, "Connector request failed. Try again explicitly."
-            )
+            return _connector_rpc_error(rid, *REQUEST_FAILED)
 
     return handler
 
@@ -86,15 +81,24 @@ def _account_gate_closed(rid):
     return _connector_rpc_error(rid, 4031, ConnectorErrorReason.connectors_unavailable, "Connectors are not available.")
 
 
+def _account_identity_error(rid):
+    """Opening the Connectors page or connecting from it is the user asking for apps: create the
+    guest identity here when the user has none. Operation polls never call this."""
+    from tools.connectors import ensure_guest_identity
+    from tui_gateway.contracts.connectors import ConnectorErrorReason
+
+    if setup_error := ensure_guest_identity():
+        return _connector_rpc_error(rid, 5034, ConnectorErrorReason.connector_request_failed, setup_error)
+    return None
+
+
 def _parse_params(rid, params, model):
     from pydantic import ValidationError
-
-    from tui_gateway.contracts.connectors import ConnectorErrorReason
 
     try:
         return model.model_validate(params), None
     except ValidationError:
-        return None, _connector_rpc_error(rid, 4000, ConnectorErrorReason.invalid_params, "Connector parameters are invalid.")
+        return None, _connector_rpc_error(rid, *_refusals().INVALID_PARAMS)
 
 
 def _connector_params(rid, params, model):
@@ -111,8 +115,6 @@ def _session_connector_gate(rid, session, action):
     import model_tools
     from tools.connectors import connectors_available
 
-    from tui_gateway.contracts.connectors import ConnectorErrorReason
-
     agent = session.get("agent")
     enabled = agent.enabled_toolsets if agent is not None else _load_enabled_toolsets(_resolve_agent_platform(_session_source(session)))
     disabled = agent.disabled_toolsets if agent is not None else None
@@ -120,7 +122,7 @@ def _session_connector_gate(rid, session, action):
         if action == "status":
             return enabled, disabled, _ok(rid, {"available": False, "connectors": []})
         return enabled, disabled, _connector_rpc_error(
-            rid, 4031, ConnectorErrorReason.connectors_unavailable, "Connectors are not available in this session."
+            rid, *_refusals().CONNECTORS_UNAVAILABLE
         )
     return enabled, disabled, None
 
@@ -149,6 +151,13 @@ def _session_connector_rpc(rid, request, session, action):
             return _connector_rpc_error(
                 rid, 4004, ConnectorErrorReason.unknown_operation, "No open connection operation for this session."
             )
+        # A retry without an alias or id means the open target; one naming another account must not re-mint this one.
+        if (request.alias is not None or request.connection_id is not None) and any(
+                (target := operation.target(name)) is not None
+                and ((request.alias is not None and target.alias != request.alias)
+                     or request.connection_id not in (None, target.repair_id, target.connection_id))
+                for name in request.connectors):
+            return _connector_rpc_error(rid, *_refusals().UNKNOWN_TARGET_REFUSAL)
         return _reissue(rid, operation, args)
     raw = model_tools.handle_function_call(
         "manage_connections",
@@ -161,7 +170,7 @@ def _session_connector_rpc(rid, request, session, action):
     )
     data = json.loads(raw) if isinstance(raw, str) else raw
     if not isinstance(data, dict) or "error" in data:
-        return _connector_rpc_error(rid, 5034, ConnectorErrorReason.connector_request_failed, "Connector request failed. Try again explicitly.")
+        return _connector_rpc_error(rid, *_refusals().REQUEST_FAILED)
     if action == "status":
         if not isinstance(data.get("connectors"), list) or any(not isinstance(row, dict) for row in data["connectors"]):
             return _connector_rpc_error(rid, 5034, ConnectorErrorReason.invalid_connector_response, "Connector service returned an invalid response.")
@@ -189,26 +198,27 @@ def _account_connector_list(rid):
 
 def _account_connector_connect(rid, request):
     from tools.connectors import account
+    from tools.connectors.managed import DESKTOP_PAGE
     from tui_gateway.connector_payload import connector_ui_payload
-    from tui_gateway.contracts.connectors import ConnectorErrorReason
-
     action = "reconnect" if request.reconnect else "connect"
     try:
-        start = account.find_or_start_operation(request.connectors, action=action, profile_home=_account_home(request))
+        start = account.find_or_start_operation(
+            request.connectors, action=action, profile_home=_account_home(request), alias=request.alias,
+            repair_id=request.connection_id, initiator=DESKTOP_PAGE)
         if not start.started:
             from tools.connectors.contract import TargetState
 
             targets = [start.operation.target(name) for name in request.connectors]
             if any(target.state in (TargetState.failed, TargetState.expired) for target in targets):
-                return _reissue(rid, start.operation, {"connectors": request.connectors})
+                return _reissue(rid, start.operation, {"connectors": request.connectors}, initiator=DESKTOP_PAGE)
             return _ok(rid, connector_ui_payload(_operation_view(start.operation)))
         if not account.wait_for_prepare(start):
             return _ok(rid, connector_ui_payload(_operation_view(start.operation)))
         if start.failed:
-            return _connector_rpc_error(rid, 5034, ConnectorErrorReason.connector_request_failed, "Connector request failed. Try again explicitly.")
+            return _connector_rpc_error(rid, *_refusals().REQUEST_FAILED)
         return _ok(rid, connector_ui_payload(_operation_view(start.operation)))
     except ValueError:
-        return _connector_rpc_error(rid, 4000, ConnectorErrorReason.invalid_params, "Connector parameters are invalid.")
+        return _connector_rpc_error(rid, *_refusals().INVALID_PARAMS)
 
 
 def _connector_rpc(rid, params, action):
@@ -222,6 +232,8 @@ def _connector_rpc(rid, params, action):
         with _account_scope(request):
             if closed := _account_gate_closed(rid):
                 return _ok(rid, {"available": False, "connectors": []}) if action == "status" else closed
+            if setup_error := _account_identity_error(rid):
+                return setup_error
             return _account_connector_list(rid) if action == "status" else _account_connector_connect(rid, request)
 
     runtime_token = _current_runtime_session_record.set(session)
@@ -240,32 +252,14 @@ def _connector_rpc(rid, params, action):
         _current_runtime_session_record.reset(runtime_token)
 
 
-def _reissue(rid, operation, args):
-    from tools.connectors.run import (
-        LINK_STILL_VALID,
-        MIXED_KINDS,
-        NOT_ALLOWED,
-        REFUSED,
-        SETTLED,
-        UNKNOWN_TARGET,
-        reissue,
-    )
+def _reissue(rid, operation, args, *, initiator=None):
+    from tools.connectors.run import reissue
     from tui_gateway.connector_payload import connector_ui_payload
-    from tui_gateway.contracts.connectors import ConnectorErrorReason
+    from tui_gateway.connector_refusals import REISSUE_REFUSALS
 
-    reason = reissue(operation, args["connectors"])
-    if reason == UNKNOWN_TARGET:
-        return _connector_rpc_error(rid, 4004, ConnectorErrorReason.unknown_target, "No such target on the open operation.")
-    if reason == MIXED_KINDS:
-        return _connector_rpc_error(rid, 4000, ConnectorErrorReason.invalid_params, "One target kind per request.")
-    if reason == LINK_STILL_VALID:
-        return _connector_rpc_error(rid, 4002, ConnectorErrorReason.link_still_valid, "Reopen the stored link.")
-    if reason == SETTLED:
-        return _connector_rpc_error(rid, 4002, ConnectorErrorReason.reissue_refused, "The operation has settled.")
-    if reason == NOT_ALLOWED:
-        return _connector_rpc_error(rid, 4002, ConnectorErrorReason.reissue_refused, "This target cannot be run again.")
-    if reason == REFUSED:
-        return _connector_rpc_error(rid, 4002, ConnectorErrorReason.reissue_refused, "The target cannot be run again.")
+    reason = reissue(operation, args["connectors"], initiator=initiator)
+    if reason in REISSUE_REFUSALS:
+        return _connector_rpc_error(rid, *REISSUE_REFUSALS[reason])
     return _ok(rid, connector_ui_payload(_operation_view(operation)))
 
 
@@ -293,19 +287,27 @@ def _account_home(request):
 
 
 @contextlib.contextmanager
+def _desktop_page_vars():
+    """Bind the session vars of a sessionless request from the desktop Connectors page. Only that
+    page sends account-owned and account RPCs, so the surface comes from the request: the backend's
+    ``HERMES_DESKTOP`` is absent on a URL or cloud backend and would name the caller ``tui``."""
+    from gateway.session_context import set_session_vars
+
+    tokens = set_session_vars(source="desktop", profile=_current_profile_name(), cron_session="")
+    try:
+        yield
+    finally:
+        _clear_session_context(tokens)
+
+
+@contextlib.contextmanager
 def _account_scope(request):
-    with _session_profile_runtime_scope({"profile_home": _account_home(request)}):
-        tokens = _set_session_context("")
-        try:
-            yield
-        finally:
-            _clear_session_context(tokens)
+    with _session_profile_runtime_scope({"profile_home": _account_home(request)}), _desktop_page_vars():
+        yield
 
 
 def _operation_for_request(rid, request, session):
     from tools.connectors import live
-    from tui_gateway.contracts.connectors import ConnectorErrorReason
-
     if request.owner.type == "session":
         operation = live.get(session["session_key"], request.op_id, profile_home=session.get("profile_home"))
     else:
@@ -314,7 +316,7 @@ def _operation_for_request(rid, request, session):
                 return None, closed
             operation = live.get_by_op_id(request.op_id, profile_home=_account_home(request))
     if operation is None:
-        return None, _connector_rpc_error(rid, 4004, ConnectorErrorReason.unknown_operation, "No open operation with that op_id.")
+        return None, _connector_rpc_error(rid, *_refusals().UNKNOWN_OPERATION)
     return operation, None
 
 
@@ -348,7 +350,7 @@ def _(rid, params):
 def _(rid, params):
     from pydantic import ValidationError
 
-    from tui_gateway.contracts.connectors import ConnectorErrorReason
+    from tui_gateway.connector_refusals import INVALID_ANSWER
     from tui_gateway.contracts.connectors_operation import ConnectionAnswer
 
     envelope = {key: value for key, value in params.items() if key != "result"}
@@ -358,7 +360,7 @@ def _(rid, params):
     try:
         answer = ConnectionAnswer.model_validate(params.get("result"))
     except ValidationError:
-        return _connector_rpc_error(rid, 4002, ConnectorErrorReason.invalid_answer, "Connection answer is invalid.")
+        return _connector_rpc_error(rid, *INVALID_ANSWER)
     operation, error = _operation_for_request(rid, request, session)
     if error:
         return error
@@ -370,21 +372,15 @@ def _(rid, params):
 
 
 def _apply_connection_answer(rid, answer, operation):
-    from tools.connectors import live
-    from tools.connectors.contract import SettleReason
     from tools.connectors.operation import IllegalTransition
-    from tools.connectors.run import apply_answer
-    from tui_gateway.contracts.connectors import ConnectorErrorReason
+    from tools.connectors.run import respond
+    from tui_gateway.connector_refusals import INVALID_ANSWER
 
     try:
-        apply_answer(operation, answer.model_dump_json(exclude_none=True))
+        settled = respond(operation, answer.model_dump_json(exclude_none=True))
     except IllegalTransition:
-        return _connector_rpc_error(rid, 4002, ConnectorErrorReason.invalid_answer, "Connection answer is invalid.")
-    if not operation.settled and operation.all_resolved:
-        operation.settle(SettleReason.all_resolved)
-    if operation.settled:
-        live.close(operation)
-    return _ok(rid, {"status": "ok", "settled": operation.settled})
+        return _connector_rpc_error(rid, *INVALID_ANSWER)
+    return _ok(rid, {"status": "ok", "settled": settled})
 
 
 def _snapshot_view(snapshot):

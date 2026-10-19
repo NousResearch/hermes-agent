@@ -10,10 +10,10 @@ import {
   CONNECTOR_CARD_PHASES,
   MARK_LABEL,
   reissueConnectionTarget,
-  useConnectionOwner,
   useConnectorFocusHandoff
 } from '@/components/assistant-ui/connector-tool'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
+import { useConnectionOwner } from '@/components/assistant-ui/use-connection-owner'
 import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'
 import { Button } from '@/components/ui/button'
 import { ConnectorCard, ConnectorRow, type ConnectorRowAction, ConnectorSummary } from '@/components/ui/connector-card'
@@ -24,13 +24,14 @@ import { Loader2 } from '@/lib/icons'
 import { prettyName } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import {
+  connectionOpOf,
   type ConnectionOwner,
   type ConnectionRequest,
   type ConnectionTarget,
   type ConnectionTargetState,
   continueConnectionRequest,
   respondToConnectionRequest,
-  sessionConnectionRequest
+  toolConnectionRequest
 } from '@/store/connection-request'
 import { notifyError } from '@/store/notifications'
 import { invalidateMcpSuggestionIndex } from '@/store/suggestion-providers/mcp'
@@ -189,7 +190,14 @@ export function McpSetupPending(props: ToolCallMessagePartProps) {
   const sessionId = useStore(view.$runtimeId)
   // Owner routes and hints are keyed by the stored id, not the runtime id the events carry.
   const storedId = useStore(view.$storedId)
-  const $request = useMemo(() => sessionConnectionRequest(sessionId), [sessionId])
+  const opId = connectionOpOf(props.args)
+  const running = props.result === undefined
+
+  const $request = useMemo(
+    () => toolConnectionRequest(sessionId, props.toolCallId, opId, running),
+    [opId, props.toolCallId, running, sessionId]
+  )
+
   const request = useStore($request)
   const action = useMemo(() => readSetupAction(props.args), [props.args])
   // The session's operation belongs to one tool call; another call's request never paints here.

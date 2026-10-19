@@ -30,9 +30,9 @@ logger = logging.getLogger(__name__)
 
 # Ordered registry: name → source. Dict insertion order doubles as the default
 # apply order. Origin is recorded so consumers never infer ownership from names.
-_SOURCES: Dict[str, SecretSource] = {}
-_SOURCE_ORIGINS: Dict[str, str] = {}
-_SCOPED_SOURCES: Dict[str, Dict[str, SecretSource]] = {}
+_SOURCES: dict[str, SecretSource] = {}
+_SOURCE_ORIGINS: dict[str, str] = {}
+_SCOPED_SOURCES: dict[str, dict[str, SecretSource]] = {}
 _BUILTINS_LOADED = False
 _REGISTRY_LOCK = threading.RLock()
 
@@ -64,20 +64,20 @@ class SourceReport:
     name: str
     label: str
     result: FetchResult
-    applied: List[str] = field(default_factory=list)
-    skipped_existing: List[str] = field(default_factory=list)   # .env/shell won
-    skipped_claimed: List[str] = field(default_factory=list)    # earlier source won
-    skipped_protected: List[str] = field(default_factory=list)  # bootstrap-auth guard
-    skipped_invalid: List[str] = field(default_factory=list)    # bad env-var name
+    applied: list[str] = field(default_factory=list)
+    skipped_existing: list[str] = field(default_factory=list)   # .env/shell won
+    skipped_claimed: list[str] = field(default_factory=list)    # earlier source won
+    skipped_protected: list[str] = field(default_factory=list)  # bootstrap-auth guard
+    skipped_invalid: list[str] = field(default_factory=list)    # bad env-var name
 
 
 @dataclass
 class ApplyReport:
     """Merged outcome of one orchestrated apply pass."""
 
-    sources: List[SourceReport] = field(default_factory=list)
-    provenance: Dict[str, AppliedVar] = field(default_factory=dict)
-    conflicts: List[str] = field(default_factory=list)  # human-readable warnings
+    sources: list[SourceReport] = field(default_factory=list)
+    provenance: dict[str, AppliedVar] = field(default_factory=dict)
+    conflicts: list[str] = field(default_factory=list)  # human-readable warnings
 
     @property
     def applied_any(self) -> bool:
@@ -133,7 +133,7 @@ def register_source(source: SecretSource, *, replace: bool = False, builtin: boo
     return True
 
 
-def _merged(scope: Optional[str]) -> Dict[str, SecretSource]:
+def _merged(scope: Optional[str]) -> dict[str, SecretSource]:
     """Global sources overlaid with the scope's (default: current home) registrations."""
     merged = dict(_SOURCES)
     merged.update(_SCOPED_SOURCES.get(hermes_home_key(scope), {}))
@@ -172,13 +172,13 @@ def restore_registration(name: str, current: SecretSource, previous: Optional[Se
     return True
 
 
-def list_sources(*, scope: Optional[str] = None) -> List[SecretSource]:
+def list_sources(*, scope: Optional[str] = None) -> list[SecretSource]:
     _ensure_builtin_sources()
     with _REGISTRY_LOCK:
         return list(_merged(scope).values())
 
 
-def list_plugin_sources() -> List[SecretSource]:
+def list_plugin_sources() -> list[SecretSource]:
     """Sources registered outside the bundled set: global ``"plugin"`` origins
     plus every scoped registration (bundled sources register with scope=None).
 
@@ -205,7 +205,7 @@ def _ensure_builtin_sources() -> None:
             try:
                 module = __import__(module_name, fromlist=[class_name])
                 register_source(getattr(module, class_name)(), builtin=True)
-            except Exception:  # noqa: BLE001 — never block startup
+            except Exception:
                 logger.warning("Failed to register bundled %s secret source", label, exc_info=True)
 
 
@@ -248,7 +248,7 @@ def _fetch_with_timeout(source: SecretSource, cfg: dict, home_path: Path,
                                       "without this source (raise secrets."
                                       f"{source.name}.timeout_seconds if the backend is just slow)",
                                       ErrorKind.TIMEOUT)
-        except Exception as exc:  # noqa: BLE001 — contract violation, contain it
+        except Exception as exc:
             return FetchResult().fail(f"fetch raised {type(exc).__name__}: {exc}", ErrorKind.INTERNAL)
     finally:
         executor.shutdown(wait=False)
@@ -264,7 +264,7 @@ def _section(secrets_cfg: dict, name: str) -> dict:
     return cfg if isinstance(cfg, dict) else {}
 
 
-def _ordered_enabled_sources(secrets_cfg: dict, *, scope: Optional[str] = None) -> List[SecretSource]:
+def _ordered_enabled_sources(secrets_cfg: dict, *, scope: Optional[str] = None) -> list[SecretSource]:
     """Enabled sources: ``secrets.sources`` order first, then registration order
     (mapped-vs-bulk precedence is applied on top by :func:`apply_all`)."""
     sources = {source.name: source for source in list_sources(scope=scope)}
@@ -277,12 +277,12 @@ def _ordered_enabled_sources(secrets_cfg: dict, *, scope: Optional[str] = None) 
                        ", ".join(unknown), ", ".join(sources) or "none")
     order = dict.fromkeys([n for n in names if n in sources] + list(sources))  # insertion-ordered set
 
-    enabled: List[SecretSource] = []
+    enabled: list[SecretSource] = []
     for name in order:
         try:
             if sources[name].is_enabled(_section(secrets_cfg, name)):
                 enabled.append(sources[name])
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.warning("Secret source '%s' is_enabled() raised; skipping", name, exc_info=True)
     return enabled
 
@@ -326,9 +326,9 @@ class _Applier:
     """Apply phase state for one orchestrated pass: sequential, first-wins, attributed."""
 
     def __init__(self, env: MutableMapping[str, str], report: ApplyReport,
-                 protected: Dict[str, str], preserve: frozenset) -> None:
+                 protected: dict[str, str], preserve: frozenset) -> None:
         self.env, self.report, self.protected, self.preserve = env, report, protected, preserve
-        self.claimed: Dict[str, str] = {}  # var → source name that won it
+        self.claimed: dict[str, str] = {}  # var → source name that won it
 
     def apply_source(self, source: SecretSource, cfg: dict, result: FetchResult,
                      profile: str, supplied_directly: set) -> None:
@@ -338,7 +338,7 @@ class _Applier:
             return
         try:
             override = source.override_existing(cfg)
-        except Exception:  # noqa: BLE001
+        except Exception:
             override = False
 
         for var, value in result.secrets.items():
@@ -413,8 +413,8 @@ def apply_all(secrets_cfg: dict, home_path: Path,
     # Mapped outranks bulk regardless of list order.
     ordered = [s for s in enabled if s.shape == "mapped"] + [s for s in enabled if s.shape == "bulk"]
 
-    fetches: List[tuple[SecretSource, dict, FetchResult]] = []
-    protected: Dict[str, str] = {}  # var → source that protects it
+    fetches: list[tuple[SecretSource, dict, FetchResult]] = []
+    protected: dict[str, str] = {}  # var → source that protects it
     for source in ordered:
         cfg = _section(secrets_cfg, source.name)
         result = _fetch_with_timeout(source, cfg, home_path, env)
@@ -422,7 +422,7 @@ def apply_all(secrets_cfg: dict, home_path: Path,
         try:
             for var in source.protected_env_vars(cfg):
                 protected.setdefault(var, source.name)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
     # An alias never shadows a var some source supplies by its real name.

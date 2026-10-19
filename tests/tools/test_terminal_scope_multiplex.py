@@ -198,7 +198,7 @@ def test_gateway_runtime_scope_resets_on_error(tmp_path):
 
 
 def test_tui_and_cron_boundaries_bind_and_reset(tmp_path):
-    import tui_gateway.server as server
+    from tui_gateway import server
     from tools.terminal_scope import install_and_reset_profile_terminal_scope
 
     home = _profile(tmp_path, "dash", "terminal:\n  backend: local\n")

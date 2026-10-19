@@ -33,8 +33,14 @@ const productMarker = '.hermes-product'
 const productOwner = 'hermes-frontend-product-v1\n'
 const developerOutputs = ['ui-tui/dist', 'hermes_cli/web_dist', 'apps/desktop/dist', 'apps/desktop/build/native-deps']
 
+// `npm run builder -- --<platform> --<arch>` stages one native tree per target
+// (apps/desktop/scripts/run-electron-builder.mjs): build/native-deps-<platform>-<arch>.
+const nativeTargetOutput = /^apps[\\/]desktop[\\/]build[\\/]native-deps-(darwin|linux|win32)-(x64|arm64)$/
+
 function developerOutput(source, out) {
-  return source && developerOutputs.some(name => path.resolve(out) === path.join(path.resolve(source), name))
+  if (!source) return false
+  const relative = path.relative(path.resolve(source), path.resolve(out))
+  return developerOutputs.some(name => relative === path.join(name)) || nativeTargetOutput.test(relative)
 }
 
 // A destination name alone does not confer ownership of its existing contents.
@@ -74,22 +80,53 @@ export function productOutput(source, out, inputs) {
   return { source: src, out: dest }
 }
 
+// Windows refuses to move a tree while anything holds a handle inside it, and
+// an antivirus scanner opens every freshly written exe. Node reports that as
+// EPERM/EACCES/EBUSY; it clears in moments, so ride it out (~3s) rather than
+// throw away a build that took minutes. Other codes never clear by waiting.
+const heldCodes = new Set(['EPERM', 'EACCES', 'EBUSY'])
+const heldRetryDelays = [100, 200, 400, 800, 1600]
+
+export function retryHeld(operation) {
+  for (const delay of [...heldRetryDelays, undefined]) {
+    try {
+      return operation()
+    } catch (error) {
+      if (delay === undefined || !heldCodes.has(error?.code)) throw error
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay)
+    }
+  }
+}
+
 // Never delete the last successful product before a compiler succeeds. The
-// staging and backup directories are siblings so publication stays on one FS.
+// backup lives beside out, outside withProduct's scratch tree, so a failed
+// rollback leaves the previous product somewhere a person can recover it.
 export function publishDirectory(staged, out, { source } = {}) {
   // The destination may have been occupied while the compiler was running.
   requireOwnedOutput(out, source)
   writeFileSync(path.join(staged, productMarker), productOwner)
-  const backup = `${staged}.previous`
-  const previous = existsSync(out)
-  if (previous) renameSync(out, backup)
+  if (!existsSync(out)) return retryHeld(() => renameSync(staged, out))
+  const backupRoot = mkdtempSync(path.join(path.dirname(out), `.${path.basename(out)}-previous-`))
+  const backup = path.join(backupRoot, 'product')
   try {
-    renameSync(staged, out)
+    retryHeld(() => renameSync(out, backup))
   } catch (error) {
-    if (previous) renameSync(backup, out)
+    rmSync(backupRoot, { recursive: true, force: true })
     throw error
   }
-  if (previous) rmSync(backup, { recursive: true, force: true })
+  try {
+    retryHeld(() => renameSync(staged, out))
+  } catch (error) {
+    try {
+      retryHeld(() => renameSync(backup, out))
+    } catch (rollbackError) {
+      error.message += `; rollback failed (${rollbackError.message}); previous product kept at ${backup}`
+      throw error
+    }
+    rmSync(backupRoot, { recursive: true, force: true })
+    throw error
+  }
+  rmSync(backupRoot, { recursive: true, force: true })
 }
 
 export async function withProduct(out, compile, { source } = {}) {

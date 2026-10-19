@@ -726,6 +726,10 @@ def _write_custom_endpoint(cfg: dict[str, Any], body: CustomEndpointUpdate) -> t
     return endpoint_id, entry
 
 
+# Sections a custom-endpoint default assignment writes together: the route and its provider entry.
+_ROUTE_SECTIONS = ("model", "providers", "custom_providers")
+
+
 @router.get("/api/providers/custom-endpoints")
 def list_custom_endpoints(profile: Optional[str] = None):
     """Return configured OpenAI-compatible custom endpoints for Desktop.
@@ -752,7 +756,9 @@ def upsert_custom_endpoint(body: CustomEndpointUpdate, profile: Optional[str] = 
             created = _resolve_custom_endpoint_entry(
                 providers if isinstance(providers, dict) else {}, body.id or body.name)[1] is None
             endpoint_id, _entry = _write_custom_endpoint(cfg, body)
-            with refusing_locked_omissions("model") if body.make_default else contextlib.nullcontext():
+            # make_default: the model route and the provider definition it names are one change,
+            # so a lock on either refuses both (never a model.provider naming an omitted entry).
+            with refusing_locked_omissions(*_ROUTE_SECTIONS) if body.make_default else contextlib.nullcontext():
                 save_config(cfg)
             response = _custom_endpoint_response(cfg)
             from hermes_constants import get_hermes_home
@@ -819,7 +825,7 @@ def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
                 else:
                     model_cfg["api_key"] = entry["api_key"]
             cfg["model"] = model_cfg
-            with refusing_locked_omissions("model"):
+            with refusing_locked_omissions(*_ROUTE_SECTIONS):
                 save_config(cfg)
         return {"ok": True, "provider": provider_key, "model": model}
 

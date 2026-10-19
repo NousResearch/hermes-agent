@@ -1813,3 +1813,41 @@ def test_dashboard_model_switch_refuses_when_a_lock_lands_after_the_guard(plane,
     if not conflict_first:
         assert plane.patches() == []
     assert plane.profile("default")["values"].get("model") in (None, {}), plane.profile("default")
+
+
+@pytest.mark.parametrize("schedule", ["locked", "late-poll", "late-retry"])
+def test_custom_endpoint_make_default_refuses_when_its_provider_entry_is_locked(plane, monkeypatch, schedule):
+    """Creating a named custom endpoint with make_default writes providers.<id> AND the model route
+    naming it. A lock on providers (present up front, seen by a poll before the save, or by the
+    re-read after a 409) refuses both: never model.provider naming an entry that was not saved."""
+    from fastapi import HTTPException
+    from hermes_cli.model_switch import ModelSwitchResult
+    from hermes_cli.web_models import CustomEndpointUpdate
+    from hermes_cli.web_routers import config_env
+    plane.upper = {"model": {"default": "old-model", "provider": "custom:old", "base_url": "https://old.example/v1"},
+                   "providers": {"custom:old": {"name": "old", "base_url": "https://old.example/v1", "model": "old-model"}}}
+    lock = [{"path": "providers", "level": "tenant"}]
+    if schedule == "locked":
+        plane.upper_locks = lock
+    monkeypatch.setattr(config_env, "_record_custom_endpoint_setup", lambda home: None)
+    monkeypatch.setattr(config_env, "_validated_main_model_selection", lambda cfg, provider, model, base_url: ModelSwitchResult(
+        success=True, new_model=model, target_provider=provider, provider_changed=True, base_url=base_url,
+        api_mode="chat_completions", is_global=True))
+    if schedule != "locked":
+        backend = get_config_backend()
+        orig = config_env.save_config
+
+        def lock_then_save(cfg, **kw):
+            plane.upper_locks = lock
+            if schedule == "late-poll":
+                assert backend.poll_one(backend._state(plane.home))
+            else:
+                plane.profile("default")["version"] += 1
+            return orig(cfg, **kw)
+
+        monkeypatch.setattr(config_env, "save_config", lock_then_save)
+    with pytest.raises(HTTPException) as exc:
+        config_env.upsert_custom_endpoint(CustomEndpointUpdate(
+            id="new-probe", name="new-probe", base_url="https://new.example/v1", model="new-model", make_default=True))
+    assert exc.value.status_code == 403, exc.value
+    assert plane.profile("default")["values"].get("model") in (None, {}), plane.profile("default")

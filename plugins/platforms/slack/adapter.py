@@ -1486,26 +1486,27 @@ class SlackAdapter(BasePlatformAdapter):
         formatted = self.format_message(content)
         return self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH) or [formatted]
 
+    def _slash_chunks(self, content: str) -> list[str]:
+        """``_format_chunks`` capped at 5 POSTs per ``response_url``; past the cap the split reserves
+        the truncation notice the fifth chunk carries, so that chunk still fits the limit."""
+        formatted = self.format_message(content)
+        budget = self.MAX_MESSAGE_LENGTH
+        while True:
+            chunks = self.truncate_message(formatted, budget) or [formatted]
+            if len(chunks) <= 5:
+                return chunks
+            notice = t("platform.slack.slash.reply_truncated", count=str(len(chunks) - 5))
+            if budget + len(notice) <= self.MAX_MESSAGE_LENGTH:
+                return chunks[:4] + [chunks[4].rstrip() + notice]
+            # A smaller budget only adds chunks, so the notice never shrinks: this converges.
+            budget = self.MAX_MESSAGE_LENGTH - len(notice)
+
     async def _send_slash_ephemeral(self, ctx: dict[str, Any], content: str) -> SendResult:
         """Replace the ephemeral ack via ``response_url`` (``replace_original`` valid 30 min). First
         chunk replaces the ack, the rest post as new ephemerals; Slack caps a response_url at 5
-        POSTs so overflow gets a truncation notice. ``success=False`` lets ``send()`` fall back.
-
-        Long replies are chunked: the first chunk replaces the ack, the rest are posted as additional
-        ephemeral messages. Slack allows at most 5 POSTs to a response_url, so anything beyond that is
-        closed with an explicit truncation notice instead of being silently dropped (#19688).
-        Returns ``success=False`` on delivery failure so the caller (``send()``) can fall back to normal
-        channel delivery — the reply must never be silently dropped just because the ephemeral swap failed
-        (#19688).
-        """
-        # Slack's response_url has the same ~40k char limit as chat_postMessage.
-        chunks = self._format_chunks(content)
-        # 5-POST cap per response_url: 1 replace + 4 follow-ups; announce the rest.
-        if len(chunks) > 5:
-            dropped = len(chunks) - 5
-            chunks = chunks[:5]
-            chunks[-1] = (
-                chunks[-1].rstrip() + t("platform.slack.slash.reply_truncated", count=str(dropped)))
+        POSTs so overflow gets a truncation notice. ``success=False`` lets ``send()`` fall back to
+        channel delivery: a failed swap must never silently drop the reply (#19688)."""
+        chunks = self._slash_chunks(content)
         try:
             async with aiohttp.ClientSession(trust_env=gateway_trust_env()) as session:
                 for idx, chunk in enumerate(chunks):

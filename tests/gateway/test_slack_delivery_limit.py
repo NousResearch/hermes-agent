@@ -225,3 +225,42 @@ def test_cron_delivery_chain_posts_stay_under_the_limit(session, body_len):
     assert "Cronjob Response: limit" in joined and "END-MARKER" in joined
     assert joined.count("&amp;") == body_len
     assert _leaks(texts) == 0
+
+
+class _ResponseUrlSession:
+    """Fake aiohttp session for ``response_url``: every POST succeeds and is recorded."""
+
+    def __init__(self):
+        self.payloads: list[dict] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def post(self, url, *, json, **kwargs):
+        self.payloads.append(json)
+        response = MagicMock(status=200)
+        response.__aenter__ = AsyncMock(return_value=response)
+        response.__aexit__ = AsyncMock(return_value=False)
+        return response
+
+
+@pytest.mark.parametrize("body", ["x" * (LIMIT * 6), "&" * (LIMIT * 3), "word " * LIMIT],
+                         ids=["hard-cuts", "escaped", "words"])
+def test_slash_reply_over_five_posts_keeps_every_payload_under_the_limit(monkeypatch, body):
+    """The truncation notice rides the fifth POST: that payload, notice included, still fits."""
+    import aiohttp
+
+    fake = _ResponseUrlSession()
+    # The adapter binds aiohttp only when the Slack SDK imports; the real module is enough here.
+    monkeypatch.setattr("plugins.platforms.slack.adapter.aiohttp", aiohttp)
+    monkeypatch.setattr("aiohttp.ClientSession", lambda *a, **kw: fake)
+    adapter = SlackAdapter(SimpleNamespace(enabled=True, token="x", extra={}))
+    result = asyncio.run(adapter._send_slash_ephemeral(
+        {"response_url": "https://hooks.slack.com/commands/long"}, body))
+    texts = [payload["text"] for payload in fake.payloads]
+    assert result.success is True
+    assert len(texts) == 5 and max(map(len, texts)) <= LIMIT
+    assert texts[-1].endswith("]_")

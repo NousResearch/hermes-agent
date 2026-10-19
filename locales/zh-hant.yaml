@@ -2386,6 +2386,14 @@ cli:
     move_out_of_range: "佇列移動超出範圍。目前佇列長度：{size}"
     moved: "已將佇列項目 {source} 移至 {destination}。"
     usage_add: "用法：/queue add <prompt>"
+    gateway_refused: "閘道未將其加入佇列：{error}。未加入任何內容；請在本輪結束後重新傳送。"
+    submit_unknown: "閘道未回應（{error}），提示可能已在佇列中。重新傳送前請先查看 /queue list。"
+    move_gateway_fifo: "閘道依傳送順序執行佇列中的提示；請改為編輯或刪除其中一則。"
+    remove_refused: "無法移除佇列項目 {index}：{error}"
+    edit_refused: "無法編輯佇列項目 {index}：{error}"
+    already_started: "佇列項目 {index} 已開始執行；將依原樣執行。"
+    started_stopped: "佇列項目 {index} 已開始執行；閘道已將其停止。"
+    change_unknown: "閘道未回應佇列項目 {index}（{error}）；請先查看 /queue list 再重試。"
   reload:
     env_reloaded: "已重新載入 .env（更新了 {count} 個變數）"
   steer:

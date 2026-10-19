@@ -937,7 +937,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 if getattr(resp, "status", 200) >= 400:
                     logger.debug("[%s] WhatsApp reaction bridge returned HTTP %s", self.name, getattr(resp, "status", "unknown"))
         except Exception as exc:
-            logger.debug("[%s] WhatsApp reaction failed: %s", self.name, exc)
+            # Best-effort status reaction: a failure must never disturb message flow.
+            logger.debug("[%s] WhatsApp reaction failed: %s", self.name, exc, exc_info=True)
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """React with 👀 while the message is being processed."""

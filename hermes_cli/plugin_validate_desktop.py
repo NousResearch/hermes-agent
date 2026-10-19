@@ -106,9 +106,9 @@ _ASSIGNED_DECLARATION = (r"(?<![\w$.]){0}\s*=\s*(?:class\b[^{{]*|function\s*\*?\
 _REBINDING = (
     r"(?<![\w$.]){0}\s*(?:&&|\|\||\?\?|\*\*|<<|>>>?|[-+*/%&|^])?=(?![=>])"
     r"|\b(?:let|const|var|class|function\s*\*?)\s+{0}(?![\w$])"
-    # a PATTERN opens where an expression cannot (not ``obj[`` / ``f()[``), names ``X`` itself (not
-    # ``X.name``), and is assigned or iterated
-    r"|(?:^|(?<=[;(,{{}}=?:&|!\n])|\b(?:let|const|var|return|yield|void))\s*[\[{{][^;=()]*?(?<![\w$.]){0}(?![\w$.])[^;=()]*?[}}\]][\s}}\]]*"
+    # a PATTERN opens where an expression cannot (not ``obj[`` / ``f()[``), names ``X`` itself as a
+    # target (not ``X.name``, not the key in ``{X: other}``), and is assigned or iterated
+    r"|(?:^|(?<=[;(,{{}}=?:&|!\n])|\b(?:let|const|var|return|yield|void))\s*[\[{{][^;=()]*?(?<![\w$.]){0}(?![\w$.]|\s*:)[^;=()]*?[}}\]][\s}}\]]*"
     r"(?:=(?![=>])|\b(?:of|in)\b)"
     r"|(?:\bfunction\s*\*?\s*[\w$]*|(?<![\w$.])(?!(?:if|for|while|switch|with|return|typeof|await)\b)[\w$]+)"
     r"\s*\([^()]*?(?<![\w$.]){0}(?![\w$])[^()]*\)\s*\{{"
@@ -118,103 +118,98 @@ _REBINDING = (
 
 
 _REGEX_AFTER_WORD = re.compile(r"(?:^|[^\w$.])(?:return|typeof|case|do|else|in|of|void|delete|throw|new|yield|await)\s*$")
+_MAX_READINGS = 32
 
 
-def _regex_may_start(source: str, at: int) -> bool:
+def _slash_readings(source: str, at: int) -> tuple[bool, bool]:
+    """(may be a regex, may be division) for the ``/`` at *at* in code. After ``)`` or ``}`` both
+    are legal JavaScript (``if (x) /re/.test(s)`` vs ``(a) / b``); only a parser could tell."""
+    if source.startswith("/", at + 1):
+        return False, True
     j = at - 1
     while j >= 0 and source[j] in " \t\r\n":
         j -= 1
     if j < 0:
-        return True
-    if source[j] in "(,=:[!&|?{};+-*%<>~^":
-        return not source.startswith("/", at + 1) and not (source[j] in "+-" and j > 0 and source[j - 1] == source[j])
-    return bool(_REGEX_AFTER_WORD.search(source, max(0, j - 12), j + 1))
+        return True, False
+    prev = source[j]
+    if prev in ")}":
+        return True, True
+    if prev in "+-" and j > 0 and source[j - 1] == prev:  # ``a++ / b``
+        return False, True
+    if prev in "(,=:[!&|?{;+-*%<>~^":
+        return True, False
+    return bool(_REGEX_AFTER_WORD.search(source, max(0, j - 12), j + 1)), True
 
 
-def _regex_end(source: str, at: int) -> int:
-    """Offset of the closing ``/`` of the regex literal at *at*, or 0 when it is not one."""
-    i, in_class = at + 1, False
-    while i < len(source) and source[i] != "\n":
-        c = source[i]
+def _step(source: str, i: int, state: tuple) -> tuple[bool, list[tuple]]:
+    """Advance one reading of the source by the character at *i*: (is that character literal text,
+    next readings). An empty list means this reading is not valid JavaScript (it dies)."""
+    kind, holes = state
+    c = source[i]
+    if kind in ("\"", "'"):
         if c == "\\":
-            i += 2
-            continue
-        if c == "[":
-            in_class = True
-        elif c == "]":
-            in_class = False
-        elif c == "/" and not in_class:
-            return i
-        i += 1
-    return 0
+            return True, [(kind + "\\", holes)]
+        if c == "\n":
+            return True, []
+        return c != kind, [("c" if c == kind else kind, holes)]
+    if kind in ("\"\\", "'\\", "t\\", "r\\", "k\\"):
+        return True, [(kind[0], holes)]
+    if kind == "t":
+        if c == "\\":
+            return True, [("t\\", holes)]
+        if c == "`":
+            return False, [("c", holes)]
+        if c == "$" and source.startswith("${", i):
+            return True, [("$", holes + (0,))]
+        return True, [("t", holes)]
+    if kind == "$":  # the ``{`` of ``${``
+        return True, [("c", holes)]
+    if kind in ("r", "k"):
+        if c == "\n":
+            return True, []
+        if c == "\\":
+            return True, [(kind + "\\", holes)]
+        if kind == "r" and c == "/":
+            return False, [("c", holes)]
+        nxt = {"[": "k"} if kind == "r" else {"]": "r"}
+        return True, [(nxt.get(c, kind), holes)]
+    # code
+    if c in "\"'":
+        return False, [(c, holes)]
+    if c == "`":
+        return False, [("t", holes)]
+    if c == "/":
+        regex, division = _slash_readings(source, i)
+        return False, ([("r", holes)] if regex else []) + ([("c", holes)] if division else [])
+    if holes and c == "{":
+        return False, [("c", holes[:-1] + (holes[-1] + 1,))]
+    if holes and c == "}":
+        if holes[-1] == 0:
+            return True, [("t", holes[:-1])]
+        return False, [("c", holes[:-1] + (holes[-1] - 1,))]
+    return False, [("c", holes)]
 
 
 def _code_view(source: str) -> str:
     """*source* with the text of quoted strings, template literals and regex literals blanked, same
-    length. Only text that can never run is blanked: a template's ``${…}`` stays code, and a ``/``
-    starts a regex only where an expression cannot end before it (after an operator, ``(``, ``,``,
-    a keyword such as ``return``); after a name, number, ``)`` or ``]`` it is division.
-
-    Every ambiguity resolves toward NOT blanking: a guess that wrongly reads code as literal text
-    hides a patch, while one that reads text as code only refuses a bundle for review. So a regex
-    statement after ``if (…)`` is scanned as code (deciding needs a parser)."""
+    length; a template's ``${…}`` stays code. Where a ``/`` could be either a regex or division,
+    BOTH readings are followed, and a character is blanked only when every live reading agrees it
+    is literal text. Since the true reading is always among them, executable code is never blanked
+    (a wrong guess cannot hide a patch); ambiguity only costs a refusal for manual review."""
     out = list(source)
-
-    def blank(i: int) -> None:
-        if source[i] != "\n":
+    readings: set[tuple] = {("c", ())}
+    for i in range(len(source)):
+        literal_everywhere = True
+        nxt: set[tuple] = set()
+        for state in readings:
+            literal, follow = _step(source, i, state)
+            literal_everywhere &= literal
+            nxt.update(follow)
+        if literal_everywhere and source[i] != "\n":
             out[i] = " "
-
-    holes: list[int] = []  # open ``${`` nesting: brace depth inside each
-    i, n = 0, len(source)
-    in_template = False
-    while i < n:
-        c = source[i]
-        if in_template:
-            if c == "\\":
-                blank(i)
-                if i + 1 < n:
-                    blank(i + 1)
-                i += 2
-                continue
-            if c == "`":
-                in_template = False
-            elif c == "$" and source.startswith("${", i):
-                blank(i), blank(i + 1)
-                holes.append(0)
-                in_template = False
-                i += 2
-                continue
-            else:
-                blank(i)
-            i += 1
-            continue
-        if c in "'\"":
-            j = i + 1
-            while j < n and source[j] not in (c, "\n"):
-                j += 2 if source[j] == "\\" else 1
-            for k in range(i + 1, min(j, n)):
-                blank(k)
-            i = j + 1
-            continue
-        if c == "/" and _regex_may_start(source, i):
-            j = _regex_end(source, i)
-            if j:
-                for k in range(i + 1, j):
-                    blank(k)
-                i = j + 1
-                continue
-        if c == "`":
-            in_template = True
-        elif holes and c == "{":
-            holes[-1] += 1
-        elif holes and c == "}":
-            if holes[-1] == 0:
-                holes.pop()
-                blank(i)
-                in_template = True
-            else:
-                holes[-1] -= 1
-        i += 1
+        if not nxt or len(nxt) > _MAX_READINGS:  # beyond what we can follow: blank nothing more
+            break
+        readings = nxt
     return "".join(out)
 
 

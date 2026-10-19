@@ -354,7 +354,8 @@ class TestDesktopSurface:
         shadowing the class, a destructuring assignment, and writes hidden in a template ``${}`` or
         between divisions. Passing the class around (``register(Q)``, ``{ Array: Q }``,
         ``registry[F.name] = F``) or text in a string, template or regex literal is not a
-        rebinding. Ambiguous text never hides code: a ``/`` after ``)`` is division."""
+        rebinding, nor is a class name used only as a destructuring key. Ambiguous text never hides
+        code: where a ``/`` could open a regex or be division, both readings are followed."""
         d = self._desktop_plugin(tmp_path, (
             "var Vector2 = class _Vector2 { constructor() { _Vector2.prototype.isVector2 = true } }\n"
             "function Track() {}\nTrack.prototype.ValueTypeName = 'vector'\n"
@@ -376,6 +377,8 @@ class TestDesktopSurface:
             "function G() {}\nlet {a: G} = window; G.prototype.setItem = spy\n"
             "function J() {}\ntrue ? [J] = [window.Storage] : null; J.prototype.setItem = spy\n"
             "const m = Number(\"if (\") / (Storage.prototype.setItem = spy, 2) / 3\n"
+            "if (false) /\"/.test(label); Storage.prototype.setItem = spy; const tail = \"/\"\n"
+            "function L() {}\nlet v; true ? {L: v} = options : null; L.prototype.isL = 1\n"
         ))
         assert desktop_surface_hits(d) == [
             "prototype patching (desktop/plugin.js:5)",
@@ -392,6 +395,7 @@ class TestDesktopSurface:
             "prototype patching (desktop/plugin.js:36)",
             "prototype patching (desktop/plugin.js:38)",
             "prototype patching (desktop/plugin.js:39)",
+            "prototype patching (desktop/plugin.js:40)",
         ]
 
     def test_node_sidecar_and_test_mjs_outside_desktop_are_not_the_surface(self, tmp_path):

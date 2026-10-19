@@ -14,6 +14,71 @@ logger = logging.getLogger(__name__)
 
 
 class StreamingWaitMonitor:
+    def _stale_kill_patience(self) -> float:
+        """Wall-clock window a wedged attempt's re-kills may keep re-arming before it is
+        abandoned: its own read timeout. That timeout is the last thing that legitimately
+        ends a parked read by itself, so a re-kill only proves wedging once it has passed;
+        and a short stale budget re-fires many times inside one read timeout, so the bound
+        is wall clock, never a kill count (#141098)."""
+        try:
+            return float(self._stream_timeouts()[1])
+        except (AttributeError, IndexError, TypeError, ValueError):
+            return 120.0  # a monitor without the wire's timeouts (the bare mixin in tests)
+
+    def _note_stale_kill(self, counted: bool, elapsed: float) -> None:
+        """Book one stale kill of the current attempt; keep its display/liveness honest.
+
+        The first kill of an attempt is the one that counts toward the cross-call breaker
+        and claims liveness. A re-kill means the previous kill did NOT unblock the reader —
+        there is no progress to report, so it must not refresh the activity heartbeat
+        either, or the kanban wedge reclaim never sees the worker (#141098). Past the
+        patience window the attempt is abandoned: no further kill can change its outcome.
+        """
+        with self.stream_attempt_lock:
+            attempt = int(self.stream_attempt_state["current"])
+        state = getattr(self, "_stale_rekill_state", None)
+        if state is None:
+            state = self._stale_rekill_state = {"attempt": attempt, "count": 0, "since": time.time()}
+        if state["attempt"] != attempt:
+            state["attempt"], state["count"], state["since"] = attempt, 0, time.time()
+        state["count"] += 1
+        # Never on the first kill: one kill is the normal recovery path, and the window
+        # below runs from it. From the second kill on, only the attempt's own read patience
+        # decides (a zero patience must not turn a single kill into an abandonment).
+        if state["count"] > 1 and time.time() - state["since"] >= self._stale_kill_patience():
+            self._abandon_stale_attempt(elapsed)
+            return
+        self.last_chunk_time["t"] = time.time()  # another full stale window before the next kill
+        self.agent._emit_diagnostic_wait(f"⚠ no output from provider for {int(elapsed)}s — reconnecting...")
+        if counted:
+            self.agent._touch_activity(f"stale stream detected after {int(elapsed)}s, reconnecting")
+
+    def _abandon_stale_attempt(self, elapsed: float) -> None:
+        """A wedged attempt whose kills never unwound the reader: stop killing and stop
+        claiming liveness. The worker path raises from ``run()``; the inline path leaves
+        the activity heartbeat to go stale so the external reclaim owns the worker."""
+        state = self._stale_rekill_state
+        logger.error(
+            "Stale stream: attempt %s was re-killed %d times over %.0fs — past its %.0fs read "
+            "patience without the reader unwinding; abandoning it (the socket shutdown is not "
+            "unblocking the worker). model=%s",
+            state["attempt"], state["count"], time.time() - state["since"],
+            self._stale_kill_patience(), self.api_kwargs.get("model", "unknown"),
+        )
+        self._stale_wedged = True
+
+    def _attempt_is_wedged(self) -> bool:
+        return bool(getattr(self, "_stale_wedged", False))
+
+    def _raise_wedged_stream(self) -> None:
+        """Fail the call so the retry/fallback path runs instead of looping forever."""
+        state = self._stale_rekill_state
+        raise RuntimeError(
+            f"Provider stream is wedged: the stale watchdog killed attempt {state['attempt']} "
+            f"{state['count']} times without the read unwinding — aborting this call so the "
+            "retry/fallback path can run. Switch models or start a new session, then retry."
+        )
+
     def _poll_local_load_notice(self, now: float) -> bool:
         """Managed local server: surface a cold model's weight-load progress
         instead of the 60s neutral "waiting on <model>" notice. Polled ~1s only while no
@@ -137,6 +202,12 @@ class StreamingWaitMonitor:
                 self._mon.wait_notice_started_ts = None  # Reconnect status has its own owner.
                 self._mon.wait_notice.reset()
                 self._kill_stale_stream(_stale_elapsed)
+                if self._attempt_is_wedged():
+                    # The reader survived every kill: no further kill can change that, and the
+                    # heartbeat would keep claiming a live worker. Worker path: run() raises for
+                    # the caller to retry/fall back; inline path: the external wedge reclaim now
+                    # sees a stale worker instead of a fresh heartbeat (#141098).
+                    return
             if self.agent._interrupt_requested:
                 self._abort_for_interrupt(_stale_elapsed)
                 return

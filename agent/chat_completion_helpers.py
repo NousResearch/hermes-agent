@@ -3817,11 +3817,13 @@ class _StreamingCall(StreamingWaitMonitor):
             attempt = int(self.stream_attempt_state["current"])
         return 0 if attempt in self._stale_counted_attempts else attempt
 
-    def _count_stale_attempt(self) -> None:
+    def _count_stale_attempt(self) -> bool:
         attempt = self._uncounted_stale_attempt()
         if attempt:
             self._stale_counted_attempts.add(attempt)
             _bump_stale_streak(self.agent)
+            return True
+        return False
 
     def _kill_stale_stream(self, elapsed: float) -> None:
         """SSE pings but no chunks: cancel the attempt and abort the request-local
@@ -3845,11 +3847,7 @@ class _StreamingCall(StreamingWaitMonitor):
             self._cancel_current_stream_attempt("stale_stream_kill")
             self.clients.close_once("stale_stream_kill")
         self._shutdown_stale_attempt_socket(_killed_response)
-        self._count_stale_attempt()
-        # Reset the timer so we don't kill repeatedly while the worker unwinds.
-        self.last_chunk_time["t"] = time.time()
-        self.agent._emit_diagnostic_wait(f"⚠ no output from provider for {int(elapsed)}s — reconnecting...")
-        self.agent._touch_activity(f"stale stream detected after {int(elapsed)}s, reconnecting")
+        self._note_stale_kill(self._count_stale_attempt(), elapsed)
 
     def _abort_for_interrupt(self, stale_elapsed: float) -> None:
         """/stop seen by the monitor: mark cancelled, abort the request-local
@@ -3982,6 +3980,8 @@ class _StreamingCall(StreamingWaitMonitor):
             if self.deltas_were_sent["yes"]:
                 return self._partial_stream_stub()
             raise self.result["error"]
+        if self._attempt_is_wedged() and self.result["response"] is None:
+            self._raise_wedged_stream()
         if self.result["response"] is not None:
             _reset_stale_streak(self.agent)  # provider proved responsive: clear the breaker
         # Propagate first-chunk timing for the ``post_api_request`` hook.

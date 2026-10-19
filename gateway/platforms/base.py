@@ -1582,6 +1582,9 @@ class ExecApprovalPrompt:
     smart_denied: bool
     metadata: Optional[dict[str, Any]] = None
     request_id: Optional[str] = None  # the ``tools.approval`` request this card answers (and only that one)
+    # Agent's latest interim commentary (why it wants the command). Empty when unknown.
+    # Display-only: it never changes the choice set or whether approval is required.
+    contextual_reason: str = ""
 
     @property
     def choices(self) -> list[str]:
@@ -2729,17 +2732,33 @@ class BasePlatformAdapter(ABC):
         """Chars of command preview that fit; platforms with a hard message cap set ``_EA_CARD_CAP``."""
         return exec_approval_cmd_budget(self, description, smart_denied)
 
+    # Escaped rationale budget. Callers subtract the rendered block from the command budget so a
+    # long "why" cannot push Slack (3000), Telegram (4096), Discord (2000), or WhatsApp (1024) over.
+    _EA_RATIONALE_BUDGET: int = 800
+
+    def _ea_rationale_block(self, contextual_reason: str) -> str:
+        """Escaped rationale plus a blank line, or "" when there is nothing to show."""
+        raw = str(contextual_reason or "").strip()
+        budget = int(self._EA_RATIONALE_BUDGET or 0)
+        # ``_ea_fit`` puts "..." outside the budget; reserve it so the block stays inside.
+        room = budget - len("...")
+        if not raw or room <= 0:
+            return ""
+        return f"{self._ea_escape(self._ea_fit(raw, room))}\n\n"
+
     def _ea_deadline_line(self) -> str:
         """The "doing nothing means it will NOT run" line, with the configured approvals.timeout."""
         return self._EA_DEADLINE_PREFIX + self._ea_escape(format_approval_deadline_line(approval_timeout_seconds()))
 
     def _format_exec_approval(
         self, command: str, description: Optional[str] = None, smart_denied: bool = False,
-        full_command_shown: bool = False) -> str:
-        """Shared exec-approval prompt text: header + fenced (truncated) command + why it was flagged +
-        the deadline line, plus the smart-deny line (``base_exec_approval.render_exec_approval``)."""
-        return render_exec_approval(self, str(command or ""), ea_default_reason_text() if description is None
-                                    else description, smart_denied, full_command_shown)[0]
+        full_command_shown: bool = False, contextual_reason: str = "") -> str:
+        """Shared exec-approval prompt text: header + optional rationale + fenced (truncated)
+        command + why it was flagged + the deadline line, plus the smart-deny line
+        (``base_exec_approval.render_exec_approval``). ``contextual_reason`` is display-only."""
+        return render_exec_approval(
+            self, str(command or ""), ea_default_reason_text() if description is None else description,
+            smart_denied, full_command_shown, contextual_reason)[0]
 
     # ── Exec-approval prompt (template method). The choice set is one rule for every button
     # surface — three separate "same fix × N adapters" commits motivated lifting it here.
@@ -2771,24 +2790,27 @@ class BasePlatformAdapter(ABC):
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str, description: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
-        smart_denied: bool = False, request_id: Optional[str] = None,
+        smart_denied: bool = False, request_id: Optional[str] = None, contextual_reason: str = "",
     ) -> SendResult:
         """Interactive exec-approval prompt; a press resolves via ``tools.approval.resolve_gateway_approval``.
         Text and choice set are shared; adapters render them natively in ``_send_exec_approval_prompt``.
         A preview that cannot hold the whole command is preceded by the full command; when that cannot
-        be sent, the card offers Deny only — nobody approves a command they could not read."""
+        be sent, the card offers Deny only — nobody approves a command they could not read.
+        ``contextual_reason`` is optional display text (default empty) and never bypasses or weakens
+        the approval."""
         description = ea_default_reason_text() if description is None else description
         command = str(command or "")
+        reason = str(contextual_reason or "")
         actions = self._exec_approval_actions(
             allow_permanent=allow_permanent, allow_session=allow_session, smart_denied=smart_denied)
-        text, truncated = render_exec_approval(self, command, description, smart_denied, True)
+        text, truncated = render_exec_approval(self, command, description, smart_denied, True, reason)
         # The request was created Deny-only; Approve goes live once the card or the full command shows it whole.
         if not await card_shows_whole_command(self, chat_id, session_key, request_id, command, metadata, truncated):
-            text = render_exec_approval(self, command, description, smart_denied, False)[0]
+            text = render_exec_approval(self, command, description, smart_denied, False, reason)[0]
             actions = [row for row in actions if row[1] == "deny"]
         return await self._send_exec_approval_prompt(ExecApprovalPrompt(
             chat_id=chat_id, session_key=session_key, metadata=metadata, command=command, description=description,
-            smart_denied=smart_denied, request_id=request_id, text=text, actions=actions))
+            smart_denied=smart_denied, request_id=request_id, contextual_reason=reason, text=text, actions=actions))
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Render ``prompt`` with the platform's native buttons; the default has none."""

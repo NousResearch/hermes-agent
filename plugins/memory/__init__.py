@@ -445,6 +445,10 @@ class _ProviderCollector:
     def register_memory_provider(self, provider):
         self.provider = provider
 
+    def inject_message(self, *args, **kwargs) -> bool:
+        """Use the profile's real injection host and its permission/target checks."""
+        return self._plugin_context().inject_message(*args, **kwargs)
+
     def register_skill(self, *args, **kwargs):
         """Forward skills to the plugin registry, tracking qualified name + path so
         switching the active provider can retract the previous one's skills. Gated

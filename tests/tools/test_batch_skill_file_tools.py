@@ -3,6 +3,8 @@
 import json
 from unittest.mock import patch
 
+import pytest
+
 from tools.file_tools import (
     READ_FILE_SCHEMA, WRITE_FILE_SCHEMA, _handle_read_file, _handle_write_file,
 )
@@ -43,6 +45,7 @@ def test_skill_view_batch_rejects_malformed_and_mixed_modes_before_loading():
     assert "requests" in SKILL_VIEW_SCHEMA["parameters"]["properties"]
 
 
+@pytest.mark.platforms("posix")
 def test_read_file_batch_preserves_result_and_per_item_guards(tmp_path):
     first = tmp_path / "first.txt"
     first.write_text("first\n")
@@ -103,6 +106,7 @@ def test_write_file_batch_results_are_verified_individually(tmp_path):
     assert second.read_text() == "second\n"
 
 
+@pytest.mark.platforms("posix")
 def test_write_file_batch_preflights_protected_and_stale_paths(tmp_path):
     candidate = tmp_path / "candidate.txt"
     blocked = _parsed(_handle_write_file({"files": [
@@ -145,6 +149,7 @@ def test_write_file_batch_reports_runtime_partial_failure(tmp_path):
     assert not second.exists()
 
 
+@pytest.mark.platforms("posix")
 def test_write_file_batch_rejects_symlink_alias_before_mutation(tmp_path):
     original = tmp_path / "original.txt"
     alias = tmp_path / "alias.txt"

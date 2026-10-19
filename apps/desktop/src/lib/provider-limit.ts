@@ -100,7 +100,13 @@ export function poolUsage(provider: ModelOptionProvider, nowMs = Date.now()) {
     const expired = resetMs !== null && resetMs <= nowMs
     const stale = entry.state === 'ready' && windows.length === 0
 
-    return { id: entry.id, label: entry.label ?? '', windows, resetMs, state: expired || stale ? 'unknown' : entry.state }
+    return {
+      id: entry.id,
+      label: entry.label ?? '',
+      windows,
+      resetMs,
+      state: expired || stale ? 'unknown' : entry.state
+    }
   })
 
   const limited = accounts.filter(entry => entry.state === 'limited')

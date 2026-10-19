@@ -434,7 +434,7 @@ def test_plugin_our_version_rejects_sits_out_without_being_disabled(admission_en
     from pm.install import sync_venv, venv_is_current
     from pm.lock import Facts
 
-    import hermes_cli.plugins_manifest as plugins_manifest
+    from hermes_cli import plugins_manifest
 
     tmp_path, home = admission_env
     core = tmp_path / "core"

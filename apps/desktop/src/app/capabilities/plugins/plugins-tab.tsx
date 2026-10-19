@@ -15,7 +15,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Switch } from '@/components/ui/switch'
 import { Tip } from '@/components/ui/tooltip'
-import { $pluginRecords, type PluginRecord, setPluginEnabled } from '@/contrib/plugins-store'
+import { $pluginRecords, enablePackageDesktopHalf, type PluginRecord, setPluginEnabled } from '@/contrib/plugins-store'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { discoverRuntimePlugins, uninstallDiskPlugin } from '@/contrib/runtime-loader'
 import { pluginSettingsRouteHref, SETTINGS_PLUGINS_AREA } from '@/contrib/settings-pages'
@@ -23,7 +23,7 @@ import type { ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { DESKTOP_PLUGIN_TOOLSETS } from '@/lib/desktop-toolsets'
 import { triggerHaptic } from '@/lib/haptics'
-import { FolderOpen, Loader2, Monitor, Package, RefreshCw, Trash2 } from '@/lib/icons'
+import { CheckCircle2, FolderOpen, Loader2, Monitor, Package, RefreshCw, Trash2 } from '@/lib/icons'
 import { CATALOG_ORIGIN, CATALOG_PICKER_URL } from '@/lib/plugin-catalog'
 import { queryClient } from '@/lib/query-client'
 import { cn } from '@/lib/utils'
@@ -178,16 +178,23 @@ function KindBadge({ kind }: { kind: PackageKind }) {
   )
 }
 
+// Official in the accent, verified green with a check, community stays neutral.
+const TIER_TONE: Record<string, 'muted' | 'primary' | 'success'> = { official: 'primary', verified: 'success' }
+
 /** Provenance pill: where the package came from. */
 function ProvenancePill({ pkg }: { pkg: PluginPackage }) {
   const { t } = useI18n()
   const p = t.skills.plugins
+  const tierLabel = t.assistant.catalogInstall.tier
 
   if (pkg.agent?.catalog_name) {
     return (
       <Tip label={p.catalogProvenance(pkg.agent.installed_sha?.slice(0, 8) ?? '')}>
         <span>
-          <Pill>{pkg.agent.catalog_tier === 'official' ? p.tierOfficial : p.tierCommunity}</Pill>
+          <Pill tone={TIER_TONE[pkg.agent.catalog_tier ?? ''] ?? 'muted'}>
+            {pkg.agent.catalog_tier === 'verified' && <CheckCircle2 />}
+            {tierLabel[pkg.agent.catalog_tier as keyof typeof tierLabel] ?? tierLabel.community}
+          </Pill>
         </span>
       </Tip>
     )
@@ -753,7 +760,17 @@ export const PluginsTab = memo(function PluginsTab({
                     return
                   }
 
-                  void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope)
+                  void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope).then(ok => {
+                    // Turning a unified package on turns its desktop half on too
+                    // (unless the user switched that half off on purpose).
+                    // Off stays per half: the desktop half is app-wide, and
+                    // another profile may still run the agent half.
+                    const half = pkg.desktop?.packageName
+
+                    if (ok && enable && half) {
+                      void enablePackageDesktopHalf(half, { keepUserChoice: true })
+                    }
+                  })
                 }}
                 onAgentUpdate={row => {
                   const finish = (outcome: AgentPluginUpdateOutcome) => {

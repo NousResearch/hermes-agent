@@ -16,8 +16,8 @@ sibling sites fixed in the same sweep:
 """
 
 from agent.transports import get_transport
-import agent.transports.chat_completions  # noqa: F401
-import agent.transports.codex  # noqa: F401
+import agent.transports.chat_completions
+import agent.transports.codex
 
 
 def _cc():

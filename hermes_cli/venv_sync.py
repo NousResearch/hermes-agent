@@ -156,6 +156,11 @@ def collect_superseded_generations(project_root: Path) -> None:
 _METADATA_FLAGS = frozenset({"-h", "--help", "-V", "--version"})
 
 
+def _is_read_only_gateway_status(command: list[str]) -> bool:
+    """Whether *command* is the recovery diagnostic that must not run an update tail."""
+    return command[:2] == ["gateway", "status"]
+
+
 def completion_pending_path(project_root: Path) -> Path:
     """Marker for a source update whose dependency sync committed but whose tail
     (launchers, products, maintenance) has not finished.
@@ -359,8 +364,13 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     from hermes_cli._parser import command_argv
     from hermes_cli.steward import read_install_stamp
 
-    if (command_argv(argv)[:1] == ["pm"]
+    command = command_argv(argv)
+    if (command[:1] == ["pm"]
             or _METADATA_FLAGS & set(argv)
+            # This is the recovery path shown by the Desktop when a pending update has
+            # fenced the gateway. Completing that same tail first can take minutes and
+            # leaves the user without the fence diagnosis or a usable restart remedy.
+            or _is_read_only_gateway_status(command)
             or os.environ.get("HERMES_DISABLE_LAZY_INSTALLS", "").lower() in ("1", "true", "yes")
             or not (root / ".git").exists()
             or not (root / "pyproject.toml").is_file()):
@@ -401,13 +411,16 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
         # noise (the record's age tracks the wait), leaving the marker armed.
         pass
     elif not owed_to_cli and (not current or pending.is_file()):
-        lock = UpdateLock()
+        # The marker alone first (a process the live update spawned runs under its claim and
+        # inherits no checkout lock); install_root still names the checkout whose held lock
+        # keeps a dead update's marker (R6: refused as held, never reclaimed).
+        lock = UpdateLock(install_root=root, checkout_first=False)
         if not lock.acquire():
             raise RuntimeError("an update is still running; wait for it to exit, then relaunch Hermes")
         try:
             # Under the launching update's own claim (its pid is our ancestor) a process it
             # spawned owes no tail: that obligation is the updater's.
-            if not lock.acquired and read_live_update() is not None:
+            if not lock.acquired and read_live_update(install_root=root) is not None:
                 if current:
                     return None
                 # A process the update spawns before its dependencies are current (a restarted
@@ -418,6 +431,11 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
                     # Relaunching would land back here and sync again, forever.
                     raise RuntimeError("dependency sync left this install out of date")
             else:
+                # The tail mutates the checkout: ACQUIRE its lock (R2), never sample it. A free
+                # marker over a held checkout lock is a killed update whose tree (its completion
+                # child) still runs.
+                if not lock.acquire_checkout(root):
+                    raise RuntimeError("an update is still running; wait for it to exit, then relaunch Hermes")
                 _finish_source_update(root, current=current, pending=pending)
         finally:
             lock.release()
@@ -459,7 +477,7 @@ def _prepare_borrowed_launch(root: Path, owner: Path, *, current: bool) -> Path 
     from hermes_cli.update_lock import UpdateLock
 
     if not current:
-        lock = UpdateLock()
+        lock = UpdateLock(install_root=root, checkout_first=False)  # R6, as in prepare_launch
         if not lock.acquire():
             raise RuntimeError("an update is still running; wait for it to exit, then relaunch Hermes")
         try:
@@ -516,13 +534,23 @@ def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
     # The tail's progress lines go to stderr: this is an automatic repair in
     # front of whatever command the user ran, and that command may be
     # emitting machine-readable stdout (a JSON probe, a piped query).
-    code = subprocess.call(
-        [sys.executable, "-I", "-B", "-u",
-         str(root / "hermes_cli/source_completion.py"),
-         "--source", str(root), "--finish-update",
-         *(("--desktop",) if desktop else ())],
-        cwd=root, env=activation_environment(root), stdout=sys.__stderr__,
-    )
+    from hermes_cli.update_custody import CustodyRefused, run
+
+    # The completion child stays in this launch's checkout custody (POSIX: it inherits the lock
+    # fd; Windows: created suspended and bound to the lock owner's kill-on-close job), so a
+    # contender never sees the checkout free while it builds. A child the job refuses never runs:
+    # the tail stays owed.
+    try:
+        code = run(
+            [sys.executable, "-I", "-B", "-u",
+             str(root / "hermes_cli/source_completion.py"),
+             "--source", str(root), "--finish-update",
+             *(("--desktop",) if desktop else ())],
+            inherit_lock=True, cwd=root, env=activation_environment(root), stdout=sys.__stderr__,
+        ).returncode
+    except CustodyRefused as exc:
+        print(f"hermes: {exc.reason}", file=sys.stderr, flush=True)
+        code = 1
     if code != 0:
         _record_completion_attempt(root, failed=True)
         raise RuntimeError(

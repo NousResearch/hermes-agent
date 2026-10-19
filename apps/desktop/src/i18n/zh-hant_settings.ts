@@ -1,6 +1,7 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import type { TranslationOverrides } from './define-locale'
+import { zhHantUpdateChannel } from './zh-hant_update_channel'
 
 export const zhHantSettings = {
   language: {
@@ -76,7 +77,17 @@ export const zhHantSettings = {
         toolsConnected: n => `已連線 ${n} 個工具`,
         skillsReady: names => (names.length === 1 ? `技能 ${names[0]} 已就緒` : `${names.length} 個技能已就緒`),
         nextChat: '更多工具將在下一次聊天中可用',
-        serverNotConnected: (server, reason) => `MCP 伺服器 ${server} 未連線${reason ? `：${reason}` : '。'}`
+        serverNotConnected: (server, reason) => `MCP 伺服器 ${server} 未連線${reason ? `：${reason}` : '。'}`,
+        verified: '已驗證',
+        unverified: '未驗證',
+        reviewedByNous: '已由 Nous 審核。',
+        installsAndEnables: profile => `安裝到 ${profile}，並立即啟用。`,
+        installsOnly: profile => `安裝到 ${profile}。`,
+        advanced: '進階',
+        versionLabel: '版本',
+        reviewedPin: sha => (sha ? `已審核的固定提交 ${sha}` : '已審核的固定提交'),
+        latestCommit: '最新提交',
+        nothingToInstall: '此套件在這裡沒有可安裝的內容。'
       }
     },
     closeSettings: '關閉設定',
@@ -709,12 +720,6 @@ export const zhHantSettings = {
         }
       }
     },
-    poolLimits: {
-      warmBotBackendsAria: '預熱機器人後端',
-      warmBotBackendsTitle: '預熱機器人後端',
-      backendIdleTimeoutAria: '後端閒置逾時（毫秒）',
-      backendIdleTimeoutTitle: '後端閒置逾時（毫秒）'
-    },
     customEndpoints: {
       active: '已啟用',
       apiKeySet: '已設定 API 金鑰',
@@ -762,7 +767,8 @@ export const zhHantSettings = {
       driverHealth: '驅動程式健康狀態'
     },
     about: {
-      updates: '更新'
+      updates: '更新',
+      channel: zhHantUpdateChannel
     },
     config: {
       minimizeToTrayTitle: '最小化至系統匣',
@@ -1068,10 +1074,27 @@ export const zhHantSettings = {
         mcp: { label: 'MCP', hint: 'MCP 工具路由' },
         title_generation: { label: '標題生成', hint: '工作階段標題' },
         review: { label: '評審', hint: '/review 評審子代理' },
+        voice_chat: { label: '語音聊天', hint: '語音模式回覆' },
         triage_specifier: { label: '分類指定', hint: '看板任務規格補全' },
         kanban_decomposer: { label: '看板分解', hint: '任務拆解' },
         profile_describer: { label: '設定檔描述', hint: '自動生成設定檔描述' },
         curator: { label: '策展器', hint: '技能使用審查' }
+      },
+      subagents: {
+        inherit: '繼承主代理設定',
+        modelOnly: '自訂模型（沿用主代理憑證）',
+        providerLabel: '子代理提供方',
+        modelLabel: '子代理模型',
+        direct: '直接端點覆寫',
+        customProvider: '自訂提供方...',
+        customProviderLabel: '自訂子代理提供方',
+        parentModel: '使用主代理模型',
+        parentModelWarning:
+          '所選提供方必須支援主代理模型。模型不相容時，僅指定提供方的路由可能失敗。若該提供方設定了自己的預設模型，子代理會改用該模型。',
+        directActive: '直接端點已啟用，優先於已儲存的提供方。選擇此模式時會保留其端點與憑證。',
+        directClear: '套用此路由會清除直接端點及其儲存的金鑰。其他請求設定維持不變。',
+        catalogFailed: '模型目錄無法使用。請手動輸入提供方與模型，或重試。',
+        draftHint: '套用前，變更只保留在本機。'
       }
     },
     localModels: {
@@ -1095,14 +1118,14 @@ export const zhHantSettings = {
       modelsTitle: '模型',
       recommended: '推薦',
       recommendedReason: {
+        'product-default': '這台機器的預設模型，由其製造商選定。',
         'best-quality-resident': '在完全駐留 GPU 且保持全速的模型中品質最高。推薦會在品質與該硬體的預計速度之間權衡。',
         'speed-gated-quality':
-          '有更高品質的模型可以裝入這台機器，但受記憶體頻寬限制回應會太慢——這是保持流暢的最佳模型。',
-        'fastest-resident': '沒有模型能在該硬體上達到全速；這是完全駐留 GPU 記憶體中最快的一個。'
+          '有更高品質的模型可以裝入這台機器，但受記憶體頻寬限制回應會太慢——這是保持流暢的最佳模型。'
       } as Record<string, string>,
       noRecommendationTitle: '此裝置暫無自動推薦模型',
       noRecommendationDetail:
-        '自動設定需要一個可完全放入 GPU 記憶體或統一記憶體的精選模型。你仍可在下方自行選擇，或瀏覽更多模型。',
+        '自動設定需要一個可完全駐留 GPU 記憶體或統一記憶體並保持全速的精選模型。你仍可在下方自行選擇，或瀏覽更多模型。',
       noRecommendationAction: '瀏覽模型',
       quickstartConfigure: '讓我選擇',
       downloaded: '已下載',

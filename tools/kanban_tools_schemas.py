@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from hermes_cli.kanban_workflow import ARCHIVED, DEFAULT_WORKFLOW
+
 _DESC_TASK_ID_DEFAULT = (
     "Task id. If omitted, defaults to HERMES_KANBAN_TASK from the env — the "
     "task the dispatcher spawned you to work on. That default only exists for "
@@ -76,10 +78,7 @@ KANBAN_LIST_SCHEMA = _schema(
         "assignee": _prop("string", "Optional assignee/profile filter."),
         "status": {
             "type": "string",
-            "enum": [
-                "triage", "todo", "ready", "running",
-                "blocked", "done", "archived",
-            ],
+            "enum": [*DEFAULT_WORKFLOW.keys(), ARCHIVED],
             "description": "Optional task status filter.",
         },
         "tenant": _prop("string", "Optional tenant/project namespace filter."),

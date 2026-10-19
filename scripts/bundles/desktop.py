@@ -152,6 +152,8 @@ def main() -> None:
     parser.add_argument("--work", type=Path)
     parser.add_argument("--cache", type=Path)
     parser.add_argument("--prepare-only", action="store_true")
+    parser.add_argument("--clean", action="store_true",
+                        help="Remove this checkout's previous build outputs, under the checkout lock, before preparing")
     parser.add_argument("--prepared", type=Path)
     parser.add_argument("builder_args", nargs=argparse.REMAINDER)
     args = parser.parse_args()
@@ -159,7 +161,7 @@ def main() -> None:
     try:
         if args.prepared:
             if (args.tag or args.commit_build or args.release_commit or args.channel_request
-                    or args.prepare_only or args.work or args.cache):
+                    or args.prepare_only or args.work or args.cache or args.clean):
                 parser.error("--prepared supplies the complete build request")
             build_prepared(args.prepared, builder_args, args.variant)
         else:
@@ -175,7 +177,7 @@ def main() -> None:
                                           release_commit=args.release_commit)
             if args.prepare_only and builder_args:
                 parser.error("builder arguments belong to the build phase")
-            result = prepare(request)
+            result = prepare(request, clean=args.clean)
             if args.prepare_only:
                 print(result)
             else:

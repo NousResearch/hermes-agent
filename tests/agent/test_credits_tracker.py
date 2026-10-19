@@ -399,7 +399,7 @@ class TestNegativeValues:
 class TestUsdValidation:
 
     def test_usd_one_decimal_returns_none(self):
-        """'18.0' does not match ^-?\d+\.\d{2}$"""
+        r"""'18.0' does not match ^-?\d+\.\d{2}$"""
         headers = _base_headers(**{"x-nous-credits-remaining-usd": "18.0"})
         assert parse_credits_headers(headers) is None
 

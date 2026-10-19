@@ -199,6 +199,14 @@ async def correct(connection, ref, params, *, verb):
         if latched:
             return {'status': 'queued', 'text': params['text'], 'execution_generation': generation,
                     'authority_epoch': authority.epoch}
+        # A claim can outlive the agent that carried it (a reaped turn the client still believes is
+        # running), and a redirect in the build window has no agent to queue behind. Nothing live can
+        # take the text, so answer 'rejected' — the wire contract's "not corrected, queue it as the
+        # next prompt" (desktop SessionRedirectResponse, tui_gateway's idle-steer reply). Raising here
+        # made clients discard the message (#141644).
+        if agent is None:
+            return {'status': 'rejected', 'text': params['text'], 'execution_generation': generation,
+                    'authority_epoch': authority.epoch}
         method = getattr(agent, verb, None)
         if not callable(method):
             raise RuntimeStoreError('execution_not_ready')

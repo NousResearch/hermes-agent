@@ -38,11 +38,18 @@ async def _admit_after(previous, adapter, runner, event):
 
 async def _admit(adapter, runner, event):
     # A permanent refusal returns, so the transport ACKs it (a replay would be refused again: main's
-    # runner dropped it too); any other failure withholds the ACK so the connector redelivers.
+    # runner dropped it too); any other failure withholds the ACK so the connector redelivers. A
+    # parked target is refused to the sender and ACKed: it stays parked until a rescan or a restart,
+    # and a withheld frame would stall the connector's ordered, ack-gated buffer drain for every
+    # profile on this instance (a live frame is never redelivered anyway).
+    from gateway.parked_route_refusal import ParkedProfileRefusal, refuse_parked_route
     from gateway.platforms.webhook_ingress import admit_producer
     from gateway.relay.adapter import _PERMANENT_REFUSALS
     try:
         receipt = await admit_producer(adapter, event)
+    except ParkedProfileRefusal as exc:
+        refuse_parked_route(adapter, event.source, exc.profile, reply_to=event.message_id)
+        return
     except RuntimeStoreError as exc:
         if exc.reason not in _PERMANENT_REFUSALS:
             raise

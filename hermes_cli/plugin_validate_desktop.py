@@ -138,7 +138,10 @@ def _slash_readings(source: str, at: int) -> tuple[bool, bool]:
         return False, True
     if prev in "(,=:[!&|?{;+-*%<>~^":
         return True, False
-    return bool(_REGEX_AFTER_WORD.search(source, max(0, j - 12), j + 1)), True
+    keyword = _REGEX_AFTER_WORD.search(source, max(0, j - 12), j + 1)
+    if keyword:  # an expression must follow ``return`` etc.; ``of`` may also be a plain name
+        return True, source[j - 1:j + 1] == "of"
+    return False, True
 
 
 def _step(source: str, i: int, state: tuple) -> tuple[bool, list[tuple]]:

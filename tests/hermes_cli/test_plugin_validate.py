@@ -379,6 +379,7 @@ class TestDesktopSurface:
             "const m = Number(\"if (\") / (Storage.prototype.setItem = spy, 2) / 3\n"
             "if (false) /\"/.test(label); Storage.prototype.setItem = spy; const tail = \"/\"\n"
             "function L() {}\nlet v; true ? {L: v} = options : null; L.prototype.isL = 1\n"
+            "function U() {}\nfunction matcher() { return /U = vector/ } U.prototype.isU = 1\n"
         ))
         assert desktop_surface_hits(d) == [
             "prototype patching (desktop/plugin.js:5)",

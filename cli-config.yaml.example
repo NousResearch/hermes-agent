@@ -1589,6 +1589,7 @@ platform_toolsets:
 # Optional per-server settings:
 #   timeout: tool call timeout in seconds (default: 120)
 #   connect_timeout: initial connection timeout (default: 60)
+#   forward_session_context: false  # Opt in to API execution IDs in tools/call _meta.
 #   keepalive_interval: liveness ping cadence in seconds (floored at 5s).
 #     HTTP servers default to 180s; lower it below the server's session TTL for
 #     servers that expire idle sessions quickly (e.g. Unreal Engine editor MCP,

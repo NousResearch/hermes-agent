@@ -277,7 +277,7 @@ async def test_gateway_shutdown_reports_a_live_owned_run_as_interrupted(tmp_path
     queue: asyncio.Queue = asyncio.Queue()
     adapter._run_streams["run-1"] = queue
     launch = runs_mod._RunLaunch(
-        adapter, "run-1", queue, "bot-chat", None, True, "ping", [], False, agent_kwargs={},
+        adapter, "run-1", queue, "bot-chat", "bot-chat", None, True, "ping", [], False, agent_kwargs={},
         request_profile=None, browser_control_principal=None, browser_control_transport_family=None)
     waiting = asyncio.Event()
 

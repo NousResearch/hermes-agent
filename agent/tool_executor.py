@@ -20,6 +20,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
+from agent.tool_call_context import bind_occurrence, persisted_occurrence
+
 from agent.display import (
     KawaiiSpinner,
     build_tool_preview as _build_tool_preview,
@@ -1325,6 +1327,7 @@ class _ConcurrentBatch:
         self.messages = messages
         self.effective_task_id = effective_task_id
         self.parsed_calls = parsed_calls
+        self.occurrences = [persisted_occurrence(messages, pc.name, pc.ref(effective_task_id).call_id) for pc in parsed_calls]
         self.timeout_s = timeout_s
         self.results: list[Optional[_ToolOutcome]] = [None] * len(parsed_calls)
         for i, pc in enumerate(parsed_calls):
@@ -1398,7 +1401,8 @@ class _ConcurrentBatch:
             _set_worker_activity_callback(agent)
             start_gate = _WorkerStartOnce(self.gate, start_order, pc.name)
             try:
-                outcome = self._dispatch_worker(index, pc.ref(self.effective_task_id), pc.scope_block, start_gate)
+                with bind_occurrence(self.occurrences[index]):
+                    outcome = self._dispatch_worker(index, pc.ref(self.effective_task_id), pc.scope_block, start_gate)
                 if outcome is not None:
                     self.results[index] = outcome
             finally:
@@ -1704,11 +1708,12 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
             error_log="memory_manager.handle_tool_call raised for %s: %s",
         )
 
+    occurrence = persisted_occurrence(messages, function_name, tool_call_id)
     # Registry tools: post hook is owned by this executor (inner observer suppressed).
     def _execute(next_args: dict) -> Any:
         import model_tools
 
-        with model_tools.suppress_post_tool_call_hook():
+        with bind_occurrence(occurrence), model_tools.suppress_post_tool_call_hook():
             return model_tools.handle_function_call(
                 function_name,
                 next_args,

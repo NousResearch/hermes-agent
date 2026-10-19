@@ -253,6 +253,8 @@ def _idempotency_capabilities(self, *, store_type) -> dict[str, Any]:
     return {
         "supported": True,
         "durable": self._run_idempotency_store.durable,
+        "request_session_id": True,
+        "tool_call_uid": True,
         "retention_seconds": store_type.RETENTION_SECONDS}
 
 
@@ -283,7 +285,7 @@ def _set_run_status(self, run_id: str, status: str, **fields: Any) -> dict[str, 
         status != previous_status
         or status in TERMINAL_STATUSES
         or bool(field_names & {
-            "output", "error", "usage", "pending_steer", "session_id", "shutdown_requested_at"}))
+            "output", "error", "usage", "pending_steer", "session_id", "request_session_id", "shutdown_requested_at"}))
     if run_id in self._run_idempotency_ids and should_persist:
         try:
             self._run_idempotency_store.update_status(run_id, current)
@@ -525,6 +527,7 @@ class _RunLaunch:
     run_id: str
     queue: _RunStream
     session_id: str
+    request_session_id: str
     gateway_session_key: Optional[str]
     declared_selected: bool
     user_message: str
@@ -785,6 +788,7 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
     selected_session_id = session_id or (
         await asyncio.to_thread(self._declared_conversation_session, gateway_session_key)
         if _declared_selected else None)
+    request_session_id = str(selected_session_id or run_id)
     # A client-addressed id from before a compression rotation must adopt the live tip (#98619):
     # history loads from it, the turn writes to it, and a detached delivery row persisted to it
     # is what the next same-id run consumes below.
@@ -806,7 +810,8 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
     created_at = self._run_streams_created[run_id] = time.time()
     self._run_approval_sessions[run_id] = run_id  # approval session key (see _RunLaunch)
     initial_status = self._set_run_status(
-        run_id, "queued", created_at=created_at, session_id=session_id, model=body.get("model", self._model_name))
+        run_id, "queued", created_at=created_at, session_id=session_id,
+        request_session_id=request_session_id, model=body.get("model", self._model_name))
     if idempotency_key:
         outcome, record = self._run_idempotency_store.reserve(
             idempotency_scope, idempotency_key, idempotency_fingerprint, run_id, initial_status,
@@ -819,7 +824,7 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
             return _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error)
         self._run_idempotency_ids.add(run_id)
     launch = _RunLaunch(
-        self, run_id, q, session_id, gateway_session_key, _declared_selected, user_message,
+        self, run_id, q, session_id, request_session_id, gateway_session_key, _declared_selected, user_message,
         conversation_history, session_history_delivery,
         agent_kwargs=dict(
             ephemeral_system_prompt=instructions, session_id=session_id, gateway_session_key=gateway_session_key,
@@ -911,7 +916,7 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
             # tools.async_delegation sees no HERMES_SESSION_CHAT_ID and forces delegations sync.
             session_tokens = self._bind_api_server_session(
                 chat_id=session_id or "", session_key=run.approval_session_key, session_id=session_id or "",
-                profile=run.request_profile or "",
+                profile=run.request_profile or "", request_session_id=run.request_session_id,
                 browser_control_principal=run.browser_control_principal,
                 browser_control_transport_family=run.browser_control_transport_family,
                 # #98619 audited opt-in: the /v1/runs session id is wake-capable only when its

@@ -440,7 +440,8 @@ def _connection_identity(config: dict) -> tuple:
 
     return (config_fingerprint(config), _frozen(config.get("env")), _frozen(config.get("headers")),
             _auth_type(config), _frozen(config.get("client_cert")), _frozen(config.get("client_key")),
-            config.get("ssl_verify", True), bool(config.get("strict_redirect_headers")))
+            config.get("ssl_verify", True), bool(config.get("strict_redirect_headers")),
+            config.get("forward_session_context") is True)
 
 
 def _auth_type(config: dict) -> str:

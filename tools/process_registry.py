@@ -1177,11 +1177,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         env_vars: dict | None = None, use_pty: bool = False, owner_task_id: str = "",
         persist_on_release: bool = False, notify_on_complete: bool = False) -> ProcessSession:
         """Spawn a background process locally (TERMINAL_ENV=local; other backends use
-        spawn_via_env()). ``use_pty`` requests a pseudo-terminal via ptyprocess/pywinpty
-        for interactive CLIs, falling back to a plain pipe when unavailable or failing.
-        ``persist_on_release`` keeps the process out of agent-lifecycle kill sweeps (#41225).
-        ``notify_on_complete`` seeds the session's completion flag at spawn time so the
-        registry knows the caller expects a completion turn on exit."""
+        spawn_via_env()). ``use_pty`` asks for a pseudo-terminal (plain pipe if unavailable).
+        ``persist_on_release``/``notify_on_complete`` are both seeded on the session at spawn."""
         # Bash parses ``A && B &`` as ``(A && B) &`` — a subshell that holds our stdout
         # pipe open forever when B is a long-running server. The rewriter turns it into
         # ``A && { B & }``. Lazy import: terminal_tool imports this module.
@@ -1190,8 +1187,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
 
         safe_command = _rewrite_bg(command)
         session = self._new_session(command, task_id, owner_task_id, session_key, _resolve_safe_cwd(cwd or os.getcwd()),
-                                    persist_on_release=persist_on_release,
-                                    notify_on_complete=notify_on_complete)
+                                    persist_on_release=persist_on_release, notify_on_complete=notify_on_complete)
         pty_scope_attempted = False
         # A worker's pipe or PTY dies with the worker (the child's next write is SIGPIPE): write to a log.
         log = worker_output_log(session.id)
@@ -1280,15 +1276,13 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         self, env: Any, command: str, cwd: str | None = None, task_id: str = "", session_key: str = "",
         timeout: int = 10, owner_task_id: str = "", persist_on_release: bool = False,
         notify_on_complete: bool = False) -> ProcessSession:
-        """Spawn a background process inside a non-local backend's sandbox.
-        The command is wrapped to capture its in-sandbox PID and redirect output to a
-        log file that later execute() calls poll. No live pipe or stdin, but it runs in
-        the correct sandbox context. ``persist_on_release`` keeps the process out of
-        agent-lifecycle kill sweeps (#41225). ``notify_on_complete`` seeds the session's
-        completion flag at spawn time."""
+        """Spawn a background process inside a non-local backend's sandbox. The command is
+        wrapped to capture its in-sandbox PID; later execute() calls poll its log file. No
+        live pipe or stdin, but it runs in the right sandbox context. ``persist_on_release``
+        keeps it out of agent-lifecycle kill sweeps (#41225); ``notify_on_complete`` seeds
+        the session's completion flag at spawn time."""
         session = self._new_session(command, task_id, owner_task_id, session_key, cwd, env_ref=env, pid_scope="sandbox",
-                                    persist_on_release=persist_on_release,
-                                    notify_on_complete=notify_on_complete)
+                                    persist_on_release=persist_on_release, notify_on_complete=notify_on_complete)
         temp_dir = self._env_temp_dir(env)
         log_path, pid_path, exit_path = (f"{temp_dir}/hermes_bg_{session.id}.{ext}" for ext in ("log", "pid", "exit"))
         q = shlex.quote

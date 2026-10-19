@@ -221,6 +221,15 @@ class ModelRejected(ValueError):
     """``switch_model`` refused the requested model (no provider can serve it)."""
 
 
+def _log_session_info_task_failure(task: asyncio.Task) -> None:
+    """Log a fire-and-forget session-info update that failed after being scheduled."""
+    if task.cancelled():
+        return
+    error = task.exception()
+    if error is not None:
+        logger.debug("ACP session info update failed", exc_info=error)
+
+
 @dataclass
 class _TurnCallbacks:
     """Per-turn ACP streaming callbacks; all None when no client is connected."""
@@ -271,6 +280,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         self._conn: Optional[acp.Client] = None
         self._connected_session_ids: set[str] = set()
         self._background_notification_task: asyncio.Task | None = None
+        self._session_info_tasks: set[asyncio.Task] = set()
 
     # ---- Connection lifecycle -----------------------------------------------
 
@@ -433,36 +443,14 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 process_registry.completion_queue.put(event)
                 continue
             except asyncio.CancelledError:
-                turn_completed = False
-                if turn_task is not None:
-                    if not turn_progress["model_started"]:
-                        turn_task.cancel()
-                        try:
-                            await turn_task
-                        except asyncio.CancelledError:
-                            pass
-                        with state.runtime_lock:
-                            if state.active_turn_origin == "autonomous":
-                                state.is_running = False
-                                state.current_prompt_text = ""
-                                state.active_turn_origin = ""
-                    else:
-                        try:
-                            await turn_task
-                        except asyncio.CancelledError:
-                            logger.debug(
-                                "Cancelled ACP autonomous turn did not finish for %s",
-                                session_id,
-                            )
-                        except Exception:
-                            logger.debug(
-                                "Cancelled ACP dispatcher's autonomous turn failed for %s",
-                                session_id,
-                                exc_info=True,
-                            )
-                        if turn_progress["model_completed"]:
-                            complete_event_delivery(event, claim)
-                            turn_completed = True
+                turn_completed = await self._settle_cancelled_background_turn(
+                    turn_task=turn_task,
+                    turn_progress=turn_progress,
+                    state=state,
+                    event=event,
+                    claim=claim,
+                    session_id=session_id,
+                )
                 if not turn_completed:
                     release_event_delivery(event, claim)
                     process_registry.completion_queue.put(event)
@@ -492,6 +480,56 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                     except asyncio.CancelledError:
                         pass
         return delivered
+
+    async def _settle_cancelled_background_turn(
+        self,
+        *,
+        turn_task: asyncio.Task | None,
+        turn_progress: dict[str, bool],
+        state: SessionState,
+        event: dict[str, Any],
+        claim: str,
+        session_id: str,
+    ) -> bool:
+        """Wind down a dispatcher-cancelled turn; True when its model already finished.
+
+        Connection replacement cancels the dispatcher, not an already-accepted model
+        turn: that turn is awaited against its captured transport, and only a turn
+        that completed its model call may consume the delegation claim.
+        """
+        from tools.async_delegation import complete_event_delivery
+
+        if turn_task is None:
+            return False
+        if not turn_progress["model_started"]:
+            turn_task.cancel()
+            try:
+                await turn_task
+            except asyncio.CancelledError:
+                pass
+            with state.runtime_lock:
+                if state.active_turn_origin == "autonomous":
+                    state.is_running = False
+                    state.current_prompt_text = ""
+                    state.active_turn_origin = ""
+            return False
+        try:
+            await turn_task
+        except asyncio.CancelledError:
+            logger.debug(
+                "Cancelled ACP autonomous turn did not finish for %s",
+                session_id,
+            )
+        except Exception:
+            logger.debug(
+                "Cancelled ACP dispatcher's autonomous turn failed for %s",
+                session_id,
+                exc_info=True,
+            )
+        if not turn_progress["model_completed"]:
+            return False
+        complete_event_delivery(event, claim)
+        return True
 
     async def _background_notification_loop(self, conn: acp.Client) -> None:
         """Poll the shared completion queue while this ACP connection is active."""
@@ -681,7 +719,12 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         """
 
         def _schedule_on_loop() -> None:
-            asyncio.create_task(self._send_session_info_update(session_id))
+            task = asyncio.create_task(self._send_session_info_update(session_id))
+            # Hold a strong reference: a bare task can be collected mid-flight, and a
+            # caller-less failure would then surface only as "never retrieved".
+            self._session_info_tasks.add(task)
+            task.add_done_callback(self._session_info_tasks.discard)
+            task.add_done_callback(_log_session_info_task_failure)
 
         try:
             loop.call_soon_threadsafe(_schedule_on_loop)

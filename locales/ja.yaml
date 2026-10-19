@@ -2386,6 +2386,14 @@ cli:
     move_out_of_range: "キューの移動先が範囲外です。現在のサイズ: {size}"
     moved: "キュー項目 {source} を {destination} に移動しました。"
     usage_add: "使い方: /queue add <prompt>"
+    gateway_refused: "ゲートウェイはキューに追加しませんでした: {error}。何も追加されていません。ターン終了後に再送してください。"
+    submit_unknown: "ゲートウェイが応答しませんでした ({error})。プロンプトはすでにキューにある可能性があります。再送する前に /queue list を確認してください。"
+    move_gateway_fifo: "ゲートウェイはキュー内のプロンプトを送信順に実行します。代わりに編集または削除してください。"
+    remove_refused: "キュー項目 {index} を削除できませんでした: {error}"
+    edit_refused: "キュー項目 {index} を編集できませんでした: {error}"
+    already_started: "キュー項目 {index} はすでに開始しています。送信したとおりに実行されます。"
+    started_stopped: "キュー項目 {index} はすでに開始していたため、ゲートウェイが停止しました。"
+    change_unknown: "ゲートウェイからキュー項目 {index} の応答がありません ({error})。再試行する前に /queue list を確認してください。"
   reload:
     env_reloaded: ".env を再読み込みしました（{count} 件の変数を更新）"
   steer:

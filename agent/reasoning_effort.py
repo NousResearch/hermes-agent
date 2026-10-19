@@ -71,18 +71,17 @@ SOLAR_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
 #: Alibaba DashScope OpenAI-compatible mode (Model Studio): ``extra_body.enable_thinking``
 #: plus a top-level ``reasoning_effort`` that must agree with it (issue #137174). The
 #: vocabulary is per family, live-verified on the CN compatible-mode endpoint (PR #137308
-#: review, 2026-10-19): Qwen speaks plain low/medium/high (and honors the disable pair);
-#: DashScope-hosted DeepSeek and Kimi-K3 additionally accept ``max`` — and ``xhigh``, but
-#: they then run *below* medium, so it maps to the declared top tier ``max`` instead of
-#: clamping to ``high``; DashScope-hosted ``glm-5*`` rejects ``medium`` outright
+#: review, controlled sweep 2026-10-19): Qwen speaks plain low/medium/high (and honors the
+#: disable pair); DashScope-hosted DeepSeek and Kimi-K3 additionally accept ``max`` — the
+#: only level that reliably raises thinking over ``high`` — while their accepted ``xhigh``
+#: runs inside the medium/high band, so it clamps down to ``high`` rather than escalating
+#: cost to ``max``; DashScope-hosted ``glm-5*`` rejects ``medium`` outright
 #: (``'reasoning_effort' must be one of: 'low', 'high', 'max'``) and its thinking cannot
 #: be disabled at all (``enable_thinking: false`` → ``restricted to True``), so it keeps
-#: the Ox-Alpha-style ladder with forced-on thinking.
+#: the low/high/max ladder with forced-on thinking.
 DASHSCOPE_QWEN_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
 DASHSCOPE_DEEPSEEK_KIMI_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "max")
-DASHSCOPE_DEEPSEEK_KIMI_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 DASHSCOPE_GLM_EFFORTS: tuple[str, ...] = ("low", "high", "max")
-DASHSCOPE_GLM_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 
 #: GLM-5.2 native knob: exactly ``high`` (its minimum thinking level) and ``max``; GLM-5.3
 #: widens it to a graded scale (live-verified, monotonic). ``xhigh`` requests the top tier.
@@ -290,9 +289,9 @@ def dashscope_efforts_for(model: Optional[str]) -> tuple[tuple[str, ...], Option
     """
     m = (model or "").strip().lower().rsplit("/", 1)[-1]
     if m.startswith("deepseek") or _KIMI_K3_SLUG_RE.search(m):
-        return DASHSCOPE_DEEPSEEK_KIMI_EFFORTS, DASHSCOPE_DEEPSEEK_KIMI_OVERRIDES
+        return DASHSCOPE_DEEPSEEK_KIMI_EFFORTS, None
     if m.startswith("glm-5"):
-        return DASHSCOPE_GLM_EFFORTS, DASHSCOPE_GLM_OVERRIDES
+        return DASHSCOPE_GLM_EFFORTS, None
     return DASHSCOPE_QWEN_EFFORTS, None
 
 

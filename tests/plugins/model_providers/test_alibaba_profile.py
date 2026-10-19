@@ -126,14 +126,16 @@ class TestDashScopePerFamilyVocabulary:
     """The clamp is per family, not one global tuple (#137308 review measurements).
 
     DashScope hosts DeepSeek, Kimi K3 and glm-5* beside Qwen, and the CN-endpoint sweep
-    showed: DeepSeek/Kimi accept ``max`` (and accept-but-misrun ``xhigh``, hence the
-    explicit ``xhigh → max`` mapping); glm-5* rejects ``medium`` with HTTP 400 and cannot
-    disable thinking at all. A global low/medium/high clamp would collapse ``max`` and
-    turn the Hermes-default ``medium`` into a 400 for every GLM request.
+    showed: DeepSeek/Kimi accept ``max`` (the only level that reliably raises thinking
+    over ``high``) while their accepted ``xhigh`` runs inside the medium/high band, so it
+    clamps down to ``high`` instead of escalating cost to ``max``; glm-5* rejects
+    ``medium`` with HTTP 400 and cannot disable thinking at all. A global low/medium/high
+    clamp would collapse ``max`` and turn the Hermes-default ``medium`` into a 400 for
+    every GLM request.
     """
 
-    def test_deepseek_keeps_max_and_routes_xhigh_to_max(self, profiles):
-        for effort, expected in [("max", "max"), ("MAX", "max"), ("xhigh", "max"), ("xHigh", "max")]:
+    def test_deepseek_keeps_max_and_clamps_xhigh_to_high(self, profiles):
+        for effort, expected in [("max", "max"), ("MAX", "max"), ("xhigh", "high"), ("xHigh", "high")]:
             extra_body, top_level = profiles["alibaba-cn"].build_api_kwargs_extras(
                 reasoning_config={"enabled": True, "effort": effort},
                 model="deepseek-v4.1-flash-1017",
@@ -150,7 +152,7 @@ class TestDashScopePerFamilyVocabulary:
         assert top_level == {"reasoning_effort": "medium"}
 
     def test_kimi_k3_keeps_medium_and_max(self, profiles):
-        for effort, expected in [("medium", "medium"), ("max", "max"), ("xhigh", "max")]:
+        for effort, expected in [("medium", "medium"), ("max", "max"), ("xhigh", "high")]:
             extra_body, top_level = profiles["alibaba-cn"].build_api_kwargs_extras(
                 reasoning_config={"enabled": True, "effort": effort}, model="kimi-k3"
             )
@@ -172,8 +174,8 @@ class TestDashScopePerFamilyVocabulary:
         assert extra_body["enable_thinking"] is True
         assert top_level == {"reasoning_effort": "low"}
 
-    def test_glm_keeps_low_high_max_and_routes_xhigh_to_max(self, profiles):
-        for effort, expected in [("low", "low"), ("high", "high"), ("max", "max"), ("xhigh", "max")]:
+    def test_glm_keeps_low_high_max_and_clamps_xhigh_to_high(self, profiles):
+        for effort, expected in [("low", "low"), ("high", "high"), ("max", "max"), ("xhigh", "high")]:
             extra_body, top_level = profiles["alibaba-cn"].build_api_kwargs_extras(
                 reasoning_config={"enabled": True, "effort": effort}, model="glm-5.3"
             )

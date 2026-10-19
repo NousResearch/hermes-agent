@@ -46,6 +46,8 @@ def _toggles():
         'density': ('tui_compact', {'on': True, 'off': False},
                     lambda d: not bool(d.get('tui_compact', False)), on_off),
         'battery': ('battery', _BOOL_WORDS, lambda d: not bool(d.get('battery', False)), on_off),
+        # The classic CLI's /timestamps key: [HH:MM] on transcript rows (T10).
+        'timestamps': ('timestamps', _BOOL_WORDS, lambda d: not bool(d.get('timestamps', False)), on_off),
         'statusbar': ('tui_statusbar', {'on': 'top', **{m: m for m in _STATUSBAR_MODES}},
                       lambda d: 'top' if _statusbar(d.get('tui_statusbar', 'top')) == 'off' else 'off', str),
         'mouse': ('mouse_tracking', _MOUSE_TRACKING_ALIASES,

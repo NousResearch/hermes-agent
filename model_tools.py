@@ -451,6 +451,47 @@ def _rewrite_input_tool_for_vault(td: dict[str, Any], available: set) -> Optiona
     return _fn_def({**fn, "description": fn.get("description", "") + _VAULT_NO_PASSWORD_NOTE})
 
 
+# The static browser descriptions tell the model to open a page and read its refs before acting. That is
+# right for the built-in browser and wrong when a browser extension controller is bound to the request:
+# the attached page is already open, the turn carries a snapshot of it with refs, and actions that change
+# the page return it with fresh refs. Each pair is (legacy wording, extension wording), applied only on that lane,
+# so the memoized legacy text stays byte-identical. A reworded schema that no longer contains its legacy
+# wording would silently keep the stale advice, so tests assert every routed browser tool is covered.
+_EXTENSION_REFS_SENTENCE = ("Refs come from the page snapshot attached to the turn (or the most recent one in this "
+                            "conversation) or from the latest action result.")
+_EXTENSION_LANE_REWRITES = {
+    "browser_navigate": (("Must be called before other browser tools.",
+                          "The page you are attached to is already open: call this only to move to a different URL."),),
+    "browser_snapshot": (("Requires browser_navigate first. Note: browser_navigate already returns a compact snapshot "
+                          "— use this to refresh after interactions that change the page, or with full=true for "
+                          "complete content.",
+                          "Browser actions that change the page already return it with fresh refs: use this for "
+                          "full=true (complete page content), to re-read a page that changed on its own, or when "
+                          "the turn carries no snapshot."),),
+    "browser_click": (("Requires browser_navigate and browser_snapshot to be called first.", _EXTENSION_REFS_SENTENCE),),
+    "browser_type": (("Requires browser_navigate and browser_snapshot to be called first.", _EXTENSION_REFS_SENTENCE),),
+    "browser_scroll": (("Requires browser_navigate to be called first.", ""),),
+    "browser_back": (("Requires browser_navigate to be called first.", ""),),
+    "browser_press": (("Requires browser_navigate to be called first.", ""),),
+}
+
+
+def _rewrite_for_extension_lane(td: dict[str, Any], available: set) -> Optional[dict[str, Any]]:
+    """Drop the "navigate/snapshot first" advice from a routed browser tool when this request has an extension
+    controller able to run it. Decided per request while the schema is assembled; the bound-identity path
+    bypasses the memo and the check_fn cache, so one process serves both lanes."""
+    name = td["function"]["name"]
+    from tools.browser_extension_router import extension_controller_available
+
+    if not extension_controller_available(name):
+        return td
+    description = td["function"].get("description", "")
+    for legacy, extension in _EXTENSION_LANE_REWRITES.get(name, ()):
+        # an empty replacement removes the sentence together with the space before it
+        description = description.replace(legacy if extension else f" {legacy}", extension)
+    return _fn_def({**td["function"], "description": description})
+
+
 def _compose_rewriters(*fns):
     def run(td, available):
         for fn in fns:
@@ -465,10 +506,15 @@ _DYNAMIC_SCHEMA_REWRITERS = {
     "execute_code": _rewrite_execute_code,
     "discord": _discord_rewriter("get_dynamic_schema_core"),
     "discord_admin": _discord_rewriter("get_dynamic_schema_admin"),
-    "browser_navigate": _rewrite_browser_navigate,
+    "browser_navigate": _compose_rewriters(_rewrite_for_extension_lane, _rewrite_browser_navigate),
+    "browser_snapshot": _rewrite_for_extension_lane,
+    "browser_click": _rewrite_for_extension_lane,
+    "browser_scroll": _rewrite_for_extension_lane,
+    "browser_back": _rewrite_for_extension_lane,
+    "browser_press": _rewrite_for_extension_lane,
     "browser_cdp": _rewrite_browser_cdp,
     "browser_exec": _compose_rewriters(_rewrite_browser_exec, _rewrite_input_tool_for_vault),
-    "browser_type": _rewrite_input_tool_for_vault,
+    "browser_type": _compose_rewriters(_rewrite_for_extension_lane, _rewrite_input_tool_for_vault),
     "browser_vault": _rewrite_browser_vault,
     "delegate_task": _rewrite_delegate_task,
 }

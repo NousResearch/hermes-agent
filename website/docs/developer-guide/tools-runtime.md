@@ -117,6 +117,8 @@ The main entry point is `model_tools.get_tool_definitions(enabled_toolsets, disa
 
 5. **Dynamic schema patching** — after filtering, `execute_code` and `browser_navigate` schemas are dynamically adjusted to only reference tools that actually passed filtering (prevents model hallucination of unavailable tools).
 
+   The routed `browser_*` schemas get one more rewrite, decided per request: when a browser extension controller is bound to the request and able to run the tool, the "call `browser_navigate` / `browser_snapshot` first" advice is replaced by a pointer to the snapshot attached to the turn and the latest action result (`_rewrite_for_extension_lane` in `model_tools.py`). Requests without a bound controller keep the static text unchanged. Bound requests skip the schema memo and the `check_fn` cache, so one process can serve both lanes.
+
 ### Legacy toolset names
 
 Old toolset names with `_tools` suffixes (e.g., `web_tools`, `terminal_tools`) are mapped to their modern tool names via `_LEGACY_TOOLSET_MAP` for backward compatibility.

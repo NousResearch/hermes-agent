@@ -1,6 +1,7 @@
 """Tests for model_tools.py — function call dispatch, agent-loop interception, legacy toolsets."""
 
 import json
+import re
 from unittest.mock import patch
 
 
@@ -534,6 +535,148 @@ class TestBrowserRetrievalHints:
         rendered = " ".join(d["function"]["description"] for d in _apply_dynamic_schemas(defs + self._defs("terminal")))
         assert "web_search" not in rendered
         assert "web_extract" not in rendered
+
+
+class TestBrowserLaneDescriptions:
+    """Routed browser tools stop telling the model to navigate and snapshot first when an extension
+    controller is bound to the request, and keep their legacy text byte-identical otherwise."""
+
+    STALE = re.compile(r"Requires browser_navigate|called before other browser tools|to be called first|navigate first")
+
+    @staticmethod
+    def _routed_names():
+        from tools import browser_tool
+
+        return [name for name, _emoji, check_fn, *_ in browser_tool._BROWSER_TOOL_TABLE if check_fn is None]
+
+    @staticmethod
+    def _static(name):
+        from tools.browser_tool import BROWSER_TOOL_SCHEMAS
+
+        return next(s for s in BROWSER_TOOL_SCHEMAS if s["name"] == name)
+
+    def _rendered(self, names):
+        from model_tools import _apply_dynamic_schemas
+
+        defs = [{"type": "function", "function": dict(self._static(n))} for n in names]
+        return {d["function"]["name"]: d["function"]["description"] for d in _apply_dynamic_schemas(defs)}
+
+    def test_bound_extension_lane_drops_the_navigate_first_advice_from_every_routed_tool(self, monkeypatch):
+        from tools import browser_extension_router
+
+        monkeypatch.setattr(browser_extension_router, "extension_controller_available", lambda action: True)
+        names = self._routed_names()
+        legacy = {n: self._static(n)["description"] for n in names}
+        stale = [n for n in names if self.STALE.search(legacy[n])]
+        assert stale, "the static browser descriptions are expected to carry the navigate-first advice"
+
+        rendered = self._rendered(names)
+
+        assert [n for n in names if self.STALE.search(rendered[n])] == []
+        for name in stale:
+            assert rendered[name] != legacy[name]
+        assert "page snapshot attached to the turn" in rendered["browser_click"]
+        assert "latest action result" in rendered["browser_click"]
+        assert "already open" in rendered["browser_navigate"]
+
+    def test_only_tools_that_take_a_ref_are_told_where_refs_come_from(self, monkeypatch):
+        from tools import browser_extension_router
+
+        monkeypatch.setattr(browser_extension_router, "extension_controller_available", lambda action: True)
+        names = self._routed_names()
+        rendered = self._rendered(names)
+
+        rewritten = [n for n in names if rendered[n] != self._static(n)["description"]]
+        assert "browser_scroll" in rewritten
+        for name in rewritten:
+            takes_ref = "ref" in self._static(name)["parameters"]["properties"]
+            assert ("page snapshot attached to the turn" in rendered[name]) == takes_ref, name
+
+    def test_legacy_descriptions_are_unchanged_without_a_controller(self, monkeypatch):
+        from tools import browser_extension_router
+
+        monkeypatch.setattr(browser_extension_router, "extension_controller_available", lambda action: False)
+        names = self._routed_names()
+
+        assert self._rendered(names) == {n: self._static(n)["description"] for n in names}
+
+    def test_only_the_tools_the_controller_can_run_are_rewritten(self, monkeypatch):
+        from tools import browser_extension_router
+
+        monkeypatch.setattr(browser_extension_router, "extension_controller_available",
+                            lambda action: action == "browser_click")
+        rendered = self._rendered(["browser_click", "browser_press"])
+
+        assert "Requires browser_navigate" not in rendered["browser_click"]
+        assert rendered["browser_press"] == self._static("browser_press")["description"]
+
+    def test_existing_browser_rewriters_still_apply_after_composition(self, monkeypatch):
+        from model_tools import _apply_dynamic_schemas
+        from tools import browser_extension_router
+
+        monkeypatch.setattr(browser_extension_router, "extension_controller_available", lambda action: True)
+        defs = [{"type": "function", "function": dict(self._static(n))} for n in ("browser_navigate", "browser_type")]
+        defs += TestBrowserRetrievalHints._defs("web_search", "browser_vault")
+        rendered = {d["function"]["name"]: d["function"]["description"] for d in _apply_dynamic_schemas(defs)}
+
+        assert "Available lightweight retrieval tool: web_search." in rendered["browser_navigate"]
+        assert "already open" in rendered["browser_navigate"]
+        assert "Never type a password" in rendered["browser_type"]
+        assert "Requires browser_navigate" not in rendered["browser_type"]
+
+    def test_one_process_serves_a_bound_and_an_unbound_session_without_leaking_text(self, monkeypatch):
+        from gateway import browser_control_broker as broker_mod
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from model_tools import _clear_tool_defs_cache, get_tool_definitions
+        from tools import browser_tool_install as bt_install
+        from tools.registry import invalidate_check_fn_cache
+
+        # the unbound session below uses the process-wide caches; keep them from carrying this test's answers
+        invalidate_check_fn_cache()
+        _clear_tool_defs_cache()
+
+        broker = broker_mod.BrowserControlBroker()
+        broker.attach(
+            broker_mod.ControllerScope(
+                principal_id="principal-fixture", profile_id="default", session_id="session-bound",
+                controller_id="controller-fixture", browser_profile_id="browser-fixture",
+                transport_family="local-api",
+                capabilities=frozenset({"browser_snapshot", "browser_click", "browser_navigate"}),
+            ),
+            lambda frame: None,
+        )
+        monkeypatch.setattr(broker_mod, "browser_control_enabled", lambda *a: True)
+        monkeypatch.setattr(broker_mod, "get_browser_control_broker", lambda: broker)
+        monkeypatch.setattr(bt_install, "check_browser_requirements", lambda: True)
+
+        def click_description(session_id):
+            tokens = set_session_vars(
+                session_id=session_id, browser_control_principal="principal-fixture",
+                browser_control_transport_family="local-api",
+            )
+            try:
+                defs = get_tool_definitions(enabled_toolsets=["browser"], quiet_mode=True, skip_tool_search_assembly=True)
+            finally:
+                clear_session_vars(tokens)
+            return next(d["function"]["description"] for d in defs if d["function"]["name"] == "browser_click")
+
+        static = self._static("browser_click")["description"]
+        try:
+            assert click_description("session-other") == static
+            assert "Requires browser_navigate" not in click_description("session-bound")
+            assert click_description("session-other") == static
+            tokens = set_session_vars(session_id="session-none")  # no bound identity at all
+            try:
+                defs = get_tool_definitions(
+                    enabled_toolsets=["browser"], quiet_mode=True, skip_tool_search_assembly=True)
+            finally:
+                clear_session_vars(tokens)
+            unbound = next(d["function"]["description"] for d in defs if d["function"]["name"] == "browser_click")
+            assert unbound == static
+            assert "Requires browser_navigate" not in click_description("session-bound")
+        finally:
+            invalidate_check_fn_cache()
+            _clear_tool_defs_cache()
 
 
 def test_tool_defs_cache_key_sees_config_replacement_with_pinned_mtime(tmp_path):

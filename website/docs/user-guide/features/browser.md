@@ -652,7 +652,7 @@ The `browser` toolset must be included in your config's `toolsets` list or enabl
 
 ### `browser_navigate`
 
-Navigate to a URL. Must be called before any other browser tool. Initializes the Browserbase session.
+Navigate to a URL. With the built-in browser it must be called before any other browser tool; it initializes the session. With the [Hermes Browser Extension](api-server.md#browser-extension-control) the tab you attached is already open, so call it only to move somewhere else: the turn carries a snapshot of the attached page with refs, and every action that changes the page returns the updated page with fresh refs.
 
 ```
 Navigate to https://github.com/NousResearch

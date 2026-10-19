@@ -494,6 +494,8 @@ _DYNAMIC_SCHEMA_REWRITERS = {
     "browser_cdp": _rewrite_browser_cdp,
     "browser_exec": _compose_rewriters(_rewrite_browser_exec, _rewrite_input_tool_for_vault),
     "browser_type": _compose_rewriters(_rewrite_for_extension_lane, _rewrite_input_tool_for_vault),
+    "browser_fill": _compose_rewriters(_rewrite_for_extension_lane, _rewrite_input_tool_for_vault),
+    "browser_batch": _compose_rewriters(_rewrite_for_extension_lane, _rewrite_input_tool_for_vault),
     "browser_vault": _rewrite_browser_vault,
     "delegate_task": _rewrite_delegate_task,
 }

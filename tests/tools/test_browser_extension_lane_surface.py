@@ -221,6 +221,22 @@ def test_the_vault_note_and_the_retrieval_hint_still_compose_with_the_lane_form(
     assert "tab_id" in rendered["browser_type"]["parameters"]["properties"]
 
 
+@pytest.mark.parametrize("tool", ("browser_type", "browser_fill", "browser_batch"))
+def test_every_tool_that_types_text_carries_the_vault_note_when_the_vault_is_available(broker, tool):
+    schemas = {s["name"]: s for s in (*browser_tool.BROWSER_TOOL_SCHEMAS, *lane.EXTENSION_ONLY_SCHEMAS)}
+    defs = [{"type": "function", "function": dict(schemas[tool])},
+            {"type": "function", "function": {"name": "browser_vault", "description": "", "parameters": {}}}]
+    tokens = set_session_vars(session_id="session-1", **IDENTITY)
+    try:
+        with_vault = _by_name(_apply_dynamic_schemas(defs))[tool]["description"]
+        without_vault = _by_name(_apply_dynamic_schemas(defs[:1]))[tool]["description"]
+    finally:
+        clear_session_vars(tokens)
+
+    assert "Never type a password" in with_vault
+    assert "Never type a password" not in without_vault
+
+
 # --- nothing attached: calls fail closed and say what to ask for ---------------------------------------------------
 
 

@@ -1618,24 +1618,26 @@ def check_respawn_guard(
     if err and latest_outcome != "crashed" and _RESPAWN_BLOCKER_RE.search(err):
         return "blocker_auth"
 
-    # The first review handoff accepts its PR comment. Once the review has
-    # completed, ordinary comments do not restart it; explicit reopen or
-    # changes-requested events authorize another cycle.
+    # Review-lane spawns stop here: the first handoff is eligible, but an
+    # explicit reopen or reviewer changes-requested event after a completed
+    # review is required to start another cycle. Ordinary comments do not.
     if lane == "review":
-        prior_review = max((t for t, _ in _rows_since(
-            conn, "task_events", task_id, 0,
-            "AND kind IN ('review_requested', 'review_reopened', 'request_changes')", strict=True,
+        latest_handoff = max((t for t, _ in _rows_since(
+            conn, "task_events", task_id, 0, "AND kind = 'review_requested'",
         )), default=None)
-        completed_review = max((t for t, row in _rows_since(
-            conn, "task_runs", task_id, 0,
-            "AND outcome IN ('review_requested', 'completed')", cols=", outcome",
-        ) if row["outcome"] == "review_requested"), default=None)
-        if prior_review is not None and completed_review is not None:
-            reopened = max((t for t, _ in _rows_since(
-                conn, "task_events", task_id, max(prior_review, completed_review),
-                "AND kind IN ('review_reopened', 'request_changes')", strict=True,
+        latest_review_completion = max((t for t, _ in _rows_since(
+            conn, "task_runs", task_id, 0, "AND outcome = 'completed'",
+        )), default=None)
+        completed_after_handoff = (
+            latest_review_completion is not None
+            and (latest_handoff is None or latest_review_completion >= latest_handoff)
+        )
+        if latest_review_completion is not None and completed_after_handoff:
+            restart = max((t for t, _ in _rows_since(
+                conn, "task_events", task_id, latest_review_completion,
+                "AND kind IN ('review_reopened', 'changes_requested')", strict=True,
             )), default=None)
-            if reopened is None:
+            if restart is None:
                 return "recent_success"
         return None
 

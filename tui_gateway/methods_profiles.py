@@ -5,6 +5,7 @@ onto server.py, so they must not collide with its globals.
 """
 
 import contextlib
+import logging
 import sqlite3
 
 from .method_ctx import HandlerRegistry, bind_module
@@ -37,8 +38,9 @@ def _lazy(module, name):
     return getattr(__import__(module, fromlist=[name]), name)
 
 
-def _pin_profile_model(profile_dir, provider, model) -> None:
-    _lazy("hermes_cli.web_routers.profiles", "_write_profile_model")(profile_dir, provider, model)
+def _pin_profile_model(profile_dir, provider, model, base_url="") -> None:
+    _lazy("hermes_cli.web_routers.profiles", "_write_profile_model")(
+        profile_dir, provider, model, base_url=base_url)
 
 
 def _model_provider_params(params) -> tuple:
@@ -289,14 +291,16 @@ def _(rid, params: dict) -> dict:
         row = {"name": p.name, "path": str(p.path), "is_default": bool(p.is_default), "model": p.model,
                "provider": p.provider, "description": p.description or "",
                "display_name": p.display_name or "", "skill_count": p.skill_count or 0,
-               "previous_names": list(p.previous_names or []), "role": p.role}
+               "previous_names": list(p.previous_names or [])}
         if include_sessions:
             _profile_session_fields(row, p.path)
         _profile_ui_meta_fields(row, Path(str(p.path)))
         out.append(row)
     # bot_mode_protocol: this backend injects the Bot Mode teammate-messaging protocol into every
-    # session, so clients must not append it to SOUL.md.
-    return _ok(rid, {"profiles": out, "bot_mode_protocol": True})
+    # session, so clients must not append it to SOUL.md. install_id (same value as /api/status)
+    # lets a multi-connection client prove WHICH machine answered a routed list.
+    from hermes_cli.install_identity import get_install_id
+    return _ok(rid, {"profiles": out, "bot_mode_protocol": True, "install_id": _try(lambda: get_install_id() or "", "")})
 
 
 @method("profiles.create")
@@ -460,12 +464,6 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"found": False})
 
 
-@_profile_handler("profiles.remember_onboarding", 5067)
-def _(rid, params: dict) -> dict:
-    from tui_gateway.onboarding_personalization import remember_onboarding
-    return _ok(rid, remember_onboarding(params.get("answers")))
-
-
 def _mirror_secret(path, launch_home, name: str, wanted) -> bool:
     """Copy the launch ``name`` file into the profile (0600) when it exists and ``wanted(src, dst)``."""
     src, dst = launch_home / name, path / name
@@ -521,18 +519,29 @@ def _inherit_launch_model(path) -> bool:
     model_cfg = launch_cfg.get("model") or {}
     if not (model_cfg.get("provider") and model_cfg.get("default")):
         return False
-    # A custom `providers:` gateway travels with the model it backs (same seed as the CLI path). It is
+    # A custom endpoint travels with the model it backs (same seed as the CLI path). It is
     # written BEFORE the pin: the pin validates the pick inside the new profile, and an empty profile
     # rejects a provider it has not been told about ("Unknown provider").
     # Seeded from the RAW launch file so a ${VAR} api_key travels as the ref, not its value.
-    custom = _lazy("hermes_cli.profiles", "launch_model_seed")(read_user_config_raw()).get("providers")
-    if custom:
-        from hermes_cli.config import load_config, save_config
+    seed = _lazy("hermes_cli.profile_model_seed", "launch_model_seed")(read_user_config_raw())
+    if seed.get("providers") or seed.get("custom_providers"):
+        from hermes_cli.config import save_config
+        merge = _lazy("hermes_cli.profile_model_seed", "merge_endpoint_seed")
         with _hermes_home_scope(path):
-            cfg = load_config()
-            cfg["providers"] = {**(cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}), **custom}
-            save_config(cfg)
-    _pin_profile_model(path, str(model_cfg["provider"]), str(model_cfg["default"]))
+            save_config(merge(read_user_config_raw(), seed))
+    # Bare ``custom``/``local`` carries its endpoint into validation (the new profile's config names
+    # none); other providers ignore it. Validation needs the expanded URL, the profile keeps the
+    # launch file's spelling so a ${VAR} URL stays a ref.
+    _pin_profile_model(path, str(model_cfg["provider"]), str(model_cfg["default"]),
+                       str(model_cfg.get("base_url") or ""))
+    raw_url = ((read_user_config_raw() or {}).get("model") or {}).get("base_url")
+    if isinstance(raw_url, str) and "${" in raw_url:
+        from hermes_cli.config import save_config
+        with _hermes_home_scope(path):
+            cfg = read_user_config_raw() or {}
+            if isinstance(cfg.get("model"), dict) and cfg["model"].get("base_url") == model_cfg.get("base_url"):
+                cfg["model"]["base_url"] = raw_url
+                save_config(cfg)
     return True
 
 
@@ -588,6 +597,11 @@ def _describe_toolsets(cfg):
     return toolsets_out, pinned_set
 
 
+def _bots_title(ui_meta: dict):
+    bots = ui_meta.get("hermes-bots")
+    return bots.get("title") if isinstance(bots, dict) else None
+
+
 def _configure_ui_meta(profile_dir, params, applied) -> None:
     """Merge ``params["ui_meta"]`` key-wise into profile.yaml (None deletes). 64KB cap (rides
     every roster paint). ``ui_meta_expected_revisions``: per-key CAS, any mismatch rejects the
@@ -615,6 +629,7 @@ def _configure_ui_meta(profile_dir, params, applied) -> None:
                 return
             current = existing.get("ui_meta")
             current = current if isinstance(current, dict) else {}
+            old_title = _bots_title(current)
             for key, value in incoming.items():
                 if value is None:
                     current.pop(key, None)
@@ -630,6 +645,13 @@ def _configure_ui_meta(profile_dir, params, applied) -> None:
             atomic_yaml_write(profile_dir / "profile.yaml", existing, sort_keys=False)
             applied["ui_meta"] = True
             applied["ui_meta_revisions"] = {key: revisions[key] for key in incoming}
+            if _bots_title(current) != old_title:
+                # A client writing another machine's bot title lands here; the Desktop's
+                # `[bot-meta win=…]` desktop.log line at the same time names the window.
+                logging.getLogger(__name__).info(
+                    "ui_meta hermes-bots title for profile %s: %r -> %r (revision %s)",
+                    params.get("name") or profile_dir.name, old_title, _bots_title(current),
+                    revisions.get("hermes-bots"))
     except Exception:
         applied["ui_meta"] = False
 

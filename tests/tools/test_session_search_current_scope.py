@@ -24,6 +24,7 @@ from gateway.session_context import (
 from gateway.recall_scope import canonical_recall_identity
 from hermes_state import SessionDB
 from tools.session_search_tool import session_search
+from datetime import UTC
 
 
 _DEFAULT_ORIGIN = object()
@@ -1547,7 +1548,7 @@ def test_current_scope_composes_with_time_window_and_exclusions(db, query, stale
         ("foreign-in-window", foreign_source, 6),
     ):
         _seed(db, sid, source, query)
-        epoch = datetime(2026, month, 15, tzinfo=timezone.utc).timestamp()
+        epoch = datetime(2026, month, 15, tzinfo=UTC).timestamp()
         db._execute_write(lambda conn, sid=sid, epoch=epoch: conn.execute(
             "UPDATE sessions SET started_at = ? WHERE id = ?", (epoch, sid)))
     if stale:

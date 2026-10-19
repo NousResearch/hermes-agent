@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from unittest.mock import Mock
 
-import tui_gateway.server as server
+from tui_gateway import server
 
 
 def _call(method: str, params: dict | None = None) -> dict:
@@ -20,7 +20,7 @@ def _call(method: str, params: dict | None = None) -> dict:
 
 
 def test_stale_model_options_refuses_instead_of_building(tmp_path, monkeypatch):
-    import gateway.code_skew as code_skew
+    from gateway import code_skew
 
     monkeypatch.setattr(code_skew, "detect_code_skew", lambda: ("abc1234567", "def4567890"))
     builds = []
@@ -37,7 +37,7 @@ def test_stale_model_options_refuses_instead_of_building(tmp_path, monkeypatch):
 
 
 def test_stale_model_save_key_refuses_instead_of_writing(tmp_path, monkeypatch):
-    import gateway.code_skew as code_skew
+    from gateway import code_skew
 
     monkeypatch.setattr(code_skew, "detect_code_skew", lambda: ("abc1234567", "def4567890"))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -50,7 +50,7 @@ def test_stale_model_save_key_refuses_instead_of_writing(tmp_path, monkeypatch):
 
 
 def test_fresh_model_options_builds_payload_unchanged(tmp_path, monkeypatch):
-    import gateway.code_skew as code_skew
+    from gateway import code_skew
 
     monkeypatch.setattr(code_skew, "detect_code_skew", lambda: None)
     monkeypatch.setattr(server, "_hermes_home", tmp_path)

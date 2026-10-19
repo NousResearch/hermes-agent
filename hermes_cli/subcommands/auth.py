@@ -69,18 +69,4 @@ def build_auth_parser(subparsers, *, cmd_auth: Callable) -> None:
     auth_upgrade.add_argument(
         "--no-browser", action="store_true", help="Do not auto-open a browser for sign-in")
     auth_upgrade.add_argument("--timeout", type=float, help="Network timeout in seconds")
-    auth_spotify = auth_subparsers.add_parser(
-        "spotify", help="Authenticate Hermes with Spotify via PKCE")
-    auth_spotify.add_argument(
-        "spotify_action", nargs="?", choices=["login", "status", "logout"], default="login")
-    auth_spotify.add_argument(
-        "--client-id", help="Spotify app client_id (or set HERMES_SPOTIFY_CLIENT_ID)")
-    auth_spotify.add_argument(
-        "--redirect-uri", help="Allow-listed localhost redirect URI for your Spotify app")
-    auth_spotify.add_argument("--scope", help="Override requested Spotify scopes")
-    auth_spotify.add_argument(
-        "--no-browser", action="store_true",
-        help="Do not attempt to open the browser automatically")
-    auth_spotify.add_argument(
-        "--timeout", type=float, help="Callback/token exchange timeout in seconds")
     auth_parser.set_defaults(func=cmd_auth)

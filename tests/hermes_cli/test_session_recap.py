@@ -41,7 +41,7 @@ def _tool_result(content="ok"):
 def test_tool_preview_length_truncates_long_user_prompt():
     long = "x " * 500
     out = build_recap([_user(long)])
-    ask_line = [l for l in out.splitlines() if "Last ask" in l][0]
+    ask_line = next(l for l in out.splitlines() if "Last ask" in l)
     assert len(ask_line) < 300  # truncated with ellipsis
     assert "…" in ask_line
 

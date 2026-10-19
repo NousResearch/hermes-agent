@@ -61,7 +61,7 @@ _PROXY_ORIGIN_FIELDS = (
 
 
 def _identity_field_types_valid(
-    origin: Mapping[str, Any], fields: Tuple[str, ...] = _PROXY_ORIGIN_FIELDS
+    origin: Mapping[str, Any], fields: tuple[str, ...] = _PROXY_ORIGIN_FIELDS
 ) -> bool:
     """Reject typed JSON values that Python would otherwise stringify loosely.
 
@@ -108,7 +108,7 @@ class RecallIdentity:
     # equality.  Two WhatsApp JID forms are equal only when both canonicalize
     # to the same chat_id; aliases merely let old origin_json rows prove that
     # equivalence without broadening to another chat.
-    chat_aliases: Tuple[str, ...] = field(default=(), compare=False)
+    chat_aliases: tuple[str, ...] = field(default=(), compare=False)
 
     def as_mapping(self) -> Mapping[str, Any]:
         return {
@@ -232,36 +232,23 @@ def _text(origin: Mapping[str, Any], key: str) -> str:
     return value.strip()
 
 
-def _whatsapp_dm_identity(value: str) -> tuple[str, Tuple[str, ...]]:
-    """Return a canonical DM id plus the exact aliases proving equivalence."""
-    try:
-        from gateway.whatsapp_identity import (
-            canonical_whatsapp_identifier,
-            expand_whatsapp_aliases,
-            normalize_whatsapp_identifier,
-        )
+def _whatsapp_dm_identity(value: str) -> tuple[str, tuple[str, ...]]:
+    """Canonicalize a WhatsApp DM through the required identity authority."""
+    from gateway.whatsapp_identity import (
+        canonical_whatsapp_identifier, expand_whatsapp_aliases, normalize_whatsapp_identifier,
+    )
 
-        normalized = normalize_whatsapp_identifier(value)
-        if not normalized:
-            return "", ()
-        aliases = {
-            normalize_whatsapp_identifier(alias)
-            for alias in expand_whatsapp_aliases(normalized)
-        }
-        aliases.discard("")
-        canonical = canonical_whatsapp_identifier(normalized)
-        if canonical:
-            aliases.add(canonical)
-        return canonical or normalized, tuple(sorted(aliases or {normalized}))
-    except Exception:
-        # Alias lookup is best-effort, but failure narrows to the exact bare
-        # identifier.  It must never turn into an unscoped/fuzzy match.
-        bare = str(value or "").strip().replace("+", "", 1)
-        bare = bare.split(":", 1)[0].split("@", 1)[0]
-        return bare, (bare,) if bare else ()
+    normalized = normalize_whatsapp_identifier(value)
+    if not normalized:
+        return "", ()
+    aliases = {normalize_whatsapp_identifier(alias) for alias in expand_whatsapp_aliases(normalized)}
+    aliases.discard("")
+    canonical = canonical_whatsapp_identifier(normalized)
+    if canonical:
+        aliases.add(canonical)
+    return canonical or normalized, tuple(sorted(aliases or {normalized}))
 
-
-def canonical_recall_identity(origin: object) -> Optional[RecallIdentity]:
+def canonical_recall_identity(origin: object) -> RecallIdentity | None:
     """Normalize live or durable routing metadata, failing closed on ambiguity."""
     if not isinstance(origin, Mapping) or not _identity_field_types_valid(origin):
         return None
@@ -314,7 +301,7 @@ def canonical_recall_identity(origin: object) -> Optional[RecallIdentity]:
 
     canonical_chat_type = chat_type if chat_kind == "chat" else chat_kind
 
-    aliases: Tuple[str, ...] = ()
+    aliases: tuple[str, ...] = ()
     if platform == "whatsapp" and chat_kind in {"dm", "dm_thread"}:
         chat_id, aliases = _whatsapp_dm_identity(chat_id)
         if not chat_id:
@@ -414,7 +401,7 @@ def _whatsapp_bare_sql(expression: str) -> str:
 def recall_scope_sql(
     alias: str,
     recall_scope: object,
-) -> tuple[str, List[Any]]:
+) -> tuple[str, list[Any]]:
     """Emit the fail-closed ``origin_json`` predicate for an identity."""
     identity = coerce_recall_identity(recall_scope)
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", alias):
@@ -489,7 +476,7 @@ def recall_scope_sql(
         f"AND {raw_chat_id} = {raw_thread_id})"
     )
 
-    params: List[Any] = [
+    params: list[Any] = [
         identity.platform,
         identity.chat_kind,
         identity.chat_type,
@@ -528,3 +515,14 @@ def recall_scope_sql(
         f"AND NOT {candidate_is_ambiguous_discord_thread}"
     )
     return f"({clause})", params
+
+
+def gateway_proxy_request_context(source, session_id, session_key):
+    """Freeze the authenticated proxy route and its exact gateway identity."""
+    if not is_recall_gateway_platform(source.platform):
+        return "/v1/chat/completions", None, None
+    if not session_id:
+        raise ValueError("gateway proxy session id is missing")
+    return (GATEWAY_PROXY_CHAT_COMPLETIONS_PATH,
+            encode_gateway_proxy_origin(source.to_dict()),
+            encode_gateway_proxy_session_key(session_key))

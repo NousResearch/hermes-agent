@@ -20,7 +20,7 @@ class TuiGateway:
         env = h.env({"TERMINAL_ENV": "local", "TERMINAL_CWD": str(h.project), "HERMES_YOLO_MODE": "1",
                      **(extra_env or {})})
         self.stderr_path = h.root / f"tui-gateway-{time.monotonic_ns()}.log"
-        self._stderr = open(self.stderr_path, "wb")  # noqa: SIM115 - closed in close()
+        self._stderr = open(self.stderr_path, "wb")
         self.proc = subprocess.Popen([sys.executable, "-m", "tui_gateway.entry"], cwd=h.project, env=env,
                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self._stderr, bufsize=0)
         if self.proc.stdin is None or self.proc.stdout is None:

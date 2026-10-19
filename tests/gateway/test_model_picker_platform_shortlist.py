@@ -85,7 +85,7 @@ def _isolated_home(tmp_path, monkeypatch, extra_config):
     monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
     monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: hermes_home)
     monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: hermes_home)
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
     # Deterministic inventory: the live listing probes credentials and disk caches.
     monkeypatch.setattr(
         "hermes_cli.model_switch_providers.list_picker_providers",
@@ -119,11 +119,12 @@ async def test_matrix_picker_narrows_to_configured_allowlist(tmp_path, monkeypat
 
     rows = adapter.captured_providers
     assert rows, "picker was not sent the provider rows"
-    assert [row["slug"] for row in rows] == ["ollama-cloud"], (
-        "the provider with no allowlisted model should be dropped, got %r" % ([r["slug"] for r in rows],)
+    slugs = [row["slug"] for row in rows]
+    assert slugs == ["ollama-cloud"], (
+        f"the provider with no allowlisted model should be dropped, got {slugs!r}"
     )
     assert rows[0]["models"] == ["glm-5.2", "kimi-k3"], (
-        "picker should list exactly the allowlisted models, got %r" % (rows[0]["models"],)
+        f"picker should list exactly the allowlisted models, got {rows[0]['models']!r}"
     )
     assert rows[0]["total_models"] == 2
 

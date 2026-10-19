@@ -70,17 +70,28 @@ def _platform_model_allowlist(platform) -> list:
     ``platform_section`` so the block is found wherever the rest of that platform's config lives
     (``matrix:`` at the root, ``platforms.matrix``, ``gateway.platforms.matrix``) — one precedence
     rule, owned by the config loader. Read at picker-send time, not at boot, so an edit lands on
-    the next ``/model``. An absent/blank key, or an unreadable config, means "no shortlist".
+    the next ``/model``. An absent/blank key, or a config the gateway cannot read
+    (``_load_gateway_config`` fail-opens to ``{}``), means "no shortlist".
     """
     try:
         from gateway.config_loader import platform_section
         from gateway.run import _load_gateway_config, _platform_config_key
-
-        cfg = _load_gateway_config()
-        gateway_platforms = (cfg.get("gateway") or {}).get("platforms")
-        section, _toplevel = platform_section(cfg, _platform_config_key(platform), gateway_platforms)
-    except Exception:
+    except ImportError:  # a gateway tree without the config loader has no shortlist to read
+        logger.debug("model_allowlist: gateway config loader unavailable", exc_info=True)
         return []
+
+    # Read errors are handled below, not swallowed here: ``_load_gateway_config`` fail-opens to
+    # ``{}`` (it logs the read failure itself), so a broken config arrives as an absent section.
+    cfg = _load_gateway_config()
+    if not isinstance(cfg, dict):
+        return []
+    try:
+        platform_key = _platform_config_key(platform)
+    except AttributeError:  # not a Platform enum — nothing to key a config block by
+        return []
+    gateway_cfg = cfg.get("gateway")
+    gateway_platforms = gateway_cfg.get("platforms") if isinstance(gateway_cfg, dict) else None
+    section, _toplevel = platform_section(cfg, platform_key, gateway_platforms)
     if not isinstance(section, dict):
         return []
     value = section.get("model_allowlist")

@@ -12,7 +12,7 @@ import os
 import time
 import threading as _threading
 from dataclasses import dataclass, field
-from typing import Any, List, Optional
+from typing import Any, Optional
 from agent.command_token_source import build_command_token_provider, materialize_probe_api_key
 from hermes_cli.providers import custom_provider_aliases, custom_provider_slug, get_label
 from utils import base_url_host_matches
@@ -1401,7 +1401,7 @@ def list_picker_providers(
     return filtered
 
 
-def apply_model_allowlist(providers: List[dict], model_allowlist: Any) -> List[dict]:
+def apply_model_allowlist(providers: list[dict], model_allowlist: Any) -> list[dict]:
     """Narrow picker rows to an operator shortlist of model ids (per-platform ``/model`` picker).
 
     Entries are the same model-id strings the picker renders, matched case-insensitively; rows
@@ -1417,7 +1417,7 @@ def apply_model_allowlist(providers: List[dict], model_allowlist: Any) -> List[d
     wanted = {str(m).strip().lower() for m in (model_allowlist or []) if str(m).strip()}
     if not wanted:
         return providers
-    kept: List[dict] = []
+    kept: list[dict] = []
     for row in providers:
         models = [m for m in (row.get("models") or []) if str(m).strip().lower() in wanted]
         if not models:

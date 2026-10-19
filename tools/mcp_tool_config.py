@@ -181,10 +181,19 @@ _CONTEXT_VAR_RESOLVERS = {
     "workspaceFolderBasename": _workspace_basename, "pathSeparator": lambda: os.sep, "/": lambda: os.sep}
 
 
-def _is_unresolved_ref(value: Any) -> bool:
-    """True when *value* is entirely one env ``${VAR}`` / ``${env:VAR}`` placeholder (not a context var)."""
-    match = _ENV_VAR_PATTERN.fullmatch(value) if isinstance(value, str) else None
-    return match is not None and match.group(1).strip() not in _CONTEXT_VAR_RESOLVERS
+class _RenderedStr(str):
+    """A config string after ``${...}`` rendering, carrying how it resolved, so later steps never
+    guess from text that may itself look like ``${...}``. ``missed``: some env reference was unset
+    (or empty) and kept its placeholder; a re-render (connect renders again under the owner's fresh
+    scope) retries from ``template``, while a fully resolved value is final. ``unset_ref``: the
+    template was one whole env reference that missed."""
+
+    def __new__(cls, text: str = "", template: Optional[str] = None, missed: bool = False, unset_ref: bool = False):
+        rendered = super().__new__(cls, text)
+        rendered.template = text if template is None else template
+        rendered.missed = missed
+        rendered.unset_ref = unset_ref
+        return rendered
 
 
 def _build_safe_env(user_env: Optional[dict]) -> dict:
@@ -207,13 +216,12 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
         if key in os.environ:
             env[key] = os.environ[key]
     if user_env:
-        # A value that is still a whole ``${VAR}`` here was unset (or empty) at render time: the
-        # key is left unset (baseline copy included) so a plugin can forward an optional var
-        # without the child seeing the literal placeholder (servers that validate it refuse to start).
+        # An entry rendered from one whole ``${VAR}`` that is unset (or empty) counts as absent, so
+        # a plugin can forward an optional var without the child seeing the literal placeholder.
+        # The key keeps its baseline value, if any: the MCP SDK re-adds its own inherited set
+        # (PATH, HOME, TERM, ...) at spawn anyway, so popping here would not unset it.
         for key, value in user_env.items():
-            if _is_unresolved_ref(value):
-                env.pop(key, None)
-            else:
+            if not getattr(value, "unset_ref", False):
                 env[key] = value
     from agent.delegation_context import delegated_child_subprocess_env
     return delegated_child_subprocess_env(env)
@@ -546,13 +554,27 @@ def _packaged_npx_entry(command: str, args: list) -> Optional[tuple]:
 def _interpolate_env_vars(value):
     """Recursively resolve ``${VAR}`` / Cursor ``${env:VAR}`` placeholders and context vars. Env
     refs resolve from the active profile's secret scope when multiplexing (the routed profile's
-    value, not another profile's in ``os.environ``). Unset vars keep the literal placeholder."""
+    value, not another profile's in ``os.environ``). Unset (or empty) vars keep the literal placeholder;
+    a templated string comes back as a ``_RenderedStr`` recording how it resolved."""
     from agent.secret_scope import get_secret as _get_secret
     if isinstance(value, str):
+        if isinstance(value, _RenderedStr) and not value.missed:
+            return value
+        template = getattr(value, "template", value)
+        missed = []
+
         def _replace(m):
             resolver = _CONTEXT_VAR_RESOLVERS.get(m.group(1).strip())
-            return resolver() if resolver is not None else (_get_secret(_env_ref_name(m.group(1)), m.group(0)) or m.group(0))
-        return _ENV_VAR_PATTERN.sub(_replace, value)
+            if resolver is not None:
+                return resolver()
+            resolved = _get_secret(_env_ref_name(m.group(1)), None)
+            if not resolved:
+                missed.append(m.group(0))
+            return resolved or m.group(0)
+        if not _ENV_VAR_PATTERN.search(template):
+            return value
+        text = _ENV_VAR_PATTERN.sub(_replace, template)
+        return _RenderedStr(text, template, missed=bool(missed), unset_ref=missed == [template])
     if isinstance(value, dict):
         return {k: _interpolate_env_vars(v) for k, v in value.items()}
     if isinstance(value, list):

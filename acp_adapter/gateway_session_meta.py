@@ -16,13 +16,10 @@ from acp.schema import (
     SessionModelState, UnstructuredCommandInput, Usage, UsageUpdate,
 )
 
+from acp_adapter.modes import DEFAULT_EDIT_APPROVAL_POLICY, DEFAULT_MODE, EDIT_APPROVAL_POLICY_TO_MODE, MODES
+
 logger = logging.getLogger(__name__)
 
-# The gateway honours one editor edit policy, ``ask`` (``gateway/session_local_editor.py``), and has
-# no verb that changes it on a live session, so main's Accept Edits / Don't Ask are not offered.
-DEFAULT_MODE = "default"
-DEFAULT_EDIT_APPROVAL_POLICY = "ask"
-EDIT_APPROVAL_POLICY_CONFIG_ID = "edit_approval_policy"
 
 # Advertised name -> (description, input hint). ``prompt`` serves each through a gateway verb
 # (``acp_adapter/gateway_commands.py``); ``/reset`` is the registry's alias of ``/new``.
@@ -59,9 +56,15 @@ def help_text() -> str:
     return "\n".join(lines)
 
 
-def session_modes() -> SessionModeState:
-    return SessionModeState(current_mode_id=DEFAULT_MODE, available_modes=[
-        SessionMode(id=DEFAULT_MODE, name="Default", description="Ask before edits.")])
+def current_mode(info: dict) -> str:
+    """The mode of the session's edit approval policy (``session.info``); an owner without the field asks."""
+    return EDIT_APPROVAL_POLICY_TO_MODE.get(info.get("edit_approval_policy") or DEFAULT_EDIT_APPROVAL_POLICY,
+                                            DEFAULT_MODE)
+
+
+def session_modes(info: dict | None = None) -> SessionModeState:
+    return SessionModeState(current_mode_id=current_mode(info or {}), available_modes=[
+        SessionMode(id=mode, name=name, description=description) for mode, (_p, name, description) in MODES.items()])
 
 
 def model_state(info: dict) -> SessionModelState | None:

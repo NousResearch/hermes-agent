@@ -211,9 +211,9 @@ With [multiplexing](../multi-profile-gateways.md#alternative-one-gateway-for-all
 
 - One group routes to one profile. A profile can own several groups.
 - A chat that matches no route stays on the default profile.
-- **Add route** lists chats the bridge has already received that are not routed yet. The count on the button is how many of those chats are waiting. **Refresh chats**, at the bottom of that dialog, reloads the list after a new message.
+- **Add route** lists chats the bridge has already received that are not routed yet. The count on the button is how many of those chats are waiting. **Refresh chats**, at the bottom of that dialog, reloads the list after a new message. If the bridge has not listed any chats, enter the group JID or phone number directly.
 - The table shows the WhatsApp group subject, or the contact name when one is known. The numeric id is a tooltip. The text of the last message is not used as the name.
-- Saving writes the route table. It does not restart the gateway. A new route applies the next time that process starts.
+- Saving writes the route table. It does not restart the gateway. A running gateway re-reads `config.yaml` and applies the new route on the next inbound message.
 - If the WhatsApp card says the bridge is down, the gateway process can still be running. Chats are not answered until the bridge connects. The gateway retries the bridge on its own.
 - The target list shows how many WhatsApp chats already route to each profile, including rows you have not saved yet.
 

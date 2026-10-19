@@ -566,14 +566,17 @@ def _register_whatsapp_session(session_path: Path, record) -> str:
 
 
 def _whatsapp_route_chat_ids() -> list[str]:
-    """Group and contact ids already on the host route table."""
+    """Group and contact ids already on the host route table.
+
+    Reads the raw file. ``load_config()`` merges ``gateway.profile_routes: []``
+    from defaults, which hides a top-level list the gateway loader prefers.
+    """
     try:
-        config = load_config()
+        from gateway.profile_routing import profile_routes_list_from_yaml
+        from hermes_cli.config import read_raw_config
+
+        routes = profile_routes_list_from_yaml(read_raw_config()) or []
     except Exception:
-        return []
-    gateway = config.get("gateway") if isinstance(config, dict) else None
-    routes = gateway.get("profile_routes") if isinstance(gateway, dict) else None
-    if not isinstance(routes, list):
         return []
     chat_ids: list[str] = []
     for row in routes:
@@ -622,10 +625,13 @@ def list_whatsapp_seen_chats():
         )
         host = next((item.path for item in infos if getattr(item, "is_default", False)), None)
         if host is not None:
-            remember_whatsapp_aliases(
-                host,
-                {chat["chat_id"]: chat["name"] for chat in chats if chat.get("name")},
-            )
+            try:
+                remember_whatsapp_aliases(
+                    host,
+                    {chat["chat_id"]: chat["name"] for chat in chats if chat.get("name")},
+                )
+            except OSError:
+                _log.warning("Could not store WhatsApp chat names", exc_info=True)
     except Exception as exc:
         _log.exception("GET /api/messaging/whatsapp/seen-chats failed")
         raise HTTPException(status_code=500, detail="Could not list WhatsApp chats.") from exc

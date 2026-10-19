@@ -255,3 +255,58 @@ class TestGatewayConfigRoundtrip:
         assert [(r.name, r.user_id, r.enabled, r.specificity) for r in restored] == [
             ("sender", "aad-456", True, 16), ("off", None, False, 4),
         ]
+
+
+class TestProfileRouteYamlPrecedence:
+    def test_top_level_list_wins_even_when_empty(self):
+        from gateway.profile_routing import profile_routes_list_from_yaml
+
+        nested = [{"name": "nested", "platform": "whatsapp", "profile": "team", "chat_id": "1@g.us"}]
+        assert profile_routes_list_from_yaml({
+            "profile_routes": [],
+            "gateway": {"profile_routes": nested},
+        }) == []
+        assert profile_routes_list_from_yaml({"gateway": {"profile_routes": nested}}) == nested
+        assert profile_routes_list_from_yaml({}) is None
+        assert profile_routes_list_from_yaml({"profile_routes": "nope"}) == []
+
+    def test_disk_loaded_runner_reloads_routes_without_restart(self, tmp_path, monkeypatch):
+        import os
+        from types import SimpleNamespace
+
+        from gateway.config import GatewayConfig, Platform
+        from gateway.profile_routing import refresh_runner_profile_routes
+        from gateway.run import GatewayRunner
+        from gateway.session import SessionSource
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        config_path = home / "config.yaml"
+        config_path.write_text(
+            "profile_routes:\n"
+            "  - {name: wa, platform: whatsapp, profile: team, chat_id: '111@g.us'}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profiles_to_serve",
+            lambda **_kwargs: [("default", home), ("team", home / "team")],
+        )
+
+        injected = GatewayRunner(GatewayConfig(multiplex_profiles=True, profile_routes=[]))
+        assert injected._profile_routes_from_disk is False
+        refresh_runner_profile_routes(injected)
+        assert injected.config.profile_routes == []
+
+        runner = SimpleNamespace(
+            _profile_routes_from_disk=True,
+            config=GatewayConfig(multiplex_profiles=True, profile_routes=[]),
+        )
+        runner._profile_name_for_source = GatewayRunner._profile_name_for_source.__get__(runner)
+        source = SessionSource(platform=Platform.WHATSAPP, chat_id="111@g.us")
+        assert runner._profile_name_for_source(source) == "team"
+
+        config_path.write_text("profile_routes: []\n", encoding="utf-8")
+        bumped = config_path.stat().st_mtime_ns + 1_000_000
+        os.utime(config_path, ns=(bumped, bumped))
+        assert runner._profile_name_for_source(source) is None

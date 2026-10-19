@@ -590,8 +590,16 @@ export const api = {
     fetchJSON<ModelsAnalyticsResponse>(
       appendProfileParam(`/api/analytics/models?days=${days}`, profile),
     ),
-  getConfig: (profile = getManagementProfile()) =>
-    fetchJSON<Record<string, unknown>>(appendProfileParam("/api/config", profile)),
+  getConfig: (
+    profile = getManagementProfile(),
+    options?: { includeDefaults?: boolean },
+  ) => {
+    const base =
+      options?.includeDefaults === false
+        ? "/api/config?include_defaults=false"
+        : "/api/config";
+    return fetchJSON<Record<string, unknown>>(appendProfileParam(base, profile));
+  },
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
   getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
   getModelInfo: (profile = getManagementProfile()) =>

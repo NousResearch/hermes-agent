@@ -1,10 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  extractProfileRoutes,
   formatProfileRouteOption,
   formatWhatsAppLastSeen,
   mergeWhatsAppProfileRoutes,
+  multiplexProfilesFlag,
   persistWhatsAppProfileRoutes,
+  profileRoutesSavePartial,
   unassignedWhatsAppChats,
   validateWhatsAppRouteChatId,
   whatsappChatLabel,
@@ -99,6 +102,64 @@ describe("whatsapp chat labels", () => {
   it("formats last seen as a local timestamp", () => {
     const formatted = formatWhatsAppLastSeen(Date.UTC(2026, 8, 18, 17, 5) / 1000);
     expect(formatted).toMatch(/^2026-09-18 \d{2}:\d{2}$/);
+  });
+});
+
+describe("profile route location", () => {
+  const whatsapp = [
+    { name: "wa-group", platform: "whatsapp" as const, chat_id: "120363@g.us", profile: "team" },
+  ];
+
+  it("uses a top-level list even when it is empty and the nested list is not", () => {
+    const config = {
+      profile_routes: [],
+      gateway: {
+        profile_routes: [
+          { name: "hidden", platform: "whatsapp", chat_id: "1@g.us", profile: "acme" },
+        ],
+      },
+    };
+    expect(extractProfileRoutes(config)).toEqual([]);
+    expect(profileRoutesSavePartial(config, whatsapp)).toEqual({
+      profile_routes: whatsapp,
+      gateway: {
+        profile_routes: [
+          { name: "hidden", platform: "whatsapp", chat_id: "1@g.us", profile: "acme" },
+          ...whatsapp,
+        ],
+      },
+    });
+  });
+
+  it("keeps non-whatsapp rows in each list that already exists", () => {
+    const config = {
+      profile_routes: [{ name: "discord-main", platform: "discord", guild_id: "1", profile: "acme" }],
+      gateway: {
+        profile_routes: [{ name: "tg", platform: "telegram", chat_id: "-100", profile: "team" }],
+      },
+    };
+    expect(extractProfileRoutes(config)).toEqual(config.profile_routes);
+    const partial = profileRoutesSavePartial(config, whatsapp);
+    expect(partial.profile_routes).toEqual([...config.profile_routes, ...whatsapp]);
+    expect((partial.gateway as { profile_routes: unknown[] }).profile_routes).toEqual([
+      ...config.gateway.profile_routes,
+      ...whatsapp,
+    ]);
+  });
+
+  it("writes the nested list when the file has neither", () => {
+    expect(profileRoutesSavePartial({}, whatsapp)).toEqual({
+      gateway: { profile_routes: whatsapp },
+    });
+  });
+
+  it("reads the multiplex flag from the raw file, not a missing key", () => {
+    expect(multiplexProfilesFlag({})).toBeNull();
+    expect(multiplexProfilesFlag({ multiplex_profiles: false })).toBe(false);
+    expect(multiplexProfilesFlag({ gateway: { multiplex_profiles: true } })).toBe(true);
+    expect(multiplexProfilesFlag({ multiplex_profiles: false, gateway: { multiplex_profiles: true } })).toBe(
+      false,
+    );
   });
 });
 

@@ -13,15 +13,58 @@ export function resolveHostProfileName(profiles: ProfileInfo[]): string {
   return host?.name ?? "default";
 }
 
-export function extractProfileRoutes(config: Record<string, unknown>): unknown[] {
+function gatewaySection(config: Record<string, unknown>): Record<string, unknown> | null {
   const gateway = config.gateway;
-  if (gateway && typeof gateway === "object" && !Array.isArray(gateway)) {
-    const routes = (gateway as Record<string, unknown>).profile_routes;
-    if (Array.isArray(routes)) return routes;
-  }
-  const top = config.profile_routes;
-  if (Array.isArray(top)) return top;
+  if (!gateway || typeof gateway !== "object" || Array.isArray(gateway)) return null;
+  return gateway as Record<string, unknown>;
+}
+
+/** ``null`` when the key is absent or null. A present non-list occupies the slot as ``[]``. */
+function ownList(record: Record<string, unknown>, key: string): unknown[] | null {
+  if (!Object.prototype.hasOwnProperty.call(record, key)) return null;
+  const value = record[key];
+  if (value == null) return null;
+  return Array.isArray(value) ? value : [];
+}
+
+/**
+ * Lists the gateway loader actually uses.
+ *
+ * A present top-level ``profile_routes`` wins even when it is ``[]``. The nested
+ * ``gateway.profile_routes`` list is used only when the top-level key is absent.
+ * A defaults-merged config always contains the nested empty list, so callers must
+ * pass the raw file (``include_defaults=false``).
+ */
+export function profileRouteLists(config: Record<string, unknown>): {
+  top: unknown[] | null;
+  nested: unknown[] | null;
+} {
+  return {
+    top: ownList(config, "profile_routes"),
+    nested: (() => {
+      const gateway = gatewaySection(config);
+      return gateway ? ownList(gateway, "profile_routes") : null;
+    })(),
+  };
+}
+
+export function extractProfileRoutes(config: Record<string, unknown>): unknown[] {
+  const { top, nested } = profileRouteLists(config);
+  if (top !== null) return top;
+  if (nested !== null) return nested;
   return [];
+}
+
+/** ``true`` / ``false`` when the raw file sets the flag, ``null`` when it does not. */
+export function multiplexProfilesFlag(config: Record<string, unknown>): boolean | null {
+  if (Object.prototype.hasOwnProperty.call(config, "multiplex_profiles")) {
+    return Boolean(config.multiplex_profiles);
+  }
+  const gateway = gatewaySection(config);
+  if (gateway && Object.prototype.hasOwnProperty.call(gateway, "multiplex_profiles")) {
+    return Boolean(gateway.multiplex_profiles);
+  }
+  return null;
 }
 
 export function isWhatsAppProfileRoute(route: unknown): route is Record<string, unknown> {
@@ -200,14 +243,38 @@ export interface ProfileRoutesPersistence {
   saveConfig: (partial: Record<string, unknown>, hostProfile: string) => Promise<unknown>;
 }
 
-/** Writes only gateway.profile_routes on the host profile config. Does not restart the gateway. */
+/**
+ * Partial PUT body. Each list that already exists is updated on its own so a
+ * non-WhatsApp row in the other list survives. Top-level wins at read time, so
+ * a nested-only write would be ignored while a top-level key is present.
+ * With neither list, the nested form is what ``hermes config set`` writes.
+ */
+export function profileRoutesSavePartial(
+  config: Record<string, unknown>,
+  whatsappRoutes: WhatsAppProfileRouteRow[],
+): Record<string, unknown> {
+  const { top, nested } = profileRouteLists(config);
+  const partial: Record<string, unknown> = {};
+  if (top !== null) {
+    partial.profile_routes = mergeWhatsAppProfileRoutes(top, whatsappRoutes);
+  }
+  if (nested !== null) {
+    partial.gateway = {
+      profile_routes: mergeWhatsAppProfileRoutes(nested, whatsappRoutes),
+    };
+  }
+  if (top === null && nested === null) {
+    partial.gateway = { profile_routes: [...whatsappRoutes] };
+  }
+  return partial;
+}
+
+/** Writes the route lists the gateway loader reads. Does not restart the gateway. */
 export async function persistWhatsAppProfileRoutes(
   deps: ProfileRoutesPersistence,
   hostProfile: string,
   whatsappRoutes: WhatsAppProfileRouteRow[],
 ): Promise<void> {
   const config = await deps.getConfig(hostProfile);
-  const existing = extractProfileRoutes(config);
-  const merged = mergeWhatsAppProfileRoutes(existing, whatsappRoutes);
-  await deps.saveConfig({ gateway: { profile_routes: merged } }, hostProfile);
+  await deps.saveConfig(profileRoutesSavePartial(config, whatsappRoutes), hostProfile);
 }

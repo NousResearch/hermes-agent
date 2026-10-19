@@ -5,6 +5,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from hermes_cli.whatsapp_seen_chats import (
     bridge_chats_for_editor,
@@ -187,6 +188,26 @@ class WhatsAppSeenChatsTest(unittest.TestCase):
             raise AssertionError("disconnected bridge must not be queried per chat")
 
         self.assertEqual(bridge_chats_for_editor(["120363@g.us"], [], lookup), [])
+
+    def test_alias_prune_failure_still_lists_chats(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            (home / "channel_directory.json").write_text(
+                json.dumps({
+                    "platforms": {
+                        "whatsapp": [
+                            {"id": "120363@g.us", "name": "Job Quest", "type": "group"},
+                        ]
+                    }
+                }),
+                encoding="utf-8",
+            )
+            with mock.patch(
+                "hermes_cli.whatsapp_seen_chats.prune_message_title_aliases",
+                side_effect=OSError("read-only"),
+            ):
+                chats = collect_whatsapp_seen_chats([home])
+        self.assertEqual([chat["chat_id"] for chat in chats], ["120363@g.us"])
 
 
 if __name__ == "__main__":

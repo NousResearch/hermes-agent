@@ -8,11 +8,14 @@ or contact name without asking the operator to paste one.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Iterable, Optional
+
+logger = logging.getLogger(__name__)
 
 
 def whatsapp_chat_kind(chat_id: str, chat_type: Optional[str] = None) -> str:
@@ -358,7 +361,10 @@ def collect_whatsapp_seen_chats(
         _chats_from_sessions(path, found, blocked_titles)
     _drop_message_titles(found, blocked_titles)
     for path in home_paths:
-        prune_message_title_aliases(path, blocked_titles)
+        try:
+            prune_message_title_aliases(path, blocked_titles)
+        except OSError:
+            logger.warning("Could not prune WhatsApp chat aliases in %s", path, exc_info=True)
     if bridge_chats:
         _apply_bridge_chats(found, bridge_chats)
     chats = list(found.values())

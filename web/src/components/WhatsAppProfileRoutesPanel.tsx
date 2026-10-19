@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Pencil, Plus, RefreshCw, Save, Trash2, X } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
+import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
@@ -14,6 +15,7 @@ import {
   extractProfileRoutes,
   formatProfileRouteOption,
   formatWhatsAppLastSeen,
+  multiplexProfilesFlag,
   persistWhatsAppProfileRoutes,
   resolveHostProfileName,
   unassignedWhatsAppChats,
@@ -42,6 +44,7 @@ export function WhatsAppProfileRoutesPanel({
   const copy = t.channelsPage?.whatsappRoutes;
 
   const [hostProfile, setHostProfile] = useState("default");
+  const [multiplexFlag, setMultiplexFlag] = useState<boolean | null>(null);
   const [profileNames, setProfileNames] = useState<string[]>([]);
   const [routes, setRoutes] = useState<WhatsAppProfileRouteRow[]>([]);
   const [seenChats, setSeenChats] = useState<WhatsAppSeenChatView[]>([]);
@@ -82,9 +85,10 @@ export function WhatsAppProfileRoutesPanel({
       setHostProfile(host);
       setProfileNames(profiles.map((p) => p.name));
       const [config, seen] = await Promise.all([
-        api.getConfig(host),
+        api.getConfig(host, { includeDefaults: false }),
         api.getWhatsAppSeenChats().catch(() => ({ chats: [] as WhatsAppSeenChatView[] })),
       ]);
+      setMultiplexFlag(multiplexProfilesFlag(config));
       setRoutes(whatsappProfileRoutesFromList(extractProfileRoutes(config)));
       setSeenChats(seen.chats ?? []);
     } catch (e) {
@@ -114,9 +118,10 @@ export function WhatsAppProfileRoutesPanel({
       const next = seen.chats ?? [];
       setSeenChats(next);
       const open = unassignedWhatsAppChats(next, routes);
-      setDraftChatId((current) =>
-        open.some((chat) => chat.chat_id === current) ? current : (open[0]?.chat_id ?? ""),
-      );
+      setDraftChatId((current) => {
+        if (next.length === 0) return current;
+        return open.some((chat) => chat.chat_id === current) ? current : (open[0]?.chat_id ?? "");
+      });
     } catch (e) {
       showToast(
         copy?.refreshChatsFailed ?? `Could not refresh WhatsApp chats: ${errorMessage(e)}`,
@@ -151,6 +156,7 @@ export function WhatsAppProfileRoutesPanel({
     if (chatErr) errors.chat_id = chatErr;
     else if (
       modal?.mode === "add" &&
+      seenChats.length > 0 &&
       !unassignedChats.some((chat) => chat.chat_id === draftChatId)
     ) {
       errors.chat_id =
@@ -211,7 +217,7 @@ export function WhatsAppProfileRoutesPanel({
     try {
       await persistWhatsAppProfileRoutes(
         {
-          getConfig: (profile) => api.getConfig(profile),
+          getConfig: (profile) => api.getConfig(profile, { includeDefaults: false }),
           saveConfig: (partial, profile) => api.saveConfig(partial, profile),
         },
         hostProfile,
@@ -219,7 +225,7 @@ export function WhatsAppProfileRoutesPanel({
       );
       showToast(
         copy?.saved ??
-          "Routes saved. They take effect the next time the gateway process starts.",
+          "Routes saved. They apply on the next inbound message.",
         "success",
       );
       await load();
@@ -244,7 +250,13 @@ export function WhatsAppProfileRoutesPanel({
           {(copy?.hostProfileLabel ?? "Host profile")}:{" "}
           <code className="font-courier">{hostProfile}</code>
           {" · "}
-          {copy?.multiplexOn ?? "Multiplex routing is on (gateway.multiplex_profiles)."}
+          {multiplexFlag === false
+            ? (copy?.multiplexOff ??
+              "Multiplex routing is off. Saved routes apply once gateway.multiplex_profiles is on.")
+            : multiplexFlag === true
+              ? (copy?.multiplexOn ?? "Multiplex routing is on (gateway.multiplex_profiles).")
+              : (copy?.multiplexUnset ??
+                "gateway.multiplex_profiles is not set in this config. The gateway decides at startup.")}
         </p>
         {viewingSecondary && (
           <p className="text-xs text-muted-foreground">
@@ -276,7 +288,7 @@ export function WhatsAppProfileRoutesPanel({
                   <tr>
                     <td colSpan={5} className="py-4 text-muted-foreground">
                       {copy?.empty ??
-                        "No WhatsApp routes yet. Add a chat the bridge has already seen."}
+                        "No WhatsApp routes yet. Add a chat, or enter its id if the bridge has not listed it."}
                     </td>
                   </tr>
                 ) : (
@@ -387,7 +399,7 @@ export function WhatsAppProfileRoutesPanel({
                   : (copy?.modalEditTitle ?? "Edit WhatsApp route")}
               </h2>
             </header>
-            <div className="grid gap-4 overflow-y-auto p-5">
+            <div className="grid gap-4 overflow-visible p-5">
               <div className="grid gap-1.5">
                 <Label htmlFor="wa-route-chat">{copy?.fieldChat ?? "Chat"} *</Label>
                 {modal.mode === "edit" ? (
@@ -398,6 +410,24 @@ export function WhatsAppProfileRoutesPanel({
                       seenById.get(draftChatId)?.kind,
                     )}
                   </p>
+                ) : seenChats.length === 0 ? (
+                  <Input
+                    id="wa-route-chat"
+                    value={draftChatId}
+                    placeholder={
+                      copy?.fieldChatManual ??
+                      "Group JID (…@g.us), phone number, or user JID"
+                    }
+                    onChange={(event) => {
+                      setDraftChatId(event.target.value);
+                      setFieldErrors((prev) => {
+                        if (!prev.chat_id) return prev;
+                        const next = { ...prev };
+                        delete next.chat_id;
+                        return next;
+                      });
+                    }}
+                  />
                 ) : unassignedChats.length === 0 ? (
                   <p id="wa-route-chat" className="text-xs text-muted-foreground">
                     {copy?.fieldChatEmpty ??
@@ -480,7 +510,11 @@ export function WhatsAppProfileRoutesPanel({
                     size="sm"
                     className="uppercase"
                     onClick={applyModal}
-                    disabled={modal.mode === "add" && unassignedChats.length === 0}
+                    disabled={
+                      modal.mode === "add" &&
+                      seenChats.length > 0 &&
+                      unassignedChats.length === 0
+                    }
                   >
                     {copy?.modalApply ?? "Apply"}
                   </Button>

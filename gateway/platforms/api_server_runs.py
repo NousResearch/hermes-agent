@@ -688,13 +688,16 @@ async def _admit_run_to_authority(
     from gateway.session_api_turn import admit_api_turn_async
     from gateway.session_contract import SessionRef
     from hermes_state_runtime import RuntimeStoreError
+    claimed_ids: list[int] = []
     try:
         with self._profile_scope(launch.request_profile):
+            if launch.fold_deliveries:
+                claimed_ids = await _fold_caller_history_deliveries(self, launch)
             launch.admission = await admit_api_turn_async(self, user_message=launch.user_message,
-                conversation_history=launch.conversation_history, active_run_id=run_id,
+                conversation_history=launch.conversation_history, request_id=run_id,
                 run_owner_scope=self._run_owners[run_id],
                 turn_author=launch.turn_author,
-                history_from_session=session_history_delivery,
+                history_from_session=session_history_delivery and not launch.fold_deliveries,
                 session_history_delivery='1' if session_history_delivery else '',
                 bind_declared_conversation=_declared_selected, walked_from=launch.walked_from,
                 **launch.agent_kwargs)
@@ -705,6 +708,10 @@ async def _admit_run_to_authority(
         if owned is not None:
             launch.admission = (owned[0], SessionRef(owned[0].profile_id, owned[1]['target_session_id']), owned[1])
             return None
+        if claimed_ids:
+            with self._profile_scope(launch.request_profile), suppress(Exception):
+                if (db := await self._ensure_session_db_async()) is not None:
+                    await asyncio.to_thread(db.release_caller_history_deliveries, launch.session_id, claimed_ids)
         # A refused admission owns no run: drop every reservation so an exact
         # retry is refused again instead of replaying a run nobody executes.
         _forget_run(
@@ -1004,18 +1011,18 @@ async def _execute_run_via_live_owner(self, run: _RunLaunch, home, record: dict[
         _retire_live_run(self, run_id)
 
 
-async def _fold_caller_history_deliveries(self, run: _RunLaunch) -> None:
+async def _fold_caller_history_deliveries(self, run: _RunLaunch) -> list[int]:
     """Fold detached delegation rows this session has not handed a caller-history run yet into
     ``run.conversation_history`` (claimed exactly once; rows the caller already carries are
     claimed without re-adding). Consecutive user turns are merged by the shared repair pass."""
     db = await self._ensure_session_db_async()
     if db is None:
-        return
+        return []
     try:
         rows = await asyncio.to_thread(db.claim_caller_history_deliveries, run.session_id)
     except Exception as exc:
-        logger.warning("Failed to claim delegation deliveries for %s: %s", run.session_id, exc)
-        return
+        logger.warning("Failed to claim delegation deliveries for %s: %s", run.session_id, exc, exc_info=True)
+        return []
     carried = {m.get("content") for m in run.conversation_history if m.get("role") == "user"}
     folded = [{"role": "user", "content": row["content"]} for row in rows
               if isinstance(row["content"], str) and row["content"] not in carried]
@@ -1024,6 +1031,7 @@ async def _fold_caller_history_deliveries(self, run: _RunLaunch) -> None:
         history = [*run.conversation_history, *folded]
         repair_message_sequence(None, history)
         run.conversation_history = history
+    return [int(row["id"]) for row in rows if row.get("id") is not None]
 
 
 async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:

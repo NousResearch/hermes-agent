@@ -165,3 +165,43 @@ async def test_caller_history_fold_and_reservation_deliver_single_copy(tmp_path)
         assert db.reserve_caller_history_deliveries("s1", "webui", ttl_seconds=60) == []
     finally:
         db.close()
+
+
+@pytest.mark.asyncio
+async def test_authority_admitted_run_keeps_caller_history_and_folds_or_releases_deliveries(
+    api, owner, monkeypatch,
+):
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+    from gateway.platforms import api_server_runs
+    from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+
+    from gateway.session_api import bind_api_session
+
+    async def no_execution(*_a, **_kw):
+        pass
+
+    monkeypatch.setattr(api_server_runs, "_execute_run", no_execution)
+    bind_api_session(owner, "s-auth")
+    await persist_delegation_delivery(api, text="DELIV-AUTH", session_id="s-auth",
+                                      evt={"type": "async_delegation", "delegation_id": "d-auth"})
+    history = [{"role": "user", "content": "CALLER"}, {"role": "assistant", "content": "REPLY"}]
+    app = web.Application()
+    app.router.add_post("/v1/runs", api._handle_runs)
+    import gateway.session_api_turn as sat_mod
+    orig_admit_async = sat_mod.admit_api_turn_async
+    async with TestClient(TestServer(app)) as client:
+        monkeypatch.setattr(
+            sat_mod, "admit_api_turn_async",
+            lambda *_a, **_k: (_ for _ in ()).throw(RuntimeStoreError("storage_unavailable")),
+        )
+        r_fail = await client.post("/v1/runs", json={
+            "session_id": "s-auth", "input": "NEXT", "conversation_history": history})
+        assert r_fail.status == 503
+        monkeypatch.setattr(sat_mod, "admit_api_turn_async", orig_admit_async)
+        r_ok = await client.post("/v1/runs", json={
+            "session_id": "s-auth", "input": "NEXT", "conversation_history": history})
+        assert r_ok.status == 202
+    row, = list_session_admissions(owner.db, session_id="s-auth")
+    stored = row["payload"]["api_turn_v1"]["history"]
+    assert stored is not None and any("DELIV-AUTH" in m["content"] for m in stored)

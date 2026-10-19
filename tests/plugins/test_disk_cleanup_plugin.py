@@ -16,8 +16,10 @@ import importlib
 import itertools
 import json
 import os
+import shutil
 import sys
-from datetime import datetime, timedelta, timezone
+import tempfile
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 
 import pytest
@@ -98,9 +100,75 @@ class TestIsSafePath:
         p.write_text("x")
         assert dg.is_safe_path(p) is True
 
+    @pytest.mark.platforms("macos")
+    def test_track_accepts_tmp_hermes_path_after_platform_resolution(self, _isolate_env):
+        dg = _load_lib()
+        temporary = Path(tempfile.mkdtemp(prefix="hermes-disk-cleanup-", dir="/tmp"))
+        try:
+            assert dg.track(str(temporary), "temp", silent=True) is True
+        finally:
+            shutil.rmtree(temporary)
+
     def test_rejects_outside_hermes_home(self, _isolate_env):
         dg = _load_lib()
         assert dg.is_safe_path(Path("/etc/passwd")) is False
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX /tmp path contract")
+    def test_rejects_tmp_traversal_and_near_prefixes(self, _isolate_env):
+        dg = _load_lib()
+        assert dg.is_safe_path(Path("/tmp/hermes-safe/../not-hermes/file")) is False
+        assert dg.is_safe_path(Path("/tmp-near/hermes-safe/file")) is False
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink contract")
+    def test_rejects_final_and_nested_symlink_escapes(self, _isolate_env):
+        dg = _load_lib()
+        temporary = Path(tempfile.mkdtemp(prefix="hermes-disk-cleanup-", dir="/tmp"))
+        outside_dir = Path(tempfile.mkdtemp(prefix="disk-cleanup-outside-", dir="/tmp"))
+        outside_file = outside_dir / "file.txt"
+        outside_file.write_text("outside", encoding="utf-8")
+        try:
+            final_link = temporary / "final-link"
+            final_link.symlink_to(outside_file)
+            nested_link = temporary / "nested-link"
+            nested_link.symlink_to(outside_dir, target_is_directory=True)
+
+            assert dg.is_safe_path(final_link) is False
+            assert dg.is_safe_path(nested_link / outside_file.name) is False
+        finally:
+            shutil.rmtree(temporary)
+            shutil.rmtree(outside_dir)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink contract")
+    def test_symlink_loop_fails_closed(self, _isolate_env, monkeypatch, tmp_path):
+        """Resolution failures must fail closed, never raise into the caller.
+
+        Non-strict ``Path.resolve()`` does not raise on a symlink loop on
+        every platform (ELOOP only surfaces under strict=True), so the loop
+        itself may resolve to a best-effort path. The fail-closed contract
+        added with #98854 is about resolution *errors*: when resolve()
+        raises OSError/RuntimeError, is_safe_path rejects and track()
+        declines without propagating.
+        """
+        dg = _load_lib()
+        loop_root = tmp_path / "loop"
+        loop_root.mkdir()
+        first = loop_root / "first"
+        second = loop_root / "second"
+        first.symlink_to(second)
+        second.symlink_to(first)
+
+        # Baseline: a loop resolves without raising, so both calls return a
+        # bool — never an exception into the plugin hook.
+        assert isinstance(dg.is_safe_path(first), bool)
+        assert isinstance(dg.track(str(first), "temp", silent=True), bool)
+
+        # Resolution errors are rejected fail-closed.
+        def _raise_resolve(self):
+            raise OSError("ELOOP: too many levels of symbolic links")
+
+        monkeypatch.setattr(Path, "resolve", _raise_resolve)
+        assert dg.is_safe_path(first) is False
+        assert dg.track(str(first), "temp", silent=True) is False
 
 
 class TestGuessCategory:
@@ -210,7 +278,7 @@ class TestProtectedDirsNeverRmtreed:
         old_file.write_text("x")
         assert dg.guess_category(cache) is None, "the cache dir itself is never tracked"
         assert dg.guess_category(old_file) == "temp", "files under cache/ still age out as temp"
-        old_ts = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()
+        old_ts = (datetime.now(UTC) - timedelta(days=8)).isoformat()
         dg.save_tracked([
             {"path": str(cache), "category": "temp", "timestamp": old_ts, "size": 0},
             {"path": str(old_file), "category": "temp", "timestamp": old_ts, "size": 1},
@@ -233,7 +301,7 @@ class TestProtectedDirsNeverRmtreed:
         assert dg.guess_category(att) is None
         # A stale pre-fix entry must be dropped by re-validation instead of deleted.
         dg.save_tracked([{"path": str(att), "category": "test",
-                          "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
+                          "timestamp": datetime.now(UTC).isoformat(), "size": 1}])
         # A kanban file the call itself CREATES must not be tracked either.
         new_att = att.with_name("test_new.sh")
         _run_tool(pi, "write_file", {"path": str(new_att), "content": "x"},
@@ -267,7 +335,7 @@ class TestGitWorktreeFilesNeverCleaned:
         f.write_text("x")
         assert dg.guess_category(f) is None
         dg.save_tracked([{"path": str(f), "category": "test",
-                          "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
+                          "timestamp": datetime.now(UTC).isoformat(), "size": 1}])
         result = dg.quick()
         assert f.exists(), "git-owned test files must never be auto-deleted"
         assert result["deleted"] == 0
@@ -284,7 +352,7 @@ class TestGitWorktreeFilesNeverCleaned:
         scratch.write_text("x")
         assert dg.guess_category(scratch) == "test"
         dg.save_tracked([{"path": str(scratch), "category": "test",
-                          "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
+                          "timestamp": datetime.now(UTC).isoformat(), "size": 1}])
         result = dg.quick()
         assert not scratch.exists()
         assert result["deleted"] == 1
@@ -322,7 +390,7 @@ class TestGitWorktreeFilesNeverCleaned:
 
         # A stale pre-fix entry is dropped by quick()'s re-validation, not deleted, while
         # untracked scratch beside it in the same repo is still cleaned.
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         dg.save_tracked([{"path": str(p), "category": "test", "timestamp": now, "size": 1}
                          for p in (tracked, scratch)])
         result = dg.quick()
@@ -414,8 +482,8 @@ class TestStaleCronEntryMigration:
         run_md.write_text("x")
 
         # Old enough to be deleted (>14 days)
-        from datetime import datetime, timezone, timedelta
-        old_ts = (datetime.now(timezone.utc) - timedelta(days=20)).isoformat()
+        from datetime import datetime, timedelta
+        old_ts = (datetime.now(UTC) - timedelta(days=20)).isoformat()
 
         tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
         tracked_file.parent.mkdir(parents=True, exist_ok=True)
@@ -480,7 +548,7 @@ class TestDryRun:
         big.write_bytes(b"z" * 10)
         dg.track(str(test_f), "test", silent=True)
         dg.track(str(big), "other", silent=True)
-        auto, prompt = dg.dry_run()
+        auto, _prompt = dg.dry_run()
         # test → auto, other → neither (doesn't hit any rule)
         assert any(i["path"] == str(test_f) for i in auto)
 

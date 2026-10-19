@@ -16,7 +16,7 @@ import time
 
 import pytest
 
-import agent.tool_executor as tool_executor
+from agent import tool_executor
 from agent.tool_executor import (
     _ManagedToolResult,
     _ToolCancelledResult,

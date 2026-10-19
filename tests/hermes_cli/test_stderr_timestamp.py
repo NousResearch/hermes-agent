@@ -93,6 +93,7 @@ def test_wrapper_timestamps_child_stdout_into_its_own_stdout(tmp_path):
              sys.executable, "-c", code],
             stdout=out,
             timeout=30,
+            check=False,
         ).returncode
 
     assert rc == 7

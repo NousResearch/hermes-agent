@@ -8,6 +8,8 @@ same way the `hermes model` CLI picker does.
 from threading import Event
 from time import monotonic
 
+import pytest
+
 import hermes_cli.inventory as inv
 import hermes_cli.models as models_mod
 from hermes_cli import models_pricing
@@ -436,6 +438,136 @@ def test_cached_only_pricing_returns_a_warm_value_without_fetching(monkeypatch):
     ) == expected
 
 
+def test_custom_provider_with_proven_upstream_reuses_canonical_pricing_source(monkeypatch):
+    """A custom row borrows a priced source only when its endpoint proves that source."""
+    expected = {"vendor/model": {"prompt": "0.000001", "completion": "0.000002"}}
+    fetch_calls = []
+
+    def fetcher(*, force_refresh=False):
+        fetch_calls.append(force_refresh)
+        return expected
+
+    cached_calls = []
+    monkeypatch.setitem(models_pricing._PRICING_FETCHERS, "openrouter", fetcher)
+    monkeypatch.setattr(
+        models_pricing,
+        "_cached_only_pricing",
+        lambda provider: cached_calls.append(provider) or expected,
+    )
+
+    assert models_pricing.get_pricing_for_provider(
+        "custom:openrouter", base_url="https://openrouter.ai/api/v1"
+    ) == expected
+    assert fetch_calls == [False]
+    assert models_pricing.get_pricing_for_provider(
+        "custom:unrelated-name", base_url="https://openrouter.ai/api/v1", cached_only=True
+    ) == expected
+    assert cached_calls == ["openrouter"]
+    assert (
+        models_pricing.pricing_cache_scope("custom:unrelated-name", base_url="https://openrouter.ai/api/v1")
+        == models_pricing.pricing_cache_scope("openrouter")
+    )
+
+
+def test_custom_provider_pricing_fails_closed_without_a_proven_upstream(monkeypatch):
+    """A shadowed canonical slug or empty suffix never leaks canonical prices to a proxy."""
+    monkeypatch.setitem(
+        models_pricing._PRICING_FETCHERS,
+        "openrouter",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("custom proxy fetched OpenRouter pricing")),
+    )
+    monkeypatch.setattr(models_pricing, "_cached_only_pricing",
+        lambda _provider: (_ for _ in ()).throw(AssertionError("custom proxy read canonical cache")),
+    )
+
+    assert models_pricing.get_pricing_for_provider(
+        "custom:openrouter", base_url="https://proxy.example/v1"
+    ) == {}
+    assert models_pricing.get_pricing_for_provider("custom:") == {}
+    assert models_pricing.pricing_cache_scope("custom:openrouter", base_url="https://proxy.example/v1") == ""
+
+
+@pytest.mark.parametrize("base_url", [
+    "https://openrouter.ai.attacker.invalid/v1",
+    "https://not-openrouter.ai/v1",
+    "https://ai-gateway.vercel.sh.attacker.invalid/v1",
+])
+def test_custom_provider_pricing_rejects_lookalike_upstream_hosts(monkeypatch, base_url):
+    """A hostname merely containing a priced provider's hostname is still an untrusted proxy."""
+    monkeypatch.setitem(
+        models_pricing._PRICING_FETCHERS,
+        "openrouter",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("lookalike host fetched OpenRouter pricing")),
+    )
+
+    assert models_pricing.get_pricing_for_provider(
+        "custom:any-name", base_url=base_url
+    ) == {}
+
+
+def test_custom_provider_alias_uses_proven_canonical_upstream(monkeypatch):
+    """A Vercel-named row on the real AI Gateway uses its canonical pricing cache."""
+    expected = {"vendor/model": {"prompt": "0.000001", "completion": "0.000002"}}
+    monkeypatch.setattr(models_pricing, "_cached_only_pricing", lambda provider: expected if provider == "ai-gateway" else {})
+
+    assert models_pricing.get_pricing_for_provider(
+        "custom:vercel", base_url="https://ai-gateway.vercel.sh/v1", cached_only=True
+    ) == expected
+    assert (
+        models_pricing.pricing_cache_scope("custom:vercel", base_url="https://ai-gateway.vercel.sh/v1")
+        == models_pricing.pricing_cache_scope("ai-gateway")
+    )
+
+
+def test_apply_pricing_uses_custom_row_endpoint_identity(monkeypatch):
+    """The picker prices an actual OpenRouter row but leaves a canonical-named proxy unpriced."""
+    expected = {"vendor/model": {"prompt": "0.000003", "completion": "0.000015"}}
+    calls = []
+
+    def pricing(provider, **kwargs):
+        calls.append((provider, kwargs))
+        return expected if kwargs.get("base_url") == "https://openrouter.ai/api/v1" else {}
+
+    monkeypatch.setattr(models_pricing, "get_pricing_for_provider", pricing)
+    rows = [
+        {"slug": "custom:openrouter", "api_url": "https://openrouter.ai/api/v1", "models": ["vendor/model"]},
+        {"slug": "custom:openrouter", "api_url": "https://proxy.example/v1", "models": ["vendor/model"]},
+    ]
+
+    inv._apply_pricing(rows, cached_only=True)
+
+    assert rows[0]["pricing"]["vendor/model"] == {
+        "input": "$3.00", "output": "$15.00", "cache": None, "free": False,
+    }
+    assert "pricing" not in rows[1]
+    assert calls == [
+        ("custom:openrouter", {"base_url": "https://openrouter.ai/api/v1", "cached_only": True}),
+        ("custom:openrouter", {"base_url": "https://proxy.example/v1", "cached_only": True}),
+    ]
+
+
+def test_prewarm_cache_scope_uses_custom_row_endpoint_identity(monkeypatch):
+    """Prewarm resolves a custom row with the same endpoint evidence as pricing lookup."""
+    observed = []
+    monkeypatch.setattr(inv, "_pricing_prewarm_threads", {})
+    monkeypatch.setattr(
+        models_pricing,
+        "pricing_cache_scope",
+        lambda provider, **kwargs: observed.append((provider, kwargs)) or "openrouter-scope",
+    )
+    monkeypatch.setattr(inv, "_apply_pricing", lambda _rows: None)
+
+    thread = inv._prewarm_pricing_async([
+        {"slug": "custom:unrelated-name", "api_url": "https://openrouter.ai/api/v1", "models": ["vendor/model"]},
+    ])
+    thread.join(timeout=2)
+
+    assert observed == [(
+        "custom:unrelated-name",
+        {"base_url": "https://openrouter.ai/api/v1", "current_provider": "", "current_base_url": ""},
+    )]
+
+
 def test_cached_only_dynamic_pricing_is_profile_scoped(tmp_path, monkeypatch):
     """Alternating profiles read the endpoint each profile warmed."""
     from hermes_constants import (
@@ -474,5 +606,3 @@ def test_cached_only_dynamic_pricing_is_profile_scoped(tmp_path, monkeypatch):
     assert in_profile(tmp_path / "b", endpoint_b, cached_only=False) == expected_b
     assert in_profile(tmp_path / "a", endpoint_b, cached_only=True) == expected_a
     assert in_profile(tmp_path / "b", endpoint_a, cached_only=True) == expected_b
-
-

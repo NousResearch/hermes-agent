@@ -11,7 +11,10 @@ vi.mock('@/app/open-session', () => ({ openSession: vi.fn() }))
 vi.mock('@/components/pane-shell/tree/store', async () => {
   const { atom } = await import('nanostores')
 
+  // session-focus.ts (reached via the preview store) and the layout store
+  // read these at import time; a mock without them crashes before any test.
   return {
+    $activeTreeGroup: atom(null),
     $collapsedTreeSides: atom(new Set()),
     $hiddenTreePanes: atom(new Set()),
     $layoutTree: atom(null),
@@ -50,6 +53,13 @@ vi.mock('@/store/session', async () => {
     setResumeExhaustedSessionId: vi.fn()
   }
 })
+// The focused session is driven directly; everything else in session-focus
+// stays real.
+vi.mock('@/store/session-focus', async importOriginal => {
+  const { atom } = await import('nanostores')
+
+  return { ...(await importOriginal<Record<string, unknown>>()), $focusedStoredSessionId: atom(null) }
+})
 vi.mock('@/store/session-states', async () => {
   const { atom } = await import('nanostores')
 
@@ -58,7 +68,6 @@ vi.mock('@/store/session-states', async () => {
     $draftSessionIds: atom([]),
     $focusedRuntimeId: atom(null),
     $focusedSessionState: atom(null),
-    $focusedStoredSessionId: atom(null),
     $sessionTiles: atom([]),
     $sessionStates: atom({}),
     $stalledSessionIds: atom([]),
@@ -152,14 +161,10 @@ const {
   setShowAllProfiles
 } = await import('@/store/profile')
 
-const {
-  $focusedRuntimeId,
-  $focusedSessionState,
-  $focusedStoredSessionId,
-  $sessionStates,
-  $sessionTiles,
-  sessionTileDelegate
-} = await import('@/store/session-states')
+const { $focusedRuntimeId, $focusedSessionState, $sessionStates, $sessionTiles, sessionTileDelegate } =
+  await import('@/store/session-states')
+
+const { $focusedStoredSessionId } = await import('@/store/session-focus')
 
 const { dropTilesForProfile } = await import('@/store/session-states')
 
@@ -321,6 +326,7 @@ describe('connection-aware plugin host APIs', () => {
 
     vi.mocked(hermesApi)
       .mockResolvedValueOnce({ sessions: [{ id: 'bot-chat', profile: 'backend-worker', title: 'Bot Chat' }] })
+      .mockResolvedValueOnce({ exists: true, runtime_revision: 31, runtime_generation: 5 })
       .mockResolvedValueOnce({ ok: true, hidden: true })
 
     await expect(host.listPersistedSessions(route, { profile: 'backend-worker', limit: 200 })).resolves.toMatchObject({
@@ -338,14 +344,28 @@ describe('connection-aware plugin host APIs', () => {
       })
     )
     expect(hermesApi).toHaveBeenNthCalledWith(2, {
+      connectionId: 'source-a', path: '/api/sessions/bot-chat/mutation-snapshot?profile=backend-worker'
+    })
+    expect(hermesApi).toHaveBeenNthCalledWith(3, {
       connectionId: 'source-a',
       path: '/api/sessions/bot-chat',
       method: 'PATCH',
-      body: { hidden: true, profile: 'backend-worker' }
+      body: { hidden: true, profile: 'backend-worker', expected_revision: 31,
+        expected_generation: 5, request_id: expect.any(String) }
     })
     expect(vi.mocked(hermesApi).mock.calls.every(([request]) => !('profile' in request))).toBe(true)
     expect(requestGatewayForAgent).not.toHaveBeenCalled()
     expect(requestGatewayForProfile).not.toHaveBeenCalled()
+  })
+
+  it('keeps an unrouted persisted-session edit on the window primary instead of pinning it to this device', async () => {
+    vi.mocked(hermesApi)
+      .mockResolvedValueOnce({ exists: true, runtime_revision: 2, runtime_generation: 1 })
+      .mockResolvedValueOnce({ ok: true, hidden: true })
+
+    await host.setPersistedSessionHidden(null, { sessionId: 'remote-chat', profile: 'default', hidden: true })
+
+    expect(vi.mocked(hermesApi).mock.calls.map(([request]) => request.connectionId)).toEqual([null, null])
   })
 
   it('forwards an explicit timeout so long-running methods outlive the generic deadline', async () => {

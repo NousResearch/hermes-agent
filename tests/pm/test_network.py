@@ -5,7 +5,7 @@ import http.client
 import socket
 import ssl
 import urllib.error
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from email.message import Message
 from email.utils import format_datetime
 
@@ -70,11 +70,11 @@ def test_only_transient_failures_use_a_finite_retry_budget(error, retried):
     ("expired-date", 1),
 ])
 def test_retry_after_is_bounded_and_interruptible(monkeypatch, retry_after, minimum):
-    now = datetime(2020, 1, 1, tzinfo=timezone.utc).timestamp()
+    now = datetime(2020, 1, 1, tzinfo=UTC).timestamp()
     monkeypatch.setattr(network.time, "time", lambda: now)
     if retry_after in ("future-date", "expired-date"):
         offset = 12 if retry_after == "future-date" else -12
-        retry_after = format_datetime(datetime.fromtimestamp(now + offset, timezone.utc), usegmt=True)
+        retry_after = format_datetime(datetime.fromtimestamp(now + offset, UTC), usegmt=True)
     error = _http_error(503, retry_after)
     attempts = []
     waits = []
@@ -91,3 +91,26 @@ def test_retry_after_is_bounded_and_interruptible(monkeypatch, retry_after, mini
         network.retry_network(fail, wait=cancel)
     assert len(attempts) == len(waits) == 1
     assert minimum <= waits[0] <= network._MAX_DELAY
+
+
+@pytest.mark.parametrize("status,headers,cdn", [
+    pytest.param(403, {"Server": "Vercel", "x-vercel-mitigated": "deny"}, "Vercel", id="vercel-deny"),
+    pytest.param(429, {"Server": "Vercel", "x-vercel-mitigated": "challenge"}, "Vercel", id="vercel-challenge-429"),
+    pytest.param(403, {"Server": "cloudflare", "cf-mitigated": "challenge", "cf-cache-status": "DYNAMIC"},
+                 "Cloudflare", id="cloudflare-challenge"),
+    pytest.param(403, {"Server": "cloudflare"}, None, id="cloudflare-origin-not-r2"),
+    pytest.param(404, {"Server": "cloudflare"}, None, id="missing-object"),
+    pytest.param(403, {"Server": "AmazonS3"}, None, id="origin-403"),
+])
+def test_download_failure_names_only_a_cdn_firewall_refusal(status, headers, cdn):
+    from pm.downloader import DownloadTransportError
+
+    hdrs = Message()
+    for key, value in headers.items():
+        hdrs[key] = value
+    url = "https://mirror.example/x"
+    message = str(DownloadTransportError(url, urllib.error.HTTPError(url, status, "failed", hdrs, None)))
+    if cdn is None:
+        assert "CDN firewall" not in message
+    else:
+        assert f"mirror.example's CDN firewall ({cdn}) refused this network" in message, message

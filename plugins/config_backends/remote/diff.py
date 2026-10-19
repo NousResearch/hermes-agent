@@ -11,7 +11,7 @@ from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from .paths import Path, covers, encode
 
-Locks = Sequence[Tuple[Path, str]]
+Locks = Sequence[tuple[Path, str]]
 
 
 def json_equal(a: Any, b: Any) -> bool:
@@ -27,11 +27,11 @@ def json_equal(a: Any, b: Any) -> bool:
     return type(a) is type(b) and a == b
 
 
-def diff(base: Dict[str, Any], new: Dict[str, Any], prefix: Path = ()) -> Tuple[Dict[Path, Any], List[Path]]:
+def diff(base: dict[str, Any], new: dict[str, Any], prefix: Path = ()) -> tuple[dict[Path, Any], list[Path]]:
     """``(set, unset)`` turning ``base`` into ``new`` (§15.2 step 5). A changed list is one
     whole-list ``set`` (D8); a key equal to its base value is not sent."""
-    sets: Dict[Path, Any] = {}
-    unsets: List[Path] = []
+    sets: dict[Path, Any] = {}
+    unsets: list[Path] = []
     for key, value in new.items():
         p = prefix + (key,)
         if key not in base:
@@ -46,7 +46,7 @@ def diff(base: Dict[str, Any], new: Dict[str, Any], prefix: Path = ()) -> Tuple[
     return sets, unsets
 
 
-def intent_diff(base: Dict[str, Any], new: Dict[str, Any], prefix: Path = ()) -> Tuple[Dict[Path, Any], List[Path]]:
+def intent_diff(base: dict[str, Any], new: dict[str, Any], prefix: Path = ()) -> tuple[dict[Path, Any], list[Path]]:
     """:func:`diff` as a caller's *intent*: the key-level edit a write means, to be re-applied to a
     newer document after a CAS conflict (§15.3). A mapping the base did not hold as a mapping
     (absent, or a scalar) is expanded to its leaves: writing ``terminal.timeout`` into a profile
@@ -54,8 +54,8 @@ def intent_diff(base: Dict[str, Any], new: Dict[str, Any], prefix: Path = ()) ->
     the time the retry runs" — another writer's ``terminal.persistent`` must survive it. Only an
     empty mapping stays a whole value (there is no leaf to name); :func:`apply_intent` adds it
     without replacing a mapping that appeared meanwhile."""
-    sets: Dict[Path, Any] = {}
-    unsets: List[Path] = []
+    sets: dict[Path, Any] = {}
+    unsets: list[Path] = []
     for key, value in new.items():
         p = prefix + (key,)
         old = base.get(key, _ABSENT)
@@ -77,7 +77,7 @@ def intent_diff(base: Dict[str, Any], new: Dict[str, Any], prefix: Path = ()) ->
 _ABSENT = object()
 
 
-def apply_intent(doc: Dict[str, Any], sets: Dict[Path, Any], unsets: Sequence[Path]) -> None:
+def apply_intent(doc: dict[str, Any], sets: dict[Path, Any], unsets: Sequence[Path]) -> None:
     """Apply an :func:`intent_diff` edit to *doc* in place."""
     for p, v in sets.items():
         if isinstance(v, dict) and not v:
@@ -89,7 +89,7 @@ def apply_intent(doc: Dict[str, Any], sets: Dict[Path, Any], unsets: Sequence[Pa
         _pop_path(doc, p)
 
 
-def _set_path(doc: Dict[str, Any], path: Path, value: Any) -> None:
+def _set_path(doc: dict[str, Any], path: Path, value: Any) -> None:
     node = doc
     for seg in path[:-1]:
         if not isinstance(node.get(seg), dict):
@@ -98,7 +98,7 @@ def _set_path(doc: Dict[str, Any], path: Path, value: Any) -> None:
     node[path[-1]] = value
 
 
-def _pop_path(doc: Dict[str, Any], path: Path) -> bool:
+def _pop_path(doc: dict[str, Any], path: Path) -> bool:
     node: Any = doc
     for seg in path[:-1]:
         if not isinstance(node, dict) or not isinstance(node.get(seg), dict):
@@ -110,7 +110,7 @@ def _pop_path(doc: Dict[str, Any], path: Path) -> bool:
     return False
 
 
-def _get_path(doc: Dict[str, Any], path: Path) -> Tuple[bool, Any]:
+def _get_path(doc: dict[str, Any], path: Path) -> tuple[bool, Any]:
     node: Any = doc
     for seg in path:
         if not isinstance(node, dict) or seg not in node:
@@ -119,12 +119,12 @@ def _get_path(doc: Dict[str, Any], path: Path) -> Tuple[bool, Any]:
     return True, node
 
 
-def strip_locked(base: Dict[str, Any], new: Dict[str, Any], locks: Locks) -> Tuple[Dict[str, Any], Dict[str, Any], List[Path]]:
+def strip_locked(base: dict[str, Any], new: dict[str, Any], locks: Locks) -> tuple[dict[str, Any], dict[str, Any], list[Path]]:
     """Drop every locked path from BOTH documents (§15.2 step 1), so a bulk write neither sets
     nor unsets a key it may not touch. Returns the copies and the locked paths whose new value
     differed from the effective one (the ones the caller tried to change)."""
     base, new = copy.deepcopy(base), copy.deepcopy(new)
-    changed: List[Path] = []
+    changed: list[Path] = []
     for lock, _level in locks:
         in_base, base_val = _get_path(base, lock)
         in_new, new_val = _get_path(new, lock)
@@ -135,7 +135,7 @@ def strip_locked(base: Dict[str, Any], new: Dict[str, Any], locks: Locks) -> Tup
     return base, new, changed
 
 
-def _touched(path: Path, value: Any) -> Iterator[Tuple[Path, Any]]:
+def _touched(path: Path, value: Any) -> Iterator[tuple[Path, Any]]:
     """``(touched path, value written there)`` for ``set path = value`` (§6.4 rule 2): the path
     itself and every path inside ``value``, descending through objects only."""
     yield path, value
@@ -144,7 +144,7 @@ def _touched(path: Path, value: Any) -> Iterator[Tuple[Path, Any]]:
             yield from _touched(path + (k,), v)
 
 
-def write_check(sets: Dict[Path, Any], unsets: Sequence[Path], locks: Locks) -> Optional[Tuple[Path, str]]:
+def write_check(sets: dict[Path, Any], unsets: Sequence[Path], locks: Locks) -> Optional[tuple[Path, str]]:
     """The ``(lock path, level)`` that refuses this write (§6.4 rules 1-3), or None."""
     for p in unsets:
         for lock, level in locks:
@@ -162,5 +162,5 @@ def write_check(sets: Dict[Path, Any], unsets: Sequence[Path], locks: Locks) -> 
     return None
 
 
-def encode_changes(sets: Dict[Path, Any], unsets: Sequence[Path]) -> Tuple[Dict[str, Any], List[str]]:
+def encode_changes(sets: dict[Path, Any], unsets: Sequence[Path]) -> tuple[dict[str, Any], list[str]]:
     return {encode(p): v for p, v in sets.items()}, [encode(p) for p in unsets]

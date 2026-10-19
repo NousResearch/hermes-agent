@@ -41,11 +41,11 @@ class PlaneCredentialError(RuntimeError):
         self.retryable = retryable
 
 
-_IDP_CACHE: Dict[Tuple[str, str, str], Tuple[float, str]] = {}
+_IDP_CACHE: dict[tuple[str, str, str], tuple[float, str]] = {}
 _IDP_LOCK = threading.Lock()
 
 
-def _idp_env() -> Dict[str, str]:
+def _idp_env() -> dict[str, str]:
     return {k: os.environ.get(IDP_ENV_PREFIX + k.upper(), "").strip() for k in _IDP_KEYS}
 
 
@@ -63,12 +63,12 @@ def _nous_token(home: Path) -> str:
 
     try:
         from hermes_cli.auth import resolve_nous_access_token
-    except Exception as exc:  # noqa: BLE001 — an import failure is a broken install, not transient
+    except Exception as exc:
         raise PlaneCredentialError(f"cannot load the Nous auth module: {exc}", retryable=False) from exc
     token = set_hermes_home_override(home)  # auth.json is per profile home
     try:
         return resolve_nous_access_token()
-    except Exception as exc:  # noqa: BLE001 — AuthError and network errors alike
+    except Exception as exc:
         # A missing login or a revoked session needs a human; a refresh that hit the network can retry.
         fatal = bool(getattr(exc, "relogin_required", False)) or getattr(exc, "code", None) == "nous_auth_missing"
         raise PlaneCredentialError(
@@ -104,7 +104,7 @@ def _idp_token() -> str:
             payload = json.loads(resp.read().decode() or "{}")
     except CredentialDestinationError:
         raise
-    except Exception as exc:  # noqa: BLE001 — HTTP and network errors alike; the message has no secret
+    except Exception as exc:  # HTTP and network errors alike; the message has no secret
         raise PlaneCredentialError(f"IdP token request to {token_url} failed: {exc}", retryable=True) from exc
     access_token = payload.get("access_token") if isinstance(payload, dict) else None
     if not isinstance(access_token, str) or not access_token:

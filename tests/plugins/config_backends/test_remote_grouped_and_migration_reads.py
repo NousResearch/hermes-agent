@@ -40,7 +40,7 @@ def plane(tmp_path, monkeypatch):
 
 
 def _tui_server(monkeypatch, home):
-    import hermes_cli.banner as banner
+    from hermes_cli import banner
     monkeypatch.setattr(banner, "prefetch_update_check", lambda: None)
     from tui_gateway import server
     monkeypatch.setattr(server, "_hermes_home", home)
@@ -187,7 +187,7 @@ def _start(target, name):
     def run():
         try:
             results.append(target())
-        except BaseException as exc:  # noqa: BLE001 — surfaced by the caller
+        except BaseException as exc:
             failures.append(exc)
 
     t = threading.Thread(target=run, name=name)

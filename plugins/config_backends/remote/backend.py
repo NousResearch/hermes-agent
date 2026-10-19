@@ -66,19 +66,19 @@ class _FetchFailed(Exception):
 class _ProfileState:
     home: Path
     profile: str
-    server_config: Dict[str, Any] = field(default_factory=dict)  # EffectiveResponse.config, as sent
-    doc: Dict[str, Any] = field(default_factory=dict)            # what readers get (+ _config_version, migrated)
+    server_config: dict[str, Any] = field(default_factory=dict)  # EffectiveResponse.config, as sent
+    doc: dict[str, Any] = field(default_factory=dict)            # what readers get (+ _config_version, migrated)
     etag: str = ""
     profile_version: int = 0
     # The profile level's stored writerConfigVersion: None = stored null, _UNKNOWN = not reported.
     profile_writer: Any = None
-    other_writers: List[int] = field(default_factory=list)  # the other levels' int stamps (R6)
-    locks: List[Tuple[KeyPath, str]] = field(default_factory=list)
-    provenance: Dict[str, str] = field(default_factory=dict)
+    other_writers: list[int] = field(default_factory=list)  # the other levels' int stamps (R6)
+    locks: list[tuple[KeyPath, str]] = field(default_factory=list)
+    provenance: dict[str, str] = field(default_factory=dict)
     changed_ns: int = 0
     gen: int = 0
     installed: int = 0         # bumped by every _install; a GET started before a newer install is stale
-    base: Optional[Dict[str, Any]] = None  # the migrated doc writes diff against (None = server_config)
+    base: Optional[dict[str, Any]] = None  # the migrated doc writes diff against (None = server_config)
     postprocessed: bool = False   # st.doc is the completed migration output of generation `installed`
     fetched_at: float = 0.0
     last_error: Optional[str] = None
@@ -98,17 +98,17 @@ class _Private:
     everyone else keeps seeing the published doc with its matching diff base. The migrated doc and
     its base are published together, in one step, when the migration ends: a concurrent writer
     never diffs a half-migrated document against the unmigrated base, or the reverse."""
-    st: "_ProfileState"
-    doc: Dict[str, Any]
+    st: _ProfileState
+    doc: dict[str, Any]
     serial: int
     gen: int = 0
 
 
-_PRIVATE: "contextvars.ContextVar[Optional[_Private]]" = contextvars.ContextVar("remote_config_private", default=None)
+_PRIVATE: contextvars.ContextVar[Optional[_Private]] = contextvars.ContextVar("remote_config_private", default=None)
 _PRIVATE_SERIAL = itertools.count(1)
 
 
-def _private_for(st: "_ProfileState") -> Optional[_Private]:
+def _private_for(st: _ProfileState) -> Optional[_Private]:
     m = _PRIVATE.get()
     return m if m is not None and m.st is st else None
 
@@ -121,7 +121,7 @@ _VALUE_REFUSALS = frozenset({
 })
 
 
-def _profile_writer(body: Dict[str, Any]) -> Any:
+def _profile_writer(body: dict[str, Any]) -> Any:
     """The profile level's stored ``writerConfigVersion`` (int or None), or ``_UNKNOWN``."""
     for lv in body.get("levels") or []:
         if isinstance(lv, dict) and lv.get("kind") == "profile":
@@ -130,7 +130,7 @@ def _profile_writer(body: Dict[str, Any]) -> Any:
     return _UNKNOWN
 
 
-def _effective_ok(body: Dict[str, Any]) -> bool:
+def _effective_ok(body: dict[str, Any]) -> bool:
     return (isinstance(body.get("config"), dict) and isinstance(body.get("profileVersion"), int)
             and isinstance(body.get("locks"), list))
 
@@ -139,8 +139,8 @@ class RemoteBackend:
     name = "remote"
 
     def __init__(self) -> None:
-        self._states: Dict[str, _ProfileState] = {}
-        self._fetch_locks: Dict[str, threading.Lock] = {}
+        self._states: dict[str, _ProfileState] = {}
+        self._fetch_locks: dict[str, threading.Lock] = {}
         self._lock = threading.Lock()
         self._poller: Optional[threading.Thread] = None
         self._poller_pid: Optional[int] = None
@@ -186,7 +186,7 @@ class RemoteBackend:
         self._ensure_poller()
         return st
 
-    def _roster(self) -> List[_ProfileState]:
+    def _roster(self) -> list[_ProfileState]:
         with self._lock:
             return list(self._states.values())
 
@@ -245,16 +245,16 @@ class RemoteBackend:
         raise _FetchFailed(f"HTTP {resp.status} {resp.error}: {resp.message}", retryable=retryable,
                            retry_after=resp.retry_after, status=resp.status)
 
-    def _install(self, st: _ProfileState, body: Dict[str, Any], etag: Optional[str]) -> None:
+    def _install(self, st: _ProfileState, body: dict[str, Any], etag: Optional[str]) -> None:
         config = body["config"]
         doc = copy.deepcopy(config)
         doc.pop("_config_version", None)  # reserved on the wire (§3.6); never expected here
         # R6: the in-memory schema version is the oldest writer's; migrations run in memory (D12).
-        writer_versions: List[int] = [
+        writer_versions: list[int] = [
             lv["writerConfigVersion"] for lv in body.get("levels") or []
             if isinstance(lv, dict) and isinstance(lv.get("writerConfigVersion"), int)]
         doc["_config_version"] = min(writer_versions) if writer_versions else _latest_config_version()
-        locks: List[Tuple[KeyPath, str]] = []
+        locks: list[tuple[KeyPath, str]] = []
         for entry in body.get("locks") or []:
             try:
                 locks.append((decode(entry["path"]), str(entry["level"])))
@@ -337,7 +337,7 @@ class RemoteBackend:
                 st.postprocessed = True
         return True
 
-    def _run_private(self, st: _ProfileState, doc: Dict[str, Any], current: int) -> Dict[str, Any]:
+    def _run_private(self, st: _ProfileState, doc: dict[str, Any], current: int) -> dict[str, Any]:
         """Run the migrations from schema *current* over a private copy of *doc* and return it.
         Nothing is published: only this thread sees the copy while the steps run (:class:`_Private`)."""
         from hermes_cli.config_migrations import run_migrations
@@ -354,7 +354,7 @@ class RemoteBackend:
             _PRIVATE.reset(private_token)
         return m.doc
 
-    def _migrate_in_memory(self, st: _ProfileState, started: int, current: int, doc: Dict[str, Any]) -> None:
+    def _migrate_in_memory(self, st: _ProfileState, started: int, current: int, doc: dict[str, Any]) -> None:
         """Migrate doc generation *started* (*doc*, schema version *current*) in memory (D12).
 
         The steps work on a private copy; the result is published with its diff base in one step,
@@ -379,7 +379,7 @@ class RemoteBackend:
         logger.info("Remote Config: migrated profile %r in memory from config version %d", st.profile, current)
 
     @staticmethod
-    def _publish_locked(st: _ProfileState, doc: Dict[str, Any], base: Dict[str, Any]) -> None:
+    def _publish_locked(st: _ProfileState, doc: dict[str, Any], base: dict[str, Any]) -> None:
         st.doc = doc
         st.base = base
         st.changed_ns = time.time_ns()
@@ -421,7 +421,7 @@ class RemoteBackend:
         return self._snapshot(st, take)
 
     @staticmethod
-    def _version_of(st: _ProfileState) -> Tuple[Any, ...]:
+    def _version_of(st: _ProfileState) -> tuple[Any, ...]:
         # Leads with a nanosecond timestamp like the file backend's st_mtime_ns (the TUI's config
         # watcher reads element 0 as a time); the etag and local generation make it exact. A
         # migration's own reads see its private copy under a version of their own, so no config
@@ -432,7 +432,7 @@ class RemoteBackend:
             return (-m.serial, m.gen, st.changed_ns, st.etag, st.gen)
         return (st.changed_ns, st.etag, st.gen)
 
-    def version(self, home: Path) -> Tuple[Any, ...]:
+    def version(self, home: Path) -> tuple[Any, ...]:
         return self._version_of(self._state(home))
 
     def exists(self, home: Path) -> bool:
@@ -458,7 +458,7 @@ class RemoteBackend:
         re-read doc, with the re-read locks; it never replays the caller's whole document, which
         would turn every key another writer changed meanwhile into an edit of ours."""
         st = self._state(home)
-        intent: Optional[Tuple[Dict[KeyPath, Any], List[KeyPath]]] = None
+        intent: Optional[tuple[dict[KeyPath, Any], list[KeyPath]]] = None
         for attempt in (1, 2):
             for _ in range(self._MAX_PREPARE):
                 # Diff against the doc readers get, i.e. migrated in memory (D12) — also after the
@@ -501,12 +501,12 @@ class RemoteBackend:
                 raise ConfigWriteError("Remote Config write not sent: the profile's config kept changing "
                                        "while the write was prepared", code="config_version_conflict")
 
-    def _diff_base(self, st: _ProfileState) -> Dict[str, Any]:
+    def _diff_base(self, st: _ProfileState) -> dict[str, Any]:
         base = copy.deepcopy(st.base if st.base is not None else st.server_config)
         base.pop("_config_version", None)
         return base
 
-    def _intent(self, st: _ProfileState, changes: Changes) -> Tuple[Dict[KeyPath, Any], List[KeyPath]]:
+    def _intent(self, st: _ProfileState, changes: Changes) -> tuple[dict[KeyPath, Any], list[KeyPath]]:
         """The key-level edit ``changes`` makes to the last read doc (§15.2 steps 1-5)."""
         base = self._diff_base(st)
         if changes.document is not None:
@@ -531,8 +531,8 @@ class RemoteBackend:
         # retry after 409 keeps the siblings another writer put in that section meanwhile.
         return intent_diff(base, new)
 
-    def _patch_body(self, st: _ProfileState, sets: Dict[KeyPath, Any], unsets: List[KeyPath]
-                    ) -> Optional[Tuple[Dict[str, Any], Dict[KeyPath, Any], List[KeyPath]]]:
+    def _patch_body(self, st: _ProfileState, sets: dict[KeyPath, Any], unsets: list[KeyPath]
+                    ) -> Optional[tuple[dict[str, Any], dict[KeyPath, Any], list[KeyPath]]]:
         """The PATCH body applying the intent to the current doc, or None when that is no change."""
         base = self._diff_base(st)
         new = copy.deepcopy(base)
@@ -552,7 +552,7 @@ class RemoteBackend:
         if not sets and not unsets:
             return None
         set_body, unset_body = encode_changes(sets, unsets)
-        body: Dict[str, Any] = {"expectedVersion": st.profile_version}
+        body: dict[str, Any] = {"expectedVersion": st.profile_version}
         # The stamp describes the profile level's STORED data (contract §5.3: absent = unchanged).
         # Stamp only when that data is already at this agent's version, or unstamped (null: readers
         # already treat it as current, R6). An older stamp means the level still holds pre-migration
@@ -567,8 +567,8 @@ class RemoteBackend:
             body["unset"] = unset_body
         return body, sets, unsets
 
-    def _migration_check_input(self, st: _ProfileState, body: Dict[str, Any], sets: Dict[KeyPath, Any],
-                               unsets: List[KeyPath]) -> Optional[Tuple[Dict[str, Any], int]]:
+    def _migration_check_input(self, st: _ProfileState, body: dict[str, Any], sets: dict[KeyPath, Any],
+                               unsets: list[KeyPath]) -> Optional[tuple[dict[str, Any], int]]:
         """``(stored doc after this write, its schema version)`` when readers will migrate it in
         memory after the write (R6: the oldest level's stamp), else None. Call under st.lock."""
         if not sets:
@@ -591,8 +591,8 @@ class RemoteBackend:
             _pop_path(stored, p)
         return stored, after
 
-    def _check_migration_keeps(self, st: _ProfileState, sets: Dict[KeyPath, Any],
-                               stored: Dict[str, Any], after: int) -> None:
+    def _check_migration_keeps(self, st: _ProfileState, sets: dict[KeyPath, Any],
+                               stored: dict[str, Any], after: int) -> None:
         """Refuse a write whose values every later read would migrate away.
 
         The plane stores the write as sent, but under a level stamp older than this agent's schema
@@ -634,7 +634,7 @@ class RemoteBackend:
                                 code=resp.error)
 
     @staticmethod
-    def _warn_inherited(st: _ProfileState, unsets: List[KeyPath]) -> None:
+    def _warn_inherited(st: _ProfileState, unsets: list[KeyPath]) -> None:
         """R5: removing a key at the profile level cannot remove a value an upper level supplies."""
         for p in unsets:
             node: Any = st.server_config
@@ -719,7 +719,7 @@ class RemoteBackend:
                     if st.next_poll <= now:
                         self.poll_one(st)
                 wake = min((st.next_poll for st in self._roster()), default=now + poll_interval())
-            except Exception:  # noqa: BLE001 — the only poller thread must survive anything
+            except Exception:
                 logger.warning("Remote Config: poll loop error; retrying", exc_info=True)
                 wake = time.monotonic() + MIN_POLL_SECONDS
             self._stop.wait(max(1.0, wake - time.monotonic()))
@@ -736,7 +736,7 @@ class RemoteBackend:
             logger.log(level, "Remote Config: poll for profile %r failed (%s); keeping the loaded config",
                        st.profile, exc)
             changed = False
-        except Exception as exc:  # noqa: BLE001 — the poller thread must survive anything
+        except Exception as exc:
             st.last_error = str(exc)
             logger.warning("Remote Config: poll for profile %r failed", st.profile, exc_info=True)
             changed = False
@@ -775,7 +775,7 @@ def _first_change(path: KeyPath, sent: Any, found: bool, got: Any) -> Optional[K
         return path
 
 
-def _set_path(doc: Dict[str, Any], path: KeyPath, value: Any) -> None:
+def _set_path(doc: dict[str, Any], path: KeyPath, value: Any) -> None:
     node = doc
     for seg in path[:-1]:
         if not isinstance(node.get(seg), dict):
@@ -784,7 +784,7 @@ def _set_path(doc: Dict[str, Any], path: KeyPath, value: Any) -> None:
     node[path[-1]] = value
 
 
-def _pop_path(doc: Dict[str, Any], path: KeyPath) -> None:
+def _pop_path(doc: dict[str, Any], path: KeyPath) -> None:
     node: Any = doc
     for seg in path[:-1]:
         node = node.get(seg) if isinstance(node, dict) else None

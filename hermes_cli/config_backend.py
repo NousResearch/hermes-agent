@@ -30,6 +30,15 @@ PathLike = Union[str, "os.PathLike[str]"]
 
 
 @dataclass(frozen=True)
+class UserLayer:
+    """One read of a profile's user layer."""
+    doc: Any                    # the parsed root as written (None for an empty document)
+    version: tuple[Any, ...]    # the cache signature this doc was read at (etag for a remote backend)
+    locks: Mapping[str, str] = field(default_factory=dict)   # dotted prefix -> level that locks it
+    provenance: str = ""        # where the doc came from, for diagnostics
+
+
+@dataclass(frozen=True)
 class Changes:
     """A write to one profile's user layer.
 
@@ -398,8 +407,8 @@ def write_config_document(config_path: PathLike, document: dict, *, extra_conten
 def config_destination(config_path: PathLike) -> str:
     """Where a write to *config_path* lands, for "✓ Set ... in <here>" lines: the file path for
     the file backend and explicit files, the backend's own name for the user layer otherwise."""
-    backend, target, is_layer = _route(config_path)
-    return backend.destination(target) if is_layer else str(target)
+    backend, home = _route(config_path)
+    return backend.destination(home)
 
 
 def write_config_key(config_path: PathLike, key_path: str, value: Any) -> None:
@@ -413,10 +422,9 @@ def write_config_keys(config_path: PathLike, updates: Mapping[str, Any]) -> None
     A remote backend sends them as one CAS PATCH, so a refusal of any of them (a lock, a value
     check) changes none of them: a grouped edit such as a model switch (default + provider + ...)
     never lands half-applied. The file backend applies them key by key, as before."""
-    backend, target, is_layer = _route(config_path)
-    changes = Changes(set={k: v for k, v in updates.items() if v is not None},
-                      unset=tuple(k for k, v in updates.items() if v is None))
-    backend.write_changes(target, changes) if is_layer else backend.write_path(target, changes)
+    backend, home = _route(config_path)
+    backend.write_changes(home, Changes(set={k: v for k, v in updates.items() if v is not None},
+                                        unset=tuple(k for k, v in updates.items() if v is None)))
 
 
 def deployment_env_names() -> frozenset:

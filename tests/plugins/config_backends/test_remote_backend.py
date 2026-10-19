@@ -800,7 +800,7 @@ def test_migration_of_a_replaced_doc_does_not_touch_the_replacement(plane, monke
     def read():
         try:
             read_raw_config()
-        except BaseException as exc:  # noqa: BLE001 — surfaced below
+        except BaseException as exc:
             failures.append(exc)
 
     reader = threading.Thread(target=read)
@@ -996,7 +996,7 @@ def test_edit_during_an_in_memory_migration_never_sends_the_migration(plane, mon
     def migrate():  # a lock-free reader (read_config_doc) starts the migration
         try:
             read_config_doc(plane.home / "config.yaml")
-        except BaseException as exc:  # noqa: BLE001 — surfaced below
+        except BaseException as exc:
             failures.append(exc)
 
     migrator = threading.Thread(target=migrate, name="migrator")
@@ -1119,7 +1119,7 @@ def test_child_for_another_profile_keeps_the_remote_deployment(plane, monkeypatc
             "from hermes_cli.config import load_config\n"
             "print('RESULT=' + json.dumps([get_config_backend().name, load_config()['display']['personality']]))\n")
     proc = subprocess.run([sys.executable, "-c", code], env=child_env, capture_output=True, text=True,
-                          timeout=120, stdin=subprocess.DEVNULL, cwd=str(tmp_path))
+                          timeout=120, stdin=subprocess.DEVNULL, cwd=str(tmp_path), check=False)
     assert proc.returncode == 0, proc.stderr[-3000:]
     line = [ln for ln in (proc.stdout + proc.stderr).splitlines() if ln.startswith("RESULT=")][-1]
     assert json.loads(line[len("RESULT="):]) == ["remote", "remote-child"]
@@ -1223,7 +1223,7 @@ def test_roster_model_follows_the_remote_layer_not_the_local_file(profile_plane)
 
 
 def _tui_server(monkeypatch, home):
-    import hermes_cli.banner as banner
+    from hermes_cli import banner
     monkeypatch.setattr(banner, "prefetch_update_check", lambda: None)
     from tui_gateway import server
     monkeypatch.setattr(server, "_hermes_home", home)
@@ -1324,7 +1324,7 @@ def test_cas_retry_keeps_a_sibling_added_to_a_section_the_doc_lacked(plane, monk
         write_config_key(plane.home / "config.yaml", "terminal.timeout", 321)
 
     assert plane.profile("default")["values"]["terminal"] == {"persistent": True, "timeout": 321}
-    first, retry = plane.patches()
+    _first, retry = plane.patches()
     assert retry["body"]["expectedVersion"] == 2
     assert retry["body"]["set"] == {"terminal.timeout": 321} and "unset" not in retry["body"]
 
@@ -1551,7 +1551,7 @@ def _fresh_interpreter_boot(tmp_path, env, project_env):
     child = {k: v for k, v in os.environ.items() if k in ("PATH", "LANG", "TMPDIR", "SYSTEMROOT")}
     child.update(env, PYTHONPATH=str(Path(__file__).resolve().parents[3]))
     return subprocess.run([sys.executable, "-c", code], env=child, capture_output=True, text=True,
-                          timeout=120, stdin=subprocess.DEVNULL, cwd=str(tmp_path))
+                          timeout=120, stdin=subprocess.DEVNULL, cwd=str(tmp_path), check=False)
 
 
 def test_plane_credential_from_the_project_dotenv_boots(plane, tmp_path):

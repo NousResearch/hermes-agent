@@ -25,7 +25,7 @@ print("RESULT=" + json.dumps(load_config()["display"]["personality"]))
 
 def _run(args, env, timeout=120):
     return subprocess.run(args, cwd=REPO, env=env, capture_output=True, text=True, timeout=timeout,
-                          stdin=subprocess.DEVNULL)
+                          stdin=subprocess.DEVNULL, check=False)
 
 
 @pytest.fixture
@@ -69,7 +69,7 @@ def test_cli_gateway_and_dashboard_share_the_remote_config(plane_env):
 
 
 def test_process_exits_non_zero_when_plane_is_down(plane_env, monkeypatch):
-    plane, env, home = plane_env
+    plane, env, _home = plane_env
     plane.fail_status = 403  # a refusal is not retried, so this is fast
     proc = _run([sys.executable, "-m", "hermes_cli.main", "config", "get", "display.personality"], env)
     assert proc.returncode != 0

@@ -47,7 +47,7 @@ def to_wire(value: Any, path: Path = ()) -> Any:
     if isinstance(value, list | tuple):
         return [to_wire(v, path) for v in value]
     if isinstance(value, dict):
-        out: Dict[str, Any] = {}
+        out: dict[str, Any] = {}
         for k, v in value.items():
             key = _wire_key(k, path)
             if key in out:
@@ -72,7 +72,7 @@ def _wire_key(key: Any, path: Path) -> str:
 # --- secret-shaped keys (§14) -----------------------------------------------------------------
 
 @lru_cache(maxsize=1)
-def _secret_rules() -> Dict[str, Any]:
+def _secret_rules() -> dict[str, Any]:
     data = json.loads(SECRET_KEYS_FIXTURE.read_text(encoding="utf-8-sig"))
     return {
         "secret_keys": frozenset(data["secretKeys"]),
@@ -88,7 +88,7 @@ def _secret_rules() -> Dict[str, Any]:
     }
 
 
-def _is_env_config_key(key: str, rules: Dict[str, Any]) -> bool:
+def _is_env_config_key(key: str, rules: dict[str, Any]) -> bool:
     if "." in key:
         return False
     up = key.upper()
@@ -107,7 +107,7 @@ def is_secret_path(segments: Sequence[str]) -> bool:
     return leaf in rules["secret_keys"] or leaf.endswith(rules["secret_suffixes"])
 
 
-def _walk(value: Any, path: Path) -> Iterator[Tuple[Path, Any]]:
+def _walk(value: Any, path: Path) -> Iterator[tuple[Path, Any]]:
     yield path, value
     if isinstance(value, dict):
         for k, v in value.items():

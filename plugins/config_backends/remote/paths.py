@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Iterable, List, Optional, Sequence, Tuple
 
-Path = Tuple[str, ...]
+Path = tuple[str, ...]
 
 
 class PathError(ValueError):
@@ -20,8 +20,8 @@ def encode(segments: Sequence[str]) -> str:
 
 
 def decode(encoded: str) -> Path:
-    segments: List[str] = []
-    current: List[str] = []
+    segments: list[str] = []
+    current: list[str] = []
     i = 0
     while i < len(encoded):
         ch = encoded[i]
@@ -72,7 +72,7 @@ def covers(lock: Sequence[str], path: Sequence[str]) -> bool:
     return len(lock) <= len(path) and tuple(path[:len(lock)]) == tuple(lock)
 
 
-def covering_lock(locks: Iterable[Tuple[Path, str]], path: Sequence[str]) -> Optional[Tuple[Path, str]]:
+def covering_lock(locks: Iterable[tuple[Path, str]], path: Sequence[str]) -> Optional[tuple[Path, str]]:
     """The first ``(lock, level)`` whose lock covers ``path``, or None."""
     for lock, level in locks:
         if covers(lock, path):

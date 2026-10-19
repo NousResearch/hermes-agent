@@ -30,6 +30,14 @@ const mutationContract = [
   targetId: string
 }[]
 
+test('legacy session rows inherit the trusted route profile before they are bound', () => {
+  const connection = { mode: 'remote', baseUrl: 'https://legacy.example', token: 'legacy-token' }
+  const [row] = bindSessionRowsToRoute([{ id: 'legacy-row' }], connection, 'research')
+
+  assert.equal(row.profile, 'research')
+  assert.equal(row._desktop_route_binding, createSessionRouteBinding('legacy-row', 'research', connection))
+})
+
 test('legacy Settings resolution retains its HTTP origin across awaits and rejects route replacement', async () => {
   const received: string[] = []
 

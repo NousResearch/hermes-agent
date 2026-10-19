@@ -140,6 +140,20 @@ interface SettingsOwner {
   legacyConnectionProfile?: string
 }
 
+export function settingsGatewayRequestOwnership(scope: ProfileScope) {
+  if (!scope || typeof scope !== 'object' || !scope.connectionOwner) {
+    return {}
+  }
+
+  return {
+    expectedConnectionOwner: scope.cacheOwner ?? scope.connectionOwner,
+    expectedOwner: {
+      profile: scope.connectionOwnerProfile ?? scope.profile ?? 'custom',
+      connectionOwner: scope.connectionOwner
+    }
+  }
+}
+
 export function settingsRecycleScope(scope: ProfileScope): RecycleBackendScope | undefined {
   if (!scope || typeof scope !== 'object') {
     return scope

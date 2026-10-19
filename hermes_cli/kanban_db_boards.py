@@ -7,15 +7,17 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 ``kanban_db.<name>`` keeps working.
 
 Dispatch admission (card t_17c9c847) lives here too: ``board_dispatch_enabled`` is the
-one chokepoint that decides whether the dispatcher may serve a board, and
+one chokepoint that decides whether the dispatcher may serve a board,
 ``list_dispatch_boards`` is the dispatcher's OWN enumeration — ``list_boards`` stays the
 full inventory for the CLI and the dashboard, so an estate board is still VISIBLE on the
-board list, it is simply never spawned from.
+board list, it is simply never spawned from — and ``dispatch_board_refused`` is the
+per-tick guard that holds even for a caller which bypassed enumeration.
 """
 
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 from typing import Any
 from typing import Optional
@@ -92,7 +94,7 @@ def board_is_archived_stub(slug: str) -> bool:
                 return False  # a live board
             if not (_kb.board_dir(slug) / "kanban.db").exists():
                 return False  # the ordinary tombstone: still this board's record
-    except Exception:
+    except (OSError, TypeError, ValueError):
         return False
     root = _kb.boards_root() / "_archived"
     if not root.is_dir():
@@ -129,8 +131,60 @@ def board_dispatch_enabled(board: Optional[str] = None) -> bool:
         return False
     try:
         return _board_dispatch_flag(read_board_metadata(slug).get("dispatch", True))
-    except Exception:
+    except (AttributeError, OSError, TypeError, ValueError):
         return True
+
+
+def board_for_store_path(path: Any) -> Optional[str]:
+    """The slug of the board whose canonical store IS ``path``, else ``None``.
+
+    The single layout->board rule (``<root>/kanban.db`` = ``default``, else
+    ``<root>/kanban/boards/<slug>/<leaf>``), shared by :func:`board_for_connection`
+    and by anything that must ask "is this file a board store, and whose?".
+    """
+    if not path:
+        return None
+    try:
+        resolved = Path(path).resolve()
+        if resolved == (_kb.kanban_home() / "kanban.db").resolve():
+            return _kb.DEFAULT_BOARD
+        rel = resolved.relative_to(_kb.boards_root().resolve())
+    except (OSError, ValueError):
+        return None
+    return rel.parts[0] if len(rel.parts) > 1 else None
+
+
+def board_for_connection(conn: Any) -> Optional[str]:
+    """The slug of the board ``conn`` is open against, or ``None`` when it cannot be told.
+
+    A filing must be bounded by the board its OWN connection belongs to: a caller holding
+    a ``--board`` override is not on ``get_current_board()``, and ``HERMES_KANBAN_DB`` can
+    pin a database no board claims (workers are spawned with exactly that). So the slug is
+    read off the open file's path, never off the ambient current board.
+    """
+    path = ""
+    for _seq, name, file in conn.execute("PRAGMA database_list"):
+        if name == "main" and file:
+            path = file
+    return board_for_store_path(path)
+
+
+def dispatch_board_refused(conn: Any, board: Optional[str] = None) -> bool:
+    """True when this tick's board is not dispatch-enabled: ``dispatch_once``'s guard.
+
+    The board is the explicit ``board`` when the caller named one, else the board the OPEN
+    CONNECTION belongs to (:func:`board_for_connection`) — never the ambient current
+    board — so a ``hermes kanban --board <estate> dispatch`` that bypasses enumeration is
+    still refused. A board that cannot be told is never refused: the ``dispatch`` flag
+    defaults to admitted at read time, and this guard must not invent a denial.
+    """
+    resolved = board
+    if not resolved:
+        try:
+            resolved = board_for_connection(conn)
+        except (AttributeError, OSError, TypeError, ValueError, sqlite3.Error):
+            resolved = None
+    return bool(resolved) and not board_dispatch_enabled(resolved)
 
 
 def read_board_metadata(board: Optional[str] = None) -> dict:

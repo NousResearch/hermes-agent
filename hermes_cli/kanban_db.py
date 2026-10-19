@@ -591,57 +591,6 @@ def workspaces_root(board: Optional[str] = None) -> Path:
     return _board_path("HERMES_KANBAN_WORKSPACES_ROOT", board, ("kanban", "workspaces"), "workspaces")
 
 
-def attachments_root(board: Optional[str] = None) -> Path:
-    """Per-board attachments root (``HERMES_KANBAN_ATTACHMENTS_ROOT`` wins). Workers
-    read attachments by absolute path, so remote terminal backends must mount it."""
-    return _board_path("HERMES_KANBAN_ATTACHMENTS_ROOT", board, ("kanban", "attachments"), "attachments")
-
-
-def task_attachments_dir(task_id: str, board: Optional[str] = None) -> Path:
-    """Return the per-task attachment directory ``<root>/<task_id>/``."""
-    return attachments_root(board=board) / task_id
-
-
-def worker_logs_dir(board: Optional[str] = None) -> Path:
-    """Per-board worker log dir (logs follow the board so ``hermes kanban log``
-    is unambiguous when two boards share a task id)."""
-    return _board_path(None, board, ("kanban", "logs"), "logs")
-
-
-def board_for_store_path(path: Any) -> Optional[str]:
-    """The slug of the board whose canonical store IS ``path``, else ``None``.
-
-    The single layout->board rule (``<root>/kanban.db`` = ``default``, else
-    ``<root>/kanban/boards/<slug>/<leaf>``), shared by :func:`board_for_connection`
-    and by anything that must ask "is this file a board store, and whose?".
-    """
-    if not path:
-        return None
-    try:
-        resolved = Path(path).resolve()
-        if resolved == (kanban_home() / "kanban.db").resolve():
-            return DEFAULT_BOARD
-        rel = resolved.relative_to(boards_root().resolve())
-    except (OSError, ValueError):
-        return None
-    return rel.parts[0] if len(rel.parts) > 1 else None
-
-
-def board_for_connection(conn: sqlite3.Connection) -> Optional[str]:
-    """The slug of the board ``conn`` is open against, or ``None`` when it cannot be told.
-
-    A filing must be bounded by the board its OWN connection belongs to: a caller holding
-    a ``--board`` override is not on ``get_current_board()``, and ``HERMES_KANBAN_DB`` can
-    pin a database no board claims (workers are spawned with exactly that). So the slug is
-    read off the open file's path, never off the ambient current board.
-    """
-    path = ""
-    for _seq, name, file in conn.execute("PRAGMA database_list"):
-        if name == "main" and file:
-            path = file
-    return board_for_store_path(path)
-
-
 # --- Data classes ---
 
 @dataclass
@@ -4272,6 +4221,11 @@ from hermes_cli.kanban_db_connect import (
     _INITIALIZED_PATHS,
     init_db,
     write_txn,
+)
+from hermes_cli.kanban_db_paths import (
+    attachments_root,
+    task_attachments_dir,
+    worker_logs_dir,
 )
 from hermes_cli.kanban_db_workspace import (
     _cleanup_workspace,

@@ -152,8 +152,12 @@ class _KanbanDispatcher:
                     b.get("slug") or self.kb.DEFAULT_BOARD
                     for b in reader()
                 ]
-            except Exception:
-                pass
+            except (AttributeError, KeyError, OSError, TypeError, ValueError, sqlite3.Error) as exc:
+                # A double with a half-formed enumeration, or an unreadable board
+                # directory: filter the plain list below instead of visiting the
+                # estate whole.
+                logger.warning("kanban dispatcher: list_dispatch_boards() unusable (%s); "
+                               "falling back to per-slug admission", exc)
         slugs = _board_slugs(self.kb)
         enabled = getattr(self.kb, "board_dispatch_enabled", None)
         if not callable(enabled):
@@ -165,7 +169,7 @@ class _KanbanDispatcher:
             try:
                 if enabled(slug):
                     out.append(slug)
-            except Exception:
+            except (AttributeError, OSError, TypeError, ValueError, sqlite3.Error):
                 continue  # unreadable admission = not admitted
         return out
 

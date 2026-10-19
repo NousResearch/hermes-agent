@@ -20,7 +20,6 @@ from dataclasses import field
 from pathlib import Path
 from typing import Any
 from typing import Callable
-from typing import Iterable
 from typing import Iterator
 from typing import Mapping
 from typing import Optional
@@ -160,40 +159,6 @@ class DispatchResult:
     happens BEFORE the lock, the reclaim phase and every claim, so the spawn path
     is never reached and no card on that board can become lane work (card
     t_17c9c847)."""
-
-
-def describe_suppression(results: Iterable[Optional[DispatchResult]]) -> str:
-    """One line naming why the tick(s) held ready work back, or ``""``.
-
-    ``active_pr=1, recent_success=2, rate_limited=1, skipped_locked=1,
-    memory_pressure=critical`` — the respawn-guard reasons counted per task
-    plus the tick-level holds. Feeds the "dispatcher stuck" warnings of the
-    CLI daemon and the embedded gateway dispatcher, which otherwise report a
-    bare zero-spawn count while ``hermes kanban tail`` is the only place the
-    guard reason is written (#111910).
-    """
-    counts: dict[str, int] = {}
-    pressure: Optional[str] = None
-    for res in results:
-        if res is None:
-            continue
-        for _task_id, reason in res.respawn_guarded:
-            counts[reason] = counts.get(reason, 0) + 1
-        if res.rate_limited:
-            counts["rate_limited"] = counts.get("rate_limited", 0) + len(res.rate_limited)
-        if res.skipped_locked:
-            counts["skipped_locked"] = counts.get("skipped_locked", 0) + 1
-        if res.skipped_board_disabled:
-            # Board-level refusal: the board is an estate/scratch board and the
-            # tick touched nothing (card t_17c9c847). Without this the refusal is
-            # invisible to the "dispatcher stuck" line.
-            counts["board_not_dispatch_enabled"] = counts.get("board_not_dispatch_enabled", 0) + 1
-        if res.memory_pressure:
-            pressure = res.memory_pressure
-    parts = [f"{k}={v}" for k, v in sorted(counts.items())]
-    if pressure:
-        parts.append(f"memory_pressure={pressure}")
-    return ", ".join(parts)
 
 
 # Bounded registry of recently-reaped worker exits, filled by the reap loop in
@@ -2014,16 +1979,10 @@ def dispatch_once(
     phantom card on that board can be spawned even by a caller that bypassed the
     dispatcher's own enumeration (card t_17c9c847).
     """
-    # Resolve the board this tick is actually against. The pin/name may be absent
-    # (the CLI passes no board=), so read it off the open store — the same mapping
-    # ``board_for_connection`` gives, never the ambient current board.
-    resolved_board = board
-    if not resolved_board:
-        try:
-            resolved_board = _kb.board_for_connection(conn)
-        except Exception:
-            resolved_board = None
-    if resolved_board and not _kb.board_dispatch_enabled(resolved_board):
+    # Which board is this tick actually against? The pin/name may be absent (the CLI
+    # passes no board=), so the guard resolves it off the open store — never the
+    # ambient current board — and refuses an estate board before any work happens.
+    if _kbb.dispatch_board_refused(conn, board):
         result = DispatchResult(skipped_board_disabled=True)
         _kb._fire_dispatch_tick_hook(result, board=board, dry_run=dry_run)
         return result
@@ -3040,5 +2999,7 @@ def run_daemon(
 # Late-bound origin namespace (see module docstring); imported LAST so this
 # module is fully populated before ``kanban_db`` imports from it.
 from hermes_cli import kanban_db as _kb
+from hermes_cli import kanban_db_boards as _kbb
 from hermes_cli import kanban_db_connect as _kbc
 from hermes_cli import kanban_db_workspace as _kbw
+from hermes_cli.kanban_db_dispatch_report import describe_suppression

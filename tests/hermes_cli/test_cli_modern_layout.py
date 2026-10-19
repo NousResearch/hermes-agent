@@ -172,8 +172,9 @@ def test_tool_rows_keep_the_classic_tool_emoji():
     from agent.display import get_cute_tool_message
     from hermes_cli.cli_modern_layout import tool_row
 
+    # clarify has no dedicated renderer: both layouts take its registered emoji from one source.
     for name, args in (("read_file", {"path": "/etc/hostname"}), ("terminal", {"command": "echo ok"}),
-                       ("execute_code", {"code": "import math"})):
+                       ("execute_code", {"code": "import math"}), ("clarify", {"question": "Which?"})):
         classic_emoji = get_cute_tool_message(name, args, 0.2).split()[1]
         assert _plain(tool_row(name, args, 0.2)).startswith(classic_emoji + " "), (name, classic_emoji)
     failed = _plain(tool_row("terminal", {"command": "false"}, 0.2, result='{"exit_code": 1, "output": ""}'))

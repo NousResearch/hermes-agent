@@ -1102,6 +1102,14 @@ def _cute_row(emoji: str, verb: str, detail: str = "") -> str:
     return _CuteRow(f"┊ {emoji} {label:9} {detail}", emoji, label, detail)
 
 
+def _cute_fallback_row(tool_name: str, args: dict) -> _CuteRow:
+    """The row for a tool with no dedicated renderer: its registered (or skin) emoji, its name, and
+    its preview. One source for both layouts, so their icons can't drift."""
+    detail = _cute_trunc(build_tool_preview(tool_name, args) or "")
+    emoji = get_tool_emoji(tool_name)
+    return _CuteRow(f"┊ {emoji} {tool_name[:9]:9} {detail}", emoji, tool_name, detail)
+
+
 def get_tool_row_parts(tool_name: str, args: dict | None, result: str | None = None, *, is_error: bool = False):
     """``[(emoji, verb, detail, failure), ...]`` for one completed call: the parts the ``┊`` line
     uses, without its padding. ``failure`` is None for a row that succeeded, else that row's
@@ -1120,10 +1128,8 @@ def get_tool_row_parts(tool_name: str, args: dict | None, result: str | None = N
                     for lb, mark in zip(labels, marks)]
         render = _CUTE_LINES.get(tool_name)
         row = render(args, result) if render else None
-        if isinstance(row, _CuteRow):
-            return [(row.emoji, row.verb, row.detail, call_failure)]
-        return [(get_tool_emoji(tool_name), tool_name, _cute_trunc(build_tool_preview(tool_name, args) or ""),
-                 call_failure)]
+        row = row if isinstance(row, _CuteRow) else _cute_fallback_row(tool_name, args)
+        return [(row.emoji, row.verb, row.detail, call_failure)]
     except Exception:
         logger.debug("Tool row parts failed for %s", tool_name, exc_info=True)
         return [("⚡", str(tool_name), "", None)]
@@ -1302,7 +1308,7 @@ def _get_cute_tool_message(tool_name: str, args: dict, duration: float, result: 
     render = _CUTE_LINES.get(tool_name)
     rows = _cute_bridge_rows(tool_name, args)
     if rows is None:
-        body = render(args, result) if render else f"┊ ⚡ {tool_name[:9]:9} {_cute_trunc(build_tool_preview(tool_name, args) or '')}"
+        body = render(args, result) if render else _cute_fallback_row(tool_name, args)
         rows, suffixes = [body], [failure_suffix if is_failure else ""]
     else:
         suffixes = _bridge_row_suffixes(len(rows), result, failure_suffix if is_failure else "")

@@ -1,11 +1,11 @@
 name: telesec
 title: Telesec
 repo: https://github.com/neoromantic/telesec
-sha: adaa6ec14b668863051d412c71e043dfbb473034
+sha: e3452dca925d03cc9220766901faabde5f5c8d62
 description: >-
   Telegram Business secretary: transcribes voice notes, round videos, and speech
   attachments right in the chat, with Settings and per-chat controls in Telegram's Manage Bot
-  panel, plus opt-in text history, correspondence stats, and contact dossiers.
+  panel, plus opt-in text history (with import from a Telegram export), correspondence stats, and contact dossiers.
   Disclosure — audio goes to the STT backend Hermes is configured with (local or
   external); transcript cleanup and opt-in dossiers send chat text through the
   host ctx.llm; runs local ffprobe/ffmpeg (argument lists, no shell) on attached
@@ -17,12 +17,12 @@ tier: community
 category: voice
 requires_hermes: ">=0.21.6"
 docs_url: https://telesec.sergeybaus.com
-version: "0.12.1"
-image: https://raw.githubusercontent.com/neoromantic/telesec/adaa6ec14b668863051d412c71e043dfbb473034/docs/images/banner.png
+version: "0.13.0"
+image: https://raw.githubusercontent.com/neoromantic/telesec/e3452dca925d03cc9220766901faabde5f5c8d62/docs/images/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/neoromantic/telesec/adaa6ec14b668863051d412c71e043dfbb473034/docs/images/voice-transcript.png
-  - https://raw.githubusercontent.com/neoromantic/telesec/adaa6ec14b668863051d412c71e043dfbb473034/docs/images/owner-panel.png
-  - https://raw.githubusercontent.com/neoromantic/telesec/adaa6ec14b668863051d412c71e043dfbb473034/docs/images/stats-panel.png
+  - https://raw.githubusercontent.com/neoromantic/telesec/e3452dca925d03cc9220766901faabde5f5c8d62/docs/images/voice-transcript.png
+  - https://raw.githubusercontent.com/neoromantic/telesec/e3452dca925d03cc9220766901faabde5f5c8d62/docs/images/owner-panel.png
+  - https://raw.githubusercontent.com/neoromantic/telesec/e3452dca925d03cc9220766901faabde5f5c8d62/docs/images/stats-panel-en@2x.png
 readme: true
 known_issues:
   - Needs in-process plugin mode for native Telegram handlers.

@@ -2,7 +2,7 @@ name: agent-station
 repo: https://github.com/thealps01-netizen/agent-station
 sha: ce8e97d25a3de6894e7f6066977c6346120b655b
 subdir: ""
-description: "Read-only Hermes Desktop page for the focused chat: the main agent and its subagents, background commands and a Replay of file edits."
+description: "Read-only Hermes Desktop page for the focused chat: the main agent and its subagents, background commands and a Replay of file edits. Disclosure — its local dashboard routes serve the file-edit contents (Replay) and background-command output tails of the chat you view to the Desktop page; reads state.db read-only."
 title: "Agent Station"
 maintainer: thealps01-netizen
 tier: community

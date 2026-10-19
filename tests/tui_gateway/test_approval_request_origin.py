@@ -53,3 +53,52 @@ def test_authenticated_submit_passes_server_stamped_origin_to_turn(tmp_path, mon
         if "sid" in locals():
             server._sessions.pop(sid, None)
         db.close()
+
+
+def test_isolated_authenticated_submit_carries_only_exact_claimed_instruction(tmp_path, monkeypatch):
+    from tui_gateway.compute_host import _isolated_chat_user_instruction
+
+    db = SessionDB(tmp_path / "state.db")
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda _sid: None)
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+    monkeypatch.setattr(server, "_register_session_cwd", lambda _session: None)
+    frames = []
+
+    class Supervisor:
+        def submit_turn(self, frame, *, on_complete=None):
+            frames.append(frame)
+            return frame["request_id"]
+
+    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: Supervisor())
+    token = bind_transport(LoginSocket())
+    try:
+        created = server.handle_request({"id": "c", "method": "session.create",
+                                         "params": {"source": "desktop", "cwd": str(tmp_path)}})
+        sid = created["result"]["session_id"]
+        text = "Transfer ABC-1 to this chat"
+        sent = server.handle_request({"id": "p", "method": "prompt.submit",
+                                      "params": {"session_id": sid, "text": text}})
+        assert sent["result"]["status"] == "streaming"
+        frame = frames[-1]
+        child = {"session_key": frame["session_key"], "profile_home": frame["profile_home"]}
+        assert frame["_chat_user_instruction"]["requester"] == "basic:alice"
+        assert _isolated_chat_user_instruction(frame, child, frame["request_id"], sid, text) == ("basic", "alice")
+        assert _isolated_chat_user_instruction(frame, child, frame["request_id"], sid, "rewritten") is None
+        assert _isolated_chat_user_instruction({**frame, "_chat_submit_ids": []}, child,
+                                                frame["request_id"], sid, text) is None
+        assert _isolated_chat_user_instruction({**frame, "source": "bot_room"}, child,
+                                                frame["request_id"], sid, text) is None
+        assert _isolated_chat_user_instruction(frame, {**child, "profile_home": "other-profile"},
+                                                frame["request_id"], sid, text) is None
+        refused = server.handle_request({"id": "d", "method": "prompt.submit",
+                                         "params": {"session_id": sid, "text": text,
+                                                    "_turn_author": {"id": "delegated"}}})
+        assert refused["error"]["code"] == 4124
+        assert len(frames) == 1
+    finally:
+        reset_transport(token)
+        if "sid" in locals():
+            server._sessions.pop(sid, None)
+        db.close()

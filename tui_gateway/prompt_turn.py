@@ -673,7 +673,7 @@ def _stage_first_contact_onboarding_note(session: dict, agent, history_empty: bo
 
 
 def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images: list[str],
-                        admit_worker=None):
+                        admit_worker=None, isolated_browser_owner=None):
     """Bind scopes, sync the agent, snapshot history, build the run message; returns
     ``(prompt, run_message, cols, streamer)`` or None when @-expansion was refused.
     Scopes fill field by field so a failure midway still leaves every bound token for the
@@ -684,7 +684,8 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     from tools.approval_context import set_current_session_key
     scopes = st.scopes
     scopes.approval = set_current_session_key(session["session_key"])
-    scopes.session_tokens = _set_session_context(session["session_key"], ui_session_id=sid)
+    scopes.session_tokens = _set_session_context(session["session_key"], ui_session_id=sid,
+                                                 isolated_browser_owner=isolated_browser_owner)
     from gateway.session_context import set_turn_user_message
     set_turn_user_message("")
     if st.chat_execution_generation is not None:
@@ -1118,6 +1119,7 @@ def _run_prompt_submit(
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
     turn_author: dict | None = None, approval_origin=None, approval_reservations=None,
+    authenticated_isolated_browser_owner=None,
     approval_completion_events=None, chat_submit_ids: tuple[str, ...] = (),
     chat_submit_key: str | None = None) -> bool:
     from gateway.chat_execution_recovery import ChatExecutionStore
@@ -1247,10 +1249,13 @@ def _run_prompt_submit(
                 execution_scope.__enter__()
                 # The capability sync may have rebuilt the agent after the first
                 # session bind. Rebind every identity field from the selected agent.
-                st.scopes.session_tokens = _set_session_context(key, ui_session_id=sid)
+                st.scopes.session_tokens = _set_session_context(
+                    key, ui_session_id=sid, isolated_browser_owner=authenticated_isolated_browser_owner)
                 set_session_run_generation(generation)
 
-            prepared = _prepare_turn_input(sid, session, st, text, images, admit_worker=admit_worker)
+            prepared = _prepare_turn_input(
+                sid, session, st, text, images, admit_worker=admit_worker,
+                isolated_browser_owner=authenticated_isolated_browser_owner)
             if prepared is None:
                 if st.terminal_callback is not None and not st.receipt_attempted:
                     st.receipt_attempted = True
@@ -1266,7 +1271,8 @@ def _run_prompt_submit(
             # instruction is not the authenticated Desktop owner's instruction.
             owner_matches = (isinstance(owner, tuple) and len(owner) == 2
                              and requester == f"{owner[0]}:{owner[1]}")
-            set_turn_user_message(text if owner_matches and isinstance(text, str) else "")
+            set_turn_user_message(text if ((owner_matches or authenticated_isolated_browser_owner is not None)
+                                           and isinstance(text, str)) else "")
             _invoke_agent(
                 sid, session, st, prompt, run_message, streamer, images, display_kind,
                 display_metadata, turn_author, text)

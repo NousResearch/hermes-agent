@@ -1043,7 +1043,8 @@ def _session_for_key(session_key: str) -> dict | None:
         return next((s for s in list(_sessions.values()) if s.get("session_key") == session_key), None)
 
 
-def _set_session_context(session_key: str, cwd: str | None = None, *, ui_session_id: str = "") -> list:
+def _set_session_context(session_key: str, cwd: str | None = None, *, ui_session_id: str = "",
+                         isolated_browser_owner=None) -> list:
     with contextlib.suppress(Exception):
         from gateway.session_context import set_session_vars
         sess = _session_for_key(session_key) if session_key else None
@@ -1072,6 +1073,13 @@ def _set_session_context(session_key: str, cwd: str | None = None, *, ui_session
             if handoff_identity is not None:
                 browser_control_provider = handoff_identity.provider
                 browser_control_subject = handoff_identity.subject
+            elif (_session_source(sess) == "desktop" and isinstance(isolated_browser_owner, tuple)
+                  and len(isolated_browser_owner) == 2
+                  and all(isinstance(part, str) and part for part in isolated_browser_owner)):
+                # The compute host received this identity only through its
+                # exact claimed turn frame. No browser-control principal or
+                # live-turn delegation grant crosses the process boundary.
+                browser_control_provider, browser_control_subject = isolated_browser_owner
         return set_session_vars(
             session_key=session_key, session_id=session_id, platform=source, source=source,
             browser_control_principal=browser_control_principal,

@@ -549,7 +549,9 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
         if not use_compute_host:
             _run_prompt_submit(rid, sid, session, queued["text"], **kwargs, **author_kwargs,
                                approval_origin=queued.get("approval_origin"))
-        elif (resp := _submit_prompt_to_compute_host(rid, sid, session, queued["text"], **kwargs)).get("error"):
+        elif (resp := _submit_prompt_to_compute_host(
+                rid, sid, session, queued["text"], chat_instruction_origin=queued.get("approval_origin"),
+                **kwargs)).get("error"):
             with session["history_lock"]:
                 session["running"] = False
                 _clear_inflight_turn(session)

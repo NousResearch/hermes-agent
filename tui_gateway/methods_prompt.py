@@ -662,7 +662,7 @@ def _approval_origin_for_direct_submit(session, text, raw_text, *, internal_host
     """Return the server-stamped identity of this committed direct RPC, if proven."""
     if (internal_hosted_submit or raw_author is not None or display_kind is not None
             or session.get("source") not in {"tui", "desktop", "cli", "acp"}
-            or not isinstance(text, str) or not text.strip() or raw_text != text or turn_isolation):
+            or not isinstance(text, str) or not text.strip() or raw_text != text):
         return None
     submitting_transport = current_transport() if transport is None else transport
     transport_owner = _server_verified_transport_owner(submitting_transport)
@@ -930,7 +930,7 @@ def _submit_after_chat_claim(
         _reopen_before_isolated_submit(session, sid)
         isolated_response = _submit_prompt_to_compute_host(
             rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata,
-            chat_submit_id=submit_id, chat_submit_key=key)
+            chat_submit_id=submit_id, chat_submit_key=key, chat_instruction_origin=approval_origin)
         if not isolated_response.get("error"):
             # The truncation already happened inline above (memory + DB).
             isolated_response["result"].update(survivor_fields)

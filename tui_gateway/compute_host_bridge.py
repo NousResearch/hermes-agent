@@ -295,7 +295,8 @@ def _submit_prompt_to_compute_host(
     rid: str, sid: str, session: dict, text: Any, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None, display_kind: str | None = None,
     display_metadata: dict | None = None, chat_submit_id: str | None = None,
-    chat_submit_ids: tuple[str, ...] = (), chat_submit_key: str | None = None) -> dict:
+    chat_submit_ids: tuple[str, ...] = (), chat_submit_key: str | None = None,
+    chat_instruction_origin=None) -> dict:
     claim_ids = (*chat_submit_ids, *((chat_submit_id,) if chat_submit_id else ()))
     if claim_ids:
         session.setdefault("_chat_pending_submit_ids", set()).update(claim_ids)
@@ -311,6 +312,19 @@ def _submit_prompt_to_compute_host(
     # Caller JSON-RPC ids may repeat across sockets and turns. Use an opaque
     # dispatch lifetime token, installed before a fast child can send activity.
     turn_id = frame["turn_id"] = frame["request_id"] = uuid.uuid4().hex
+    owner = session.get("transport_owner")
+    if (isinstance(chat_instruction_origin, tuple) and len(chat_instruction_origin) == 5
+            and isinstance(owner, tuple) and len(owner) == 2
+            and chat_instruction_origin[0] == f"{owner[0]}:{owner[1]}"
+            and chat_instruction_origin[3] == text and claim_ids
+            and frame.get("source") == "desktop"):
+        # The parent verified this WebSocket and reserved the exact submitted
+        # turn. Carry instruction provenance only, never the approval task or
+        # in-process live-turn grant, across the private compute-host pipe.
+        frame["_chat_user_instruction"] = {
+            "turn_id": turn_id, "session_key": frame["session_key"],
+            "profile_home": frame["profile_home"], "submit_id": claim_ids[0],
+            "owner": list(owner), "requester": chat_instruction_origin[0], "text": text}
     with session["history_lock"]:
         session["_compute_host_turn_id"] = turn_id
         session.pop("_compute_host_activity_ns", None)

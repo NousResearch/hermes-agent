@@ -31,6 +31,23 @@ def now_ns() -> int:
     return time.perf_counter_ns()
 
 
+def _isolated_chat_user_instruction(frame, session, request_id, sid, text):
+    """Accept only the parent's exact owner-bound, journal-claimed turn frame."""
+    proof = frame.get("_chat_user_instruction")
+    owner = proof.get("owner") if isinstance(proof, dict) else None
+    if (not isinstance(proof, dict) or not isinstance(owner, list) or len(owner) != 2
+            or not all(isinstance(part, str) and part for part in owner)
+            or proof.get("requester") != f"{owner[0]}:{owner[1]}"
+            or proof.get("text") != text or not isinstance(text, str)
+            or proof.get("turn_id") != frame.get("turn_id") or frame.get("turn_id") != request_id
+            or proof.get("session_key") != str(session.get("session_key") or sid)
+            or proof.get("profile_home") != str(session.get("profile_home") or "")
+            or proof.get("submit_id") not in tuple(frame.get("_chat_submit_ids") or ())
+            or frame.get("source") != "desktop"):
+        return None
+    return tuple(owner)
+
+
 class _HostTransport:
     def __init__(self, emit: Callable[[dict[str, Any]], None]) -> None:
         self._emit = emit
@@ -269,12 +286,14 @@ class ComputeHost:
                 hermes_undo.on_user_message_appended(session["session_key"])
             with contextlib.suppress(Exception):
                 server._persist_branch_seed(session)
+            instruction_owner = _isolated_chat_user_instruction(frame, session, request_id, sid, text)
             server._run_prompt_submit(
                 request_id, sid, session, text, display_kind=frame.get("display_kind") or None,
                 display_metadata=(frame.get("display_metadata")
                                   if isinstance(frame.get("display_metadata"), dict) else None),
                 chat_submit_ids=tuple(frame.get("_chat_submit_ids") or ()),
-                chat_submit_key=frame.get("_chat_submit_key"))
+                chat_submit_key=frame.get("_chat_submit_key"),
+                authenticated_isolated_browser_owner=instruction_owner)
             run_thread = session.get("_run_thread")
             if run_thread is not None and hasattr(run_thread, "join"):
                 while run_thread.is_alive():

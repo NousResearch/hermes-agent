@@ -390,6 +390,7 @@ class AIAgent(
         ):
             setattr(self, counter, 0)
         self.session_estimated_cost_usd = 0.0
+        self.session_actual_cost_usd = 0.0
         self.session_cost_status = "unknown"
         self.session_cost_source = "none"
 

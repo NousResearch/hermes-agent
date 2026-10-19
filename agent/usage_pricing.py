@@ -56,9 +56,12 @@ def format_cost_label(amount: Decimal) -> str:
     return f"~${amount:.2f}"
 
 CostStatus = Literal["actual", "estimated", "included", "unknown"]
+# ``provider_response``: the provider's own billed figure for the call (OpenRouter's
+# ``usage.cost``), read at the turn seam — not a derived estimate, and not the
+# generations API (which returns zeroed records for these routes).
 CostSource = Literal[
     "provider_cost_api", "provider_generation_api", "provider_models_api", "official_docs_snapshot",
-    "user_override", "custom_contract", "none",
+    "user_override", "custom_contract", "provider_response", "none",
 ]
 
 

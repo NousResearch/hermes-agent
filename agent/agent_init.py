@@ -2238,6 +2238,9 @@ _USAGE_STATE: dict[str, Any] = {
     "session_cache_write_tokens": 0,
     "session_reasoning_tokens": 0,
     "session_estimated_cost_usd": 0.0,
+    # Provider-billed spend for the session (``usage.cost``); kept separate from the
+    # estimated column so the same call is never counted in both (see agent/turn_usage.py).
+    "session_actual_cost_usd": 0.0,
     "session_cost_status": "unknown",
     "session_cost_source": "none",
     # Status-bar latency/velocity history (last 10 calls), shared by loop + codex_runtime.

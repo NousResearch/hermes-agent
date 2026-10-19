@@ -111,7 +111,7 @@ def test_connect_scope_install_failure_releases_the_discovery_claim(monkeypatch,
     async def _boom():
         raise RuntimeError("hydration failed")
     monkeypatch.setattr(discovery, "_install_owner_secret_scope", _boom)
-    claim = lambda server: None  # noqa: E731
+    claim = lambda server: None
 
     async def _run():
         token = discovery._core._connect_server_claim.set(claim)

@@ -8,7 +8,7 @@ they must resolve to the real NEW tree, not test doubles or the old module.
 This fixture avoids depending on a deep Git history in CI/shallow checkouts.
 """
 
-# ruff: noqa: F821 -- globals came from the old process; the test supplies them.
+
 import sys
 from pathlib import Path
 

@@ -95,7 +95,7 @@ def _mock_health(json_data, raise_on=None, *, knows_token=True, reflects_bearer=
         headers = kwargs.get("headers") or {}
         requests.append((url, headers))
         if raise_on == "headers":
-            raise asyncio.TimeoutError
+            raise TimeoutError
         if url.endswith("/auth-proof"):
             challenge = headers.get("X-Hermes-Bridge-Challenge", "")
             token = _TEST_TOKEN if knows_token else headers.get("Authorization", "").removeprefix("Bearer ")

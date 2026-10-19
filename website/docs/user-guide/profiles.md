@@ -383,8 +383,28 @@ This stops the gateway, removes the systemd/launchd service, removes the command
 Use `--yes` to skip confirmation: `hermes profile delete coder --yes`
 
 :::note
-You cannot delete the default profile (`~/.hermes`). To remove everything, use `hermes uninstall`.
+The default profile cannot be removed: its directory holds the Hermes install and every other profile. Deleting it — `hermes profile delete default`, or **Delete** on the default profile or default Bot in the desktop app — **resets** it instead. To remove everything, use `hermes uninstall`.
 :::
+
+## Resetting a profile
+
+```bash
+hermes profile reset          # the default profile
+hermes profile reset coder    # any other profile
+```
+
+A reset wipes the agent's own state and keeps everything it shares, so you stay logged in:
+
+| Reset (wiped) | Kept |
+|---------------|------|
+| Memories: `memories/` (`MEMORY.md`, `USER.md`) and the local `memory_store.db` | API keys and logins: `.env`, `auth.json`, OAuth/MCP tokens, platform pairing, browser logins, and every other credential store |
+| Skills: `skills/` is emptied and the bundled skills are installed again (a `.no-bundled-skills` opt-out is cleared) | The model choice (`model` block and its provider entry) and an explicit `gateway.multiplex_profiles` |
+| Settings: every other key in `config.yaml` returns to its default | Every other profile (`profiles/`) and their sessions — including rows of theirs that sit in the default `state.db` |
+| Persona and look: `SOUL.md` is rewritten to the stock persona; `profile.yaml` (display name, description, Bot appearance) and `desktop.json` are removed | The Hermes install: the `hermes-agent/` checkout, managed runtimes, `bin/`, `node_modules/` |
+| Conversations: this profile's sessions and their transcripts, `response_store.db`, `.hermes_history` | `logs/`, caches, `workspace/`, `plugins/`, `skins/`, kanban boards, `backups/` |
+| Cron jobs: every job (and its output) is removed | |
+
+You'll be asked to type the profile name to confirm (`--yes` skips it). The gateway keeps running during a reset; a session with a turn in progress is kept. See [`hermes profile reset`](../reference/profile-commands.md#hermes-profile-reset) for details.
 
 ## Tab completion
 

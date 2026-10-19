@@ -83,7 +83,7 @@ Remote-creation notes:
 
 **Edit Profile** (right-click a Bot) reopens the same surface on the live profile any time: avatar, title, description, model pin, skills, toolsets, MCP servers, and the full SOUL.md.
 
-**Duplicate** (right-click) makes a full clone of a Bot — config, skills, SOUL.md, memory, and its look. **Delete Profile** permanently removes one, behind the same destructive confirmation the desktop's profile menu uses; the default profile cannot be deleted.
+**Duplicate** (right-click) makes a full clone of a Bot — config, skills, SOUL.md, memory, and its look. **Delete Profile** permanently removes one, behind the same destructive confirmation the desktop's profile menu uses. The default Bot cannot be removed — its profile holds the Hermes install and your other Bots — so **Delete Profile** on it **resets** it instead: its memories, skills, settings, persona, look, chats and cron jobs are wiped, while your other Bots, the install, and your API keys and logins are kept ([what a reset keeps](./profiles.md#resetting-a-profile)).
 
 ## Avatars
 

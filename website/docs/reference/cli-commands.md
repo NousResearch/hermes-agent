@@ -1936,7 +1936,8 @@ Manage profiles — multiple isolated Hermes instances, each with its own config
 | `list` | List all profiles. |
 | `use <name>` | Set a sticky default profile. |
 | `create <name> [--clone] [--clone-all] [--clone-from <source>] [--no-alias]` | Create a new profile. `--clone` copies config, `.env`, `SOUL.md`, skills, and the curated `MEMORY.md`/`USER.md` memory files from the active profile. `--clone-all` copies all state. `--clone-from` specifies a source profile and implies config clone unless paired with `--clone-all`. |
-| `delete <name> [-y]` | Delete a profile. |
+| `delete <name> [-y]` | Delete a profile. `delete default` resets the default profile instead (it cannot be removed). |
+| `reset [<name>] [-y]` | Reset a profile (default: `default`): wipe its memories, skills, settings, persona, sessions and cron jobs; keep credentials, the model choice, other profiles and the install. |
 | `show <name>` | Show profile details (home directory, config, etc.). |
 | `alias <name> [--remove] [--name NAME]` | Manage wrapper scripts for quick profile access. |
 | `rename <old> <new>` | Rename a profile. |

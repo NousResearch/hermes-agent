@@ -30,6 +30,8 @@ from tools import browser_tool_session as bt_session
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
+    from tools import browser_use_cli_lifecycle
+    monkeypatch.setattr(browser_use_cli_lifecycle, "_daemons", {})
     monkeypatch.delenv("BU_NAME", raising=False)
     monkeypatch.delenv("BU_AUTOSPAWN", raising=False)
     monkeypatch.delenv("BROWSER_USE_API_KEY", raising=False)
@@ -1298,7 +1300,6 @@ class TestExecHybridPrivateUrlRouting:
         monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: object())
         monkeypatch.setattr(bt_cloud, "_auto_local_for_private_urls", lambda: True)
         monkeypatch.setattr(bu_cli, "_exec_route_is_sidecar", {}, raising=False)
-        monkeypatch.setattr(bu_cli, "_driven_daemons", set())
         self.cloud_keys = []
         monkeypatch.setattr(bt_session, "_get_session_info",
                             lambda key: self.cloud_keys.append(key) or {"cdp_url": "wss://cloud.example/x"})
@@ -1344,9 +1345,10 @@ class TestExecHybridPrivateUrlRouting:
             assert [k for k, *_ in self.local_keys] == ["t::local"]
             assert result["output"] == "_local_default"
 
-    def test_sidecar_route_has_its_own_daemon_and_sticks_for_url_less_calls(self):
+    def test_sidecar_route_has_its_own_daemon_and_sticks_for_url_less_calls(self, monkeypatch):
         """The harness daemon reads BU_CDP_* once at spawn, so the sidecar must not share the cloud
         route's daemon; a follow-up with no URL literal keeps driving the page the last call opened."""
+        self._dns(monkeypatch, "93.184.216.34", "93.184.216.34")
         steps = [('new_tab("https://example.com/")', "default"),
                  (f'new_tab("{self.LAN}")', "_local_default"),
                  ('print(js("document.title"))', "_local_default")]

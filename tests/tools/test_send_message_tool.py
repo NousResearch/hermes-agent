@@ -516,13 +516,19 @@ def _album_send(monkeypatch, tmp_path, count, runner=None):
 
 
 class TestSendTelegramStandaloneAlbums:
-    def test_standalone_uses_adapter_albums_chunked_at_ten(self, tmp_path, monkeypatch):
-        import plugins.platforms.telegram.adapter  # the real adapter, over the mocked bot
+    @pytest.mark.parametrize("adapter, albums, singles", [(True, [10, 2], 0), (False, [], 12)],
+                             ids=["adapter", "no-adapter"])
+    def test_standalone_photos_go_as_albums_or_one_by_one(self, tmp_path, monkeypatch, adapter, albums, singles):
+        if adapter:
+            import plugins.platforms.telegram.adapter  # the real adapter, over the mocked bot
+        else:  # no adapter: every photo still arrives, one sendPhoto each
+            monkeypatch.setitem(sys.modules, "plugins.platforms.telegram.adapter", None)
         bot, _, result = _album_send(monkeypatch, tmp_path, 12)
         assert result["success"] is True
-        assert [len(c.kwargs["media"]) for c in bot.send_media_group.await_args_list] == [10, 2]
-        assert {c.kwargs["message_thread_id"] for c in bot.send_media_group.await_args_list} == {7}
-        bot.send_photo.assert_not_awaited()
+        assert [len(c.kwargs["media"]) for c in bot.send_media_group.await_args_list] == albums
+        sends = bot.send_media_group.await_args_list + bot.send_photo.await_args_list
+        assert {c.kwargs["message_thread_id"] for c in sends} == {7}
+        assert bot.send_photo.await_count == singles
 
     def test_live_gateway_adapter_sends_the_album(self, tmp_path, monkeypatch):
         live = SimpleNamespace(is_connected=True, send_multiple_images=AsyncMock(
@@ -533,13 +539,6 @@ class TestSendTelegramStandaloneAlbums:
         assert [url for url, _ in images] == [p.as_uri() for p in paths]
         assert (chat_id, metadata["thread_id"]) == ("12345", "7")
         bot.send_photo.assert_not_awaited()
-        bot.send_media_group.assert_not_awaited()
-
-    def test_without_the_adapter_photos_go_one_by_one(self, tmp_path, monkeypatch):
-        monkeypatch.setitem(sys.modules, "plugins.platforms.telegram.adapter", None)
-        bot, _, result = _album_send(monkeypatch, tmp_path, 2)
-        assert result["success"] is True
-        assert bot.send_photo.await_count == 2
         bot.send_media_group.assert_not_awaited()
 
 

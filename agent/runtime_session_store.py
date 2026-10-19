@@ -6,11 +6,19 @@ No existing cron/child/compute consumer is switched until its inventory is cover
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
+from concurrent.futures import ThreadPoolExecutor
 import json
+import logging
 import os
 from pathlib import Path
+import queue
+import sys
 import threading
+from hermes_dir_acl import make_user_dir
 
+logger = logging.getLogger(__name__)
 
 _worker_process = False
 
@@ -39,61 +47,164 @@ class WorkerPersistenceError(RuntimeError):
     pass
 
 
+def _caller_summary(limit=8):
+    """module:function:line of the frames above this store (its own frames skipped), never
+    locals or argument values: best-effort callers swallow the guard's raise (#139029)."""
+    frame, frames = sys._getframe(2), []
+    while frame is not None and len(frames) < limit:
+        module = frame.f_globals.get('__name__', '?')
+        if not module.startswith('agent.runtime_session_'):
+            frames.append(f'{module}:{frame.f_code.co_name}:{frame.f_lineno}')
+        frame = frame.f_back
+    return ' <- '.join(frames)
+
+
+def call_off_event_loop(fn, *args, **kwargs):
+    """Call ``fn`` here, or on a worker thread when this thread is running an event loop.
+
+    For synchronous best-effort writers that can run inside a callback Relay drives on its private
+    loop (provider/tool callbacks): there ``WorkerRPC`` refuses the call (``synchronous_rpc_on_event_loop``,
+    sticky for the rest of the turn; #139029). The callback already blocks that loop, so waiting for the
+    thread costs it nothing; the context is copied so session-scoped state survives the hop, and errors
+    re-raise here. Async code awaits ``asyncio.to_thread`` instead.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return fn(*args, **kwargs)
+    context = contextvars.copy_context()
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix='worker-persist-off-loop') as pool:
+        return pool.submit(context.run, fn, *args, **kwargs).result()
+
+
+class _OwnerLink:
+    """One owner WebSocket and the only thread that reads it. Events the owner broadcasts to every
+    transport are discarded as they arrive, idle or not: left queued, websockets' bounded receive
+    buffer pauses socket reads, which also stalls pongs and the close handshake. The reply to the
+    one outstanding request id goes to its caller; a closed connection goes to it as the exception."""
+    def __init__(self, ws):
+        self.ws = ws
+        self.awaiting = None
+        self.replies = queue.SimpleQueue()
+        self.reader = threading.Thread(target=self._read, name='worker-rpc-reader', daemon=True)
+        self.reader.start()
+
+    def _read(self):
+        try:
+            while True:
+                try:
+                    frame = json.loads(self.ws.recv())
+                except ValueError:
+                    continue
+                if isinstance(frame, dict) and self.awaiting is not None and frame.get('id') == self.awaiting:
+                    self.replies.put(frame)
+        except Exception as exc:  # health: allow BLE001 -- handed to the caller, which raises it (ConnectionClosed included)
+            self.replies.put(exc)
+
+    def send(self, request_id, message):
+        self.awaiting = request_id
+        self.ws.send(message)
+
+    def receive(self, timeout):
+        try:
+            reply = self.replies.get(timeout=timeout)
+        except queue.Empty:
+            raise TimeoutError('worker_receipt_timeout') from None
+        if isinstance(reply, BaseException):
+            raise reply
+        return reply
+
+
 class WorkerRPC:
     """Bounded authenticated calls to an existing owner; never starts a daemon.
 
-    websockets.sync owns a dedicated frame receiver, independent of the caller.
     No owner-loop synchronous self-RPC or SQLite fallback is permitted.
+    One connection serves every call (serialized by ``lock``, correlated by id); it is
+    discovered, identified and ticketed on connect exactly as each call once was.
     """
     def __init__(self, home):
         self.home = Path(home).resolve()
         self.lock = threading.Lock()
         self.endpoint = None
+        self.link = None
+        self.request_id = 0
 
-    def __call__(self, method, **params):
+    def _connection(self):
+        if self.link is not None:
+            if self.link.reader.is_alive():
+                return self.link
+            # The owner closed it while idle, before any send: redial with a fresh ticket.
+            self._drop()
         from hermes_cli.gateway_client import _session_ticket, gateway_ws_target
         from hermes_cli.gateway_runtime_discovery import query_identify
         from websockets.sync.client import connect
+        # A served secondary has no socket; its multiplexer's descriptor names it.
+        from hermes_cli.gateway_runtime import discover_gateway_endpoint
+        discovery = discover_gateway_endpoint(self.home, timeout=5)
+        if discovery.state == 'ready' and discovery.endpoint is not None:
+            self.endpoint = discovery.endpoint
+        elif discovery.state != 'draining' or self.endpoint is None:
+            raise WorkerPersistenceError('owner_unavailable')
+        from hermes_cli.gateway_runtime import control_home_for
+        endpoint = self.endpoint
+        descriptor = query_identify(control_home_for(self.home, endpoint), timeout=5)
+        if descriptor.get('pid') == os.getpid():
+            raise WorkerPersistenceError('synchronous_self_rpc')
+        ticket = _session_ticket(self.home, endpoint, purpose='worker-adoption')
+        url, protocols = gateway_ws_target(endpoint, ticket)
+        # The owner is loopback, like connect_gateway's peer: an inherited HTTPS_PROXY must not carry it.
+        # No library keepalive: its pong deadline would run independently of (and could fail) a call
+        # inside its receipt budget; that budget and the observed close are the liveness checks.
+        self.link = _OwnerLink(connect(url, subprotocols=protocols, open_timeout=5, close_timeout=1,
+                                       max_size=8 * 1024 * 1024, proxy=None, ping_interval=None))
+        return self.link
+
+    def _drop(self):
+        link, self.link = self.link, None
+        if link is not None:
+            with contextlib.suppress(OSError):  # a broken socket is already gone
+                link.ws.close()
+
+    def close(self):
+        with self.lock:
+            self._drop()
+
+    def __call__(self, method, **params):
         try:
             asyncio.get_running_loop()
         except RuntimeError:
             pass
         else:
+            logger.warning('synchronous_rpc_on_event_loop: %s on thread %s; caller: %s',
+                           method, threading.current_thread().name, _caller_summary())
             raise WorkerPersistenceError('synchronous_rpc_on_event_loop')
+        from websockets.exceptions import ConnectionClosed
         with self.lock:
-            # A served secondary has no socket; its multiplexer's descriptor names it.
-            from hermes_cli.gateway_runtime import discover_gateway_endpoint
-            discovery = discover_gateway_endpoint(self.home, timeout=5)
-            if discovery.state == 'ready' and discovery.endpoint is not None:
-                self.endpoint = discovery.endpoint
-            elif discovery.state != 'draining' or self.endpoint is None:
-                raise WorkerPersistenceError('owner_unavailable')
-            from hermes_cli.gateway_runtime import control_home_for
-            endpoint = self.endpoint
-            descriptor = query_identify(control_home_for(self.home, endpoint), timeout=5)
-            if descriptor.get('pid') == os.getpid():
-                raise WorkerPersistenceError('synchronous_self_rpc')
-            ticket = _session_ticket(self.home, endpoint, purpose='worker-adoption')
-            url, protocols = gateway_ws_target(endpoint, ticket)
-            # The owner is loopback, like connect_gateway's peer: an inherited HTTPS_PROXY must not carry it.
-            with connect(url, subprotocols=protocols,
-                         open_timeout=5, close_timeout=1, max_size=8 * 1024 * 1024, proxy=None) as ws:
-                ws.send(json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': method, 'params': params}))
-                import time
-                deadline = time.monotonic() + 20
-                while True:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise TimeoutError('worker_receipt_timeout')
-                    response = json.loads(ws.recv(timeout=remaining))
-                    if response.get('id') == 1:
-                        break
-                if 'error' in response:
-                    raise WorkerPersistenceError(response['error'].get('message', 'persistence_failed'))
-                if method in ('worker.register', 'worker.adopt') and params.get('pid') == os.getpid():
-                    global _worker_process
-                    _worker_process = True
-                return response['result']
+            self.request_id += 1
+            request_id = self.request_id
+            message = json.dumps({'jsonrpc': '2.0', 'id': request_id, 'method': method, 'params': params})
+            try:
+                link = self._connection()
+                try:
+                    link.send(request_id, message)
+                except ConnectionClosed:
+                    # websockets raises this from send only before a complete frame is written (closed
+                    # on entry, or the socket write failed): the owner closed the link after the idle
+                    # check and never saw this request, so redial and send it once more.
+                    self._drop()
+                    link = self._connection()
+                    link.send(request_id, message)
+                response = link.receive(20)
+            except BaseException:
+                # Outcome unknown once sent: surface the error and never resend; the next call redials.
+                self._drop()
+                raise
+            if 'error' in response:
+                raise WorkerPersistenceError(response['error'].get('message', 'persistence_failed'))
+            if method in ('worker.register', 'worker.adopt') and params.get('pid') == os.getpid():
+                global _worker_process
+                _worker_process = True
+            return response['result']
 
 
 from agent.runtime_session_compression import RuntimeSessionCompressionMixin
@@ -116,7 +227,7 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
         self.lock = threading.RLock()
         self.failure = None
         self.path = Path(outbox_dir) / 'pending.json'
-        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        make_user_dir(self.path.parent, mode=0o700, parents=True, exist_ok=True)
         if self.path.parent.is_symlink() or self.path.is_symlink():
             raise WorkerPersistenceError('unsafe_outbox')
         os.chmod(self.path.parent, 0o700)

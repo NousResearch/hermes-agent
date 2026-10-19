@@ -73,6 +73,8 @@ gateway:
     next_turn_only: "    (apenas no próximo turno — volta ao normal após uma resposta)"
     switch_cancelled: "🟡 Troca de modelo cancelada. Modelo atual inalterado ({model})."
     guard_confirm: "⚠️ **{title}**\n\n{message}\n\n_Alternativa em texto: responda `{prefix}approve` para trocar ou `{prefix}cancel` para manter o modelo atual._"
+    err_once_local: "`--once` is not available in this session; use `/model <name>` and switch back after the turn."
+    local_next_turn: "Applies from your next message."
   agents:
     header: "🤖 **Agentes e tarefas ativos**"
     active_agents: "**Agentes ativos:** {count}"
@@ -162,6 +164,7 @@ gateway:
     full_logs_hint: "Para enviar logs completos, usa `hermes debug share` a partir da CLI."
     share_hint: "Partilha estes links com a equipa do Hermes para obter suporte."
     report_label: "Relatório"
+    local_refused: "`/debug local` mantém o relatório na máquina que executa o Hermes, por isso não está disponível num chat. Envie `/debug` para enviar o relatório resumido."
   deny:
     stale: "❌ Comando negado (a aprovação tinha expirado)."
     no_pending: "Não há nenhum comando pendente para negar."
@@ -443,6 +446,9 @@ gateway:
     state_no: "Não"
     queued: "**Seguimentos em fila:** {count}"
     platforms: "**Plataformas ligadas:** {platforms}"
+  discard:
+    nothing: "Nada para descartar: este chat não tem nenhum turno perdido em uma reinicialização."
+    done: "🗑️ {count} turno(s) perdido(s) descartado(s); não foram executados novamente. Suas mensagens salvas serão respondidas agora."
   stop:
     stopped_pending: "⚡ Parado. O agente ainda não tinha começado — podes continuar esta sessão."
     stopped: "⚡ Parado. Podes continuar esta sessão."
@@ -1528,6 +1534,8 @@ slash:
     description: "Importar um arquivo de perfil compartilhado como novo perfil"
   stop:
     description: "Encerrar todos os processos em segundo plano em execução"
+  discard:
+    description: "Descarta um turno perdido quando o Hermes reiniciou para que a fila deste chat continue"
   pause:
     description: "Pausar todo trabalho novo globalmente (parada de emergência); '/pause off' retoma"
   deny:
@@ -3002,6 +3010,10 @@ cli:
       usage_disconnect: "disconnect   Volta ao backend de navegador padrão"
       usage_status: "status       Mostra o modo atual do navegador"
       usage_use: "use [off]    Muda para o modo Browser Use (CLI 3.0) / volta às ferramentas integradas"
+      remote_gateway: "/browser connect e /browser disconnect gerenciam um navegador Chromium no host do gateway — disponível apenas com um gateway local."
+      checking: "Verificando a depuração remota do navegador Chromium em {url}..."
+      new_sessions_only: "Aplica-se a novas sessões — esta mantém as ferramentas atuais (/new para iniciar uma)."
+      status_gateway_default: "🌐 Navegador: backend de navegador padrão do gateway (sem conexão CDP ao vivo)"
     heartbeat:
       label: "Heartbeats"
       paused: "⏸ Heartbeat pausado: {prompt}"
@@ -3110,6 +3122,10 @@ cli:
     loaded: "(carregado)"
     not_found: "(não encontrado)"
     microsoft_entra_id: "Microsoft Entra ID"
+    google_vertex_oauth: "Google OAuth (Vertex AI)"
+    key_cmd_token: "key_cmd token (command)"
+    minimax_oauth: "MiniMax OAuth"
+    token_provider: "Token provider"
     api_key_not_set: "Não definida!"
     value_not_set: "não definido"
     section_model: "Modelo"
@@ -3291,8 +3307,22 @@ cli:
     next_session_deepens: "A próxima sessão `hermes -w` aprofunda o clone e remove worktrees já mescladas automaticamente."
     unpushed_keeping: "⚠ A worktree tem commits não enviados (push); mantendo: {path}"
     uncommitted_keeping: "⚠ A worktree tem alterações não commitadas; mantendo: {path}"
+    kept_reason: "⚠ Mantendo a worktree ({reason}): {path}"
     clean_up_manually: "Para limpar manualmente: git worktree remove --force {path}"
     cleaned_up: "✓ Worktree limpa: {path}"
+    exit_question_dirty: "Esta worktree tem alterações não commitadas: {path}"
+    exit_question_unpushed: "Esta worktree tem commits não enviados (push): {path}"
+    exit_choice_keep: "Manter a worktree (padrão)"
+    exit_choice_archive: "Arquivar e remover (restaurável)"
+    exit_choice_discard: "Remover e descartar as alterações"
+    archiving: "Arquivando {path} … (pode demorar em uma árvore grande)"
+    archived: "✓ Worktree arquivada em {ref} e removida: {path}"
+    restore_hint: "Restaure com: hermes worktree restore {name}"
+    archive_failed: "✗ Não foi possível arquivar {path}; mantendo: {error}"
+    archived_kept: "✓ Worktree arquivada em {ref}, mas mantida ({reason}): {path}"
+    sweep_archived_removed: "arquivada + removida → {ref}"
+    sweep_archived_kept: "arquivada, mantida ({reason}) → {ref}"
+    discarded: "Worktree removida e alterações descartadas: {path}"
 display:
   verb:
     web_search: "Pesquisando na web"
@@ -3721,7 +3751,7 @@ tips:
   t241: "O gateway mantém instâncias de AIAgent em cache por sessão — destruir esse cache quebra o cache de prompt da Anthropic."
   t242: "Qualquer site pode expor skills via /.well-known/skills/index.json — o hub de skills as descobre automaticamente."
   t243: "O log de auditoria de skills em ~/.hermes/skills/.hub/audit.log registra toda operação de instalação e remoção."
-  t244: "Worktrees git obsoletos são limpos automaticamente na inicialização: árvores limpas e totalmente mescladas são removidas; trabalho sujo ou não enviado é sempre preservado."
+  t244: "Worktrees git obsoletas são limpas automaticamente: árvores limpas e mescladas são removidas; árvores ociosas com alterações não commitadas ou não enviadas são arquivadas antes e podem ser restauradas com hermes worktree restore."
   t245: "Perfis delimitam o estado do Hermes via HERMES_HOME; subprocessos de ferramentas do host mantêm seu HOME real, a menos que terminal.home_mode seja profile."
   t246: "A variável de ambiente HERMES_HOME_MODE (octal, ex.: 0701) define permissões de diretório personalizadas para travessia pelo servidor web."
   t247: "Modo contêiner: coloque .container-mode em HERMES_HOME e a CLI do host executa automaticamente dentro do contêiner."

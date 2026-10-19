@@ -73,6 +73,8 @@ gateway:
     next_turn_only: "    （仅下一回合生效——一次响应后恢复）"
     switch_cancelled: "🟡 已取消切换模型。当前模型不变（{model}）。"
     guard_confirm: "⚠️ **{title}**\n\n{message}\n\n_文字回退方式：回复 `{prefix}approve` 切换，或回复 `{prefix}cancel` 保留当前模型。_"
+    err_once_local: "`--once` is not available in this session; use `/model <name>` and switch back after the turn."
+    local_next_turn: "Applies from your next message."
   agents:
     header: "🤖 **活跃代理与任务**"
     active_agents: "**活跃代理：** {count}"
@@ -162,6 +164,7 @@ gateway:
     full_logs_hint: "如需上传完整日志，请在 CLI 中使用 `hermes debug share`。"
     share_hint: "请将这些链接分享给 Hermes 团队以获得支持。"
     report_label: "报告"
+    local_refused: "`/debug local` 会把报告留在运行 Hermes 的机器上，因此无法在聊天中使用。发送 `/debug` 可上传摘要报告。"
   deny:
     stale: "❌ 命令已拒绝（批准已过期）。"
     no_pending: "没有待拒绝的命令。"
@@ -443,6 +446,9 @@ gateway:
     state_no: "否"
     queued: "**排队的后续：** {count}"
     platforms: "**已连接平台：** {platforms}"
+  discard:
+    nothing: "没有可丢弃的内容：此聊天没有在重启时丢失的回合。"
+    done: "🗑️ 已丢弃 {count} 个丢失的回合；未重新执行。现在会回复你已保存的消息。"
   stop:
     stopped_pending: "⚡ 已停止。代理尚未启动 — 你可以继续此会话。"
     stopped: "⚡ 已停止。你可以继续此会话。"
@@ -1528,6 +1534,8 @@ slash:
     description: "将分享的配置档归档导入为新配置档"
   stop:
     description: "终止所有正在运行的后台进程"
+  discard:
+    description: "丢弃 Hermes 重启时丢失的回合，让此聊天的队列继续运行"
   pause:
     description: "全局暂停新工作（紧急停止）；'/pause off' 恢复"
   deny:
@@ -3002,6 +3010,10 @@ cli:
       usage_disconnect: "disconnect   恢复为默认浏览器后端"
       usage_status: "status       显示当前浏览器模式"
       usage_use: "use [off]    切换到 Browser Use 模式（CLI 3.0）/ 切回内置工具"
+      remote_gateway: "/browser connect 和 /browser disconnect 管理网关主机上的 Chromium 系浏览器 — 仅在连接到本地网关时可用。"
+      checking: "正在检查 {url} 的 Chromium 系浏览器远程调试..."
+      new_sessions_only: "应用于新会话 — 此会话保留当前工具（/new 开始新的）。"
+      status_gateway_default: "🌐 浏览器：网关的默认浏览器后端（无实时 CDP 连接）"
     heartbeat:
       label: "心跳"
       paused: "⏸ 心跳已暂停：{prompt}"
@@ -3110,6 +3122,10 @@ cli:
     loaded: "（已加载）"
     not_found: "（未找到）"
     microsoft_entra_id: "Microsoft Entra ID"
+    google_vertex_oauth: "Google OAuth (Vertex AI)"
+    key_cmd_token: "key_cmd token (command)"
+    minimax_oauth: "MiniMax OAuth"
+    token_provider: "Token provider"
     api_key_not_set: "未设置！"
     value_not_set: "未设置"
     section_model: "模型"
@@ -3291,8 +3307,22 @@ cli:
     next_session_deepens: "下一次 `hermes -w` 会话会自动加深克隆并清理已合并的工作树。"
     unpushed_keeping: "⚠ 工作树有未推送的提交，保留：{path}"
     uncommitted_keeping: "⚠ 工作树有未提交的更改，保留：{path}"
+    kept_reason: "⚠ 保留工作树（{reason}）：{path}"
     clean_up_manually: "手动清理：git worktree remove --force {path}"
     cleaned_up: "✓ 工作树已清理：{path}"
+    exit_question_dirty: "此工作树有未提交的更改：{path}"
+    exit_question_unpushed: "此工作树有未推送的提交：{path}"
+    exit_choice_keep: "保留工作树（默认）"
+    exit_choice_archive: "归档并移除（可恢复）"
+    exit_choice_discard: "移除并丢弃更改"
+    archiving: "正在归档 {path} …(大型工作树可能需要一些时间)"
+    archived: "✓ 工作树已归档到 {ref} 并移除：{path}"
+    restore_hint: "恢复方式：hermes worktree restore {name}"
+    archive_failed: "✗ 无法归档 {path}，保留：{error}"
+    archived_kept: "✓ 工作树已归档到 {ref}，但已保留（{reason}）：{path}"
+    sweep_archived_removed: "已归档并移除 → {ref}"
+    sweep_archived_kept: "已归档，保留（{reason}）→ {ref}"
+    discarded: "工作树已移除，更改已丢弃：{path}"
 display:
   verb:
     web_search: "搜索网页"
@@ -3721,7 +3751,7 @@ tips:
   t241: "网关按会话缓存 AIAgent 实例——销毁这个缓存会破坏 Anthropic 的提示词缓存。"
   t242: "任何网站都可以通过 /.well-known/skills/index.json 公开技能——技能中心会自动发现它们。"
   t243: "技能审计日志位于 ~/.hermes/skills/.hub/audit.log，记录每一次安装和移除操作。"
-  t244: "启动时会自动清理过期的 git 工作树：干净且已完全合并的会被清除；有未提交或未推送改动的始终保留。"
+  t244: "过期的 git 工作树会自动清理：干净且已合并的会被移除；闲置且有未提交或未推送改动的会先归档，可用 hermes worktree restore 恢复。"
   t245: "配置档通过 HERMES_HOME 隔离 Hermes 状态；除非 terminal.home_mode 设为 profile，主机工具子进程仍使用你真实的 HOME。"
   t246: "HERMES_HOME_MODE 环境变量（八进制，如 0701）为 Web 服务器遍历设置自定义目录权限。"
   t247: "容器模式：在 HERMES_HOME 中放置 .container-mode，主机 CLI 就会自动切换到容器内执行。"

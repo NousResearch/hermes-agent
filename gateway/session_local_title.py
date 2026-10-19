@@ -45,8 +45,11 @@ def resolve_latest_session(authority, actor, family, workspace=None):
     if family not in families or (workspace is not None and (not isinstance(workspace, str) or not workspace)):
         raise RuntimeStoreError('invalid_params')
     from gateway.session_local_migration import resolve_local_target
+    # The owner's own rows are stored ``local``, with the family in ``created_source``.
+    sources = [*families[family], 'local']
     for scope in ([workspace] if workspace else []) + [None]:
-        for row in authority.db.search_sessions(source=families[family], limit=50, workspace_key=scope):
+        for row in authority.db.search_sessions(source=sources, local_created_sources=[family], limit=50,
+                                                workspace_key=scope):
             tip = authority.db.get_compression_tip(row['id']) or row['id']
             try:
                 return resolve_local_target(authority, actor, tip)

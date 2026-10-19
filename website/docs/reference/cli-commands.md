@@ -68,7 +68,7 @@ The install also ships `hermes-agent`, a minimal runner that sends one query and
 | `hermes status` | Show agent, auth, and platform status. |
 | `hermes usage` | Show the configured account's rate-limit windows (the `/usage` block) without a session; `--json` for scripts. |
 | `hermes cron` | Inspect and tick the cron scheduler. |
-| `hermes pause` / `hermes resume` | Global emergency stop: no new cron fires (built-in ticker, managed-cron webhook, misfire catch-up), kanban dispatch or gateway turns start until resumed; in-flight work is never killed. |
+| `hermes pause` / `hermes resume` | Global emergency stop: no new cron fires (built-in ticker, managed-cron webhook, misfire catch-up), kanban dispatch or gateway turns start until resumed. Interactive CLI, TUI and Desktop turns are gateway turns, so they are held too, and each surface shows "Hermes is paused" with the reason and "run `hermes resume`". Turns already running finish; in-flight work is never killed. |
 | `hermes kanban` | Multi-profile collaboration board (tasks, links, dispatcher). |
 | `hermes project` | Manage named, multi-folder workspaces (projects). Anchors desktop session grouping and, when bound to a kanban board, gives tasks a deterministic worktree + branch convention. State is per-profile. |
 | `hermes webhook` | Manage dynamic webhook subscriptions for event-driven activation. |
@@ -181,7 +181,7 @@ Every event carries `timestamp` (Unix epoch milliseconds).
 | `text` | `text` — a streamed assistant text delta |
 | `tool_use` | `name`; `input` when the tool arguments are available |
 | `tool_result` | `name`, `output` (capped at 5000 chars), `duration_ms`, `is_error` |
-| `result` | `session_id`, `exit_code`, `text`, `tokens` (`input`, `output`, `total`, `cache_read`, `cache_write`), `duration_ms`; `error` when the turn failed |
+| `result` | `session_id`, `exit_code`, `text`, `tokens` (`input`, `output`, `total`, `cache_read`, `cache_write`), `duration_ms`; `error` when the turn failed; `replay_gap: true` when the run fell behind the gateway's stream and re-attached, so its `text` events stopped early (`text` here is still the whole reply) |
 
 Once a conversation starts, its terminal record is always `result` — including
 `exit_code: 130` when it is interrupted with Ctrl-C. Treat that record as the

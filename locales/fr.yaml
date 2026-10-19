@@ -72,6 +72,8 @@ gateway:
     err_stale_override: "enregistré dans config.yaml, mais l'ancienne surcharge de session n'a pas été effacée ({error})"
     next_turn_only: "    (prochain tour uniquement — rétabli après une réponse)"
     switch_cancelled: "🟡 Changement de modèle annulé. Le modèle actuel est inchangé ({model})."
+    err_once_local: "`--once` is not available in this session; use `/model <name>` and switch back after the turn."
+    local_next_turn: "Applies from your next message."
     guard_confirm: |-
       ⚠️ **{title}**
 
@@ -188,6 +190,7 @@ gateway:
     full_logs_hint: "Pour envoyer les journaux complets, utilisez `hermes debug share` depuis la CLI."
     share_hint: "Partagez ces liens avec l'équipe Hermes pour obtenir de l'aide."
     report_label: "Rapport"
+    local_refused: "`/debug local` garde le rapport sur la machine qui exécute Hermes ; il n'est donc pas disponible depuis une discussion. Envoyez `/debug` pour téléverser le rapport de synthèse."
   deny:
     stale: "❌ Commande refusée (l'approbation était périmée)."
     no_pending: "Aucune commande en attente de refus."
@@ -483,6 +486,9 @@ gateway:
     state_no: "Non"
     queued: "**Suivis en file :** {count}"
     platforms: "**Plateformes connectées :** {platforms}"
+  discard:
+    nothing: "Rien à ignorer : ce chat n'a aucun tour perdu lors d'un redémarrage."
+    done: "🗑️ {count} tour(s) perdu(s) ignoré(s) ; ils n'ont pas été relancés. Vos messages enregistrés vont maintenant recevoir une réponse."
   stop:
     stopped_pending: "⚡ Arrêté. L'agent n'avait pas encore commencé — vous pouvez continuer cette session."
     stopped: "⚡ Arrêté. Vous pouvez continuer cette session."
@@ -1780,6 +1786,8 @@ slash:
     description: "Importer une archive de profil partagée comme nouveau profil"
   stop:
     description: "Tuer tous les processus en arrière-plan en cours"
+  discard:
+    description: "Ignorer un tour perdu au redémarrage de Hermes pour que la file de ce chat reprenne"
   pause:
     description: "Suspendre tout nouveau travail globalement (arrêt d'urgence) ; '/pause off' reprend"
   deny:
@@ -3307,6 +3315,10 @@ cli:
       usage_disconnect: "disconnect   Revenir au backend de navigateur par défaut"
       usage_status: "status       Afficher le mode de navigateur actuel"
       usage_use: "use [off]    Passer en mode Browser Use (CLI 3.0) / revenir aux outils intégrés"
+      remote_gateway: "/browser connect et /browser disconnect gèrent un navigateur Chromium sur l'hôte de la passerelle — disponible uniquement avec une passerelle locale."
+      checking: "Vérification du débogage distant du navigateur Chromium à {url}..."
+      new_sessions_only: "S'applique aux nouvelles sessions — celle-ci garde ses outils actuels (/new pour en démarrer une)."
+      status_gateway_default: "🌐 Navigateur : backend de navigateur par défaut de la passerelle (pas de connexion CDP en direct)"
     heartbeat:
       label: "Heartbeats"
       paused: "⏸ Heartbeat en pause : {prompt}"
@@ -3417,6 +3429,10 @@ cli:
     loaded: "(chargé)"
     not_found: "(introuvable)"
     microsoft_entra_id: "Microsoft Entra ID"
+    google_vertex_oauth: "Google OAuth (Vertex AI)"
+    key_cmd_token: "key_cmd token (command)"
+    minimax_oauth: "MiniMax OAuth"
+    token_provider: "Token provider"
     api_key_not_set: "Non définie !"
     value_not_set: "non défini"
     section_model: "Modèle"
@@ -3608,8 +3624,22 @@ cli:
     next_session_deepens: "La prochaine session `hermes -w` approfondira le clone et supprimera automatiquement les worktrees fusionnés."
     unpushed_keeping: "⚠ Le worktree a des commits non poussés, conservé : {path}"
     uncommitted_keeping: "⚠ Le worktree a des modifications non commitées, conservé : {path}"
+    kept_reason: "⚠ Worktree conservé ({reason}) : {path}"
     clean_up_manually: "Pour nettoyer manuellement : git worktree remove --force {path}"
     cleaned_up: "✓ Worktree nettoyé : {path}"
+    exit_question_dirty: "Ce worktree contient des modifications non commitées : {path}"
+    exit_question_unpushed: "Ce worktree contient des commits non poussés : {path}"
+    exit_choice_keep: "Conserver le worktree (par défaut)"
+    exit_choice_archive: "L'archiver et le supprimer (restaurable)"
+    exit_choice_discard: "Le supprimer et abandonner les modifications"
+    archiving: "Archivage de {path} … (cela peut prendre du temps pour un grand arbre)"
+    archived: "✓ Worktree archivé dans {ref} et supprimé : {path}"
+    restore_hint: "Pour le restaurer : hermes worktree restore {name}"
+    archive_failed: "✗ Impossible d'archiver {path}, conservé : {error}"
+    archived_kept: "✓ Worktree archivé dans {ref} mais conservé ({reason}) : {path}"
+    sweep_archived_removed: "archivé + supprimé → {ref}"
+    sweep_archived_kept: "archivé, conservé ({reason}) → {ref}"
+    discarded: "Worktree supprimé et modifications abandonnées : {path}"
 display:
   verb:
     web_search: "Recherche sur le web"
@@ -4046,7 +4076,7 @@ tips:
   t241: "Le gateway met en cache les instances AIAgent par session — détruire ce cache casse le cache de prompt Anthropic."
   t242: "N'importe quel site web peut exposer des skills via /.well-known/skills/index.json — le hub de skills les découvre automatiquement."
   t243: "Le journal d'audit des skills dans ~/.hermes/skills/.hub/audit.log trace chaque installation et suppression."
-  t244: "Les worktrees git obsolètes sont nettoyés automatiquement au démarrage : les arbres propres et entièrement fusionnés sont supprimés ; le travail modifié ou non poussé est toujours préservé."
+  t244: "Les worktrees git obsolètes sont nettoyés automatiquement : les arbres propres et fusionnés sont supprimés ; les arbres inactifs avec des modifications non commitées ou non poussées sont d'abord archivés et restaurables avec hermes worktree restore."
   t245: "Les profils délimitent l'état d'Hermes via HERMES_HOME ; les sous-processus d'outils sur l'hôte conservent votre vrai HOME sauf si terminal.home_mode vaut profile."
   t246: "La variable d'environnement HERMES_HOME_MODE (octal, ex. 0701) définit des permissions de répertoire personnalisées pour la traversée par le serveur web."
   t247: "Mode conteneur : placez .container-mode dans HERMES_HOME et la CLI hôte s'exécute automatiquement dans le conteneur."

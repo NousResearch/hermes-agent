@@ -17,6 +17,7 @@ import { isSessionGone } from '@/store/session-gone-latch'
 import { noteSessionEvent } from '@/store/session-states'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
 
+import { handleDeferredPickEvent } from './deferred-pick'
 import { handleDesktopBridgeEvent } from './desktop-bridge'
 import { handleFreeTierEvent } from './free-tier'
 import { handleInputRequestEvent } from './input-requests'
@@ -87,6 +88,7 @@ const HANDLERS: GatewayEventHandler[] = [
   handleFreeTierEvent,
   handleOnboardingEvent,
   handleSessionInfoEvent,
+  handleDeferredPickEvent,
   handleControlEvent,
   handleMessageStreamEvent,
   handleToolEvent,

@@ -13,20 +13,51 @@ logger = logging.getLogger(__name__)
 
 admission_author = ContextVar('admission_author', default=None)
 executing_admission = ContextVar('executing_admission', default=False)
+# The live session while the executing turn is one its viewer submitted (``is_viewer_input``), else None.
+viewer_turn: ContextVar = ContextVar('viewer_turn', default=None)
 # Set by a busy-path caller that must be released once its input is durably queued.
 busy_acceptance = ContextVar('busy_acceptance', default=None)
+# Set beside it by a caller that must also know when the row is durably committed (a busy burst's
+# commit task, which command barriers and /restart wait on): ``busy_acceptance`` may already resolve
+# once the input's FIFO position is fixed behind an earlier input of its chat still capturing.
+busy_commit = ContextVar('busy_commit', default=None)
+# ``_validate_native`` clauses about the message's own content, safe to name to the sender's chat.
+_CONTENT_CLAUSES = frozenset({
+    'text', 'auto_skill', 'channel_prompt', 'channel_context', 'reply_expected',
+    'media_urls', 'media_types', 'media_text_inlined', 'media_types_length', 'media_text_inlined_length',
+})
+
+# Nothing was committed (main's busy-queue cap); /retry answers it before rewriting (#139257).
+QUEUE_FULL_REPLY = ('⏳ Too many messages are already waiting in this conversation; '
+                    'send this again after the current reply.')
 
 
 async def admit_message(authority, event):
-    accepted = busy_acceptance.get()
+    from gateway.session_authority import messaging_admission
+    accepted, committed = busy_acceptance.get(), busy_commit.get()
     busy_acceptance.set(None)  # the drain task this schedules must not inherit the busy caller's future
+    busy_commit.set(None)
+    ingress = messaging_admission.set(True if accepted is None else accepted)
     try:
         receipt = await authority.admit_native(event)
+        if committed is not None and not committed.done():
+            committed.set_result(None)  # the row is durable (any status): a barrier may go on
     except RuntimeStoreError as exc:
+        if exc.reason == 'stale_generation' and exc.field == 'route':
+            return None  # a later /stop or /new of the chat fenced it, as main cancels a queued row
+        if exc.reason == 'invalid_params' and exc.field:
+            # Refused before commit (_validate_native): a refusal notice instead of a generic turn error.
+            # The reply reaches the whole chat, so only content clauses are named; trust and provenance
+            # clauses (and any new one) stay generic, and gateway.log keeps the clause (``_refuse``).
+            named = f'{exc.reason}: {exc.field}' if exc.field in _CONTENT_CLAUSES else exc.reason
+            return (f'⚠️ Hermes refused this message ({named}), so it was not saved '
+                    'or answered. Ask the operator to check gateway.log.')
         if exc.reason != 'queue_full':
             raise
         # Nothing was committed (main's busy-queue cap): say so instead of a generic turn error.
-        return '⏳ Too many messages are already waiting in this conversation; send this again after the current reply.'
+        return QUEUE_FULL_REPLY
+    finally:
+        messaging_admission.reset(ingress)
     if receipt.status == 'terminal':
         return None
     # Only the delivery waiter is process-local; execution reads the committed snapshot.
@@ -167,9 +198,15 @@ def pause_notice(authority, ref, reason):
         # Transient: queued behind work already running on this conversation (a worker execution).
         return '⏳ Your message is saved and will be answered when the work running in this conversation finishes.'
     if reason == 'unknown_execution':
-        cause = 'a previous turn did not finish when Hermes restarted, so nothing queued after it will run'
-    else:
-        cause = f'a queued message could not be re-authorized ({reason})'
+        # GW-10: the way out is in this chat. /discard acknowledges the lost turn (never replayed)
+        # through the same fenced resolve_unknown as Desktop/TUI, and the saved messages then run.
+        # Slack registers no native /discard (its slash cap): the umbrella `/hermes discard` reaches it.
+        slack = getattr(getattr(live.source, 'platform', None), 'value', None) == 'slack'
+        discard = '/hermes discard' if slack else '/discard'
+        return ('⏸️ This conversation is paused: a previous turn did not finish when Hermes restarted, '
+                f'and only you know whether to send it again. Your message is saved. Send {discard} to drop '
+                'the lost turn and continue (it is not re-run), or /reset to start a fresh conversation.')
+    cause = f'a queued message could not be re-authorized ({reason})'
     return (f'⏸️ This conversation is paused: {cause}. Your message is saved but will not be answered here. '
             'Send /reset to start a fresh conversation, or ask the operator to resume this one.')
 
@@ -187,6 +224,10 @@ def row_turn_author(policy, row):
 
 
 async def execute_admission(authority, ref, row):
+    from gateway.session_completion_notes import note_if_unviewed
+    noted = await note_if_unviewed(authority, ref, row)  # #134889 LC-7: no viewer, no turn
+    if noted is not None:
+        return noted
     from gateway.session_policy import policy_for_source
     policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
     if policy is not None and policy.source == 'cron':
@@ -223,8 +264,14 @@ async def execute_admission(authority, ref, row):
     from gateway.session_api_turn import api_execution, prepare_api_execution
     from gateway.session_results import execution_result
     is_api = live.source.platform == Platform.API_SERVER
+    if not (event.internal or is_api or live.source.platform == Platform.LOCAL):
+        # The claim on a chat route (native or a viewer's submit): a /new before the turn resolves
+        # its session must not move it onto the fresh conversation (main's /new cancelled its task).
+        event._claimed_owner = (ref.session_id, row['generation'])
     author = event.metadata.get('turn_author')
     author_token = admission_author.set(author if author is not None else row_turn_author(local_policy, row))
+    from gateway.session_operator import is_viewer_input
+    viewer_token = viewer_turn.set(live if is_viewer_input(row) else None)
     api_token = api_execution.set(None)
     captured = {}
     result_token = execution_result.set(captured)
@@ -260,7 +307,9 @@ async def execute_admission(authority, ref, row):
                               'error': response or 'The admitted turn failed.'}
             # The drain commits this under the stream lock so no viewer reads `terminal`
             # before the completion event exists in the replay ring.
-            authority.pending_results[row['admission_id']] = {'result': result, 'usage': captured.get('usage', {})}
+            authority.pending_results[row['admission_id']] = {
+                'result': result, 'usage': captured.get('usage', {}),
+                **({'session_usage': captured['session_usage']} if 'session_usage' in captured else {})}
             if not is_api and response:
                 adapter = authority.runner._adapter_for_source(event.source)
                 if adapter is not None:
@@ -283,6 +332,7 @@ async def execute_admission(authority, ref, row):
         execution_result.reset(result_token)
         api_execution.reset(api_token)
         admission_author.reset(author_token)
+        viewer_turn.reset(viewer_token)
 
 
 async def _execution_scope(authority, home):
@@ -355,11 +405,19 @@ async def deliver_response(adapter, event, session_key, response):
                                        record_delivery=results.append)
 
 
-async def dispatch_shared_busy(adapter, event, session_key):
+async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):
     """Serial receive loops (IRC, Signal) await this before reading their next frame, so return
-    once the follow-up is committed to the FIFO; a tracked observer delivers its one reply."""
+    once the follow-up is committed to the FIFO, or queued behind an earlier input of its chat still
+    capturing (its position is then fixed; acceptance still waits for the commit); a tracked
+    observer delivers its one reply. *durable*: return only once the row is committed (or the input
+    was refused, fenced or answered), never on the earlier position release: a busy burst's commit
+    task, which a command barrier (``/restart`` closing admission) waits on. Otherwise an input
+    released before its commit is held until it commits or its handler ends, and a serial reader's
+    next command waits for that too (``burst_gate``): a non-burst busy input (a second video, a voice
+    note, text outside queue mode) has no burst commit task to wait on."""
     delivery_event = replace(event, source=replace(event.source))
     accepted = asyncio.get_running_loop().create_future()
+    committed = asyncio.get_running_loop().create_future()
 
     async def observe():
         # Like the first message's lifecycle, this sender adopts the turn's crash marker and
@@ -382,18 +440,39 @@ async def dispatch_shared_busy(adapter, event, session_key):
             await adapter._release_turn_marker(delivery_event)
             await adapter._release_turn_marker(event)
 
-    token = busy_acceptance.set(accepted)
+    token, commit_token = busy_acceptance.set(accepted), busy_commit.set(committed)
     try:
         task = asyncio.create_task(observe())
     finally:
         busy_acceptance.reset(token)
+        busy_commit.reset(commit_token)
     adapter._background_tasks.add(task)
     task.add_done_callback(adapter._background_tasks.discard)
     try:
         await asyncio.wait({accepted, task}, return_when=asyncio.FIRST_COMPLETED)
+        if durable and not task.done():
+            await asyncio.wait({committed, task}, return_when=asyncio.FIRST_COMPLETED)
     except asyncio.CancelledError:
         if not accepted.done():
             task.cancel()  # cancelled before commit: the input was never ACKed
         raise
     if task.done():
         task.result()  # refused, consumed or answered inline before any durable acceptance
+    elif not committed.done():
+        _hold_until_committed(adapter, committed, task)
+
+
+def _hold_until_committed(adapter, committed, task):
+    """Released before its commit: the reader reads on, but this input is not durable yet. A serial
+    reader's next command waits for its commit or its handler's end (``burst_gate``), so /restart never
+    closes admission, and /new never cancels the chat's rows, before it lands."""
+    settled = asyncio.get_running_loop().create_future()
+
+    def settle(_):
+        if not settled.done():
+            settled.set_result(None)
+    committed.add_done_callback(settle)
+    task.add_done_callback(settle)
+    held = adapter.__dict__.setdefault('_uncommitted_inputs', set())
+    held.add(settled)
+    settled.add_done_callback(held.discard)

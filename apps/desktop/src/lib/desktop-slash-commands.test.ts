@@ -175,8 +175,8 @@ describe('desktop slash command curation', () => {
   })
 
   it('routes only stateless session commands through dedicated gateway RPCs', () => {
+    // /save is an action now: it renders on the owner (session.export) and writes through Electron (T11).
     const expected = {
-      '/save': 'session.save',
       '/status': 'session.status'
     } as const
 
@@ -201,7 +201,7 @@ describe('desktop slash command curation', () => {
     // print lands after the capture window closes, so the result never
     // reached the originating conversation).
     // /undo /retry /steer /queue are local actions now: the shared gateway refuses them as exec.
-    const execNames = ['/debug', '/goal', '/personality', '/rollback', '/tools', '/version']
+    const execNames = ['/debug', '/goal', '/personality', '/tools', '/version']
 
     for (const name of execNames) {
       expect(resolveDesktopCommand(name)?.surface).toEqual({ kind: 'exec' })

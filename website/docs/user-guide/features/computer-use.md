@@ -395,12 +395,20 @@ want every action confirmed.
 Screenshots are expensive. Hermes applies four layers of optimisation:
 
 - **Screenshot eviction** — on every provider, screenshots ride each
-  request until it would cross Anthropic's documented per-request image
-  limit (20 image blocks, or 24 MB of image data); then the oldest batch becomes
-  `[screenshot removed to save context]` placeholders. Below the limit
-  nothing is rewritten, so the prompt-cache prefix survives; at it, one
-  slower turn per batch instead of one per screenshot. Images you attach
-  yourself count against the limit but are never removed.
+  request until it would cross a per-request image limit; then the oldest
+  batch becomes `[screenshot removed to save context]` placeholders. The
+  block limit is 100 images when every image in the request is at most
+  2000 px per side (Hermes embeds its own screenshots at 1568 px or less),
+  and 20 when any image is larger, because above 20 images Anthropic holds
+  every image to that stricter per-side cap. A 24 MB image-data budget
+  applies either way. Below the limit nothing is rewritten, so the
+  prompt-cache prefix survives; at it, one slower turn per batch instead of
+  one per screenshot. Images you attach yourself count against the limit
+  but are never removed; when they alone exceed it, screenshots are still
+  retired in whole batches, never one per new image. A retired screenshot
+  stays retired for the rest of the session, even when a later request
+  would have room for it again (a smaller new screenshot, or an attached
+  image that has dropped out of the request).
 - **Client-side compression pruning** — the context compressor detects
   multimodal tool results and strips image parts from old ones.
 - **Image-aware token estimation** — each image is counted as ~1500

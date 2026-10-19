@@ -235,7 +235,8 @@ def stop_authority_turns(authority, *, in_process=False, reason=None):
     through its own fenced path). ``in_process`` also hard-interrupts the running agent of each
     executing in-process turn, or latches the generation ``adopt_agent`` consumes before it exists.
     ``reason`` (a gateway restart/shutdown) is recorded on each worker it signals, so the turn settles
-    with that cause; a worker already stopped (the user's Stop came first) keeps none."""
+    with that cause; a worker already stopped (the user's Stop came first) keeps none. A worker
+    still being spawned gets the same Stop and cause through latches (``_stop_spawning_managed``)."""
     from hermes_state_runtime import RuntimeStoreError
     signalled = 0
     workers = getattr(authority, '_managed_workers', {})
@@ -250,6 +251,7 @@ def stop_authority_turns(authority, *, in_process=False, reason=None):
             # loop escalates on that latch alone (terminate after STOP_ACK_SECONDS).
             logger.debug('managed Stop not queued (%s); the latch escalates it', exc.reason)
         signalled += 1
+    signalled += _stop_spawning_managed(authority, workers, reason)
     if not in_process:
         return signalled
     from agent.interrupt_compat import request_hard_interrupt
@@ -257,7 +259,7 @@ def stop_authority_turns(authority, *, in_process=False, reason=None):
     running = getattr(authority.runner, '_running_agents', {})
     for sid, live in list(authority.sessions.items()):
         generation = live.event_stream.execution.get('execution_generation')
-        if generation is None or sid in workers:
+        if generation is None or sid in workers or sid in getattr(authority, '_managed_spawning', {}):
             continue
         adopted_generation, agent = authority.adopted.get(sid, (None, None))
         if adopted_generation != generation:
@@ -268,6 +270,26 @@ def stop_authority_turns(authority, *, in_process=False, reason=None):
             request_hard_interrupt(agent, 'Profile stopping', tool_reason='gateway shutdown')
         signalled += 1
     return signalled
+
+
+def _stop_spawning_managed(authority, workers, reason):
+    """A managed turn whose worker is still being spawned has nothing to signal yet: latch the
+    Stop for its generation (``adopt_agent`` delivers it to the worker, which is never
+    bootstrapped) and, for a gateway restart/shutdown, the cause its pre-bootstrap interrupted
+    result carries (#134889 GW-22). A user's Stop latched first keeps no cause."""
+    stopped = 0
+    for sid, generation in list(getattr(authority, '_managed_spawning', {}).items()):
+        if sid in workers:
+            continue
+        stops = authority.pending_stops
+        if reason and stops.get(sid) != generation:
+            causes = getattr(authority, 'pending_stop_causes', None)
+            if causes is None:
+                causes = authority.pending_stop_causes = {}
+            causes[sid] = (generation, reason)
+        stops[sid] = generation
+        stopped += 1
+    return stopped
 
 
 def stop_managed_turns(runner, reason=None):

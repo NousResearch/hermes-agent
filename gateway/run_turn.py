@@ -783,7 +783,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
 
     @staticmethod
     def _proxy_error_result(text: str) -> dict[str, Any]:
-        return {"final_response": text, "messages": [], "api_calls": 0, "tools": []}
+        return {"final_response": text, "messages": [], "api_calls": 0, "tools": [], "failed": True, "completed": False, "agent_persisted": False}
 
     def _proxy_stream_consumer(self, source: SessionSource, event_message_id, _thread_metadata, _run_still_current):
         """Platform stream consumer for the proxy path when streaming is enabled, else ``None``."""

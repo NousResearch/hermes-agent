@@ -40,6 +40,7 @@ class FailoverReason(enum.Enum):
     upstream_rate_limit = "upstream_rate_limit"  # Aggregator's upstream model 429 — fallback model, key is healthy
     upstream_blocked = "upstream_blocked"  # 403 from a WAF/CDN/proxy in front of the provider — key is healthy, fallback
     overloaded = "overloaded"            # 503/529 — provider overloaded, backoff
+    native_tool_output = "native_tool_output"  # Tensorfold atomic rejection: never retry/fallback
     server_error = "server_error"        # 500/502 — internal server error, retry
     timeout = "timeout"                  # Connection/read timeout — rebuild client + retry
     ssl_cert_verification = "ssl_cert_verification"  # Deterministic TLS chain failure — fail fast with guidance
@@ -980,6 +981,30 @@ def _by_transport(c: _Ctx) -> Optional[Verdict]:
     return _V_TIMEOUT if transport else None
 
 
+def is_native_tool_output_error(error: Exception) -> bool:
+    """Only the structured native guard contract is terminal, never message text.
+
+    JSON500 and SDK-decoded SSE200 errors expose either the inner error body
+    or its enclosing ``error`` object. Do not classify ordinary backend 500s
+    (including unknown structured codes) as terminal.
+    """
+    body = getattr(error, "body", None)
+    if not isinstance(body, dict):
+        return False
+    inner = body.get("error", body)
+    return (isinstance(inner, dict)
+            and inner.get("code") == "unavailable_tool_call"
+            and inner.get("type") == "model_output_error"
+            and inner.get("source") == "tensorfold.tool_output_guard")
+
+
+def _native_tool_output(c: _Ctx) -> Optional[Verdict]:
+    if is_native_tool_output_error(c.error):
+        return _v(_R.native_tool_output, retryable=False, should_compress=False,
+                  should_rotate_credential=False, should_fallback=False)
+    return None
+
+
 def _by_status(c: _Ctx) -> Optional[Verdict]:
     """HTTP status code with message-aware refinement (unlisted 4xx/5xx → generic)."""
     status = c.status_code
@@ -993,7 +1018,7 @@ def _by_status(c: _Ctx) -> Optional[Verdict]:
 # HTTP status → MoA shapes → structured error code → message patterns → SSL → disconnect +
 # large session → transport types → unknown (retryable with backoff).
 _STAGES: Sequence[Callable[[_Ctx], Optional[Verdict]]] = (
-    _plugin_verdict, _profile_verdict, _provider_special_cases, _by_status, _moa_special_cases,
+    _native_tool_output, _plugin_verdict, _profile_verdict, _provider_special_cases, _by_status, _moa_special_cases,
     _by_error_code, _by_message, _by_transport,
 )
 

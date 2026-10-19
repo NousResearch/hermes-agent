@@ -397,7 +397,12 @@ def _sidecar_daemon_name(name: str) -> str:
     """BU_NAME of the harness daemon serving the hybrid local sidecar. The daemon reads BU_CDP_* once at
     spawn and outlives the call, so sharing the cloud route's daemon would relay a private URL to the
     cloud browser it is already attached to. User session names cannot start with ``_``."""
-    return f"_local_{name or 'default'}"[:64]
+    identity = name or "default"
+    daemon_name = f"_local_{identity}"
+    if len(daemon_name) <= 64:
+        return daemon_name
+    digest = hashlib.sha256(identity.encode("ascii")).hexdigest()[:12]
+    return f"_local_{identity[:44]}-{digest}"
 
 
 def _export_real_profile_note(env: dict, key: str) -> None:

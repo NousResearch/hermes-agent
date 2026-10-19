@@ -107,6 +107,7 @@ from hermes_cli.cli_render import (
     _cprint,
     _d,
     _detect_light_mode_uncached,
+    _display_width,
     _heal_cooked_mode_drift,
     _hex_to_ansi,
     _install_skin_light_mode_hook,

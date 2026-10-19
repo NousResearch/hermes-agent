@@ -262,20 +262,30 @@ def _interrupt_busy_session(sid: str, session: dict, agent: Any) -> None:
     threading.Thread(target=interrupt, daemon=True, name=f"busy-interrupt-{sid}").start()
 
 
-def _ac_try_correction(rid, session: dict, agent: Any, method: str, plain_text: str, status: str) -> dict | None:
+def _ac_try_correction(rid, session: dict, agent: Any, method: str, plain_text: str, status: str,
+                       chat_submit_id: str | None = None, chat_submit_key: str | None = None) -> dict | None:
     """Apply ``agent.<method>(plain_text)`` (steer/redirect); on acceptance record the correction, scrub stale
     self-duplicates so the live turn's original text is not re-fired after settle, and return the ``status`` reply.
     None → caller falls through to the queue path."""
-    try:
-        if not getattr(agent, method)(plain_text):
-            return None
-    except Exception:
-        return None
     with session["history_lock"]:
-        _record_inflight_correction(session, plain_text)
-        _drop_queued_duplicates_of_inflight_user(session)
-        session["last_active"] = time.time()
-    return _ok(rid, {"status": status})
+        correction_lock = session.setdefault("_chat_correction_lock", threading.RLock())
+    with correction_lock if chat_submit_id else contextlib.nullcontext():
+        if chat_submit_id and session.get("_chat_correction_closed"):
+            return None
+        try:
+            if not getattr(agent, method)(plain_text):
+                return None
+        except Exception:
+            return None
+        with session["history_lock"]:
+            _record_inflight_correction(session, plain_text)
+            _drop_queued_duplicates_of_inflight_user(session)
+            session["last_active"] = time.time()
+            if chat_submit_id:
+                session.setdefault("_chat_accepted_corrections", []).append(
+                    (chat_submit_key or str(session.get("session_key") or ""), chat_submit_id))
+                session.setdefault("_chat_pending_submit_ids", set()).add(chat_submit_id)
+        return _ok(rid, {"status": status})
 
 
 def _session_compression_in_flight(session: dict) -> bool:
@@ -418,7 +428,8 @@ def _replace_queued_user_row_for_turn(session: dict, queued: dict, is_dispatchin
 
 def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any, queued: bool = False,
                         turn_author: dict | None = None, display_kind: str | None = None,
-                        approval_origin=None, chat_submit_id: str | None = None) -> dict | None:
+                        approval_origin=None, chat_submit_id: str | None = None,
+                        chat_submit_key: str | None = None) -> dict | None:
     """Apply ``display.busy_input_mode`` to a mid-turn prompt instead of rejecting it (rejection made clients busy-retry
     and drop sends): ``interrupt`` (default) → redirect, falling back to hard interrupt + queue; ``queue`` → queue only;
     ``steer`` → inject after the current atomic action. ``queued=True`` (client queue drain) forces queue mode: a "run
@@ -447,7 +458,8 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
             "interrupt": getattr(agent, "_supports_active_turn_redirect", False) is True and hasattr(agent, "redirect")}
         method, status = {"steer": ("steer", "steered"), "interrupt": ("redirect", "redirected")}.get(mode, (None, None))
         if (method and supported[mode]
-                and (resp := _ac_try_correction(rid, session, agent, method, plain_text, status)) is not None):
+                and (resp := _ac_try_correction(rid, session, agent, method, plain_text, status,
+                                                chat_submit_id, chat_submit_key)) is not None):
             return resp
     # Queue before asking the live turn to stop. Never call a provider/compute-host method under history_lock: an
     # interrupt can wait behind the op it cancels.
@@ -488,6 +500,7 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
         queue_generation = int(session.get("_queued_prompt_generation", 0))
         _ac_set_queue(session, session.get("queued_prompts") or [])
         session["running"] = True
+        session["_chat_correction_closed"] = False
         queued_transport = queued.get("transport")
         # The queuer's transport is pinned so the drained turn reaches the client that sent it — but
         # ATTACHED, not rebound: a mid-turn prompt from a second client used to silence the first for the

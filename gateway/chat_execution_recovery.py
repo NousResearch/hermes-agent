@@ -35,6 +35,8 @@ class ChatExecutionStore:
             db.execute("""CREATE TABLE IF NOT EXISTS pending_submits (
                 session_key TEXT NOT NULL, submit_id TEXT NOT NULL,
                 PRIMARY KEY(session_key, submit_id))""")
+            db.execute("""CREATE TABLE IF NOT EXISTS session_key_lineage (
+                parent_key TEXT NOT NULL, child_key TEXT PRIMARY KEY)""")
             db.execute("""CREATE TABLE IF NOT EXISTS concurrent_tool_resources (
                 session_key TEXT NOT NULL, generation INTEGER NOT NULL, resource_id TEXT NOT NULL,
                 session_id TEXT NOT NULL, kind TEXT NOT NULL, state TEXT NOT NULL,
@@ -64,6 +66,50 @@ class ChatExecutionStore:
         with self._db() as db:
             row = db.execute("SELECT MAX(generation) AS g FROM executions WHERE session_key=?", (session_key,)).fetchone()
             return int(row["g"] or 0)
+
+    @staticmethod
+    def _lineage_keys(db, root_key):
+        rows = db.execute("""WITH RECURSIVE descendants(key) AS (
+            SELECT ? UNION SELECT child_key FROM session_key_lineage
+            JOIN descendants ON parent_key=descendants.key)
+            SELECT key FROM descendants""", (root_key,)).fetchall()
+        return tuple(row["key"] for row in rows)
+
+    def lineage_keys(self, root_key):
+        if not root_key:
+            return ()
+        with self._db() as db:
+            return self._lineage_keys(db, root_key)
+
+    def link_session_keys(self, parent_key, child_key):
+        """Record an actual compression re-anchor before the runtime adopts its new key."""
+        if not parent_key or not child_key or parent_key == child_key:
+            return False
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            existing = db.execute("SELECT parent_key FROM session_key_lineage WHERE child_key=?",
+                                  (child_key,)).fetchone()
+            if existing:
+                db.rollback(); return existing["parent_key"] == parent_key
+            if parent_key in self._lineage_keys(db, child_key):
+                db.rollback(); return False
+            parent_fence = db.execute("SELECT * FROM session_fences WHERE session_key=?",
+                                      (parent_key,)).fetchone()
+            child_fence = db.execute("SELECT 1 FROM session_fences WHERE session_key=?",
+                                     (child_key,)).fetchone()
+            # A late alias cannot make a previously issued retirement receipt
+            # claim that an already-running child was quiescent.
+            child_work = (db.execute("SELECT 1 FROM executions WHERE session_key=? LIMIT 1",
+                                     (child_key,)).fetchone()
+                          or db.execute("SELECT 1 FROM pending_submits WHERE session_key=? LIMIT 1",
+                                        (child_key,)).fetchone())
+            if child_fence or (parent_fence and parent_fence["receipt"] and child_work):
+                db.rollback(); return False
+            db.execute("INSERT INTO session_key_lineage VALUES (?, ?)", (parent_key, child_key))
+            if parent_fence:
+                db.execute("INSERT INTO session_fences VALUES (?, ?, ?, 'fenced', NULL)",
+                           (child_key, parent_fence["generation"], parent_fence["recovery_id"]))
+            db.commit(); return True
 
     def begin_submit(self, session_key, submit_id):
         """Reserve a real incoming turn before any pre-worker transcript mutation."""
@@ -400,7 +446,16 @@ class ChatExecutionStore:
                                (session_key, claim_generation)).fetchone()
             if not claim or not claim["session_id"]:
                 db.rollback(); return denied
-            fence = db.execute("SELECT * FROM session_fences WHERE session_key=?", (session_key,)).fetchone()
+            keys = self._lineage_keys(db, session_key)
+            # Core cannot prove that another Linear issue does not own a later
+            # segment of this physical chat. Refuse the whole transfer before
+            # fencing any segment; the plugin must refuse before preparing intent.
+            if len(keys) != 1:
+                db.rollback(); return {**denied, "reason": "compressed_lineage"}
+            marks = ",".join("?" for _ in keys)
+            fences = {row["session_key"]: row for row in db.execute(
+                f"SELECT * FROM session_fences WHERE session_key IN ({marks})", keys)}
+            fence = fences.get(session_key)
             if fence:
                 if fence["recovery_id"] != recovery_id or fence["state"] != "fenced":
                     db.rollback(); return {**denied, "status": "stale"}
@@ -408,27 +463,35 @@ class ChatExecutionStore:
                     receipt = json.loads(fence["receipt"])
                     db.rollback()
                     return receipt if receipt.get("kind") == "chat-retirement/v1" and receipt.get("claim_generation") == claim_generation else {**denied, "status": "stale"}
+            if any(row["recovery_id"] != recovery_id or row["state"] != "fenced"
+                   for row in fences.values()):
+                db.rollback(); return {**denied, "status": "stale"}
             latest = db.execute("SELECT * FROM executions WHERE session_key=? ORDER BY generation DESC LIMIT 1",
                                 (session_key,)).fetchone()
-            submitting = db.execute("SELECT 1 FROM pending_submits WHERE session_key=? LIMIT 1",
-                                    (session_key,)).fetchone()
+            submitting = db.execute(f"SELECT 1 FROM pending_submits WHERE session_key IN ({marks}) LIMIT 1",
+                                    keys).fetchone()
             if submitting:
                 db.rollback(); return denied
-            if not fence:
-                db.execute("INSERT INTO session_fences VALUES (?, ?, ?, 'fenced', NULL)",
-                           (session_key, latest["generation"], recovery_id))
-            pending = db.execute("SELECT 1 FROM executions WHERE session_key=? AND "
-                                 "(worker!='completed' OR worker_started!=1 OR session_id='') LIMIT 1", (session_key,)).fetchone()
-            resources = db.execute("SELECT 1 FROM concurrent_tool_resources WHERE session_key=? AND state!='finished' LIMIT 1",
-                                   (session_key,)).fetchone()
+            for key in keys:
+                if key not in fences:
+                    key_latest = db.execute("SELECT MAX(generation) FROM executions WHERE session_key=?",
+                                            (key,)).fetchone()[0]
+                    db.execute("INSERT INTO session_fences VALUES (?, ?, ?, 'fenced', NULL)",
+                               (key, key_latest or claim_generation, recovery_id))
+            pending = db.execute(f"SELECT 1 FROM executions WHERE session_key IN ({marks}) AND "
+                                 "(worker!='completed' OR worker_started!=1 OR session_id='') LIMIT 1",
+                                 keys).fetchone()
+            resources = db.execute(f"SELECT 1 FROM concurrent_tool_resources WHERE session_key IN ({marks}) "
+                                   "AND state!='finished' LIMIT 1", keys).fetchone()
             if pending or resources:
                 db.commit(); return denied
-            unknown = db.execute("SELECT 1 FROM executions WHERE session_key=? AND "
-                                 "(effects!='none' OR tool_observed!=0) LIMIT 1", (session_key,)).fetchone()
+            unknown = db.execute(f"SELECT 1 FROM executions WHERE session_key IN ({marks}) AND "
+                                 "(effects!='none' OR tool_observed!=0) LIMIT 1", keys).fetchone()
             receipt = {"version": VERSION, "kind": "chat-retirement/v1", "status": "retired",
                        "profile_home": str(self.home), "session_key": session_key,
                        "claim_generation": claim_generation, "run_generation": latest["generation"],
                        "session_id": latest["session_id"], "recovery_id": recovery_id,
+                       "lineage_keys": list(keys),
                        "worker": "completed", "effects": "unknown" if unknown else "none",
                        "execution_admitted": False}
             db.execute("UPDATE session_fences SET receipt=? WHERE session_key=?", (json.dumps(receipt), session_key))

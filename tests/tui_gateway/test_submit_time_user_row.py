@@ -108,6 +108,47 @@ def test_queued_desktop_submit_blocks_handoff_then_registered_stop_cancels_claim
         db.close()
 
 
+def test_accepted_desktop_steer_keeps_claim_through_worker_settlement(monkeypatch, tmp_path):
+    from gateway.chat_execution_recovery import ChatExecutionStore
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    session["profile_home"] = str(tmp_path)
+    session["agent"] = SimpleNamespace(steer=lambda _text: True)
+    session["running"] = True
+    session["inflight_turn"] = {"user": "original work"}
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "steer")
+    store = ChatExecutionStore(tmp_path)
+    assert store.start_local_worker(key, key) == 1
+    try:
+        response = server.handle_request({"id": "steer", "method": "prompt.submit", "params": {
+            "session_id": sid, "text": "accepted correction"}})
+        assert response["result"]["status"] == "steered"
+        assert store.worker_finished(key, 1)
+        assert store.retire_for_handoff(key, 1, "handoff")["status"] == "blocked"
+        corrections = session.pop("_chat_accepted_corrections")
+        assert len(corrections) == 1 and corrections[0][0] == key
+        session["_chat_followup_corrections"] = corrections
+        session["running"] = False
+        admitted = []
+
+        def run_followup(_rid, _sid, _session, prompt, **kwargs):
+            admitted.append((prompt, kwargs["chat_submit_ids"]))
+            assert store.start_local_worker(key, key, kwargs["chat_submit_ids"]) == 2
+            assert store.worker_finished(key, 2)
+            return True
+
+        monkeypatch.setattr(server, "_run_prompt_submit", run_followup)
+        server._run_post_turn_followups("followup", sid, session,
+                                        {"pending_steer": "accepted correction"}, None)
+        assert admitted == [("accepted correction", (corrections[0][1],))]
+        assert store.retire_for_handoff(key, 1, "handoff")["status"] == "retired"
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
 def test_submit_ack_binds_the_written_row_even_if_worker_consumes_staging(monkeypatch, tmp_path):
     db = SessionDB(db_path=tmp_path / "state.db")
     sid, key = _desktop_session(monkeypatch, db)

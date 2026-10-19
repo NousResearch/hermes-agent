@@ -94,6 +94,44 @@ def test_cancelled_rotated_submit_settles_both_key_aliases(tmp_path):
     assert not store.submit_claims_active("new-key", ("cancelled-rpc",), source_key="old-key")
 
 
+def test_real_desktop_compression_lineage_refuses_retirement_without_fencing_other_work(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from tui_gateway import server
+
+    store = ChatExecutionStore(tmp_path)
+    assert store.start_local_worker("old-key", "agent-old") == 1
+    assert store.worker_finished("old-key", 1)
+    session = {"session_key": "old-key", "profile_home": str(tmp_path),
+               "agent": SimpleNamespace(session_id="compressed-key")}
+    monkeypatch.setattr(server, "_transfer_active_session_slot", lambda *args, **kwargs: True)
+    server._sync_session_key_after_compress("desktop-sid", session, restart_slash_worker=False)
+    assert session["session_key"] == "compressed-key"
+    assert store.start_local_worker("compressed-key", "agent-compressed") == 1
+    assert store.worker_finished("compressed-key", 1)
+    assert store.lineage_keys("old-key") == ("old-key", "compressed-key")
+    assert store.retire_for_handoff("old-key", 1, "handoff")["status"] == "blocked"
+    assert store.start_local_worker("compressed-key", "late-compressed") == 2
+
+
+def test_compute_host_rotation_frame_refuses_old_key_retirement(monkeypatch, tmp_path):
+    import threading
+    from tui_gateway import server
+
+    store = ChatExecutionStore(tmp_path)
+    assert store.start_local_worker("old-key", "agent-old") == 1
+    assert store.worker_finished("old-key", 1)
+    session = {"session_key": "old-key", "profile_home": str(tmp_path),
+               "history_lock": threading.RLock()}
+    monkeypatch.setattr(server, "_transfer_active_session_slot", lambda *args, **kwargs: True)
+    server._compute_host_adopt_frame_meta(session, {"sid": "desktop-sid", "session_key": "host-key"})
+    assert session["session_key"] == "host-key"
+    assert store.start_local_worker("host-key", "agent-host") == 1
+    assert store.worker_finished("host-key", 1)
+    assert store.lineage_keys("old-key") == ("old-key", "host-key")
+    assert store.retire_for_handoff("old-key", 1, "handoff")["status"] == "blocked"
+    assert store.start_local_worker("host-key", "late-host") == 2
+
+
 def test_retirement_cannot_be_reused_as_execution_recovery(tmp_path):
     store = ChatExecutionStore(tmp_path)
     assert store.start("old-chat", 1, "session-1")

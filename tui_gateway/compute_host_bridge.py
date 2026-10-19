@@ -113,6 +113,12 @@ def _compute_host_adopt_frame_meta(session: dict, frame: dict) -> None:
     by its owner — never claimed from the child pid (authority stays singular, #103737 review)."""
     new_key = str(frame.get("session_key") or "")
     if new_key and new_key != str(session.get("session_key") or ""):
+        from gateway.chat_execution_recovery import ChatExecutionStore
+        from hermes_constants import get_process_hermes_home
+        old_key = str(session.get("session_key") or frame.get("sid") or "")
+        if not ChatExecutionStore(session.get("profile_home") or get_process_hermes_home()).link_session_keys(
+                old_key, new_key):
+            raise RuntimeError("Durable compute-host compression lineage could not be recorded")
         if not _transfer_active_session_slot(str(frame.get("sid") or ""), session, new_session_id=new_key):
             logger.warning("Compression session lease did not re-anchor: sid=%s old_session_id=%s new_session_id=%s",
                            frame.get("sid"), session.get("session_key"), new_key)

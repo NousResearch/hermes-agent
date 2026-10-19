@@ -744,6 +744,7 @@ def _lock_in_submit_turn(
             if err is not None:
                 return err, {}
         session["running"] = True
+        session["_chat_correction_closed"] = False
         session["_turn_cancel_requested"] = False
         session["last_active"] = time.time()
         if hosted_task is not None:
@@ -901,7 +902,7 @@ def _submit_after_chat_claim(
             display_kind=display_kind, approval_origin=_approval_origin_for_direct_submit(
                 session, text, raw_text, internal_hosted_submit=internal_hosted_submit, raw_author=raw_author,
                 display_kind=display_kind, turn_isolation=turn_isolation, transport=t or busy_transport,
-                queued=True), chat_submit_id=submit_id)
+                queued=True), chat_submit_id=submit_id, chat_submit_key=key)
         if busy_response is not None:
             return busy_response
     requested_rebind_ids = _requested_rebind_ids(params.get("rebind_survivor_row_ids"))

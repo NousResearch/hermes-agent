@@ -319,9 +319,14 @@ def _sync_session_key_after_compress(
     post-turn auto-compression. ``restart_slash_worker``: False only when the caller manages the worker."""
     agent = session.get("agent")
     new_session_id = getattr(agent, "session_id", None) or ""
-    old_key = session.get("session_key", "") or ""
+    old_key = session.get("session_key", "") or sid
     if not new_session_id or new_session_id == old_key:
         return
+    from gateway.chat_execution_recovery import ChatExecutionStore
+    from hermes_constants import get_process_hermes_home
+    if not ChatExecutionStore(session.get("profile_home") or get_process_hermes_home()).link_session_keys(
+            str(old_key), str(new_session_id)):
+        raise RuntimeError("Durable compression lineage could not be recorded")
     if not _transfer_active_session_slot(sid, session, new_session_id=new_session_id):
         logger.warning(
             "Compression session lease did not re-anchor: sid=%s old_session_id=%s new_session_id=%s",

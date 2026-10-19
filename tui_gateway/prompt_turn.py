@@ -443,8 +443,25 @@ def _run_post_turn_followups(
     notifications.  Each nested submit re-checks ``running`` under the lock."""
     steer = result.get("pending_steer") if isinstance(result, dict) else None
     if isinstance(steer, str) and steer.strip():
+        corrections = session.pop("_chat_followup_corrections", [])
+        if corrections:
+            from gateway.chat_execution_recovery import ChatExecutionStore
+            from hermes_constants import get_process_hermes_home
+            current_key = str(session.get("session_key") or sid)
+            store = ChatExecutionStore(session.get("profile_home") or get_process_hermes_home())
+            # Keep the original claims until native admission. A rotation also
+            # aliases them to the current key before the queued turn is visible.
+            if not all(store.submit_claims_active(current_key, (submit_id,), source_key=source_key)
+                       for source_key, submit_id in corrections):
+                return
         with session["history_lock"]:
-            _enqueue_prompt(session, steer, session.get("transport"))
+            if session.get("_turn_cancel_requested"):
+                return
+            envelope = _enqueue_prompt(session, steer, session.get("transport"))
+            if envelope is not None and corrections:
+                envelope.setdefault("_chat_submit_ids", []).extend(
+                    submit_id for _, submit_id in corrections)
+                envelope["_chat_submit_key"] = current_key
     if _drain_queued_prompt(rid, sid, session):
         return
     if goal_followup:
@@ -1107,6 +1124,9 @@ def _run_prompt_submit(
     from hermes_constants import get_process_hermes_home
     import uuid
     chat_submit_ids = tuple(chat_submit_ids)
+    with session["history_lock"]:
+        correction_lock = session.setdefault("_chat_correction_lock", threading.RLock())
+        session["_chat_correction_closed"] = False
     submit_key = str(session.get("session_key") or sid)
     submit_store = ChatExecutionStore(session.get("profile_home") or get_process_hermes_home())
     if chat_submit_ids:
@@ -1281,6 +1301,16 @@ def _run_prompt_submit(
                 for submit_id in chat_submit_ids:
                     submit_store.abandon_submit(submit_key, submit_id)
                 session.get("_chat_pending_submit_ids", set()).difference_update(chat_submit_ids)
+            with correction_lock:
+                session["_chat_correction_closed"] = True
+                corrections = session.pop("_chat_accepted_corrections", [])
+                pending_steer = (st.result.get("pending_steer") if isinstance(st.result, dict) else None)
+                if corrections and pending_steer:
+                    session["_chat_followup_corrections"] = corrections
+                elif corrections and execution_started and not st.error_retained:
+                    for source_key, submit_id in corrections:
+                        submit_store.abandon_submit(source_key, submit_id)
+                        session.get("_chat_pending_submit_ids", set()).discard(submit_id)
             _release_turn_scopes(sid, session, st)
             try:  # a raising settle step must not skip the trim / HERMES_HOME reset
                 _current_runtime_session_record.reset(runtime_session_token)

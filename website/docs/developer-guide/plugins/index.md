@@ -103,6 +103,11 @@ skipped at its own boundary when valid sibling components can still load.
 profile-scoped writable directory managed by Hermes.
 Values declared in portable MCP `env` are visible package data, not a secret
 storage mechanism. Do not place credentials in `mcp.json`.
+To pass a user's variable through to a stdio server (Hermes otherwise hands MCP
+servers a filtered environment), declare it as `"NAME": "${NAME}"`. The value
+comes from the user's shell or profile `.env`; when the variable is unset, Hermes
+leaves `NAME` out of the server's environment rather than passing the literal
+`${NAME}`, so optional variables are safe to forward.
 
 The current portable subset supports stdio and Streamable HTTP MCP entries.
 Portable `streamable-http` entries are routed through Hermes' existing native

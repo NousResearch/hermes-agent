@@ -2735,6 +2735,7 @@ export interface PromptSubmitParams {
   confirm_empty_truncate?: boolean | null
   confirm_deep_truncate?: boolean | null
   rebind_survivor_row_ids?: number[] | null
+  client_turn_id?: string | null
 }
 /** ``status`` is absent only on the typed-stop-phrase reply (``voice_stopped``). After a truncation the survivor row ids let the client rebind its cached ``rowId``s (``None`` map entries: drop the cached id). ``turn_isolation`` marks a compute-host dispatch. */
 export interface PromptSubmitResult {
@@ -2746,8 +2747,35 @@ export interface PromptSubmitResult {
   turn_isolation?: boolean | null
   admission_id?: string | null
   forwarded?: boolean | null
+  accepted?: boolean | null
+  client_turn_id?: string | null
+  server_turn_id?: string | null
+  state?: TurnAckState | null
+  duplicate?: boolean | null
+  idempotent?: boolean | null
+  replayed?: boolean | null
+  outcome?: TurnOutcome | null
 }
-export type PromptSubmitStatus = 'streaming' | 'queued' | 'steered' | 'redirected'
+export type PromptSubmitStatus = 'streaming' | 'queued' | 'steered' | 'redirected' | 'replayed'
+/** The three states an ACK may carry. ``failed``/``cancelled`` are status-only: an ack is a commitment to run the turn, and a turn that already ended badly is reported with ``state: terminal`` plus ``outcome`` instead. */
+export type TurnAckState = 'accepted' | 'running' | 'terminal'
+/** How a terminal turn actually ended. */
+export type TurnOutcome = 'succeeded' | 'failed' | 'cancelled'
+/** ``turn.status`` — what the server knows about one client-minted turn id. */
+export interface TurnStatusParams {
+  session_id: string
+  profile?: string | null
+  client_turn_id: string
+}
+/** ``known: false`` carries the echo and nothing else; a known turn adds its server identity and current state. */
+export interface TurnStatusResult {
+  known: boolean
+  client_turn_id: string
+  server_turn_id?: string | null
+  state?: TurnStatusState | null
+}
+/** The five states ``turn.status`` reports. Wider than ``TurnAckState`` on purpose: a status is a report, so a finished failure says ``failed`` rather than ``terminal``. */
+export type TurnStatusState = 'accepted' | 'running' | 'terminal' | 'failed' | 'cancelled'
 export interface ClipboardPasteParams {
   session_id: string
   profile?: string | null
@@ -6407,6 +6435,8 @@ export interface RpcMethods {
   'tools.show': { params: _SessionScoped; result: ToolsShowResult }
   /** Toolset summaries (no tool names) for the desktop Toolsets tab. */
   'toolsets.list': { params: _SessionScoped; result: ToolsetsListResult }
+  /** Report the server's current view of one client-minted turn id (known or not). */
+  'turn.status': { params: TurnStatusParams; result: TurnStatusResult }
   /** Two-bar dollar usage view shared by /usage, /topup and /subscription; fail-open to unavailable. */
   'usage.bars': { params: ProfileParams; result: UsageModel }
   /** Add a login / payment / address item to the local vault. */
@@ -6685,6 +6715,7 @@ export const RPC_METHODS = [
   'tools.list',
   'tools.show',
   'toolsets.list',
+  'turn.status',
   'usage.bars',
   'vault.add',
   'vault.list',

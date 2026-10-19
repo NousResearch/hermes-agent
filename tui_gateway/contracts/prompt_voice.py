@@ -45,6 +45,9 @@ class PromptSubmitParams(SessionParams):
     confirm_empty_truncate: bool | None = None
     confirm_deep_truncate: bool | None = None  # send when the cut archives >1 user turn (enforced next release)
     rebind_survivor_row_ids: list[int] | None = None
+    # Client-minted identity for an IDEMPOTENT submit (<=180 chars, validated in the handler). Absent
+    # keeps the legacy ack byte-identical: no accepted/server_turn_id/state keys at all.
+    client_turn_id: str | None = None
     # In-process only: injected by the hosted-room / bot-relay handlers, never accepted from a
     # client (a client dict for ``_turn_author`` answers 4124). Excluded from the rendered wire.
     hosted_task: JsonValue | None = Field(default=None, exclude=True, alias="_hosted_task")
@@ -58,6 +61,37 @@ class PromptSubmitStatus(WireEnum):
     queued = "queued"
     steered = "steered"
     redirected = "redirected"
+    # An idempotent replay: the stored turn came back, nothing was started by this request.
+    replayed = "replayed"
+
+
+class TurnAckState(WireEnum):
+    """The three states an ACK may carry. ``failed``/``cancelled`` are status-only: an ack is a
+    commitment to run the turn, and a turn that already ended badly is reported with
+    ``state: terminal`` plus ``outcome`` instead."""
+
+    accepted = "accepted"
+    running = "running"
+    terminal = "terminal"
+
+
+class TurnStatusState(WireEnum):
+    """The five states ``turn.status`` reports. Wider than ``TurnAckState`` on purpose: a status is a
+    report, so a finished failure says ``failed`` rather than ``terminal``."""
+
+    accepted = "accepted"
+    running = "running"
+    terminal = "terminal"
+    failed = "failed"
+    cancelled = "cancelled"
+
+
+class TurnOutcome(WireEnum):
+    """How a terminal turn actually ended."""
+
+    succeeded = "succeeded"
+    failed = "failed"
+    cancelled = "cancelled"
 
 
 class PromptSubmitResult(Result):
@@ -77,10 +111,42 @@ class PromptSubmitResult(Result):
     # the OWNER's FIFO (``status: queued``) and runs there after the current turn; nothing runs here.
     admission_id: str | None = None
     forwarded: bool | None = None
+    # ── idempotent-turn ack ──────────────────────────────────────────────────────────────────────
+    # Present together, and ONLY when the request carried ``client_turn_id``. ``duplicate`` is the
+    # compatibility field: it always equals ``replayed``, so a server can ship before the app reads
+    # the newer name.
+    accepted: bool | None = None
+    client_turn_id: str | None = None  # exact echo of the request id
+    server_turn_id: str | None = None  # server-minted, stable across replays of this turn
+    state: TurnAckState | None = None
+    duplicate: bool | None = None
+    idempotent: bool | None = None
+    replayed: bool | None = None
+    outcome: TurnOutcome | None = None  # present exactly when state == terminal
 
 
 method("prompt.submit", params=PromptSubmitParams, result=PromptSubmitResult,
        doc="Send a user turn to a live session; busy sessions queue / steer / redirect instead of refusing.")
+
+
+class TurnStatusParams(SessionParams):
+    """``turn.status`` — what the server knows about one client-minted turn id."""
+
+    client_turn_id: str
+
+
+class TurnStatusResult(Result):
+    """``known: false`` carries the echo and nothing else; a known turn adds its server identity and
+    current state."""
+
+    known: bool
+    client_turn_id: str
+    server_turn_id: str | None = None
+    state: TurnStatusState | None = None
+
+
+method("turn.status", params=TurnStatusParams, result=TurnStatusResult,
+       doc="Report the server's current view of one client-minted turn id (known or not).")
 
 
 # ── attachments ───────────────────────────────────────────────────────────────────────────────

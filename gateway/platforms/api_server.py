@@ -70,6 +70,10 @@ _STATIC_FEATURE_FLAGS = {
     "session_resources": True, "model_options": True, "session_chat": True,
     "session_chat_streaming": True, "session_fork": True, "session_model_lock": True,
     "reasoning_streaming": True,
+    # ``tui_gateway`` ships client-turn identity in this same build: prompt.submit accepts
+    # ``client_turn_id`` and answers the idempotent ack, and ``turn.status`` reports it. Unconditional
+    # on purpose — a build that advertises the feature is a build that implements it.
+    "turn_idempotency_v1": True,
     "admin_config_rw": False, "jobs_admin": False, "memory_write_api": False,
     "skills_api": True, "audio_api": False, "realtime_voice": False,
     "session_continuity_header": "X-Hermes-Session-Id",

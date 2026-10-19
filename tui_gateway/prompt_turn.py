@@ -308,6 +308,50 @@ def _commit_turn_history(
             "but was not saved to session history.")
 
 
+# ── client-turn identity (``prompt.submit.client_turn_id``) ─────────────────────────────────────
+# The registry owns the record; the turn loop owns the TRUTH about it. ``running`` is recorded when
+# the agent actually starts (not when the RPC was answered) and the terminal outcome in the turn's
+# ``finally``, so a replay reports what happened rather than what was asked.
+
+
+def _end_client_turn(session: dict, sid: str, client_turn_id, outcome: str) -> None:
+    """End a client turn that never reached the loop (admission / dispatch refused)."""
+    turn = _client_turn_record(session, sid, client_turn_id)
+    if turn is not None:
+        turn_identity.finish(turn, outcome)
+
+
+def _attach_client_turn(session: dict, sid: str, client_turn_id) -> None:
+    """Record ``running`` and make this turn own the id's outcome.
+
+    One turn runs per session at a time (``running`` gates admission), so a single slot cannot mix
+    two turns; ``_ride_client_turn`` appends the ids that joined this turn as a steer/redirect.
+    """
+    turn = _client_turn_record(session, sid, client_turn_id)
+    if turn is None:
+        return
+    turn_identity.mark(turn, turn_identity.RUNNING)
+    with session["history_lock"]:
+        session["_active_client_turns"] = [turn]
+
+
+def _finish_client_turn(session: dict, outcome: str) -> None:
+    """End every client turn this turn carries, with ``outcome`` (succeeded / failed / cancelled).
+
+    Called under ``history_lock`` from the turn's ``finally`` and from the paths that end a turn
+    before the loop starts. A submit without ``client_turn_id`` never fills the slot, so a legacy
+    turn does nothing here.
+    """
+    for turn in session.pop("_active_client_turns", None) or []:
+        turn_identity.finish(turn, outcome)
+
+
+def _client_turn_outcome(status: str) -> str:
+    """Turn-loop status -> the outcome the ack/status report: a stop is cancelled, not failed."""
+    return {"interrupted": turn_identity.CANCELLED, "error": turn_identity.FAILED}.get(
+        status, turn_identity.SUCCEEDED)
+
+
 def _result_status(result: dict) -> str:
     return (
         "interrupted" if result.get("interrupted")
@@ -1092,7 +1136,8 @@ def _run_prompt_submit(
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
-    turn_author: dict | None = None, report_ownership_refusal: bool = True) -> bool:
+    turn_author: dict | None = None, report_ownership_refusal: bool = True,
+    client_turn_id: str | None = None) -> bool:
     # Every dispatch binds the session's own row (session_key, real source) before the turn writes:
     # the synthesized turns that enter here directly (crash auto-continue, queued-prompt drain,
     # wake-ups) bypass prompt.submit's persist, and a row-less turn is otherwise materialized by
@@ -1105,7 +1150,9 @@ def _run_prompt_submit(
         sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata,
         report_ownership_refusal=report_ownership_refusal)
     if admitted is None:
+        _end_client_turn(session, sid, client_turn_id, turn_identity.FAILED)
         return False
+    _attach_client_turn(session, sid, client_turn_id)
     images, agent = admitted
     from gateway.warning_notifications import diagnostic_turn_muted
     from agent.notification_presentation import notification_config_snapshot
@@ -1178,6 +1225,10 @@ def _run_prompt_submit(
                 reset_transport(transport_token)
                 # A stale interim closure must not fire during a later turn.
                 st.agent.interim_assistant_callback = None
+                # This run's own ending, decided HERE rather than by the request that asked for it:
+                # a stop is cancelled, a returned error is failed, anything else succeeded.
+                status = _result_status(st.result) if isinstance(st.result, dict) else (
+                    "error" if st.error_retained else "complete")
                 with session["history_lock"]:
                     session["running"] = False
                     session["last_active"] = time.time()
@@ -1185,13 +1236,10 @@ def _run_prompt_submit(
                     if not st.error_retained:
                         _clear_inflight_turn(session)
                     _release_hosted_room_turn_slot(session)
+                    _finish_client_turn(session, _client_turn_outcome(status))
                 # Closing bookend of "tui prompt accepted" — exactly one per accepted prompt.
                 # agent.session_id is re-read because compression may have rotated it (an
                 # accepted/finished pair whose id changed IS a rotation trace).
-                if isinstance(st.result, dict):
-                    status = _result_status(st.result)
-                else:
-                    status = "error" if st.error_retained else "complete"
                 logger.info(
                     "tui turn finished: ui_session=%s session_key=%s agent_session_id=%s status=%s "
                     "error_retained=%s duration=%.1fs%s",
@@ -1233,6 +1281,7 @@ def _run_prompt_submit(
     if not can_start:
         with session["history_lock"]:
             session["running"] = False
+        _finish_client_turn(session, turn_identity.FAILED)
     return can_start
 
 

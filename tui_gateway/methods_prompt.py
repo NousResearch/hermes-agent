@@ -658,10 +658,16 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
 
 
 def _run_after_agent_ready(
-    rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author=None
+    rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author=None,
+    client_turn_id=None
 ):
     """Turn thread body: patient wait for a deferred build (a slow build must not eat the
-    accepted in-flight message), then run."""
+    accepted in-flight message), then run.
+
+    ``client_turn_id`` only rides to the loop so it can record ``running`` and then the run's own
+    outcome; every exit below that never reaches the loop still ends it here, so a client turn is
+    never left ``accepted`` by a turn that died before it started.
+    """
     # The wait delivers the prompt when the still-running build completes, honors a cancel promptly, notices
     # the user once past the slow threshold, and only errors when the build itself fails or the bounded cap
     # expires. See #63078.
@@ -675,6 +681,7 @@ def _run_after_agent_ready(
         with session["history_lock"]:
             session["running"] = False
             session["last_active"] = time.time()
+        _finish_client_turn(session, turn_identity.FAILED)
         _emit("session.info", sid, _session_info(session.get("agent"), session))
         return
     with session["history_lock"]:
@@ -686,10 +693,12 @@ def _run_after_agent_ready(
                 "Turn cancelled before the agent was ready"
                 if session.get("_turn_cancel_requested")
                 else "Session no longer running before the agent was ready")})
+            _finish_client_turn(session, turn_identity.CANCELLED)
             return
     _run_prompt_submit(
         rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata,
-        terminal_callback=hosted_terminal_callback, turn_author=turn_author)
+        terminal_callback=hosted_terminal_callback, turn_author=turn_author,
+        client_turn_id=client_turn_id)
 
 
 _TRUNCATION_PARAMS = (
@@ -800,9 +809,105 @@ def _lock_in_submit_turn(
 from gateway.session_surface import SURFACES as _CLIENT_SURFACES
 
 
+# ── idempotent client turns ──────────────────────────────────────────────────────────────────────
+# A client-minted ``client_turn_id`` makes a submit retry-safe: ONE run per (profile, session, id),
+# and a replay answers the stored ack instead of starting a second agent turn. The registry is
+# ``tui_gateway/turn_identity.py``; the wire shape is ``contracts/prompt_voice.py``. Nothing here
+# runs for a submit without an id: that ack stays byte-identical to the pre-idempotency one.
+
+
+def _client_turn_id_param(rid, raw):
+    """Validate the optional ``client_turn_id``: an opaque string, 1..180 chars, else ``4001``.
+
+    The value is client-minted, so the contract cannot constrain it and the dispatcher's unknown-key
+    check cannot help; a malformed id is a client bug and must come back as invalid params, never as
+    a 500 out of the registry.
+    """
+    if raw is None:
+        return None, None
+    if not isinstance(raw, str) or not raw or len(raw) > turn_identity.MAX_CLIENT_TURN_ID:
+        return None, _err(
+            rid, 4001,
+            f"client_turn_id must be a non-empty string of at most "
+            f"{turn_identity.MAX_CLIENT_TURN_ID} characters")
+    return raw, None
+
+
+def _client_turn_ack(turn, *, state=None, replayed=False) -> dict:
+    """The idempotent-turn fields, at the TOP level of ``prompt.submit``'s result.
+
+    ``duplicate`` is the compatibility field and always equals ``replayed``, so a server can ship
+    before the app reads the newer name. ``outcome`` rides only on a terminal state: the ack path
+    has no other way to say "already finished, badly".
+    """
+    turn_state = state or turn.state
+    ack = {
+        "accepted": True,
+        "client_turn_id": turn.client_turn_id,
+        "server_turn_id": turn.server_turn_id,
+        "state": turn_state,
+        "duplicate": replayed,
+        "idempotent": True,
+        "replayed": replayed,
+    }
+    if turn_state == turn_identity.TERMINAL and turn.outcome:
+        ack["outcome"] = turn.outcome
+    return ack
+
+
+def _with_client_turn_ack(response, turn, *, state=None, replayed=False) -> dict:
+    """Merge the ack into a SUCCESSFUL submit reply; an error keeps its shape untouched."""
+    if turn is None or not isinstance(response, dict) or not isinstance(response.get("result"), dict):
+        return response
+    response["result"].update(_client_turn_ack(turn, state=state, replayed=replayed))
+    return response
+
+
+def _client_turn_begin(session, sid, client_turn_id, text):
+    """Resolve this submit to its turn ``(turn, replayed)``; ``(None, False)`` for a legacy submit."""
+    if not client_turn_id:
+        return None, False
+    return turn_identity.begin(
+        profile=turn_identity.profile_scope(session), session_id=str(sid or ""),
+        client_turn_id=client_turn_id, text=text)
+
+
+def _client_turn_record(session, sid, client_turn_id):
+    """The stored turn for ``client_turn_id`` under this session's profile, or None."""
+    if not client_turn_id:
+        return None
+    return turn_identity.lookup(
+        profile=turn_identity.profile_scope(session), session_id=str(sid or ""),
+        client_turn_id=client_turn_id)
+
+
+def _fail_client_turn(turn) -> None:
+    """A turn that will never run still ends: terminal-failed, never left ``accepted``."""
+    if turn is not None:
+        turn_identity.finish(turn, turn_identity.FAILED)
+
+
+def _ride_client_turn(session, turn) -> None:
+    """A steered/redirected submit joins the LIVE turn, so it ends when that turn ends."""
+    if turn is None:
+        return
+    with session["history_lock"]:
+        session.setdefault("_active_client_turns", []).append(turn)
+
+
+def _busy_client_turn_state(response) -> str:
+    """What a busy-path ack reports: a redirected/steered submit is already running; a queued one
+    waits behind the live turn."""
+    status = ((response or {}).get("result") or {}).get("status")
+    return turn_identity.RUNNING if status in ("steered", "redirected") else turn_identity.ACCEPTED
+
+
 @method("prompt.submit")
 def _(rid, params: dict) -> dict:
     from hermes_cli.input_sanitize import sanitize_user_prompt_text
+    client_turn_id, id_error = _client_turn_id_param(rid, params.get("client_turn_id"))
+    if id_error is not None:
+        return id_error
     sid = params.get("session_id", "")
     raw_text = params.get("text", "")
     text = sanitize_user_prompt_text(raw_text) if isinstance(raw_text, str) else raw_text
@@ -839,10 +944,18 @@ def _(rid, params: dict) -> dict:
         if internal_hosted_submit else _legacy_group_fence_error(rid, session, params))
     if err is not None:
         return err
+    # ONE run per (profile, session, client_turn_id). A replay of words that already ran answers the
+    # stored ack and starts nothing — resolved BEFORE the active-slot limit and the busy path,
+    # because neither may charge (or redirect) a retry for a turn that already exists.
+    turn, replayed = _client_turn_begin(session, sid, client_turn_id, text)
+    if replayed:
+        return _ok(rid, {"status": "replayed", **_client_turn_ack(turn, replayed=True)})
     if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
         # Refused HERE — before the busy queue, db row and agent build — so a refusal
         # leaves the session untouched.  The reason travels as machine-readable data.
-        return _slot_refusal(rid, sid, session, text, params, limit_message, internal_hosted_submit)
+        return _with_client_turn_ack(
+            _slot_refusal(rid, sid, session, text, params, limit_message, internal_hosted_submit),
+            turn, state=turn_identity.ACCEPTED)
     # Rewritten every submit: a session alternates app window / HUD / live voice; a stale value misinforms.
     session["client_surface"] = params.get("surface") if params.get("surface") in _CLIENT_SURFACES else ""
     # Live-voice delegations carry the recent spoken transcript for the MODEL INPUT only (the persisted
@@ -889,9 +1002,12 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 4009, "session busy")
         busy_response = _handle_busy_submit(
             rid, sid, session, text, busy_transport, queued=bool(params.get("queued")), turn_author=turn_author,
-            display_kind=display_kind)
+            display_kind=display_kind, client_turn_id=client_turn_id)
         if busy_response is not None:
-            return busy_response
+            busy_state = _busy_client_turn_state(busy_response)
+            if busy_state == turn_identity.RUNNING:
+                _ride_client_turn(session, turn)
+            return _with_client_turn_ack(busy_response, turn, state=busy_state)
     raw_rebind_ids = params.get("rebind_survivor_row_ids")
     requested_rebind_ids = (
         {r for r in raw_rebind_ids if isinstance(r, int) and not isinstance(r, bool)}
@@ -920,9 +1036,10 @@ def _(rid, params: dict) -> dict:
         isolated_response = _submit_prompt_to_compute_host(
             rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata)
         if not isolated_response.get("error"):
-            # The truncation already happened inline above (memory + DB).
+            # The truncation already happened inline above (memory + DB). The child process owns the
+            # turn from here, so this process reports it accepted and cannot observe its end.
             isolated_response["result"].update(survivor_fields)
-            return isolated_response
+            return _with_client_turn_ack(isolated_response, turn, state=turn_identity.ACCEPTED)
         # An ordinal/id alone is not consent. A client that carries a leftover ordinal into an ORDINARY
         # submit sends a request that is indistinguishable, field by field, from a real rewind — same
         # method, same shape, an in-range target — and the cut it asks for is a destructive
@@ -935,6 +1052,7 @@ def _(rid, params: dict) -> dict:
             "compute-host dispatch failed for session %s; falling back inline: %s", sid,
             isolated_response["error"].get("message", "unknown error"))
     if (err := _persist_session_row_for_submit(rid, session, text, display_kind)) is not None:
+        _fail_client_turn(turn)  # no turn thread will start, so the turn id must not stay accepted
         return err
     # Capture before starting the worker: it consumes the staging dict and may finish before the RPC returns.
     staged_user = session.get("_submit_user_row") or {}
@@ -943,14 +1061,46 @@ def _(rid, params: dict) -> dict:
     # A completed FAILED build must not wedge the session: rebuild, don't replay it.
     if not _restart_completed_failed_agent_build(sid, session, session.get("agent_ready")):
         _start_agent_build(sid, session)
-    run_thread = threading.Thread(
-        target=lambda: _run_after_agent_ready(
-            rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author),
-        daemon=True)
+    def _turn_thread():
+        try:
+            _run_after_agent_ready(
+                rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback,
+                turn_author, client_turn_id=client_turn_id)
+        finally:
+            # Backstop: a crash before the turn loop's own finally must still end the client turn
+            # (``turn_identity.mark`` refuses to reopen a turn that already reached terminal).
+            _finish_client_turn(session, turn_identity.FAILED)
+
+    run_thread = threading.Thread(target=_turn_thread, daemon=True)
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     session["_run_thread"] = run_thread
     run_thread.start()
-    return _ok(rid, {"status": "streaming", **survivor_fields})
+    return _with_client_turn_ack(
+        _ok(rid, {"status": "streaming", **survivor_fields}), turn, state=turn_identity.ACCEPTED)
+
+
+@method("turn.status")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """What the server knows about one client-minted turn id.
+
+    ``known: false`` still echoes the id (the client matches the echo before it trusts anything).
+    A missing runtime session is NOT an error here: the answer is simply that this process knows
+    nothing about that id, which is also what a reaped session means.
+    """
+    client_turn_id, id_error = _client_turn_id_param(rid, params.get("client_turn_id"))
+    if id_error is not None:
+        return id_error
+    if client_turn_id is None:
+        return _err(rid, 4001, "turn.status requires client_turn_id")
+    sid = params.get("session_id")
+    if not isinstance(sid, str) or not sid:
+        return _err(rid, 4006, "session_id required")
+    turn = _client_turn_record(_sessions.get(sid), sid, client_turn_id)
+    if turn is None:
+        return _ok(rid, {"known": False, "client_turn_id": client_turn_id})
+    return _ok(rid, {"known": True, "client_turn_id": client_turn_id,
+                     "server_turn_id": turn.server_turn_id, "state": turn_identity.report_state(turn)})
 
 
 @method("clipboard.paste")

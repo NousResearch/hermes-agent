@@ -4309,6 +4309,24 @@
       }
     },
     {
+      "name": "turn.status",
+      "summary": "Report the server's current view of one client-minted turn id (known or not).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/TurnStatusParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/TurnStatusResult"
+        }
+      }
+    },
+    {
       "name": "usage.bars",
       "summary": "Two-bar dollar usage view shared by /usage, /topup and /subscription; fail-open to unavailable.",
       "params": [
@@ -31890,6 +31908,18 @@
             ],
             "default": null,
             "title": "Rebind Survivor Row Ids"
+          },
+          "client_turn_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Client Turn Id"
           }
         },
         "required": [
@@ -32016,6 +32046,100 @@
             ],
             "default": null,
             "title": "Forwarded"
+          },
+          "accepted": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Accepted"
+          },
+          "client_turn_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Client Turn Id"
+          },
+          "server_turn_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Server Turn Id"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TurnAckState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "duplicate": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Duplicate"
+          },
+          "idempotent": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Idempotent"
+          },
+          "replayed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Replayed"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TurnOutcome"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "title": "PromptSubmitResult",
@@ -32026,7 +32150,8 @@
           "streaming",
           "queued",
           "steered",
-          "redirected"
+          "redirected",
+          "replayed"
         ],
         "title": "PromptSubmitStatus",
         "type": "string"
@@ -44258,6 +44383,26 @@
         "title": "TranscriptMessage",
         "type": "object"
       },
+      "TurnAckState": {
+        "description": "The three states an ACK may carry. ``failed``/``cancelled`` are status-only: an ack is a\ncommitment to run the turn, and a turn that already ended badly is reported with\n``state: terminal`` plus ``outcome`` instead.",
+        "enum": [
+          "accepted",
+          "running",
+          "terminal"
+        ],
+        "title": "TurnAckState",
+        "type": "string"
+      },
+      "TurnOutcome": {
+        "description": "How a terminal turn actually ended.",
+        "enum": [
+          "succeeded",
+          "failed",
+          "cancelled"
+        ],
+        "title": "TurnOutcome",
+        "type": "string"
+      },
       "TurnStatus": {
         "description": "``prompt_turn._result_status``.",
         "enum": [
@@ -44266,6 +44411,93 @@
           "interrupted"
         ],
         "title": "TurnStatus",
+        "type": "string"
+      },
+      "TurnStatusParams": {
+        "additionalProperties": false,
+        "description": "``turn.status`` \u2014 what the server knows about one client-minted turn id.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "client_turn_id": {
+            "title": "Client Turn Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "client_turn_id"
+        ],
+        "title": "TurnStatusParams",
+        "type": "object"
+      },
+      "TurnStatusResult": {
+        "additionalProperties": false,
+        "description": "``known: false`` carries the echo and nothing else; a known turn adds its server identity and\ncurrent state.",
+        "properties": {
+          "known": {
+            "title": "Known",
+            "type": "boolean"
+          },
+          "client_turn_id": {
+            "title": "Client Turn Id",
+            "type": "string"
+          },
+          "server_turn_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Server Turn Id"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TurnStatusState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "known",
+          "client_turn_id"
+        ],
+        "title": "TurnStatusResult",
+        "type": "object"
+      },
+      "TurnStatusState": {
+        "description": "The five states ``turn.status`` reports. Wider than ``TurnAckState`` on purpose: a status is a\nreport, so a finished failure says ``failed`` rather than ``terminal``.",
+        "enum": [
+          "accepted",
+          "running",
+          "terminal",
+          "failed",
+          "cancelled"
+        ],
+        "title": "TurnStatusState",
         "type": "string"
       },
       "UiMetaConflict": {

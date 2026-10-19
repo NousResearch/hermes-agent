@@ -2597,23 +2597,31 @@ def _scan_prose_for_phantom_ids(conn: sqlite3.Connection, text: str) -> list[str
 
 
 def _completion_gate_enabled() -> bool:
-    return os.environ.get("HERMES_COMPLETION_GATE", "").strip().lower() in {"1", "true", "yes", "on"}
+    """``kanban.completion_gate``: also verify untyped contracts. Default false."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        return (load_config_readonly() or {}).get("kanban", {}).get("completion_gate") is True
+    except Exception:
+        return False
 
 
 def _apply_completion_verification_gate(
     conn: sqlite3.Connection, task_id: str, metadata: Optional[dict],
 ) -> Optional[dict]:
-    """Verify before any acceptance or done write; return metadata with stable evidence."""
-    if not _completion_gate_enabled():
-        return metadata
-    from hermes_cli.verification_gate import verify_completion
+    """Verify before any acceptance or done write; return metadata with stable evidence.
+
+    A typed contract (``pr-merged``, ``deployed``, ...) is the card's own opt-in, so its
+    artifact is always required; ``kanban.completion_gate`` adds the full payload checks.
+    """
+    from hermes_cli.verification_gate import CARD_TYPE_ARTIFACTS, verify_completion
 
     task = get_task(conn, task_id)
     contract = task.completion_contract if task else None
-    from hermes_cli.verification_gate import CARD_TYPE_ARTIFACTS
-    card_type = contract if contract in CARD_TYPE_ARTIFACTS else None
+    full = _completion_gate_enabled()
+    if contract not in CARD_TYPE_ARTIFACTS and not full:
+        return metadata
     payload = metadata.get("verification") if isinstance(metadata, dict) else None
-    report = verify_completion(payload, card_type=card_type)
+    report = verify_completion(payload, contract=contract, full=full)
     if not report["ok"]:
         with write_txn(conn):
             _append_event(conn, task_id, "completion_blocked_verification", {

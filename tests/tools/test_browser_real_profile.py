@@ -974,13 +974,32 @@ class TestReviewRound3:
         monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
         first, err = bc.snapshot_real_profile("chrome", src=str(src))
         assert err is None
-        with open(os.path.join(first, bc._SNAPSHOT_DONE_MARKER), "w", encoding="utf-8") as fh:
+        with open(os.path.join(first, bc._SNAPSHOT_DONE_MARKER), "w", encoding="utf-8") as fh:  # windows-footgun: ok — write mode, not a read
             fh.write("Default")
         monkeypatch.setattr(bc, "_profile_is_locked", lambda s, p: True)
         monkeypatch.setattr(bc, "_real_profile_autoclose", lambda: False)
         dst, err = bc.snapshot_real_profile("chrome", src=str(src))
         assert dst is None
         assert err and err.startswith(bc._PROFILE_LOCKED_PREFIX)
+
+    def test_interrupted_profile_switch_never_reuses_stale_marker(self, tmp_path, monkeypatch):
+        """A sync from another source profile that dies mid-way must not leave the old marker
+        vouching for the mixed copy: a later locked launch refuses instead of reusing it."""
+        import hermes_cli.browser_connect as bc
+        src = self._multi(tmp_path / "real")
+        home = tmp_path / "hh"
+        monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
+        _first, err = bc.snapshot_real_profile("chrome", src=str(src))
+        assert err is None  # completed copy of Profile 6
+        monkeypatch.setattr(bc, "_resolve_source_profile", lambda s: ("Default", None))
+        monkeypatch.setattr(bc, "_mirror_profile_auth", lambda *a: (_ for _ in ()).throw(OSError("killed")))
+        assert bc.snapshot_real_profile("chrome", src=str(src))[0] is None  # interrupted switch
+        monkeypatch.undo()
+        monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
+        monkeypatch.setattr(bc, "_profile_is_locked", lambda s, p: True)
+        monkeypatch.setattr(bc, "_real_profile_autoclose", lambda: False)
+        dst, err = bc.snapshot_real_profile("chrome", src=str(src))
+        assert dst is None and err.startswith(bc._PROFILE_LOCKED_PREFIX)
 
     def test_processes_holding_profile_identity_binding(self, tmp_path, monkeypatch):
         """The process matcher requires BOTH a browser binary AND this exact

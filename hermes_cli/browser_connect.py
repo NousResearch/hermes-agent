@@ -756,14 +756,17 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
     # Only a copy that previously COMPLETED counts as populated; a half-written tree is
     # rebuilt — otherwise a torn first copy poisons freshness forever.
     populated = os.path.isfile(marker)
+    same_source = populated and _snapshot_source(marker) == source_profile
     # Fast lock probe BEFORE any copy: a blocking file op on a Windows-locked cookie DB can
     # hang the launch for minutes. Never trips on POSIX, where a running browser only locks the
     # password/autofill DBs, which ``_mirror_profile_auth`` skips.
     if _profile_is_locked(src, source_profile):
-        if populated and _snapshot_source(marker) == source_profile:
-            return _reuse_snapshot(browser, dst)
-        return None, _locked_profile_error(browser)
+        return _reuse_snapshot(browser, dst) if same_source else (None, _locked_profile_error(browser))
     try:
+        if populated and not same_source:
+            # Drop another profile's marker BEFORE re-syncing: an interrupted sync must never leave
+            # it vouching for this profile's cookies on a later locked reuse.
+            os.unlink(marker)
         os.makedirs(dst, exist_ok=True)
         # Secure the snapshot dir AND its browser-profile parent on EVERY launch so a failed
         # first attempt or an older-build dir still converges to owner-only perms.

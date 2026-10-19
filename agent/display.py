@@ -18,7 +18,8 @@ from urllib.parse import urlsplit
 from utils import safe_json_loads
 from agent.i18n import t
 from agent.redact import redact_sensitive_text
-from agent.tool_result_classification import file_mutation_result_landed, has_failure_marker, is_guardrail_refusal
+from agent.tool_result_classification import (
+    shape_failure_error, file_mutation_result_landed, has_failure_marker, is_guardrail_refusal)
 
 logger = logging.getLogger(__name__)
 
@@ -1048,6 +1049,12 @@ def _detect_tool_failure(tool_name: str, result: Any) -> tuple[bool, str]:
         err = data.get("error") or data.get("message")
         if err and (failed or "error" in data):
             return True, f" [{_trim_error(str(err))}]"
+        if shape_err := shape_failure_error(data):
+            return True, f" [{_trim_error(shape_err)}]"
+        # A JSON object is judged by its top-level shape only. An ``error`` key nested
+        # inside a success payload is data the tool read (a page's own validation
+        # message inside browser_cdp's ``result``), not a failure of the call.
+        return False, ""
     # Multimodal results (dicts) are successes; failures arrive as JSON-encoded strings.
     if isinstance(result, str) and has_failure_marker(result):
         return True, t("display.failure.generic")

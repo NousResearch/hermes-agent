@@ -164,6 +164,7 @@ gateway:
     full_logs_hint: "Vir volledige loglae, gebruik `hermes debug share` vanaf die CLI."
     share_hint: "Deel hierdie skakels met die Hermes-span vir ondersteuning."
     report_label: "Verslag"
+    local_refused: "`/debug local` hou die verslag op die masjien waarop Hermes loop, so dit is nie vanuit 'n klets beskikbaar nie. Stuur `/debug` om die opsommingsverslag op te laai."
   deny:
     stale: "❌ Opdrag geweier (goedkeuring was verouderd)."
     no_pending: "Geen hangende opdrag om te weier nie."
@@ -445,6 +446,9 @@ gateway:
     state_no: "Nee"
     queued: "**Opgehoopte opvolge:** {count}"
     platforms: "**Verbinde Platforms:** {platforms}"
+  discard:
+    nothing: "Niks om weg te gooi nie: hierdie klets het geen beurt wat in 'n herbegin verlore is nie."
+    done: "🗑️ {count} verlore beurt(e) weggegooi; hulle is nie weer uitgevoer nie. Jou gestoorde boodskappe word nou beantwoord."
   stop:
     stopped_pending: "⚡ Gestop. Die agent het nog nie begin nie — jy kan met hierdie sessie voortgaan."
     stopped: "⚡ Gestop. Jy kan met hierdie sessie voortgaan."
@@ -1530,6 +1534,8 @@ slash:
     description: "Voer 'n gedeelde profielargief as 'n nuwe profiel in"
   stop:
     description: "Beëindig alle lopende agtergrondprosesse"
+  discard:
+    description: "Gooi 'n beurt weg wat verlore is toe Hermes herbegin het sodat hierdie klets se tou weer loop"
   pause:
     description: "Pouseer nuwe werk globaal (noodstop); '/pause off' hervat"
   deny:
@@ -3004,6 +3010,10 @@ cli:
       usage_disconnect: "disconnect   Keer terug na die verstek-blaaieragterkant"
       usage_status: "status       Wys die huidige blaaiermodus"
       usage_use: "use [off]    Skakel oor na Browser Use-modus (CLI 3.0) / terug na ingeboude gereedskap"
+      remote_gateway: "/browser connect en /browser disconnect bestuur 'n Chromium-blaaier op die gateway-gasheer — slegs beskikbaar wanneer aan 'n plaaslike gateway gekoppel."
+      checking: "Kontroleer Chromium-blaaier se afstandontfouting by {url}..."
+      new_sessions_only: "Geld vir nuwe sessies — hierdie een behou sy huidige gereedskap (/new om een te begin)."
+      status_gateway_default: "🌐 Blaaier: die gateway se verstek-blaaier (geen lewendige CDP-verbinding nie)"
     heartbeat:
       label: "Hartklopte"
       paused: "⏸ Hartklop gepouseer: {prompt}"

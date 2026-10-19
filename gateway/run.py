@@ -2359,6 +2359,9 @@ class _GatewayModelContext:
     base_url: str
     context_length: int
     context_source: str
+    # Friendly name of a NAMED custom provider (``provider`` is the generic runtime class
+    # ``custom`` for those); display-only, so the session notice doesn't say "custom" for e.g. engy.
+    requested_provider: str = ""
 
 
 def _resolve_gateway_model_context(
@@ -2377,6 +2380,7 @@ def _resolve_gateway_model_context(
     resolved_model = model or _resolve_gateway_model()
     config_context_length = provider = base_url = api_key = custom_providers = None
     configured_model = configured_provider = configured_base_url = None
+    requested_provider = None
 
     def _read_config() -> None:
         nonlocal config_context_length, provider, base_url, custom_providers
@@ -2400,17 +2404,19 @@ def _resolve_gateway_model_context(
             custom_providers = data.get("custom_providers")
 
     def _read_runtime() -> None:
-        nonlocal provider, base_url, api_key
+        nonlocal provider, base_url, api_key, requested_provider
         if route and route.get("base_url"):
             # A session route with its own endpoint (a /model switch) replaces the default runtime
             # read; a route without one (persisted / SessionDB / plain config) still resolves the
             # default runtime credentials so a custom endpoint and its context_length pin survive.
             provider = route.get("provider") or provider
+            requested_provider = route.get("requested_provider") or route.get("provider") or requested_provider
             base_url = route["base_url"]
             api_key = route.get("api_key")
             return
         runtime = _resolve_runtime_agent_kwargs()
         provider = runtime.get("provider") or provider
+        requested_provider = runtime.get("requested_provider") or provider or requested_provider
         base_url = runtime.get("base_url") or base_url
         api_key = runtime.get("api_key")
 
@@ -2442,7 +2448,8 @@ def _resolve_gateway_model_context(
                       else "default" if fell_through else "detected")
     return _GatewayModelContext(
         model=resolved_model, provider=provider or "", base_url=base_url or "",
-        context_length=context_length, context_source=context_source)
+        context_length=context_length, context_source=context_source,
+        requested_provider=requested_provider or "")
 
 
 def _resolve_runtime_agent_kwargs_for_provider(provider: str, target_model: Optional[str] = None) -> dict:

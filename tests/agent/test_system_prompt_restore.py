@@ -203,6 +203,41 @@ class TestSurfaceSwitch:
         # Only the carried-over name: a tool this surface built is not inert.
         assert "read_file" not in agent._surface_switch_note.split("were not loaded for this interface")[1]
 
+    def _note_carrying_message_agent(self, *, authorized: bool) -> str:
+        """A cli -> desktop switch whose pin carries ``message_agent`` and a desktop-only tool.
+
+        ``message_agent`` is injected by its auth gate, never registered, so the surface's own
+        registry build can never list it."""
+        from unittest.mock import patch
+
+        def _carry(agent, saved_names):
+            agent.tools = [self._tool("read_file"), self._tool("message_agent"), self._tool("focus_pane")]
+            return True
+
+        with (
+            patch("tools.mcp_tool_agent.restore_agent_tool_prefix", _carry),
+            patch("tools.bot_mode_dm.message_agent_authorized", return_value=authorized),
+        ):
+            agent = self._restore(stored="cli", current="desktop",
+                                  tool_names='["message_agent", "focus_pane"]',
+                                  tools=[self._tool("read_file")])
+        return agent._surface_switch_note
+
+    def test_an_authorized_injected_tool_is_not_called_inert(self):
+        """A Bot Chat's ``message_agent`` is re-injected and dispatchable on every surface.
+
+        Naming it inert told the model "expect a call to fail", so it stopped using a working
+        tool and shelled out to the DM transport by hand. Agent DMs arrive on the cli surface
+        and the user types on desktop, so every such alternation re-sent the false note."""
+        inert = self._note_carrying_message_agent(authorized=True).split("were not loaded for this interface")[1]
+        assert "focus_pane" in inert
+        assert "message_agent" not in inert
+
+    def test_an_unauthorized_injected_tool_is_still_inert(self):
+        # Outside an authorized Bot Chat the gate never re-publishes it, so a call really fails.
+        inert = self._note_carrying_message_agent(authorized=False).split("were not loaded for this interface")[1]
+        assert "message_agent" in inert
+
     def test_note_rides_the_user_message_channel_once(self):
         from agent.turn_context import _merge_gateway_notes, consume_surface_switch_note
 

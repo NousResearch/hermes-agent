@@ -212,11 +212,24 @@ def local_batch_error(entries: list[dict[str, Any]]) -> str:
 
 def not_deferrable_error(name: str) -> str:
     """Rejection for a ``tool_call`` naming something that is not a deferred tool.
-    Two different mistakes reach here and need opposite corrections: a directly-listed
-    tool (call it without the bridge) vs. an unknown name — typically a deferred MCP tool
-    cited by its bare suffix instead of the full ``mcp__<server>__{tool}`` name. Telling
-    the second group 'call it directly' is the opposite of what they must do."""
-    from tools.tool_search import _core_tool_names  # late: tool_search imports this module
+    Three different mistakes reach here and need three different corrections: a
+    directly-listed tool (call it without the bridge) vs. an unknown name — typically a
+    deferred MCP tool cited by its bare suffix instead of the full ``mcp__<server>__{tool}``
+    name. Telling the second group 'call it directly' is the opposite of what they must do.
+
+    The middle case is a tool injected into THIS session's ``tools[]`` by an auth gate and
+    deliberately never registered: ``message_agent`` (Bot Mode DM, #124209). It is advertised
+    to the provider and dispatchable natively, yet ``_registry_entry`` returns None and it is
+    not in ``_HERMES_CORE_TOOLS``, so it fell through to the *unknown-name* branch — telling the
+    model to search for a name tool_search can never return, which is how a working DM tool was
+    reported as "not loaded". Ask the live surface first, exactly as ``out_of_scope_reason``
+    asks the registry for a GUI tool's missing surface."""
+    from tools.tool_search import _core_tool_names, _session_direct_names  # late: tool_search imports this module
+    # An injected native tool: it is in this session's tool list right now, so the correct
+    # correction is the direct door — the same wording the registry/core branch gives.
+    if _session_direct_names(name):
+        return (f"'{name}' is a directly-listed tool, not a deferred one. "
+                "Call it directly instead of via tool_call.")
     if name in _core_tool_names() or _registry_entry(name) is not None:
         return (f"'{name}' is a directly-listed tool, not a deferred one. "
                 "Call it directly instead of via tool_call.")

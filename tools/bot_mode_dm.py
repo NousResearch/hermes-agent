@@ -38,6 +38,33 @@ logger = logging.getLogger(__name__)
 
 MESSAGE_AGENT_TOOL_NAME = "message_agent"
 
+# Names of tools INJECTED into a session's tool surface by an auth gate and deliberately
+# never registered (so they are absent from ``tools.registry``, ``toolsets._HERMES_CORE_TOOLS``
+# and therefore from the tool_search catalog). A published name here means "this process put
+# it in a live session's tools[]/valid_tool_names", which is the fact the tool_search bridge
+# otherwise lacks and must not answer around with an 'unknown name' correction.
+# Mutable module state, not per-session: the bridge call sites have no agent handle, and a
+# monotonic set of immutable strings is atomic under the GIL. Fail-open on lookup.
+_injected_native_names: set = set()
+
+
+def _publish_injected_tool_name(name: str) -> None:
+    """Record an injected-but-unregistered native tool name as a real native door."""
+    with contextlib.suppress(Exception):
+        _injected_native_names.add(name)
+
+
+def is_injected_native_tool(name: str) -> bool:
+    """True when *name* is a gate-injected native tool this process has published.
+
+    Read by ``tools.tool_search._session_direct_names`` so an injected tool gets the
+    'call it directly' correction instead of being reported as an unknown name (#124209).
+    Never raises: a bridge call must survive any failure here."""
+    try:
+        return name in _injected_native_names
+    except Exception:  # pragma: no cover - defensive
+        return False
+
 # Message body cap — generous for real work, small enough that a runaway paste can't
 # turn one DM into a context bomb on the recipient.
 MESSAGE_MAX_CHARS = 16000
@@ -161,6 +188,14 @@ def ensure_message_agent_tool(agent: Any) -> bool:
         valid = getattr(agent, "valid_tool_names", None)
         if isinstance(valid, set):
             valid.add(MESSAGE_AGENT_TOOL_NAME)
+        # Record that this process really did publish the tool into a live session's
+        # surface. ``message_agent`` is injected and never registered, so the tool_search
+        # bridge cannot see it in the registry — and answered the model "not a known tool
+        # name ... use tool_search to find the exact name", sending it to search a catalog
+        # that structurally cannot list it (#124209). This is the honest signal that the
+        # name is a real native door here. Monotonic set.add of an immutable str is atomic,
+        # so no lock is needed; the process outlives any one session's gate.
+        _publish_injected_tool_name(MESSAGE_AGENT_TOOL_NAME)
         return True
     except Exception:  # pragma: no cover — must never break a turn
         logger.debug("ensure_message_agent_tool failed", exc_info=True)

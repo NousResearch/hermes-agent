@@ -1015,3 +1015,10 @@ Leave `everyone` and `roles` at `false` unless you know exactly why you need the
 For more information on securing your Hermes Agent deployment, see the [Security Guide](../security.md).
 
 
+
+The same profile setting also applies to the `discord` model tool's `create_thread`
+action when its archive duration is omitted. Explicit tool/slash durations win and
+must use the same Discord enum. Invalid YAML values fall back to 1440 minutes.
+Standalone manual and handoff threads are explicitly public; anchored threads
+retain their normal Discord message visibility. Settings resolve independently for
+each served profile. Update-result threads using the handoff helper share this policy.

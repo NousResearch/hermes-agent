@@ -81,7 +81,7 @@ class _Snowflake:
         self.id = id
 
 
-VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
+from .thread_config import VALID_THREAD_AUTO_ARCHIVE_MINUTES, validate_thread_auto_archive_duration
 _DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}
 _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
@@ -1317,9 +1317,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         # Auto-archive duration (minutes) for threads Hermes creates (auto-
         # threads, /thread slash, handoffs). Discord only accepts 60/1440/4320/
         # 10080; any other config value falls back to the default 1440.
-        self._thread_auto_archive_duration = self._config_int("thread_auto_archive_duration", 1440)
-        if self._thread_auto_archive_duration not in VALID_THREAD_AUTO_ARCHIVE_MINUTES:
-            self._thread_auto_archive_duration = 1440
+        self._thread_auto_archive_duration = validate_thread_auto_archive_duration(
+            self.config.extra.get("thread_auto_archive_duration", 1440))
         self._liveness_task: Optional[asyncio.Task] = None
         self._liveness_notification_task: Optional[asyncio.Task] = None
         # True while disconnect() intentionally closes discord.py (done callback: shutdown vs crash).
@@ -5439,7 +5438,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             thread = await parent_channel.create_thread(
                 name=name,
                 auto_archive_duration=effective_duration,
-                reason=reason,
+                reason=reason, type=discord.ChannelType.public_thread,
             )
             if starter_message:
                 await thread.send(starter_message)
@@ -5625,7 +5624,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 thread = await create(
                     name=thread_name,
                     auto_archive_duration=self._thread_auto_archive_duration,
-                    reason=reason,
+                    reason=reason, type=discord.ChannelType.public_thread,
                 )
                 return str(thread.id)
         except Exception as direct_error:
@@ -7319,7 +7318,7 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     def _csv(value) -> str:
         return ",".join(str(v) for v in value) if isinstance(value, list) else str(value)
 
-    seeded_extra = {}
+    seeded_extra = {"thread_auto_archive_duration": discord_cfg.get("thread_auto_archive_duration", 1440)}
     for key, env_key in _YAML_BOOL_ENV_KEYS:
         if key in discord_cfg:
             seeded_extra[key] = discord_cfg[key]  # original type: the shared-key loop seeds bools as bools

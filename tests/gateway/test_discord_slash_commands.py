@@ -76,6 +76,7 @@ def _ensure_discord_mock():
 _ensure_discord_mock()
 
 from plugins.platforms.discord.adapter import DiscordAdapter
+from plugins.platforms.discord import adapter as discord_adapter
 
 
 class FakeTree:
@@ -350,7 +351,7 @@ async def test_handle_thread_create_slash_reports_success(adapter):
     parent_channel.create_thread.assert_awaited_once_with(
         name="Planning",
         auto_archive_duration=1440,
-        reason="Requested by Jezza via /thread",
+        reason="Requested by Jezza via /thread", type=discord_adapter.discord.ChannelType.public_thread,
     )
     created_thread.send.assert_awaited_once_with("Kickoff")
     # Thread link shown to user
@@ -408,7 +409,7 @@ async def test_handle_thread_create_slash_none_uses_config_duration(adapter):
     parent_channel.create_thread.assert_awaited_once_with(
         name="Planning",
         auto_archive_duration=10080,
-        reason="Requested by Jezza via /thread",
+        reason="Requested by Jezza via /thread", type=discord_adapter.discord.ChannelType.public_thread,
     )
 
 
@@ -432,7 +433,7 @@ async def test_handle_thread_create_slash_explicit_param_wins(adapter):
     parent_channel.create_thread.assert_awaited_once_with(
         name="Planning",
         auto_archive_duration=4320,
-        reason="Requested by Jezza via /thread",
+        reason="Requested by Jezza via /thread", type=discord_adapter.discord.ChannelType.public_thread,
     )
 
 
@@ -807,7 +808,7 @@ async def test_handoff_thread_uses_config_archive_duration(adapter):
     parent.create_thread.assert_awaited_once_with(
         name="handoff test",
         auto_archive_duration=60,
-        reason="Hermes session handoff",
+        reason="Hermes session handoff", type=discord_adapter.discord.ChannelType.public_thread,
     )
 
 

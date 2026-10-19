@@ -357,8 +357,15 @@ def _list_pins(token: str, channel_id: str, **_kwargs: Any) -> str:
 
 def _create_thread(
     token: str, channel_id: str, name: str, message_id: Optional[str] = None,
-    auto_archive_duration: int = 1440, **_kwargs: Any) -> str:
+    auto_archive_duration: Optional[int] = None, **_kwargs: Any) -> str:
     """Create a thread — anchored to ``message_id`` when given, else standalone public."""
+    from plugins.platforms.discord.thread_config import (
+        VALID_THREAD_AUTO_ARCHIVE_MINUTES, configured_thread_auto_archive_duration,
+    )
+    if auto_archive_duration is None:
+        auto_archive_duration = configured_thread_auto_archive_duration()
+    if isinstance(auto_archive_duration, bool) or auto_archive_duration not in VALID_THREAD_AUTO_ARCHIVE_MINUTES:
+        return tool_error("Thread archive duration must be one of 60, 1440, 4320 or 10080 minutes.")
     body: dict[str, Any] = {"name": name, "auto_archive_duration": auto_archive_duration}
     path = f"/channels/{channel_id}/threads"
     if message_id:
@@ -491,7 +498,7 @@ _SCHEMA_PROPERTIES: dict[str, Any] = {
     "auto_archive_duration": {
         "type": "integer",
         "enum": [60, 1440, 4320, 10080],
-        "description": "Thread archive duration in minutes (create_thread, default 1440).",
+        "description": "Thread archive duration in minutes (create_thread; omitted uses profile setting, otherwise 1440).",
     },
 }
 
@@ -581,7 +588,7 @@ def check_discord_tool_requirements() -> bool:
 # ── handlers ─────────────────────────────────────────────────────────────────
 _HANDLER_DEFAULTS = {
     "guild_id": "", "channel_id": "", "user_id": "", "role_id": "", "message_id": "", "query": "",
-    "name": "", "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440}
+    "name": "", "limit": 50, "before": "", "after": "", "auto_archive_duration": None}
 
 
 def _run_discord_action(action: str, valid_actions: dict[str, Any], tool_label: str, **params: Any) -> str:

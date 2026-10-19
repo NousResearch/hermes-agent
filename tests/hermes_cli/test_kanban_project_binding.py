@@ -4,12 +4,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 import subprocess
 import time
 from pathlib import Path
 
 import pytest
 
+from hermes_cli import kanban as kanban_cli
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_project_binding as project_binding
@@ -167,6 +169,8 @@ def test_unknown_project_is_rejected_without_mutation(kanban_conn, capsys):
     assert code != 0
     assert result is not None
     assert result["ok"] is False
+    assert result["result"] == "error"
+    assert result["changed"] is False
     assert "not found" in result["error"].lower()
     assert dict(conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()) == before
     assert _rows(conn, "SELECT * FROM task_events WHERE task_id = ? ORDER BY id", (task_id,)) == events_before
@@ -560,3 +564,477 @@ def test_board_and_project_scope_mismatches_are_rejected(kanban_conn, tmp_path, 
     assert "board" in result["error"].lower()
     assert dict(conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()) == before
     assert _rows(conn, "SELECT * FROM task_events WHERE task_id = ? ORDER BY id", (task_id,)) == events_before
+
+
+def test_bind_project_initialization_sqlite_error_returns_json_error(
+    kanban_conn, capsys, monkeypatch,
+):
+    conn, tmp_path = kanban_conn
+    project = _make_project(tmp_path)
+    task_id = _make_projectless_task(conn, project)
+    task_before = dict(conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone())
+    events_before = _rows(conn, "SELECT * FROM task_events WHERE task_id = ? ORDER BY id", (task_id,))
+
+    def fail_initialization(*args, **kwargs):
+        raise sqlite3.OperationalError("injected SQLite initialization failure")
+
+    monkeypatch.setattr(kb, "init_db", fail_initialization)
+
+    code, result, captured = _invoke_bind(task_id, project.id, capsys)
+
+    assert code != 0
+    assert result is not None, (
+        "expected a JSON error envelope; "
+        f"stdout={captured.out!r}, stderr={captured.err!r}"
+    )
+    assert set(result) == {
+        "ok", "result", "changed", "task_id", "project_id", "project_slug", "board", "error",
+    }
+    assert result["ok"] is False
+    assert result["result"] == "error"
+    assert result["changed"] is False
+    assert result["task_id"] == task_id
+    assert result["project_id"] is None
+    assert result["project_slug"] is None
+    assert result["board"] == "default"
+    assert "injected SQLite initialization failure" in result["error"]
+    assert captured.err == ""
+    assert "Bound " not in captured.out
+    assert dict(conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()) == task_before
+    assert _rows(conn, "SELECT * FROM task_events WHERE task_id = ? ORDER BY id", (task_id,)) == events_before
+
+
+def test_bind_project_corrupt_database_initialization_returns_json_error(
+    kanban_conn, capsys, monkeypatch,
+):
+    conn, tmp_path = kanban_conn
+    project = _make_project(tmp_path)
+    task_id = _make_projectless_task(conn, project)
+    task_before = dict(conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone())
+    events_before = _rows(conn, "SELECT * FROM task_events WHERE task_id = ? ORDER BY id", (task_id,))
+    corrupt_error = kbc.KanbanDbCorruptError(
+        tmp_path / "corrupt-kanban.db",
+        tmp_path / "corrupt-kanban.db.corrupt.backup",
+        "integrity_check returned malformed",
+    )
+    initialization_calls = []
+    binding_calls = []
+
+    def fail_initialization(*args, **kwargs):
+        initialization_calls.append((args, kwargs))
+        raise corrupt_error
+
+    def unexpected_binding(*args, **kwargs):
+        binding_calls.append((args, kwargs))
+        raise AssertionError("binding handler must not run after initialization failure")
+
+    monkeypatch.setattr(kb, "init_db", fail_initialization)
+    monkeypatch.setattr(project_binding, "bind_task_project", unexpected_binding)
+
+    root = argparse.ArgumentParser()
+    build_parser(root.add_subparsers())
+    args = root.parse_args([
+        "kanban", "bind-project", task_id, "--project", project.id, "--json",
+    ])
+    code = kanban_command(args)
+    captured = capsys.readouterr()
+    try:
+        result = json.loads(captured.out)
+    except json.JSONDecodeError:
+        result = None
+
+    assert code != 0
+    assert len(initialization_calls) == 1
+    assert isinstance(corrupt_error, kbc.KanbanDbCorruptError)
+    assert result is not None, (
+        "expected a JSON error envelope for KanbanDbCorruptError; "
+        f"stdout={captured.out!r}, stderr={captured.err!r}"
+    )
+    assert result["ok"] is False
+    assert result["result"] == "error"
+    assert result["changed"] is False
+    assert result["task_id"] == task_id
+    assert result["project_id"] is None
+    assert result["project_slug"] is None
+    assert "integrity" in result["error"].lower() or "corrupt" in result["error"].lower()
+    assert str(tmp_path) not in result["error"]
+    assert captured.err == ""
+    assert binding_calls == []
+    assert dict(conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()) == task_before
+    assert _rows(conn, "SELECT * FROM task_events WHERE task_id = ? ORDER BY id", (task_id,)) == events_before
+
+
+def test_bind_project_audit_sqlite_error_returns_json_and_rolls_back(
+    kanban_conn, capsys,
+):
+    conn, tmp_path = kanban_conn
+    project = _make_project(tmp_path)
+    task_id = _make_projectless_task(conn, project)
+    task_before = dict(conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone())
+    events_before = _rows(conn, "SELECT * FROM task_events WHERE task_id = ? ORDER BY id", (task_id,))
+    conn.execute(
+        """
+        CREATE TRIGGER fail_project_bound_event
+        BEFORE INSERT ON task_events
+        WHEN NEW.kind = 'project_bound'
+        BEGIN
+            SELECT RAISE(ABORT, 'injected project_bound audit failure');
+        END
+        """
+    )
+
+    escaped_error = None
+    try:
+        code, result, captured = _invoke_bind(task_id, project.id, capsys)
+    except sqlite3.Error as exc:
+        escaped_error = exc
+        code, result = None, None
+        captured = capsys.readouterr()
+
+    task_after = dict(conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone())
+    events_after = _rows(conn, "SELECT * FROM task_events WHERE task_id = ? ORDER BY id", (task_id,))
+    assert task_after == task_before
+    assert events_after == events_before
+    assert not any(event["kind"] == "project_bound" for event in events_after)
+    assert escaped_error is None, (
+        "SQLite audit failure escaped the CLI instead of producing JSON: "
+        f"{escaped_error!r}; stdout={captured.out!r}, stderr={captured.err!r}"
+    )
+    assert code is not None and code != 0
+    assert result is not None and result["ok"] is False
+    assert result["result"] == "error"
+    assert result["changed"] is False
+    assert result["task_id"] == task_id
+    assert result["project_id"] is None
+    assert result["project_slug"] is None
+    assert result["board"] == "default"
+    assert "injected project_bound audit failure" in result["error"]
+    assert captured.err == ""
+    assert "Bound " not in captured.out
+
+
+def test_post_commit_readback_failure_is_indeterminate_without_retry(
+    kanban_conn, capsys, monkeypatch,
+):
+    conn, tmp_path = kanban_conn
+    project = _make_project(tmp_path)
+    task_id = _make_projectless_task(conn, project)
+    original_check = kbc._check_file_length_invariant
+    committed = []
+
+    def fail_after_commit(candidate_conn):
+        if not candidate_conn.in_transaction:
+            task = candidate_conn.execute(
+                "SELECT project_id FROM tasks WHERE id = ?", (task_id,),
+            ).fetchone()
+            event = candidate_conn.execute(
+                "SELECT kind, payload FROM task_events WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+                (task_id,),
+            ).fetchone()
+            if task is not None and task["project_id"] == project.id and event is not None:
+                committed.append((task["project_id"], event["kind"]))
+                raise sqlite3.DatabaseError("injected post-COMMIT invariant failure")
+        original_check(candidate_conn)
+
+    original_snapshot = kanban_cli._bind_project_snapshot
+    snapshot_calls = []
+
+    def fail_reconciliation_read(candidate_conn, candidate_task_id):
+        snapshot_calls.append(candidate_task_id)
+        if len(snapshot_calls) == 2:
+            raise sqlite3.OperationalError("injected reconciliation readback failure")
+        return original_snapshot(candidate_conn, candidate_task_id)
+
+    original_bind = project_binding.bind_task_project
+    bind_calls = []
+
+    def count_bind_calls(*args, **kwargs):
+        bind_calls.append(1)
+        return original_bind(*args, **kwargs)
+
+    monkeypatch.setattr(kbc, "_check_file_length_invariant", fail_after_commit)
+    monkeypatch.setattr(kanban_cli, "_bind_project_snapshot", fail_reconciliation_read)
+    monkeypatch.setattr(project_binding, "bind_task_project", count_bind_calls)
+
+    code, result, captured = _invoke_bind(task_id, project.id, capsys)
+
+    assert code == 1
+    assert result is not None
+    assert result["result"] == "reconciliation_required"
+    assert result["changed"] is None
+    assert result["binding_state"] == "indeterminate"
+    assert result["reconciliation_required"] is True
+    assert "injected post-COMMIT invariant failure" in result["error"]
+    assert "injected reconciliation readback failure" in result["reconciliation_error"]
+    assert len(committed) == 1 and committed[0] == (project.id, "project_bound")
+    assert len(snapshot_calls) == 2
+    assert len(bind_calls) == 1
+    assert captured.err == ""
+    assert json.loads(captured.out) == result
+
+    with kbc.connect_closing() as read_conn:
+        task_after = read_conn.execute(
+            "SELECT project_id FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        event_after = read_conn.execute(
+            "SELECT kind, payload FROM task_events WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+    assert task_after["project_id"] == project.id
+    assert event_after["kind"] == "project_bound"
+
+
+def test_bind_project_post_commit_sqlite_error_requires_reconciliation(
+    kanban_conn, capsys, monkeypatch,
+):
+    conn, tmp_path = kanban_conn
+    project = _make_project(tmp_path)
+    task_id = _make_projectless_task(conn, project)
+    task_before = dict(conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone())
+    events_before = _rows(conn, "SELECT * FROM task_events WHERE task_id = ? ORDER BY id", (task_id,))
+    original_check = kbc._check_file_length_invariant
+    committed_state = []
+
+    def fail_after_committed_binding(candidate_conn):
+        if not candidate_conn.in_transaction:
+            task = candidate_conn.execute(
+                "SELECT project_id FROM tasks WHERE id = ?", (task_id,),
+            ).fetchone()
+            event = candidate_conn.execute(
+                "SELECT kind, payload FROM task_events WHERE task_id = ? "
+                "ORDER BY id DESC LIMIT 1", (task_id,),
+            ).fetchone()
+            if task is not None and task["project_id"] == project.id and event is not None:
+                payload = json.loads(event["payload"])
+                if (
+                    event["kind"] == "project_bound"
+                    and payload.get("from_project_id") is None
+                    and payload.get("to_project_id") == project.id
+                ):
+                    committed_state.append({
+                        "in_transaction": candidate_conn.in_transaction,
+                        "project_id": task["project_id"],
+                        "event_kind": event["kind"],
+                        "event_payload": payload,
+                    })
+                    raise sqlite3.DatabaseError("injected post-COMMIT invariant failure")
+        original_check(candidate_conn)
+
+    monkeypatch.setattr(kbc, "_check_file_length_invariant", fail_after_committed_binding)
+
+    code, result, captured = _invoke_bind(task_id, project.id, capsys)
+
+    assert len(committed_state) == 1, "injection must occur only after task and event COMMIT"
+    assert committed_state[0]["in_transaction"] is False
+    assert committed_state[0]["project_id"] == project.id
+    assert committed_state[0]["event_kind"] == "project_bound"
+    assert committed_state[0]["event_payload"]["project_slug"] == project.slug
+
+    # Verify persistence through a fresh connection before asserting the CLI
+    # response contract; a RED result must not skip the COMMIT evidence.
+    with kbc.connect_closing() as read_conn:
+        task_after = dict(read_conn.execute(
+            "SELECT * FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone())
+        events_after = _rows(
+            read_conn, "SELECT * FROM task_events WHERE task_id = ? ORDER BY id", (task_id,),
+        )
+    assert task_after["project_id"] == project.id
+    assert task_after != task_before
+    assert events_after[:len(events_before)] == events_before
+    assert len(events_after) == len(events_before) + 1
+    assert events_after[-1]["kind"] == "project_bound"
+    persisted_payload = json.loads(events_after[-1]["payload"])
+    assert persisted_payload["to_project_id"] == project.id
+    assert persisted_payload["project_slug"] == project.slug
+
+    assert code == 1
+    assert result is not None
+    assert result["ok"] is False
+    assert (result["result"], result["changed"]) == ("reconciliation_required", None)
+    assert result["task_id"] == task_id
+    assert result["project_id"] is None
+    assert result["project_slug"] is None
+    assert result["board"] == "default"
+    assert result["binding_state"] == "indeterminate"
+    assert result["reconciliation_required"] is True
+    assert "injected post-COMMIT invariant failure" in result["error"]
+    assert captured.err == ""
+    assert json.loads(captured.out) == result
+    assert captured.out.count("\n") >= 1
+
+    with kbc.connect_closing() as read_conn:
+        task_after = dict(read_conn.execute(
+            "SELECT * FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone())
+        events_after = _rows(
+            read_conn, "SELECT * FROM task_events WHERE task_id = ? ORDER BY id", (task_id,),
+        )
+    assert task_after["project_id"] == project.id
+    assert task_after != task_before
+    assert events_after[:len(events_before)] == events_before
+    assert len(events_after) == len(events_before) + 1
+    assert events_after[-1]["kind"] == "project_bound"
+    persisted_payload = json.loads(events_after[-1]["payload"])
+    assert persisted_payload["to_project_id"] == project.id
+    assert persisted_payload["project_slug"] == project.slug
+
+
+def test_bind_project_missing_result_after_commit_is_indeterminate(
+    kanban_conn, capsys, monkeypatch,
+):
+    conn, tmp_path = kanban_conn
+    project = _make_project(tmp_path)
+    task_id = _make_projectless_task(conn, project)
+    task_before = dict(conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone())
+    events_before = _rows(conn, "SELECT * FROM task_events WHERE task_id = ? ORDER BY id", (task_id,))
+    original_bind = project_binding.bind_task_project
+    bind_calls = []
+
+    def commit_without_returning_result(*args, **kwargs):
+        bind_calls.append(1)
+        committed_result = original_bind(*args, **kwargs)
+        assert committed_result["changed"] is True
+
+    monkeypatch.setattr(project_binding, "bind_task_project", commit_without_returning_result)
+
+    code, result, captured = _invoke_bind(task_id, project.id, capsys)
+
+    assert code == 1
+    assert len(bind_calls) == 1
+    assert result is not None
+    assert result["ok"] is False
+    assert result["result"] == "reconciliation_required"
+    assert result["changed"] is None
+    assert result["binding_state"] == "indeterminate"
+    assert result["reconciliation_required"] is True
+    assert result["task_id"] == task_id
+    assert result["project_id"] is None
+    assert result["project_slug"] is None
+    assert result["board"] == "default"
+    assert captured.err == ""
+    assert json.loads(captured.out) == result
+
+    with kbc.connect_closing() as read_conn:
+        task_after = dict(read_conn.execute(
+            "SELECT * FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone())
+        events_after = _rows(
+            read_conn, "SELECT * FROM task_events WHERE task_id = ? ORDER BY id", (task_id,),
+        )
+    assert task_before["project_id"] is None
+    assert task_after["project_id"] == project.id
+    assert task_after != task_before
+    assert events_after[:len(events_before)] == events_before
+    assert len(events_after) == len(events_before) + 1
+    assert events_after[-1]["kind"] == "project_bound"
+    payload = json.loads(events_after[-1]["payload"])
+    assert payload["to_project_id"] == project.id
+    assert payload["project_slug"] == project.slug
+
+
+def test_concurrent_other_project_binding_is_not_attributed_to_command(
+    kanban_conn, capsys, monkeypatch,
+):
+    conn, tmp_path = kanban_conn
+    project_a = _make_project(tmp_path, name="Concurrent Project A")
+    project_b = _make_project(tmp_path, name="Requested Project B")
+    task_id = _make_projectless_task(conn, project_a)
+    task_before = dict(conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone())
+    events_before = _rows(conn, "SELECT * FROM task_events WHERE task_id = ? ORDER BY id", (task_id,))
+
+    snapshot_calls = []
+    writer_commit = []
+    original_snapshot = kanban_cli._bind_project_snapshot
+    original_bind = project_binding.bind_task_project
+
+    def record_snapshot(candidate_conn, candidate_task_id):
+        snapshot_calls.append(candidate_conn)
+        return original_snapshot(candidate_conn, candidate_task_id)
+
+    def bind_after_concurrent_writer(command_conn, candidate_task_id, project_ref, **kwargs):
+        assert candidate_task_id == task_id
+        assert project_ref == project_b.id
+        assert len(snapshot_calls) == 1
+        assert snapshot_calls[0] is command_conn
+
+        with kbc.connect_closing() as writer_conn:
+            assert writer_conn is not command_conn
+            writer_result = original_bind(
+                writer_conn, task_id, project_a.id,
+                board=kwargs["board"], actor="concurrent-writer",
+            )
+            assert writer_result["changed"] is True
+            assert writer_conn.in_transaction is False
+
+            with kbc.connect_closing() as committed_conn:
+                committed_task = committed_conn.execute(
+                    "SELECT project_id FROM tasks WHERE id = ?", (task_id,),
+                ).fetchone()
+                committed_events = _rows(
+                    committed_conn,
+                    "SELECT * FROM task_events WHERE task_id = ? ORDER BY id", (task_id,),
+                )
+            assert committed_task["project_id"] == project_a.id
+            assert len(committed_events) == len(events_before) + 1
+            committed_event = committed_events[-1]
+            committed_payload = json.loads(committed_event["payload"])
+            assert committed_event["kind"] == "project_bound"
+            assert committed_payload["to_project_id"] == project_a.id
+            assert committed_payload["actor"] == "concurrent-writer"
+            writer_commit.append({
+                "transaction_open_after_bind": writer_conn.in_transaction,
+                "task_project_id": committed_task["project_id"],
+                "event_kind": committed_event["kind"],
+                "event_payload": committed_payload,
+            })
+
+        return original_bind(command_conn, candidate_task_id, project_ref, **kwargs)
+
+    monkeypatch.setattr(kanban_cli, "_bind_project_snapshot", record_snapshot)
+    monkeypatch.setattr(project_binding, "bind_task_project", bind_after_concurrent_writer)
+
+    code, result, captured = _invoke_bind(task_id, project_b.id, capsys)
+
+    assert len(snapshot_calls) == 2
+    assert len(writer_commit) == 1
+    assert writer_commit[0]["transaction_open_after_bind"] is False
+    assert writer_commit[0]["task_project_id"] == project_a.id
+    assert writer_commit[0]["event_kind"] == "project_bound"
+
+    with kbc.connect_closing() as read_conn:
+        task_after = dict(read_conn.execute(
+            "SELECT * FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone())
+        events_after = _rows(
+            read_conn, "SELECT * FROM task_events WHERE task_id = ? ORDER BY id", (task_id,),
+        )
+    assert task_before["project_id"] is None
+    assert task_after["project_id"] == project_a.id
+    assert events_after[:len(events_before)] == events_before
+    assert len(events_after) == len(events_before) + 1
+    assert events_after[-1]["kind"] == "project_bound"
+    assert json.loads(events_after[-1]["payload"])["to_project_id"] == project_a.id
+    assert captured.err == ""
+    assert captured.out.strip()
+    assert result is not None
+    assert json.loads(captured.out) == result
+
+    expected_contract = (
+        1, False, "reconciliation_required", None, "indeterminate", True, None, None,
+    )
+    actual_contract = (
+        code, result.get("ok"), result.get("result"), result.get("changed"),
+        result.get("binding_state"), result.get("reconciliation_required"),
+        result.get("project_id"), result.get("project_slug"),
+    )
+    assert actual_contract == expected_contract, (
+        f"command_json={captured.out.strip()}; "
+        f"final_task_project={task_after['project_id']}; "
+        f"final_project_bound_events={len(events_after) - len(events_before)}; "
+        f"writer_commit={json.dumps(writer_commit[0], sort_keys=True)}"
+    )
+    assert result["task_id"] == task_id
+    assert result["board"] == "default"
+    assert "already bound" in result["error"].lower()
+    assert project_a.id in result["error"]

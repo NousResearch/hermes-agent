@@ -2,6 +2,7 @@ import { Box, Text, useInput, useStdout } from '@hermes/ink'
 import type { SessionListResult, SessionListRow } from '@hermes/shared/gateway-events'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import { mutateCanonical } from '../app/slash/canonicalSessionControls.js'
 import { sessionScopedModelArg } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type {
@@ -317,6 +318,8 @@ export function ActiveSessionSwitcher({
   const [items, setItems] = useState<SessionActiveItem[]>([])
   const [history, setHistory] = useState<SessionListRow[]>([])
   const [err, setErr] = useState('')
+  // A close/delete failure: kept apart from `err`, which every quiet poll rewrites.
+  const [actionErr, setActionErr] = useState('')
   const [sel, setSel] = useState(0)
   const [loading, setLoading] = useState(true)
   const [draft, setDraft] = useState('')
@@ -371,11 +374,28 @@ export function ActiveSessionSwitcher({
         // Fetch independently (allSettled) so a failing session.list can't
         // wipe the live-session list: live sessions still render and the
         // resumable history degrades on its own.
+        const canonicalList = gw.isCanonical
+          ? gw.request<{ scope?: string; sessions?: (SessionListRow & { running?: boolean })[] }>('session.list', {
+              limit: 200
+            })
+          : null
+
         const [liveRes, histRes] = await Promise.allSettled([
-          gw.request<SessionActiveListResponse>('session.active_list', {
-            current_session_id: currentSessionId
-          }),
-          includeHistory ? gw.request<SessionListResult>('session.list', { limit: 200 }) : Promise.resolve(null)
+          canonicalList
+            ? canonicalList.then(value => ({
+                sessions: value.sessions?.map(row => ({
+                  ...row,
+                  current: row.id === currentSessionId,
+                  status: row.running ? ('working' as const) : ('idle' as const)
+                }))
+              }))
+            : gw.request<SessionActiveListResponse>('session.active_list', { current_session_id: currentSessionId }),
+          includeHistory
+            ? gw.request<SessionListResult>('session.list', {
+                limit: 200,
+                ...(canonicalList ? { scope: 'stored' } : {})
+              })
+            : Promise.resolve(null)
         ])
 
         const r = liveRes.status === 'fulfilled' ? asRpcResult<SessionActiveListResponse>(liveRes.value) : null
@@ -491,7 +511,7 @@ export function ActiveSessionSwitcher({
       return
     }
 
-    setErr('')
+    setActionErr('')
     setClosingId(target.id)
 
     try {
@@ -499,7 +519,13 @@ export function ActiveSessionSwitcher({
       const closed = Boolean(result?.closed ?? result?.ok)
 
       if (!closed) {
-        setErr(messages().pickers.session.errors.alreadyClosed)
+        // A canonical view closes only what it holds: a null answer means no close was attempted, not
+        // that main refused one. Only a receipt can say the session was already closed.
+        setActionErr(
+          gw.isCanonical && result === null
+            ? messages().pickers.session.errors.notAttached
+            : messages().pickers.session.errors.alreadyClosed
+        )
 
         return
       }
@@ -515,11 +541,11 @@ export function ActiveSessionSwitcher({
         setSel(s => Math.max(0, Math.min(s, remaining.length + history.length)))
       }
     } catch (e: unknown) {
-      setErr(rpcErrorMessage(e))
+      setActionErr(rpcErrorMessage(e))
     } finally {
       setClosingId('')
     }
-  }, [closingId, currentSessionId, history.length, items, load, onClose, onNew, onSelect, rowKind, sel])
+  }, [closingId, currentSessionId, gw.isCanonical, history.length, items, load, onClose, onNew, onSelect, rowKind, sel])
 
   const performDelete = useCallback(
     (id: string) => {
@@ -530,12 +556,21 @@ export function ActiveSessionSwitcher({
       }
 
       setDeleting(true)
-      gw.request<SessionDeleteResponse>('session.delete', { session_id: target.id })
-        .then(raw => {
-          const r = asRpcResult<SessionDeleteResponse>(raw)
+      setActionErr('')
+      // The shared gateway has no `session.delete`: its delete is the revision-fenced
+      // `session.mutate operation=delete` (the whole lineage), as the classic CLI sends it.
+      const deleted = gw.isCanonical
+        ? mutateCanonical(gw, target.id, 'delete', {}).then(mutation => Boolean(mutation?.result))
+        : gw
+            .request<SessionDeleteResponse>('session.delete', { session_id: target.id })
+            .then(raw => asRpcResult<SessionDeleteResponse>(raw)?.deleted === target.id)
 
-          if (!r || r.deleted !== target.id) {
-            setErr(messages().pickers.common.invalidResponse('session.delete'))
+      deleted
+        .then(ok => {
+          if (!ok) {
+            setActionErr(
+              messages().pickers.common.invalidResponse(gw.isCanonical ? 'session.mutate' : 'session.delete')
+            )
             setDeleting(false)
 
             return
@@ -544,11 +579,10 @@ export function ActiveSessionSwitcher({
           rawHistoryRef.current = rawHistoryRef.current.filter(h => h.id !== target.id)
           setHistory(prev => prev.filter(h => h.id !== target.id))
           setSel(s => Math.max(0, Math.min(s, items.length + history.length - 1)))
-          setErr('')
           setDeleting(false)
         })
         .catch((e: unknown) => {
-          setErr(rpcErrorMessage(e))
+          setActionErr(rpcErrorMessage(e))
           setDeleting(false)
         })
     },
@@ -715,7 +749,7 @@ export function ActiveSessionSwitcher({
       </Text>
       <Text color={t.color.muted}>{sessionsCountLabel(items.length, history.length)}</Text>
 
-      {err && <Text color={t.color.label}>{C.error(err)}</Text>}
+      {(actionErr || err) && <Text color={t.color.label}>{C.error(actionErr || err)}</Text>}
 
       <Box backgroundColor={newRowStyle?.backgroundColor} flexDirection="row" onClick={handleRowClick(0)} width="100%">
         <Text bold={newSelectedRow} color={newRowTextColor ?? t.color.muted}>

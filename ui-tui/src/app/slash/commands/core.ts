@@ -5,18 +5,22 @@ import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
 import { hotkeys } from '../../../content/hotkeys.js'
 import { isSectionName, nextDetailsMode, parseDetailsMode, SECTION_NAMES } from '../../../domain/details.js'
 import type {
+  ConfigFullResponse,
   ConfigGetValueResponse,
   ConfigSetResponse,
+  SessionExportResponse,
   SessionSaveResponse,
   SessionStatusResponse,
   SessionSteerResponse,
   SessionTitleResponse,
   SessionUndoResponse,
+  SlashExecResponse,
   SystemBatteryResponse
 } from '../../../gatewayTypes.js'
 import { t } from '../../../i18n/runtime.js'
 import { writeClipboardText } from '../../../lib/clipboard.js'
 import { writeOsc52Clipboard } from '../../../lib/osc52.js'
+import { writeSessionExport } from '../../../lib/sessionExport.js'
 import {
   configureDetectedTerminalKeybindings,
   configureTerminalKeybindings,
@@ -25,8 +29,26 @@ import {
 import type { Msg, PanelSection } from '../../../types.js'
 import type { StatusBarMode } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
-import { patchUiState } from '../../uiStore.js'
-import type { SlashCommand } from '../types.js'
+import { patchUiState, sessionCwd } from '../../uiStore.js'
+import { canonicalRewind, canonicalTitle } from '../canonicalSessionCommands.js'
+import type { SlashCommand, SlashRunCtx } from '../types.js'
+
+// Client display preferences: written to the profile's config.yaml by either backend (the shared
+// owner's config.set serves them profile-wide, like the sidecar). `/focus` names the session on the
+// shared owner so its tool-progress mode follows at once (the sidecar's session read it from config).
+const saveDisplayPref = (ctx: SlashRunCtx, key: string, value: string) => {
+  const session = key === 'focus' && ctx.gateway.gw?.isCanonical && ctx.sid ? { session_id: ctx.sid } : {}
+
+  ctx.gateway.rpc<ConfigSetResponse>('config.set', { key, value, ...session }).catch(() => {})
+}
+
+/** `/config`: the projection as indented `key: value` lines (YAML-shaped, like the classic CLI). */
+const configLines = (value: Record<string, unknown>, indent: string): string[] =>
+  Object.entries(value).flatMap(([key, v]) =>
+    v && typeof v === 'object' && !Array.isArray(v)
+      ? [`${indent}${key}:`, ...configLines(v as Record<string, unknown>, `${indent}  `)]
+      : [`${indent}${key}: ${Array.isArray(v) ? JSON.stringify(v) : String(v)}`]
+  )
 
 const flagFromArg = (arg: string, current: boolean): boolean | null => {
   if (!arg) {
@@ -112,6 +134,7 @@ export const coreCommands: SlashCommand[] = [
       )
 
       ctx.transcript.panel(ctx.ui.theme.brand.helpHeader, sections)
+      ctx.ran?.()
     }
   },
 
@@ -167,9 +190,8 @@ export const coreCommands: SlashCommand[] = [
       }
 
       patchUiState({ mouseTracking: next })
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'mouse', value: next }).catch(() => {})
-
       queueMicrotask(() => ctx.transcript.sys(t('slashCmd.core.mouse.tracking', next)))
+      saveDisplayPref(ctx, 'mouse', next)
     }
   },
 
@@ -186,6 +208,7 @@ export const coreCommands: SlashCommand[] = [
       const requestedTitle = isNew ? arg.trim() : ''
 
       const commit = () => {
+        ctx.ran?.()
         patchUiState({ status: t('slashCmd.core.clear.forgingSession') })
         ctx.session.newSession(
           isNew ? t('slashCmd.core.clear.newSessionStarted') : undefined,
@@ -227,6 +250,20 @@ export const coreCommands: SlashCommand[] = [
         return ctx.transcript.sys(t('slashCmd.core.status.noActiveSession'))
       }
 
+      if (ctx.gateway.gw?.isCanonical) {
+        // The shared gateway serves /status as a session read; session.status is a legacy sidecar RPC.
+        ctx.gateway.gw
+          .request<SlashExecResponse>('slash.exec', { command: 'status', session_id: ctx.sid })
+          .then(r => {
+            if (!ctx.stale()) {
+              ctx.transcript.page(r?.output || t('slashCmd.core.status.empty'), t('slashCmd.core.status.pageTitle'))
+            }
+          })
+          .catch(ctx.guardedErr)
+
+        return
+      }
+
       ctx.gateway
         .rpc<SessionStatusResponse>('session.status', { session_id: ctx.sid })
         .then(
@@ -247,6 +284,10 @@ export const coreCommands: SlashCommand[] = [
       }
 
       const title = arg.trim()
+
+      if (ctx.gateway.gw?.isCanonical && (!arg || title)) {
+        return canonicalTitle(title, ctx)
+      }
 
       if (!arg) {
         ctx.gateway
@@ -291,9 +332,65 @@ export const coreCommands: SlashCommand[] = [
       }
 
       patchUiState({ compact: next })
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'density', value: next ? 'on' : 'off' }).catch(() => {})
-
       queueMicrotask(() => ctx.transcript.sys(t('slashCmd.core.density.state', next ? 'on' : 'off')))
+      saveDisplayPref(ctx, 'density', next ? 'on' : 'off')
+    }
+  },
+
+  {
+    aliases: ['ts'],
+    help: 'toggle [HH:MM] timestamps on transcript messages [on|off|status]',
+    name: 'timestamps',
+    run: (arg, ctx) => {
+      const mode = arg.trim().toLowerCase()
+      const current = ctx.ui.timestamps
+
+      // T10: `display.timestamps` (the classic CLI's key) through the owner's config.set; the
+      // transcript repaints on the same frame, as /density does.
+      if (mode === 'status') {
+        return ctx.transcript.sys(`timestamps ${current ? 'on' : 'off'}`)
+      }
+
+      const next = flagFromArg(mode, current)
+
+      if (next === null) {
+        return ctx.transcript.sys('usage: /timestamps [on|off|status]')
+      }
+
+      patchUiState({ timestamps: next })
+      ctx.transcript.sys(`timestamps ${next ? 'on' : 'off'}`)
+      // A refused write would revert on the next config refresh: say so instead of staying quiet.
+      ctx.gateway.gw
+        .request<ConfigSetResponse>('config.set', { key: 'timestamps', value: next ? 'on' : 'off' })
+        .catch(ctx.guardedErr)
+    }
+  },
+
+  {
+    help: 'show the presentation settings the gateway serves for this profile',
+    name: 'config',
+    run: (_arg, ctx, cmd) => {
+      // Main's sidecar ran the classic CLI's /config in its slash worker; keep that there.
+      if (!ctx.gateway.gw?.isCanonical) {
+        return void ctx.gateway.gw
+          .request<SlashExecResponse>('slash.exec', { command: cmd.slice(1), session_id: ctx.sid })
+          .then(r => !ctx.stale() && ctx.transcript.page(r?.output || '{}', 'Config'))
+          .catch(ctx.guardedErr)
+      }
+
+      // T10: the owner's config.get `full` is the redacted presentation projection (display,
+      // approvals, voice keybinding) — never provider/MCP/terminal config, which can hold secrets.
+      // The client renders it; the classic CLI's full dump stays `hermes config`.
+      ctx.gateway
+        .rpc<ConfigFullResponse>('config.get', { key: 'full', ...(ctx.sid ? { session_id: ctx.sid } : {}) })
+        .then(
+          ctx.guarded<ConfigFullResponse>(r => {
+            const lines = configLines(r.config ?? {}, '')
+
+            ctx.transcript.page(lines.length ? lines.join('\n') : '{}', 'Config')
+          })
+        )
+        .catch(ctx.guardedErr)
     }
   },
 
@@ -339,10 +436,8 @@ export const coreCommands: SlashCommand[] = [
         const { [first]: _drop, ...rest } = ui.sections
 
         patchUiState({ sections: mode ? { ...rest, [first]: mode } : rest })
-        gateway
-          .rpc<ConfigSetResponse>('config.set', { key: `details_mode.${first}`, value: mode ?? '' })
-          .catch(() => {})
         transcript.sys(t('slashCmd.core.details.section', first, mode ?? t('slashCmd.core.details.reset')))
+        saveDisplayPref(ctx, `details_mode.${first}`, mode ?? '')
 
         return
       }
@@ -356,8 +451,8 @@ export const coreCommands: SlashCommand[] = [
       const sections = Object.fromEntries(SECTION_NAMES.map(section => [section, next]))
 
       patchUiState({ detailsMode: next, detailsModeCommandOverride: true, sections })
-      gateway.rpc<ConfigSetResponse>('config.set', { key: 'details_mode', value: next }).catch(() => {})
       transcript.sys(t('slashCmd.core.details.current', next, ''))
+      saveDisplayPref(ctx, 'details_mode', next)
     }
   },
 
@@ -521,6 +616,8 @@ export const coreCommands: SlashCommand[] = [
       // transcript so `/history` actually reflects what the user just did.
       const items = ctx.local.getHistoryItems().filter(m => m.role === 'user' || m.role === 'assistant')
 
+      ctx.ran?.()
+
       if (!items.length) {
         return ctx.transcript.sys(t('slashCmd.core.history.noConversation'))
       }
@@ -556,7 +653,7 @@ export const coreCommands: SlashCommand[] = [
   {
     help: 'save the current transcript to JSON',
     name: 'save',
-    run: (_arg, ctx) => {
+    run: (arg, ctx) => {
       const hasConversation = ctx.local
         .getHistoryItems()
         .some(m => m.role === 'user' || m.role === 'assistant' || m.role === 'tool')
@@ -567,6 +664,45 @@ export const coreCommands: SlashCommand[] = [
 
       if (!ctx.sid) {
         return ctx.transcript.sys(t('slashCmd.core.save.noActiveSession'))
+      }
+
+      // T10: the shared owner renders the transcript (session.export) and Ink writes the file on
+      // the user's machine, as the classic CLI's `/save [json|md|html] [filename] [redact]` did.
+      // The same verb serves a remote Desktop, where the gateway's disk is not the user's.
+      if (ctx.gateway.gw?.isCanonical) {
+        const parts = arg.trim().split(/\s+/).filter(Boolean)
+        const redact = /^-{0,2}redact$/i.test(parts.at(-1) ?? '')
+
+        if (redact) {
+          parts.pop()
+        }
+
+        const [format = 'json', filename] = parts
+        // The user's folder, fixed now: a local session's cwd, else the launch HERMES_CWD (a remote
+        // session's folder names the gateway host's disk, not this one).
+        const remote = Boolean(process.env.HERMES_TUI_GATEWAY_URL?.trim())
+        const cwd = (remote ? process.env.HERMES_CWD : sessionCwd()) || process.cwd()
+
+        // The write is the user's accepted request: it runs even when another slash has started
+        // since (the stale-flight guard drops only the success notice; a failure always shows).
+        return void ctx.gateway
+          .rpc<SessionExportResponse>('session.export', { format, redact, session_id: ctx.sid })
+          .then(r => {
+            if (!r) {
+              return
+            }
+
+            try {
+              const notice = t('slashCmd.core.save.saved', writeSessionExport(r, filename, cwd))
+
+              if (!ctx.stale()) {
+                ctx.transcript.sys(notice)
+              }
+            } catch (e) {
+              ctx.transcript.sys(`${t('slashCmd.core.save.failed')}: ${e instanceof Error ? e.message : String(e)}`)
+            }
+          })
+          .catch(ctx.guardedErr)
       }
 
       ctx.gateway
@@ -608,11 +744,10 @@ export const coreCommands: SlashCommand[] = [
       // returns to whatever /verbose mode the user had. Optimistically patch the
       // badge so the status bar flips on the same frame.
       patchUiState({ focusView: next })
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'focus', value: next ? 'on' : 'off' }).catch(() => {})
-
       queueMicrotask(() =>
         ctx.transcript.sys(next ? t('slashCmd.core.focus.enabled') : t('slashCmd.core.focus.disabled'))
       )
+      saveDisplayPref(ctx, 'focus', next ? 'on' : 'off')
     }
   },
 
@@ -638,9 +773,8 @@ export const coreCommands: SlashCommand[] = [
       }
 
       patchUiState({ statusBar: next })
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'statusbar', value: next }).catch(() => {})
-
       queueMicrotask(() => ctx.transcript.sys(t('slashCmd.core.statusbar.state', next)))
+      saveDisplayPref(ctx, 'statusbar', next)
     }
   },
 
@@ -679,9 +813,8 @@ export const coreCommands: SlashCommand[] = [
       }
 
       patchUiState({ battery: next, ...(next ? {} : { batteryStatus: null }) })
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'battery', value: next ? 'on' : 'off' }).catch(() => {})
-
       queueMicrotask(() => ctx.transcript.sys(t('slashCmd.core.battery.state', next ? 'on' : 'off')))
+      saveDisplayPref(ctx, 'battery', next ? 'on' : 'off')
     }
   },
 
@@ -724,7 +857,13 @@ export const coreCommands: SlashCommand[] = [
       }
 
       ctx.gateway
-        .rpc<SessionSteerResponse>('session.steer', { session_id: ctx.sid, text: payload })
+        .rpc<SessionSteerResponse>('session.steer', {
+          session_id: ctx.sid,
+          text: payload,
+          ...(ctx.gateway.gw.isCanonical && ctx.ui.info?.execution_generation !== undefined
+            ? { execution_generation: ctx.ui.info.execution_generation }
+            : {})
+        })
         .then(
           ctx.guarded<SessionSteerResponse>(r => {
             if (r?.status === 'queued') {
@@ -748,6 +887,10 @@ export const coreCommands: SlashCommand[] = [
         return ctx.transcript.sys(t('slashCmd.core.undo.nothing'))
       }
 
+      if (ctx.gateway.gw?.isCanonical) {
+        return canonicalRewind('undo', ctx)
+      }
+
       ctx.gateway.rpc<SessionUndoResponse>('session.undo', { session_id: ctx.sid }).then(
         ctx.guarded<SessionUndoResponse>(r => {
           if ((r.removed ?? 0) > 0) {
@@ -767,6 +910,11 @@ export const coreCommands: SlashCommand[] = [
     help: 'retry last user message',
     name: 'retry',
     run: (_arg, ctx) => {
+      // The durable transcript names the turn to retry, so a resumed session retries too.
+      if (ctx.sid && ctx.gateway.gw?.isCanonical) {
+        return canonicalRewind('retry', ctx)
+      }
+
       const last = ctx.local.getLastUserMsg()
 
       if (!last) {

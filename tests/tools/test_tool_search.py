@@ -118,7 +118,7 @@ class TestClassification:
         from tools.tool_search import ToolSearchConfig, assemble_tool_defs
 
         discover_builtin_tools()
-        names = {"read_window_below", "apply_layout", "project_list"}
+        names = {"read_window_below", "set_theme", "project_list"}
         assembled = assemble_tool_defs(
             [_td(name, f"GUI {name}") for name in names],
             context_length=200_000,

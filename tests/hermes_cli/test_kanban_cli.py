@@ -111,6 +111,32 @@ def test_kanban_show_text_renders_legacy_iso_completed_at(kanban_home):
     assert "completed: 2026-09-30 14:22" in " ".join(output.split())
 
 
+def test_show_survives_iso_strings_in_integer_timestamp_columns(kanban_home):
+    """`kanban show` must not crash on ISO-8601 strings written into the
+    INTEGER timestamp columns of tasks / task_runs / task_events by raw SQL
+    outside the mutators (#97455): both output modes stay readable and serve
+    epoch ints instead of raising ``invalid literal for int()``."""
+    iso_utc = "2026-08-28T14:35:22+00:00"
+    iso_z = "2026-08-28T16:58:56.613Z"
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="corrupted card", assignee="alice")
+        assert kb.claim_task(conn, task_id)
+        assert kb.complete_task(conn, task_id, summary="done")
+        conn.execute("UPDATE task_runs SET ended_at = ? WHERE task_id = ?", (iso_utc, task_id))
+        conn.execute("UPDATE tasks SET completed_at = ? WHERE id = ?", (iso_z, task_id))
+        conn.execute("UPDATE task_events SET created_at = ? WHERE task_id = ?", (iso_z, task_id))
+        conn.commit()
+
+    output = kc.run_slash(f"show {task_id}")
+    assert f"Task {task_id}: corrupted card" in output
+    assert "invalid literal" not in output
+
+    payload = json.loads(kc.run_slash(f"show {task_id} --json"))
+    assert payload["task"]["id"] == task_id
+    assert [r["ended_at"] for r in payload["runs"]] == [1787927722]  # iso_utc, not a 0 fallback
+    assert payload["events"] and {e["created_at"] for e in payload["events"]} == {1787936336}  # iso_z
+
+
 def test_kanban_edit_updates_documented_task_fields(kanban_home):
     with kbc.connect_closing() as conn:
         task_id = kb.create_task(conn, title="old title", body="old body", priority=2)

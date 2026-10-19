@@ -31,7 +31,7 @@ def _load_fal_client() -> Any:
 from tools.debug_helpers import DebugSession
 from tools.fal_common import (
     _ManagedFalSyncClient, _extract_http_status, _managed_fal_billing_error,
-    _normalize_fal_queue_url_format, submit_managed_fal_with_rate_limit_retry,
+    _normalize_fal_queue_url_format, submit_managed_fal_with_rate_limit_retry, wait_fal_queue_result,
 )
 from tools.image_generation_catalog import (
     DEFAULT_ASPECT_RATIO, DEFAULT_MODEL, FAL_MODELS, UPSCALER_CREATIVITY, UPSCALER_DEFAULT_PROMPT,
@@ -94,7 +94,7 @@ class ImageGenerationInterrupted(Exception):
 
 
 def _wait_fal_result(handler, *, poll_seconds: float = 0.5):
-    """Interrupt-aware ``handler.get()``: the SDK blocks 30-60s, hiding user interrupts.
+    """Interrupt-aware ``wait_fal_queue_result``: the wait blocks 30-60s, hiding user interrupts.
 
     The get runs on a daemon worker; the interrupt bit is polled between join slices and on
     interrupt the worker is abandoned (remote job keeps running).
@@ -104,7 +104,7 @@ def _wait_fal_result(handler, *, poll_seconds: float = 0.5):
     error_box: list = []
     def _get():
         try:
-            result_box.append(handler.get())
+            result_box.append(wait_fal_queue_result(handler))
         except BaseException as exc:
             error_box.append(exc)
     worker = threading.Thread(target=_get, daemon=True, name="fal-result-wait")

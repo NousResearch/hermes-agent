@@ -1,3 +1,4 @@
+import { JsonRpcGatewayError } from '@hermes/shared/json-rpc-channel'
 import { beforeEach, expect, it, vi } from 'vitest'
 
 import { createSlashHandler } from '../app/createSlashHandler.js'
@@ -11,7 +12,7 @@ import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 const flush = () => new Promise(resolve => setImmediate(resolve))
 const LEGACY = ['session.title', 'session.undo', 'session.usage', 'slash.exec', 'tools.configure']
 
-function harness() {
+function harness(rewindRefusal?: Error) {
   let voiceMode = 'off'
 
   // T9/T10 owner verbs, one answer per method (kept out of the request ladder below).
@@ -43,7 +44,7 @@ function harness() {
     { role: 'assistant', content: 'a2', row_id: 14 }
   ]
 
-  const request = vi.fn(async (method: string, params: any) => {
+  const reply = async (method: string, params: any) => {
     if (method === 'session.resume') {
       return { session_id: 'owner', revision: 7, execution_generation: 3, messages }
     }
@@ -112,7 +113,14 @@ function harness() {
     }
 
     throw new Error(`unknown_method: ${method}`)
-  })
+  }
+
+  // A refused rewind (the owner's typed busy refusal) replaces only the rewind reply.
+  const request = vi.fn(async (method: string, params: any) =>
+    rewindRefusal && method === 'session.mutate' && params.operation === 'rewind'
+      ? Promise.reject(rewindRefusal)
+      : reply(method, params)
+  )
 
   const sys = vi.fn()
   const send = vi.fn()
@@ -199,6 +207,39 @@ it('/title renames and /undo, /retry rewind through session.mutate with the snap
   // Main's /retry resubmits the rewound turn's own text.
   expect(send).toHaveBeenCalledWith('second question')
   expect(request.mock.calls.some(([method]) => LEGACY.includes(method))).toBe(false)
+})
+
+it('/undo and /retry while a turn runs print main\'s stop-first text, not the bare reason code', async () => {
+  const busy = new JsonRpcGatewayError('session_busy', { code: 4001, data: { reason: 'session_busy' } })
+  const { send, slash, sys } = harness(busy)
+
+  for (const command of ['undo', 'retry']) {
+    slash(`/${command}`)
+    await flush()
+    expect(sys).toHaveBeenLastCalledWith(
+      `session busy — Hermes is still replying. Stop the current reply first (Stop button, or Ctrl+C in a terminal), then run /${command}.`
+    )
+  }
+
+  expect(sys.mock.calls.some(([line]) => String(line).includes('error: session_busy'))).toBe(false)
+  expect(send).not.toHaveBeenCalled()
+})
+
+it('/undo and /retry while a compression holds the session say to wait for it', async () => {
+  const compressing = new JsonRpcGatewayError('session_busy', {
+    code: 4001,
+    data: { field: 'compression', reason: 'session_busy' }
+  })
+
+  const { send, slash, sys } = harness(compressing)
+
+  for (const command of ['undo', 'retry']) {
+    slash(`/${command}`)
+    await flush()
+    expect(sys).toHaveBeenLastCalledWith(`session busy — a /compress is running; run /${command} when it finishes.`)
+  }
+
+  expect(send).not.toHaveBeenCalled()
 })
 
 it("/usage renders main's session totals from session.stats and /tools lists the owner's tools.show", async () => {

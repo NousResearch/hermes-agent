@@ -239,6 +239,22 @@ SESSION_SEARCH_GUIDANCE = (
     "context exists, use session_search to recall it before asking them to repeat themselves."
 )
 
+# An OpenRouter preset may switch on SERVER-SIDE tools (advisor, fusion, web search/fetch, ...) that
+# execute inside the router. They never appear in the client tool list and their output carries no
+# tool-call trace, so the model cannot tell a preset tool ran. One factual paragraph, rendered only for
+# a preset route: no fabricated client tool, no lookup of the preset's actual contents (#621).
+PRESET_SERVER_TOOLS_NOTE = (
+    "## Preset routes and server-side tools\n"
+    "This session's model id names an OpenRouter preset (it contains `@preset/`). A preset may declare "
+    "OpenRouter server-side tools — `openrouter:advisor`, `openrouter:fusion`, `openrouter:datetime`, "
+    "`openrouter:web_search`, `openrouter:web_fetch`, `openrouter:subagent` — which execute inside the "
+    "router and never surface to you as client tool calls: the preset decides whether they are enabled, "
+    "and this prompt cannot read that configuration. So asking for a second opinion or a fusion of "
+    "several models is possible simply by asking for it, but an answer produced that way carries no "
+    "visible trace — no tool call, no result block, no citation — and must therefore never be described "
+    "as evidence you verified or as a source you consulted."
+)
+
 # The opening sentence is worded deliberately: Anthropic's server-side filter rejected the previous phrasing
 # ("After completing a complex task (5+ tool calls)... save the approach as a skill...") on subscription OAuth
 # credentials, surfacing as a billing-shaped HTTP 400. If you rewrite it, re-verify with a subscription OAuth

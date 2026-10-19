@@ -21,7 +21,7 @@ from agent.delegation_context import owned_kanban_task
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, EXECUTION_GUIDANCE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE, HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS, KANBAN_GUIDANCE,
-    PARALLEL_TOOL_CALL_GUIDANCE, PLATFORM_HINTS, SESSION_SEARCH_GUIDANCE,
+    PARALLEL_TOOL_CALL_GUIDANCE, PLATFORM_HINTS, PRESET_SERVER_TOOLS_NOTE, SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE, STEER_CHANNEL_NOTE, TASK_COMPLETION_GUIDANCE, TELEGRAM_RICH_MESSAGES_HINT,
     TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, drain_truncation_warnings,
 )
@@ -556,6 +556,16 @@ def _identity_parts(agent: Any, ctx_len: Optional[int]) -> tuple[list[str], bool
     return ([_soul_content], True) if _soul_content else ([DEFAULT_AGENT_IDENTITY], False)
 
 
+def _is_openrouter_preset(model: Any) -> bool:
+    """True when the configured model id names an OpenRouter preset.
+
+    SUBSTRING test, not ``startswith``: both ``@preset/<slug>`` and ``<model>@preset/<slug>`` are
+    accepted (hermes_cli/models_validate.py ``_parse_openrouter_preset``), and both carry the
+    preset's server-side tool configuration.
+    """
+    return isinstance(model, str) and "@preset/" in model
+
+
 def _guidance_parts(agent: Any) -> list[str]:
     """Universal + tool-aware + model-gated guidance blocks, each gated by its config.yaml key."""
     parts: list[str] = []
@@ -567,6 +577,10 @@ def _guidance_parts(agent: Any) -> list[str]:
             ) if getattr(agent, flag, True)
         ]
     parts.append(_tool_guidance_block(agent))  # None/empty entries are dropped by _join_tier
+    # Preset routes: a preset can turn on OpenRouter server-side tools that no client tool list
+    # ever shows. Stable tier, because it depends on the configured model, not the turn.
+    if _is_openrouter_preset(agent.model):
+        parts.append(PRESET_SERVER_TOOLS_NOTE)
     if not agent.valid_tool_names:
         return parts
     # Steering only lands inside tool results, so only reachable with tools.

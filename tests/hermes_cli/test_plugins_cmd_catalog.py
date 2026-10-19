@@ -538,3 +538,15 @@ def test_catalog_rows_maps_resolves_the_live_catalog_once(monkeypatch):
 
     monkeypatch.setattr(cat, "load_catalog_live", boom)
     assert cat.catalog_rows_maps() == ({}, {}, {})
+
+
+def test_catalog_row_fields_carries_the_catalog_title(world):
+    """The Plugins hub heads an installed row with the catalog's human name when the entry has one; an
+    entry without a title, or a caller that passes no titles map, keeps the package slug."""
+    entry = pc_cat.get_live_catalog_entry("cat-plugin")
+    assert entry is not None
+    target, _m, _n = cat.install_catalog_entry(entry, force=False)
+    pins = cat.catalog_pins()
+    assert "catalog_title" not in cat.catalog_row_fields(target, pins)
+    assert cat.catalog_row_fields(target, pins, None, {"cat-plugin": "Cat Plugin"})["catalog_title"] == "Cat Plugin"
+    assert "catalog_title" not in cat.catalog_row_fields(target, pins, None, {"other": "Other"})

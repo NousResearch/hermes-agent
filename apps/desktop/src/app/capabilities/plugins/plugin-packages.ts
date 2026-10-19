@@ -62,6 +62,12 @@ function agentPackageName(row: AgentPluginRow): string {
   return row.install_dir?.split(/[\\/]/).filter(Boolean).pop() ?? row.name
 }
 
+/** Row heading for a package: the catalog's human name when the entry carries one, else the package
+ *  folder name. Kept here (not inline in the row) so the row's own branch budget stays flat. */
+export function packageLabel(pkg: PluginPackage): string {
+  return pkg.agent?.catalog_title || pkg.name
+}
+
 export function mergePluginPackages(
   desktopRecords: readonly PluginRecord[],
   agentRows: readonly AgentPluginRow[]

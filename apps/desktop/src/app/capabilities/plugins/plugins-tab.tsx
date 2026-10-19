@@ -54,7 +54,7 @@ import { Pill } from '../../settings/primitives'
 import { useDeepLinkHighlight } from '../../settings/use-deep-link-highlight'
 import { TOOLSETS_QUERY_KEY } from '../toolsets/toolsets-data'
 
-import { mergePluginPackages, type PackageKind, type PluginPackage } from './plugin-packages'
+import { mergePluginPackages, packageLabel, type PackageKind, type PluginPackage } from './plugin-packages'
 
 // The REAL Plugin Catalog page (docs site) embedded as a one-click picker —
 // the same pattern as the Skills tab's EmbeddedHubPicker. `?embed=picker`
@@ -366,7 +366,7 @@ function PackageRow({
         <div className="flex min-w-0 flex-1 items-start gap-2" role="cell">
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2 text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
-              <span>{pkg.name}</span>
+              <span>{packageLabel(pkg)}</span>
               {agent?.version && <span className="text-(--ui-text-quaternary)">v{agent.version}</span>}
               <KindBadge kind={pkg.kind} />
               <ProvenancePill pkg={pkg} />

@@ -5044,6 +5044,18 @@
             "default": null,
             "title": "Catalog Tier"
           },
+          "catalog_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Catalog Title"
+          },
           "installed_sha": {
             "anyOf": [
               {

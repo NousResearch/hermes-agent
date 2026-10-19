@@ -848,10 +848,12 @@ def installed_catalog_state(installed: dict[str, dict[str, Any]]) -> dict[str, A
     }
 
 
-def catalog_row_fields(dir_path, pins: dict[str, str], versions: Optional[dict[str, str]] = None) -> dict[str, Any]:
+def catalog_row_fields(dir_path, pins: dict[str, str], versions: Optional[dict[str, str]] = None,
+                       titles: Optional[dict[str, str]] = None) -> dict[str, Any]:
     """Provenance fields for one installed-plugin row (TUI/desktop ``plugins.manage list``): catalog
     name/tier/installed SHA and, when *pins* has the entry, the current pin (+ its version label from
-    *versions*) and ``update_available``."""
+    *versions*) and ``update_available``. *titles* carries the entry's human name, which lets the
+    Plugins hub head the row with it instead of the package slug."""
     versions = versions or {}
     sidecar = catalog_install_record(dir_path)
     if not sidecar:
@@ -860,6 +862,9 @@ def catalog_row_fields(dir_path, pins: dict[str, str], versions: Optional[dict[s
     row: dict[str, Any] = {
         "catalog_name": sidecar["catalog_name"], "catalog_tier": str(sidecar.get("tier") or "community"),
         "installed_sha": installed_sha}
+    title = str((titles or {}).get(str(sidecar["catalog_name"])) or "")
+    if title:
+        row["catalog_title"] = title
     pin = pins.get(str(sidecar["catalog_name"]))
     if pin:
         row["catalog_sha"] = pin

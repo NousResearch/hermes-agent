@@ -46,6 +46,8 @@ export interface AgentPluginRow {
   /** Curated-catalog provenance (from the install sidecar), when present. */
   catalog_name?: string
   catalog_tier?: string
+  /** Human name the catalog gives the entry ("DeepSeek Search & Fetch"); the row heads with it. */
+  catalog_title?: string
   installed_sha?: string
   /** Current catalog pin for this entry (backend-computed). */
   catalog_sha?: string

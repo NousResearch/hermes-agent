@@ -703,6 +703,7 @@ class AgentPluginRow(Result):
     servers: list[PluginServerRow]
     catalog_name: str | None = None
     catalog_tier: str | None = None
+    catalog_title: str | None = None
     installed_sha: str | None = None
     catalog_sha: str | None = None
     catalog_version: str | None = None

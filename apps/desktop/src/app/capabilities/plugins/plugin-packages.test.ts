@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { PluginRecord } from '@/contrib/plugins-store'
 import type { AgentPluginRow } from '@/store/agent-plugins'
 
-import { mergePluginPackages } from './plugin-packages'
+import { mergePluginPackages, packageLabel } from './plugin-packages'
 
 const agent = (over: Partial<AgentPluginRow>): AgentPluginRow => ({
   description: '',
@@ -21,6 +21,16 @@ const desktop = (over: Partial<PluginRecord>): PluginRecord => ({
   name: 'x',
   status: 'loaded',
   ...over
+})
+
+describe('packageLabel', () => {
+  it('heads the row with the catalog title and falls back to the package name', () => {
+    const [titled] = mergePluginPackages([], [agent({ name: 'deepseek-search-fetch', catalog_title: 'DeepSeek Search & Fetch' })])
+    const [plain] = mergePluginPackages([], [agent({ name: 'plain-plugin' })])
+
+    expect(packageLabel(titled)).toBe('DeepSeek Search & Fetch')
+    expect(packageLabel(plain)).toBe('plain-plugin')
+  })
 })
 
 describe('mergePluginPackages', () => {

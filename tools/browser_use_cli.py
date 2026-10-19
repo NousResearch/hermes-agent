@@ -5,7 +5,7 @@ instead of default browser tools
 """
 
 import contextlib
-import hashlib
+import functools
 import importlib
 import importlib.util
 import json
@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, NamedTuple, Optional
 
 from hermes_constants import get_hermes_home, hermes_home_key
+from tools.browser_harness_dirs import daemon_env, daemon_identity, namespace_harness_dirs
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -178,27 +179,8 @@ def _base_subprocess_env() -> dict:
         env.pop("PYTHONPATH", None)
     env["PATH"] = _floor_subprocess_path(env.get("PATH", ""))
     env.setdefault("ANONYMIZED_TELEMETRY", "false")
-    _namespace_harness_daemons(env)
+    namespace_harness_dirs(env, _served_profile_tag())  # a served profile's own harness runtime/tmp dirs
     return env
-
-
-def _namespace_harness_daemons(env: dict) -> None:
-    """A served profile's harness daemons live in their own runtime dir. The harness names a daemon by
-    ``BU_NAME`` alone (unnamed calls are ``default``) and reuses any live one, so with one shared dir a
-    profile's exec drove another profile's browser. Outside a served-profile scope nothing changes."""
-    tag = _served_profile_tag()
-    if not tag:
-        return
-    base = env.get("BH_RUNTIME_DIR") or env.get("BH_TMP_DIR")
-    if not base:  # browser-harness paths.home_dir() / "runtime", resolved against the child's env
-        root = env.get("BH_HOME") or env.get("BROWSER_HARNESS_HOME")
-        if not root:
-            xdg = env.get("XDG_CONFIG_HOME")
-            root = str(Path(xdg) / "browser-harness") if xdg else str(
-                Path(env.get("HOME") or Path.home()) / ".config" / "browser-harness")
-        base = str(Path(root).expanduser() / "runtime")
-    env["BH_RUNTIME_DIR"] = str(Path(base) / f"p-{hashlib.sha256(tag.encode()).hexdigest()[:12]}")
-    env["BH_RUNTIME_DIR_SHARED"] = "1"  # several BU_NAMEs share the dir: keep bu-<name> stems
 
 
 def _floor_subprocess_path(path: str) -> str:
@@ -711,14 +693,12 @@ def _run_cli_killing_process_group(cmd, code, env, timeout):
     return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
-# Harness daemons this process has driven. The daemon reads BU_CDP_* once, at start, and outlives
-# every call, so a backend swap (/browser connect|disconnect) that only changes the resolved endpoint
-# leaves later browser_exec calls in the old browser until these are stopped. Keyed by the daemon's
-# identity (its _HARNESS_DIR_KEYS values plus BU_NAME): a served profile's runtime dir is its own,
-# so no other profile can take over the entry.
-_HARNESS_DIR_KEYS = ("BH_RUNTIME_DIR", "BH_RUNTIME_DIR_SHARED")
-_driven_daemons: dict[tuple[str, str, str], str] = {}  # (runtime dir, shared flag, BU_NAME) -> home
+# Harness daemons this process drove: each latches BU_CDP_* at start and outlives every call, so a backend
+# swap (/browser connect|disconnect) leaves later calls in the old browser until these are stopped.
+_driven_daemons: dict[tuple[str, ...], str] = {}  # daemon identity -> home
 _driven_daemons_lock = threading.Lock()
+_live_generation = functools.partial(_lazy_call, "tools.browser_tool_cdp", "live_cdp_generation", 0,
+                                     "live CDP generation lookup failed")  # this profile's publish count
 # Route cache key -> whether its last browser_exec ran on the hybrid local sidecar.
 _exec_route_is_sidecar: dict[str, bool] = {}
 # Route cache key -> the note from its real-profile fallback; that route stays on the fallback browser.
@@ -734,15 +714,17 @@ def stop_harness_daemons(home_key: Optional[str] = None) -> None:
         daemons = sorted(key for key, home in _driven_daemons.items() if home_key in (None, home))
         for key in daemons:
             _driven_daemons.pop(key, None)
+    _reload_daemons(daemons)
+
+
+def _reload_daemons(daemons) -> None:  # each ``daemon_identity`` daemon, with its own dirs
     cmd = _find_cli() if daemons else None
     if not cmd:
         return
     env = _base_subprocess_env()
-    for *dirs, name in daemons:
-        target = {k: v for k, v in env.items() if k not in _HARNESS_DIR_KEYS}
-        target.update((k, v) for k, v in zip(_HARNESS_DIR_KEYS, dirs) if v)
+    for daemon in daemons:
         with contextlib.suppress(OSError, subprocess.SubprocessError):
-            _run_cli_killing_process_group([*cmd, "--reload"], "", {**target, "BU_NAME": name}, 15)
+            _run_cli_killing_process_group([*cmd, "--reload"], "", daemon_env(env, daemon), 15)
 
 
 def _route_exec(env: dict, session: str, task_id: Optional[str], local: bool, local_sidecar: bool,
@@ -756,6 +738,29 @@ def _route_exec(env: dict, session: str, task_id: Optional[str], local: bool, lo
     if note:
         _real_profile_fallback.setdefault(route_key, note)
     return route_err, local_sidecar or bool(env.pop(_LOCAL_FALLBACK_SENTINEL, None))
+
+
+def _route_exec_current(env: dict, session: str, task_id: Optional[str], local: bool,
+                        local_sidecar: bool, route_key: str) -> tuple[dict, Optional[str], bool, int]:
+    """``_route_exec`` on a copy of ``env`` -> ``(routed env, error, sidecar, generation)``, re-routed (at
+    most 3 tries) when /browser connect published meanwhile; ``_reload_if_republished`` covers dispatch."""
+    for _attempt in range(3):
+        routed = dict(env)
+        generation = _live_generation()
+        route_err, sidecar = _route_exec(routed, session, task_id, local, local_sidecar, route_key)
+        if route_err or _live_generation() == generation:
+            break
+    return routed, route_err, sidecar, generation
+
+
+def _reload_if_republished(env: dict, generation: int) -> None:
+    """Stop this call's daemon if the profile published a new endpoint while it spawned on the old one."""
+    if _live_generation() == generation:
+        return
+    daemon = daemon_identity(env)
+    with _driven_daemons_lock:
+        _driven_daemons.pop(daemon, None)
+    _reload_daemons([daemon])
 
 
 def _take_real_profile_note(route_key: str) -> dict:
@@ -795,7 +800,8 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
             return tool_error(f"Invalid session name {session!r}: use 1-64 letters, digits, "
                               "dashes, or underscores (e.g. 'r7k2').")
         env["BU_NAME"] = session
-    route_err, local_sidecar = _route_exec(env, session, task_id, bool(local), local_sidecar, route_key)
+    env, route_err, local_sidecar, generation = _route_exec_current(
+        env, session, task_id, bool(local), local_sidecar, route_key)
     if route_err:
         return tool_error(route_err)
     if local_sidecar:
@@ -824,7 +830,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     def dispatch() -> dict[str, Any]:
         _attach_vault_supervisor(env, task_id)
         with _driven_daemons_lock:
-            daemon = (*(env.get(k, "") for k in _HARNESS_DIR_KEYS), env.get("BU_NAME", "default"))
+            daemon = daemon_identity(env)
             _driven_daemons[daemon] = hermes_home_key()
         try:
             return {"proc": _run_cli_killing_process_group(cmd, code, env, timeout)}
@@ -842,6 +848,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         dispatched = run_fenced({"features": {"local": True}}, dispatch)
     else:
         dispatched = dispatch()
+    _reload_if_republished(env, generation)
     if "proc" not in dispatched:
         if "error_result" in dispatched:
             return dispatched["error_result"]

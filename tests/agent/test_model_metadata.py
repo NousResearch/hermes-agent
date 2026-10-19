@@ -816,9 +816,7 @@ class TestCodexOAuthContextLength:
 
         bare = model_id.rsplit("/", 1)[-1]
         catalog_slug = strip_codex_context_variant_suffix(bare)
-        if catalog_slug.endswith("-900k"):
-            # invalid alias — catalog advertises the underlying family slug
-            catalog_slug = catalog_slug[: -len("-900k")]
+        catalog_slug = catalog_slug.removesuffix("-900k")
         fake_response = MagicMock()
         fake_response.status_code = 200
         fake_response.json.return_value = {

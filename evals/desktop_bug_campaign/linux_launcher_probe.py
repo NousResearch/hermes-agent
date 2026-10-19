@@ -12,7 +12,7 @@ import venv
 
 def run(argv, env, cwd):
     result = subprocess.run(argv, env=env, cwd=cwd, stdin=subprocess.DEVNULL,
-                            capture_output=True, text=True, timeout=60)
+                            capture_output=True, text=True, timeout=60, check=False)
     return {"argv": argv, "returncode": result.returncode,
             "stdout": result.stdout, "stderr": result.stderr}
 

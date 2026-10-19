@@ -34,7 +34,7 @@ def _positive_env(name: str, default, cast):
     return val if val > 0 else default
 
 
-def platform_httpx_limits() -> "httpx.Limits | None":
+def platform_httpx_limits() -> httpx.Limits | None:
     """``httpx.Limits`` tuned for persistent platform-adapter clients; ``None`` without httpx."""
     if httpx is None:
         return None

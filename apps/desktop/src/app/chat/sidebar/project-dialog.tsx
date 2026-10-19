@@ -24,13 +24,13 @@ import { notifyError } from '@/store/notifications'
 import {
   $newProjectDropPlacement,
   $projectDialog,
-  addProjectFolder,
+  addProjectFolders,
   clearNewProjectDropPlacement,
   closeProjectDialog,
   createProject,
   enterProject,
   generateProjectIdea,
-  pickProjectFolder,
+  pickProjectFolders,
   renameProject
 } from '@/store/projects'
 
@@ -116,27 +116,32 @@ export function ProjectDialog() {
 
   const pickFolder = async () => {
     try {
-      const dir = await pickProjectFolder()
+      // One pick can carry several folders (multi-select dialog, #68741):
+      // add-folder mode submits them all in one beat; create mode extends
+      // the accumulated list exactly as successive single picks would.
+      const picked = (await pickProjectFolders()).filter(Boolean)
 
-      if (!dir) {
+      if (!picked.length) {
         return
       }
 
       const projectId = state?.projectId
 
       if (mode === 'add-folder' && projectId) {
-        await runSubmit(() => addProjectFolder(projectId, dir))
+        await runSubmit(() => addProjectFolders(projectId, picked))
 
         return
       }
 
-      setFolders(prev => (prev.includes(dir) ? prev : [...prev, dir]))
+      setFolders(prev => [...prev, ...picked.filter(dir => !prev.includes(dir))])
 
       // Picking a folder with no name typed names the project after the folder
       // (the ⌘O "Open folder…" naming), so one pick + Create is enough. The name
       // lands in the input, never in a hidden fallback the user cannot see.
       if (mode === 'create') {
-        setName(prev => prev.trim() || baseName(dir) || prev)
+        const first = picked[0]
+
+        setName(prev => prev.trim() || baseName(first) || prev)
       }
     } catch (err) {
       notifyError(err, p.createFailed)

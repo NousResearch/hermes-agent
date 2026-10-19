@@ -1,7 +1,8 @@
 {
   "/agents": null,
   "/approvals": null,
-  "/approve": "messaging",
+  "/approve": null,
+  "/autoprune": null,
   "/battery": null,
   "/bg": null,
   "/blueprint": null,
@@ -25,7 +26,7 @@
   "/ctx": null,
   "/curator": "advanced",
   "/debug": null,
-  "/deny": "messaging",
+  "/deny": null,
   "/diff": null,
   "/egress": null,
   "/exit": "terminal",

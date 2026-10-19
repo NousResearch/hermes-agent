@@ -1,3 +1,4 @@
+import { enDesktopCommands } from './en_desktop_commands'
 import { enSessionCommands } from './en_session_commands'
 import type { Translations } from './types'
 
@@ -27,7 +28,8 @@ export const enNotices = {
     compactedTurnUnavailable:
       "That message was summarized when the chat was compressed, so it can't be restored or edited anymore.",
     staleTurnUnavailable: "That message is no longer in this chat's history.",
-    sessionCommands: enSessionCommands
+    sessionCommands: enSessionCommands,
+    desktopCommands: enDesktopCommands
   },
   keepAwakeOffer: {
     title: 'Your computer slept while Hermes was working',

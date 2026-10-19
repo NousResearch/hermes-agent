@@ -860,7 +860,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         for count, what in (
             (self._interrupt_api_server_runs(reason), "api_server run(s)"),
             (self._interrupt_deferred_agent_workers(reason), "deferred agent worker(s)"),
-            (stop_managed_turns(self), "managed-worker turn(s)"), (interrupt_side_agents(self, reason), "side agent(s)"),
+            (stop_managed_turns(self, reason), "managed-worker turn(s)"), (interrupt_side_agents(self, reason), "side agent(s)"),
         ):
             if count:
                 logger.debug("Interrupted %d %s during shutdown", count, what)
@@ -2219,7 +2219,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             if ctx.timed_out:
                 await GatewayRunner._stop_interrupt_remaining_work(self, ctx)
             from gateway.run_runtime import settle_gateway_runtime  # within what the leash has left
-            await settle_gateway_runtime(self, budget=_effective_watchdog_leash(self) - ctx.elapsed())
+            await settle_gateway_runtime(self, _effective_watchdog_leash(self) - ctx.elapsed(), GatewayRunner._shutdown_interrupt_reason(self))
             await GatewayRunner._stop_finalize_agents_and_adapters(self, ctx)
             await GatewayRunner._stop_release_runtime_state(self, ctx)
             GatewayRunner._stop_quiesce_and_close_session_dbs(self, timeout, ctx)

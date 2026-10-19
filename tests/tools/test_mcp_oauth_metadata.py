@@ -98,6 +98,7 @@ def _manager_provider_with_context(storage: HermesTokenStorage, **context_attrs)
     context.server_url = context_attrs.get("server_url", "https://example.com")
     context.update_token_expiry = MagicMock()
     provider.context = context
+    provider._initialized = True
     return provider
 
 

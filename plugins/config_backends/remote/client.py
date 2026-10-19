@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from .credentials import plane_token
+from .destination import checked_url, open_credentialed
 
 DEFAULT_URL = "https://config-config.nousresearch.com"
 URL_ENV = "HERMES_CONFIG_REMOTE_URL"
@@ -43,6 +44,8 @@ class TransportError(RuntimeError):
 
 
 def base_url() -> str:
+    """The configured plane origin (+ path prefix). Display only: :func:`request` re-checks it
+    against the credential destination policy before anything is sent."""
     return (os.environ.get(URL_ENV, "").strip() or DEFAULT_URL).rstrip("/")
 
 
@@ -69,8 +72,12 @@ def _retry_after(value: Optional[str]) -> Optional[float]:
 
 def request(method: str, home: Path, profile: str, *, etag: Optional[str] = None,
             body: Optional[Dict[str, Any]] = None) -> Response:
-    """One call to ``/v1/config/self?profile=<profile>`` as ``home``'s agent."""
-    url = f"{base_url()}/v1/config/self?{urllib.parse.urlencode({'profile': profile})}"
+    """One call to ``/v1/config/self?profile=<profile>`` as ``home``'s agent.
+
+    The destination is checked before the bearer is resolved, and the request never follows a
+    redirect (:mod:`.destination`): raises its :class:`CredentialDestinationError` instead."""
+    plane = checked_url(base_url(), env_name=URL_ENV)
+    url = f"{plane}/v1/config/self?{urllib.parse.urlencode({'profile': profile})}"
     headers = {
         "Authorization": f"Bearer {plane_token(home)}",
         "X-Hermes-Instance-Id": instance_id(),
@@ -84,7 +91,7 @@ def request(method: str, home: Path, profile: str, *, etag: Optional[str] = None
         headers["If-None-Match"] = etag
     req = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_S) as resp:
+        with open_credentialed(req, timeout=_HTTP_TIMEOUT_S) as resp:
             return Response(resp.status, _parse_body(resp.read()), resp.headers.get("ETag"),
                             _retry_after(resp.headers.get("Retry-After")))
     except urllib.error.HTTPError as exc:  # every non-2xx, including 304

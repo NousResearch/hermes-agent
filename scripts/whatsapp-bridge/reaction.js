@@ -16,6 +16,11 @@ export function buildReactionPayload({ chatId, messageId, emoji, senderId, fromM
   };
 }
 
+// Well inside the adapter's 5 s request timeout and far below the 60 s default
+// send timeout, so a stalled reaction cannot hold the shared send queue (and the
+// replies queued behind it).
+export const REACTION_SEND_TIMEOUT_MS = 4000;
+
 export function registerReactionRoute(app, {
   getSocket,
   getConnectionState,
@@ -41,7 +46,7 @@ export function registerReactionRoute(app, {
 
     try {
       const payload = buildReactionPayload({ chatId, messageId, emoji, senderId, fromMe });
-      const sent = await sendWithTimeout(chatId, payload);
+      const sent = await sendWithTimeout(chatId, payload, {}, REACTION_SEND_TIMEOUT_MS, { skipIfExpired: true });
       trackSentMessageId(sent);
       return res.json({ success: true });
     } catch (err) {

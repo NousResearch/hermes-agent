@@ -157,18 +157,31 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function sendWithTimeout(chatId, payload, options = {}, timeoutMs = SEND_TIMEOUT_MS) {
+// `skipIfExpired` is for best-effort sends (reactions): a send whose deadline
+// passed while it waited in the queue is dropped instead of started late, where
+// the already-rejected race would free the queue while it is still in flight and
+// overlap the next send.
+function sendWithTimeout(chatId, payload, options = {}, timeoutMs = SEND_TIMEOUT_MS, { skipIfExpired = false } = {}) {
   let timer;
+  let expired = false;
   const timeoutPromise = new Promise((_, reject) => {
     timer = setTimeout(
-      () => reject(new Error(`sendMessage timed out after ${timeoutMs / 1000}s`)),
+      () => {
+        expired = true;
+        reject(new Error(`sendMessage timed out after ${timeoutMs / 1000}s`));
+      },
       timeoutMs,
     );
   });
-  return enqueueSend(() =>
-    Promise.race([sock.sendMessage(chatId, payload, options), timeoutPromise])
-      .finally(() => clearTimeout(timer))
-  );
+  // A send can expire while it still waits in the queue, before the race below is
+  // attached; mark the rejection handled so it cannot crash the process. The
+  // caller still sees it through the race or the expiry check.
+  timeoutPromise.catch(() => {});
+  return enqueueSend(() => {
+    if (skipIfExpired && expired) return timeoutPromise;
+    return Promise.race([sock.sendMessage(chatId, payload, options), timeoutPromise])
+      .finally(() => clearTimeout(timer));
+  });
 }
 
 function formatOutgoingMessage(message) {

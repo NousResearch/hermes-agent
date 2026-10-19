@@ -1,5 +1,6 @@
 """Tests for WhatsApp processing lifecycle reactions."""
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -52,7 +53,15 @@ def _make_adapter(*, config_extra=None, running=True, http_session=None, authori
     adapter._fatal_error_message = None
     adapter._fatal_error_retryable = True
     adapter._fatal_error_handler = None
+    adapter._background_tasks = set()
+    adapter._reaction_tail = None
     return adapter
+
+
+async def _drain(adapter):
+    """Wait for the queued reaction sends (each waits for the one before it)."""
+    if adapter._reaction_tail is not None:
+        await asyncio.wait({adapter._reaction_tail})
 
 
 def _event(*, chat_id="chat@s.whatsapp.net", message_id="msg-123", sender_id="sender@s.whatsapp.net", from_me=False,
@@ -98,6 +107,7 @@ class TestWhatsAppLifecycleReactions:
         adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
 
         await adapter.on_processing_start(_event())
+        await _drain(adapter)
 
         adapter._http_session.post.assert_called_once()
         url = adapter._http_session.post.call_args.args[0]
@@ -119,6 +129,7 @@ class TestWhatsAppLifecycleReactions:
         adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
 
         await adapter.on_processing_complete(_event(), ProcessingOutcome.SUCCESS)
+        await _drain(adapter)
 
         payload = adapter._http_session.post.call_args.kwargs["json"]
         assert payload["emoji"] == "✅"
@@ -131,6 +142,7 @@ class TestWhatsAppLifecycleReactions:
         adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
 
         await adapter.on_processing_complete(_event(), ProcessingOutcome.FAILURE)
+        await _drain(adapter)
 
         payload = adapter._http_session.post.call_args.kwargs["json"]
         assert payload["emoji"] == "❌"
@@ -143,6 +155,7 @@ class TestWhatsAppLifecycleReactions:
         adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
 
         await adapter.on_processing_complete(_event(), ProcessingOutcome.CANCELLED)
+        await _drain(adapter)
 
         payload = adapter._http_session.post.call_args.kwargs["json"]
         assert payload["emoji"] == ""
@@ -154,6 +167,7 @@ class TestWhatsAppLifecycleReactions:
 
         await adapter.on_processing_start(_event())
         await adapter.on_processing_complete(_event(), ProcessingOutcome.SUCCESS)
+        await _drain(adapter)
 
         adapter._http_session.post.assert_not_called()
 
@@ -163,6 +177,7 @@ class TestWhatsAppLifecycleReactions:
         adapter._http_session.post = MagicMock()
 
         await adapter.on_processing_start(_event(message_id=None))
+        await _drain(adapter)
 
         adapter._http_session.post.assert_not_called()
 
@@ -173,6 +188,7 @@ class TestWhatsAppLifecycleReactions:
         adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
 
         await adapter.on_processing_start(_event(chat_id="1234567890", sender_id="1234567890"))
+        await _drain(adapter)
 
         payload = adapter._http_session.post.call_args.kwargs["json"]
         assert payload["chatId"] == "1234567890@s.whatsapp.net"
@@ -193,6 +209,7 @@ def _sent_emojis(post):
 async def _run_lifecycle(adapter, outcome=ProcessingOutcome.SUCCESS, **event_kwargs):
     await adapter.on_processing_start(_event(**event_kwargs))
     await adapter.on_processing_complete(_event(**event_kwargs), outcome)
+    await _drain(adapter)
 
 
 class TestWhatsAppReactionSenderGate:
@@ -225,6 +242,7 @@ class TestWhatsAppReactionSenderGate:
         _recording_session(adapter)
 
         await adapter.on_processing_start(_event(chat_id="120363@g.us", sender_id="member@s.whatsapp.net", chat_type="group"))
+        await _drain(adapter)
 
         assert seen == [("member@s.whatsapp.net", "group", "120363@g.us")]
 
@@ -284,3 +302,52 @@ class TestWhatsAppReactionSenderGate:
         await _run_lifecycle(adapter, sender_id=None)
 
         post.assert_not_called()
+
+
+class _BlockedCM:
+    """Async context manager whose entry waits until ``release`` is set (a stalled bridge request)."""
+
+    def __init__(self, release, value):
+        self.release = release
+        self.value = value
+
+    async def __aenter__(self):
+        await self.release.wait()
+        return self.value
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class TestWhatsAppReactionsInBackground:
+    """A slow or failing reaction send must not hold up the turn, and 👀 still lands before ✅/❌."""
+
+    @pytest.mark.asyncio
+    async def test_hooks_return_while_the_bridge_is_stalled_and_keep_order(self):
+        adapter = _make_adapter()
+        release = asyncio.Event()
+        resp = MagicMock(status=200)
+        adapter._http_session.post = MagicMock(
+            side_effect=lambda *_a, **_k: _BlockedCM(release, resp) if not release.is_set() else _AsyncCM(resp))
+
+        await asyncio.wait_for(adapter.on_processing_start(_event()), timeout=1)
+        await asyncio.wait_for(adapter.on_processing_complete(_event(), ProcessingOutcome.SUCCESS), timeout=1)
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+        # 👀 is in flight and stalled; ✅ waits behind it instead of overtaking it.
+        assert _sent_emojis(adapter._http_session.post) == ["👀"]
+        release.set()
+        await _drain(adapter)
+        assert _sent_emojis(adapter._http_session.post) == ["👀", "✅"]
+
+    @pytest.mark.asyncio
+    async def test_failed_reaction_send_is_contained_and_the_next_one_still_goes(self):
+        adapter = _make_adapter()
+        resp = MagicMock(status=200)
+        adapter._http_session.post = MagicMock(side_effect=[OSError("bridge down"), _AsyncCM(resp)])
+
+        await _run_lifecycle(adapter, ProcessingOutcome.FAILURE)
+
+        assert _sent_emojis(adapter._http_session.post) == ["👀", "❌"]
+        assert adapter._background_tasks == set()

@@ -392,6 +392,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # Text debounce batching: rapid bursts (forwards, paste-splits) would otherwise each trigger a separate agent turn.
         # Telegram cadence and ceilings (#44883); ``0`` dispatches each message immediately.
         self._configure_text_batch_delays()
+        self._reaction_tail: Optional[asyncio.Task] = None  # last queued status reaction (see _queue_reaction)
 
     @staticmethod
     def _coerce_bool(value: Any) -> bool:
@@ -952,6 +953,21 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # Best-effort status reaction: a failure must never disturb message flow.
             logger.debug("[%s] WhatsApp reaction failed: %s", self.name, exc, exc_info=True)
 
+    def _queue_reaction(self, chat_id: str, message_id: str, emoji: str, *, sender_id: Optional[str], from_me: bool) -> None:
+        """Send a reaction off the turn's critical path, so a slow bridge cannot delay the turn or its reply. Each
+        send waits for the previous one, so a message's 👀 always reaches the bridge before its ✅/❌."""
+        previous = self._reaction_tail
+
+        async def _send() -> None:
+            if previous is not None:
+                await asyncio.wait({previous})  # done either way; its own failure was already logged
+            await self._send_reaction_to_bridge(chat_id, message_id, emoji, sender_id=sender_id, from_me=from_me)
+
+        task = asyncio.get_running_loop().create_task(_send())
+        self._reaction_tail = task
+        self._background_tasks.add(task)  # cancelled with the adapter's other work on shutdown
+        task.add_done_callback(self._background_tasks.discard)
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         """React with 👀 while the message is being processed."""
         if not self._reactions_enabled() or not self._reaction_sender_authorized(event):
@@ -961,8 +977,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not chat_id or not message_id:
             return
         raw = event.raw_message if isinstance(event.raw_message, dict) else {}
-        await self._send_reaction_to_bridge(
-            chat_id, message_id, "👀", sender_id=raw.get("senderId"), from_me=bool(raw.get("fromMe", False)))
+        self._queue_reaction(chat_id, message_id, "👀", sender_id=raw.get("senderId"), from_me=bool(raw.get("fromMe", False)))
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Swap the in-progress reaction for the final outcome reaction."""
@@ -983,8 +998,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not chat_id or not message_id:
             return
         raw = event.raw_message if isinstance(event.raw_message, dict) else {}
-        await self._send_reaction_to_bridge(
-            chat_id, message_id, emoji, sender_id=raw.get("senderId"), from_me=bool(raw.get("fromMe", False)))
+        self._queue_reaction(chat_id, message_id, emoji, sender_id=raw.get("senderId"), from_me=bool(raw.get("fromMe", False)))
 
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         if not self._running or not self._http_session:

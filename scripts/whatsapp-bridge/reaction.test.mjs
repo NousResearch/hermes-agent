@@ -4,7 +4,7 @@ import test from 'node:test';
 import { extractBridgeEvent } from './bridge_helpers.js';
 import { createOutboundIdTracker, isOwnSendEcho } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
-import { buildReactionPayload, registerReactionRoute } from './reaction.js';
+import { REACTION_SEND_TIMEOUT_MS, buildReactionPayload, registerReactionRoute } from './reaction.js';
 
 function responseRecorder() {
   return {
@@ -242,4 +242,33 @@ test('a sent reaction is recorded so its fromMe echo is dropped at intake', asyn
     messageId: echo.messageId,
     chatId: echo.chatId,
   }), { action: 'drop_echo' });
+});
+
+test('the /react route sends with a short deadline that is dropped once expired', async () => {
+  let routeHandler;
+  const app = {
+    post(_path, handler) {
+      routeHandler = handler;
+    },
+  };
+  const sendCalls = [];
+  registerReactionRoute(app, {
+    getSocket: () => ({}),
+    getConnectionState: () => 'connected',
+    sendWithTimeout: async (...args) => {
+      sendCalls.push(args);
+    },
+    trackSentMessageId: () => {},
+  });
+
+  await routeHandler({
+    body: { chatId: '123@s.whatsapp.net', messageId: 'msg-9', emoji: '👀' },
+  }, responseRecorder());
+
+  // A stalled reaction may hold the shared send queue for this long at most,
+  // not for the 60 s default that real replies use.
+  assert.equal(sendCalls.length, 1);
+  assert.equal(sendCalls[0][3], REACTION_SEND_TIMEOUT_MS);
+  assert.ok(REACTION_SEND_TIMEOUT_MS < 5000);
+  assert.deepEqual(sendCalls[0][4], { skipIfExpired: true });
 });

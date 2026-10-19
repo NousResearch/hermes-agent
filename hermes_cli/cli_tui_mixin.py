@@ -16,7 +16,7 @@ import time
 
 from agent.i18n import t
 from agent.interrupt_compat import request_hard_interrupt
-from hermes_cli.commands_completion import SlashCommandAutoSuggest, SlashCommandCompleter
+from hermes_cli.commands_completion import SlashCommandAutoSuggest, cli_slash_completer
 from pathlib import Path
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.history import FileHistory
@@ -39,6 +39,7 @@ from prompt_toolkit.widgets import TextArea
 from typing import Optional
 
 from hermes_cli.cli_footer_split import FooterSplit
+from hermes_cli.cli_panel import _Panel
 
 # Rows below an overlay panel taken by spinner/tool-progress, status bar, input, separators and
 # prompt symbol (measured ~6 during live PTY approval prompts) — shared by every panel budget.
@@ -82,32 +83,6 @@ def _num_prefix(i: int) -> str:
 
 def _term_rows() -> int:
     return shutil.get_terminal_size((100, 24)).lines
-
-
-class _Panel:
-    """Fragment accumulator for one bordered overlay panel (``(style, text)`` tuples)."""
-
-    def __init__(self, border: str, box_width: int, title: str = "", title_style: str = ""):
-        from cli import _append_blank_panel_line, _append_panel_line
-        self.lines, self.border, self.width = [], border, box_width
-        self._row, self._blank = _append_panel_line, _append_blank_panel_line
-        if title:
-            # Title inlined into the top rule: ``╭─ Title ───╮``.
-            self.lines.append((border, "╭─ "))
-            self.lines.append((title_style, title))
-            self.lines.append((border, " " + ("─" * max(0, box_width - len(title) - 3)) + "╮\n"))
-        else:
-            self.lines.append((border, "╭" + ("─" * box_width) + "╮\n"))
-
-    def row(self, style: str, text: str) -> None:
-        self._row(self.lines, self.border, style, text, self.width)
-
-    def blank(self) -> None:
-        self._blank(self.lines, self.border, self.width)
-
-    def close(self) -> list:
-        self.lines.append((self.border, "╰" + ("─" * self.width) + "╯\n"))
-        return self.lines
 
 
 def _wrap_rows(wrap, items, width, indent) -> list[tuple[int, str]]:
@@ -189,7 +164,7 @@ class CLITuiMixin:
         """Render the dangerous-command approval panel.
 
         Layout priority: title + command + choices must always render, even in a short terminal
-        or with a long (tirith multi-paragraph) description. The description sits at the bottom
+        or with a long multi-paragraph description. The description sits at the bottom
         and is truncated to the remaining row budget, so HSplit never clips approve/deny off-screen.
         """
         from cli import _panel_box_width, _wrap_panel_text_keep_ws
@@ -438,6 +413,8 @@ class CLITuiMixin:
             input_rule_bot,
             voice_status_bar,
             completions_menu]
+        if getattr(self, "_modern_layout", False):  # footer under the composer and its completions
+            ordered.append(ordered.pop(ordered.index(status_bar)))
         return [item for item in ordered if item is not None]
 
     def _tui_spinner_loop(self):
@@ -479,6 +456,8 @@ class CLITuiMixin:
 
         def _status_rows(width):
             rows = []
+            # End of the active question block and the row span of its selected choice.
+            focus = {}
             for idx, entry in enumerate(questions_list):
                 answered = entry["qid"] in answers
                 marker = "✓" if answered else ("▸" if idx == active else "·")
@@ -498,8 +477,11 @@ class CLITuiMixin:
                     cb = ("[x] " if i in selected_indices else "[ ] ") if multi_select else ""
                     style = 'class:clarify-selected' if i == selected and not freetext else 'class:clarify-choice'
                     label = f"  {cursor} {cb}{_num_prefix(i)}. {choice}"
+                    first = len(rows)
                     for wrapped in _wrap_panel_text(label, width, subsequent_indent="      "):
                         rows.append((style, wrapped))
+                    if i == selected and not freetext:
+                        focus["selected"] = (first, len(rows))
                 if choices:
                     other_idx = len(choices)
                     mid = _num_prefix(other_idx)
@@ -518,17 +500,31 @@ class CLITuiMixin:
                     else:
                         other_label = f"    {mid}. " + (other_suffix or t("cli.tui.clarify_other_type_answer"))
                         other_style = 'class:clarify-choice'
+                    first = len(rows)
                     for wrapped in _wrap_panel_text(other_label, width, subsequent_indent="      "):
                         rows.append((other_style, wrapped))
+                    if freetext or selected == other_idx:
+                        focus["selected"] = (first, len(rows))
                 elif freetext:
                     guidance = "  " + t("cli.tui.clarify_guidance")
                     for wrapped in _wrap_panel_text(guidance, width):
                         rows.append(('class:clarify-active-other', wrapped))
-            return rows
+                focus["end"] = len(rows)
+            return rows, focus
 
-        preview_rows = _status_rows(60)
+        preview_rows, _ = _status_rows(60)
         box_width = _panel_box_width(title, [header] + [text for _, text in preview_rows])
-        rows = _status_rows(max(8, box_width - 2))
+        rows, focus = _status_rows(max(8, box_width - 2))
+        # The panel is an unsized Window, so rows past the viewport are clipped from the
+        # bottom, which is where the active question's choices sit. When the body does not
+        # fit, show the slice that ends with those choices and always holds the selected one.
+        # Top rule, header and bottom rule take three rows.
+        budget = max(1, _term_rows() - _PANEL_RESERVED_BELOW - 3)
+        if len(rows) > budget and "end" in focus:
+            sel_start, _sel_end = focus.get("selected", (focus["end"] - 1, focus["end"]))
+            first = min(sel_start, focus["end"] - budget)
+            first = max(0, min(first, len(rows) - budget))
+            rows = rows[first:first + budget]
 
         panel = _Panel('class:clarify-border', box_width, title, 'class:clarify-title')
         panel.row('class:clarify-question', header)
@@ -777,10 +773,10 @@ class CLITuiMixin:
         return []
 
     def _tui_placeholder_text(self):
-        if self._voice_recording:
-            return t("cli.tui.placeholder_recording", shortcut=self._voice_record_key_label())
+        if self._voice_recording:  # live STT partial text (stt.streaming) replaces the hint
+            return self._voice_live_text or t("cli.tui.placeholder_recording", shortcut=self._voice_record_key_label())
         if self._voice_processing:
-            return t("cli.tui.placeholder_transcribing")
+            return self._voice_live_text or t("cli.tui.placeholder_transcribing")
         if self._sudo_state:
             if (self._sudo_state.get("vault_save") or {}).get("step") == "identifier":
                 return t("cli.tui.placeholder_vault_username")
@@ -800,6 +796,8 @@ class CLITuiMixin:
         if self._command_running:
             return f"{self._command_spinner_frame()} {self._command_status or t('cli.tui.placeholder_processing_command')}"
         if self._agent_running:
+            if getattr(self, "_modern_layout", False):
+                return t(f"cli.modern.placeholder_busy_{self.busy_input_mode}")
             return t("cli.tui.placeholder_busy")
         if self._voice_mode:
             return t("cli.tui.placeholder_voice_idle", shortcut=self._voice_record_key_label())
@@ -899,7 +897,7 @@ class CLITuiMixin:
     def _tui_cancel_foreground_ui(self, event, *, closers) -> bool:
         """Close the first active foreground UI (slash-confirm / picker / palette); True if any."""
         for state_attr, close in closers:
-            if getattr(self, state_attr):
+            if getattr(self, state_attr, None):
                 close()
                 event.app.current_buffer.reset()
                 event.app.invalidate()
@@ -922,7 +920,7 @@ class CLITuiMixin:
         return True
 
     def _tui_clear_or_exit(self, event) -> None:
-        """Idle press: clear text/images like bash; exit when everything is already empty."""
+        """Clear text/images like bash; exit when everything is already empty."""
         if event.app.current_buffer.text or self._attached_images:
             event.app.current_buffer.reset()
             self._attached_images.clear()
@@ -932,21 +930,21 @@ class CLITuiMixin:
             event.app.exit()
 
     def _tui_handle_ctrl_c(self, event):
-        """Ctrl+C priority: cancel voice recording → cancel foreground UI/overlay prompt →
-        interrupt the running agent (first press) → force exit (second press within 2s) → when
-        idle clear the draft or exit."""
+        """Ctrl+C priority: cancel voice recording → cancel foreground UI/overlay prompt or the wait for a
+        gateway plugin command → clear a typed draft, even mid-run (a correction must never kill the turn)
+        → interrupt the running agent → force exit (second press within 2s) → when idle and empty, exit."""
         now = time.time()
         if self._tui_cancel_voice_recording(event):
             return
         if self._tui_cancel_foreground_ui(event, closers=(
             ("_slash_confirm_state", lambda: self._submit_slash_confirm_response("cancel")),
-            ("_model_picker_state", self._close_model_picker),
-            ("_command_palette_state", self._close_command_palette))):
+            ("_model_picker_state", self._close_model_picker), ("_command_palette_state", self._close_command_palette),
+            ("_plugin_command_wait", lambda: self._plugin_command_wait.set()))):
             return
         overlay_cleared = self._tui_clear_blocking_overlays(event)
         if overlay_cleared and not (self._agent_running and self.agent):
             return
-        if self._agent_running and self.agent:
+        if self._agent_running and self.agent and not (event.app.current_buffer.text or self._attached_images):
             if now - self._last_ctrl_c_time < 2.0:
                 print("\n" + t("cli.tui.force_exiting"))
                 self._should_exit = True
@@ -969,7 +967,7 @@ class CLITuiMixin:
         overlay_cleared = self._tui_clear_blocking_overlays(event)
         if overlay_cleared and not (self._agent_running and self.agent):
             return
-        if self._agent_running and self.agent:
+        if self._agent_running and self.agent and not (event.app.current_buffer.text or self._attached_images):
             print("\n" + t("cli.tui.interrupting"))
             request_hard_interrupt(self.agent)
         else:
@@ -1082,7 +1080,6 @@ class CLITuiMixin:
                     break
         except Exception:
             pass
-        return None
 
     def _tui_handle_escape_modal(self, event):
         """ESC cancels active secret/sudo/connection/slash-confirm prompts."""
@@ -1122,13 +1119,13 @@ class CLITuiMixin:
         run_in_terminal(_suspend)
 
     def _tui_handle_ctrl_d(self, event):
-        """Ctrl+D deletes under the cursor (readline); exits only on empty input, like bash/zsh.
-        Pending attached images count as input so the user doesn't lose them silently."""
+        """Ctrl+D deletes under the cursor (readline); exits only on empty input (pending images count),
+        like bash/zsh. Mid-turn it detaches: the gateway finishes the turn, Ctrl+C stops it (LC-6b)."""
         buf = event.app.current_buffer
         if buf.text:
             buf.delete()
         elif not self._attached_images:
-            self._should_exit = True
+            self._should_exit, self._detach_on_exit = True, bool(self._agent_running)
             event.app.exit()
 
     def _tui_recall_without_recollapse(self, buf, move):
@@ -1473,9 +1470,9 @@ class CLITuiMixin:
                 self._should_exit = True
                 if event.app.is_running:
                     event.app.exit()
-        elif (
-            self._should_handle_steer_command_inline(text, has_images=has_images)
-            or self._should_handle_background_command_inline(text, has_images=has_images)):
+        elif (self._should_handle_steer_command_inline(text, has_images=has_images)
+              or self._should_handle_background_command_inline(text, has_images=has_images)
+              or self._should_handle_stop_command_inline(text, has_images=has_images)):
             self.process_command(text)
         else:
             return False
@@ -1483,7 +1480,7 @@ class CLITuiMixin:
         event.app.invalidate()
         return True
 
-    def _tui_enter_while_busy(self, text: str, images: list, payload) -> None:
+    def _tui_enter_while_busy(self, text: str, images: list, payload, mode: str | None = None) -> None:
         """Route a submission typed while the agent runs, per ``busy_input_mode``.
 
         steer → agent.steer(text) mid-run (images can't ride along and a missing/rejecting
@@ -1492,7 +1489,7 @@ class CLITuiMixin:
         multimodal follow-ups, or a turn that finished in the race). queue → next turn.
         """
         from cli import CLI_CONFIG, _ACCENT, _DIM, _RST, _cprint, _hermes_home
-        _effective_mode = self.busy_input_mode
+        _effective_mode = mode or self.busy_input_mode
         redirected = False
         if _effective_mode == "steer":
             if images or not text:
@@ -1836,9 +1833,7 @@ class CLITuiMixin:
         self._should_exit = False
         self._last_ctrl_c_time = 0  # double Ctrl+C force-exit tracking
 
-        # Plugins get a CLI reference so they can inject messages.
-        from hermes_cli.plugins import get_plugin_manager
-        get_plugin_manager()._cli_ref = self
+        # No PluginManager._cli_ref: plugins load in the gateway, not here (PLG-7).
 
         # Config file watcher — detect mcp_servers changes and auto-reload.
         from hermes_cli.config import get_config_path as _get_config_path
@@ -1879,7 +1874,7 @@ class CLITuiMixin:
         self._voice_tts = False
         self._voice_recorder = None     # AudioRecorder (lazy init)
         self._voice_recording = False
-        self._voice_processing = False  # STT in progress
+        self._voice_processing, self._voice_live_text = False, ""  # STT in progress; live partial text
         self._voice_continuous = False  # auto-restart after the agent responds
         self._voice_tts_done = threading.Event()  # TTS playback finished
         self._voice_tts_done.set()  # initially "done" (no TTS pending)
@@ -1890,7 +1885,6 @@ class CLITuiMixin:
 
         if os.environ.get("HERMES_DEFER_AGENT_STARTUP") != "1":
             self._install_tool_callbacks()
-            self._ensure_tirith_security()
 
     def _tui_build_key_bindings(self):
         """Build the prompt_toolkit KeyBindings for the REPL input area.
@@ -2144,6 +2138,9 @@ class CLITuiMixin:
         input_rule_bot = Window(
             char='─', height=lambda: cli_ref._tui_input_rule_height("bottom"), style='class:input-rule',
         )
+        if getattr(self, "_modern_layout", False):
+            from hermes_cli.cli_modern_layout import modern_input_rules
+            input_rule_top, input_rule_bot = modern_input_rules(self, kb)
         image_bar = Window(
             content=FormattedTextControl(self._tui_image_bar_fragments),
             height=Condition(lambda: bool(cli_ref._attached_images)))
@@ -2192,7 +2189,7 @@ class CLITuiMixin:
     def _tui_build_input_area(self):
         """Multi-line prompt TextArea with slash completion, paste-collapse tracking and
         placeholder/password processors."""
-        from cli import _estimate_tui_input_height, get_skill_bundles, get_skill_commands
+        from cli import _estimate_tui_input_height
         from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
         from prompt_toolkit.completion import ThreadedCompleter
         cli_ref = self
@@ -2200,10 +2197,7 @@ class CLITuiMixin:
         def get_prompt():
             return cli_ref._get_tui_prompt_fragments()
 
-        _completer = SlashCommandCompleter(
-            skill_commands_provider=lambda: get_skill_commands(),
-            command_filter=cli_ref._command_available,
-            skill_bundles_provider=lambda: get_skill_bundles())
+        _completer = cli_slash_completer(self)
         input_area = TextArea(
             height=Dimension(min=1, max=8, preferred=1),
             prompt=get_prompt,
@@ -2212,10 +2206,9 @@ class CLITuiMixin:
             wrap_lines=True,
             read_only=Condition(lambda: bool(cli_ref._command_blocks_input)),
             history=FileHistory(str(self._history_file)),
-            # The completer does blocking work (fuzzy @-file indexing shells out to rg/fd with a
-            # 2s timeout; path completion hits os.listdir/stat), so complete_while_typing inline
-            # would stall the render loop per keystroke (WSL2/slow FS). ThreadedCompleter moves
-            # it off the UI event loop.
+            # The completer does blocking work (fuzzy @-file indexing shells out to rg/fd with a 2s timeout;
+            # path completion hits os.listdir/stat), so complete_while_typing inline would stall the render
+            # loop per keystroke (WSL2/slow FS). ThreadedCompleter moves it off the UI event loop.
             completer=ThreadedCompleter(_completer),
             complete_while_typing=True,
             auto_suggest=SlashCommandAutoSuggest(history_suggest=AutoSuggestFromHistory(), completer=_completer),

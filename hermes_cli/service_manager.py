@@ -230,7 +230,7 @@ S6_SERVICE_PREFIX = "gateway-"
 
 def _profile_from_service(name: str) -> str:
     """Strip the ``gateway-`` prefix back off (matches what the user typed via ``-p``)."""
-    return name[len(S6_SERVICE_PREFIX):] if name.startswith(S6_SERVICE_PREFIX) else name
+    return name.removeprefix(S6_SERVICE_PREFIX)
 
 
 def _profile_dir_for_gateway_service(name: str) -> Path:
@@ -549,16 +549,27 @@ class S6ServiceManager:
         self._run_svc("-u", "start", name)
         _write_gateway_desired_state(name, "running")
 
-    def _supervised_pid(self, name: str) -> int | None:
-        """PID of the supervised gateway per ``s6-svstat``, or None on any failure."""
-        try:
-            result = _s6_run("s6-svstat", str(self.scandir / name))
-        except (OSError, subprocess.SubprocessError):
-            return None
+    def _svstat_fields(self, name: str, *fields: str) -> list[str] | None:
+        """``s6-svstat -o <fields>`` values for ``name``, or None on a nonzero rc or a count mismatch.
+
+        Never parse the human status line: s6 2.15 prints ``up (pid N pgid N) Ss``, which the old
+        ``(pid N)`` regex never matched, so the planned-stop marker was silently skipped.
+        """
+        result = _s6_run("s6-svstat", "-o", ",".join(fields), str(self.scandir / name))
         if result.returncode != 0:
             return None
-        m = re.search(r"\(pid (\d+)\)", result.stdout)
-        return int(m.group(1)) if m else None
+        values = result.stdout.split()
+        return values if len(values) == len(fields) else None
+
+    def _supervised_pid(self, name: str) -> int | None:
+        """PID of the supervised gateway per ``s6-svstat -o pid`` (``-1`` when down), or None on any
+        failure."""
+        try:
+            values = self._svstat_fields(name, "pid")
+            pid = int(values[0]) if values else 0
+        except (OSError, subprocess.SubprocessError, ValueError):
+            return None
+        return pid if pid > 0 else None
 
     def stop(self, name: str) -> None:
         """``s6-svc -d``, after writing a planned-stop marker for the supervised PID so the gateway's
@@ -580,8 +591,8 @@ class S6ServiceManager:
         _write_gateway_desired_state(name, "running")
 
     def is_running(self, name: str) -> bool:
-        result = _s6_run("s6-svstat", str(self.scandir / name))
-        return result.returncode == 0 and "up " in result.stdout
+        values = self._svstat_fields(name, "up")
+        return values == ["true"]
 
     # -- runtime registration ---------------------------------------------
 

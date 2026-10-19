@@ -47,7 +47,6 @@ async def test_unavailable_skill_scan_skips_known_commands_and_runs_off_loop():
         scan_started.set()
         # True only if the loop ran while this scan was in flight, i.e. the scan is off-loop.
         loop_was_free.append(loop_ticked.wait(timeout=1))
-        return None
 
     with patch.object(gateway_run, "_check_unavailable_skill", _slow_scan):
         # A registered gateway command returns before any filesystem walk.

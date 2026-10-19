@@ -1,4 +1,4 @@
-#!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/_hermes-python" "$0" "$@"'
+#!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/run-in-hermes-env" python3 "$0" "$@"'
 """Standalone structural validator for plugin-catalog entry files.
 
 Validates ``plugin-catalog/*.yaml`` catalog entries and
@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover - dependency guidance only
 # rejects it. The two gates must see the same strings identically.
 NAME_RE = re.compile(r"^[a-z0-9_-]{1,64}\Z")
 SHA_RE = re.compile(r"^[0-9a-f]{40}\Z")
-TIERS = ("official", "community")
+TIERS = ("official", "verified", "community")
 CATEGORIES = ("desktop", "memory", "platform", "web", "tools", "voice", "automation", "models", "general")
 PLATFORMS = ("linux", "macos", "windows")
 CAPABILITY_KEYS = (
@@ -76,6 +76,7 @@ KNOWN_KEYS = {
     "title",
     "onboarding",
     "known_issues",
+    "attested_binaries",
 }
 # Cosmetic labels attached to the pin. ``version`` is never parsed; ``image`` and ``screenshots``
 # may only point at GitHub so the Desktop catalog browser and the docs site never fetch from
@@ -236,7 +237,28 @@ def validate_entry(data: object) -> tuple[list[str], list[str]]:
             ):
                 errors.append(f"capabilities.{key} must be a list of strings")
 
+    # attested_binaries: relative paths to compiled files that carry a GitHub
+    # build-provenance attestation (README rule 17). The CI gate verifies the
+    # attestation; here we only shape-check the paths.
+    _check_attested_binaries(data.get("attested_binaries"), errors)
+
     return errors, warnings
+
+
+def _check_attested_binaries(attested: object, errors: list[str]) -> None:
+    """Shape-check the optional ``attested_binaries`` list of relative paths."""
+    if attested is None:
+        return
+    if not isinstance(attested, list) or not all(isinstance(p, str) for p in attested):
+        errors.append("attested_binaries must be a list of strings")
+        return
+    for p in attested:
+        if not re.fullmatch(r"[A-Za-z0-9._/-]+", p) or any(
+            seg in ("", ".", "..") for seg in p.split("/")
+        ):
+            errors.append(
+                f"attested_binaries path {p!r} must be a relative path without '.' or '..' segments"
+            )
 
 
 def validate_removed(data: object) -> tuple[list[str], list[str]]:

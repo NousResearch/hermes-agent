@@ -1,6 +1,6 @@
-"""Classic CLI live-work dock (subagents, background processes, active goal, queued prompts) and
-scoped controls; no agent-loop state is changed. Process rows come from ``cli_process_dock``,
-goal/queue rows from ``cli_session_dock``."""
+"""Classic CLI live-work dock (subagents, background processes, active goal, standing loop, queued
+prompts) and scoped controls; no agent-loop state is changed. Process rows come from
+``cli_process_dock``, goal/loop/queue rows from ``cli_session_dock``."""
 from __future__ import annotations
 
 import json
@@ -32,6 +32,9 @@ class SubagentMonitor:
         self.entries = []
         self.processes = []
         self.goal = ''
+        self.loop = ''
+        self.loop_badge = ''
+        self.loop_prompt = ''
         self.queued = []
         self.selected_id = None
         self._signature = None
@@ -39,10 +42,11 @@ class SubagentMonitor:
         self.app = None
         self.opening = False
         self.collapsed = False
+        self.detail = False  # the monitor's detail view is open (its tick fetches the gateway tail)
 
     @property
     def has_rows(self):
-        return bool(self.entries or self.processes or self.goal or self.queued)
+        return bool(self.entries or self.processes or self.goal or self.loop or self.queued)
 
     @property
     def roster(self):
@@ -62,29 +66,38 @@ class SubagentMonitor:
         row = self.selected
         return row if row and row.get('kind') == 'process' else None
 
+    def subagents(self):
+        """The subagent backend: the gateway session's view when its children run there (CLI-12),
+        else this process's own registry; both answer the same ``subagent_*`` calls."""
+        from hermes_cli.gateway_tools import LocalSubagents, process_view
+        view = process_view()
+        if view is not None:
+            return view
+        if getattr(self, '_local', None) is None:
+            self._local = LocalSubagents(self.cli)
+        return self._local
+
     def refresh(self, now=None):
-        from tools.delegate_tool_registry import _list_payload, list_active_subagents
         now = time.time() if now is None else now
-        parent = getattr(self.cli, 'agent', None)
-        entries = _list_payload(parent)['subagents'] if parent is not None else []
-        # The scoped control-plane snapshot supplies authority and transcript paths;
-        # its matching public lifecycle record supplies the latest observed tool.
-        activity = {r['subagent_id']: r for r in list_active_subagents()} if entries else {}
+        entries = self.subagents().subagent_rows(busy=bool(getattr(self.cli, '_agent_running', False)))
         for row in entries:
-            live = activity.get(row['subagent_id'], {})
-            row['elapsed'] = max(0, int(now - live.get('started_at', now)))
-            row['last_tool'] = live.get('last_tool') or ''
+            row['elapsed'] = max(0, int(now - (row.get('started_at') or now)))
+            row['last_tool'] = row.get('last_tool') or ''
             row['key'] = row['subagent_id']
             row.pop('running_seconds', None)
         processes = procs.process_rows(now)
         goal = session_rows.goal_line(self.cli)
+        loop_badge, loop, loop_prompt = session_rows.loop_row(self.cli, now)
         queued = session_rows.queued_prompts(self.cli)
-        signature = json.dumps([entries, processes, goal, queued], sort_keys=True, default=str)
+        signature = json.dumps([entries, processes, goal, loop, queued], sort_keys=True, default=str)
         changed = signature != self._signature
         self._signature = signature
         self.entries = entries
         self.processes = processes
         self.goal = goal
+        self.loop = loop
+        self.loop_badge = loop_badge
+        self.loop_prompt = loop_prompt
         self.queued = queued
         if self.selected is None:
             roster = self.roster
@@ -100,16 +113,32 @@ class SubagentMonitor:
             # invalidate call, which reads the loop more than once.
             _run_on_app_loop(app, app.invalidate)
 
+    def poll_soon(self):
+        """Let the spinner thread's next tick poll the gateway, instead of the caller blocking the
+        UI loop on it."""
+        self._last_poll = 0
+
     def tick(self):
         now = time.monotonic()
         if now - self._last_poll < 1:
             return
         self._last_poll = now
-        if self.refresh():
+        changed = self.refresh()
+        if self._poll_tail() or changed:
             if self.app is not None:
                 self.invalidate()
             else:
                 self.cli._invalidate()
+
+    def _poll_tail(self):
+        """Off the render path (the spinner thread's tick): refresh the gateway tail the open detail
+        view paints from the cache. True when the text changed."""
+        row = self.selected
+        if not self.detail or row is None or row.get('kind') == 'process':
+            return False
+        backend = self.subagents()
+        before = backend.subagent_tail(row['subagent_id'])
+        return backend.subagent_tail(row['subagent_id'], fetch=True) != before
 
     def select(self, delta):
         roster = self.roster
@@ -123,12 +152,11 @@ class SubagentMonitor:
             if action != 'stop':
                 return {'error': t('cli.subagents.cannot_steer_process')}
             return procs.kill(target)
-        from tools.delegate_tool_registry import _handle_control_action
-        return json.loads(_handle_control_action(action, target, message, getattr(self.cli, 'agent', None)))
+        return self.subagents().subagent_control(action, target, message)
 
     def _counts(self, *, session=True):
         """Count fragment: ``2 live``, ``1 proc``, ``2 live · 3 procs``; the collapsed heading
-        (``session=True``) adds ``goal active|paused|parked`` and ``N queued``."""
+        (``session=True``) adds ``goal active|paused|parked``, the loop badge and ``N queued``."""
         parts = []
         if self.entries:
             parts.append(t('cli.subagents.count_live', count=len(self.entries)))
@@ -142,6 +170,8 @@ class SubagentMonitor:
         if session and self.goal:
             parts.append(t('cli.subagents.goal_parked' if self.goal.startswith('⏳') else
                            'cli.subagents.goal_paused' if self.goal.startswith('⏸') else 'cli.subagents.goal_active'))
+        if session and self.loop_badge:
+            parts.append(self.loop_badge)
         if session and self.queued:
             parts.append(t('cli.subagents.count_queued', count=len(self.queued)))
         return ' · '.join(parts)
@@ -163,7 +193,8 @@ class SubagentMonitor:
             return self._agent_activity(self.entries[0])
         if self.processes:
             return procs.process_activity(self.processes[0])
-        return self.goal or t('cli.subagents.next_queued', text=self.queued[0])
+        # The loop's state is already the heading's badge; its prompt is the activity.
+        return self.goal or self.loop_prompt or t('cli.subagents.next_queued', text=self.queued[0])
 
     def dock_text(self, *, columns, rows):
         if not self.has_rows:
@@ -192,7 +223,7 @@ class SubagentMonitor:
                 heading += ' · ' + _clip(activity, room)
             return _clip(' ' + heading, max(0, columns))
         columns = max(0, columns - 2)
-        lines = [_clip(f' {self.goal}', columns)] if self.goal else []
+        lines = [_clip(f' {row}', columns) for row in (self.goal, self.loop) if row]
         budget = max(1, min(4, (rows - 10) // 3))
         # Both blocks present: split the row budget so neither hides the other entirely.
         agent_budget = budget if not self.processes else max(1, budget - max(1, budget // 2))
@@ -249,10 +280,19 @@ def read_tail(path):
         return t('cli.subagents.transcript_unavailable')
 
 
+def subagent_tail(monitor, row):
+    """The child's transcript tail from the monitor's backend (the gateway's is fetched and filtered by
+    the monitor's tick, never here: the detail view calls this every frame)."""
+    text = monitor.subagents().subagent_tail(row['subagent_id'])
+    return t('cli.subagents.transcript_unavailable') if text is None else text
+
+
 def modal_prompt_active(cli):
+    """A prompt owns the composer (its text is an answer or a secret, never a chat message):
+    every composer shortcut stays off while one is open."""
     return any(getattr(cli, name, None) for name in (
         '_clarify_state', '_approval_state', '_slash_confirm_state', '_sudo_state',
-        '_secret_state', '_model_picker_state', '_command_palette_state'))
+        '_secret_state', '_connection_state', '_model_picker_state', '_command_palette_state'))
 
 
 def build_monitor_application(monitor, **kwargs):
@@ -264,7 +304,7 @@ def build_monitor_application(monitor, **kwargs):
     from prompt_toolkit.layout.controls import FormattedTextControl
     from prompt_toolkit.widgets import TextArea
 
-    state = {'detail': False, 'steering': False, 'confirm': False, 'notice': ''}
+    state = {'steering': False, 'confirm': False, 'notice': ''}
     steer = TextArea(height=1, prompt=t('cli.subagents.steer_prompt'), multiline=False)
     tail = TextArea(read_only=True, scrollbar=True, wrap_lines=True)
 
@@ -301,7 +341,7 @@ def build_monitor_application(monitor, **kwargs):
         elif row.get('kind') == 'process':
             text = procs.process_tail(row['id'])
         else:
-            text = read_tail(row.get('live_transcript'))
+            text = subagent_tail(monitor, row)
         if text != tail.text:
             following = tail.buffer.cursor_position == len(tail.text)
             position = tail.buffer.cursor_position
@@ -311,7 +351,7 @@ def build_monitor_application(monitor, **kwargs):
     def header():
         row = monitor.selected
         title = f"{monitor._title()} · {monitor._counts(session=False)}"
-        if state['detail'] and row:
+        if monitor.detail and row:
             title += f" · {monitor._key(row)} · {row.get('goal') or row.get('command') or ''}"
         return [('class:subagent-dock.heading', _clip(title, app.output.get_size().columns))]
 
@@ -326,14 +366,31 @@ def build_monitor_application(monitor, **kwargs):
             return t('cli.subagents.footer_steering_compact' if narrow else 'cli.subagents.footer_steering')
         steer = '' if process else t('cli.subagents.footer_steer_key')
         if narrow:
-            return (t('cli.subagents.footer_detail_compact', steer=steer) if state['detail']
+            return (t('cli.subagents.footer_detail_compact', steer=steer) if monitor.detail
                     else t('cli.subagents.footer_roster_compact'))
         steer = '' if process else t('cli.subagents.footer_steer_key_long')
-        return t('cli.subagents.footer_detail' if state['detail'] else 'cli.subagents.footer_roster', steer=steer)
+        return t('cli.subagents.footer_detail' if monitor.detail else 'cli.subagents.footer_roster', steer=steer)
+
+    def run_control(action, message, target):
+        """Steer/stop off the UI loop: a stalled gateway call (up to its timeout) must not freeze the
+        monitor's repaint, Esc or Ctrl+C. The answer lands in the notice line when it arrives."""
+        import asyncio
+        state['notice'] = t('cli.subagents.control_pending')
+
+        def done(future):
+            try:
+                result = future.result()
+            except Exception as exc:  # health: allow BLE001 -- a control failure is shown, never raised into the UI loop
+                result = {'error': str(exc)}
+            state['notice'] = result.get('error') or result.get('note') or str(result)
+            app.invalidate()
+
+        asyncio.get_running_loop().run_in_executor(
+            None, lambda: monitor.control(action, message, target=target)).add_done_callback(done)
 
     kb = KeyBindings()
     normal = Condition(lambda: not state['steering'] and not state['confirm'])
-    listing = normal & Condition(lambda: not state['detail'])
+    listing = normal & Condition(lambda: not monitor.detail)
 
     @kb.add('up', filter=listing)
     def up(event):
@@ -346,7 +403,8 @@ def build_monitor_application(monitor, **kwargs):
     @kb.add('enter', filter=listing)
     def detail(event):
         if monitor.selected:
-            state['detail'] = True
+            monitor.detail = True
+            monitor.poll_soon()  # the spinner thread's next tick fetches the tail
             update_tail()
             app.layout.focus(tail)
 
@@ -361,11 +419,10 @@ def build_monitor_application(monitor, **kwargs):
     def send_steer(event):
         if not steer.text.strip():
             return
-        result = monitor.control('steer', steer.text, target=state['target'])
-        state['notice'] = result.get('error') or result.get('note') or str(result)
+        run_control('steer', steer.text, state['target'])
         steer.text = ''
         state['steering'] = False
-        app.layout.focus(tail if state['detail'] else roster)
+        app.layout.focus(tail if monitor.detail else roster)
 
     @kb.add('x', filter=normal)
     def stop(event):
@@ -375,17 +432,16 @@ def build_monitor_application(monitor, **kwargs):
 
     @kb.add('y', filter=Condition(lambda: state['confirm']))
     def confirm(event):
-        result = monitor.control('stop', target=state['target'])
-        state['notice'] = result.get('error') or result.get('note') or str(result)
+        run_control('stop', None, state['target'])
         state['confirm'] = False
 
     @kb.add('escape', eager=True)
     def back(event):
         if state['steering'] or state['confirm']:
             state['steering'] = state['confirm'] = False
-            app.layout.focus(tail if state['detail'] else roster)
-        elif state['detail']:
-            state['detail'] = False
+            app.layout.focus(tail if monitor.detail else roster)
+        elif monitor.detail:
+            monitor.detail = False
             app.layout.focus(roster)
         else:
             app.exit()
@@ -399,8 +455,8 @@ def build_monitor_application(monitor, **kwargs):
 
     layout = Layout(HSplit([
         Window(FormattedTextControl(header), height=1),
-        ConditionalContainer(roster, filter=Condition(lambda: not state['detail'])),
-        ConditionalContainer(tail, filter=Condition(lambda: state['detail'])),
+        ConditionalContainer(roster, filter=Condition(lambda: not monitor.detail)),
+        ConditionalContainer(tail, filter=Condition(lambda: monitor.detail)),
         ConditionalContainer(steer, filter=Condition(lambda: state['steering'])),
         Window(FormattedTextControl(lambda: _clip(state['notice'], app.output.get_size().columns)), height=1),
         Window(FormattedTextControl(footer), height=1),
@@ -410,7 +466,7 @@ def build_monitor_application(monitor, **kwargs):
         # first frame if a prompt won the race with in_terminal() acquisition.
         if modal_prompt_active(monitor.cli) and not app.is_done:
             app.exit()
-        elif state['detail']:
+        elif monitor.detail:
             update_tail()
 
     from prompt_toolkit.styles import Style
@@ -432,12 +488,14 @@ def open_monitor(cli):
     async def run():
         try:
             async with in_terminal():
-                monitor.refresh()
+                # Paint the roster the dock's tick already holds; refreshing here would block the UI
+                # loop on the gateway's subagent.list. The spinner thread's next tick re-reads it.
+                monitor.poll_soon()
                 monitor.app = build_monitor_application(monitor)
                 await monitor.app.run_async()
         finally:
             monitor.app = None
-            monitor.opening = False
+            monitor.detail = monitor.opening = False
             cli._invalidate()
 
     asyncio.get_running_loop().create_task(run())

@@ -105,7 +105,7 @@ def test_max_retries_exhausted_chat_text_has_next_step_and_no_mechanism_lead():
     error = _Http(503, "HTTP 503: upstream unavailable")
     classified = classify_api_error(error, provider="openrouter", model="m")
     result = max_retries_exhausted_result(
-        _Agent(), error, classified, max_retries=3, is_rate_limited=False, error_msg=str(error).lower(),
+        _Agent(), error, classified, attempts=3, is_rate_limited=False, error_msg=str(error).lower(),
         api_kwargs=None, api_messages=[], messages=[], conversation_history=None, api_call_count=1,
         approx_tokens=10, provider="openrouter", base_url="https://openrouter.ai/api/v1", model="m",
     )
@@ -130,7 +130,7 @@ def test_exhausted_plan_quota_429_names_the_reset_window_not_wait_a_minute():
     agent = _Agent()
     agent._summarize_api_error = ApiErrorSummaryMixin._summarize_api_error
     result = max_retries_exhausted_result(
-        agent, error, classified, max_retries=3, is_rate_limited=True, error_msg=str(error).lower(),
+        agent, error, classified, attempts=3, is_rate_limited=True, error_msg=str(error).lower(),
         api_kwargs=None, api_messages=[], messages=[], conversation_history=None, api_call_count=3,
         approx_tokens=10, provider="openai-codex", base_url="https://chatgpt.com/backend-api/codex", model="gpt-5.3-codex",
     )
@@ -141,7 +141,7 @@ def test_exhausted_plan_quota_429_names_the_reset_window_not_wait_a_minute():
     # A throttle with no reset window keeps the short-wait copy.
     short = _Http(429, "HTTP 429: Rate limit exceeded")
     plain = max_retries_exhausted_result(
-        _Agent(), short, classify_api_error(short, provider="openrouter", model="m"), max_retries=3,
+        _Agent(), short, classify_api_error(short, provider="openrouter", model="m"), attempts=3,
         is_rate_limited=True, error_msg=str(short).lower(), api_kwargs=None, api_messages=[], messages=[],
         conversation_history=None, api_call_count=3, approx_tokens=10, provider="openrouter",
         base_url="https://openrouter.ai/api/v1", model="m",

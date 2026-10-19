@@ -1,0 +1,52 @@
+# Presence in optional-mcps = Nous approval after PR review.
+manifest_version: 1
+
+name: graphrag-ts
+description: Search Markdown corpora with local and global GraphRAG.
+source: https://github.com/sadofriod/graphrag-ts
+
+transport:
+  type: http
+  url: "${GRAPHRAG_MCP_URL}"
+
+auth:
+  type: none
+  env:
+    - name: GRAPHRAG_MCP_URL
+      prompt: Local GraphRAG Streamable HTTP endpoint
+      default: http://127.0.0.1:3000/mcp
+      required: true
+      secret: false
+
+tools:
+  default_enabled:
+    - submit_index_job
+    - get_index_job
+    - query_graph
+    - query_graph_global
+
+post_install: |
+  This entry connects Hermes to a GraphRAG MCP service that you run locally.
+  Before connecting, start the service and configure its chat, slice, judge,
+  and embedding endpoints. The embedding model must return 768-dimensional
+  vectors. The endpoint has no authentication and must remain bound to loopback;
+  do not expose it to a network or use it as a remote hosted service.
+
+  From the graphrag-ts repository, copy .env.example to .env, set a strong
+  PostgreSQL password, and configure reachable model endpoints. Run
+  `docker compose up -d --build`; the default MCP URL is
+  http://127.0.0.1:3000/mcp. If MCP_PORT is changed, enter the matching URL
+  during installation. If Hermes runs in a container, its backend must be able
+  to reach the local endpoint without disabling the server's localhost Host
+  check.
+
+  Index jobs read Markdown only from the server's configured read-only input
+  mount. `submit_index_job` builds a complete snapshot and replaces that
+  workspace's active snapshot only after success; use a dedicated workspace
+  for experiments. Corpus content is sent to your configured model endpoints
+  for indexing and query generation. Review their data-handling terms.
+
+  Use a workspace_id consistently for indexing, polling, and queries; it is a
+  routing key, not an authentication credential. `remember_text` is available
+  through `hermes mcp configure graphrag-ts` when you explicitly want to enable
+  text ingestion.

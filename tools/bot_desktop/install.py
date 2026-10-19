@@ -49,7 +49,7 @@ def _try_flock(path: Path):
     """Open + non-blocking exclusive flock; None when another process holds it."""
     import fcntl  # windows-footgun: ok — Linux-only runtime (is_supported_host)
     path.parent.mkdir(parents=True, exist_ok=True)
-    fh = open(path, "a+", encoding="utf-8")  # noqa: SIM115 — held open for the life of the install slot
+    fh = open(path, "a+", encoding="utf-8")
     try:
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
@@ -116,7 +116,7 @@ def install_packages(*, ask_password: Callable[[], str], on_line: Callable[[str]
 def _sudo_nopasswd() -> bool:
     try:
         return subprocess.run(["sudo", "-n", "true"], capture_output=True, timeout=3,
-                              stdin=subprocess.DEVNULL).returncode == 0
+                              stdin=subprocess.DEVNULL, check=False).returncode == 0
     except Exception:
         return False
 

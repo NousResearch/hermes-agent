@@ -1,0 +1,49 @@
+name: omh
+repo: https://github.com/rlaope/oh-my-hermes
+sha: 021e5c63d976b4e0faf9cfc7d608701d98fe1722
+subdir: src/plugin_bundle/omh
+description: "Oh My Hermes (OMH) bridge: routing hints and role context for OMH workflow skills, per-task delegation model routing, plan todos and a status tool, a Hermes Desktop status pane (off until enabled), bounded evidence probes that keep prepared work apart from observed results, and a file-backed memory provider. Disclosure — omh_delegate_route writes delegation.model/provider/reasoning_effort in $HERMES_HOME/config.yaml and the session hooks restore them; omh_gather_evidence runs allowlisted checks (python -m unittest with reporting flags only, python -m compileall, git diff --check, omh doctor/probe/docs/release checks) via subprocess on the host, outside any sandboxed terminal backend and without Hermes' terminal approval, in the agent working directory or below it, so it runs whatever test code that directory holds; omh_team (only with the separate OMH core package installed) asks once through the Hermes approval prompt for an exact list of up to 8 check commands from an accepted plan, then runs them on the host as each helper returns; omh_jev_ask posts model-supplied state and questions to api.typesafe.ai (openrouter.ai only when the operator opts in via ~/.omh/jev/settings.json) with the user's own TYPESAFE_API_KEY or OPENROUTER_API_KEY, only in a turn where the user names Jev; opt-in egress_attempts (re-registers chosen core tools, needs the operator's tool-override grant) and browser_adapter (vetoes core browser_* tools) settings; reads session and cost metadata from state.db read-only; state lives under ~/.omh and <project>/.omh."
+maintainer: rlaope
+tier: community
+category: tools
+requires_hermes: ">=0.21.1"
+docs_url: https://github.com/rlaope/oh-my-hermes
+version: "3.0.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - omh_agent_board
+    - omh_capabilities
+    - omh_context
+    - omh_decision_gate
+    - omh_delegate_route
+    - omh_document_plan
+    - omh_gather_evidence
+    - omh_hud
+    - omh_interact
+    - omh_jev_ask
+    - omh_loop
+    - omh_memory
+    - omh_probe
+    - omh_recommend
+    - omh_resume
+    - omh_role
+    - omh_route_answer
+    - omh_run_summary
+    - omh_source_trust
+    - omh_status
+    - omh_team
+    - omh_todo
+  provides_hooks:
+    - on_session_end
+    - on_session_start
+    - post_tool_call
+    - pre_llm_call
+    - pre_tool_call
+    - pre_verify
+    - subagent_start
+    - subagent_stop
+    - transform_llm_output
+    - transform_tool_result
+  provides_middleware: []
+  requires_env: []

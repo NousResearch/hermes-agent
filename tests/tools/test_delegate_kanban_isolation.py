@@ -74,7 +74,7 @@ def test_delegated_child_context_suppresses_env_gated_kanban_tools(monkeypatch, 
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
 
-    import tools.kanban_tools  # noqa: F401 - ensure registered
+    import tools.kanban_tools
     from agent.delegation_context import delegated_child_context
     from model_tools import _clear_tool_defs_cache, get_tool_definitions
     from tools.registry import invalidate_check_fn_cache
@@ -101,11 +101,11 @@ def test_build_child_agent_strips_kanban_toolset_even_when_parent_is_worker(monk
 
     import run_agent
     from tools import delegate_tool
-    import tools.delegate_tool_config as delegate_tool_config
+    from tools import delegate_tool_config
 
     monkeypatch.setattr(run_agent, "AIAgent", FakeAgent)
-    monkeypatch.setattr(delegate_tool, "_load_config", lambda: {})
-    monkeypatch.setattr(delegate_tool_config, "_load_config", lambda: {})
+    monkeypatch.setattr(delegate_tool, "_load_config", dict)
+    monkeypatch.setattr(delegate_tool_config, "_load_config", dict)
 
     class Parent:
         enabled_toolsets = ["terminal", "kanban"]

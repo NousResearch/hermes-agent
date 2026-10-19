@@ -65,6 +65,19 @@ def _load_receipts(adapter, bot_id) -> None:
             bounded_put(seen, key, ts, _SEEN_CAP)
 
 
+def _field_names(update: Update) -> str:
+    """Field names of an update and of its objects (e.g. its message), never values.
+
+    PTB serializes unset service flags as False; those are left out as absent.
+    """
+    def names(data):
+        return [name for name, value in sorted(data.items()) if value is not False]
+
+    data = update.to_dict()
+    return ", ".join(f"{name}({','.join(names(data[name]))})" if isinstance(data[name], dict) else name
+                     for name in names(data))
+
+
 def _record_receipt(adapter, key: str) -> None:
     bounded_put(adapter._seen_update_ids, key, time.time(), _SEEN_CAP)
     adapter._update_receipts_dirty.add(key.split(":", 1)[0])
@@ -96,6 +109,7 @@ async def _flush_receipts(adapter) -> None:
 class _Claim:
     key: str
     dispatch_task: asyncio.Task | None
+    update: Update
     accepted: bool = False
     completed: bool = False
     failed: bool = False
@@ -190,15 +204,16 @@ class TelegramApplication(Application):
 
     def add_handler(self, handler, group=0):
         super().add_handler(handler, group)
-        self._admit_callbacks(handler)
+        # Core handlers live in group 0; the adapter's group-99 observer only watches.
+        self._admit_callbacks(handler, observer=group != 0)
 
-    def _admit_callbacks(self, handler):
+    def _admit_callbacks(self, handler, observer=False):
         # ConversationHandler has no callback. Keep its identity (including persistence,
         # state transitions and block resolution) and instrument its selected children.
         if isinstance(handler, ConversationHandler):
             for child in [*handler.entry_points, *handler.fallbacks,
                           *(child for handlers in handler.states.values() for child in handlers)]:
-                self._admit_callbacks(child)
+                self._admit_callbacks(child, observer)
             return
         callback = getattr(handler, "callback", None)
         if callback is None or getattr(callback, "_telegram_admitted", False):
@@ -222,7 +237,8 @@ class TelegramApplication(Application):
                     # groups already scheduled via block=False; their outcomes settle below.
                     if asyncio.current_task() is claim.dispatch_task:
                         raise ApplicationHandlerStop
-                else:
+                elif not observer:
+                    # An observer returning is not service: unserved updates stay unreceipted.
                     claim.completed = True
             return result
 
@@ -266,6 +282,10 @@ class TelegramApplication(Application):
         del self.adapter._inflight_update_ids[claim.key]
         if claim.accepted or (claim.completed and not claim.failed):
             _record_receipt(self.adapter, claim.key)
+        elif not claim.failed:
+            # No receipt, so a redelivery is not suppressed. Names only: no content or ids.
+            logger.info("[Telegram] Update %s matched no core handler; not receipted (fields: %s)",
+                        claim.update.update_id, _field_names(claim.update))
 
     async def process_error(self, update, error, job=None, coroutine=None):
         claim = self._current_claim.get()
@@ -287,7 +307,7 @@ class TelegramApplication(Application):
         pending = self.adapter._inflight_update_ids
         if key in seen or key in pending:
             return
-        claim = _Claim(key, asyncio.current_task())
+        claim = _Claim(key, asyncio.current_task(), update)
         # Atomic on PTB's event loop: no await between lookup and claim. Dispatch and its
         # PTB tasks share ownership; completed-history pressure cannot evict active work.
         pending[key] = claim

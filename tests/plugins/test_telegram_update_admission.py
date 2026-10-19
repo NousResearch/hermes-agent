@@ -182,6 +182,9 @@ async def test_replay_is_admitted_once_before_dispatch(monkeypatch, tmp_path, ki
             assert [event.text for event in delivered] == ["hello", "changed", "hello"]
             assert observer.await_count == 2
         if mode == "retention":
+            async def native_serve(unused, context):
+                return None  # plugin-owned: bare update ids are accepted, so they receipt
+            app.add_handler(TypeHandler(Update, native_serve))
             now = time.time()
             with monkeypatch.context() as clock:
                 clock.setattr(time, "time", lambda: now + 6.5 * 60 * 60)
@@ -886,3 +889,38 @@ async def test_slow_update_does_not_block_other_chats(monkeypatch):
         assert next(e.source.chat_id for e in delivered) == "43"
         same_chat = "\n".join(e.text for e in delivered if e.source.chat_id == "42")
         assert same_chat == "hello\nsecond"
+
+
+@pytest.mark.asyncio
+async def test_unserved_update_not_receipted_and_logs_field_names(monkeypatch, caplog):
+    """#141570: an update that no group-0 handler serves (e.g. a dice message) must not be
+    receipted by the group-99 observer's return — the receipt would suppress redelivery of
+    an update nobody served, silently. Instead one INFO line names the update id and the
+    field names only (never values), and a redelivery dispatches again."""
+    import logging as stdlib_logging
+
+    dice_payload = {
+        "update_id": 77,
+        "message": {
+            "message_id": 473, "date": 1800000000,
+            "chat": {"id": 42, "type": "private"},
+            "from": {"id": 88, "is_bot": False, "first_name": "Human"},
+            "dice": {"emoji": "🎲", "value": 4},
+        },
+    }
+    async with connected(monkeypatch) as (adapter, app, delivered):
+        caplog.set_level(stdlib_logging.INFO, logger="plugins.platforms.telegram.update_admission")
+        dice = Update.de_json(dice_payload, app.bot)
+        await app.process_update(dice)
+        assert not delivered  # no core handler serves a dice message
+        assert f"{app.bot.id}:77" not in adapter._seen_update_ids  # not receipted
+        records = [r for r in caplog.records if "matched no core handler" in r.message]
+        assert len(records) == 1
+        text = records[0].getMessage()
+        assert "Update 77" in text
+        assert "message(chat,date,dice,from,message_id)" in text  # field names only
+        assert "🎲" not in text and "473" not in text and "88" not in text  # never values
+        # No receipt: a redelivery of the same id dispatches again instead of being dropped.
+        await app.process_update(dice)
+        records = [r for r in caplog.records if "matched no core handler" in r.message]
+        assert len(records) == 2

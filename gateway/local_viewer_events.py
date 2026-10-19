@@ -82,8 +82,9 @@ def launch_shows_reasoning(policy, authority) -> bool:
     """An unset session flag: ``display.show_reasoning`` for an Ink or Desktop launch, else off."""
     if getattr(policy, "source", None) not in _CONFIG_DEFAULT_SOURCES:
         return False
-    display = policy.config(authority, secrets=False).get("display")
-    return bool((display if isinstance(display, dict) else {}).get("show_reasoning", True))
+    from gateway.display_config import local_display_config
+    display = local_display_config(policy.config(authority, secrets=False).get("display"))
+    return bool(display.get("show_reasoning", True))
 
 
 def _is_active_session_subagent(turn, payload: dict, event_type: str = "") -> bool:

@@ -9,6 +9,7 @@ module, and every origin-module symbol is read through ``_cc()`` at call time so
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import Any, Optional
@@ -52,6 +53,80 @@ def delegate_stub(args: dict, content: str, content_len: int) -> str:
     goal = goal if len(goal) <= 60 else goal[:57] + "..."
     detail = f"{len(tasks)} tasks, first: '{goal}'" if batch else f"'{goal}'"
     return f"[delegate_task] {detail} ({content_len:,} chars result)" + _cc()._result_failure_suffix(content)
+
+
+def _code_result_payload(content: str) -> dict:
+    # Subdirectory instructions can follow the JSON result on the same tool row.
+    try:
+        payload, _ = json.JSONDecoder().raw_decode(content.lstrip())
+    except (ValueError, RecursionError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _kernel_note(payload: dict, status: str) -> str:
+    kernel = payload.get("kernel")
+    if not isinstance(kernel, dict):
+        return ""
+    if kernel.get("state_lost") is True or (
+        status in ("timeout", "interrupted")
+        and (kernel.get("mode") == "session" or kernel.get("remote") is True)
+    ):
+        return "kernel state lost"
+    if kernel.get("state_reset") is True:
+        return "kernel state reset"
+    return "kernel ended" if kernel.get("ended") is True else ""
+
+
+def _code_result_suffix(payload: dict) -> str:
+    status = payload.get("status")
+    status = status if isinstance(status, str) else ""
+    label = {"error": "FAILED", "timeout": "TIMEOUT", "interrupted": "INTERRUPTED"}.get(status, "")
+    error, exit_code = payload.get("error"), payload.get("exit_code")
+    nonzero_exit = type(exit_code) is int and exit_code != 0
+    if not label and (error or payload.get("success") is False or nonzero_exit):
+        label = "FAILED"
+    errors = payload.get("tool_errors")
+    inner = None
+    if isinstance(errors, list):
+        inner = next((entry for entry in errors if isinstance(entry, dict) and entry.get("error")), None)
+    notes = "; ".join(filter(None, (label, "inner tool failed" if inner else "", _kernel_note(payload, status))))
+    if not notes:
+        return ""
+    reason = error
+    if not reason and inner:
+        reason = f"{_cc()._str_arg(inner, 'tool', 'tool')}: {inner['error']}"
+    if not reason and nonzero_exit:
+        reason = f"exit code {exit_code}"
+    if isinstance(reason, str) and reason.lstrip().startswith("Traceback (most recent call last):"):
+        reason = reason.rstrip().splitlines()[-1]
+    return _cc()._failure_suffix(reason, notes)
+
+
+def execute_code_stub(args: dict, content: str, line_count: int) -> str:
+    """Keep the execution outcome when deterministic compaction drops the output."""
+    from tools.tool_result_storage import has_archive_pointer
+
+    cc = _cc()
+    limit = cc._PRUNE_MIN_CHARS - 1
+    # The fallback summary can receive a stub written by an earlier prune.
+    if content.startswith("[execute_code] ") and "\n" not in content:
+        if len(content) <= limit or has_archive_pointer(content):
+            return content
+
+    payload = _code_result_payload(content)
+    status, error = payload.get("status"), payload.get("error")
+    if status in ("blocked", "pending_approval") or (
+        isinstance(error, str) and error.lstrip().startswith("BLOCKED")
+    ):
+        refused = cc._summarize_refused_tool_result("execute_code", args, json.dumps(payload))
+        if refused is not None:
+            return refused
+
+    code = cc._str_arg(args, "code")
+    preview = code[:60].replace("\n", " ") + ("..." if len(code) > 60 else "")
+    stub = f"[execute_code] `{preview}` ({line_count} lines output)"
+    return (stub + _code_result_suffix(payload))[:limit]
 
 
 def stub_arguments(args: dict) -> str:

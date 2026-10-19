@@ -273,13 +273,8 @@ class CLIStatusBarMixin:
         except Exception:
             pass
         try:
-            from tools.process_registry import process_registry
-            snapshot["active_background_processes"] = process_registry.count_running()
-        except Exception:
-            pass
-        try:
-            from tools.async_delegation import active_count as _async_active_count
-            snapshot["active_background_subagents"] = _async_active_count()
+            from hermes_cli.gateway_tools import background_counts
+            snapshot.update(background_counts())
         except Exception:
             pass
 

@@ -711,7 +711,7 @@ SKILLS_LIST_SCHEMA = {
 
 SKILL_VIEW_SCHEMA = {
     "name": "skill_view",
-    "description": "Skills allow for loading information about specific tasks and workflows, as well as scripts and templates. Load a skill's full content or access its linked files (references, templates, scripts). First call returns SKILL.md content plus a 'linked_files' dict showing available references/templates/scripts. To access those, call again with file_path parameter.",
+    "description": "Load a skill's SKILL.md or a linked file. For independent reads, use requests (1-4 entries) in one call; each result retains its own status and content. Use name/file_path for a single read, not together with requests.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -723,8 +723,15 @@ SKILL_VIEW_SCHEMA = {
                 "type": "string",
                 "description": "OPTIONAL: Path to a linked file within the skill (e.g., 'references/api.md', 'templates/config.yaml', 'scripts/validate.py'). Omit to get the main SKILL.md content.",
             },
+            "requests": {
+                "type": "array", "minItems": 1, "maxItems": 4,
+                "description": "Batch of independent skill reads; do not combine with name/file_path. Partial failures are reported per request.",
+                "items": {"type": "object", "properties": {
+                    "name": {"type": "string"}, "file_path": {"type": "string"},
+                }, "required": ["name"]},
+            },
         },
-        "required": ["name"],
+        "required": [],
     },
 }
 
@@ -738,6 +745,27 @@ def _skill_view_with_bump(args, **kw):
     """Invoke skill_view, then bump view_count/use on success (best-effort). Repeat-view dedup
     mirrors read_file's unchanged-stub: a result byte-identical to one already served for the
     same skill file in this session returns a short stub (cache cleared on context compression)."""
+    if "requests" in args:
+        requests = args["requests"]
+        if "name" in args or "file_path" in args:
+            return tool_error("skill_view: use either name/file_path or requests, not both")
+        if not isinstance(requests, list) or not 1 <= len(requests) <= 4:
+            return tool_error("skill_view: requests must contain 1-4 entries")
+        if any(not isinstance(r, dict) or not isinstance(r.get("name"), str)
+               or not r["name"].strip() or ("file_path" in r and not isinstance(r["file_path"], str))
+               for r in requests):
+            return tool_error("skill_view: each request needs a name string and optional file_path string")
+        if len({(r["name"], r.get("file_path") or "") for r in requests}) != len(requests):
+            return tool_error("skill_view: duplicate requests; load each skill file once per batch")
+        results = []
+        for request in requests:
+            result = json.loads(_skill_view_with_bump(request, **kw))
+            results.append({"request": request, "result": result})
+        completed = sum(r["result"].get("success") is True for r in results)
+        return _json({"success": completed == len(requests), "completed": completed,
+                      "total": len(requests), "results": results})
+    if not isinstance(args.get("name"), str) or not args["name"].strip():
+        return tool_error("skill_view: name is required (or pass requests)")
     name = args.get("name", "")
     task_id = kw.get("task_id")
     # The background-review fork shares the parent's task_id (prefix-cache parity). A stub there

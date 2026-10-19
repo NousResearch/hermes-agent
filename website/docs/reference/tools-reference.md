@@ -119,6 +119,8 @@ Scoped to the Feishu document-comment handler. Drives comment read/write operati
 
 For local files, a full unredacted read (including all pages of the same file version), a successful `write_file`, or your own `patch` of a file you had read in full supplies a whole-file baseline. Reading a smaller region afterward does not discard that baseline while the bytes remain unchanged. A file changed by another writer, an unread file, a file patched without a full read, or a view with hidden/redacted or clamped content still needs a full current read before replacement; `patch` remains available for targeted edits. Writes made through terminal commands or `execute_code` do not establish a `write_file` baseline.
 
+Independent file operations can be grouped without introducing another tool: `read_file({"requests": [{"path": "a.md"}, {"path": "b.md", "offset": 20, "limit": 50}]})` and `write_file({"files": [{"path": "a.md", "content": "..."}, {"path": "b.md", "content": "..."}]})`. Batches contain 1–4 entries; omit the single-file arguments when using a batch. Each response has ordered `results`, `completed`, `total`, and an aggregate `success`; individual results retain the original tool's fields and errors. Batch reads limit each result to 16K characters, with `next_offset` for larger files. Batch writes preflight all entries, then run the usual per-file guards and verification sequentially; a later runtime failure can leave earlier writes applied. These are **not atomic transactions**.
+
 ## `computer_use` toolset
 
 | Tool | Description | Requires environment |
@@ -196,6 +198,8 @@ Enabled for sessions whose source is the desktop app, whichever backend it's con
 | `skill_manage` | Manage skills (create, update, delete). Skills are your procedural memory — reusable approaches for recurring task types. New skills go to ~/.hermes/skills/; existing skills can be modified wherever they live. Actions: create (full SKILL.m… | — |
 | `skill_view` | Skills allow for loading information about specific tasks and workflows, as well as scripts and templates. Load a skill's full content or access its linked files (references, templates, scripts). First call returns SKILL.md content plus a… | — |
 | `skills_list` | List available skills (name + description). Use skill_view(name) to load full content. | — |
+
+For independent skill reads, `skill_view({"requests": [{"name": "one"}, {"name": "two", "file_path": "references/api.md"}]})` loads up to four SKILL.md or linked files in order and reports partial failures per entry. A single read still uses `name` and optional `file_path`. Skill edits already support atomic batches through `skill_manage({"operations": [...]})`; use that existing tool rather than repeated single edits.
 
 ## `terminal` toolset
 

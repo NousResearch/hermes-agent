@@ -1,0 +1,28 @@
+name: gurusup-brain
+title: Gurusup
+repo: https://github.com/gurusup/gurusup-brain-plugin
+sha: 4709ca345cb55a1fab809b6b53523c5c0600be6e
+description: >-
+  Your company's memory in Hermes: search decisions, people, customers and projects
+  across every source your team connected to Gurusup (Slack, HubSpot, Notion,
+  uploaded documents and more), with the sources behind each answer. Portable Agent
+  Plugins v1 package (mcp.json + skills/), remote streamable-http with OAuth 2.1, no
+  local code and no API keys. Disclosure: hosted-only connector; every tool call goes
+  to Gurusup's MCP server at mcp.brain.gurusup.com and answers are limited to what the
+  signed-in Gurusup account can see. Write tools save knowledge to the company's Gurusup workspace
+  (add_company_knowledge, skills_publish) and send issue reports or feedback to Gurusup
+  (report_issue, send_feedback); request_human_info can message a teammate on Slack or
+  call them when its dispatch flag is set. OAuth must be enabled with
+  `hermes mcp add gurusup-brain --url https://mcp.brain.gurusup.com/mcp --auth oauth`;
+  the bundled mcp.json alone yields 401.
+maintainer: Gurusup
+tier: community
+category: tools
+version: "0.1.0"
+docs_url: https://gurusup.com/brain/mcp
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1,6 +1,7 @@
-"""Worker-context rendering for ``build_worker_context``: the capped markdown sections a spawned
-worker reads about its task (header, attachments, prior attempts, parent handoffs, role
-history, comments).
+"""Worker-context rendering: ``build_worker_context`` and the capped markdown sections it
+assembles for a spawned worker (header, attachments, prior attempts, parent handoffs, role
+history, comments), plus the ``full`` / ``compact`` / ``minimal`` renderings that let a caller
+ask for a smaller handoff (#95561).
 
 Split out of ``hermes_cli.kanban_db``; origin-resident helpers are reached late-bound via
 ``_kb`` so monkeypatching ``kanban_db.<name>`` keeps working.
@@ -217,3 +218,55 @@ def _ctx_comments(lines: list[str], comments: list[Comment], now: int) -> None:
         lines.append(f"comment from worker `{safe_author}` at {_ctx_stamp(c.created_at, now)}:")
         lines.append(_ctx_cap(c.body, _CTX_MAX_COMMENT_BYTES))
         lines.append("")
+
+
+# Worker-context renderings a caller can ask for (#95561). ``full`` is the default
+# and renders exactly what it always has.
+KANBAN_CONTEXT_MODES = ("full", "compact", "minimal")
+
+# What each trimmed mode leaves out — rendered as one note line so the model sees
+# that a smaller handoff was its own choice and can escalate to ``full``.
+_CTX_MODE_OMITTED: dict[str, str] = {
+    "compact": "prior attempts and recent work by the assignee",
+    "minimal": "body, attachments, prior attempts, recent work by the assignee, and the comment thread",
+}
+
+
+def build_worker_context(conn: sqlite3.Connection, task_id: str, mode: str = "full") -> str:
+    """Everything a worker should read about its task: header, body,
+    attachments, prior attempts, done-parent handoffs, the assignee's recent
+    work, comments. Lists are tail-capped and fields char-capped
+    (``_CTX_MAX_*``) so the prompt stays bounded on pathological boards.
+
+    ``mode`` selects how much of that to render: ``full`` (default — the
+    complete handoff), ``compact`` (body and parent handoffs, without the
+    prior-attempt or recent-work history), or ``minimal`` (header and parent
+    handoff summaries only). An unknown mode raises instead of falling back to
+    ``full`` — falling back would spend exactly the tokens the caller asked to
+    avoid.
+    """
+    if mode not in KANBAN_CONTEXT_MODES:
+        raise ValueError(
+            f"unknown worker-context mode {mode!r}: expected one of {', '.join(KANBAN_CONTEXT_MODES)}")
+    task = _kb.get_task(conn, task_id)
+    if not task:
+        raise ValueError(f"unknown task {task_id}")
+    # One clock reading so every relative age in this rendering agrees.
+    now = int(time.time())
+    lines: list[str] = []
+    _ctx_header(lines, task, include_body=mode != "minimal")
+    if mode != "full":
+        lines.append(
+            f"_Context mode `{mode}`: omitted {_CTX_MODE_OMITTED[mode]}. "
+            f"Request `context=\"full\"` for the complete handoff._")
+        lines.append("")
+    if mode != "minimal":
+        _ctx_attachments(lines, _kb.list_attachments(conn, task_id))
+    if mode == "full":
+        _ctx_prior_attempts(lines, conn, task_id, now)
+    _ctx_parent_results(lines, conn, task_id, now)
+    if mode == "full":
+        _ctx_role_history(lines, conn, task, now)
+    if mode != "minimal":
+        _ctx_comments(lines, _kb.list_comments(conn, task_id), now)
+    return "\n".join(lines).rstrip() + "\n"

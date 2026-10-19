@@ -792,6 +792,50 @@ package command. Restart Hermes after successful dependency preparation.
 
 ---
 
+### Bilinc
+
+:::info Plugin catalog
+Bilinc is a community plugin maintained by ReARC Labs and installed from the [plugin catalog](./plugins.md) rather than bundled with Hermes. Source and full reference: [ReARCLabs/bilinc-hermes-plugin](https://github.com/ReARCLabs/bilinc-hermes-plugin).
+:::
+
+Hosted long-term memory where every change to a memory is versioned: recall before each turn, explicit tools to recall, remember, revise and forget, and mirroring of Hermes' built-in memory writes.
+
+| | |
+|---|---|
+| **Best for** | Seeing what the agent remembered, when it changed and why |
+| **Requires** | `hermes plugins install bilinc` (no Python dependencies); Hermes 0.21.6 or newer; [API key](https://bilinc.space) |
+| **Data storage** | Bilinc Cloud |
+| **Cost** | Free plan (no card required) / Bilinc pricing; each recall counts as an operation on your plan |
+
+**Tools (4):** `bilinc_recall` (search memories; results include each memory's key), `bilinc_remember` (store under a new key; never overwrites an existing key), `bilinc_revise` (change a memory; the previous version is kept), `bilinc_forget` (remove from recall, with the reason kept in the history)
+
+**Setup:**
+```bash
+hermes plugins install bilinc   # from the plugin catalog
+hermes memory setup bilinc      # paste your API key
+# Or manually:
+hermes config set memory.provider bilinc
+echo "BILINC_API_KEY=your-key" >> ~/.hermes/.env
+```
+
+Start a new session to activate it.
+
+**Config:** `config.yaml` under `memory.bilinc` (all optional)
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `auto_recall` | `true` | Recall relevant memories before each turn |
+| `recall_limit` | `6` | Memories added per turn (1–20) |
+| `mirror_builtin` | `true` | Copy Hermes built-in memory writes to Bilinc, and update or remove them with it |
+| `capture_turns` | `false` | Store each finished turn as a short-lived session record |
+| `capture_ttl_days` | `30` | How long captured turns are kept |
+
+**Environment variables:** `BILINC_API_KEY` (required), `BILINC_BASE_URL` (overrides the endpoint; https only, http accepted for localhost).
+
+**Data handling:** over HTTPS to `bilinc.space`, under your `BILINC_API_KEY`, the plugin sends the text of your message as a recall query (when `auto_recall` is on), the arguments of the Bilinc tools, mirrored built-in memory writes (when `mirror_builtin` is on) and the Hermes session ID with writes; each turn's user and assistant text is sent only when `capture_turns` is on. Secret-looking strings are redacted before sending. Subagents, cron jobs and flush runs only read. There is no separate process, local database or telemetry. See the [plugin README](https://github.com/ReARCLabs/bilinc-hermes-plugin#data-and-privacy) for details.
+
+---
+
 ## Provider Comparison
 
 | Provider | Storage | Cost | Tools | Dependencies | Unique Feature |
@@ -805,6 +849,7 @@ package command. Restart Hermes after successful dependency preparation.
 | **ByteRover** | Local/Cloud | Free/Paid | 3 | `brv` CLI | Pre-compression extraction |
 | **Supermemory** (plugin catalog) | Cloud/Self-hosted | Free/Paid | 4 | `hermes plugins install supermemory` | Context fencing + session graph ingest + multi-container |
 | **Memori** | Cloud | Free/Paid | 5 | `hermes-memori` | Tool-aware memory + structured recall |
+| **Bilinc** (plugin catalog) | Cloud | Free/Paid | 4 | `hermes plugins install bilinc` | Version history for every memory |
 
 ## Profile Isolation
 

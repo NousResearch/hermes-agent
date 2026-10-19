@@ -550,7 +550,8 @@ export function ActiveSessionSwitcher({
     [history.length, items.length]
   )
 
-  const { deletePending, deleting, performDelete } = useSessionDelete(gw, removeDeleted, setActionErr)
+  const keepView = useCallback((resolved: string) => resolved === currentSessionId, [currentSessionId])
+  const { deletePending, deleting, performDelete } = useSessionDelete(gw, removeDeleted, setActionErr, keepView)
 
   const handleRowClick = useCallback(
     (index: number) => (event: { stopImmediatePropagation?: () => void }) => {

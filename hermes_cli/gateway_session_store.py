@@ -277,16 +277,22 @@ class GatewaySessionStore:
 
     def delete_session(self, session_id, sessions_dir=None):
         self.snapshots.pop(session_id, None)
-        state = self.connection.states.get(session_id)
-        viewing = state is not None and state.subscription_id is not None
         snapshot = self.call("session.resume", session_id=session_id)
+        # The owner answers and subscribes under the id it resolved the read to (a compression
+        # segment maps to its logical owner), and reuses a subscription this viewer already holds.
+        resolved = snapshot.get("session_id") or session_id
+        state = self.connection.states.get(resolved)
+        held = state is not None and state.subscription_id is not None
         try:
             self._mutate(session_id, "delete", {}, snapshot)
         except GatewayClientError:
-            # The revision read attached this viewer; a session it was not viewing goes back closed.
-            if not viewing and snapshot.get("subscription_id"):
-                self.call("session.detach", session_id=session_id, subscription_id=snapshot["subscription_id"],
-                          end_reason="cli_close")
+            # Hand back only the attachment the read made, with a plain detach: an end_reason would
+            # run the owner's viewer close (fencing the session's delegations, ending it at idle).
+            if not held and snapshot.get("subscription_id"):
+                try:
+                    self.call("session.detach", session_id=resolved, subscription_id=snapshot["subscription_id"])
+                except GatewayClientError as exc:
+                    logger.debug("session.detach after a refused delete failed: %s", exc)
             raise
         self._leave(session_id)
         return True

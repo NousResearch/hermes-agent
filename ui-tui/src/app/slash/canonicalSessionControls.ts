@@ -64,6 +64,8 @@ export interface MutationSnapshot {
   execution_generation: number
   /** The viewer attachment the revision read made (`session.resume` attaches). */
   subscription_id?: string
+  /** The id the owner resolved the read to and subscribed under; may differ from the one sent. */
+  session_id?: string
 }
 
 /** The CAS tuple read (`session.resume`, which attaches this client as a viewer). */

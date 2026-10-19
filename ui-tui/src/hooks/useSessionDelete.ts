@@ -8,11 +8,13 @@ import { messages } from '../i18n/runtime.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 
 /** The picker's history delete: one request at a time, and a refused delete hands back the viewer
- *  attachment its revision read made. Settles through `onDeleted` or `onError`. */
+ *  attachment its revision read made unless `keepView` says this view already held the session.
+ *  Settles through `onDeleted` or `onError`. */
 export function useSessionDelete(
   gw: GatewayClient,
   onDeleted: (id: string) => void,
-  onError: (message: string) => void
+  onError: (message: string) => void,
+  keepView: (resolvedId: string) => boolean
 ) {
   const [deleting, setDeleting] = useState(false)
   // Set synchronously (one stdin chunk can carry the confirming key and a click before a re-render);
@@ -35,11 +37,18 @@ export function useSessionDelete(
       onError('')
       // The shared gateway has no `session.delete`: its delete is the revision-fenced
       // `session.mutate operation=delete` (the whole lineage), as the classic CLI sends it.
-      let readSubscription: string | undefined
+      let release: undefined | { session_id: string; subscription_id: string }
 
       const deleted = gw.isCanonical
         ? mutateCanonical(gw, target.id, 'delete', {}, undefined, snapshot => {
-            readSubscription = snapshot.subscription_id
+            // The owner subscribes under the id it resolved the read to, and reuses a subscription
+            // this view already holds: release only an attachment the read itself made.
+            const resolved = snapshot.session_id || target.id
+
+            release =
+              snapshot.subscription_id && !keepView(resolved)
+                ? { session_id: resolved, subscription_id: snapshot.subscription_id }
+                : undefined
           }).then(mutation => Boolean(mutation?.result))
         : gw
             .request<SessionDeleteResponse>('session.delete', { session_id: target.id })
@@ -56,23 +65,17 @@ export function useSessionDelete(
           settle()
         })
         .catch(rejection => {
-          // The revision read attached this view to a session it was not showing; a refused
-          // delete hands it back closed so it does not reappear in the live section.
-          if (readSubscription) {
-            void gw
-              .request('session.detach', {
-                session_id: target.id,
-                subscription_id: readSubscription,
-                end_reason: 'tui_close'
-              })
-              .catch(() => undefined)
+          // A refused delete hands the read's attachment back so the closed session does not reappear
+          // in the live section. A plain detach: an end reason would run the owner's viewer close.
+          if (release) {
+            void gw.request('session.detach', release).catch(() => undefined)
           }
 
           onError(rpcErrorMessage(rejection))
           settle()
         })
     },
-    [gw, onDeleted, onError]
+    [gw, keepView, onDeleted, onError]
   )
 
   const pending = useCallback(() => deleting || deletingRef.current, [deleting])

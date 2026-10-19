@@ -20,7 +20,7 @@ from typing import Dict, List, Optional
 
 from agent.i18n import t
 from gateway.config import Platform
-from gateway.platforms.base import build_auto_tts_output_path
+from gateway.platforms.base import BasePlatformAdapter, build_auto_tts_output_path
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 
@@ -29,6 +29,18 @@ logger = logging.getLogger("gateway.run")  # log-record parity with the origin m
 # Adapter-side per-chat auto-TTS override sets (``/voice off`` vs explicit ``/voice on``/``tts``).
 _OFF_SET, _ON_SET = "_auto_tts_disabled_chats", "_auto_tts_enabled_chats"
 _VOICE_MODES = {"off", "voice_only", "all"}
+
+
+def _has_native_voice_delivery(adapter) -> bool:
+    """True when the adapter overrides ``send_voice`` with a native delivery path. The base
+    implementation is a friendly-failure notice, so auto-TTS on such an adapter synthesizes
+    an MP3 that can never be delivered (#90103 a2a, #141792 email)."""
+    cls_send_voice = getattr(type(adapter), "send_voice", None)
+    if cls_send_voice is not None:
+        return cls_send_voice is not BasePlatformAdapter.send_voice
+    # No class-level send_voice: real adapters always have one via BasePlatformAdapter,
+    # so this is a double exposing it as an instance attribute — read it as native.
+    return getattr(adapter, "send_voice", None) is not None
 
 
 class GatewayVoiceMixin:
@@ -123,12 +135,13 @@ class GatewayVoiceMixin:
         except Exception:
             auto_tts_default = False
         if hasattr(adapter, "_auto_tts_default"):
-            # A2A never inherits the global speak default. The flag is written by
-            # Desktop "Read replies aloud" / voice.auto_tts and is meant for human
-            # chat surfaces; an agent peer's replies must stay text (its adapter has
-            # no native send_voice, so auto-TTS would synthesize an MP3 and then
-            # fail delivery) — /voice scoped modes never applied to A2A anyway.
-            if platform.value == "a2a":
+            # A2A (explicit, mirroring the runner-side early exit) and adapters without
+            # a native send_voice never inherit the global speak default: the flag is
+            # written by Desktop "Read replies aloud" / voice.auto_tts for human chat
+            # surfaces with voice delivery; auto-TTS on a text-only lane (a2a, Email)
+            # would synthesize an MP3 and then fail delivery (#90103, #141792) —
+            # /voice scoped modes never applied to them anyway.
+            if platform.value == "a2a" or not _has_native_voice_delivery(adapter):
                 adapter._auto_tts_default = False
             else:
                 adapter._auto_tts_default = auto_tts_default
@@ -391,6 +404,16 @@ class GatewayVoiceMixin:
         voice_mode = self._voice_mode.get(self._voice_key_for_source(event.source))
         is_voice_input = event.message_type == MessageType.VOICE
         adapter = self._delivery_adapter_for(event.source)
+        # No native voice delivery (Email, and any future text-only adapter; a2a
+        # already exited above): the base send_voice is a friendly-failure notice,
+        # so an auto-TTS reply here synthesizes an MP3 and then emails "Couldn't
+        # deliver the audio attachment." per turn (#141792). Gate structurally on
+        # the send_voice override instead of enumerating platforms.
+        if not _has_native_voice_delivery(adapter):
+            logger.debug(
+                "Auto voice reply skipped: adapter has no native send_voice (platform=%s chat=%s)",
+                event.source.platform.value, chat_id)
+            return False
         adapter_auto_tts = False
         with suppress(Exception):  # adapters without the probe read as False
             adapter_auto_tts = bool(adapter._should_auto_tts_for_chat(chat_id))

@@ -75,13 +75,15 @@ def remove_env_setting(key: str) -> bool:
 
 def read_env_setting(key: str) -> Optional[str]:
     """Resolve like the gateway does: ``.env`` first, then a not-yet-converged top-level
-    ``config.yaml`` copy under the name as typed, which is reported as stale on stderr."""
+    ``config.yaml`` copy under the typed or canonical uppercase name, reported as stale."""
     from hermes_cli.config import get_env_value, read_raw_config_readonly
 
     value = get_env_value(key.upper())
     if value is None:
-        value = read_raw_config_readonly().get(key)
+        config = read_raw_config_readonly()
+        stored_key = key if key in config else key.upper()
+        value = config.get(stored_key)
         if value is not None:
-            print(f"  (note: {key} is a stale top-level config.yaml copy; `hermes config set {key} <value>` "
+            print(f"  (note: {stored_key} is a stale top-level config.yaml copy; `hermes config set {key} <value>` "
                   f"moves it to .env, `hermes config unset {key}` removes it)", file=sys.stderr)
     return value

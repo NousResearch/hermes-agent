@@ -5,6 +5,41 @@ import pytest
 import hermes_yaml as yaml
 
 
+@pytest.mark.parametrize("key", ["FEISHU_HOME_CHANNEL", "feishu_home_channel", "Feishu_Home_Channel"])
+def test_registered_env_alias_reads_legacy_yaml_value(tmp_path, monkeypatch, capsys, key):
+    from hermes_cli import config as cfg
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(tmp_path / "managed"))
+    (tmp_path / "config.yaml").write_text(
+        "FEISHU_HOME_CHANNEL: oc_legacy\n", encoding="utf-8"
+    )
+
+    cfg.get_config_value(key)
+
+    captured = capsys.readouterr()
+    assert captured.out.strip() == "oc_legacy"
+    assert "stale top-level config.yaml copy" in captured.err
+
+
+@pytest.mark.parametrize("value", ["oc_current", ""])
+def test_registered_env_alias_prefers_dotenv_to_legacy_yaml(tmp_path, monkeypatch, capsys, value):
+    from hermes_cli import config as cfg
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(tmp_path / "managed"))
+    (tmp_path / "config.yaml").write_text(
+        "FEISHU_HOME_CHANNEL: oc_legacy\n", encoding="utf-8"
+    )
+    (tmp_path / ".env").write_text(f"FEISHU_HOME_CHANNEL={value}\n", encoding="utf-8")
+
+    cfg.get_config_value("feishu_home_channel")
+
+    captured = capsys.readouterr()
+    assert captured.out.strip() == value
+    assert "stale top-level config.yaml copy" not in captured.err
+
+
 def test_platform_env_key_round_trips_without_a_config_yaml_copy(tmp_path, monkeypatch, capsys):
     """``config set/get/unset`` shares the platform setup flow's .env storage."""
     from hermes_cli import config as cfg

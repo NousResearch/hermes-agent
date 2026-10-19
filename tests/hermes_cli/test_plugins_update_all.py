@@ -33,7 +33,7 @@ def fleet(monkeypatch, tmp_path):
     def fake_update(name, target, console, *, interactive=True):
         calls.append((name, interactive))
         if name == "cat":
-            raise plugins_cmd.PluginOperationError("catalog pin refused")
+            raise TimeoutError("catalog pin refused")  # not a typed refusal: the batch must still go on
         return True
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

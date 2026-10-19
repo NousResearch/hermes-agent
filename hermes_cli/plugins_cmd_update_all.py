@@ -10,6 +10,7 @@ Sibling of :mod:`hermes_cli.plugins_cmd` (the facade is imported late, never at 
 
 from __future__ import annotations
 
+import logging
 import sys
 from dataclasses import dataclass, field
 from typing import Any
@@ -18,6 +19,7 @@ from typing import Any
 # re-pins to the reviewed sha, a tracked git install pulls. A pip row is a PyPI distribution that
 # Hermes never upgrades (#132494), so offering it would promise an update nothing applies.
 _UPDATE_KIND = {"catalog": "catalog re-pin", "git": "git pull"}
+logger = logging.getLogger(__name__)
 
 
 def _pc():
@@ -76,6 +78,10 @@ def _update_one(row, console, *, interactive: bool) -> tuple[str, str]:
     except _pc().PluginOperationError as exc:
         console.print(f"[red]Error:[/red] {escape(str(exc))}")
         return "failed", _short(str(exc))
+    except Exception as exc:  # per-plugin batch boundary: a feed timeout or crash must not stop the rest
+        logger.warning("update of plugin %s failed", row.name, exc_info=True)
+        console.print(f"[red]Error:[/red] {escape(type(exc).__name__)}: {escape(str(exc))}")
+        return "failed", _short(f"{type(exc).__name__}: {exc}")
     if not moved:
         return "current", ""
     return "updated", f"{(row.current or '')[:8]}..{(row.latest or '')[:8]}"

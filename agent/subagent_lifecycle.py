@@ -47,6 +47,16 @@ class SubagentState(str, enum.Enum):
 
 @dataclasses.dataclass(frozen=True)
 class SubagentLaunchRequest:
+    """Immutable launch contract with two mutually exclusive model surfaces:
+
+    - ``model`` is the raw internal plugin trust surface: an unvalidated model string the
+      plugin takes full responsibility for (passed through to child construction as-is).
+    - ``model_profile`` is the policy path: a name resolved through the operator-configured
+      ``delegation.profiles`` via ``agent.delegation_model_routing.resolve_profile_route`` —
+      the exact seam ``delegate_task`` uses — so a profile means the same provider/model on
+      both APIs. Setting both is rejected at validation.
+    """
+
     goal: str
     context: Optional[str] = None
     role: str = "leaf"
@@ -59,6 +69,8 @@ class SubagentLaunchRequest:
     correlation_id: Optional[str] = None
     metadata: Mapping[str, Any] = dataclasses.field(default_factory=dict)
     timeout_seconds: Optional[float] = None
+    # Appended last so positional construction by existing callers is unaffected.
+    model_profile: Optional[str] = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -73,6 +85,17 @@ class SubagentHandle:
     role: str
     depth: int
     capability: str
+    # Route provenance (appended last, defaults None, so positional construction and old serialized
+    # handles stay valid). All five are None for legacy profile-less launches. ``resolved_model`` is the
+    # SPAWN-TIME route model while ``model`` tracks the child's live model — divergence between the two
+    # is the requested-vs-effective signal when a fallback fires mid-run. ``resolved_reasoning`` is the
+    # reasoning the child was BUILT with ("<effort>" / "disabled"); None = inherited or unknown at spawn
+    # time, never inferred.
+    requested_profile: Optional[str] = None
+    resolved_provider: Optional[str] = None
+    resolved_model: Optional[str] = None
+    fallback_policy: Optional[str] = None
+    resolved_reasoning: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -213,6 +236,11 @@ _HANDLE_FIELD_CHECKS: tuple[tuple[str, Callable[[Any], bool]], ...] = (
     ("role", lambda v: isinstance(v, str)),
     ("depth", lambda v: type(v) is int),
     ("capability", lambda v: isinstance(v, str)),
+    ("requested_profile", _opt_str),
+    ("resolved_provider", _opt_str),
+    ("resolved_model", _opt_str),
+    ("fallback_policy", _opt_str),
+    ("resolved_reasoning", _opt_str),
 )
 
 # Launch-request rejections in check order: (predicate, error). The type check leads so later predicates may
@@ -230,6 +258,11 @@ _REQUEST_REJECTIONS: tuple[tuple[Callable[[Any], bool], str], ...] = (
      "working_directory is not supported because Hermes delegates use isolated task environments."),
     (lambda r: bool(r.blocked_tools),
      "Per-tool blocking is not supported; use allowed_toolsets. Hermes always blocks unsafe child tools."),
+    (lambda r: not _opt_str(r.model_profile), "model_profile must be a string profile name or None."),
+    (lambda r: r.model is not None and r.model_profile is not None,
+     "model and model_profile are mutually exclusive; pass a raw model OR a configured delegation profile."),
+    (lambda r: r.provider is not None and r.model_profile is not None,
+     "provider and model_profile are mutually exclusive; a delegation profile pins its own provider."),
 )
 
 
@@ -293,16 +326,40 @@ class SubagentLifecycleService:
             _build_child_preserving_parent_tools, _credential_overrides, _load_config, _resolve_delegation_credentials,
             DEFAULT_MAX_ITERATIONS,
         )
-        # Routing precedence: request.provider > delegation config > parent.
-        routing_cfg = {"provider": request.provider, "model": request.model or ""} if request.provider is not None else _load_config()
+        # Routing precedence: request.model_profile > request.provider > delegation config
+        # (delegation.default_profile, then legacy provider/model) > parent.
+        max_iterations = DEFAULT_MAX_ITERATIONS
+        if request.provider is not None:
+            routing_cfg = {"provider": request.provider, "model": request.model or ""}
+        else:
+            routing_cfg = _load_config()
+            if request.model is not None and request.model_profile is None:
+                # A raw request model is the plugin trust surface: never graft it onto a
+                # default_profile's provider/credentials — it follows the legacy branches.
+                routing_cfg = {k: v for k, v in routing_cfg.items() if k != "default_profile"}
         try:
-            creds = _resolve_delegation_credentials(routing_cfg, parent)
+            if request.model_profile is not None:
+                # The SAME resolution path delegate_task uses (tools/delegate_tool_config.py →
+                # agent.delegation_model_routing.resolve_profile_route).
+                from tools.delegate_tool_config import _resolve_profile_credentials
+                creds = _resolve_profile_credentials(request.model_profile, routing_cfg)
+            else:
+                creds = _resolve_delegation_credentials(routing_cfg, parent)
         except ValueError as exc:
             raise SubagentLifecycleError(str(exc)) from exc
+        if creds.get("requested_profile"):
+            # A profile may only TIGHTEN the budget (#25752) — clamp against the CONFIGURED
+            # delegation budget (delegation.max_iterations), same as delegate_task, not the constant.
+            configured_budget = routing_cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
+            if isinstance(configured_budget, int) and not isinstance(configured_budget, bool):
+                max_iterations = configured_budget
+            profile_max_iter = creds.get("max_iterations")
+            if isinstance(profile_max_iter, int):
+                max_iterations = min(profile_max_iter, max_iterations)
         child = _build_child_preserving_parent_tools(
             task_index=0, goal=request.goal, context=request.context,
             toolsets=list(request.allowed_toolsets) if request.allowed_toolsets else None,
-            model=request.model or creds["model"], max_iterations=DEFAULT_MAX_ITERATIONS,
+            model=request.model or creds["model"], max_iterations=max_iterations,
             task_count=1, parent_agent=parent, role=request.role, **_credential_overrides(creds, routing_cfg),
         )
         subagent_id = str(getattr(child, "_subagent_id", "") or "")
@@ -313,6 +370,12 @@ class SubagentLifecycleService:
             PUBLIC_CONTRACT_VERSION, subagent_id, parent_session_id, request.correlation_id, created,
             getattr(child, "provider", None), getattr(child, "model", None), getattr(child, "_delegate_role", request.role),
             int(getattr(child, "_delegate_depth", 1) or 1), self._capability(subagent_id, parent_session_id, created),
+            # Spawn-time route provenance stamped by _build_child_preserving_parent_tools; all None on legacy launches.
+            requested_profile=getattr(child, "_route_requested_profile", None),
+            resolved_provider=getattr(child, "_route_resolved_provider", None),
+            resolved_model=getattr(child, "_route_resolved_model", None),
+            fallback_policy=getattr(child, "_route_fallback_policy", None),
+            resolved_reasoning=getattr(child, "_route_resolved_reasoning", None),
         )
         record = _Record(handle, SubagentState.PENDING, created, agent=child)
         with _REGISTRY.lock:

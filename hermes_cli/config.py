@@ -607,8 +607,8 @@ from hermes_cli.personality import (
 # ---- Config schema-version stamp ----  (moved into config_version_stamp; re-exported here
 # because callers and tests import these from hermes_cli.config)
 
-from hermes_cli.config_version_stamp import (
-    check_config_version, read_config_version_stamp)
+from hermes_cli.config_version_stamp import check_config_version, read_config_version_stamp
+from hermes_cli.config_delegation_profiles import validate_delegation_profiles
 
 
 # ---- Config Migration System ----
@@ -1207,8 +1207,8 @@ def validate_config_structure(config: Optional[dict[str, Any]] = None) -> list[C
                    f"Root-level key '{key}' looks misplaced — should it be under 'model:' or inside a 'custom_providers' entry?",
                    f"Move '{key}' under the appropriate section")
 
-    _validate_web_backends(config, issues)
-    _validate_quoted_containers(config, issues)
+    for _check in (_validate_web_backends, validate_delegation_profiles, _validate_quoted_containers):
+        _check(config, issues)
     return issues
 
 

@@ -1345,46 +1345,40 @@ DEFAULT_CONFIG = {
     "delegation": {
         "model": "",  # e.g. "google/gemini-3-flash-preview" (empty = inherit parent)
         "provider": "",  # e.g. "openrouter" (empty = inherit parent provider + credentials)
-        # Fallback chain for delegated children (same entry format as the top-level list).
-        # For an unpinned child, null = inherit the parent chain; [] = disable fallback.
-        # A child pinned by provider, endpoint, or model gets no fallback unless this
-        # setting declares one explicitly.
+        # Fallback chain for delegated children (same entry format as the top-level list). For an unpinned child, null =
+        # inherit the parent chain; [] = disable fallback. A child pinned by provider, endpoint, or model gets no
+        # fallback unless this setting declares one explicitly.
         "fallback_providers": None,
         "base_url": "",  # direct OpenAI-compatible endpoint for subagents
         "api_key": "",  # key for delegation.base_url (falls back to OPENAI_API_KEY)
-        # Wire protocol for delegation.base_url: "chat_completions" | "codex_responses" |
-        # "anthropic_messages". Empty = auto-detect from URL (e.g. /anthropic suffix); set
-        # explicitly for non-standard endpoints.
+        # Wire protocol for delegation.base_url: "chat_completions" | "codex_responses" | "anthropic_messages". Empty =
+        # auto-detect from URL (e.g. /anthropic suffix); set explicitly for non-standard endpoints.
         "api_mode": "",
-        # Per-child request settings on every delegation call (all resolution branches). Top-level
-        # keys = API kwargs (e.g. service_tier); "extra_body" sub-dict merges into extra_body, e.g.
-        # {"extra_body": {"provider": {"sort": "throughput"}}}. Explicit values win OVER
-        # runtime/parent overrides (extra_body deep-merged 1 level).
+        # Per-child request settings on every delegation call (all resolution branches). Top-level keys = API kwargs
+        # (e.g. service_tier); "extra_body" sub-dict merges into extra_body, e.g. {"extra_body": {"provider": {"sort":
+        # "throughput"}}}. Explicit values win OVER runtime/parent overrides (extra_body deep-merged 1 level).
         "request_overrides": {},
-        # compression_threshold_tokens: optional absolute cap on a subagent's compaction TRIGGER
-        # (not the request payload), applied as the lower of this and the child's ratio threshold.
-        # 0 (default) = no subagent-specific cap; children compact where the parent does — the lower
-        # of 0.50 x window and the global compression.threshold_tokens cap. A replay of a 1,393-agent
-        # run showed 200K-400K caps within 5% of each other in cost once cache prefixes are intact,
-        # and every compaction is a chance to lose detail, so the default stays off. A token count >= 16000 enables it;
-        # other values (true, "200k") are config errors: warned and ignored.
+        # compression_threshold_tokens: optional absolute cap on a subagent's compaction TRIGGER (not the request
+        # payload), applied as the lower of this and the child's ratio threshold. 0 (default) = no subagent-specific
+        # cap; children compact where the parent does — the lower of 0.50 x window and the global
+        # compression.threshold_tokens cap. A replay of a 1,393-agent run showed 200K-400K caps within 5% of each other
+        # in cost once cache prefixes are intact, and every compaction is a chance to lose detail, so the default stays
+        # off. A token count >= 16000 enables it; other values (true, "200k") are config errors: warned and ignored.
         "compression_threshold_tokens": 0,
         # When delegate_task narrows child toolsets, keep the parent's enabled MCP toolsets (so
         # toolsets=["web"] doesn't strip MCP). false = strict intersection.
         "inherit_mcp_toolsets": True,
         # Per-subagent iteration cap (own budget, independent of the parent's).
         "max_iterations": 250,
-        # Hard per-summary char ceiling on subagent results, layered on the dynamic budget (each
-        # summary is sized to the parent's remaining context headroom; trimmed text spills to
-        # ~/.hermes/cache/delegation/ with a head+tail window + read_file offset footer, nothing
-        # lost). 0 disables the ceiling; the dynamic budget still applies.
+        # Hard per-summary char ceiling on subagent results, layered on the dynamic budget (each summary is sized to the
+        # parent's remaining context headroom; trimmed text spills to ~/.hermes/cache/delegation/ with a head+tail
+        # window + read_file offset footer, nothing lost). 0 disables the ceiling; the dynamic budget still applies.
         "max_summary_chars": 24000,
         # Inactivity cap per child (seconds, floor 30) — time with NO progress, not total runtime. 0 = no cap:
         # children fail only from real errors (API, tools, iteration budget). A progressing child (including one
         # waiting on a multi-minute completion) restarts the window; a frozen one is caught.
         "child_timeout_seconds": 0,
-        # Subagent effort: "ultra" | "max" | "xhigh" | "high" | "medium" | "low" | "minimal" |
-        # "none" (empty = inherit)
+        # Subagent effort: "ultra" | "max" | "xhigh" | "high" | "medium" | "low" | "minimal" | "none" (empty = inherit)
         "reasoning_effort": "",
         # Max parallel children per batch AND max concurrent background delegation units; async
         # dispatches beyond it run synchronously. Floor 1, no ceiling.
@@ -1407,6 +1401,12 @@ DEFAULT_CONFIG = {
         # notifications to the PARENT; false suppresses them (the child's result is the
         # deliverable). Async-delegation results are NEVER suppressed.
         "surface_child_process_notifications": False,
+        # Named worker tiers {name: {provider, model, reasoning_effort?, max_iterations?, fallback?}}; a profile's
+        # fallback list ([] = no model promotion) replaces the parent's chain; profiles never touch toolsets.
+        # Precedence: per-task > top-level model_profile > default_profile > legacy provider/model > parent.
+        "profiles": {},
+        "default_profile": "",  # applied when a task picks none; must name a profile ("" = legacy behavior)
+        "agent_routing": False,  # true = delegate_task exposes a model_profile enum of the profile names
     },
     # Ephemeral prefill messages file — JSON list of {role, content} dicts injected at the start of
     # every API call for few-shot priming. Never saved to sessions/logs/trajectories.

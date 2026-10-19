@@ -1149,10 +1149,14 @@ def _run_prompt_submit(
     admitted = _admit_prompt_turn(
         sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata,
         report_ownership_refusal=report_ownership_refusal)
+    # Client-turn bookkeeping is gated on having an id: a legacy submit must not touch (or even
+    # resolve) any of it, which also keeps handlers rebound against a partial test namespace working.
     if admitted is None:
-        _end_client_turn(session, sid, client_turn_id, turn_identity.FAILED)
+        if client_turn_id:
+            _end_client_turn(session, sid, client_turn_id, turn_identity.FAILED)
         return False
-    _attach_client_turn(session, sid, client_turn_id)
+    if client_turn_id:
+        _attach_client_turn(session, sid, client_turn_id)
     images, agent = admitted
     from gateway.warning_notifications import diagnostic_turn_muted
     from agent.notification_presentation import notification_config_snapshot
@@ -1236,7 +1240,8 @@ def _run_prompt_submit(
                     if not st.error_retained:
                         _clear_inflight_turn(session)
                     _release_hosted_room_turn_slot(session)
-                    _finish_client_turn(session, _client_turn_outcome(status))
+                    if client_turn_id:
+                        _finish_client_turn(session, _client_turn_outcome(status))
                 # Closing bookend of "tui prompt accepted" — exactly one per accepted prompt.
                 # agent.session_id is re-read because compression may have rotated it (an
                 # accepted/finished pair whose id changed IS a rotation trace).
@@ -1281,7 +1286,8 @@ def _run_prompt_submit(
     if not can_start:
         with session["history_lock"]:
             session["running"] = False
-        _finish_client_turn(session, turn_identity.FAILED)
+        if client_turn_id:
+            _finish_client_turn(session, turn_identity.FAILED)
     return can_start
 
 

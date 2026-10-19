@@ -681,7 +681,8 @@ def _run_after_agent_ready(
         with session["history_lock"]:
             session["running"] = False
             session["last_active"] = time.time()
-        _finish_client_turn(session, turn_identity.FAILED)
+        if client_turn_id:
+            _finish_client_turn(session, turn_identity.FAILED)
         _emit("session.info", sid, _session_info(session.get("agent"), session))
         return
     with session["history_lock"]:
@@ -693,7 +694,8 @@ def _run_after_agent_ready(
                 "Turn cancelled before the agent was ready"
                 if session.get("_turn_cancel_requested")
                 else "Session no longer running before the agent was ready")})
-            _finish_client_turn(session, turn_identity.CANCELLED)
+            if client_turn_id:
+                _finish_client_turn(session, turn_identity.CANCELLED)
             return
     _run_prompt_submit(
         rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata,
@@ -1073,7 +1075,8 @@ def _(rid, params: dict) -> dict:
             # Backstop for a wrapper that DIED before the turn loop took over: this thread returns as
             # soon as the turn is dispatched to its own worker, so a normal (or merely slow) turn must
             # never be ended from here — only an exception means no loop will ever end it.
-            _finish_client_turn(session, turn_identity.FAILED)
+            if client_turn_id:
+                _finish_client_turn(session, turn_identity.FAILED)
             raise
 
     run_thread = threading.Thread(target=_turn_thread, daemon=True)

@@ -324,6 +324,32 @@ describe('/steer', () => {
     expect(renderedText(handle)).toContain(copy.steerQueued('check the tests too'))
   })
 
+  it('seals the live reply at the steer notice, keeping its running tool live', async () => {
+    const requestGateway = gateway(method => (method === 'session.steer' ? { status: 'queued' } : undefined))
+    const tool = { type: 'tool-call', toolCallId: 't1', toolName: 'terminal', args: {}, argsText: '{}', timestamp: 2 }
+    const live = { id: 'stream-1', role: 'assistant', pending: true, parts: [{ type: 'text', text: 'before', timestamp: 1 }, tool] }
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={[live]}
+        seedStreamId="stream-1"
+      />
+    )
+    publishSessionState(RUNTIME_SESSION_ID, { ...handle!.state(), busy: true })
+
+    await handle!.submitText('/steer use the other file')
+
+    // The next delta (the model's answer to the steer) seeds a bubble BELOW the notice.
+    const { messages, streamId } = handle!.state()
+    expect(streamId).toBeNull()
+    expect(messages.map(message => message.id).indexOf('stream-1')).toBe(0)
+    expect(renderedText(handle!)).toContain(copy.steerQueued('use the other file'))
+    expect(messages[0]).toMatchObject({ pending: true, parts: [expect.anything(), tool] })
+  })
+
   it('queues the text as the next turn when the steer is not accepted', async () => {
     publishSessionState(RUNTIME_SESSION_ID, { ...createClientSessionState(RUNTIME_SESSION_ID), busy: true })
     const requestGateway = gateway(method => (method === 'session.steer' ? { status: 'rejected' } : undefined))

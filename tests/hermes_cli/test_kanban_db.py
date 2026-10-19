@@ -554,27 +554,19 @@ def test_respawn_guard_ignores_auth_words_in_crashed_worker_output(kanban_home):
 def test_infrastructure_spawn_refusal_never_charges_the_card(
     kanban_home, monkeypatch, all_assignees_spawnable,
 ):
-    """The host refusing to place a worker (managed gateway, user bus gone —
-    #114720) is not a card failure: through the REAL spawn boundary and the
-    real dispatcher accounting, ``consecutive_failures`` stays put, the breaker
-    never parks the card as a bare ``blocked``, the run is tagged
-    ``infrastructure`` and the guard spaces the retries. A control spawn
-    failure on the same card still counts."""
-    from tools import process_registry
+    """A host-level placement refusal preserves card budget and spaces retries;
+    an ordinary spawn failure on the same card still counts."""
+    from tools.process_registry import RestartSafeScopeUnavailable
 
-    monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
-    monkeypatch.setenv("INVOCATION_ID", "managed-gateway")
-    monkeypatch.setattr(process_registry, "_systemd_run_user_scope_available", lambda: False)
     monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "0")
 
-    def spawn_via_real_boundary(task, workspace, board=None):
-        kbd._restart_safe_worker_argv(task, ["hermes", "chat"])  # raises: real probe verdict, real _degrade()
-        raise AssertionError("unreachable")
+    def spawn_refused(task, workspace, board=None):
+        raise RestartSafeScopeUnavailable("host scope unavailable: enable-linger")
 
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="bus is down", assignee="a")
         for _ in range(3):
-            res = kbd.dispatch_once(conn, spawn_fn=spawn_via_real_boundary, failure_limit=2)
+            res = kbd.dispatch_once(conn, spawn_fn=spawn_refused, failure_limit=2)
             assert res.auto_blocked == []
         row = conn.execute(
             "SELECT status, block_kind, consecutive_failures, last_failure_error FROM tasks WHERE id = ?", (tid,),

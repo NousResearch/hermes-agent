@@ -29,6 +29,10 @@ def bundle(tmp_path, monkeypatch):
     # Host-independent artifact contract; executable lookup itself is covered natively.
     from hermes_cli import main_desktop
     monkeypatch.setattr(main_desktop, '_desktop_packaged_executable', lambda _: resources.parent / 'Hermes.exe')
+    # This fixture is a Windows artifact even on macOS. Keep native layout lookup
+    # at the boundary; the renderer, archive and freshness checks remain real.
+    monkeypatch.setattr(main_desktop, '_packaged_resources_dir',
+                        lambda desktop: verify._desktop_packaged_executable(desktop).parent / 'resources')
     copy_freshness_scripts(tmp_path)
     stamp_product(tmp_path, "desktop", dist)
     use_host_node_as_pm_node(monkeypatch)

@@ -242,6 +242,10 @@ def test_stable_git_uses_remote_identity_without_moving_local_tags(update_tree, 
         return run(command, *args, **kwargs)
 
     monkeypatch.setattr(subprocess, 'run', guarded_run)
+    # All Git transports, including Darwin's watched ref writer, cross here.
+    from hermes_cli import update_custody
+    monkeypatch.setattr(update_custody, 'run_git',
+                        lambda git, args, **kw: guarded_run([*git, *args], **kw))
     if server == 'fetch-refused':
         with pytest.raises(SystemExit) as error:
             cli_main.cmd_update(t.args)

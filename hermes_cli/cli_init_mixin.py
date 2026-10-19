@@ -121,8 +121,11 @@ class CLIInitMixin:
             enabled=display.get("persistent_output", True),
             max_lines=display.get("persistent_output_max_lines", 200),
         )
+        from hermes_cli.cli_modern_layout import busy_input_mode_from_config, layout_from_config, set_active
+        self._modern_layout = layout_from_config(display)  # display.cli_layout: modern | classic
+        set_active(self._modern_layout)
         # busy_input_mode: "interrupt" (redirect the run) | "queue" (next turn) | "steer" (inject mid-run).
-        _bim = str(display.get("busy_input_mode", "interrupt")).strip().lower()
+        _bim = busy_input_mode_from_config(display)
         self.busy_input_mode = _bim if _bim in ("queue", "steer") else "interrupt"
 
         # verbose ONLY controls global DEBUG logging; tool_progress="verbose" is independent

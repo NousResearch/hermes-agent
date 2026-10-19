@@ -1689,6 +1689,21 @@ slash:
   quit:
     description: "Вийти з CLI (--delete також видаляє історію сеансу)"
 cli:
+  modern:
+    thought_for: "Міркував {seconds} с"
+    thought: "Міркував"
+    working: "Працюю…"
+    preparing: "Готую {what}…"
+    hint_steer: "спрямувати"
+    hint_queue: "у чергу"
+    hint_interrupt: "перервати"
+    hint_stop: "стоп"
+    hint_commands: "команди"
+    hint_files: "файли"
+    hint_shell: "shell"
+    placeholder_busy_steer: "пишіть, щоб спрямувати цей хід · Tab ставить у чергу на потім"
+    placeholder_busy_interrupt: "пишіть, щоб перенаправити цей хід · Tab ставить у чергу на потім"
+    placeholder_busy_queue: "пишіть, щоб поставити повідомлення в чергу після цього ходу"
   billing:
     load_failed: "{label}: {error}"
     load_failed_label: "Не вдалося завантажити дані оплати"
@@ -2232,6 +2247,7 @@ cli:
     queue_heading: "Черга · {count} у черзі · /queue list{controls}"
     more_queued: "+{count} ще"
     transcript_unavailable: "Транскрипт у реальному часі ще недоступний."
+    control_pending: "Надсилання…"
     steer_prompt: "Скерувати: "
     roster_empty: "Немає активних субагентів чи фонових процесів. Результати з'являться в розмові."
     entry_gone: "Цей запис більше не активний."

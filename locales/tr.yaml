@@ -1689,6 +1689,21 @@ slash:
   quit:
     description: "CLI'dan çık (oturum geçmişini de silmek için --delete kullanın)"
 cli:
+  modern:
+    thought_for: "{seconds} sn düşündü"
+    thought: "Düşündü"
+    working: "Çalışıyor…"
+    preparing: "{what} hazırlanıyor…"
+    hint_steer: "yönlendir"
+    hint_queue: "sıraya al"
+    hint_interrupt: "kes"
+    hint_stop: "durdur"
+    hint_commands: "komutlar"
+    hint_files: "dosyalar"
+    hint_shell: "kabuk"
+    placeholder_busy_steer: "bu turu yönlendirmek için yazın · Tab sonrası için sıraya alır"
+    placeholder_busy_interrupt: "bu turu değiştirmek için yazın · Tab sonrası için sıraya alır"
+    placeholder_busy_queue: "bu turdan sonrası için mesaj sıraya almak üzere yazın"
   billing:
     load_failed: "{label}: {error}"
     load_failed_label: "Faturalandırma yüklenemedi"
@@ -2232,6 +2247,7 @@ cli:
     queue_heading: "Kuyruk · {count} sırada · /queue list{controls}"
     more_queued: "+{count} tane daha"
     transcript_unavailable: "Canlı transkript henüz kullanılamıyor."
+    control_pending: "Gönderiliyor…"
     steer_prompt: "Yönlendir: "
     roster_empty: "Canlı alt ajan veya arka plan süreci yok. Sonuçlar konuşmaya gelir."
     entry_gone: "Bu kayıt artık canlı değil."

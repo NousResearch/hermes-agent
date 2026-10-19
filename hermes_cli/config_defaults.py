@@ -1609,6 +1609,8 @@ DEFAULT_CONFIG = {
         # Mention allowed users on approval prompts so owners notice them in shared channels. Env:
         # DISCORD_APPROVAL_MENTIONS.
         "approval_mentions": False,
+        # Prefix title header in prompt content alongside embeds. Env: DISCORD_PROMPT_HEADER_IN_CONTENT.
+        "prompt_header_in_content": True,
         # Voice-channel inactivity timeout (seconds); 0 = stay until `/voice leave`.
         "voice_channel_inactivity_timeout_seconds": 300,
         # Minimum seconds before force-stopping a VC playback; the adapter probes clip duration and

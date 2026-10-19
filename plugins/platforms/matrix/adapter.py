@@ -664,7 +664,7 @@ def _is_invited_room_source(source: Any) -> bool:
         from mautrix.client import SyncStream
 
         return bool(source & SyncStream.INVITED_ROOM)
-    except Exception:
+    except (ImportError, AttributeError, TypeError, ValueError):
         return True
 
 

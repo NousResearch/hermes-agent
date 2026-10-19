@@ -14,6 +14,7 @@ scrubbing, interpreter/cwd), tools/code_execution_rpc.py (RPC servers).
 import json
 import logging
 import os
+from hermes_constants import _termux_safe_tempdir
 import re
 import secrets
 import shlex
@@ -336,7 +337,7 @@ _FILE_TRANSPORT_HEADER = '''\
 """Auto-generated Hermes tools RPC stubs (file-based transport)."""
 import json, os, shlex, tempfile, threading, time
 
-_RPC_DIR = os.environ.get("HERMES_RPC_DIR") or os.path.join(tempfile.gettempdir(), "hermes_rpc")
+_RPC_DIR = os.environ.get("HERMES_RPC_DIR") or os.path.join(_termux_safe_tempdir(), "hermes_rpc")
 _seq = 0
 # `_seq += 1` is not atomic (read-modify-write), so concurrent _call()
 # invocations from multiple threads could allocate the same sequence number
@@ -498,10 +499,18 @@ def _env_temp_dir(env: Any) -> str:
             temp_dir = get_temp_dir()
         except Exception as exc:
             logger.debug("Could not resolve execute_code env temp dir: %s", exc)
-    for candidate in (temp_dir, tempfile.gettempdir()):
+    for candidate in (temp_dir, *_termux_tempdir_candidates()):
         if isinstance(candidate, str) and candidate.startswith("/"):
             return candidate.rstrip("/") or "/"
     return tempfile.gettempdir()
+
+
+def _termux_tempdir_candidates() -> tuple[str, ...]:
+    """Yield Termux/Android-friendly temp dir candidates before bare /tmp."""
+    for key in ("TERMINAL_TEMP_DIR", "TMPDIR", "TMP", "TEMP"):
+        candidate = os.environ.get(key)
+        if candidate and candidate.startswith("/"):
+            yield candidate.rstrip("/") or "/"
 
 
 def _format_interrupted_output(stdout_text: str) -> str:

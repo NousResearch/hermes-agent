@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from hermes_constants import _termux_safe_tempdir
 import re
 import tempfile
 from dataclasses import dataclass
@@ -223,7 +224,7 @@ def _marker_root(cwd: Path) -> Optional[Path]:
     config, and a stray manifest in /tmp must not flip every session under it."""
     current = cwd.resolve()
     try:
-        temp_root = Path(tempfile.gettempdir()).resolve()
+        temp_root = Path(_termux_safe_tempdir()).resolve()
     except Exception:
         temp_root = None
     skip = (_home(), temp_root)

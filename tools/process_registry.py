@@ -1104,6 +1104,10 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                     return temp_dir.rstrip("/") or "/"
             except Exception as exc:
                 logger.debug("Could not resolve environment temp dir: %s", exc)
+        for key in ("TERMINAL_TEMP_DIR", "TMPDIR", "TMP", "TEMP"):
+            candidate = os.environ.get(key)
+            if candidate and candidate.startswith("/"):
+                return candidate.rstrip("/") or "/"
         return tempfile.gettempdir()
 
     def _scope_argv(self, session: ProcessSession, safe_command: str, unit_suffix: str, label: str) -> list[str]:

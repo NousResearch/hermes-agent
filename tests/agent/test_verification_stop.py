@@ -105,6 +105,10 @@ def test_no_suite_nudge_uses_canonical_temp_dir(tmp_path, monkeypatch):
     linked_temp = tmp_path / "linked-temp"
     linked_temp.symlink_to(real_temp, target_is_directory=True)
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(linked_temp))
+    monkeypatch.delenv("TERMINAL_TEMP_DIR", raising=False)
+    monkeypatch.delenv("TMPDIR", raising=False)
+    monkeypatch.delenv("TMP", raising=False)
+    monkeypatch.delenv("TEMP", raising=False)
 
     nudge = build_verify_on_stop_nudge(
         session_id="s1",

@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 from typing import Any, Optional
 
-from hermes_constants import get_hermes_home
+from hermes_constants import _termux_safe_tempdir, get_hermes_home
 
 
 _DB_LOCK = threading.Lock()
@@ -308,7 +308,7 @@ def _is_temp_script_path(token: str, root: str | Path | None) -> bool:
         name = Path(token).expanduser().name
     except Exception:
         return False
-    return name.startswith(_AD_HOC_SCRIPT_NAME_PREFIXES) and _is_under(token, tempfile.gettempdir()) and not _is_under(token, root)
+    return name.startswith(_AD_HOC_SCRIPT_NAME_PREFIXES) and _is_under(token, _termux_safe_tempdir()) and not _is_under(token, root)
 
 
 def _is_interpreter_token(token: str) -> bool:

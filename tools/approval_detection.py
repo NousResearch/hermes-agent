@@ -7,6 +7,7 @@ prompting live here.
 import functools
 import logging
 import os
+from hermes_constants import _termux_safe_tempdir
 import re
 import shlex
 import tempfile
@@ -1516,7 +1517,7 @@ def _is_verification_artifact_cleanup(command: str) -> bool:
     if len(argv) != 3 or argv[0] != "rm" or argv[1] != "-f":
         return False
     operand = argv[2]
-    temp_dir = os.path.realpath(tempfile.gettempdir())
+    temp_dir = os.path.realpath(_termux_safe_tempdir())
     basename = os.path.basename(operand)
     return (
         operand == os.path.join(temp_dir, basename)

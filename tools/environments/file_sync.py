@@ -8,6 +8,7 @@ Docker and Singularity use bind mounts (live host FS view) and don't need this.
 import hashlib
 import logging
 import os
+from hermes_constants import _termux_safe_tempdir
 import posixpath
 import shlex
 import shutil
@@ -103,7 +104,7 @@ def _cleanup_stale_sync_back_temp(temp_dir: Path | None = None) -> int:
     entries removed; a permission error or a race with another sync-back must not prevent
     the current one.
     """
-    directory = temp_dir or Path(tempfile.gettempdir())
+    directory = temp_dir or Path(_termux_safe_tempdir())
     cutoff = time.time() - _SYNC_BACK_STALE_SECONDS
     removed = 0
     try:

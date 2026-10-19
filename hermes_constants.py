@@ -819,6 +819,21 @@ def socket_safe_tmpdir() -> str:
     return "/tmp"  # no-tmp: ok — AF_UNIX 108-byte socket path limit on Linux
 
 
+def _termux_safe_tempdir() -> str:
+    """Temp dir that respects Termux/Android env vars before bare /tmp.
+    
+    On Termux/Android, ``tempfile.gettempdir()`` can return an unusable ``/tmp``.
+    This helper checks ``TERMINAL_TEMP_DIR`` / ``TMPDIR`` / ``TMP`` / ``TEMP``
+    first, then falls back to ``tempfile.gettempdir()``.
+    """
+    import tempfile
+    for key in ("TERMINAL_TEMP_DIR", "TMPDIR", "TMP", "TEMP"):
+        candidate = os.environ.get(key)
+        if candidate and candidate.startswith("/"):
+            return candidate.rstrip("/") or "/"
+    return tempfile.gettempdir()
+
+
 # ---- Managed mode (NixOS declarative config) ----
 # Canonical home of "is this install package-manager managed": ``hermes_cli.config`` re-exports
 # these, and :func:`apply_secure_dir_policy` below reads them. Lives here because constants

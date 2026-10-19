@@ -13,19 +13,26 @@ import { DEFAULT_THEME } from '../theme.js'
 const stored = { id: 'old', session_id: 'old', title: 'Retained old conversation', source: 'cli', started_at: 1, message_count: 2 }
 const live = { id: 'live', session_id: 'live', title: 'Current conversation', started_at: 2, message_count: 1, running: false }
 
-function mount(mutate: (params: any) => Promise<unknown>) {
+function mount(
+  mutate: (params: any) => Promise<unknown>,
+  resolve: (sid: string) => string = sid => sid,
+  current = 'live'
+) {
   const request = vi.fn(async (method: string, params: any) => {
     if (method === 'session.list') {
       return { scope: params.scope ?? 'live', sessions: params.scope === 'stored' ? [stored] : [live] }
     }
 
     if (method === 'session.resume') {
+      // The owner answers (and subscribes) under the id it resolved the read to.
+      const resolved = resolve(params.session_id)
+
       return {
-        session_id: params.session_id,
+        session_id: resolved,
         revision: 4,
         execution_generation: 2,
         messages: [],
-        subscription_id: 'cas-read'
+        subscription_id: `sub-${resolved}`
       }
     }
 
@@ -48,7 +55,7 @@ function mount(mutate: (params: any) => Promise<unknown>) {
   })
   const element = (
     <ActiveSessionSwitcher
-      currentSessionId="live"
+      currentSessionId={current}
       gw={{ isCanonical: true, request } as any}
       onCancel={vi.fn()}
       onClose={vi.fn()}
@@ -99,6 +106,8 @@ it('deletes a stored session through session.mutate with the resume CAS tuple', 
       payload: {}
     })
     expect(request.mock.calls.map(([method]) => method)).not.toContain('session.delete')
+    // A committed delete retires the session on the owner: nothing to detach.
+    expect(request.mock.calls.map(([method]) => method)).not.toContain('session.detach')
     await vi.waitFor(() => {
       out.text = ''
       instance.rerender(React.cloneElement(element))
@@ -131,22 +140,62 @@ it('keeps a refused delete on screen past the live-status poll', async () => {
   }
 })
 
-it('hands back the attachment its revision read made when the delete is refused', async () => {
-  // The CAS read is a `session.resume`, which attaches this view to the closed session; left
-  // attached, a refusal puts the closed session back in the live list until Ink exits.
+it('detaches the viewer its CAS read attached when the delete is refused (#134889 TUI-19)', async () => {
   const { deleteStored, instance, request } = mount(async () => {
-    throw Object.assign(new Error('session_busy'), { data: { reason: 'session_busy' } })
+    throw Object.assign(new Error('revision_conflict'), { data: { reason: 'revision_conflict' } })
   })
+
+  try {
+    await deleteStored()
+    // Without it the closed session stays subscribed, so the owner lists it live until Ink exits. A plain
+    // detach: an end reason would run the owner's viewer close on whatever session the row names.
+    await vi.waitFor(() =>
+      expect(request).toHaveBeenCalledWith('session.detach', { session_id: 'old', subscription_id: 'sub-old' })
+    )
+    const methods = request.mock.calls.map(([method]) => method)
+    expect(methods.indexOf('session.detach')).toBeGreaterThan(methods.indexOf('session.mutate'))
+  } finally {
+    instance.unmount()
+  }
+})
+
+it('detaches by the id the read resolved to, not the history row id (#134889 TUI-19)', async () => {
+  // A compressed session: the row names a segment, the owner resolves it to the logical owner.
+  const { deleteStored, instance, request } = mount(
+    async () => {
+      throw Object.assign(new Error('revision_conflict'), { data: { reason: 'revision_conflict' } })
+    },
+    sid => (sid === 'old' ? 'old-owner' : sid)
+  )
 
   try {
     await deleteStored()
     await vi.waitFor(() =>
       expect(request).toHaveBeenCalledWith('session.detach', {
-        session_id: 'old',
-        subscription_id: 'cas-read',
-        end_reason: 'tui_close'
+        session_id: 'old-owner',
+        subscription_id: 'sub-old-owner'
       })
     )
+    expect(request).not.toHaveBeenCalledWith('session.detach', expect.objectContaining({ session_id: 'old' }))
+  } finally {
+    instance.unmount()
+  }
+})
+
+it('keeps the view of the session this picker watches when the read resolves to it', async () => {
+  const { deleteStored, instance, request } = mount(
+    async () => {
+      throw Object.assign(new Error('revision_conflict'), { data: { reason: 'revision_conflict' } })
+    },
+    sid => (sid === 'old' ? 'live' : sid),
+    'live'
+  )
+
+  try {
+    await deleteStored()
+    await vi.waitFor(() => expect(request.mock.calls.map(([method]) => method)).toContain('session.mutate'))
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(request.mock.calls.map(([method]) => method)).not.toContain('session.detach')
   } finally {
     instance.unmount()
   }

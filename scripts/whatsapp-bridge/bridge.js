@@ -43,6 +43,7 @@ import {
   buildTextSendPayload,
   createBoundedMessageStore,
   createQuotedMediaCache,
+  deliveryStatusEvent,
   extractBridgeEvent,
   getMessageContent,
   inboundReadReceiptKeys,
@@ -375,6 +376,15 @@ function rememberSentId(id) {
   recentlySentIds.remember(id);
 }
 
+function enqueueDeliveryStatus(args) {
+  const event = deliveryStatusEvent({ ...args, isOwnSend: id => recentlySentIds.has(id) });
+  if (!event) return;
+  messageQueue.push(event);
+  if (messageQueue.length > MAX_QUEUE_SIZE) {
+    messageQueue.shift();
+  }
+}
+
 let sock = null;
 let connectionState = 'disconnected';
 
@@ -469,8 +479,13 @@ async function startSocket() {
     }
   });
 
+  sock.ev.on('message-receipt.update', (receipts) => {
+    for (const { key, receipt } of receipts || []) enqueueDeliveryStatus({ key, receipt });
+  });
+
   sock.ev.on('messages.update', async (updates) => {
     for (const { key, update } of updates || []) {
+      if (update?.status !== undefined) enqueueDeliveryStatus({ key, update });
       if (!update?.pollUpdates) continue;
       const pollCreationId = key?.id || update.pollUpdates?.[0]?.pollCreationMessageKey?.id;
       const pollCreation = messageStore.get(pollCreationId);

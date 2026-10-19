@@ -690,10 +690,64 @@ class AuthorityConnection:
         return self.authority.sessions[ref.session_id].event_stream.since(epoch, sequence)
 
     async def submit(self, ref, params):
+        if self._voice_stop_replay(ref, params) or await self._typed_voice_stop(ref, params):
+            self._record_voice_stop(ref, params)
+            return {'voice_stopped': True}
         # The interactive WS is the one surface a restart's after-turn wait admits (#139041).
         receipt = await self.authority.submit(self.actor, self.submission(ref, params),
                                               queue_while_restarting=self._operator is True)
         return asdict(receipt)
+
+    def _voice_stop_key(self, ref, params):
+        request_id = params.get('submission_id') or params.get('input_id')
+        if not isinstance(request_id, str) or not request_id:
+            return None
+        return (self.actor.subject, ref.profile_id, ref.session_id, request_id)
+
+    def _voice_stop_replay(self, ref, params):
+        """A retry of a stop this owner already consumed (its reply was lost; Ink offers Alt+K on the
+        same submission id). Voice is off by then, so the phrase check alone would admit ``stop`` as a
+        turn: the request identity answers it again, as an admission's replay would."""
+        key = self._voice_stop_key(ref, params)
+        if key is None or key not in getattr(self.authority, '_consumed_voice_stops', {}):
+            return False
+        if ref.session_id not in self.subscriptions:
+            return False  # submission() refuses it as permission_denied
+        self.authority.authorize(self.actor, ref, 'session:submit')
+        return True
+
+    def _record_voice_stop(self, ref, params):
+        from collections import OrderedDict
+        key = self._voice_stop_key(ref, params)
+        if key is None:
+            return
+        consumed = self.authority.__dict__.setdefault('_consumed_voice_stops', OrderedDict())
+        consumed[key] = True
+        consumed.move_to_end(key)
+        while len(consumed) > 256:
+            consumed.popitem(last=False)
+
+    async def _typed_voice_stop(self, ref, params):
+        """TUI-26: a bare stop phrase typed while the session's voice chat is on ends the chat
+        (the sidecar's ``methods_prompt._consume_typed_stop_phrase``, its typed twin of the spoken
+        stop) and is never admitted. Only a submitter attached to the session may end it, and only
+        on a LOCAL session: a messaging lane's own ``/voice`` mode belongs to that chat, so a
+        viewer's typed text there is admitted untouched."""
+        text = params.get('text')
+        if not isinstance(text, str):
+            return False
+        if ref.session_id not in self.subscriptions:
+            return False  # submission() refuses it as permission_denied
+        self.authority.authorize(self.actor, ref, 'session:submit')
+        live = self.authority.sessions.get(ref.session_id)
+        source = getattr(live, 'source', None)
+        if source is None or source.platform != Platform.LOCAL:
+            return False
+        from gateway.session_config import local_voice_enabled
+        if not local_voice_enabled(ref.session_id):
+            return False
+        from tui_gateway import server
+        return await asyncio.to_thread(server._consume_typed_stop_phrase, text, ref.session_id, emit=False)
 
     def submission(self, ref, params):
         """The admission a ``prompt.submit``-shaped request asks for (``prompt.replace_queued`` too)."""

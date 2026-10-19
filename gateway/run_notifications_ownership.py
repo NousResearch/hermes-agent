@@ -155,9 +155,9 @@ class GatewayNotificationOwnershipMixin:
         if verdict != "terminal":
             return False
         logger.warning(
-            "Dropping %s notification of process %s: pinned session %s is permanently gone (user "
-            "boundary such as /new); the route now runs %s and refuses it (%s). Output remains "
-            "available via process(action='log').",
+            "Dropping %s notification of process %s: pinned session %s is permanently gone (closed "
+            "at a user boundary such as /new, or no longer an owner); the route now runs %s and "
+            "refuses it (%s). Output remains available via process(action='log').",
             evt.get("type") or "watch", evt.get("session_id") or "<unknown>", pinned,
             cast(Any, self).session_store.peek_session_id(session_key) or "<none>", refusal,
         )

@@ -139,6 +139,37 @@ async def test_durable_caller_still_gets_the_refusal_for_a_gone_pin(monkeypatch,
         authority.db.close()
 
 
+@pytest.mark.asyncio
+async def test_refused_notice_pinned_to_a_compression_ancestor_is_retried(monkeypatch, caplog):
+    """A compression ancestor is not gone: whatever refused its notice, the notice stays queued."""
+    from gateway import session_automation
+    from hermes_state_runtime import RuntimeStoreError
+    runner, authority, entry = await _gateway(monkeypatch)
+    try:
+        parent, child = entry.session_id, entry.session_id + '-compressed'
+        runner.session_store._db_for_key(entry.session_key).publish_compression_child(
+            parent_session_id=parent, child_session_id=child, source='discord',
+            require_compression_lease=False, model='offline', model_config={},
+            system_prompt='offline', messages=[{'role': 'user', 'content': 'retained'}],
+        )
+        assert runner.session_store.advance_compression_session(entry.session_key, parent, child)
+
+        async def refuse(*_args):
+            raise RuntimeStoreError('admission_conflict')
+        monkeypatch.setattr(session_automation, 'admit_process_notice', refuse)
+        notice = _notice(entry, parent)
+        pending = queue.Queue()
+        pending.put(notice)
+
+        with caplog.at_level(logging.WARNING, logger='gateway.run'):
+            await runner._drain_watch_notifications(pending)
+
+        assert pending.get_nowait() is notice
+        assert not [r for r in caplog.records if 'permanently gone' in r.getMessage()]
+    finally:
+        authority.db.close()
+
+
 async def _foreign_pin(runner):
     """A live session of another chat: the authority refuses the notice, but nothing proves the pin
     gone, so the refusal stays retryable."""

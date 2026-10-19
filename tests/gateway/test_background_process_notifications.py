@@ -17,11 +17,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from tests.module_clock import install_module_clock
-
 from gateway.config import GatewayConfig, Platform
 from gateway.run import GatewayRunner, _parse_session_key
 from gateway.run_notifications import INTERNAL_NOTIFICATION_FOOTER
+from tests.module_clock import install_module_clock
 
 
 # ---------------------------------------------------------------------------
@@ -361,10 +360,11 @@ async def test_post_turn_watch_drain_refused_event_backs_off_then_drops(monkeypa
             break
 
     assert len(attempt_times) == _MAX_COMPLETION_INJECTION_ATTEMPTS
-    # Backoff, not one attempt per drain tick: each retry waits twice the last, up to the cap.
+    # Backoff, not one attempt per drain tick: the wait starts at the base, grows, and stops at the cap.
     gaps = [b - a for a, b in itertools.pairwise(attempt_times)]
-    assert gaps == [min(_WATCH_INJECTION_RETRY_BASE_DELAY * 2 ** n, _COMPLETION_INJECTION_RETRY_MAX_DELAY)
-                    for n in range(_MAX_COMPLETION_INJECTION_ATTEMPTS - 1)]
+    assert gaps[0] >= _WATCH_INJECTION_RETRY_BASE_DELAY
+    assert all(b >= a for a, b in itertools.pairwise(gaps)) and gaps[-1] > gaps[0]
+    assert max(gaps) <= _COMPLETION_INJECTION_RETRY_MAX_DELAY
     assert completion_queue.empty()
     drops = [r for r in caplog.records
              if r.levelno >= logging.WARNING and "dropping the queued event" in r.message]

@@ -87,8 +87,17 @@ def publish_worker_tool_event(authority, session_id, generation, frame) -> bool:
         verbose = getattr(authority.sessions[session_id], "tool_progress_mode", None) == "verbose"
         payload = _tool_complete_payload(call_id, name, args, result, is_error=frame["is_error"], verbose=verbose)
     authority.publish_execution(session_id, generation, kind, payload)
-    from gateway.session_api_turn import publish_api_tool_event
+    from gateway.session_api_turn import publish_api_tool_event, publish_api_tool_progress
     publish_api_tool_event(authority, session_id, generation, kind, call_id, name, args, result)
+    # A worker sends no progress events: progress-only observers get the executor's preview of its
+    # args and the frame's own verdict, taken before the result was bounded.
+    if kind == "tool.start":
+        from agent.display import build_tool_preview
+        publish_api_tool_progress(authority, session_id, generation, "tool.started", name,
+                                  build_tool_preview(name, args), args)
+    else:
+        publish_api_tool_progress(authority, session_id, generation, "tool.completed", name, None, None,
+                                  is_error=frame["is_error"], result=result)
     return True
 
 
@@ -790,7 +799,8 @@ class GatewayTurnProgressMixin:
         if ctx._voice_ack_fired[0] or ctx._voice_ack_guild[0] is None or not ctx._run_still_current():
             return
         ctx._voice_ack_fired[0] = True
-        adapter = self._runner.adapters.get(Platform.DISCORD)
+        # The bot whose call the guild was resolved on (#139345), not the default profile's.
+        adapter = self._runner._delivery_adapter_for(ctx.source)
         if adapter is None or not hasattr(adapter, "play_ack_in_voice"):
             return
         try:

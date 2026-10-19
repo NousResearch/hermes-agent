@@ -401,11 +401,6 @@ model:
 # Disable this only when every review is performed manually from the dashboard.
 kanban:
   review_dispatch: true
-  # Verify every completion against metadata.verification: evidence, preflight and scope for
-  # all contracts, plus commit/push/PR/CI/review for pr-merged, OWNER/REPO and PR-URL contracts.
-  # Typed contracts (pr-merged, deployed, document-committed, decision-recorded) always require
-  # their artifact, whether or not this is enabled.
-  completion_gate: false
 
 # =============================================================================
 # Terminal Tool Configuration

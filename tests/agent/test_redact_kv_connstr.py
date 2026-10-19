@@ -4,6 +4,8 @@ The URL pass only knows ``scheme://user:pass@``; ``Host=…;Password=…`` leake
 verbatim through configmap dumps, ``cat appsettings.json`` and env listings.
 """
 
+import time
+
 import pytest
 
 from agent.redact import redact_sensitive_text, redact_terminal_output
@@ -75,3 +77,31 @@ def test_terminal_output_path(cmd):
 def test_idempotent():
     once = redact_sensitive_text(f"Host=db;Username=app;Password={SECRET}")
     assert redact_sensitive_text(once) == once
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("Server=db;UID=app;PWD={Zq7x;LmP2};Database=core", "Server=db;UID=app;PWD={***};Database=core"),
+    ("Server=db;UID=app;PWD={Zq7x}}Lm;P2}", "Server=db;UID=app;PWD={***}"),  # ``}}`` escapes a brace
+])
+def test_odbc_braced_value_leaves_no_tail(text, expected):
+    assert redact_sensitive_text(text) == expected
+
+
+def test_code_file_braced_template_preserved():
+    text = 'string.Format("Server={0};UID=app;PWD={1};", host, pw)'
+    assert redact_sensitive_text(text, code_file=True) == text
+
+
+def test_braced_mask_idempotent():
+    once = redact_sensitive_text("Server=db;UID=app;PWD={Zq7x;LmP2}")
+    assert redact_sensitive_text(once) == once
+
+
+@pytest.mark.parametrize("pad", [" ", "\t", ";"])
+def test_long_padding_is_linear(pad):
+    # The key patterns once began with ``(?:^|[;\s])\s*``, rescanning the padding from
+    # every offset: 16K spaces before ``password=`` took ~30s.
+    text = pad * 32768 + "host=db password=x"
+    start = time.perf_counter()
+    redact_sensitive_text(text)
+    assert time.perf_counter() - start < 1.0

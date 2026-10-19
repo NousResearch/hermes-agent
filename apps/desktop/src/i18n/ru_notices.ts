@@ -1,4 +1,5 @@
 import type { TranslationOverrides } from './define-locale'
+import { ruDesktopCommands } from './ru_desktop_commands'
 import { ruSessionCommands } from './ru_session_commands'
 
 // Shell notices (remote-display toast, butterbar, keep-awake offer), spread into ru.ts.
@@ -27,7 +28,8 @@ export const ruNotices = {
     compactedTurnUnavailable:
       'Это сообщение было сжато в краткое изложение при сжатии чата, поэтому его больше нельзя восстановить или изменить.',
     staleTurnUnavailable: 'Этого сообщения больше нет в истории этого чата.',
-    sessionCommands: ruSessionCommands
+    sessionCommands: ruSessionCommands,
+    desktopCommands: ruDesktopCommands
   },
   keepAwakeOffer: {
     title: 'Компьютер ушёл в сон, пока Hermes работал',

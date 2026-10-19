@@ -49,9 +49,19 @@ def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
     connection.native_owner = False
     with pytest.raises(RuntimeStoreError, match='permission_denied'):
         build_kanban_policy(connection, params, config)
+    # Source is a row LABEL, not a capability grant: execution is authorized by the CLAIM verified
+    # above (native_owner + the ``session:create`` capability, then the claim's claim_lock / board /
+    # run_id / cwd — the forged-field loop above), never by a caller-supplied source value. Before
+    # t_53101721 the create gate additionally refused a raw ``source='kanban'``; the trusted kanban
+    # path always built with ``source='cli'`` and stamped the row ``kanban`` after claim verification,
+    # while the dispatcher's subprocess worker (HERMES_SESSION_SOURCE=kanban) sent 'kanban' through
+    # ``session.create`` and was refused by the SURFACES map. The gate now accepts the label the row
+    # store and ``restore_policy`` already accept (the full-turn coverage lives in
+    # ``test_canonical_create_kanban_surface_gate.py``). A forged source still cannot override the
+    # claim's frozen cwd/model — that is the claim loop above, not the source value.
     from gateway.session_policy import build_policy
-    with pytest.raises(RuntimeStoreError, match='invalid_params'):
-        build_policy({'source': 'kanban', 'cwd': str(workspace)}, config)
+    policy = build_policy({'source': 'kanban', 'cwd': str(workspace)}, config)
+    assert policy.source == 'kanban' and policy.platform == 'cli'
 
 
 @pytest.mark.parametrize('mode', ['complete', 'timeout', 'rate_limit', 'billing', 'crash'])

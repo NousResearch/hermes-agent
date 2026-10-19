@@ -295,6 +295,46 @@ hermes gateway
 
 The bot should come online within seconds. Send it a message on Telegram to verify.
 
+## Add a secret with a one-time link
+
+Never paste an API key or token into a Telegram chat. Send `/secret` (or `/secret STRIPE_SECRET_KEY` to fill in the key name) and Hermes replies with a one-time HTTPS link. A skill that needs a missing key sends the same link by itself, with the key name filled in, and continues after you save the value.
+
+On the page you type the key name and the secret value and select the profiles: **All profiles** (every profile that exists when you submit) or individual profiles. Hermes writes the key to each selected profile's `.env` and replies `Saved KEY_NAME.` in the chat. The value never goes through Telegram, the agent, the logs or the chat history.
+
+The link:
+
+- works once and expires 10 minutes after Hermes sends it; a gateway restart invalidates every open link;
+- opens with link previews off, and opening the page does not use it up;
+- does not overwrite a key that already exists: the page names the profiles that have it and lets you select **Replace existing value** or pick a different key name;
+- refuses key names the `.env` writer refuses (`PATH`, `LD_PRELOAD`, invalid names, administrator-pinned keys), empty values, values with line breaks, and values over 8192 bytes.
+
+A chat can have 5 open links at a time. Each client address can make 10 requests per minute to the link pages. After 5 failed submits a link closes.
+
+After a save, Hermes restarts the gateway of each written profile whose gateway is running, so adapter credentials (bot tokens and similar) take effect. The confirmation goes out before any restart. The one exception is a link a skill asked for (a missing key): skills read their secrets per turn, so the profile whose chat made the request is not restarted — that would cut off the turn that waits for your save. Other written profiles still restart.
+
+:::warning Trust boundary
+Any user allowed to talk to the bot in this chat can create a link, and a link can write to **any** profile on the host. Only allow trusted users (`TELEGRAM_ALLOWED_USERS`).
+
+**Group chats:** Hermes sends the link in the chat that asked for it, so in a group **every member can see the link, and anyone who opens it before you can write a secret to any profile on the host** — including members who are not allowed to use the bot. The link works once and expires after 10 minutes, but it is not tied to you. Run `/secret` in a private chat with the bot unless every member of the group is trusted with the host.
+:::
+
+When you reply to the link message, Hermes hides the link token in the quoted text it passes to the agent.
+
+### Setup
+
+1. Make the gateway's HTTP listener reachable over HTTPS. The links are served on the listener the gateway already runs — the [API server](../features/api-server.md) or the [webhook](./webhooks.md) port — under `/secret-link/`. Put a TLS reverse proxy (Caddy, nginx, Cloudflare Tunnel, …) in front of it; Hermes does not open a port or manage certificates for this.
+2. Set the public HTTPS address in the gateway profile's `config.yaml`:
+
+   ```yaml
+   secret_links:
+     public_base_url: https://hermes.example.com
+   ```
+
+   The address must start with `https://`. Without it, `/secret` replies that the public HTTPS URL is not configured. The form only accepts posts whose `Origin` (or `Referer`) matches this address exactly.
+3. Restart the gateway.
+
+Rate limits apply to the client address the listener sees. Behind a reverse proxy every request comes from the proxy, so the 10-requests-per-minute limit is shared.
+
 ## Sending Generated Files from Docker-backed Terminals
 
 If your terminal backend is `docker`, keep in mind that Telegram attachments are

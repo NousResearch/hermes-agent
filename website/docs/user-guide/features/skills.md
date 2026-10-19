@@ -310,7 +310,7 @@ required_environment_variables:
     required_for: full functionality
 ```
 
-When a missing value is encountered, Hermes asks for it securely only when the skill is actually loaded in the local CLI. You can skip setup and keep using the skill. Messaging surfaces never ask for secrets in chat — they tell you to use `hermes setup` or `~/.hermes/.env` locally instead.
+When a missing value is encountered, Hermes asks for it securely when the skill is actually loaded in the local CLI, the TUI or the desktop app. You can skip setup and keep using the skill. On Telegram, Hermes sends a [one-time secret entry link](../messaging/telegram.md#add-a-secret-with-a-one-time-link) with the key name filled in; the value never goes through the chat, and the skill turn continues after you save it. Other messaging surfaces never ask for secrets in chat — they tell you to use `hermes setup` or the profile's `.env` locally instead.
 
 Once set, declared env vars are **automatically passed through** to `execute_code` and `terminal` sandboxes — the skill's scripts can use `$TENOR_API_KEY` directly. For non-skill env vars, use the `terminal.env_passthrough` config option. See [Environment Variable Passthrough](../security.md#environment-variable-passthrough) for details.
 

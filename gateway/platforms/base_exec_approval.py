@@ -82,3 +82,15 @@ def format_approval_deadline_line(timeout_s: int) -> str:
 
 def format_approval_timed_out_notice(timeout_s: int) -> str:
     return approval_timed_out_notice(format_approval_window(timeout_s))
+
+
+def renders_exec_approval_buttons(adapter_cls: type) -> bool:
+    """True when the adapter class renders native approval buttons. BasePlatformAdapter subclasses
+    say so through ``supports_exec_approval_buttons``; anything else (test doubles, relay-style
+    duck types) counts when it defines ``send_exec_approval`` itself."""
+    from gateway.platforms.base import BasePlatformAdapter
+
+    probe = getattr(adapter_cls, "supports_exec_approval_buttons", None)
+    if callable(probe) and issubclass(adapter_cls, BasePlatformAdapter):
+        return bool(probe())
+    return getattr(adapter_cls, "send_exec_approval", None) is not None

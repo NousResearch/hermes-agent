@@ -2,12 +2,30 @@
 
 Keeps the api_server facade under its frozen line cap (root AGENTS.md god-file
 guidance: move code into a topical sibling). ``api_server.py`` re-exports
-``_request_service_tier`` and ``_request_reasoning_config`` so existing importers
+``_request_service_tier``, ``_request_reasoning_config`` and ``_coerce_request_bool`` so existing importers
 are unaffected; the helpers those two read stay in the facade and are imported
 lazily (call time) to avoid an import cycle.
 """
 
 from typing import Any, Dict, Optional
+
+_TRUE_REQUEST_BOOL_STRINGS = frozenset({"1", "true", "yes", "on"})
+_FALSE_REQUEST_BOOL_STRINGS = frozenset({"0", "false", "no", "off"})
+
+
+def _coerce_request_bool(value: Any, default: bool = False) -> bool:
+    """Normalize boolean-like payload values; only explicit bool-ish scalars count (some
+    frontends send ``"false"`` for ``stream``, which is truthy), else ``default``."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in _TRUE_REQUEST_BOOL_STRINGS:
+            return True
+        return False if normalized in _FALSE_REQUEST_BOOL_STRINGS else default
+    return bool(value) if isinstance(value, (int, float)) else default
 
 
 def _request_reasoning_config(model_options: Any) -> Optional[dict[str, Any]]:
@@ -36,7 +54,7 @@ def _request_reasoning_config(model_options: Any) -> Optional[dict[str, Any]]:
 
 def _request_service_tier(model_options: Any) -> Any:
     """Return a per-request service_tier override or _REQUEST_OPTION_MISSING."""
-    from gateway.platforms.api_server import _REQUEST_OPTION_MISSING, _clean_request_string, _coerce_request_bool
+    from gateway.platforms.api_server import _REQUEST_OPTION_MISSING, _clean_request_string
 
     if not isinstance(model_options, dict):
         return _REQUEST_OPTION_MISSING

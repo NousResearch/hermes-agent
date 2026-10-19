@@ -181,6 +181,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                busy_policy="dispatch", execute="profile"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
                gateway_only=True, aliases=("set-home",), desktop="terminal"),
+    CommandDef("secret", "Get a one-time link to add a secret to .env (Telegram)", "Configuration",
+               gateway_only=True, args_hint="[KEY_NAME]", desktop="terminal"),
     CommandDef("resume", "Resume a previously-named session", "Session",
                args_hint="[name]", argument_mode="mixed"),
     CommandDef("sessions", "Browse and resume previous sessions", "Session"),

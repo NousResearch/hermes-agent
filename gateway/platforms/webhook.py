@@ -272,6 +272,8 @@ class WebhookAdapter(BasePlatformAdapter):
         # Without an api_server listener this port is the shared listener: forward a secondary's
         # inbound-port platforms (Twilio, LINE, Teams, ...) registered in shared-listener mode.
         app.router.add_route("*", "/p/{profile}/{tail:.*}", self._handle_profile_ingress)
+        from gateway.secret_link_routes import mount_secret_link_routes
+        mount_secret_link_routes(app)  # one-time secret entry links (Telegram /secret)
         self._runner = web.AppRunner(app)
         await self._runner.setup()
         try:

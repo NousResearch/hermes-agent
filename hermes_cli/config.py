@@ -2770,20 +2770,8 @@ def save_env_value(key: str, value: str):
     value = _check_non_ascii_credential(key, value)
     ensure_hermes_home()
     env_path = get_env_path()
-
-    with _env_write_lock(env_path):
-        lines = _read_env_lines(env_path) if env_path.exists() else []
-        serialized_value = _quote_env_value(value)
-
-        idx = next((i for i, line in enumerate(lines) if _env_line_defines_key(line, key)), None)
-        if idx is not None:
-            lines[idx] = f"{key}={serialized_value}\n"
-        else:
-            if lines and not lines[-1].endswith("\n"):
-                lines[-1] += "\n"
-            lines.append(f"{key}={serialized_value}\n")
-
-        _write_env_lines(env_path, lines, preserve_mode=env_path.exists())
+    from hermes_cli.config_env_write import write_env_key
+    write_env_key(env_path, key, value, preserve_mode=env_path.exists())
     _publish_env_value(key, value)
     invalidate_env_cache()
 

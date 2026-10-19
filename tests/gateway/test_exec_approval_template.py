@@ -11,7 +11,7 @@ import pytest
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, ExecApprovalPrompt, SendResult
-from gateway.run_turn_runner import _renders_exec_approval_buttons
+from gateway.platforms.base_exec_approval import renders_exec_approval_buttons
 
 
 class _Plain(BasePlatformAdapter):
@@ -79,12 +79,12 @@ def test_runner_only_offers_buttons_to_adapters_that_render_them():
     """Plain adapters get the text ``/approve`` prompt; the base send_exec_approval must not make
     the runner believe every adapter has buttons (its default reports failure and the runner would
     log a spurious fallback on every approval)."""
-    assert _renders_exec_approval_buttons(_Buttons) is True
-    assert _renders_exec_approval_buttons(_Plain) is False
+    assert renders_exec_approval_buttons(_Buttons) is True
+    assert renders_exec_approval_buttons(_Plain) is False
 
     class _DuckTyped:
         async def send_exec_approval(self, *a, **k):
             return SendResult(success=True)
 
-    assert _renders_exec_approval_buttons(_DuckTyped) is True
-    assert _renders_exec_approval_buttons(object) is False
+    assert renders_exec_approval_buttons(_DuckTyped) is True
+    assert renders_exec_approval_buttons(object) is False

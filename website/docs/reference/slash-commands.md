@@ -255,6 +255,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/retry` | Retry the last message. |
 | `/undo` | Remove the last exchange. |
 | `/sethome` (alias: `/set-home`) | Mark the current chat as the platform home channel for deliveries. |
+| `/secret [KEY_NAME]` | **Telegram only.** Send a one-time HTTPS link where you type a key name and a secret value and select the profiles whose `.env` gets it. The value never goes through Telegram. Needs `secret_links.public_base_url`. See [Telegram → Add a secret with a one-time link](../user-guide/messaging/telegram.md#add-a-secret-with-a-one-time-link). |
 | `/compress [here [N] \| focus topic]` | Manually compress conversation context. `/compress here [N]` keeps the most recent N exchanges (default 2) verbatim and summarizes the rest. A focus topic narrows what a full summary preserves. |
 | `/topic [off\|help\|session-id]` | **Telegram DM only.** Manage user-managed multi-session topic mode. `/topic` enables it or shows status; `/topic off` disables it and clears bindings; `/topic help` shows usage; `/topic <session-id>` inside a topic restores a previous session. See [Multi-session DM mode](../user-guide/messaging/telegram.md#multi-session-dm-mode-topic). |
 | `/title [name]` | Set or show the session title. |
@@ -317,7 +318,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 - `/skills` is **CLI-only for search/browse/install**; its write-approval review subcommands (`pending`, `approve`, `reject`, `diff`, `approval`) also work on messaging platforms when `skills.write_approval` is on. `/memory` works on **both** surfaces.
 - `/verbose` is **CLI-only by default**, but can be enabled for messaging platforms by setting `display.tool_progress_command: true` in `config.yaml`. When enabled, it cycles the `display.tool_progress` mode and saves to config.
 - `/focus` and `/verbose` share one suppression path (`display.tool_progress`), so they can never contradict each other: `/focus on` pins tool progress to `off` and stashes your mode under `display.focus_saved_tool_progress`; `/focus off` restores it; cycling `/verbose` while focus is on takes the mode back and clears the focus badge. Focus view is display-only — it never changes conversation history, the system prompt, or anything sent to the model, so it has zero prompt-cache impact.
-- `/sethome`, `/restart`, `/approve`, `/deny`, `/topic`, `/platform`, `/pause`, and `/commands` are **messaging-only** commands.
+- `/sethome`, `/secret`, `/restart`, `/approve`, `/deny`, `/topic`, `/platform`, `/pause`, and `/commands` are **messaging-only** commands.
 - `/status`, `/egress`, `/version`, `/whoami`, `/bg`, `/btw`, `/queue`, `/steer`, `/voice`, `/reload-mcp`, `/reload-skills`, `/rollback`, `/diff`, `/debug`, `/fast`, `/approvals`, `/busy`, `/footer`, `/curator`, `/kanban`, `/topup`, `/login`, `/suggestions`, `/blueprint`, `/learn`, `/init`, `/sessions`, `/loop`, and `/yolo` work in **both** the CLI and the messaging gateway.
 - `/voice join`, `/voice channel`, and `/voice leave` are only meaningful on Discord.
 - `/connectors` is **TUI-only**.

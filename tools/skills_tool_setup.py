@@ -91,10 +91,15 @@ def _capture_required_environment_variables(
     if not missing_entries:
         return _capture_result([])
     missing_names = [entry["name"] for entry in missing_entries]
-    # Messaging-platform gateway surfaces can't prompt for a secret, so they get the "unsupported"
+    # Other messaging-platform gateway surfaces can't prompt for a secret, so they get the "unsupported"
     # hint. Interactive gateway surfaces (desktop app / TUI) set HERMES_INTERACTIVE (same flag
     # tools/approval.py uses) and register a callback routing to a secure secret.request overlay.
     if _is_gateway_surface() and not env_var_enabled("HERMES_INTERACTIVE"):
+        # Telegram turns get a one-time HTTPS entry link instead (gateway/secret_link.py).
+        from gateway.secret_link import current_turn_secret_requester
+        if (request := current_turn_secret_requester()) is not None:
+            remaining = [entry["name"] for entry in missing_entries if not request(entry["name"])["success"]]
+            return _capture_result(remaining, bool(remaining))
         try:
             from gateway.platforms.base import GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE as hint
         except Exception:

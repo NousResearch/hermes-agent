@@ -93,6 +93,7 @@
   "/s": null,
   "/save": null,
   "/sb": "terminal",
+  "/secret": "terminal",
   "/sessions": null,
   "/set-home": "terminal",
   "/sethome": "terminal",

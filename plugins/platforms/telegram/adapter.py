@@ -1275,8 +1275,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             return default
         return bool(value)
 
-    def _link_preview_kwargs(self) -> dict[str, Any]:
-        if not getattr(self, "_disable_link_previews", False):
+    def _link_preview_kwargs(self, metadata: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        if not (getattr(self, "_disable_link_previews", False) or (metadata or {}).get("disable_link_preview")):
             return {}
         if LinkPreviewOptions is not None:
             return {"link_preview_options": LinkPreviewOptions(is_disabled=True)}
@@ -1487,7 +1487,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         if routing is None:
             return None
         reply_to_id, thread_kwargs = routing
-        payload = self._rich_payload_base(chat_id, content)
+        payload = self._rich_payload_base(chat_id, content, metadata)
         # Only non-None routing keys: direct_messages_topic_id is paired with message_thread_id=None.
         payload.update({k: v for k, v in thread_kwargs.items() if v is not None})
         payload.update(self._notification_kwargs(metadata))
@@ -1520,9 +1520,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             await self._record_rich_sent(chat_id, message_id, content)
         return SendResult(success=True, message_id=str(message_id) if message_id is not None else None)
 
-    def _rich_payload_base(self, chat_id: str, content: str) -> dict[str, Any]:
+    def _rich_payload_base(self, chat_id: str, content: str, metadata: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         payload: dict[str, Any] = {"chat_id": normalize_telegram_chat_id(chat_id), "rich_message": self._rich_message_payload(content)}
-        if getattr(self, "_disable_link_previews", False):
+        if getattr(self, "_disable_link_previews", False) or (metadata or {}).get("disable_link_preview"):
             payload["link_preview_options"] = {"is_disabled": True}
         return payload
 
@@ -3494,7 +3494,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             try:
                 send_kwargs = {
                     "chat_id": normalize_telegram_chat_id(chat_id), "reply_to_message_id": reply_to_id, **thread_kwargs,
-                    **self._link_preview_kwargs(), **self._notification_kwargs(metadata)}
+                    **self._link_preview_kwargs(metadata), **self._notification_kwargs(metadata)}
                 return await self._send_chunk_markdown_or_plain(chunk, send_kwargs), used_thread_fallback
             except _NetErr as send_err:
                 # BadRequest subclasses NetworkError in PTB but is permanent; handle specific cases.
@@ -3962,7 +3962,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         thread_id: Optional[str], metadata: Optional[dict[str, Any]], finalize: bool):
         """Send one continuation chunk (MarkdownV2 then plain on finalize; raw when streaming); drops the
         reply anchor once on 'reply message not found'. Returns the sent message or None."""
-        base = {**self._link_preview_kwargs(), **self._notification_kwargs(metadata)}
+        base = {**self._link_preview_kwargs(metadata), **self._notification_kwargs(metadata)}
         for use_markdown in (True, False) if finalize else (False,):
             try:
                 if use_markdown:
@@ -7042,12 +7042,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         first, then text/caption, rich echo, then the sent index."""
         if not message.reply_to_message:
             return None, None
+        from gateway.secret_link import redact_secret_links  # a one-time link token must not reach the agent
         reply_to_id = str(message.reply_to_message.message_id)
-        quote = getattr(message, "quote", None)
-        quote_text = getattr(quote, "text", None) if quote is not None else None
-        if quote_text:
-            return reply_to_id, quote_text
+        quote_text = getattr(getattr(message, "quote", None), "text", None)
         reply_to_text = message.reply_to_message.text or message.reply_to_message.caption or None
+        if quote_text:
+            return reply_to_id, redact_secret_links(quote_text, reply_to_text or "")
         if not reply_to_text:
             reply_to_text = self._extract_rich_reply_text(message.reply_to_message)
         if not reply_to_text:
@@ -7062,7 +7062,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                 # didn't quote (#22619). Fall back to the full replied-to message text / caption when no
                 # native quote is present.
                 reply_to_text = None
-        return reply_to_id, reply_to_text
+        return reply_to_id, redact_secret_links(reply_to_text) if reply_to_text else reply_to_text
 
     def _build_message_event(self, message: Message, msg_type: MessageType, update_id: Optional[int] = None) -> MessageEvent:
         """Build a MessageEvent from a Telegram message. ``update_id`` lets ``/restart`` record the

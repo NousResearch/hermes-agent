@@ -25,7 +25,7 @@ from agent.replay_cleanup import canonicalize_replay_history
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
-from gateway.platforms.base_exec_approval import ea_default_reason_text
+from gateway.platforms.base_exec_approval import ea_default_reason_text, renders_exec_approval_buttons
 from gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
 from utils import is_truthy_value
@@ -47,16 +47,6 @@ _CARD_DESTINATION_REFUSALS = {
     "slack task_card requires a thread anchor",
     "slack task_card requires a thread anchor (Slack streams are thread replies)",
 }
-
-
-def _renders_exec_approval_buttons(adapter_cls: type) -> bool:
-    """True when the adapter class renders native approval buttons. BasePlatformAdapter subclasses
-    say so through ``supports_exec_approval_buttons``; anything else (test doubles, relay-style
-    duck types) counts when it defines ``send_exec_approval`` itself."""
-    probe = getattr(adapter_cls, "supports_exec_approval_buttons", None)
-    if callable(probe) and issubclass(adapter_cls, BasePlatformAdapter):
-        return bool(probe())
-    return getattr(adapter_cls, "send_exec_approval", None) is not None
 
 
 # Rendered on a native clarify card whose wait ended without a click (mirrors the notice the
@@ -1469,7 +1459,7 @@ class TurnRunner:
         desc = approval_data.get("description") or ea_default_reason_text()
         flags = {k: approval_data.get(k, d) for k, d in (("allow_permanent", True), ("allow_session", True), ("smart_denied", False))}
         # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
-        if _renders_exec_approval_buttons(type(adapter)):
+        if renders_exec_approval_buttons(type(adapter)):
             try:
                 fut = self._schedule(
                     adapter.send_exec_approval(
@@ -1686,12 +1676,14 @@ class TurnRunner:
         """Run the turn with the per-session gateway approval callback registered: dangerous-command
         approval blocks the agent thread (mirrors CLI input()); the callback bridges sync→async."""
         from gateway.run import _wrap_current_message_with_observed_context
+        from gateway.secret_link import open_turn_secret_requests
         from tools.approval import register_gateway_notify, unregister_gateway_notify
         from tools.approval_context import reset_current_session_key, set_current_session_key
         ctx = self._ctx
         session_key = ctx.session_key or ""
         token = set_current_session_key(session_key)
         register_gateway_notify(session_key, self._approval_notify_sync)
+        secret_requests = open_turn_secret_requests(self._runner, ctx.source, session_key, ctx._loop_for_step, self._agent_interrupted)
         try:
             api_message = _wrap_current_message_with_observed_context(self._native_image_run_message(), observed_group_context)
             kwargs = {"conversation_history": agent_history, "task_id": ctx.session_id}
@@ -1724,6 +1716,7 @@ class TurnRunner:
                 return agent.run_conversation(api_message, **kwargs)
         finally:
             unregister_gateway_notify(session_key)
+            secret_requests.close()
             # Cancel pending clarify entries so blocked agent threads don't hang past the end of the
             # run (interrupt, completion, gateway shutdown). Idempotent.
             with suppress(Exception):

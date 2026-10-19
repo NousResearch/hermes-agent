@@ -264,25 +264,6 @@ def _sse_frame(
     return f"{prefix}data: {json.dumps(data, ensure_ascii=ensure_ascii)}\n\n".encode()
 
 
-_TRUE_REQUEST_BOOL_STRINGS = frozenset({"1", "true", "yes", "on"})
-_FALSE_REQUEST_BOOL_STRINGS = frozenset({"0", "false", "no", "off"})
-
-
-def _coerce_request_bool(value: Any, default: bool = False) -> bool:
-    """Normalize boolean-like payload values; only explicit bool-ish scalars count (some
-    frontends send ``"false"`` for ``stream``, which is truthy), else ``default``."""
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return default
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in _TRUE_REQUEST_BOOL_STRINGS:
-            return True
-        return False if normalized in _FALSE_REQUEST_BOOL_STRINGS else default
-    return bool(value) if isinstance(value, (int, float)) else default
-
-
 _REQUEST_OPTION_MISSING = object()
 # Full internal ladder + "none" (what /reasoning and config.yaml accept); provider
 # vocabulary clamping happens downstream in agent.reasoning_effort.
@@ -299,7 +280,7 @@ def _clean_request_string(value: Any) -> Optional[str]:
 # model_options decoding lives in the topical sibling (line-cap offset);
 # re-exported here so importers are unaffected.
 from gateway.platforms.api_server_request_options import (
-    _request_reasoning_config, _request_service_tier)
+    _coerce_request_bool, _request_reasoning_config, _request_service_tier)
 
 
 def _apply_runtime_agent_overrides(
@@ -810,6 +791,9 @@ if AIOHTTP_AVAILABLE:
     @web.middleware
     async def cors_middleware(request, handler):
         """Add CORS headers for explicitly allowed origins; handle OPTIONS preflight."""
+        from gateway.secret_link_routes import is_secret_link_route  # same-origin form; checks its own Origin
+        if is_secret_link_route(request):
+            return await handler(request)
         adapter = request.app.get("api_server_adapter")
         origin = request.headers.get("Origin", "")
         cors_headers = None
@@ -829,7 +813,8 @@ if AIOHTTP_AVAILABLE:
     @web.middleware
     async def body_limit_middleware(request, handler):
         """Reject overly large request bodies early based on Content-Length."""
-        if request.method in {"POST", "PUT", "PATCH"}:
+        from gateway.secret_link_routes import is_secret_link_route  # its own 16 KiB cap answers 400
+        if request.method in {"POST", "PUT", "PATCH"} and not is_secret_link_route(request):
             cl = request.headers.get("Content-Length")
             if cl is not None:
                 try:
@@ -4490,6 +4475,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             # Registered LAST so every native mirror above wins: anything else under /p/<profile>/ is a
             # secondary profile's inbound-port platform (Twilio, LINE, Teams, ...) served on this listener.
             self._app.router.add_route("*", "/p/{profile}/{tail:.*}", self._handle_profile_ingress)
+            from gateway.secret_link_routes import mount_secret_link_routes
+            mount_secret_link_routes(self._app)  # one-time secret entry links (Telegram /secret)
             # After native routes: Relay bootstrap shims feature-detect on this key and must
             # no-op rather than shadow the native session-control handlers.
             self._app["api_server_adapter"] = self

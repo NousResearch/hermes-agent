@@ -1,0 +1,35 @@
+name: telesec
+title: Telesec
+repo: https://github.com/neoromantic/telesec
+sha: 365ee6665187a3a534ee69b484db95f023a3994d
+description: >-
+  Telegram Business secretary: transcribes voice notes, round videos, and speech
+  attachments right in the chat, with per-chat controls in Telegram's Manage Bot
+  panel, plus opt-in text history, correspondence stats, and contact dossiers.
+  Disclosure — audio goes to the STT backend Hermes is configured with (local or
+  external); transcript cleanup and opt-in dossiers send chat text through the
+  host ctx.llm; runs local ffprobe/ffmpeg (argument lists, no shell) on attached
+  audio; opt-in dossiers run a gateway background thread; modes, opt-in history,
+  and dossiers are stored 0600 under HERMES_HOME/data/telesec; reads only the
+  numeric bot id prefix of TELEGRAM_BOT_TOKEN; no telemetry.
+maintainer: neoromantic
+tier: community
+category: voice
+requires_hermes: ">=0.21.6"
+docs_url: https://telesec.sergeybaus.com
+version: "0.10.1"
+image: https://raw.githubusercontent.com/neoromantic/telesec/365ee6665187a3a534ee69b484db95f023a3994d/docs/images/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/neoromantic/telesec/365ee6665187a3a534ee69b484db95f023a3994d/docs/images/voice-transcript.png
+  - https://raw.githubusercontent.com/neoromantic/telesec/365ee6665187a3a534ee69b484db95f023a3994d/docs/images/owner-panel.png
+  - https://raw.githubusercontent.com/neoromantic/telesec/365ee6665187a3a534ee69b484db95f023a3994d/docs/images/stats-panel.png
+readme: true
+known_issues:
+  - Needs in-process plugin mode for native Telegram handlers.
+  - Uses the undocumented host STT entrypoint tools.transcription_tools.transcribe_audio.
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_gateway_dispatch
+  provides_middleware: []
+  requires_env: []

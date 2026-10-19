@@ -339,7 +339,7 @@ export function registerTerminalIpc({
     }
 
     const outputGate = createTerminalOutputGate({
-      onExitFlushed: () => terminalSessions.delete(id),
+      onExitFlushed: () => disposeTerminalSession(id),
       sendData: data => send('data', data),
       sendExit: payload => send('exit', payload)
     })
@@ -354,6 +354,17 @@ export function registerTerminalIpc({
     ptyProcess.onData(data => outputGate.data(data))
     ptyProcess.onExit(({ exitCode, signal }) => {
       outputGate.exit({ code: exitCode, signal: signal == null ? null : String(signal) })
+
+      // The child is gone but node-pty keeps the /dev/ptmx master fd open
+      // until kill() runs; release it here instead of waiting for the tab to
+      // close (or the renderer to attach), or repeated `exit`s exhaust macOS
+      // PTYs (#128942). The map entry stays until the gate flushes the
+      // buffered exit, so a late attach still receives it.
+      try {
+        ptyProcess.kill()
+      } catch {
+        // Already reaped.
+      }
     })
     event.sender.once('destroyed', () => disposeTerminalSession(id))
 

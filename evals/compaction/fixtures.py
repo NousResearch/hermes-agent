@@ -11,7 +11,7 @@ import random
 from typing import Any, Dict, List
 
 
-def estimate_tokens(msg: Dict[str, Any]) -> int:
+def estimate_tokens(msg: dict[str, Any]) -> int:
     """Chars/4 estimate, matching the harness's scoring convention."""
     total = len(msg.get("content") or "") if isinstance(msg.get("content"), str) else 0
     tc = msg.get("tool_calls")
@@ -20,11 +20,11 @@ def estimate_tokens(msg: Dict[str, Any]) -> int:
     return total // 4
 
 
-def total_tokens(messages: List[Dict[str, Any]]) -> int:
+def total_tokens(messages: list[dict[str, Any]]) -> int:
     return sum(estimate_tokens(m) for m in messages)
 
 
-def load_transcript(path: str, cap_tokens: int | None = None) -> List[Dict[str, Any]]:
+def load_transcript(path: str, cap_tokens: int | None = None) -> list[dict[str, Any]]:
     """Load a transcript JSON ({"messages": [...]}) and optionally cap it.
 
     The cap takes the chronological prefix, then drops trailing assistant
@@ -34,7 +34,7 @@ def load_transcript(path: str, cap_tokens: int | None = None) -> List[Dict[str, 
     msgs = data["messages"] if isinstance(data, dict) else data
     if cap_tokens is None:
         return msgs
-    prefix: List[Dict[str, Any]] = []
+    prefix: list[dict[str, Any]] = []
     running = 0
     for m in msgs:
         t = estimate_tokens(m)
@@ -47,14 +47,14 @@ def load_transcript(path: str, cap_tokens: int | None = None) -> List[Dict[str, 
     return prefix
 
 
-def synthetic_transcript(n_turns: int = 60, seed: int = 7) -> List[Dict[str, Any]]:
+def synthetic_transcript(n_turns: int = 60, seed: int = 7) -> list[dict[str, Any]]:
     """Deterministic fake transcript with plantable facts for smoke tests.
 
     Every 10th turn plants a distinctive fact ("The deploy code for region
     N is XYZ") so smoke tests can assert recall mechanics without an LLM.
     """
     rng = random.Random(seed)
-    msgs: List[Dict[str, Any]] = [
+    msgs: list[dict[str, Any]] = [
         {"role": "system", "content": "You are a test agent."},
         {"role": "user", "content": "Work through the checklist and remember the codes."},
     ]

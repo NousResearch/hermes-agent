@@ -119,7 +119,25 @@ def test_only_managed_search_may_use_billed_fallback(
             assert headers.get("X-Pplx-Integration") == (None if managed else "hermes-agent")
 
 
-def test_unentitled_managed_search_names_the_gateway(monkeypatch, tmp_path, local_gateway):
+def test_managed_search_without_identity_names_the_gateway(monkeypatch, tmp_path, local_gateway):
+    from hermes_cli.config import atomic_config_write
+    from tools import managed_tool_gateway, web_tools
+    from tests.tools.conftest import register_all_web_providers
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    atomic_config_write(tmp_path / "config.yaml", {"web": {"backend": "nous", "keyless_rescue": False}})
+    monkeypatch.delenv("PERPLEXITY_API_KEY", raising=False)
+    monkeypatch.delenv("TOOL_GATEWAY_USER_TOKEN", raising=False)
+    monkeypatch.setattr(managed_tool_gateway, "managed_nous_tools_enabled", lambda **kw: False)
+    register_all_web_providers()
+
+    error = json.loads(web_tools.web_search_tool("local fixture", limit=3))["error"]
+    assert "no usable Nous identity" in error and "hermes tools" in error
+    assert "PERPLEXITY_API_KEY" not in error
+    assert local_gateway == []
+
+
+def test_unentitled_managed_search_gets_fast_search_but_no_billed_fallback(monkeypatch, tmp_path, local_gateway):
     from hermes_cli.config import atomic_config_write
     from tools import managed_tool_gateway, web_tools
     from tests.tools.conftest import register_all_web_providers
@@ -130,7 +148,6 @@ def test_unentitled_managed_search_names_the_gateway(monkeypatch, tmp_path, loca
     monkeypatch.setattr(managed_tool_gateway, "managed_nous_tools_enabled", lambda **kw: False)
     register_all_web_providers()
 
-    error = json.loads(web_tools.web_search_tool("local fixture", limit=3))["error"]
-    assert "Nous Tool Gateway" in error and "hermes tools" in error
-    assert "PERPLEXITY_API_KEY" not in error
-    assert local_gateway == []
+    # The fixture 503s the Perplexity route; an entitled caller would then be served by /v2/search.
+    assert json.loads(web_tools.web_search_tool("local fixture", limit=3))["success"] is False
+    assert [(path, body.get("search_type")) for path, _, body in local_gateway] == [("/perplexity/search", "fast")]

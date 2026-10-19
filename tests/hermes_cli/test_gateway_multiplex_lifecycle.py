@@ -146,7 +146,7 @@ def test_force_restart_keeps_parked_profile_gateway_ownership(homes, monkeypatch
 def test_parked_status_and_topology_keep_roster(homes, monkeypatch, capsys):
     from hermes_cli import gateway as gw, profiles
     from hermes_cli.web_server_gateway import _collect_profile_gateway_topology
-    root, secondary = homes
+    _root, secondary = homes
     (secondary / 'gateway.parked').touch()
     monkeypatch.setenv('HERMES_HOME', str(secondary))
     monkeypatch.setattr(gw, '_current_profile_name', lambda: 'worker')
@@ -239,7 +239,7 @@ def test_default_status_distinguishes_served_and_parked(homes, monkeypatch, caps
 
 def test_parked_status_still_reports_a_forced_gateway(homes, monkeypatch, capsys):
     from hermes_cli import gateway as gw, profiles
-    root, secondary = homes
+    _root, secondary = homes
     (secondary / 'gateway.parked').touch()
     monkeypatch.setenv('HERMES_HOME', str(secondary))
     monkeypatch.setattr(gw, '_current_profile_name', lambda: 'worker')
@@ -252,3 +252,27 @@ def test_parked_status_still_reports_a_forced_gateway(homes, monkeypatch, capsys
     output = capsys.readouterr().out
     assert 'parked (hermes -p worker gateway start)' in output
     assert 'Gateway is running (PID: 4242)' in output
+
+
+@pytest.mark.parametrize('verdict, healthy', [
+    (('incompatible', 'runtime_protocol'), False),  # an older Hermes's daemon left running
+    (('ready', None), True),
+])
+def test_status_flags_a_gateway_this_hermes_cannot_attach(homes, monkeypatch, capsys, verdict, healthy):
+    """Upgrade with the old daemon up: every client refuses it, so status must not say ✓."""
+    from hermes_cli import gateway as gw, gateway_runtime, profiles
+    root, _secondary = homes
+    monkeypatch.setenv('HERMES_HOME', str(root))
+    monkeypatch.setattr(gw, '_current_profile_name', lambda: 'default')
+    monkeypatch.setattr(profiles, 'get_active_profile_name', lambda: 'default')
+    monkeypatch.setattr(gw, 'get_gateway_runtime_snapshot', lambda system=False: gw.GatewayRuntimeSnapshot(
+        manager='manual', gateway_pids=(4242,)))
+    monkeypatch.setattr(gw, 'named_profile_served_by_running_multiplexer', lambda: False)
+    monkeypatch.setattr(gw, '_installed_service_kind_for', lambda _check: None)
+    monkeypatch.setattr(gateway_runtime, 'discover_gateway_endpoint', lambda home, timeout=2.0: (
+        gateway_runtime.GatewayDiscovery(verdict[0], reason_code=verdict[1])))
+    gw._cmd_status(SimpleNamespace())
+    output = capsys.readouterr().out
+    assert ('✓ Gateway is running (PID: 4242)' in output) is healthy
+    assert ('incompatible: runtime_protocol' in output) is not healthy
+    assert ('hermes gateway restart' in output) is not healthy

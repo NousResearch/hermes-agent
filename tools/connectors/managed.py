@@ -6,11 +6,11 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from tools.connectors.contract import Actor, SettleReason, TargetState, allowed
-from tools.connectors.gateway.config import operation_session_key
-from tools.connectors.gateway.errors import RateLimited
+from tools.connectors.gateway.config import ensure_guest_identity, operation_session_key
+from tools.connectors.gateway.errors import RateLimited, ToolGatewayError
 from tools.connectors.operation import ConnectionOperation, DetachedOperation, IllegalTransition, Target
 from tools.connectors.run import Kind, run_operation
-from tools.connectors.targets import catalog_names, hosted_names, misrouted_to_hosted_error
+from tools.connectors.targets import HostedTarget, catalog_names, hosted_names, misrouted_to_hosted_error
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -26,7 +26,7 @@ _MAX_READ_SECONDS = 10.0
 
 # The six-state account vocabulary -> the state that read ends the attempt in, and who caused it.
 # `pending` is not here: it is the attempt still running, and moves nothing.
-_ACCOUNT_OUTCOME: Dict[str, Tuple[TargetState, Actor]] = {
+_ACCOUNT_OUTCOME: dict[str, tuple[TargetState, Actor]] = {
     "active": (TargetState.connected, Actor.backend_watcher),
     "failed": (TargetState.failed, Actor.backend_watcher),
     "revoked": (TargetState.failed, Actor.backend_watcher),
@@ -38,35 +38,61 @@ _ACCOUNT_OUTCOME: Dict[str, Tuple[TargetState, Actor]] = {
 NOTE = (
     "Settled once. connected → use the app now; skipped → the user chose Not now, do not connect it "
     "or route around it; not_connected → ask the user what to do, never re-mint on your own. "
-    "A later request from the USER for that same app is not a re-ask — run it."
+    "A later request from the USER for that same app is not a re-ask — run it. "
+    "If you named an account, tell the user its name and that they can rename it."
 )
 
 
-def managed_client():
-    from tools.connectors.gateway.client import ConnectorClient
+GUEST_SETUP_FAILED = "GUEST_SETUP_FAILED"
 
-    return ConnectorClient()
+# The connect request's ``initiator``: manage_connections, the Connectors page, the card's Try again.
+AGENT_TOOL = "agent_tool"
+DESKTOP_PAGE = "desktop_page"
+CARD_RETRY = "card_retry"
+
+
+def managed_client(*, initiator: Optional[str] = AGENT_TOOL, call: Optional[Any] = None):
+    """The real gateway client for a user action. The first one creates the guest identity when the
+    user has none: every hosted action is a request for an app. ``initiator`` names who asked, so
+    every link the client mints is attributed."""
+    from tools.connectors.gateway.client import ConnectorClient
+    from tools.connectors.gateway.errors import ToolGatewayError
+
+    if setup_error := ensure_guest_identity():
+        raise ToolGatewayError(setup_error, code=GUEST_SETUP_FAILED, retryable=True)
+    return ConnectorClient(initiator=initiator, call=call)
 
 
 def managed_kind(client: Any, action: str, force: bool) -> Kind:
     return Kind(prepare=_prepare(client, action, force), observe=lambda operation: _observe(client, operation), note=NOTE)
 
 
-def _status_by_slug(client: Any) -> Dict[str, Dict[str, Any]]:
+def _status_by_slug(client: Any) -> dict[str, dict[str, Any]]:
     """The toolkit list, by slug. Only the reconnect repair check reads it: it answers "is this app
     already connected" before any account exists for the watcher to read."""
     return {str(i.get("connector", "")).lower(): i for i in client.list_connectors() if isinstance(i, dict)}
 
 
-def mint(client: Any, operation: ConnectionOperation, names: List[str], *, reinitiate: bool, actor: Actor) -> None:
+def mint(client: Any, operation: ConnectionOperation, names: list[str], *, reinitiate: bool, actor: Actor,
+         connection_id: Optional[str] = None) -> None:
     """Mint links for ``names`` and apply the gateway's per-app answer to the operation. ``actor`` is
     the watcher on the first mint and the user on Try again. The operation id rides along so the
-    vendor's done page can name it on the way back to the desktop."""
+    vendor's done page can name it on the way back to the desktop. ``connection_id`` names the one
+    existing account a repair restarts; the gateway then needs no alias to find it. A repair without
+    one (Try again) reuses the account the named target already minted, so a rename in between
+    cannot point the retry at another login."""
     from tools.connectors.gateway.client import return_to_args
 
     if not names:
         return
-    response = client.connections(names, reinitiate=reinitiate, **return_to_args(op=operation.op_id))
+    # One aliased target per call, so the first named target is the request's.
+    named = next((t for t in operation.targets if t.name in names and t.alias), None)
+    if reinitiate and connection_id is None:
+        repaired = next((t.repair_id for t in operation.targets if t.name in names and t.repair_id), None)
+        connection_id = repaired or (named.connection_id if named is not None else None)
+    alias = None if connection_id or named is None else named.alias
+    response = client.connections(names, reinitiate=reinitiate, alias=alias, connection_id=connection_id,
+                                  **return_to_args(op=operation.op_id))
     for entry in response.get("results", []):
         name = str(entry.get("connector") or "").lower()
         target = operation.target(name)
@@ -74,6 +100,9 @@ def mint(client: Any, operation: ConnectionOperation, names: List[str], *, reini
             continue
         status = str(entry.get("status") or "")
         detail = str(entry.get("status_reason") or "")
+        if status not in ("active", "initiated"):
+            # A refusal's reason comes in its instruction ("not allowed by your organization's policy").
+            detail = detail or str(entry.get("instruction") or "")
         connection_id = entry.get("connection_id")
         if status == "active":
             operation.transition(name, TargetState.initiated, actor)
@@ -100,7 +129,7 @@ def mint(client: Any, operation: ConnectionOperation, names: List[str], *, reini
             operation.transition(name, TargetState.failed, Actor.backend_watcher, detail=detail)
 
 
-def _status_for(client: Any, target: Target, *, timeout: float) -> Optional[Dict[str, Any]]:
+def _status_for(client: Any, target: Target, *, timeout: float) -> Optional[dict[str, Any]]:
     """The one route the watcher reads: that target's own account row. ``None`` means "nothing to
     apply this tick" — no account to read, a rate-limit still in force, an account the gateway does
     not know yet (404 until the deadline), or a read that failed. A 429 is raised to the tick: its
@@ -112,7 +141,7 @@ def _status_for(client: Any, target: Target, *, timeout: float) -> Optional[Dict
     except RateLimited:
         raise
     except Exception as exc:
-        logger.debug("connector account read failed for %s: %s", target.name, exc)
+        logger.warning("connector account read failed for %s: %s", target.name, exc)
         return None
 
 
@@ -188,34 +217,111 @@ def _mark_misrouted(operation: ConnectionOperation) -> None:
         operation.settle(SettleReason.all_resolved)
 
 
+def _unknown_slug(name: str, known: set[str]) -> str:
+    close = sorted(slug for slug in known if name in slug or slug in name)
+    if close:
+        return f"'{name}' is not a connector slug; use {' or '.join(close)}"
+    return f"'{name}' is not a connector slug; manage_connections status lists them"
+
+
+def _mark_unknown(client: Any, operation: ConnectionOperation) -> None:
+    """The gateway refuses a slug it does not list as a policy block. The model guesses a slug from the
+    app's name (granola for granola_mcp), so the row names the listed slug instead."""
+    unminted = [t for t in operation.targets if t.state == TargetState.failed and not t.connection_id]
+    if operation.settled or not unminted:
+        return
+    catalog = catalog_names()  # a local MCP name already carries its misrouted detail
+    unminted = [t for t in unminted if t.name not in catalog]
+    if not unminted:
+        return
+    try:
+        known = {str(i.get("connector", "")).lower() for i in client.list_connectors()}
+    except ToolGatewayError as exc:
+        logger.debug("connector list for an unminted slug failed: %s", exc)
+        return
+    unknown = [t for t in unminted if t.name not in known]
+    for target in unknown:
+        operation.refresh(target.name, connect_url=None, actor=Actor.backend_watcher,
+                          detail=_unknown_slug(target.name, known))
+    if unknown and len(unknown) == len(operation.targets):
+        operation.settle(SettleReason.all_resolved)
+
+
 def _prepare(client: Any, action: str, force: bool) -> Callable[[ConnectionOperation], None]:
     def prepare(operation: ConnectionOperation) -> None:
         names = [t.name for t in operation.targets]
         if action == "connect":
             mint(client, operation, names, reinitiate=False, actor=Actor.backend_watcher)
             _mark_misrouted(operation)
+            _mark_unknown(client, operation)
             return
+        # A named account is checked on its own row, read before force so a label resolves to its
+        # account either way: the connector-wide flag reports any account.
+        named = _alias_status(operation.targets)
         if force:
             # The re-mint names a new account; the watcher reads that one, never the old row.
-            mint(client, operation, names, reinitiate=True, actor=Actor.backend_watcher)
+            account = next((s["connection_id"] for s in (named or {}).values() if s.get("connection_id")), None)
+            mint(client, operation, names, reinitiate=True, actor=Actor.backend_watcher, connection_id=account)
             _mark_misrouted(operation)
+            _mark_unknown(client, operation)
             return
-        status = _status_by_slug(client)
+        status = named or _status_by_slug(client)
         repair = []
         for name in names:
-            if status.get(name, {}).get("connected"):
+            target = operation.target(name)
+            if target is not None and target.repair_id and name not in (named or {}):
+                # A surface asked to repair one account by id: its Reconnect is the user's choice, and
+                # the connector's other accounts say nothing about this one.
+                repair.append(name)
+            elif status.get(name, {}).get("connected"):
                 operation.transition(name, TargetState.initiated, Actor.backend_watcher)
                 operation.transition(name, TargetState.connected, Actor.backend_watcher)
             else:
                 repair.append(name)
-        mint(client, operation, repair, reinitiate=True, actor=Actor.backend_watcher)
+        # A named target is alone in its call, so at most one account id applies.
+        account = next((status[n].get("connection_id") for n in repair if status.get(n, {}).get("connection_id")), None)
+        mint(client, operation, repair, reinitiate=True, actor=Actor.backend_watcher, connection_id=account)
         _mark_misrouted(operation)
+        _mark_unknown(client, operation)
 
     return prepare
 
 
-def _no_card_result(client: Any, action: str, names: List[str], force: bool, session_id: str) -> str:
-    operation = DetachedOperation([Target(n, "connector", action) for n in names], session_key=session_id)
+def portal_accounts() -> list[dict[str, Any]]:
+    from tools.connectors.portal.client import PortalConnectorClient
+
+    return PortalConnectorClient().list_accounts()
+
+
+def _alias_status(targets: list[Target]) -> Optional[dict[str, dict[str, Any]]]:
+    """``{slug: {"connected": bool, "connection_id": str | None}}`` for an aliased target, read from
+    that account's own row (``connection_id`` is None when no account has that name yet); ``None``
+    when no target is aliased. A failed read raises: guessing "not connected" would send the user
+    through a new login for an account that may be healthy."""
+    aliased = [t for t in targets if t.alias]
+    if not aliased:
+        return None
+    rows = portal_accounts()
+    status: dict[str, dict[str, Any]] = {}
+    for t in aliased:
+        mine = [r for r in rows if r.get("connector") == t.name and not r.get("disabled")]
+        row = next((r for r in mine if r.get("alias") == t.alias), None)
+        if row is None:
+            # An unnamed account is addressed by its label, as rename does; it stays unnamed.
+            row = next((r for r in mine if not r.get("alias") and r.get("label") == t.alias), None)
+            if row is not None:
+                t.alias, t.repair_id = None, row.get("connectionId")
+        status[t.name] = {"connected": bool(row) and row.get("status") == "active",
+                          "connection_id": row.get("connectionId") if row else None}
+    return status
+
+
+def _targets(targets: list[HostedTarget], action: str) -> list[Target]:
+    return [Target(t.name, "connector", action, alias=t.alias) for t in targets]
+
+
+def _no_card_result(client: Any, action: str, targets: list[HostedTarget], force: bool, session_id: str) -> str:
+    operation = DetachedOperation(_targets(targets, action), session_key=session_id)
     _prepare(client, action, force)(operation)
     payload = operation.result(with_urls=True)
     payload["status"] = "initiated" if any(t.state == TargetState.initiated for t in operation.targets) else "settled"
@@ -223,33 +329,111 @@ def _no_card_result(client: Any, action: str, names: List[str], force: bool, ses
         "Show each connect_url to the user; they open it in a browser to authorize. Ask them to tell you "
         "when they are done, then check with action 'status'. Do not call connect again for the same app."
     )
+    if any(t.alias for t in targets):
+        payload["note"] += " You named this account: tell the user its name and that they can rename it."
     return json.dumps(payload, ensure_ascii=False)
+
+
+def _status_result(client: Any, connectors: list[str]) -> str:
+    items = client.list_connectors()
+    known = {str(i.get("connector", "")).lower() for i in items}
+    unknown = {name: _unknown_slug(name, known) for name in connectors if name not in known}
+    if connectors:
+        wanted = set(connectors)
+        items = [i for i in items if str(i.get("connector", "")).lower() in wanted]
+    try:
+        rows = portal_accounts()
+    except ToolGatewayError as exc:
+        # The account list is extra detail; the connector list alone still answers status.
+        logger.debug("connector accounts for status failed: %s", exc)
+    else:
+        by_slug: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            entry = {"alias": row.get("alias"), "label": row.get("label"), "status": row.get("status"),
+                     "active": row.get("active")}
+            if row.get("disabled"):
+                entry["retired"] = True
+            by_slug.setdefault(str(row.get("connector", "")).lower(), []).append(entry)
+        items = [dict(i, accounts=by_slug.get(str(i.get("connector", "")).lower(), [])) for i in items]
+    return json.dumps({"connectors": items, "hint": (
+        "connected=false means calls to that connector will return CONNECTION_REQUIRED. "
+        "Use action 'connect' to start an authorization. 'accounts' lists each account by its name "
+        "(alias) and the vendor's label; address an unnamed account by its label. A retired account was "
+        "replaced by a reconnect and is kept only for the record."), **({"unknown": unknown} if unknown else {})},
+        ensure_ascii=False)
+
+
+def _display_result(client: Any, suggested: list[str], *, session_id: Optional[str], tool_call_id: Optional[str],
+                    connection_callback: Optional[Callable[[dict[str, Any]], Optional[str]]], call: Any) -> str:
+    """The desktop card when one can draw; elsewhere the status list and where to connect."""
+    from tools.connectors.display import OFF_DESKTOP_NOTE, run_display
+
+    if connection_callback is None:
+        return json.dumps({**json.loads(_status_result(client, [])), "note": OFF_DESKTOP_NOTE}, ensure_ascii=False)
+    return run_display(client, suggested, session_key=operation_session_key(session_id), tool_call_id=tool_call_id,
+                       connection_callback=connection_callback, call=call)
+
+
+def _rename_result(target: HostedTarget) -> str:
+    """Rename the one account of ``target.name`` called ``target.alias`` (or, when unnamed, labelled
+    so) to ``target.to``. Synchronous: no operation and no card."""
+    from tools.connectors.gateway.errors import GatewayUnavailable, IdempotencyConflict
+    from tools.connectors.portal.client import PortalConnectorClient
+
+    rows = [r for r in portal_accounts() if str(r.get("connector", "")).lower() == target.name]
+    matches = [r for r in rows if r.get("alias") == target.alias] or [
+        r for r in rows if not r.get("alias") and r.get("label") == target.alias]
+    if len(matches) != 1:
+        names = sorted({str(r.get("alias") or r.get("label")) for r in rows})
+        found = f"Its accounts are: {', '.join(names)}." if names else f"The user has no {target.name} account."
+        what = "No" if not matches else "More than one"
+        return tool_error(f"{what} {target.name} account is called {target.alias!r}. {found}")
+    try:
+        account = PortalConnectorClient().rename_account(matches[0]["connectionId"], target.to)
+    except IdempotencyConflict:
+        return tool_error(f"The name {target.to!r} is already used by another {target.name} account. Pick another name.")
+    except GatewayUnavailable as exc:
+        if exc.code == "connection_not_found":
+            return tool_error(f"That {target.name} account no longer exists. Use action status to list accounts.")
+        return tool_error("This Nous Portal cannot rename connector accounts yet.")
+    except ToolGatewayError as exc:
+        if exc.status == 405:
+            return tool_error("This Nous Portal cannot rename connector accounts yet.")
+        raise
+    return json.dumps({
+        "renamed": {"connector": account["connector"], "alias": account.get("alias"), "label": account["label"]},
+        "notice": f"Tell the user their {target.name} account {target.alias!r} is now called {target.to!r}.",
+    }, ensure_ascii=False)
 
 
 def run_managed_action(
     action: str,
-    connectors: List[str],
-    args: Dict[str, Any],
+    targets: list[HostedTarget],
+    args: dict[str, Any],
     *,
     client_factory: Optional[Callable[[], Any]] = None,
     session_id: Optional[str] = None,
     tool_call_id: Optional[str] = None,
-    connection_callback: Optional[Callable[[Dict[str, Any]], Optional[str]]] = None,
+    turn_id: Optional[str] = None,
+    connection_callback: Optional[Callable[[dict[str, Any]], Optional[str]]] = None,
     connectors_available: Optional[Callable[[], bool]] = None,
+    card_surface: bool = False,
 ) -> str:
+    from tools.managed_gateway_identity import CallRef
+
     if connectors_available is not None and not connectors_available():
         return tool_error("Connectors are not available in this session.")
     try:
-        client = (client_factory or managed_client)()
+        if action == "rename":
+            return _rename_result(targets[0])
+        call = CallRef(turn_id=turn_id, tool_call_id=tool_call_id)
+        client = client_factory() if client_factory else managed_client(call=call)
+        if action == "display":
+            return _display_result(client, [t.name for t in targets], session_id=session_id, tool_call_id=tool_call_id,
+                                   connection_callback=connection_callback if card_surface else None, call=call)
         if action == "status":
-            items = client.list_connectors()
-            if connectors:
-                wanted = set(connectors)
-                items = [i for i in items if str(i.get("connector", "")).lower() in wanted]
-            return json.dumps({"connectors": items, "hint": (
-                "connected=false means calls to that connector will return CONNECTION_REQUIRED. "
-                "Use action 'connect' to start an authorization.")}, ensure_ascii=False)
-        if not connectors:
+            return _status_result(client, [t.name for t in targets])
+        if not targets:
             return tool_error(
                 f"'{action}' requires 'connectors': the connector slugs to authorize (e.g. [\"gmail\"]). "
                 "Use action 'status' to list them."
@@ -257,15 +441,17 @@ def run_managed_action(
         force = bool(args.get("force", False))
         session_key = operation_session_key(session_id)
         if connection_callback is None:
-            return _no_card_result(client, action, connectors, force, session_key)
+            return _no_card_result(client, action, targets, force, session_key)
         return run_operation(
-            [Target(n, "connector", action) for n in connectors],
+            _targets(targets, action),
             managed_kind(client, action, force),
             session_key=session_key, tool_call_id=tool_call_id, tick_seconds=WATCH_TICK_SECONDS,
-            connection_callback=connection_callback, with_urls_in_result=False,
+            connection_callback=connection_callback, with_urls_in_result=False, call=call,
         )
     except Exception as exc:
-        logger.debug("manage_connections %s failed: %s", action, exc)
+        logger.warning("manage_connections %s failed: %s", action, exc)
+        if getattr(exc, "code", None) == GUEST_SETUP_FAILED:
+            return tool_error(str(exc))
         return tool_error(
             f"The connector gateway request failed: {exc}. "
             "If this persists, the user can manage connections in the Nous Portal."

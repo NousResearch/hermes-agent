@@ -19,7 +19,7 @@ from hermes_cli.plugins import get_plugin_manager
 from tui_gateway import server
 
 
-def _fake_install_core(identifier, *, force=False, ref=None):
+def _fake_install_core(identifier, *, force=False, ref=None, **_kwargs):
     """Stand-in for the git clone: a portable plugin (mcp.json + a skill) under the sandbox plugins dir,
     returning ``(target, manifest, name)`` like the real core."""
     from hermes_cli.agent_plugins import MCP_SCHEMA_V1, PLUGIN_SCHEMA_V1

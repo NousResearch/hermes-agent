@@ -2150,6 +2150,96 @@ class TestV1SpecRegressionFixes:
         assert adapter._rpc_tasks_get(1, {"taskId": "t-local"})["result"]["status"]["state"] == protocol.STATE_SUBMITTED
         assert len(seen) == 3
 
+    def test_forwarded_ledger_unknown_fails_the_task_instead_of_parking_it(self, monkeypatch, tmp_path):
+        """An `unknown` admission is a LOST turn, not a running one.
+
+        `recover_session_inputs` turns `started` into `unknown` when the owner restarts mid-turn and it
+        stays there: only an operator's resolve_unknown, or the last viewer closing the session, ends
+        it, and an A2A forward has no viewer. Reported as WORKING the caller polls forever, and no
+        sweep ends it — the task is active, not parked, so the job budget never applies to it.
+        """
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+        from gateway import session_a2a
+
+        async def status(home, **params):
+            return {"status": "unknown", "outcome": None, "result": None, "admission_id": "a"}
+
+        monkeypatch.setattr(session_a2a, "status_from_owner", status)
+        monkeypatch.setattr("plugins.platforms.a2a.adapter._profile_home", lambda profile: str(tmp_path))
+        adapter = A2AAdapter(PlatformConfig(enabled=True, extra={"agents": {"dev": {"profile": "dev"}}}))
+        adapter.tasks.create("t-lost", "c1", "peer", "dev", "", input_id="in-1")
+        failed_before = protocol.metrics.tasks_failed
+
+        got = adapter._rpc_tasks_get(1, {"taskId": "t-lost"})["result"]
+
+        assert got["status"]["state"] == protocol.STATE_FAILED
+        assert "will not be replayed" in protocol.extract_text(got["status"]["message"])
+        assert adapter.tasks.get("t-lost")["state"] == protocol.STATE_FAILED
+        assert protocol.metrics.tasks_failed == failed_before + 1
+
+    def test_a_terminal_forwarded_outcome_is_recorded_once(self, monkeypatch, tmp_path):
+        """Recording a finished task twice must count once and log once.
+
+        Every poll that reads a terminal ledger state calls `_record_outcome`, so two concurrent polls
+        (or a poll after a restart) both reach it. The gate is the store's own atomic transition:
+        `TaskStore.complete` answers None once the task is terminal, so the loser writes nothing.
+        """
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+
+        persisted = []
+        monkeypatch.setattr(protocol, "persist_message",
+                            lambda context_id, role, text, task_id="", input_id="": persisted.append((role, text)))
+        monkeypatch.setattr("plugins.platforms.a2a.adapter._profile_home", lambda profile: str(tmp_path))
+        adapter = A2AAdapter(PlatformConfig(enabled=True, extra={"agents": {"dev": {"profile": "dev"}}}))
+        adapter.tasks.create("t-once", "c1", "peer", "dev", "", input_id="in-1")
+        completed_before = protocol.metrics.tasks_completed
+
+        adapter._record_outcome("t-once", "c1", "peer", protocol.STATE_COMPLETED, "done once")
+        adapter._record_outcome("t-once", "c1", "peer", protocol.STATE_COMPLETED, "done once")
+
+        assert protocol.metrics.tasks_completed == completed_before + 1
+        assert persisted == [("agent", "done once")], persisted
+
+    def test_two_concurrent_polls_of_a_terminal_ledger_record_once(self, monkeypatch, tmp_path):
+        """The concurrent shape of the same race: both polls past the terminal check before either records."""
+        import threading
+
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+        from gateway import session_a2a
+
+        persisted = []
+        monkeypatch.setattr(protocol, "persist_message",
+                            lambda context_id, role, text, task_id="", input_id="": persisted.append((role, text)))
+        both_in = threading.Barrier(2, timeout=15)
+
+        async def status(home, **params):
+            both_in.wait()  # both polls hold a non-terminal record before either records the outcome
+            return {"status": "terminal", "outcome": "completed", "admission_id": "a",
+                    "result": {"final_response": "done once"}}
+
+        monkeypatch.setattr(session_a2a, "status_from_owner", status)
+        monkeypatch.setattr("plugins.platforms.a2a.adapter._profile_home", lambda profile: str(tmp_path))
+        adapter = A2AAdapter(PlatformConfig(enabled=True, extra={"agents": {"dev": {"profile": "dev"}}}))
+        adapter.tasks.create("t-race", "c1", "peer", "dev", "", input_id="in-1")
+        completed_before = protocol.metrics.tasks_completed
+        start = threading.Barrier(2, timeout=15)
+
+        def poll():
+            start.wait()
+            adapter._rpc_tasks_get(1, {"taskId": "t-race"})
+
+        threads = [threading.Thread(target=poll) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(20)
+
+        assert protocol.metrics.tasks_completed == completed_before + 1
+        assert persisted == [("agent", "done once")], persisted
+
     def test_forwarded_task_survives_a_restart_through_its_persisted_identity(self, monkeypatch, tmp_path):
         """tasks/get must answer after a restart for a forwarded task whose admission is still live.
 

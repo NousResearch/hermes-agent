@@ -111,6 +111,14 @@ _ASYNC_ACCEPTED_NOTE = (
 # late-finalize callback that the outcome is already recorded, so it is not counted a second time.
 _SWEPT_REPLY = "[task already tombstoned by the A2A sweep]"
 
+# What a poller reads when the owner's admission turns `unknown`: the owner restarted mid-turn and
+# the turn is never replayed. Reporting the loss explicitly is what lets the caller decide to resend;
+# mapping `unknown` to WORKING parks the caller forever, and no sweep ends it — the task is active,
+# not parked, so the job budget never applies to it.
+_OWNER_LOST_TURN_NOTE = (
+    "Task failed: the owner restarted while this turn was running and it will not be replayed. "
+    "Send the work again if you still need it.")
+
 
 def _window_elapsed_note() -> str:
     return (
@@ -841,8 +849,9 @@ class A2AAdapter(BasePlatformAdapter):
         """Map a forwarded task's state from the owner's admission ledger (accept-then-poll).
 
         The plugin never opens the served profile's database — it asks the owner (``a2a.status``) and
-        maps ``queued`` -> SUBMITTED, ``started``/``unknown`` -> WORKING, ``terminal`` -> its outcome.
-        A task with no stored identity, an unreachable owner, or a missing admission keeps its state.
+        maps ``queued`` -> SUBMITTED, ``started`` -> WORKING, ``unknown`` -> FAILED (the owner lost the
+        turn), ``terminal`` -> its outcome. A task with no stored identity, an unreachable owner, or a
+        missing admission keeps its state.
         """
         if rec is None or not rec.get("input_id") or rec.get("state") in protocol.TERMINAL_STATES:
             return rec
@@ -864,9 +873,17 @@ class A2AAdapter(BasePlatformAdapter):
         task_id = rec["task_id"]
         if ledger == "queued":
             self.tasks.set_state(task_id, protocol.STATE_SUBMITTED)
-        elif ledger in ("started", "unknown"):
+        elif ledger == "started":
             self.tasks.set_state(task_id, protocol.STATE_WORKING)
             self.tasks.note(task_id, _ASYNC_ACCEPTED_NOTE)
+        elif ledger == "unknown":
+            # The owner restarted mid-turn: recover_session_inputs turns `started` into `unknown` and it
+            # stays there — only an operator's resolve_unknown, or the last viewer closing the session,
+            # ends it, and an A2A forward has no viewer. Reported as WORKING the caller would poll
+            # forever, and no sweep would end it: the task is active, not parked, so the job budget
+            # never applies. Report the loss explicitly instead, so the caller can decide to resend.
+            self._record_outcome(task_id, rec["context_id"], rec["peer"], protocol.STATE_FAILED,
+                                 _OWNER_LOST_TURN_NOTE)
         elif ledger == "terminal":
             result = state.get("result") or {}
             completed = state.get("outcome") == "completed" and not result.get("failed")
@@ -879,7 +896,16 @@ class A2AAdapter(BasePlatformAdapter):
 
     def _record_outcome(self, task_id: str, context_id: str, peer: str, state: str, reply: str,
                         started: Optional[float] = None) -> None:
-        """Persist + audit + count a finished task, mark it terminal, and fire its push callback."""
+        """Persist + audit + count a finished task, mark it terminal, and fire its push callback.
+
+        Idempotent, and gated on the store's own transition: ``TaskStore.complete`` is atomic and
+        answers None once the task is terminal, so only the caller that actually finished the task
+        writes the conversation-log line, the audit row and the metric. Two concurrent polls of a
+        forwarded task — or a poll after a restart — both read the same terminal ledger state, and
+        without this gate each of them recorded the outcome again.
+        """
+        if self.tasks.complete(task_id, state, reply) is None:
+            return
         protocol.persist_message(context_id, "agent", reply, task_id)
         security.audit("outbound", peer, task_id, reply)
         m = protocol.metrics
@@ -889,7 +915,6 @@ class A2AAdapter(BasePlatformAdapter):
                 m.record_latency(time.time() - started)
         else:
             m.tasks_failed += 1
-        self.tasks.complete(task_id, state, reply)
         self._send_push_notification(task_id, context_id, reply, state)
 
     def _finalize_task(self, pending: dict, state: str, reply: str) -> tuple[str, str]:

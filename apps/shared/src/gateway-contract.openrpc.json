@@ -4698,6 +4698,94 @@
         "title": "A2aForwardResult",
         "type": "object"
       },
+      "A2aStatusParams": {
+        "additionalProperties": false,
+        "properties": {
+          "agent": {
+            "title": "Agent",
+            "type": "string"
+          },
+          "tenant": {
+            "title": "Tenant",
+            "type": "string"
+          },
+          "peer": {
+            "title": "Peer",
+            "type": "string"
+          },
+          "context_id": {
+            "title": "Context Id",
+            "type": "string"
+          },
+          "input_id": {
+            "title": "Input Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent",
+          "tenant",
+          "peer",
+          "context_id",
+          "input_id"
+        ],
+        "title": "A2aStatusParams",
+        "type": "object"
+      },
+      "A2aStatusResult": {
+        "additionalProperties": false,
+        "description": "The admission state of one forwarded A2A turn, read from the owner's ledger.",
+        "properties": {
+          "status": {
+            "enum": [
+              "queued",
+              "started",
+              "unknown",
+              "terminal",
+              "missing"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "admission_id": {
+            "title": "Admission Id",
+            "type": "string"
+          },
+          "result": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result"
+          }
+        },
+        "required": [
+          "status",
+          "outcome",
+          "session_id",
+          "admission_id",
+          "result"
+        ],
+        "title": "A2aStatusResult",
+        "type": "object"
+      },
       "AccountOwner": {
         "additionalProperties": false,
         "properties": {
@@ -47483,6 +47571,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/A2aForwardResult"
+        }
+      }
+    },
+    {
+      "name": "a2a.status",
+      "summary": "Read one forwarded A2A turn's admission state at its exact identity.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/A2aStatusParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/A2aStatusResult"
         }
       }
     },

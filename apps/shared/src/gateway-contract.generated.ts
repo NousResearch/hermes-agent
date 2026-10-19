@@ -4845,6 +4845,21 @@ export interface A2aForwardResult {
   session_id: string
   result: unknown | null
 }
+export interface A2aStatusParams {
+  agent: string
+  tenant: string
+  peer: string
+  context_id: string
+  input_id: string
+}
+/** The admission state of one forwarded A2A turn, read from the owner's ledger. */
+export interface A2aStatusResult {
+  status: 'queued' | 'started' | 'unknown' | 'terminal' | 'missing'
+  outcome: string | null
+  session_id: string
+  admission_id: string
+  result: unknown | null
+}
 export interface WorkerRegisterParams {
   profile_id: string
   session_id: string
@@ -6790,6 +6805,8 @@ export const RPC_METHODS = [
 export interface CanonicalRpcMethods {
   /** Forward one A2A input into the conversation its identity tuple names. */
   'a2a.forward': { params: A2aForwardParams; result: A2aForwardResult }
+  /** Read one forwarded A2A turn's admission state at its exact identity. */
+  'a2a.status': { params: A2aStatusParams; result: A2aStatusResult }
   'approval.respond': { params: CanonicalApprovalParams; result: PromptResponseResult }
   'bot_relay.deliver': { params: CanonicalBotDeliverParams; result: CanonicalBotDeliverResult }
   'bot_relay.settle': { params: CanonicalBotDeliverParams; result: CanonicalBotDeliverResult }
@@ -6870,6 +6887,7 @@ export interface CanonicalRpcMethods {
 export type CanonicalRpcMethod = keyof CanonicalRpcMethods
 export const CANONICAL_RPC_METHODS = [
   'a2a.forward',
+  'a2a.status',
   'approval.respond',
   'bot_relay.deliver',
   'bot_relay.settle',

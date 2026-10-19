@@ -618,7 +618,12 @@ def _ensure_pending_intake_columns(conn: sqlite3.Connection) -> None:
 
 
 def _issue22_executor() -> tuple[str, str]:
-    """Require one configured Hermes profile and its currently live session."""
+    """Require one configured Hermes profile and its trusted persistent session id.
+
+    The active-session lease belongs to task execution, not durable admission. The
+    Kanban worker resumes this session and acquires Hermes' normal lease before its
+    first model turn.
+    """
     profile = os.environ.get("HERMES_ISSUE22_EXECUTOR_PROFILE", "").strip()
     active_profile = os.environ.get("HERMES_PROFILE", "").strip()
     session_id = os.environ.get("HERMES_ISSUE22_SESSION_ID", "").strip()
@@ -629,10 +634,29 @@ def _issue22_executor() -> tuple[str, str]:
         raise AdmissionRefused("TASK_EXECUTOR_PROFILE_MISMATCH")
     try:
         from hermes_cli.profiles import resolve_profile_env
-        if not Path(resolve_profile_env(profile)).is_dir():
+        profile_home = Path(resolve_profile_env(profile))
+        if not profile_home.is_dir():
             raise FileNotFoundError(profile)
     except Exception as exc:
         raise AdmissionRefused("TASK_EXECUTOR_PROFILE_UNAVAILABLE") from exc
+    # An empty, durable session is a binding target; it must exist before a task
+    # can be queued. Do not create a session or registry record on this path.
+    from hermes_state_registry import acquire as acquire_session_db
+    state_db_path = profile_home / "state.db"
+    if not state_db_path.is_file():
+        raise AdmissionRefused("TASK_EXECUTOR_SESSION_UNAVAILABLE")
+    session_db = None
+    try:
+        session_db = acquire_session_db(state_db_path)
+        if session_db.get_session(session_id) is None:
+            raise AdmissionRefused("TASK_EXECUTOR_SESSION_UNAVAILABLE")
+    except AdmissionRefused:
+        raise
+    except Exception as exc:
+        raise AdmissionRefused("TASK_EXECUTOR_SESSION_UNAVAILABLE") from exc
+    finally:
+        if session_db is not None:
+            session_db.close()
     return profile, session_id
 
 
@@ -676,56 +700,55 @@ def bind_next_pending_task(
     title = next((line.strip(" #\t") for line in intent.task_text.splitlines() if line.strip()), "")
     title = title[:160] or f"Issue 22 task {intent.nonce[:12]}"
     try:
-        with _session_owner_fence(session_id) as session_fence:
-            with _owner_write_txn(conn):
-                row = conn.execute(
-                    "SELECT dispatch_state,task_id,expires_at,body_sha256 FROM issue22_pending_intakes "
-                    "WHERE repository_id=? AND issue_number=? AND nonce=?",
-                    (pins.repository_id, ISSUE_NUMBER, intent.nonce),
-                ).fetchone()
-                if not row:
-                    raise AdmissionRefused("PENDING_INTAKE_NOT_FOUND")
-                if row["dispatch_state"] != "awaiting_binding":
-                    if row["task_id"]:
-                        return {"verdict": "ACK", "state": "queued", "task_id": row["task_id"]}
-                    raise AdmissionRefused("PENDING_INTAKE_STATE_INVALID")
-                if int(row["expires_at"]) <= current:
-                    raise AdmissionRefused("INTENT_EXPIRED_BEFORE_BINDING")
-                if row["body_sha256"] != intent.body_sha256:
-                    raise AdmissionRefused("PENDING_COMMENT_CHANGED")
-                if issue22_task_is_active(conn):
-                    return {"verdict": "BUSY", "reason": "TASK_EXECUTOR_OCCUPIED"}
-                task_id = kanban_db.create_task(
-                    conn, title=title, body=intent.task_text,
-                    created_by="github:ISVGitHub/autonomous-entity#22",
-                    assignee=profile, workspace_kind="scratch", project_id="",
-                    initial_status="running", session_id=session_id, board="missions",
-                    idempotency_key=f"github-issue22:{pins.repository_id}:22:{intent.nonce}",
-                    max_runtime_seconds=900, max_retries=1,
-                )
-                binding = {
-                    "repository": pins.repository, "repository_id": pins.repository_id,
-                    "issue_number": ISSUE_NUMBER, "comment_id": intent.comment_id,
-                    "nonce": intent.nonce, "executor_profile": profile,
-                    "session_id": session_id, "recorded_at": current,
-                }
-                conn.execute(
-                    "INSERT INTO task_events(task_id,run_id,kind,payload,created_at) "
-                    "VALUES (?,NULL,'github_task_binding',?,?)",
-                    (task_id, json.dumps(binding, sort_keys=True, separators=(",", ":")), current),
-                )
-                updated = conn.execute(
-                    "UPDATE issue22_pending_intakes SET dispatch_state='queued',task_id=?, "
-                    "session_id=?,executor_profile=?,bound_at=? WHERE repository_id=? "
-                    "AND issue_number=? AND nonce=? AND dispatch_state='awaiting_binding'",
-                    (task_id, session_id, profile, current, pins.repository_id, ISSUE_NUMBER, intent.nonce),
-                )
-                if updated.rowcount != 1:
-                    raise AdmissionRefused("PENDING_INTAKE_RACE")
-                session_fence.assert_current()
-                return {"verdict": "ACK", "state": "queued", "task_id": task_id}
-    except ActiveSessionRegistryError as exc:
-        raise AdmissionRefused("SESSION_FENCE_REFUSED") from exc
+        # Durable admission/binding is independent of a live turn. The existing
+        # Kanban dispatcher claims this ready task once; its worker resumes the
+        # pinned session and uses Hermes' atomic active-session lease before work.
+        with _owner_write_txn(conn):
+            row = conn.execute(
+                "SELECT dispatch_state,task_id,expires_at,body_sha256 FROM issue22_pending_intakes "
+                "WHERE repository_id=? AND issue_number=? AND nonce=?",
+                (pins.repository_id, ISSUE_NUMBER, intent.nonce),
+            ).fetchone()
+            if not row:
+                raise AdmissionRefused("PENDING_INTAKE_NOT_FOUND")
+            if row["dispatch_state"] != "awaiting_binding":
+                if row["task_id"]:
+                    return {"verdict": "ACK", "state": "queued", "task_id": row["task_id"]}
+                raise AdmissionRefused("PENDING_INTAKE_STATE_INVALID")
+            if int(row["expires_at"]) <= current:
+                raise AdmissionRefused("INTENT_EXPIRED_BEFORE_BINDING")
+            if row["body_sha256"] != intent.body_sha256:
+                raise AdmissionRefused("PENDING_COMMENT_CHANGED")
+            if issue22_task_is_active(conn):
+                return {"verdict": "BUSY", "reason": "TASK_EXECUTOR_OCCUPIED"}
+            task_id = kanban_db.create_task(
+                conn, title=title, body=intent.task_text,
+                created_by="github:ISVGitHub/autonomous-entity#22",
+                assignee=profile, workspace_kind="scratch", project_id="",
+                initial_status="ready", session_id=session_id, board="missions",
+                idempotency_key=f"github-issue22:{pins.repository_id}:22:{intent.nonce}",
+                max_runtime_seconds=900, max_retries=1,
+            )
+            binding = {
+                "repository": pins.repository, "repository_id": pins.repository_id,
+                "issue_number": ISSUE_NUMBER, "comment_id": intent.comment_id,
+                "nonce": intent.nonce, "executor_profile": profile,
+                "session_id": session_id, "recorded_at": current,
+            }
+            conn.execute(
+                "INSERT INTO task_events(task_id,run_id,kind,payload,created_at) "
+                "VALUES (?,NULL,'github_task_binding',?,?)",
+                (task_id, json.dumps(binding, sort_keys=True, separators=(",", ":")), current),
+            )
+            updated = conn.execute(
+                "UPDATE issue22_pending_intakes SET dispatch_state='queued',task_id=?, "
+                "session_id=?,executor_profile=?,bound_at=? WHERE repository_id=? "
+                "AND issue_number=? AND nonce=? AND dispatch_state='awaiting_binding'",
+                (task_id, session_id, profile, current, pins.repository_id, ISSUE_NUMBER, intent.nonce),
+            )
+            if updated.rowcount != 1:
+                raise AdmissionRefused("PENDING_INTAKE_RACE")
+            return {"verdict": "ACK", "state": "queued", "task_id": task_id}
     except sqlite3.Error as exc:
         raise AdmissionRefused("TASK_BINDING_TRANSACTION_FAILED") from exc
 

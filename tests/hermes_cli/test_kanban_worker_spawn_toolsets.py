@@ -4,7 +4,7 @@ import pytest
 import subprocess
 
 
-def _make_task(kb, *, assignee: str):
+def _make_task(kb, *, assignee: str, created_by="test", session_id=None):
     return kb.Task(
         id="t_spawn_tools",
         title="spawn tools",
@@ -12,7 +12,7 @@ def _make_task(kb, *, assignee: str):
         assignee=assignee,
         status="running",
         priority=0,
-        created_by="test",
+        created_by=created_by,
         created_at=1,
         started_at=None,
         completed_at=None,
@@ -22,6 +22,7 @@ def _make_task(kb, *, assignee: str):
         claim_expires=None,
         tenant=None,
         current_run_id=7,
+        session_id=session_id,
     )
 
 
@@ -114,6 +115,43 @@ def test_default_spawn_does_not_pass_mutable_launch_overrides(monkeypatch, tmp_p
     # Mutable model strings are not launch authority; the owner reads the claimed card.
     assert captured["cmd"][-2:] == ["-m", "hermes_cli.kanban_worker_client"]
     assert task.model_override not in captured["cmd"]
+
+def test_issue22_worker_resumes_bound_session_and_marks_busy_refusal(monkeypatch, tmp_path):
+    root = tmp_path / ".hermes"
+    (root / "profiles" / "issue22-dispatch").mkdir(parents=True)
+    root.joinpath("config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
+    captured = {}
+
+    class FakeProc:
+        pid = 4245
+
+    def fake_popen(cmd, *args, **kwargs):
+        captured["cmd"] = list(cmd)
+        captured["env"] = dict(kwargs.get("env") or {})
+        return FakeProc()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    task = _make_task(
+        kb, assignee="issue22-dispatch",
+        created_by="github:ISVGitHub/autonomous-entity#22", session_id="session-22",
+    )
+    assert kbd._default_spawn(task, str(workspace)) == 4245
+    assert captured["cmd"][captured["cmd"].index("--resume") + 1] == "session-22"
+    assert captured["env"]["HERMES_ISSUE22_TASK"] == "1"
+    from hermes_cli._parser import build_top_level_parser
+    parser, _subparsers, _chat_parser = build_top_level_parser()
+    args = parser.parse_args(captured["cmd"][3:])
+    assert args.resume == "session-22"
+    assert args.query == "work kanban task t_spawn_tools"
+
 
 def test_default_spawn_resolves_env_passthrough_under_multiplex(monkeypatch, tmp_path):
     """Under multiplex a worker spawn with ``terminal.env_passthrough`` configured must

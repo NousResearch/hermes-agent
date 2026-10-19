@@ -130,6 +130,42 @@ def test_pending_task_nonce_cannot_be_reused_for_different_body():
         conn.close()
 
 
+def test_executor_binding_requires_existing_durable_session_but_not_live_lease(monkeypatch, tmp_path):
+    profile = tmp_path / "profiles" / "issue22-dispatch"
+    profile.mkdir(parents=True)
+    (profile / "state.db").touch()
+    monkeypatch.setenv("HERMES_PROFILE", "issue22-dispatch")
+    monkeypatch.setenv("HERMES_ISSUE22_EXECUTOR_PROFILE", "issue22-dispatch")
+    monkeypatch.setenv("HERMES_ISSUE22_SESSION_ID", "session-22")
+    monkeypatch.setattr(
+        "hermes_cli.profiles.resolve_profile_env", lambda _name: str(profile),
+    )
+
+    class FakeSessionDB:
+        def __init__(self, session):
+            self.session = session
+            self.closed = False
+
+        def get_session(self, session_id):
+            return {"id": session_id} if self.session else None
+
+        def close(self):
+            self.closed = True
+
+    fake_db = FakeSessionDB(session=True)
+    monkeypatch.setattr(
+        "hermes_state_registry.acquire", lambda _path: fake_db,
+    )
+    assert ingress._issue22_executor() == ("issue22-dispatch", "session-22")
+    assert fake_db.closed
+
+    monkeypatch.setattr(
+        "hermes_state_registry.acquire", lambda _path: FakeSessionDB(session=False),
+    )
+    with pytest.raises(ingress.AdmissionRefused, match="TASK_EXECUTOR_SESSION_UNAVAILABLE"):
+        ingress._issue22_executor()
+
+
 def test_nonce_reuse_with_different_body_is_rejected():
     conn = connect()
     try:
@@ -200,9 +236,11 @@ def test_task_result_links_pending_row_when_control_receipts_also_exist():
         conn.close()
 
 
-def test_pending_task_binds_atomically_to_one_profile_and_live_session(monkeypatch, tmp_path):
-    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
-    conn = ingress.kanban_db_connect.connect()
+def test_pending_task_binds_without_live_lease_and_waits_ready_for_executor(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli import kanban_db as kb
+    kb.create_board("missions")
+    conn = ingress.kanban_db_connect.connect(board="missions")
     pins = ingress.TrustPins(
         "ISVGitHub/autonomous-entity", 1165823465, 5343540, 172036721, 548464,
     )
@@ -213,17 +251,16 @@ def test_pending_task_binds_atomically_to_one_profile_and_live_session(monkeypat
     )
     ingress.admit_intent(conn, intent=intent, now=now)
     monkeypatch.setattr(ingress, "validate_ingress_config", lambda _path: pins)
-    monkeypatch.setattr(ingress, "read_authenticated_intent", lambda *a, **kw: intent)
+    active_intent = {"value": intent}
+    monkeypatch.setattr(
+        ingress, "read_authenticated_intent", lambda *a, **kw: active_intent["value"],
+    )
     monkeypatch.setattr(ingress, "_issue22_executor", lambda: ("grandloop", "session-22"))
 
-    @contextmanager
-    def session_fence(_session_id):
-        class Fence:
-            def assert_current(self):
-                return None
-        yield Fence()
-
-    monkeypatch.setattr(ingress, "_session_owner_fence", session_fence)
+    monkeypatch.setattr(
+        ingress, "_session_owner_fence",
+        lambda *_args, **_kwargs: pytest.fail("binding must not require a live lease"),
+    )
     try:
         bound = ingress.bind_next_pending_task(
             conn, config_path=Path("/tmp/pinned.json"), now=now,
@@ -243,8 +280,78 @@ def test_pending_task_binds_atomically_to_one_profile_and_live_session(monkeypat
         assert conn.execute(
             "SELECT COUNT(*) FROM task_events WHERE kind='github_task_binding'",
         ).fetchone()[0] == 1
+        second = make_intent(
+            nonce="task_nonce_second1", comment_id=83, kind="TASK",
+            expires_at=now + 300, task_text="must remain pending while busy",
+        )
+        ingress.admit_intent(conn, intent=second, now=now)
+        active_intent["value"] = second
+        # BUSY leaves the second intake pending; it is not consumed or dropped.
+        assert ingress.bind_next_pending_task(
+            conn, config_path=Path("/tmp/pinned.json"), now=now,
+        ) == {"verdict": "BUSY", "reason": "TASK_EXECUTOR_OCCUPIED"}
+        pending = conn.execute(
+            "SELECT dispatch_state,task_id FROM issue22_pending_intakes WHERE nonce=?",
+            (second.nonce,),
+        ).fetchone()
+        assert tuple(pending) == ("awaiting_binding", None)
+        # Simulate a lost admission ACK/repeated poll: neither task is duplicated.
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 1
     finally:
         conn.close()
+
+
+def test_issue22_tasks_are_claimed_by_only_one_concurrent_gateway_dispatcher(monkeypatch, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Lock
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli import kanban_db as kb
+    kb.create_board("missions")
+    conn = ingress.kanban_db_connect.connect(board="missions")
+    pins = ingress.TrustPins(
+        "ISVGitHub/autonomous-entity", 1165823465, 5343540, 172036721, 548464,
+    )
+    now = int(ingress.time.time())
+    intent = make_intent(
+        nonce="task_nonce_concurrent", comment_id=82, kind="TASK",
+        expires_at=now + 300, task_text="one durable task",
+    )
+    ingress.admit_intent(conn, intent=intent, now=now)
+    monkeypatch.setattr(ingress, "validate_ingress_config", lambda _path: pins)
+    monkeypatch.setattr(ingress, "read_authenticated_intent", lambda *a, **kw: intent)
+    monkeypatch.setattr(ingress, "_issue22_executor", lambda: ("issue22-dispatch", "session-22"))
+    bound = ingress.bind_next_pending_task(conn, config_path=Path("/tmp/pinned.json"), now=now)
+    task_id = bound["task_id"]
+    conn.close()
+
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_dispatch as dispatch
+
+    monkeypatch.setattr(dispatch, "_profile_exists_fn", lambda: None)
+    monkeypatch.setattr(dispatch._kbw, "resolve_workspace", lambda *_a, **_kw: str(tmp_path / "worker-ws"))
+    (tmp_path / "worker-ws").mkdir()
+    called = []
+    called_lock = Lock()
+    barrier = __import__("threading").Barrier(2)
+
+    def spawn(_task, _workspace, board=None):
+        with called_lock:
+            called.append(_task.id)
+        return 72001
+
+    def run_dispatch():
+        with kbc.connect(board="missions") as db:
+            barrier.wait(timeout=5)
+            return dispatch.dispatch_once(db, board="missions", spawn_fn=spawn)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(lambda _n: run_dispatch(), range(2)))
+    with kbc.connect(board="missions") as db:
+        task = kb.get_task(db, task_id)
+        assert task.status == "running"
+        assert task.worker_pid == 72001
+    assert called == [task_id]
 
 
 def test_expired_pending_task_is_never_bound_or_dispatched(monkeypatch):

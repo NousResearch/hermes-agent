@@ -50,7 +50,11 @@ def _dead_worker_with_log(conn, tid: str, pid: int, rc: int) -> None:
 
 @pytest.mark.parametrize(
     "rc, event, failure_counted",
-    [(0, "protocol_violation", False), (kb.KANBAN_RATE_LIMIT_EXIT_CODE, "rate_limited", False)],
+    [
+        (0, "protocol_violation", False),
+        (kb.KANBAN_RATE_LIMIT_EXIT_CODE, "rate_limited", False),
+        (kb.KANBAN_SESSION_BUSY_EXIT_CODE, "session_busy", False),
+    ],
 )
 def test_fresh_process_sweep_books_the_logged_exit_code(kanban_home, rc, event, failure_counted):
     """Empty reap registry + exit trailer in the log: a clean exit is the protocol violation
@@ -79,8 +83,22 @@ def test_fresh_process_sweep_books_the_logged_exit_code(kanban_home, rc, event, 
             assert kb._json_dict(run["metadata"]).get("protocol_violation") is True
             assert kbd._protocol_violation_streak(conn, tid) == 1
             assert KANBAN_WORKER_EXIT_TRAILER not in (run["error"] or "")
+        elif rc == kb.KANBAN_RATE_LIMIT_EXIT_CODE:
+            assert run["outcome"] == "rate_limited"
         else:
             assert run["outcome"] == "rate_limited"
+            assert "bound Hermes session lease" in run["error"]
+
+
+def test_issue22_active_session_refusal_uses_neutral_retry(monkeypatch):
+    from hermes_cli.cli_single_query import _active_session_refusal_exit_code
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_issue22")
+    monkeypatch.setenv("HERMES_ISSUE22_TASK", "1")
+    assert _active_session_refusal_exit_code() == kb.KANBAN_SESSION_BUSY_EXIT_CODE
+
+    monkeypatch.delenv("HERMES_ISSUE22_TASK")
+    assert _active_session_refusal_exit_code() == 1
 
 
 def test_violation_budget_trip_holds_until_operator_unblock(kanban_home):

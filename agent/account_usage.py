@@ -326,7 +326,7 @@ def _resolve_codex_usage_credentials(
     base_url: Optional[str], api_key: Optional[str], *, force_refresh: bool = False,
 ) -> tuple[str, str, Optional[str]]:
     """Codex quota credentials: explicit live-agent creds → native runtime resolver (itself pool-aware) → direct
-    pool select. Native OAuth stores device-code logins in the pool, so the singleton store alone is not enough."""
+    account-scoped pool select. Native OAuth stores device-code logins in the pool, so the singleton store alone is not enough."""
     explicit_key = str(api_key or "").strip()
     if explicit_key and not force_refresh:
         return explicit_key, str(base_url or "").strip(), None
@@ -368,7 +368,7 @@ def _resolve_codex_usage_credentials(
         logger.debug("codex ▸ /usage runtime resolver returned no creds; trying pool", exc_info=True)
     # Tier 3: pool credentials have no account_id concept → header omitted.
     from agent.credential_pool import load_pool
-    entry = load_pool("openai-codex").select()
+    entry = load_pool("openai-codex").select_for_usage()
     if entry is None:
         raise RuntimeError("No available openai-codex credential in credential pool")
     # Pool rows keep the canonical URL; a gateway key must go to its route host, not chatgpt.com (#121486).

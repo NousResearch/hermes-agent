@@ -45,6 +45,27 @@ def merge_model_cooldowns(*maps: Any) -> dict[str, float]:
 
 
 class CredentialPoolModelCooldownMixin:
+    def select_for_usage(self) -> Optional[PooledCredential]:
+        """Resolve an account-metadata credential, not a model inference lease.
+
+        Model entitlement/rate-limit benches cannot block account quota reads. Keep
+        credential-wide blocks and token refresh rules, without counting a request,
+        changing the current inference credential, or rotating the pool order.
+        """
+        with self._lock:
+            available, pending = self._available_entries(refresh=True, for_usage=True)
+        if not available and pending:
+            self._refresh_pending_entries(pending)
+            with self._lock:
+                available, _pending = self._available_entries(refresh=True, for_usage=True)
+        return available[0] if available else None
+
+    def _selection_model_cooldown(
+        self, entry: PooledCredential, model: Optional[str], *, for_usage: bool = False,
+    ) -> Optional[float]:
+        """Only account-metadata selection may bypass model-scoped benches."""
+        return None if for_usage else model_cooldown_until(entry, model)
+
     def token_is_blocked(self, token: str, *, model: Optional[str] = None) -> bool:
         """Whether a pool cooldown blocks *token* for *model*.
 

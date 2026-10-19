@@ -10,8 +10,10 @@ from __future__ import annotations
 import base64
 import json
 import threading
+import time
 from datetime import datetime, timedelta, timezone, UTC
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import httpx
 import pytest
@@ -184,3 +186,37 @@ def test_read_only_fetch_remembered_under_identity_slot(monkeypatch, tmp_path):
     assert snapshot is not None and snapshot.windows[0].used_percent == 66.0
     assert cached_account_usage("openai-codex") is None, \
         "a per-credential snapshot must never pose as the provider-wide gauge"
+
+
+def test_live_quota_fallback_reads_model_benched_pool_row(monkeypatch, tmp_path):
+    """Real pool store + loopback quota GET: a model bench is not an account auth failure."""
+    from agent.credential_pool import load_pool
+    from hermes_cli import auth
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+
+    def invalid_singleton(**kwargs):
+        raise auth.AuthError("Invalid refresh token", provider="openai-codex",
+                             code="invalid_refresh_token", relogin_required=True)
+
+    monkeypatch.setattr(account_usage, "resolve_codex_runtime_credentials", invalid_singleton)
+    token = _codex_jwt("acct-quota", "user-quota")
+    with _LoopbackUsageServer() as server:
+        server.responses[token] = (200, _usage_payload(weekly_used=26))
+        auth.write_credential_pool("openai-codex", [{
+            "id": "quota-seat", "label": "quota-seat", "auth_type": "api_key",
+            "priority": 0, "source": "manual", "access_token": token,
+            "base_url": server.url,
+            "model_cooldowns": {"unavailable-model": time.time() + 365 * 86400},
+        }])
+        before = auth.read_credential_pool("openai-codex")
+        assert load_pool("openai-codex").select() is None
+        snapshot = fetch_account_usage("openai-codex")
+
+    assert snapshot is not None
+    assert [(w.label, w.used_percent) for w in snapshot.windows] == [("Session", 20.0), ("Weekly", 26.0)]
+    assert server.requests == [{"path": "/backend-api/wham/usage", "token": f"Bearer {token}"}]
+    assert auth.read_credential_pool("openai-codex") == before
+    assert load_pool("openai-codex").select(model="unavailable-model") is None

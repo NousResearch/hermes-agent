@@ -58,13 +58,16 @@ async def test_real_whatsapp_bridge_events_run_a_turn_through_native_admission(t
     adapter.gateway_runner, runner.adapters = runner, {Platform.WHATSAPP: adapter}
     authority = await initialize_session_authority(runner, profile_id='default', instance_id='wa')
     runner._wire_adapter_handlers(adapter)
-    sent, turns = [], []
+    sent, turns, native_claims = [], [], []
 
     async def send(chat_id, content, **_):
         sent.append(content)
         return SendResult(success=True, message_id='s')
 
     async def turn(event, *_args, **_kwargs):
+        from gateway.session_ingress import native_transfer_instruction
+        claim = native_transfer_instruction.get()
+        native_claims.append((claim[0] is event, claim[1]) if claim else None)
         turns.append((event.text, event.metadata))
         execution_result.get()['result'] = {'final_response': 'ok', 'messages': []}
         return 'ok'
@@ -80,6 +83,7 @@ async def test_real_whatsapp_bridge_events_run_a_turn_through_native_admission(t
                                    timeout=20, what=f'reply to {shape["nativeType"]}')
             assert sent[index] == 'ok', sent
             assert turns[index] == (text, metadata), turns
+            assert native_claims[index] == (True, text)
     finally:
         authority.db.close()
 

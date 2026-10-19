@@ -96,6 +96,56 @@ def test_failed_agent_result_never_counts_as_intentional_silence():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("internal", "inherit_channel_pin", "message_id", "claim_present", "expected_instruction"),
+    [
+        (False, False, "native-message-1", True, "Please transfer issue ABC-1 to this chat"),
+        (True, False, "native-message-1", True, ""),
+        (False, True, "native-message-1", True, ""),
+        (False, False, "native-message-1", False, ""),
+        (False, False, None, True, "Please transfer issue ABC-1 to this chat"),
+    ],
+)
+async def test_native_turn_binds_only_authenticated_human_instruction(
+    monkeypatch, tmp_path, internal, inherit_channel_pin, message_id, claim_present,
+    expected_instruction,
+):
+    from tools.registry import _current_tool_invocation_context
+    from gateway.run import GatewayRunner
+    from gateway.session_ingress import executing_admission, native_transfer_instruction
+
+    runner = _runner(monkeypatch, tmp_path)
+    runner._set_session_env = GatewayRunner._set_session_env.__get__(runner)
+    instruction = "Please transfer issue ABC-1 to this chat"
+    event = MessageEvent(
+        text=instruction, source=_source(), message_id=message_id,
+        internal=internal, inherit_channel_pin=inherit_channel_pin,
+    )
+    seen = []
+
+    async def observe_tool_context(**_kwargs):
+        seen.append(_current_tool_invocation_context())
+        return {"final_response": "done", "messages": [], "tools": [],
+                "history_offset": 0, "last_prompt_tokens": 0, "api_calls": 1,
+                "failed": False}
+
+    runner._run_agent = observe_tool_context
+    executing_token = executing_admission.set(True)
+    claim_token = native_transfer_instruction.set((event, instruction) if claim_present else None)
+    try:
+        await runner._handle_message_with_agent(
+            event, _source(), "agent:main:telegram:group:-1001:12345", 1,
+        )
+    finally:
+        native_transfer_instruction.reset(claim_token)
+        executing_admission.reset(executing_token)
+    assert len(seen) == 1
+    assert seen[0].platform == "telegram"
+    assert seen[0].user_id == "12345"
+    assert seen[0].user_message == expected_instruction
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("reply_expected", [None, True], ids=["adapter-unknown", "addressed"])
 async def test_human_turn_gets_a_visible_fallback_for_a_silence_marker(monkeypatch, tmp_path, reply_expected):
     runner = _runner(monkeypatch, tmp_path)

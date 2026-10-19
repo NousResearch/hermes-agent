@@ -676,6 +676,56 @@ def test_broken_config_yaml_serves_last_known_good_with_drop_ins(home):
     assert cfg["agent"]["max_turns"] == 11          # LKG user values recovered
 
 
+def test_in_process_last_known_good_reapplies_a_drop_in_edited_while_broken(home):
+    """The LKG arm a live gateway actually takes must not freeze the overlay it last expanded.
+
+    This is the other half of the recovery contract, and the arm the backup test above steps
+    around by clearing ``_LAST_EXPANDED_CONFIG_BY_PATH``: here the in-process LKG survives, so the
+    served config is the one expanded BEFORE the drop-in edit. A drop-in is an independent valid
+    file, so editing it while config.yaml is broken must still take effect.
+    """
+    (home / "config.yaml").write_text("display:\n  skin: user_skin\n", encoding="utf-8")
+    d = _drop_in_dir(home)
+    drop = d / "10-a.yaml"
+    drop.write_text("display:\n  skin: dropin_v1\n", encoding="utf-8")
+    assert config_mod.load_config()["display"]["skin"] == "dropin_v1"  # primes the in-process LKG
+    (home / "config.yaml").write_text("display: [broken yaml\n", encoding="utf-8")
+    _rewrite(drop, "display:\n  skin: dropin_v2\n")  # the user fixes the drop-in, not config.yaml
+    # Only the load cache goes: _LAST_EXPANDED_CONFIG_BY_PATH deliberately survives.
+    config_mod._LOAD_CONFIG_CACHE.clear()
+    config_d.invalidate_config_d_cache()
+    assert config_mod.load_config()["display"]["skin"] == "dropin_v2"
+
+
+def test_in_process_last_known_good_keeps_admin_pins_over_reapplied_drop_in(
+        home, tmp_path, monkeypatch):
+    """Re-applying the overlay on the in-process LKG must stay UNDER the managed layer.
+
+    The in-process LKG is an ALREADY-merged config, so a naive re-overlay would let a drop-in
+    shadow an administrator-pinned value — inverting the documented order.
+    """
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    (managed / "config.yaml").write_text("display:\n  skin: managed_skin\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    from hermes_cli import managed_scope
+
+    managed_scope.invalidate_managed_cache()
+    try:
+        (home / "config.yaml").write_text("display:\n  skin: user_skin\n", encoding="utf-8")
+        d = _drop_in_dir(home)
+        drop = d / "10-a.yaml"
+        drop.write_text("display:\n  skin: dropin_v1\n", encoding="utf-8")
+        assert config_mod.load_config()["display"]["skin"] == "managed_skin"
+        (home / "config.yaml").write_text("display: [broken yaml\n", encoding="utf-8")
+        _rewrite(drop, "display:\n  skin: dropin_v2\n")
+        config_mod._LOAD_CONFIG_CACHE.clear()
+        config_d.invalidate_config_d_cache()
+        assert config_mod.load_config()["display"]["skin"] == "managed_skin"
+    finally:
+        managed_scope.invalidate_managed_cache()
+
+
 def test_drop_in_terminal_section_counts_as_file_sourced(home):
     """Same contract as cli_config_load's _file_has_terminal_config: only a file-sourced
     terminal section may overwrite .env-set TERMINAL_* vars — and a drop-in IS a file."""

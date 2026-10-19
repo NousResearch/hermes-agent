@@ -1,9 +1,10 @@
 """Configuration management for Hermes Agent: config.yaml / .env loading, saving,
 validation, migration, and the ``hermes config`` command."""
 
-# health: allow FILE_LINES -- config.d drop-in layer: the +27 lines are the loader integration
+# health: allow FILE_LINES -- config.d drop-in layer: the added lines are the loader integration
 # itself (drop-in overlay at each of the four merge points, the drop-in signature folded into the
-# cache key, and the dynamic cache indices that replace the previously hardcoded 8). The
+# cache key, the dynamic cache indices that replace the previously hardcoded 8, and the in-process
+# last-known-good re-overlay that keeps a drop-in edit effective while config.yaml is broken). The
 # config.d-specific helpers were already moved to hermes_cli/config_d.py and the pre-defaults
 # user-layer normalization to hermes_cli/config_user_layer.py; what remains here is the chokepoint
 # wiring that cannot live outside the facade.
@@ -2266,6 +2267,14 @@ def _last_known_good_fallback(config_path: Path, path_key: str, cache_sig, exc: 
     # See #31188.
     lkg = _LAST_EXPANDED_CONFIG_BY_PATH.get(path_key)
     fallback = "last-known-good"
+    if lkg is not None:
+        # Drop-ins are independent valid files: a config.yaml broken mid-edit must not freeze the
+        # overlay we last EXPANDED — edit a drop-in while config.yaml is broken and this arm would
+        # keep serving the old value, while the backup arm below re-applies the current one. The
+        # in-process LKG already carries the managed overlay, so re-applying it here must stay
+        # UNDER the admin pins (same order as a normal load: user layer, then managed).
+        lkg, _ = _merge_managed_overlay(_deep_merge(
+            lkg, _expand_env_vars(config_d.load_config_d())))  # type: ignore[arg-type]
     if lkg is None:
         # Fresh process (CLI restart, `hermes config get`): nothing loaded yet in this process, so
         # fall back to the newest byte-exact copy the last successful parse left in backups/config/.

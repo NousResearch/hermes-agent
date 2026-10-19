@@ -73,6 +73,8 @@ gateway:
     next_turn_only: "    (للدور التالي فقط — يُستعاد بعد ردّ واحد)"
     switch_cancelled: "🟡 أُلغي تبديل النموذج. النموذج الحالي لم يتغيّر ({model})."
     guard_confirm: "⚠️ **{title}**\n\n{message}\n\n_بديل نصي: أرسل `{prefix}approve` للتبديل أو `{prefix}cancel` للإبقاء على النموذج الحالي._"
+    err_once_local: "`--once` is not available in this session; use `/model <name>` and switch back after the turn."
+    local_next_turn: "Applies from your next message."
   agents:
     header: "🤖 **الوكلاء والمهام النشطة**"
     active_agents: "**الوكلاء النشطون:** {count}"
@@ -162,6 +164,7 @@ gateway:
     full_logs_hint: "لرفع السجلات الكاملة، استخدم `hermes debug share` من واجهة الأوامر."
     share_hint: "شارك هذه الروابط مع فريق Hermes للحصول على الدعم."
     report_label: "تقرير"
+    local_refused: "يُبقي `/debug local` التقرير على الجهاز الذي يشغّل Hermes، لذا فهو غير متاح من المحادثة. أرسل `/debug` لرفع التقرير الموجز."
   deny:
     stale: "❌ رُفض الأمر (الموافقة كانت قديمة)."
     no_pending: "لا يوجد أمر معلّق لرفضه."
@@ -184,8 +187,8 @@ gateway:
     choice_normal: "normal — المعالجة القياسية"
     choice_auto: "auto — سريع في الثواني الأولى من كل دور"
     choice_cold: "cold — سريع في الدور الأول من الجلسة فقط"
-    choice_ultrafast: "ultrafast — ‏OpenAI Ultrafast ‏(GPT-6 Astra، السعر ×6)"
-    ultrafast_not_supported: "⚡ ‏Ultrafast متاح فقط لـ GPT-6 Astra (النموذج الحالي: `{model}`)."
+    choice_ultrafast: "ultrafast — ‏OpenAI Ultrafast، السعر ×6"
+    ultrafast_not_supported: "⚡ ‏Ultrafast غير متاح لـ `{model}` على هذا الحساب أو المسار."
   footer:
     status: "📎 تذييل التشغيل: **{state}**\nالحقول: `{fields}`\nالمنصّة: `{platform}`"
     usage: "الاستخدام: `/footer [on|off|status]`"
@@ -435,7 +438,6 @@ gateway:
     last_activity: "**آخر نشاط:** {timestamp}"
     model: "**النموذج:** `{model}`"
     model_provider: "**النموذج:** `{model}` ({provider})"
-    free_tier: "Nous · الخطة المجانية · nous/welcome · /login لتسجيل الدخول"
     context: "**السياق:** {used} / {total} ({pct}%)"
     context_used: "**السياق:** ~{used} رمزًا"
     tokens: "**رموز API التراكمية (تُعاد كل استدعاء):** {tokens}"
@@ -444,6 +446,9 @@ gateway:
     state_no: "لا"
     queued: "**المتابعات في الطابور:** {count}"
     platforms: "**المنصّات المتصلة:** {platforms}"
+  discard:
+    nothing: "لا شيء لتجاهله: لا توجد في هذه المحادثة جولة فُقدت أثناء إعادة التشغيل."
+    done: "🗑️ تم تجاهل {count} جولة مفقودة؛ لم تُعد تشغيلها. سيتم الرد على رسائلك المحفوظة الآن."
   stop:
     stopped_pending: "⚡ تم الإيقاف. لم يكن الوكيل قد بدأ بعد — يمكنك متابعة هذه الجلسة."
     stopped: "⚡ تم الإيقاف. يمكنك متابعة هذه الجلسة."
@@ -779,8 +784,6 @@ gateway:
   plan:
     ack_task: "جارٍ التخطيط: {task}"
     ack_conversation: "جارٍ التخطيط من سياق هذه المحادثة…"
-  initiate_setup:
-    ack: "جارٍ بدء الإعداد…"
   init:
     start_failed: "تعذّر بدء /init — يُرجى المحاولة مرة أخرى."
     ack_update: "جارٍ تحديث AGENTS.md من فحص المشروع…"
@@ -843,7 +846,6 @@ gateway:
   startup:
     handoff_thread_title: "Hermes — {title}"
     restarted: "♻ أُعيد تشغيل البوّابة بنجاح. جلستك مستمرة."
-    free_tier_line: "الاستدلال: الطبقة المجانية من Nous (nous/welcome). سجّل الدخول للمزيد: /login"
     online: "♻️ البوّابة متصلة — Hermes عاد وجاهز."
     db_corrupt: "⚠️ رُصد تلف في قاعدة بيانات الجلسات. قد لا تُحفظ الرسائل. خيارات الاستعادة:\n1. شغّل `hermes {profile_arg}doctor --fix`\n2. أوقف البوّابة، ثم استعد بـ:\n   hermes {profile_arg}sessions recover --source {db_path} --inspect-only\n   (إذا أفاد بإمكانية الاستعادة) hermes {profile_arg}sessions recover --source {db_path} --output recovered-state.db\n   — تأخذ الاستعادة لقطة من الملف المتضرر أولًا؛ لا تشغّل `sqlite3 ... \".recover\"` على state.db الحي، فقد يزيد sqlite3 CLI المعرّض للثغرات من تلفه\n3. استعد من نسخة احتياطية في {backups_dir}/\nشغّل `hermes {profile_arg}doctor` للحصول على تشخيصات منقّحة."
     db_fts_corrupt: "⚠️ أفادت قاعدة بيانات الجلسات بخطأ تلف محصور في فهرس البحث (FTS5)؛ جداول الرسائل غير متضررة. قد لا تُحفظ الرسائل حتى إصلاحه: شغّل `hermes {profile_arg}doctor --fix` ثم أعد تشغيل البوّابة. لا تشغّل أدوات الاستعادة ولا تستعد نسخة احتياطية إلا إذا أكّد `hermes {profile_arg}doctor` وجود تلف."
@@ -1532,6 +1534,8 @@ slash:
     description: "استيراد أرشيف ملف تعريفي مشترك كملف تعريفي جديد"
   stop:
     description: "إنهاء كل العمليات قيد التشغيل في الخلفية"
+  discard:
+    description: "تجاهل جولة فُقدت عند إعادة تشغيل Hermes لتستأنف قائمة انتظار هذه المحادثة"
   pause:
     description: "إيقاف الأعمال الجديدة مؤقتًا على مستوى النظام (إيقاف طارئ)؛ '/pause off' يستأنفها"
   deny:
@@ -1558,8 +1562,6 @@ slash:
     description: "إعادة تشغيل مطالبة على فترات متكررة في هذه الجلسة"
   plan:
     description: "كتابة خطة تنفيذ بصيغة markdown في .hermes/plans/ دون تنفيذ أي شيء"
-  initiate-setup:
-    description: "شغّل الإعداد الأول: يتعرّف عليك ويجهّز Hermes حولك"
   moa:
     description: "تشغيل مطالبة واحدة عبر الإعداد الافتراضي لـ Mixture of Agents ثم استعادة نموذجك"
   subgoal:
@@ -1972,6 +1974,7 @@ cli:
     desc_switch_anyway: "استخدام هذا النموذج لجلسة Hermes الحالية."
     choice_cancel: "إلغاء"
     desc_keep_current_model: "الاحتفاظ بالنموذج الحالي."
+    confirm_choice_prompt: "الاختيار [1/2]: "
     switch_cancelled: "أُلغي تبديل النموذج."
     selection_failed: "✗ فشل اختيار النموذج: {error}"
     switch_failed: "⚠ فشل التبديل إلى النموذج {model} ({error})؛ البقاء على {old_model}."
@@ -2279,6 +2282,7 @@ cli:
     failed: "فشل الاتصال"
     authorized_no_tools: "تم التصريح. الأدوات غير متاحة."
     connected: "متصل"
+    named_account: "سمّى Hermes حساب {name} هذا {alias}. يمكنك إعادة تسميته في أي وقت."
     waiting: "في الانتظار…"
   editor:
     only_interactive: "المحرّر الخارجي متاح فقط داخل واجهة سطر الأوامر التفاعلية."
@@ -2660,7 +2664,7 @@ cli:
       feature_anthropic: "الوضع السريع من Anthropic"
       feature_openai: "المعالجة ذات الأولوية"
       feature_ultrafast: "OpenAI Ultrafast"
-      ultrafast_not_supported: "(._.) ‏Ultrafast متاح فقط لـ GPT-6 Astra (النموذج الحالي: {model})."
+      ultrafast_not_supported: "(._.) ‏Ultrafast غير متاح لـ {model} على هذا الحساب أو المسار."
       usage: "الاستخدام: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ تم ضبط {feature} على {value} {scope}"
@@ -2918,8 +2922,6 @@ cli:
     plan:
       planning: "📋 جارٍ التخطيط: {task}"
       from_conversation: "📋 جارٍ التخطيط من سياق هذه المحادثة..."
-    initiate_setup:
-      starting: "🧭 جارٍ بدء الإعداد..."
     init:
       updating: "⚡ جارٍ تحديث AGENTS.md من فحص المشروع..."
       generating: "⚡ جارٍ إنشاء AGENTS.md من فحص المشروع..."
@@ -3008,6 +3010,10 @@ cli:
       usage_disconnect: "disconnect   الرجوع إلى الواجهة الخلفية الافتراضية للمتصفح"
       usage_status: "status       عرض وضع المتصفح الحالي"
       usage_use: "use [off]    التبديل إلى وضع Browser Use (CLI 3.0) / الرجوع إلى الأدوات المضمّنة"
+      remote_gateway: "‏/browser connect و /browser disconnect يديران متصفحًا من عائلة Chromium على مضيف البوابة — متاح فقط عند الاتصال ببوابة محلية."
+      checking: "جارٍ التحقق من التصحيح عن بُعد لمتصفح Chromium على {url}..."
+      new_sessions_only: "ينطبق على الجلسات الجديدة — تحتفظ هذه الجلسة بأدواتها الحالية (‏/new لبدء جلسة)."
+      status_gateway_default: "🌐 المتصفح: الواجهة الافتراضية لمتصفح البوابة (لا يوجد اتصال CDP مباشر)"
     heartbeat:
       label: "النبضات"
       paused: "⏸ تم إيقاف النبض مؤقتًا: {prompt}"
@@ -3116,6 +3122,10 @@ cli:
     loaded: "(محمّل)"
     not_found: "(غير موجود)"
     microsoft_entra_id: "Microsoft Entra ID"
+    google_vertex_oauth: "Google OAuth (Vertex AI)"
+    key_cmd_token: "key_cmd token (command)"
+    minimax_oauth: "MiniMax OAuth"
+    token_provider: "Token provider"
     api_key_not_set: "غير معيّن!"
     value_not_set: "غير معيّن"
     section_model: "النموذج"
@@ -3297,8 +3307,22 @@ cli:
     next_session_deepens: "جلسة `hermes -w` التالية تعمّق الاستنساخ وتحذف worktrees المدمجة تلقائيًا."
     unpushed_keeping: "⚠ يحتوي worktree على إيداعات غير مدفوعة، سيُحتفظ به: {path}"
     uncommitted_keeping: "⚠ يحتوي worktree على تغييرات غير مودعة، سيُحتفظ به: {path}"
+    kept_reason: "⚠ سيُحتفظ بالـ worktree ({reason}): {path}"
     clean_up_manually: "للتنظيف يدويًا: git worktree remove --force {path}"
     cleaned_up: "✓ تم تنظيف worktree: {path}"
+    exit_question_dirty: "يحتوي هذا الـ worktree على تغييرات غير مودعة: {path}"
+    exit_question_unpushed: "يحتوي هذا الـ worktree على إيداعات غير مدفوعة: {path}"
+    exit_choice_keep: "الاحتفاظ بالـ worktree (افتراضي)"
+    exit_choice_archive: "أرشفته وإزالته (قابل للاستعادة)"
+    exit_choice_discard: "إزالته وتجاهل التغييرات"
+    archiving: "جارٍ أرشفة {path} … (قد يستغرق ذلك بعض الوقت لشجرة كبيرة)"
+    archived: "✓ تمت أرشفة الـ worktree في {ref} وإزالته: {path}"
+    restore_hint: "لاستعادته: hermes worktree restore {name}"
+    archive_failed: "✗ تعذّرت أرشفة {path}، سيُحتفظ به: {error}"
+    archived_kept: "✓ تمت أرشفة الـ worktree في {ref} لكن احتُفظ به ({reason}): {path}"
+    sweep_archived_removed: "أُرشف + أُزيل → {ref}"
+    sweep_archived_kept: "أُرشف، واحتُفظ به ({reason}) → {ref}"
+    discarded: "تمت إزالة الـ worktree وتجاهل تغييراته: {path}"
 display:
   verb:
     web_search: "يبحث في الويب"
@@ -3727,7 +3751,7 @@ tips:
   t241: "تخزّن البوّابة مثيلات AIAgent مؤقتًا لكل جلسة — وتدمير هذه الذاكرة المؤقتة يعطّل تخزين مطالبات Anthropic المؤقت."
   t242: "يمكن لأي موقع ويب عرض مهارات عبر /.well-known/skills/index.json — ويكتشفها مركز المهارات تلقائيًا."
   t243: "يتتبّع سجل تدقيق المهارات في ~/.hermes/skills/.hub/audit.log كل عملية تثبيت وإزالة."
-  t244: "تُنظَّف worktrees القديمة في git تلقائيًا عند البدء: تُحذف الأشجار النظيفة المدمجة بالكامل؛ ويُحفظ دائمًا أي عمل غير مكتمل أو غير مدفوع."
+  t244: "تُنظَّف worktrees القديمة في git تلقائيًا: تُحذف الأشجار النظيفة المدمجة؛ أما الأشجار الخاملة التي تحتوي على تغييرات غير مودعة أو غير مدفوعة فتُؤرشف أولًا ويمكن استعادتها باستخدام hermes worktree restore."
   t245: "تحدّد الملفات التعريفية نطاق حالة Hermes عبر HERMES_HOME؛ وتحتفظ عمليات الأدوات الفرعية على المضيف بـ HOME الحقيقي ما لم يكن terminal.home_mode هو profile."
   t246: "يضبط متغير البيئة HERMES_HOME_MODE (ثماني، مثل 0701) صلاحيات مخصصة للمجلد لتمكين خادم الويب من عبوره."
   t247: "وضع الحاوية: ضع .container-mode في HERMES_HOME وسينفّذ سطر أوامر المضيف نفسه تلقائيًا داخل الحاوية."

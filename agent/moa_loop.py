@@ -946,18 +946,14 @@ def aggregate_moa_context(
 
     agg_label = _slot_label(aggregator)
     agg_runtime = _slot_runtime(aggregator)
-    cache_disabled, cache_ttl = _agent_cache_opts(agent)
     _touch_fanout_progress(
         agent, f"MoA: synthesizing aggregator guidance ({agg_label})"
     )
     try:
-        # Same cache_control decoration as the advisor calls; this synthesis call is
-        # a third independent MoA call path that otherwise re-bills its full input.
-        agg_messages = _maybe_apply_moa_cache_control(
-            [{"role": "user", "content": synth_prompt}], _with_cache_disabled(agg_runtime, cache_disabled), cache_ttl=cache_ttl,
-        )
+        # Undecorated: the prompt embeds this call's reference outputs, so no later call
+        # reads it back and a marker would only pay a cache write (is_one_shot_request).
         synthesis = _extract_text(call_llm(
-            task="moa_aggregator", messages=agg_messages, temperature=aggregator_temperature,
+            task="moa_aggregator", messages=[{"role": "user", "content": synth_prompt}], temperature=aggregator_temperature,
             reasoning_config=_aggregator_reasoning_config(aggregator), **agg_runtime,
         ))
     except Exception as exc:

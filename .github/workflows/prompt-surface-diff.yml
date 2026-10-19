@@ -9,13 +9,18 @@ name: Prompt surface diff
 #     change that alters the surface must carry the regenerated snapshot in the same PR;
 #   * this job summarises the snapshot's base->head diff (per-surface token deltas, prompt hunks,
 #     per-tool description/param changes) into the unified CI review comment;
-#   * the protect-main ruleset requires two hermes-agent-core approvals for that directory.
+#   * the prompt-surface-review ruleset requires one hermes-agent-core approval for that directory.
 #
 # Never blocking: the staleness test is the gate and the ruleset is the review requirement.
 # Reads only the two committed snapshots (no PR code runs), so it needs no secrets.
 
 on:
   workflow_call:
+    inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
     outputs:
       changed:
         description: Whether the prompt-surface snapshot changed relative to the target branch.
@@ -28,21 +33,23 @@ permissions:
   contents: read
 
 concurrency:
-  group: prompt-surface-diff-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: prompt-surface-diff-${{ inputs.commit != '' && github.run_id || github.event.pull_request.number || github.ref }}
+  # A stable run is on the default branch. It must not queue behind or cancel a push.
+  cancel-in-progress: ${{ inputs.commit == '' }}
 
 jobs:
   diff:
     name: Prompt surface summary
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     outputs:
       changed: ${{ steps.diff.outputs.changed }}
       review_status: ${{ steps.emit-status.outputs.review_status }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
+          ref: ${{ inputs.commit }}
           fetch-depth: 0 # need history for the merge base
           persist-credentials: false
 
@@ -87,7 +94,7 @@ jobs:
                   "summary": "This PR changes the system prompt or tool schemas every session sends.",
                   "detail": detail,
                   "how_to_fix": "Read the rendered change below (full text under tests/fixtures/prompt_surface/ "
-                                "in the Files tab). Merging needs two hermes-agent-core approvals.",
+                                "in the Files tab). Merging needs a hermes-agent-core approval.",
               }]}]
           print("review_status=" + json.dumps(status))
           PY

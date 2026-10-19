@@ -12,7 +12,7 @@ still land on the intended region::
 import bisect
 import re
 from difflib import SequenceMatcher
-from typing import Callable, Optional
+from typing import Callable, Iterable, Optional
 
 Span = tuple[int, int]
 
@@ -302,6 +302,27 @@ STRATEGIES: list[tuple[str, Callable[[str, str], list[Span]]]] = [
 SIMILARITY_STRATEGIES = frozenset({"block_anchor", "context_aware"})
 
 
+def boundary_note(strategies: Iterable[Optional[str]], target: str = "old_string's",
+                  where: str = "") -> Optional[str]:
+    """The note for an edit whose span was found by a similarity strategy, else None.
+
+    Those strategies accept a window whose lines only resemble the search text, so the spliced span
+    can land a line off (observed: a duplicated closing delimiter just outside the intended region).
+    The normalizing strategies still match every line, so their boundaries are exact; they fire on
+    routine edits (e.g. missing base indentation), where a note would teach the model to ignore it.
+    Post-write verification cannot catch a shifted span: it only confirms the new content landed.
+    """
+    used = list(dict.fromkeys(s for s in strategies if s in SIMILARITY_STRATEGIES))
+    if not used:
+        return None
+    return (
+        f"Non-exact match (strategy: {', '.join(used)}){where}. The edit span was located "
+        f"approximately, not matched to {target} literal boundaries — review the diff below to "
+        "confirm the change landed exactly where intended (a shifted boundary can duplicate or "
+        "drop a line just outside the edited region)."
+    )
+
+
 # ── Orchestrator ─────────────────────────────────────────────────────────
 
 def is_already_applied(content: str, old_string: str, new_string: str) -> bool:
@@ -336,11 +357,13 @@ def _format_match_locations(content: str, matches: list[Span], cap: int = 5) -> 
 
 
 def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
-                           replace_all: bool = False) -> tuple[str, int, Optional[str], Optional[str]]:
+                           replace_all: bool = False, *,
+                           correction_notes: Optional[list[str]] = None) -> tuple[str, int, Optional[str], Optional[str]]:
     """Find and replace via the strategy chain.
 
     Returns ``(new_content, match_count, strategy_name, error)``; on failure
-    ``(content, 0, None, error)``.
+    ``(content, 0, None, error)``. Successful escape corrections append their
+    explanation to ``correction_notes`` when supplied by a tool caller.
     """
     if not old_string:
         # Actionable recovery text: a terse "cannot be empty" leaves the model
@@ -358,6 +381,13 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
             "old_string is only whitespace — provide non-blank text to match. Set it "
             "to the exact existing text the replacement should replace (read the file "
             "first if unsure). Do not re-send this call unchanged.")
+    # All consumers, including validation and approval previews, must use the
+    # same correction policy before a fuzzy strategy can match ambiguous text.
+    from tools.escape_drift_autocorrect import AmbiguousEscapeDriftError, maybe_correct_escape_drift
+    try:
+        old_string, new_string, correction_note = maybe_correct_escape_drift(old_string, new_string, content)
+    except AmbiguousEscapeDriftError as exc:
+        return content, 0, None, str(exc)
     if old_string == new_string:
         return content, 0, None, IDENTICAL_STRINGS_ERROR
 
@@ -395,6 +425,8 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
             unicode_plan=(_unicode_edit_plan(old_string, effective_new)
                           if strategy_name == "unicode_normalized" else None))
         _note_edit_match(strategy_name)
+        if correction_note and correction_notes is not None:
+            correction_notes.append(correction_note)
         return new_content, len(matches), strategy_name, None
 
     _note_edit_match(None, "no_match")
@@ -525,11 +557,32 @@ def _first_meaningful_line(text: str) -> Optional[str]:
     return next((line for line in text.split("\n") if line.strip()), None)
 
 
-def _reindent_replacement(file_region: str, old_string: str, new_string: str) -> str:
+def _match_starts_mid_line(content: str, start: int, end: int) -> bool:
+    """Whether text outside the match precedes its first non-blank line.
+
+    Leading newlines and blank lines do not make an anchor partial-line: the first
+    code line can still be captured in full and need indentation adjustment.
+    """
+    first_line_start = start
+    for line in content[start:end].split("\n"):
+        if line.strip():
+            line_start = content.rfind("\n", 0, first_line_start) + 1
+            return bool(content[line_start:first_line_start].strip(" \t\r"))
+        first_line_start += len(line) + 1
+    return False
+
+
+def _reindent_replacement(file_region: str, old_string: str, new_string: str, *,
+                          match_starts_mid_line: bool) -> str:
     """Re-anchor ``new_string``'s indentation onto the file's actual base indent after a
     non-exact match: swap the LLM base prefix (first non-blank old_string line) for the
-    file's, preserving relative nesting; shallower lines anchor to the file base."""
-    if not new_string:
+    file's, preserving relative nesting; shallower lines anchor to the file base.
+
+    Preserve the supplied indentation when non-whitespace text precedes the match's
+    first non-blank line: a partial-line expression has no reliable base indent.
+    Leading line breaks and blank lines still allow whole-line re-anchoring.
+    """
+    if not new_string or match_starts_mid_line:
         return new_string
     old_first = _first_meaningful_line(old_string)
     file_first = _first_meaningful_line(file_region)
@@ -596,7 +649,10 @@ def _apply_replacements(content: str, matches: list[Span],
                 # Each occurrence may use different typographic characters even
                 # though all normalize to the same old_string.
                 adjusted = _preserve_unicode_in_replacement(region, adjusted, unicode_plan)
-            adjusted = _reindent_replacement(region, old_string, adjusted)
+            adjusted = _reindent_replacement(
+                region, old_string, adjusted,
+                match_starts_mid_line=_match_starts_mid_line(content, start, end),
+            )
         result = result[:start] + adjusted + result[end:]
     return result
 

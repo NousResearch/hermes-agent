@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_constants import hermes_home_key
 from tools.browser_tool_origin import origin as _bt
 from tools import browser_tool_cdp as _cdp
 from tools import browser_tool_cloud as _cloud
@@ -264,19 +265,28 @@ def _session_record(prefix: str, cdp_url: Optional[str], features: dict[str, Any
             "cdp_url": cdp_url, "features": features}
 
 
+def real_profile_note(task_id: str) -> Optional[str]:
+    """The real-profile fallback note on ``task_id``'s existing session; never creates or touches one."""
+    with _bt._cleanup_lock:
+        return (_bt._active_sessions.get(task_id) or {}).get("real_profile_unavailable")
+
+
 def _create_local_session(task_id: str, allow_real_profile: bool = True) -> dict[str, str]:
     """Local Chromium session; consented real-profile CDP attach when allowed.
 
-    Real-profile fails closed on resolver/launch errors (a consented user must never be
-    silently downgraded to a throwaway). The hybrid private-URL sidecar passes
-    ``allow_real_profile=False``: the user's cookie jar must not reach an arbitrary
-    internal host the model chose.
+    When the real profile can't be loaded (browser holding its cookies, non-Chromium default,
+    launch failure) the session falls back to a fresh browser and carries the reason as
+    ``real_profile_unavailable`` so the first navigation tells the model it is signed out. The
+    hybrid private-URL sidecar passes ``allow_real_profile=False``: the user's cookie jar must
+    not reach an arbitrary internal host the model chose.
     """
+    fallback_note = None
     if allow_real_profile:
         cdp_url, err = _real_profile._real_profile_cdp()
         if err:
-            raise RuntimeError(err)
-        if cdp_url:
+            _bt.logger.warning("real-profile unavailable for task %s, using a fresh browser: %s", task_id, err)
+            fallback_note = _real_profile.real_profile_fallback_note(err)
+        elif cdp_url:
             info = _session_record("rp", _cdp._resolve_cdp_override(cdp_url), {"local": True, "real_profile": True})
             _bt.logger.info("Created real-profile local session %s for task %s", info["session_name"], task_id)
             return info
@@ -284,10 +294,12 @@ def _create_local_session(task_id: str, allow_real_profile: bool = True) -> dict
     # Browser Use mode + ``browser.engine: lightpanda`` drives a Hermes-spawned
     # ``lightpanda serve`` (the built-in tools are hidden in that mode).
     if _bt._is_browser_use_cli_mode() and _lp._using_lightpanda_engine():
-        return _create_lightpanda_session(task_id)
-
-    info = _session_record("h", None, {"local": True})
-    _bt.logger.info("Created local browser session %s for task %s", info["session_name"], task_id)
+        info = _create_lightpanda_session(task_id)
+    else:
+        info = _session_record("h", None, {"local": True})
+        _bt.logger.info("Created local browser session %s for task %s", info["session_name"], task_id)
+    if fallback_note:
+        info["real_profile_unavailable"] = fallback_note
     return info
 
 
@@ -409,6 +421,7 @@ def _get_session_info(task_id: Optional[str] = None) -> dict[str, Any]:
         session_info = dict(session_info)
         session_info.setdefault("session_key", task_id)
         session_info.setdefault("owner_task_id", _bt._bare_task_id_for_session_key(task_id))
+        session_info.setdefault("home_key", hermes_home_key())  # the profile reaped on /browser connect
         _bt._active_sessions[task_id] = session_info
         _bt._suspect_browser_sessions.pop(task_id, None)  # brand-new session is healthy by definition
 

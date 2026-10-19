@@ -167,6 +167,50 @@ def environment_pairs(value: str) -> dict[str, str]:
     return result
 
 
+def environment_file_pairs(spec: str, uid: int) -> dict[str, str]:
+    # EnvironmentFiles entries: "[-]/path (ignore_errors=...)" — systemd expands
+    # %h and the show output carries the resolved paths. Simple KEY=VALUE lines
+    # only; quoting/escaping beyond that stays unverified.
+    result = {}
+    for match in re.finditer(r"(-?)(/\S+)(?: \((?:ignore_errors=\S+|ignore)\))?", spec):
+        _prefix, path = match.group(1), match.group(2)
+        try:
+            with open(path, "r", encoding="utf-8") as stream:
+                lines = stream.read().splitlines()
+        except OSError:
+            if _prefix == "-":
+                continue
+            _unverified()
+        for line in lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            key, separator, value = stripped.partition("=")
+            if not separator or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+                _unverified()
+            result[key] = value.strip().strip('"').strip("'")
+    return result
+
+
+def _known_safe_pre_hook(argv: list[str]) -> bool:
+    # Recognized pre-hooks: an rm cleanup of Hermes runtime files (the deadline-
+    # lockup drop-in) or a plain absolute script path under the Hermes install.
+    if len(argv) >= 3 and argv[0] == "/bin/sh" and argv[1] == "-c":
+        # systemd prints argv[] unquoted, so the -c string arrives as loose
+        # tokens; rejoining recovers it (a quoted single token joins to itself).
+        command = " ".join(argv[2:])
+        if any(char in command for char in ("$", "`", "\\")):
+            return False
+        parts = re.findall(r"rm -f ([^;]+?)(?=(?:;|$))", command)
+        targets = {t.strip() for t in parts}
+        if not targets or not all(re.fullmatch(r"[\w./-]+", t) and t.startswith("/") for t in targets):
+            return False
+        tail = command.rstrip().rsplit(";", 1)[-1].strip()
+        return tail in {"", "exit 0"}
+    return len(argv) == 1 and argv[0].startswith("/") and re.fullmatch(
+        r"[\w./-]+", argv[0]) is not None and "/.hermes/" in argv[0]
+
+
 def verify_systemd(props: dict[str, str], manager_env: str, home: Path, *, system: bool) -> None:
     import pwd
 
@@ -178,9 +222,19 @@ def verify_systemd(props: dict[str, str], manager_env: str, home: Path, *, syste
     # These can change the execution account, environment, mount namespace, or
     # definitions at start time; show does not expose their resulting identity.
     if props["DynamicUser"] != "no" or any(props[key] for key in (
-        "EnvironmentFiles", "PAMName", "RootDirectory", "RootImage", "ExecStartPre", "ExecCondition",
+        "PAMName", "RootDirectory", "RootImage", "ExecCondition",
     )):
         _unverified()
+    # EnvironmentFiles contribute identity like the manager environment: fold
+    # their KEY=VALUE pairs in so HERMES_HOME via a drop-in stays verifiable.
+    file_env = environment_file_pairs(props["EnvironmentFiles"], os.getuid())
+    # Pre-hooks are verified against the known-safe shapes below; anything
+    # unrecognized (variable expansion, command substitution, unknown script)
+    # stays unverified because show does not expose its resulting identity.
+    if props["ExecStartPre"]:
+        for block in re.findall(r"\{ path=(.*?) ; argv\[\]=(.*?) ; ignore_errors=(?:yes|no)", props["ExecStartPre"]):
+            if any(char in block[1] for char in ("$", "\\", "{", "}")) or not _known_safe_pre_hook(shlex.split(block[1])):
+                _unverified()
     user = props["User"]
     uid = os.getuid()  # windows-footgun: ok — native systemd only
     if user:
@@ -195,6 +249,7 @@ def verify_systemd(props: dict[str, str], manager_env: str, home: Path, *, syste
     inherited = environment_pairs(manager_env)
     env = inherited if not system else {k: v for k, v in inherited.items() if k in props["PassEnvironment"].split()}
     env.update(environment_pairs(props["Environment"]))
+    env.update(file_env)
     for item in shlex.split(props["UnsetEnvironment"]):
         key, sep, value = item.partition("=")
         if not sep or env.get(key) == value:

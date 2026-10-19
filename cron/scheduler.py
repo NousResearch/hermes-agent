@@ -1509,8 +1509,11 @@ def _job_doc_header(job_name: str, job_id: str, now_iso: str, mode: str) -> str:
 
 
 def _resolve_job_workdir(job: dict, job_id: str) -> Optional[str]:
-    """Configured job workdir, or None when unset / no longer a directory (logged)."""
-    workdir = (job.get("workdir") or "").strip() or None
+    """Configured job workdir with ``~`` expanded, or None when unset / no longer a directory (logged).
+
+    ``create``/``edit`` store an expanded path, but a store written by other means (a profile
+    distribution's ``cron/jobs.json``) can carry ``~``, which only the running user can resolve."""
+    workdir = os.path.expanduser((job.get("workdir") or "").strip()) or None
     if workdir and not Path(workdir).is_dir():
         logger.warning(
             "Job '%s': configured workdir %r no longer exists — running without it",

@@ -18,6 +18,16 @@ _registry = HandlerRegistry()
 # Answered from the live session ONLY when the agent lives on a compute host.
 _ISOLATED_SESSION_READ_COMMANDS = frozenset({"context", "tools", "help"})
 
+# /context on a LOCAL session is answered in-process: the slash worker is a CLI
+# subprocess whose ``self.agent`` is built lazily by the first chat prompt and
+# never by a slash command, so its /context answers "(._.) No active agent" for
+# any local session, active or idle (#81251 / #93280). With a live agent we render
+# the full Cursor-style breakdown (the desktop gauge's engine); without one we
+# fall back to the persisted-state view. ``tools``/``help`` keep the old routing:
+# ``_format_live_tools_output`` reads ``session["agent"]``, so serving it here
+# for an agentless session would answer worse, not better.
+_CONTEXT_LOCAL_IN_PROCESS = frozenset({"context"})
+
 _NO_AGENT_USAGE = "(._.) No active agent -- send a message first."
 _NO_AGENT = "No active agent -- send a message first."
 
@@ -60,11 +70,96 @@ def _format_live_review_output(sid: str, session: Optional[dict], arg: str) -> s
     return format_dispatch_note(result, arg or "")
 
 
+def _format_live_refine_output(sid: str, session: Optional[dict], arg: str) -> str:
+    """Dispatch /refine against the live session's agent: spawn the background
+    memory/skills review directly instead of forking the isolated slash worker."""
+    if session is None:
+        return "Refine unavailable (no session)."
+    if session.get("running"):
+        return "Agent is running — wait for the turn to finish, then /refine."
+    if _session_uses_compute_host(session):
+        command = "/refine" + (f" {arg}" if arg.strip() else "")
+        try:
+            ack = _send_compute_host_control(
+                sid,
+                route_name="slash.refine",
+                command=command,
+                wait=True,
+            )
+        except Exception as exc:
+            return f"compute-host slash.refine failed: {exc}"
+        if ack.get("type") in {"control.error", "error"}:
+            return str(ack.get("message") or "compute-host slash.refine failed")
+        _apply_compute_host_metadata_mirror(session, ack)
+        return str(ack.get("output") or "")
+    agent = session.get("agent")
+    if agent is None:
+        return "Nothing to refine yet — send a message first."
+
+    snapshot = []
+    transcript_ref = str(session.get("session_key") or "")
+    if transcript_ref:
+        try:
+            with _session_db(session) as db:
+                if db is not None:
+                    snapshot = db.get_messages_as_conversation(
+                        transcript_ref, include_ancestors=True
+                    )
+        except Exception:
+            logger.debug("failed to load persisted /refine transcript", exc_info=True)
+    if not snapshot:
+        with session["history_lock"]:
+            snapshot = list(session.get("history", []))
+    if not snapshot:
+        return "Nothing to refine yet — the conversation is empty."
+
+    review_skills = "skill_manage" in getattr(agent, "valid_tool_names", set())
+    try:
+        agent._spawn_background_review(
+            messages_snapshot=list(snapshot),
+            review_memory=True,
+            review_skills=review_skills,
+            focus=arg.strip() or None,
+            explicit=True,
+        )
+    except Exception as exc:
+        return f"/refine failed to start: {exc}"
+    tail = f" (focus: {arg.strip()})" if arg.strip() else ""
+    return (
+        f"⚗ Reviewing this conversation in the background{tail} — "
+        "any memory/skill updates will be reported when done."
+    )
+
+
+def _usage_account_blocks(session: dict) -> list[str]:
+    """Provider limits then Nous credits, as CLI/messaging /usage show them; neither needs an agent.
+    Both read the session profile's credentials, unreadable outside its scope when multiplexed (#132422).
+    Before the first turn the route is the session's composer pick, else the profile's provider."""
+    from agent.account_usage import fetch_account_usage, nous_credits_lines, render_account_usage_lines
+    agent = session.get("agent")
+    pick = session.get("model_override") or {}
+    lines: list[str] = []
+    with _session_profile_runtime_scope(session):
+        with contextlib.suppress(Exception):
+            if provider := getattr(agent, "provider", None) or pick.get("provider") or _config_model_target()[1]:
+                lines += render_account_usage_lines(fetch_account_usage(
+                    provider, base_url=getattr(agent, "base_url", None), api_key=getattr(agent, "api_key", None)))
+        with contextlib.suppress(Exception):
+            lines += nous_credits_lines()
+    return lines
+
+
 def _format_live_usage_output(sid: str, session: dict, arg: str) -> str:
+    extra = _usage_account_blocks(session)
+    tokens = _format_live_usage_tokens(session)
+    return "\n\n".join(filter(None, [tokens, "\n".join(extra)])) or _NO_AGENT_USAGE
+
+
+def _format_live_usage_tokens(session: dict) -> str:
     agent = session.get("agent")
     usage = _session_usage_snapshot(session)
     if agent is None and not usage:
-        return _NO_AGENT_USAGE
+        return ""
     if session.get("_metadata_message_count") is not None:
         message_count = int(session.get("_metadata_message_count") or 0)
     else:
@@ -126,6 +221,34 @@ def _format_live_context_output(sid: str, session: dict, arg: str) -> str:
     if not messages:
         with session["history_lock"]:
             messages = _history_to_messages(list(session.get("history", [])), profile_home=session.get("profile_home"))
+
+    breakdown_lines: list[str] = []
+    if (agent := session.get("agent")) is not None:
+        # Live agent: the desktop gauge's engine (agent.context_breakdown) —
+        # full Cursor-style breakdown, provider-anchored, no provider calls.
+        # `all` expands per-skill / per-toolset costs, matching the CLI.
+        with session["history_lock"]:
+            live_messages = list(session.get("history", []))
+        try:
+            # Bind the session context: on the RPC thread the session cwd is unset, so the
+            # prompt build inside would key its workspace pin on the backend's cwd.
+            tokens = _set_session_context(session["session_key"], cwd=_session_cwd(session))
+            try:
+                from agent.context_breakdown import (
+                    compute_context_details,
+                    compute_session_context_breakdown,
+                    render_context_breakdown_lines)
+                payload = compute_session_context_breakdown(agent, live_messages)
+                details = None
+                if (arg or "").strip().lower() in {"all", "full", "details"}:
+                    with contextlib.suppress(Exception):
+                        details = compute_context_details(agent)
+                breakdown_lines = render_context_breakdown_lines(payload, details=details, grid=False)
+            finally:
+                _clear_session_context(tokens)
+        except Exception:
+            breakdown_lines = []  # fall back to the persisted-state view below
+
     usage = _session_usage_snapshot(session)
     mirror = _metadata_mirror(session)
     lines = [f"Conversation: {len(messages)} messages" if messages else "Conversation is empty (no messages yet)."]
@@ -134,6 +257,9 @@ def _format_live_context_output(sid: str, session: dict, arg: str) -> str:
     if model := mirror.get("model") or usage.get("model") or "":
         lines.append(f"Model: {model}")
     lines.append(f"Provider: {mirror.get('provider') or 'auto'}")
+    if breakdown_lines:
+        lines.extend(["", *breakdown_lines])
+        return "\n".join(lines)
     context_used = int(usage.get("context_used") or 0)
     mark = "~" if usage.get("context_estimated") else ""
     context_max = int(usage.get("context_max") or 0)
@@ -204,6 +330,7 @@ _LIVE_SLASH_OUTPUT = {
     "usage": (_NO_AGENT_USAGE, _format_live_usage_output),
     "review": (None, _format_live_review_output),
     "history": ("No conversation history yet.", _format_live_history_output),
+    "refine": (None, _format_live_refine_output),
     "status": (None, _format_live_status_output),
     "context": ("Conversation is empty (no messages yet).", _format_live_context_output),
     "tools": ("No tools available.", _format_live_tools_output),
@@ -220,6 +347,12 @@ def _live_slash_command_output(sid: str, session: Optional[dict], name: str, arg
     arg = arg or ""
     if name == "model" and not arg.strip():
         return _format_live_model_output(session or {})
+    if (
+        name in _CONTEXT_LOCAL_IN_PROCESS
+        and session is not None
+        and not _session_uses_compute_host(session)
+    ):
+        return _format_live_context_output(sid, session, arg)
     if name in _ISOLATED_SESSION_READ_COMMANDS and not (session is not None and _session_uses_compute_host(session)):
         return None
     entry = _LIVE_SLASH_OUTPUT.get(name)
@@ -250,15 +383,18 @@ def _compress_live_with_feedback(sid: str, session: dict, agent, arg: str, *, sn
         AGGRESSIVE_UNSUPPORTED, compress_now, parse_compress_args, render_compress_result)
     from agent.manual_compression_feedback import describe_compression_lock_skip, summarize_manual_compression
     from agent.model_metadata import estimate_request_tokens_rough
-    with _session_profile_runtime_scope(session):
+    request = parse_compress_args(arg)
+    if request.aggressive:
+        return AGGRESSIVE_UNSUPPORTED
+    if request.preview:  # report only — history, agent and session key untouched, so no busy claim
+        with session["history_lock"]:
+            preview_messages = list(session.get("history", []))
+        with _session_profile_runtime_scope(session):
+            return "\n".join(render_compress_result(compress_now(agent, preview_messages, request)))
+    with _session_profile_runtime_scope(session), _manual_compress_turn(sid, session):
         with session["history_lock"]:
             before_messages = list(session.get("history", []))
             history_version = int(session.get("history_version", 0))
-        request = parse_compress_args(arg)
-        if request.aggressive:
-            return AGGRESSIVE_UNSUPPORTED
-        if request.preview:  # report only — history, agent and session key untouched
-            return "\n".join(render_compress_result(compress_now(agent, before_messages, request)))
         sys_prompt = getattr(agent, "_cached_system_prompt", "") or ""
         tools = getattr(agent, "tools", None) or None
 
@@ -303,7 +439,7 @@ def _mirror_personality(sid, session, agent, arg) -> None:
 
 
 _FAST_TIERS = {"fast": "priority", "on": "priority", "normal": None, "off": None, "auto": "auto", "cold": "cold",
-               "ultrafast": "ultrafast"}
+               "ultrafast": "ultrafast", "ultra": "ultrafast"}
 
 
 def _mirror_fast(sid, session, agent, arg) -> None:
@@ -326,6 +462,17 @@ def _mirror_stop(sid, session, agent, arg) -> None:
 
 
 # name → mirror(sid, session, agent, arg); a falsy return means "no warning".
+def _mirror_autoprune(sid, session, agent, arg) -> str:
+    """An answered low-disk question drops its sticky notice (``later`` too: it re-arms in a week);
+    ``status``, a typo or a failed save leave it up."""
+    from pathlib import Path
+    from hermes_cli.prune_advisor import answered
+    home = session.get("profile_home")
+    if arg and answered(Path(home) if home else None):
+        _emit("notification.clear", sid, {"key": "sessions.auto_prune"})
+    return ""
+
+
 _SLASH_MIRRORS = {
     "model": lambda sid, session, agent, arg: (
         _apply_model_switch(sid, session, arg).get("warning", "") if arg and agent else ""),
@@ -333,7 +480,8 @@ _SLASH_MIRRORS = {
     "compress": lambda sid, session, agent, arg: (
         _compress_live_with_feedback(sid, session, agent, arg, snapshot_kwargs=False) if agent else ""),
     "fast": _mirror_fast,
-    "reload-mcp": _mirror_reload_mcp, "stop": _mirror_stop}
+    "reload-mcp": _mirror_reload_mcp, "stop": _mirror_stop,
+    "autoprune": _mirror_autoprune}
 
 
 def _compute_host_slash(sid: str, session: dict, name: str, command: str) -> tuple[str, str]:
@@ -374,7 +522,7 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
         if _session_uses_compute_host(session):
             return _compute_host_slash(sid, session, name, command)[1]
         if session.get("running"):
-            return busy_message(name)
+            return busy_message(name, bool(session.get("_manual_compress_active")))
     if (mirror := _SLASH_MIRRORS.get(name)) is None:
         return ""
     try:
@@ -382,6 +530,8 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
         # profile scope or /model's credential read raises UnscopedSecretError under multiplex (#122655).
         with _session_profile_runtime_scope(session):
             return mirror(sid, session, agent, arg) or ""
+    except CompressionBusy as e:  # a turn won the race after the unlocked running check above
+        return str(e)
     except Exception as e:
         if name == "compress" and agent:
             from agent.conversation_compression import finalize_context_engine_compression_notification

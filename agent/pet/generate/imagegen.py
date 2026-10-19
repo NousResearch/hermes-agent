@@ -41,7 +41,7 @@ def _discover() -> None:
         from hermes_cli.plugins import _ensure_plugins_discovered
 
         _ensure_plugins_discovered()
-    except Exception as exc:  # noqa: BLE001 - discovery is best-effort
+    except Exception as exc:
         logger.debug("image-gen plugin discovery failed: %s", exc)
 
 
@@ -70,7 +70,7 @@ def resolve_provider(*, require_references: bool = True, prefer: str | None = No
             return SpriteProvider(name=name, provider=chosen, supports_references=True)
     try:
         active = get_active_provider()
-    except Exception:  # noqa: BLE001
+    except Exception:
         active = None
     active_name = getattr(active, "name", "") if active is not None else ""
     if active_name in _REF_CAPABLE and active.is_available():
@@ -150,7 +150,7 @@ def generate(
     def _run(extra: dict) -> tuple[Path | None, str]:
         try:
             result = sprite.provider.generate(prompt, aspect_ratio=aspect_ratio, **extra, **ref_kwargs)
-        except Exception as exc:  # noqa: BLE001 - normalize provider crashes
+        except Exception as exc:
             logger.debug("provider.generate crashed: %s", exc)
             return None, str(exc)
         if not isinstance(result, dict):
@@ -161,7 +161,7 @@ def generate(
             return None, "provider returned no image"
         try:
             return _save_local(str(image_ref), prefix=prefix), ""
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return None, f"could not save generated image: {exc}"
 
     out: list[Path] = []

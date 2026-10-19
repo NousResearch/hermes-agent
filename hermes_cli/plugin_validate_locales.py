@@ -27,7 +27,7 @@ def _bundled_locales_dir() -> Path:
     return _locales_dir()
 
 
-def reference_keys(surface: str) -> Optional[Set[str]]:
+def reference_keys(surface: str) -> Optional[set[str]]:
     """English key set for *surface*: flattened ``en.yaml`` for core, the JSON export for tui/desktop.
     ``None`` when the reference is unavailable (the check is then skipped)."""
     locales = _bundled_locales_dir()
@@ -65,7 +65,7 @@ def check_language_packs(report, manifest: dict, plugin_dir: Path) -> None:
         return
     locales_dir = plugin_dir / "locales"
     found = scan_locale_dir(locales_dir)
-    by_lang: Dict[str, List] = {}
+    by_lang: dict[str, list] = {}
     for lang_id, surface, path in found:
         by_lang.setdefault(lang_id, []).append((surface, path))
     for lang_id in declared:

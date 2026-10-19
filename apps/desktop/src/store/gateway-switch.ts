@@ -10,6 +10,7 @@ import { resetSessionsLimit } from '@/store/layout'
 import { resetLiveSync } from '@/store/live-sync'
 import { invalidateProfileListFetches } from '@/store/profile'
 import { exitProjectScope } from '@/store/project-scope'
+import { clearLiveReactionOverlays } from '@/store/reactions-local'
 import {
   $unreadFinishedSessionIds,
   setActiveSessionId,
@@ -32,6 +33,7 @@ import {
 import { clearAllSessionControl } from '@/store/session-control'
 import { resetSessionPinMirror } from '@/store/session-pin-sync'
 import { clearAllSessionStates } from '@/store/session-states'
+import { reloadOpenStarmapGraph, resetStarmapGraph } from '@/store/starmap'
 import { clearAllSessionTodos } from '@/store/todos'
 import { clearTranscriptTailPaging } from '@/store/transcript-tail'
 import { clearTranscriptTails } from '@/store/transcript-tail-cache'
@@ -137,6 +139,9 @@ export function endGatewaySwitch(token?: GatewaySwitchToken): void {
   }
 
   $gatewaySwitching.set(false)
+  // The wipe reset the star map while the outgoing source was still active; requests now route
+  // to whichever source the switch left active, so an open view reloads against it.
+  reloadOpenStarmapGraph()
 }
 
 /**
@@ -212,6 +217,9 @@ export function wipeSessionListsForGatewaySwitch(): void {
   setSessionProfilesUsage({})
   setCronSessions([])
   invalidateCronJobsRequests()
+  // The star map is a scan of the outgoing backend's skills and memory; an open view reloads it
+  // when the switch ends (endGatewaySwitch), not here: the outgoing source is still active.
+  resetStarmapGraph()
   setCronJobs([])
   setMessagingSessions([])
   setMessagingListServer(null)
@@ -251,6 +259,14 @@ export function wipeSessionListsForGatewaySwitch(): void {
   // Transient on purpose: the per-backend memory of the old gateway stays.
   setCurrentCwdTransient('')
   setCurrentBranch('')
+
+  // Reaction overlays describe the outgoing backend's messages: $agentReactions
+  // is keyed by bare DB row id (per-database, so the next backend's row ids name
+  // different messages) and $localReactions by renderer ids the next transcript
+  // regenerates. The profile-swap boundary is covered by the subscribe inside
+  // reactions-local; a connection switch can keep the profile name, so it needs
+  // this explicit wipe.
+  clearLiveReactionOverlays()
 
   // Artifacts are keyed by sessions on the previous backend, so both the
   // registry and any rail tab pointing into it go with them.

@@ -80,7 +80,7 @@ def fleet(tmp_path, monkeypatch):
                 runtime["served_profiles"] = ["default", "coder", "ops"]
             runtime_path.write_text(json.dumps(runtime))
 
-    import gateway.status as status
+    from gateway import status
     # The default gateway the fixture "starts" is this process; the served probe verifies identity.
     monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "hermes gateway run")
     monkeypatch.setattr(gm, "_installed_services", lambda home: _units(state.services.get(_name(home))))
@@ -433,6 +433,20 @@ def test_update_hook_never_touches_single_profile_or_already_multiplexed(fleet, 
     fleet.services.clear(); fleet.pids.clear()  # secondaries exist but run no gateway of their own
     gm.maybe_auto_migrate_after_update()
     assert capsys.readouterr().out == "" and _config_flag(fleet.root) is None
+
+
+def test_update_hook_reads_a_masked_default_unit_as_an_opt_out(fleet, capsys, monkeypatch, tmp_path):
+    """`systemctl mask hermes-gateway` is the operator's "never start this": no refusal, no change (#139324)."""
+    from hermes_cli import gateway as gw
+    unit = tmp_path / "systemd/user/hermes-gateway.service"
+    unit.parent.mkdir(parents=True)
+    unit.symlink_to(os.devnull)  # exactly what `systemctl --user mask` leaves on disk
+    monkeypatch.setattr(gw, "get_systemd_unit_path", lambda system=False: unit if not system else tmp_path / "none")
+    fleet.services["default"] = ("systemd", False)
+    gm.maybe_auto_migrate_after_update()
+    out = capsys.readouterr().out
+    assert "masked" in out and "refused" not in out and gm.MIGRATE_COMMAND in out
+    assert fleet.ops == [] and _config_flag(fleet.root) is None
 
 
 @pytest.mark.parametrize(

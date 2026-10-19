@@ -21,7 +21,7 @@ def store_lock_path(base: Path) -> Path:
 
 
 @contextmanager
-def store_lock(base: Path, *, repair_refs: bool = True):
+def store_lock(base: Path, *, repair_refs: bool = False):
     """Serialize whole operations, including GC and clear, across processes."""
     from hermes_cli.runtime_state import _lock
 

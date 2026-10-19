@@ -15,7 +15,7 @@ _OWNER_STOP_HINTS = {
 
 
 def _drain_manual_gateway(home: Path) -> None:
-    from gateway.control_socket import identify_gateway, pause_gateway_for_update
+    from gateway.control_socket import identify_gateway, launch_supervisor, pause_gateway_for_update
     from gateway.status import get_process_start_time, get_running_pid_identity_strict, _pid_exists
 
     identity = identify_gateway(home)
@@ -25,9 +25,9 @@ def _drain_manual_gateway(home: Path) -> None:
         return
     if not identity.get("hermes_home") or Path(identity["hermes_home"]).resolve() != home:
         raise RuntimeError(f"gateway control identity does not match {home}")
-    owner = identity.get("supervisor")
+    owner = launch_supervisor(identity)
     if owner != "manual":
-        hint = _OWNER_STOP_HINTS.get(owner, "stop it through its supervisor before retrying")
+        hint = _OWNER_STOP_HINTS.get(owner or "", "stop it through its supervisor before retrying")
         raise RuntimeError(f"{owner or 'unknown'} gateway still owns {home}; {hint}")
     if identity.get("served_profiles"):
         raise RuntimeError("gateway serves multiple profiles; stop it explicitly before deleting one profile's data")
@@ -130,7 +130,7 @@ def quiescent_home(home: Path):
     _refuse_multiplexer(home)
     _drain_manual_gateway(home)
     with ExitStack() as stack:
-        stack.enter_context(store_lock(home / "checkpoints"))
+        stack.enter_context(store_lock(home / "checkpoints", repair_refs=False))
         gateway_lock = stack.enter_context((home / "gateway.lock").open("a+", encoding="utf-8"))
         if not _try_acquire_file_lock(gateway_lock):
             raise RuntimeError(f"gateway is still active for {home}")

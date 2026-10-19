@@ -20,9 +20,10 @@ def test_refused_notification_retains_result_without_spending_attempts(tmp_path,
 
     event = pending('owned', 'refused-notification') if kind == 'async_delegation' else {
         'type': 'completion', 'session_id': 'owned-process', 'session_key': 'owned'}
-    session = {'history_lock': threading.RLock(), '_closing': True, 'running': True}
+    session = {'history_lock': threading.RLock(), '_closing': True, 'running': True,
+               'session_key': 'owned', 'profile_home': tmp_path}
     emitted = []
-    namespace = dict(time=time, logger=logging.getLogger(__name__),
+    namespace = dict(time=time, threading=threading, logger=logging.getLogger(__name__),
         _emit=lambda *args: emitted.append(args),
         _session_turn_admission=_session_turn_admission,
         _ensure_active_session_slot=lambda *args: None,

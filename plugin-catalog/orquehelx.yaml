@@ -1,25 +1,24 @@
 name: orquehelx
 repo: https://github.com/TicoraX/OrqueHelx
-sha: ab21801c5e9c09673c00cd511bcd5f7dfb4c2aaf
+sha: 964896e44979b29755dd880c5eb2557909e88bf6
 subdir: orquehelx
 description: >-
   Per-call delegation across your own subscriptions. The model sends each subagent to a named route with
-  delegate_to(route, goal, context): a provider Hermes already knows (Claude, Codex or Antigravity
-  subscription plugins) or any ACP CLI such as OpenCode. delegate_task, by contrast, uses the one target in
-  config.yaml. A child counts as out of quota only on an unambiguous provider error or a measured window at
-  100 %, and the route never switches on its own: a policy decides whether the parent asks you, picks
-  another route, or waits. Disclosure: a pre_tool_call hook blocks delegate_task spawns while routes are
-  configured (list/steer/stop pass); an api_request_error hook records quota errors in memory. Quota is
-  measured with Hermes' own account-usage fetchers (Anthropic and OpenAI Codex, each with its configured
-  credential) on /ohx quota, when the dashboard tab loads, and after a generic Claude-subscription error. No
-  other network egress. The optional dashboard tab keeps quota pauses in
-  HERMES_HOME/plugin-data/orquehelx/pauses.db. English by default; Spanish follows Hermes' language.
+  delegate_to(route, goal, context); each route pins a provider Hermes already knows (Claude, Codex or
+  Antigravity subscription plugins, ACP provider plugins) and a model. delegate_task, by contrast, uses the
+  one target in config.yaml. Subagents launch through ctx.subagent_lifecycle. A child counts as out of quota
+  only on an unambiguous provider error or a measured window at 100 %, and the route never switches on its
+  own: a policy decides whether the parent asks you, picks another route, or waits. Disclosure: a
+  pre_tool_call hook blocks delegate_task spawns while routes are configured (list/steer/stop pass); an
+  api_request_error hook records quota errors in memory. Quota is read with Hermes' fetch_account_usage
+  (Anthropic and OpenAI Codex) on /ohx quota and after a provider error. No other network egress, no files
+  written.
 maintainer: TicoraX
 tier: community
 category: automation
-requires_hermes: ">=0.21.5"
-docs_url: https://github.com/TicoraX/OrqueHelx/blob/ab21801c5e9c09673c00cd511bcd5f7dfb4c2aaf/README.md
-version: "0.2.0"
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/TicoraX/OrqueHelx/blob/964896e44979b29755dd880c5eb2557909e88bf6/README.md
+version: "0.3.0"
 platforms: [linux, macos, windows]
 capabilities:
   provides_tools:

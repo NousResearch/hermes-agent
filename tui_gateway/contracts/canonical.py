@@ -264,6 +264,28 @@ canonical_method("rollback.session_diff", params=RollbackSessionDiffParams, resu
                      "retained checkpoint, as data for its terminal renderer.")
 
 
+class SessionExportParams(Params):
+    """``format``: json (default) / md / markdown / html / snapshot (``normalize_save_format``)."""
+
+    session_id: str
+    profile: str | None = None
+    format: str = "json"
+    redact: bool = False
+
+
+class SessionExportResult(Result):
+    """``gateway/session_tui_ops.py::export_session``: the rendered ``/save`` body and its default
+    file name. The client writes it (the gateway may be remote); nothing is written on the host."""
+
+    format: str
+    filename: str
+    content: str
+
+
+canonical_method("session.export", params=SessionExportParams, result=SessionExportResult,
+                 doc="The /save transcript rendered for the client to write (the gateway writes nothing).")
+
+
 class SessionAutomationParams(Params):
     session_id: str
     kind: Literal["goal", "loop", "heartbeat"]

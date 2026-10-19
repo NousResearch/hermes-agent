@@ -211,9 +211,10 @@ _OUTPUT_MODE_FLAGS = {"files_only": "-l", "count": "-c"}
 def _parse_search_output(result, output_mode: str, limit: int, offset: int,
                          context: int, warning: Optional[str] = None) -> SearchResult:
     """Parse rg/grep ``| head`` output into a SearchResult (shared by both engines).
-    Direct engines use 1 for no matches and 2 for errors; find folds a failed
-    grep invocation into exit 1. Diagnostics distinguish that failure from an
-    empty search. Keep usable matches on partial errors (one unreadable file).
+    Direct engines use 0 for matches, 1 for no matches, and 2 for errors;
+    find folds a failed grep invocation into exit 1. Diagnostics distinguish
+    that failure from an empty search. Keep usable matches on partial errors
+    (one unreadable file).
     ``warning`` is attached to files_only/content results."""
     stdout, limit_reason = _search_stdout_and_limit(result)
     diagnostics, payload = _split_tool_diagnostics(stdout)

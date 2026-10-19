@@ -14,7 +14,6 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 from agent.session_activity import (
     ActivityProvenance, bound_activity_description, normalize_activity_provenance,
 )
-from hermes_startup_watchdog import report_startup_progress
 from hermes_state_errors import SessionActiveWriteGuardError
 from hermes_state_common import (
     _LISTABLE_CHILD_SQL, _RECOVERABLE_END_REASONS,
@@ -22,6 +21,7 @@ from hermes_state_common import (
     _shape_preview, _sql_preview_raw, QUEUED_PROMPT_METADATA_KEY,
     _sql_in_window, _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id,
     escape_like as _escape_like, _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
+    _source_match_clause, emit_session_deleted,
 )
 from hermes_state_compression import _CHAIN_CAP
 
@@ -113,7 +113,7 @@ def _session_filter_where(
     *, exclude_children: bool = False, source: str | None = None, sources: list[str] | None = None,
     session_key: str | None = None, exclude_sources: list[str] | None = None, cwd_prefix: str | None = None,
     min_message_count: int = 0, archived_only: bool = False, include_archived: bool = False,
-    include_subagents: bool = False,
+    include_subagents: bool = False, local_created_sources: Sequence[str] | None = None,
 ) -> tuple[list[str], list[Any]]:
     """Shared ``sessions s`` WHERE builder so counts line up with listed rows. ``exclude_children``
     hides sub-agent runs and compression continuations but keeps branch/reset children
@@ -134,8 +134,9 @@ def _session_filter_where(
     # legacy heuristic (parent ended with 'branched' before the child started), covering branch sessions
     # created before the marker existed.
     include_sources = [source] if source else list(sources or [])
+    source_clause, source_params = _source_match_clause(include_sources, local_created_sources)
     for clause, values in (
-        (f"s.source IN ({_session_ids_placeholders(include_sources)})", include_sources),
+        (source_clause, source_params),
         ("s.session_key = ?", [session_key] if session_key else []),
         (f"s.source NOT IN ({_session_ids_placeholders(exclude_sources or ())})", exclude_sources or []),
         (_cwd_prefix_clause(cwd_prefix) if cwd_prefix else ("", [])),
@@ -933,12 +934,21 @@ class SessionSessionsMixin:
             (session_id, session_id, value),
         ).fetchall()]
 
-    def set_session_archived(self, session_id: str, archived: bool) -> bool:
+    def set_session_archived(self, session_id: str, archived: bool, *, notify: bool = True) -> bool:
         """Soft-hide (or unhide) a session and its compression lineage; messages are kept.
         This is the DELIBERATE archive (user, CLI, API): it clears the ``auto_archived``
-        provenance, so re-activation never un-hides it on the user's behalf."""
-        return self._set_lineage_column(
-            "archived", session_id, int(archived), extra_set_sql=", auto_archived = 0")
+        provenance, so re-activation never un-hides it on the user's behalf. A real
+        unarchived -> archived flip fires ``on_session_delete`` (``reason="archive"``) after commit;
+        ``notify=False`` is for housekeeping that hides a row whose session lives on elsewhere."""
+        def _do(conn):
+            row = conn.execute("SELECT archived FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            ids = self._set_lineage_column_in_transaction(
+                conn, "archived", session_id, int(archived), extra_set_sql=", auto_archived = 0")
+            return ids, bool(archived and ids and row is not None and not row[0])
+        ids, newly_archived = self._execute_write(_do)
+        if newly_archived and notify:
+            emit_session_deleted(self, ids, reason="archive", primary=session_id)
+        return bool(ids)
 
     def _auto_archive_lineage(self, session_id: str) -> bool:
         """The idle sweep's archive: like :meth:`set_session_archived` but stamps
@@ -1325,18 +1335,20 @@ class SessionSessionsMixin:
         order_by_last_active: bool = False, include_archived: bool = False, archived_only: bool = False,
         id_query: str | None = None, search_query: str | None = None, compact_rows: bool = False,
         include_pinned: bool = False, session_key: str | None = None, include_hidden: bool = False,
-        include_subagents: bool = False,
+        include_subagents: bool = False, local_created_sources: Sequence[str] | None = None,
     ) -> list[dict[str, Any]]:
         """List sessions with preview and ``last_active`` in one query. ``order_by_last_active`` sorts
         by the chain TIP via a recursive CTE (the only path honouring ``id_query`` / ``search_query``);
         ``include_pinned`` back-fills pins the page missed, still obeying the other
         filters except archived: a pin is an explicit keep, so a pinned row stamped
-        archived must still return."""
+        archived must still return. ``local_created_sources`` restricts ``source='local'``
+        rows to those surfaces before LIMIT/OFFSET."""
         self.flush_token_counts()  # rows carry token/cost totals
         where_clauses, params = _session_filter_where(
             exclude_children=not include_children, source=source, sources=sources, session_key=session_key,
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
             archived_only=archived_only, include_archived=include_archived, include_subagents=include_subagents,
+            local_created_sources=local_created_sources,
         )
         # The archived-only view is the recovery surface for rows that dropped out of every
         # default list: a session that is archived AND hidden (Bot Mode marks its sessions
@@ -1420,7 +1432,7 @@ class SessionSessionsMixin:
                 exclude_children=not include_children, source=source, sources=sources,
                 session_key=session_key, exclude_sources=exclude_sources, cwd_prefix=cwd_prefix,
                 min_message_count=min_message_count, archived_only=False, include_archived=True,
-                include_subagents=include_subagents,
+                include_subagents=include_subagents, local_created_sources=local_created_sources,
             )
             if not include_hidden and not archived_only:
                 pinned_clauses.append("s.hidden = 0")
@@ -1532,16 +1544,18 @@ class SessionSessionsMixin:
 
     def search_sessions(
         self, source: str | Sequence[str] | None = None, limit: int = 20, offset: int = 0,
-        workspace_key: str | None = None,
+        workspace_key: str | None = None, local_created_sources: Sequence[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Sessions MRU-first with a computed ``last_active``; ``workspace_key`` scopes to one workspace
-        so ``hermes -c``/``--resume`` picks its last session. ``source`` may be one label or several."""
+        so ``hermes -c``/``--resume`` picks its last session. ``source`` may be one label or several.
+        ``local_created_sources`` restricts ``source='local'`` rows before LIMIT/OFFSET."""
         where_clauses = []
         params: list = []
         if source:
             sources = [source] if isinstance(source, str) else list(source)
-            where_clauses.append(f"s.source IN ({','.join('?' * len(sources))})")
-            params.extend(sources)
+            clause, bound = _source_match_clause(sources, local_created_sources)
+            where_clauses.append(clause)
+            params.extend(bound)
         if workspace_key:
             ws_clause, ws_params = _workspace_key_clause(workspace_key)
             where_clauses.append(ws_clause)
@@ -1747,6 +1761,8 @@ class SessionSessionsMixin:
             removed_ids.extend(scope)
             return True
         deleted = self._execute_write(_do)
+        if deleted:
+            emit_session_deleted(self, removed_ids, reason="delete", primary=session_id, sessions_dir=sessions_dir)
         from hermes_state_media import collect_retired_media
         collect_retired_media(self)
         for sid in removed_ids:
@@ -1799,13 +1815,16 @@ class SessionSessionsMixin:
             if eligible is None:
                 return False
             # Same BEGIN IMMEDIATE transaction as the check above: retire the ledger rows
-            # (ON DELETE RESTRICT) and delete without re-evaluating eligibility.
+            # (ON DELETE RESTRICT) and delete without re-evaluating eligibility. Housekeeping, not
+            # a user delete: its fence ages out at the horizon (an untitled row is never a Bot Chat).
             from hermes_state_mutation_retirement import retire_sessions
-            retire_sessions(conn, [session_id])
+            retire_sessions(conn, [session_id], expiring=[session_id])
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             self._delete_unreferenced_system_prompts(conn)
             return True
         deleted = self._execute_write(_do)
+        if deleted:
+            emit_session_deleted(self, [session_id], reason="empty_sweep", sessions_dir=sessions_dir)
         from hermes_state_media import collect_retired_media
         collect_retired_media(self)
         if deleted:
@@ -1893,6 +1912,9 @@ class SessionSessionsMixin:
             # 3 rows, however many physical links those rows had.
             return len(existing)
         count = self._execute_write(_do)
+        if count:
+            emit_session_deleted(self, removed_ids, reason="delete", primary=unique_ids[0] if len(unique_ids) == 1 else None,
+                                 sessions_dir=sessions_dir)
         from hermes_state_media import collect_retired_media
         collect_retired_media(self)
         for sid in removed_ids:
@@ -1935,6 +1957,8 @@ class SessionSessionsMixin:
             self._delete_unreferenced_system_prompts(conn)
             return len(session_ids)
         count = self._execute_write(_do)
+        if count:
+            emit_session_deleted(self, removed_ids, reason="empty_sweep", sessions_dir=sessions_dir)
         from hermes_state_media import collect_retired_media
         collect_retired_media(self)
         for sid in removed_ids:
@@ -1954,34 +1978,3 @@ class SessionSessionsMixin:
         for row in rows:
             self.set_session_archived(row["id"], True)
         return len(rows)
-
-    def maybe_auto_archive(
-        self, idle_days: float = 3, min_interval_hours: int = 24, exclude_pinned: bool = True,
-    ) -> dict[str, Any]:
-        """Idempotent, non-destructive auto-archive of sessions idle for ``idle_days``; state_meta
-        ``last_auto_archive`` gates runs within ``min_interval_hours``. Never raises."""
-        result: dict[str, Any] = {"skipped": False, "archived": 0}
-        try:
-            now = time.time()
-            try:
-                last = float(self.get_meta("last_auto_archive") or 0.0)
-            except (TypeError, ValueError):
-                last = 0.0  # corrupt meta; treat as no prior run
-            if last and now - last < min_interval_hours * 3600:
-                result["skipped"] = True
-                return result
-            # Startup-watchdog lease: the archive sweep is I/O-bound (near-zero CPU),
-            # which the watchdog's CPU fallback misreads as a parked deadlock.
-            # No-op when the watchdog is not armed; never raises.
-            report_startup_progress(900.0, phase="state_db_auto_archive")
-            archived = result["archived"] = self.archive_stale_sessions(idle_days, exclude_pinned=exclude_pinned)
-            # Record even a zero-archive run so we don't re-sweep every call.
-            self.set_meta("last_auto_archive", str(now))
-            if archived > 0:
-                logger.info(
-                    "state.db auto-archive: archived %d session(s) idle >= %s days", archived, idle_days,
-                )
-        except Exception as exc:
-            logger.warning("state.db auto-archive failed: %s", exc)
-            result["error"] = str(exc)
-        return result

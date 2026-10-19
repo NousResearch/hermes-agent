@@ -1,7 +1,7 @@
 """Bearer-bound user instruction provenance for API chat transfer tools."""
 
 import hmac
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 
 request_transfer_auth: ContextVar[tuple[str, str]] = ContextVar(
@@ -35,6 +35,33 @@ def bind_legacy_turn(identity, user_message, session_id):
     from gateway.session_context import set_api_transfer_identity, set_turn_user_message
     set_turn_user_message(user_message)
     set_api_transfer_identity(principal, family, session_id)
+
+
+@contextmanager
+def admitted_serialized_tool_turn(session_key, session_id, agent):
+    """Journal a bearer-bound API worker before its tools can use serialized services."""
+    from gateway.session_context import get_api_transfer_identity, set_session_run_generation
+    principal, family, conversation = get_api_transfer_identity()
+    actual = getattr(agent, "session_id", None)
+    if (not principal or not family or not conversation or not session_key or not session_id
+            or not isinstance(actual, str) or actual != session_id):
+        yield False
+        return
+    from agent.chat_execution_context import bind_chat_execution
+    from gateway.chat_execution_recovery import ChatExecutionStore
+    from hermes_constants import get_hermes_home
+    home = get_hermes_home()
+    store = ChatExecutionStore(home)
+    generation = store.start_local_worker(session_key, actual)
+    if generation is None:
+        yield False
+        return
+    set_session_run_generation(generation)
+    with bind_chat_execution(home, session_key, generation):
+        try:
+            yield True
+        finally:
+            store.worker_finished(session_key, generation)
 
 
 def browser_control_transport_family(request):

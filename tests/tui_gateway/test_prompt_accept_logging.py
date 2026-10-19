@@ -106,6 +106,20 @@ def test_stop_settles_accepted_correction_claim_before_followup_dispatch(tmp_pat
     assert not store.submit_claims_active("gw-session-key", ("accepted-steer",))
     assert store.retire_for_handoff("gw-session-key", 1, "handoff")["status"] == "retired"
 
+
+def test_pre_worker_admission_refusal_settles_synthesized_submit_claim(turn_stubs, monkeypatch, tmp_path):
+    from gateway.chat_execution_recovery import ChatExecutionStore
+
+    store = ChatExecutionStore(tmp_path)
+    assert store.start_local_worker("gw-session-key", "prior-turn") == 1
+    assert store.worker_finished("gw-session-key", 1)
+    session = _session(running=True, profile_home=tmp_path)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: True)
+    monkeypatch.setattr(server, "_admit_prompt_turn", lambda *args: None)
+
+    assert server._run_prompt_submit("rid", "sid", session, "queued text") is False
+    assert store.retire_for_handoff("gw-session-key", 1, "handoff")["status"] == "retired"
+
 SECRETISH_PROMPT = "please rotate QDRANT_API_KEY=hunter2-super-secret now"
 
 def test_accepted_and_finished_records_on_success(turn_env, caplog):
@@ -140,6 +154,7 @@ def test_accepted_and_finished_records_on_success(turn_env, caplog):
 
 
 def test_desktop_turn_binds_real_journal_and_authenticated_user_instruction(turn_env, monkeypatch, tmp_path):
+    import os
     from agent.chat_execution_context import observe_tool_before_execution
     from gateway.chat_execution_recovery import ChatExecutionStore
     from tools.registry import _current_tool_invocation_context
@@ -148,7 +163,9 @@ def test_desktop_turn_binds_real_journal_and_authenticated_user_instruction(turn
     def run_conversation(*_args, **_kwargs):
         context = _current_tool_invocation_context()
         seen.append((context.session_key, context.session_id, context.run_generation,
-                     context.user_message, observe_tool_before_execution()))
+                     context.user_message, observe_tool_before_execution(),
+                     ChatExecutionStore(tmp_path).worker_process_matches(
+                         context.session_key, context.run_generation, context.session_id, os.getpid())))
         return {"final_response": "done"}
 
     agent = types.SimpleNamespace(session_id="actual-desktop-session", run_conversation=run_conversation,
@@ -160,7 +177,7 @@ def test_desktop_turn_binds_real_journal_and_authenticated_user_instruction(turn
     text = "Transfer ABC-1 to this chat"
     server._run_prompt_submit("rid", "ui-sid", session, text,
                               approval_origin=("basic:alice", "turn-id", None, text, None))
-    assert seen == [("gw-session-key", "actual-desktop-session", 1, text, True)]
+    assert seen == [("gw-session-key", "actual-desktop-session", 1, text, True, True)]
     receipt = ChatExecutionStore(tmp_path).retire_for_handoff("gw-session-key", 1, "transfer-id")
     assert receipt["status"] == "retired"
     assert receipt["effects"] == "unknown"

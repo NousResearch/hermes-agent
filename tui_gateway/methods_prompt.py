@@ -689,6 +689,9 @@ def _run_after_agent_ready(
     # expires. See #63078.
     err = _wait_agent_for_prompt(session, rid, sid)
     if err:
+        from tui_gateway.session_auto_continue import _abandon_unadmitted_chat_submits
+        _abandon_unadmitted_chat_submits(session, chat_submit_key or str(session.get("session_key") or sid),
+                                         chat_submit_ids)
         # Terminal frame + retained snapshot (not a bare "error" event): the snapshot is
         # the only way resume shows this to a disconnected client.
         _emit_terminal_turn_error(
@@ -701,6 +704,9 @@ def _run_after_agent_ready(
         return
     with session["history_lock"]:
         if session.get("_turn_cancel_requested") or not session.get("running"):
+            from tui_gateway.session_auto_continue import _abandon_unadmitted_chat_submits
+            _abandon_unadmitted_chat_submits(session, chat_submit_key or str(session.get("session_key") or sid),
+                                             chat_submit_ids)
             session["running"] = False
             _clear_inflight_turn(session)
             # Without this emit the turn vanishes silently after {"status": "streaming"}.

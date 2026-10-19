@@ -1,4 +1,6 @@
 """Physical retirement is durable but never asserts that historical tool effects were undone."""
+import os
+
 from gateway.chat_execution_recovery import ChatExecutionStore
 
 
@@ -39,6 +41,19 @@ def test_desktop_turn_uses_real_session_and_tool_observation_before_handoff(tmp_
     assert receipt["session_id"] == "actual-desktop-session"
     assert receipt["effects"] == "unknown"
     assert store.start_local_worker("desktop-chat", "late-session") is None
+
+
+def test_serialized_tool_turn_is_bound_to_its_recorded_worker_process(tmp_path):
+    store = ChatExecutionStore(tmp_path)
+    generation = store.start_local_worker("desktop-chat", "actual-session")
+    assert generation == 1
+    reopened = ChatExecutionStore(tmp_path)
+    assert reopened.worker_process_matches("desktop-chat", generation, "actual-session", os.getpid())
+    assert not reopened.worker_process_matches("desktop-chat", generation, "actual-session", os.getpid() + 1)
+    assert not reopened.worker_process_matches("desktop-chat", generation, "other-session", os.getpid())
+    assert not reopened.worker_process_matches("desktop-chat", generation + 1, "actual-session", os.getpid())
+    assert store.worker_finished("desktop-chat", generation)
+    assert not reopened.worker_process_matches("desktop-chat", generation, "actual-session", os.getpid())
 
 
 def test_pending_desktop_submit_blocks_retirement_until_real_worker_settles(tmp_path):

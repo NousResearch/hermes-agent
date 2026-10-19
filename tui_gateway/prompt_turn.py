@@ -1155,6 +1155,8 @@ def _run_prompt_submit(
     admitted = _admit_prompt_turn(
         sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata)
     if admitted is None:
+        from tui_gateway.session_auto_continue import _abandon_unadmitted_chat_submits
+        _abandon_unadmitted_chat_submits(session, chat_submit_key or submit_key, chat_submit_ids)
         return False
     images, agent = admitted
     from gateway.warning_notifications import diagnostic_turn_muted

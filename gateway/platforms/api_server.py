@@ -4265,8 +4265,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                         approval_token = set_current_session_key(approval_session_key)
                         register_gateway_notify(approval_session_key, approval_notify_callback)
                     try:
-                        with notification_turn(agent, muted=muted, session_id=session_id or ""):
-                            result = agent.run_conversation(**conversation_kwargs)
+                        with _transfer.admitted_serialized_tool_turn(
+                                gateway_session_key or session_id or "", session_id or "", agent):
+                            with notification_turn(agent, muted=muted, session_id=session_id or ""):
+                                result = agent.run_conversation(**conversation_kwargs)
                     finally:
                         if approval_token is not None:
                             from tools.approval_context import reset_current_session_key

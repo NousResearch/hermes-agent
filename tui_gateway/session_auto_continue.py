@@ -144,6 +144,18 @@ def _ac_inflight_original(session: dict) -> str:
     return str(turn.get("user") or "").strip() if isinstance(turn, dict) else ""
 
 
+def _abandon_unadmitted_chat_submits(session: dict, source_key: str, submit_ids) -> None:
+    """A refused pre-worker turn has no executor left to consume its accepted claims."""
+    if not submit_ids:
+        return
+    from gateway.chat_execution_recovery import ChatExecutionStore
+    from hermes_constants import get_process_hermes_home
+    store = ChatExecutionStore(session.get("profile_home") or get_process_hermes_home())
+    for submit_id in submit_ids:
+        store.abandon_submit(source_key, submit_id)
+        session.get("_chat_pending_submit_ids", set()).discard(submit_id)
+
+
 def _abandon_queued_chat_submits(session: dict) -> None:
     """Settle queued and accepted correction claims cancelled before dispatch."""
     from gateway.chat_execution_recovery import ChatExecutionStore

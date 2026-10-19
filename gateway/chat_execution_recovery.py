@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import json
+import os
 import sqlite3
 from pathlib import Path
 from typing import Callable
@@ -29,6 +30,11 @@ class ChatExecutionStore:
                 session_id TEXT NOT NULL, worker TEXT NOT NULL, worker_started INTEGER NOT NULL,
                 effects TEXT NOT NULL, tool_observed INTEGER NOT NULL,
                 PRIMARY KEY(session_key, generation))""")
+            columns = {row[1] for row in db.execute("PRAGMA table_info(executions)")}
+            if "worker_pid" not in columns:
+                db.execute("ALTER TABLE executions ADD COLUMN worker_pid INTEGER")
+            if "worker_start_time" not in columns:
+                db.execute("ALTER TABLE executions ADD COLUMN worker_start_time INTEGER")
             db.execute("""CREATE TABLE IF NOT EXISTS session_fences (
                 session_key TEXT PRIMARY KEY, generation INTEGER NOT NULL,
                 recovery_id TEXT NOT NULL, state TEXT NOT NULL, receipt TEXT)""")
@@ -66,6 +72,29 @@ class ChatExecutionStore:
         with self._db() as db:
             row = db.execute("SELECT MAX(generation) AS g FROM executions WHERE session_key=?", (session_key,)).fetchone()
             return int(row["g"] or 0)
+
+    @staticmethod
+    def _worker_process_identity():
+        from gateway.status import get_process_start_time
+        pid = os.getpid()
+        return pid, get_process_start_time(pid)
+
+    def worker_process_matches(self, session_key, generation, session_id, pid):
+        """Bind a serialized tool request to the process of its admitted physical worker."""
+        if (not session_key or not session_id or not self._valid_generation(generation)
+                or type(pid) is not int or pid <= 0):
+            return False
+        from gateway.status import get_process_start_time
+        started = get_process_start_time(pid)
+        if started is None:
+            return False
+        with self._db() as db:
+            row = db.execute("SELECT session_id,worker,worker_started,worker_pid,worker_start_time "
+                             "FROM executions WHERE session_key=? AND generation=?",
+                             (session_key, generation)).fetchone()
+        return bool(row and row["session_id"] == session_id and row["worker"] == "pending"
+                    and row["worker_started"] == 1 and row["worker_pid"] == pid
+                    and row["worker_start_time"] == started)
 
     @staticmethod
     def _lineage_keys(db, root_key):
@@ -165,7 +194,8 @@ class ChatExecutionStore:
             latest = db.execute("SELECT MAX(generation) AS g FROM executions WHERE session_key=?", (session_key,)).fetchone()["g"]
             if latest is not None and generation <= latest:
                 db.rollback(); return False
-            db.execute("INSERT INTO executions VALUES (?, ?, ?, 'pending', 0, 'unknown', 0)", (session_key, generation, session_id))
+            db.execute("INSERT INTO executions (session_key,generation,session_id,worker,worker_started,effects,tool_observed) "
+                       "VALUES (?, ?, ?, 'pending', 0, 'unknown', 0)", (session_key, generation, session_id))
             db.commit()
             return True
 
@@ -187,8 +217,10 @@ class ChatExecutionStore:
             latest = db.execute("SELECT MAX(generation) FROM executions WHERE session_key=?",
                                 (session_key,)).fetchone()[0] or 0
             generation = latest + 1
-            db.execute("INSERT INTO executions VALUES (?, ?, ?, 'pending', 1, 'unknown', 0)",
-                       (session_key, generation, session_id))
+            pid, started = self._worker_process_identity()
+            db.execute("INSERT INTO executions (session_key,generation,session_id,worker,worker_started,effects,tool_observed,worker_pid,worker_start_time) "
+                       "VALUES (?, ?, ?, 'pending', 1, 'unknown', 0, ?, ?)",
+                       (session_key, generation, session_id, pid, started))
             for submit_id in submit_ids:
                 # Aliases for a rotating session stay fenced until this exact
                 # physical worker is admitted, then settle in one transaction.
@@ -218,7 +250,8 @@ class ChatExecutionStore:
                     db.rollback()
                     return None
             generation = max(int(latest), memory_floor, caller_floor) + 1
-            db.execute("INSERT INTO executions VALUES (?, ?, '', 'pending', 0, 'unknown', 0)", (session_key, generation))
+            db.execute("INSERT INTO executions (session_key,generation,session_id,worker,worker_started,effects,tool_observed) "
+                       "VALUES (?, ?, '', 'pending', 0, 'unknown', 0)", (session_key, generation))
             db.commit()
             return generation
 
@@ -233,9 +266,11 @@ class ChatExecutionStore:
             if (fence and fence["state"] == "fenced") or latest != generation:
                 db.rollback()
                 return False
+            pid, started = self._worker_process_identity()
             result = db.execute(
-                "UPDATE executions SET session_id=?, worker_started=1 WHERE session_key=? AND generation=? AND session_id='' AND worker_started=0",
-                (session_id, session_key, generation),
+                "UPDATE executions SET session_id=?, worker_started=1,worker_pid=?,worker_start_time=? "
+                "WHERE session_key=? AND generation=? AND session_id='' AND worker_started=0",
+                (session_id, pid, started, session_key, generation),
             )
             if result.rowcount != 1:
                 db.rollback()

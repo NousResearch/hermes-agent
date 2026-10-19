@@ -1,6 +1,7 @@
 """Authenticated API runs stamp transfer provenance into the actual tool context."""
 
 import asyncio
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -12,12 +13,20 @@ from tools.registry import _current_tool_invocation_context
 
 
 @pytest.mark.asyncio
-async def test_authenticated_run_stamps_transfer_instruction_and_conversation():
+async def test_authenticated_run_stamps_transfer_instruction_and_conversation(tmp_path, monkeypatch):
+    from gateway.chat_execution_recovery import ChatExecutionStore
+    from hermes_constants import get_hermes_home
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     adapter = _make_adapter(api_key="sk-secret")
     captured = {}
     agent = MagicMock()
-    agent.run_conversation.side_effect = lambda **kwargs: (
-        captured.update(context=_current_tool_invocation_context()) or {"final_response": "done"})
+    agent.session_id = "same-conversation"
+    def run_conversation(**kwargs):
+        context = _current_tool_invocation_context()
+        captured.update(context=context, worker_bound=ChatExecutionStore(get_hermes_home()).worker_process_matches(
+            context.session_key, context.run_generation, context.session_id, os.getpid()))
+        return {"final_response": "done"}
+    agent.run_conversation.side_effect = run_conversation
     agent.session_prompt_tokens = agent.session_completion_tokens = agent.session_total_tokens = 0
     app = _create_runs_app(adapter)
     async with TestClient(TestServer(app)) as cli:
@@ -44,6 +53,8 @@ async def test_authenticated_run_stamps_transfer_instruction_and_conversation():
     assert context.api_control_principal.startswith("principal:")
     assert context.api_control_transport_family
     assert context.api_conversation_key == "same-conversation"
+    assert context.run_generation == 1
+    assert captured["worker_bound"] is True
 
 
 @pytest.mark.asyncio

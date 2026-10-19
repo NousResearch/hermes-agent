@@ -669,6 +669,16 @@ class GatewayTurnProgressMixin:
         st.progress_msg_id, st.progress_lines = None, []
         self._ctx.last_progress_msg[0], self._ctx.repeat_count[0] = None, 0
 
+    async def _flush_before_reset(self, st) -> None:
+        """Deliver lines the edit throttle is still holding back, or the reset drops them (#29371).
+        With no bubble posted yet (the throttle held back the first line too), post one."""
+        await self._roll_progress_overflow_if_needed(st)
+        if st.progress_msg_id is not None:
+            await self._flush_progress_edit(st)
+        elif st.can_edit and st.progress_lines:
+            with suppress(Exception):
+                await self._send_progress_text(st, self._progress_text(st.progress_lines))
+
     def _progress_absorb(self, st, raw) -> Any:
         """Fold a queue item into the bubble buffer; returns the line to render this tick."""
         if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
@@ -765,6 +775,7 @@ class GatewayTurnProgressMixin:
                     await asyncio.sleep(0)
                     continue
                 if self._is_reset_marker(raw):
+                    await self._flush_before_reset(st)
                     self._reset_progress_bubble(st)
                     continue
                 msg = self._progress_absorb(st, raw)

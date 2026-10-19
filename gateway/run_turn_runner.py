@@ -499,6 +499,14 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
 
     # ── blocking prompts from the agent thread (approval / clarify) ─────────────────────────
 
+    def _close_progress_bubble(self) -> None:
+        """An approval or clarify prompt posts a new message below the tool-progress bubble. Close
+        the bubble so tool lines after the prompt start a fresh one under it; else they keep editing
+        the bubble above the prompt, which scrolls out of view after a prompt or two."""
+        progress_queue = getattr(self._ctx, "progress_queue", None)
+        if progress_queue is not None:
+            progress_queue.put(("__reset__",))
+
     def _close_native_stream_boundary(self, reason: str, placeholder: str | None = None, reopen: bool = False) -> bool:
         """Native-streaming platforms (e.g. WeCom): an interrupting interaction (approval or clarify
         prompt) must finalize the current stream first, or post-interaction output keeps updating the
@@ -607,6 +615,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # Unlike approval, clarify passes reopen=True so the continuation re-opens a native stream
         # below the question; if the re-seed fails the consumer degrades to send() automatically.
         self._close_native_stream_boundary("Clarify", t("gateway.clarify.native_stream_placeholder"), reopen=True)
+        self._close_progress_bubble()
         # Pause typing: a "thinking..." status must not obscure the prompt or block an "Other" reply
         # on platforms that disable input while typing (Slack Assistant).
         with suppress(Exception):
@@ -683,6 +692,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # in approve/deny.
         adapter.pause_typing_for_chat(ctx._status_chat_id)
         self._close_native_stream_boundary("Approval")
+        self._close_progress_bubble()
         # Redact credentials before display: the raw command string can carry secrets. Both the button and plain-text paths use this value.
         cmd = _redact_approval_command(approval_data.get("command", ""))
         desc = approval_data.get("description") or ea_default_reason_text()

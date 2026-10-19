@@ -57,3 +57,20 @@ def test_malformed_port_in_base_url_keeps_the_proxy_instead_of_raising(proxy_env
     assert _get_proxy_for_base_url("http://host:99999/v1") == "http://proxy.corp:3128"
     proxy_env.setenv("NO_PROXY", "host")
     assert _get_proxy_for_base_url("http://host:notaport/v1") is None  # host still matched
+
+
+@pytest.mark.parametrize("base_url", [
+    "http://127.0.0.1:11434/v1",   # Ollama default
+    "http://localhost:11434/v1",
+    "http://[::1]:11434/v1",
+    "http://127.8.8.7:8080/v1",    # any 127.x.x.x literal, not just .0.0.1
+    "127.0.0.1:11434",             # scheme-less form callers may pass
+])
+def test_loopback_base_url_never_dials_through_the_proxy(proxy_env, base_url):
+    """A local model endpoint must bypass the proxy unconditionally — the same rule the
+    CDP/websockets path applies (#110565). With a bare ``HTTPS_PROXY`` and no loopback entry in
+    NO_PROXY, the request used to be tunneled into the proxy and the SSE stream hung with no
+    error callback until the stale watchdog fired (~200 s, #135208)."""
+    assert _get_proxy_for_base_url(base_url) is None
+    # and the exclusion is loopback-only: remote endpoints keep the proxy
+    assert _get_proxy_for_base_url("https://api.openai.com/v1") == "http://proxy.corp:3128"

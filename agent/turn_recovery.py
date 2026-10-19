@@ -631,6 +631,10 @@ def recover_after_classification(
     Returns ``(retry_now, recovered_with_pool)``; the latter feeds the Nous rate-limit guard."""
     from agent.conversation_loop import _is_nous_inference_route
 
+    # Local key acquisition cannot be fixed by refreshing/rotating provider credentials.
+    if classified.error_context.get("local_auth_source"):
+        return False, False
+
     # The credit-limited 402 clamp runs before pool rotation, which would bench a credential
     # that still has credit. A ``reasoning.context`` 400 is classified reasoning_mandatory, whose rung
     # would drop the whole reasoning config; omit only the all_turns opt-in, ahead of it.
@@ -995,6 +999,20 @@ def nonretryable_client_error_result(
     for likely context-overflow 400s so the failure does not grow the session), build result."""
     # Result/guidance helpers stay in the loop module (tests import + patch them there).
     from agent.conversation_loop import _billing_failure_result, _content_policy_blocked_result
+
+    if classified.error_context.get("local_auth_source"):
+        agent._flush_status_buffer()
+        agent._persist_session(messages, conversation_history)
+        final_response, keep_partial = _with_delivered_partial(
+            classified.message, classified.message, delivered,
+        )
+        result = stamp_failure(
+            _failed_turn_result(final_response, messages, api_call_count, classified.message),
+            classified.reason.value, False,
+        )
+        if keep_partial:
+            result["partial"] = True
+        return result
 
     if api_kwargs is not None:
         agent._dump_api_request_debug(api_kwargs, reason="non_retryable_client_error", error=api_error)
@@ -1910,6 +1928,9 @@ def route_classified_error(
     # escalate to the fallback chain once; False -> terminal handling.
     if (
         classified.is_auth
+        # Local sources use the nonretryable fallback walk below, on EVERY route,
+        # independently of the once-per-turn provider-auth failover guard.
+        and not classified.error_context.get("local_auth_source")
         and not _retry.auth_failover_attempted
         and agent._fallback_index < len(agent._fallback_chain)
     ):

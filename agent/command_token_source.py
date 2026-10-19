@@ -28,6 +28,10 @@ _MINT_TIMEOUT_SECONDS = 15
 # No advertised expiry: nothing in the request path re-mints on 401 (the SDK retries 429/5xx only), so
 # a process-lifetime cache would 401 forever once the token died. Re-mint on a bounded window instead.
 _NO_TTL_REFRESH_SECONDS = 900.0
+# Failed helpers are local failures, not API throttles. Share one bounded failure
+# window with callers waiting on this source instead of serially spawning the
+# same failing command. Never cache exceptions or their captured process output.
+_MINT_FAILURE_COOLDOWN_SECONDS = 30.0
 
 
 class CommandTokenError(RuntimeError):
@@ -121,6 +125,7 @@ class CommandTokenSource:
         self._lock = threading.Lock()
         self._token = ""
         self._expires_at: float = 0.0
+        self._mint_retry_after: float = 0.0
 
     @property
     def cache_identity(self) -> str:
@@ -131,7 +136,19 @@ class CommandTokenSource:
         with self._lock:
             if self._token and time.monotonic() < self._expires_at:
                 return self._token
-            token, ttl = _mint(self._command, self._label)
+            if time.monotonic() < self._mint_retry_after:
+                raise CommandTokenError(
+                    f"key_cmd for provider {self._label!r} recently failed; "
+                    "credential acquisition is temporarily cooling down. "
+                    "Check that provider's helper sign-in before retrying."
+                )
+            try:
+                token, ttl = _mint(self._command, self._label)
+            except CommandTokenError:
+                self._token, self._expires_at = "", 0.0
+                self._mint_retry_after = time.monotonic() + _MINT_FAILURE_COOLDOWN_SECONDS
+                raise
+            self._mint_retry_after = 0.0
             self._token = token
             self._expires_at = time.monotonic() + (
                 max(ttl - _TOKEN_REFRESH_LEEWAY_SECONDS, 5.0) if ttl else _NO_TTL_REFRESH_SECONDS

@@ -983,7 +983,17 @@ def classify_api_error(
     dark-tier 403 on it because that refusal carries no distinguishing message.
     ``api_key`` identifies an anonymous request; a host or fairshare reason alone does not.
     The credential is never included in the returned context."""
+    from agent.command_token_source import CommandTokenError
     from hermes_cli.anon_auth import is_anonymous_request
+    # SDK transport wrappers may hide a failed local key helper in their cause.
+    # No provider request was authenticated, so neither HTTP status nor rotation applies.
+    if _from_cause_chain(error, lambda exc: True if isinstance(exc, CommandTokenError) else None, False):
+        return ClassifiedError(
+            reason=FailoverReason.auth, provider=provider, model=model,
+            message="Local credential source failed. Check this provider's key_cmd and its sign-in, then retry.",
+            error_context={"local_auth_source": True}, retryable=False, should_fallback=True,
+            should_rotate_credential=False,
+        )
     status_code = _extract_status_code(error)
     # Copilot/GitHub Models RateLimitError may not set .status_code; force 429.
     if status_code is None and type(error).__name__ == "RateLimitError":

@@ -16,7 +16,7 @@ import pytest
 
 from tests.installation_launcher_fixture import publish_fixture_launcher
 from tests.scripts.desktop_update.legacy_desktop_reader import legacy_read
-from tests.scripts.desktop_update.test_desktop_update_windows_marker import MARKER, SCRIPT, _run
+from tests.scripts.desktop_update.windows_marker_support import MARKER, SCRIPT, _run
 from tests.scripts.desktop_update.windows_handoff_support import _HeldLock, _creation_time
 
 

@@ -1,96 +1,20 @@
-"""Update-marker contract C1 v2 on the real Windows hand-off script.
-
-Every case runs the real ``scripts/desktop-update/windows.ps1`` under
-Windows PowerShell against a marker owned by a REAL process (a sleeping
-Python child) and reads the marker / result / hand-off log it leaves.
-"""
+"""Windows marker ownership contract on real processes."""
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import time
 
-import psutil
 import pytest
 
 from tests.installation_launcher_fixture import publish_fixture_launcher
 from tests.scripts.desktop_update.windows_handoff_support import _creation_time
+from tests.scripts.desktop_update import windows_marker_support
+from tests.scripts.desktop_update.windows_marker_support import (CLI, MARKER, SCRIPT, _dead_pid, _protected_pid, _run)
 
-ROOT = Path(__file__).resolve().parent.parent.parent.parent
-SCRIPT = ROOT / 'scripts/desktop-update/windows.ps1'
-MARKER = '.hermes-update-in-progress'
-CLI = """
-import sys
-from pathlib import Path
-def main():
-    if '--version' in sys.argv:
-        print('Install directory: ' + str(Path(__file__).resolve().parents[1])); return 0
-    if '--help' in sys.argv:
-        print('--keep-stash'); return 0
-    return 0
-if __name__ == '__main__':
-    sys.exit(main())
-"""
-
-
-@pytest.fixture
-def sleeper():
-    proc = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(600)'])
-    yield proc
-    proc.kill()
-    proc.wait()
-
-
-def _protected_pid() -> int:
-    """A live pid that grants only limited query rights (a SYSTEM/protected service): what
-    Get-Process .StartTime needs is denied, what CIM/GetProcessTimes need is granted."""
-    import ctypes
-    k32 = ctypes.windll.kernel32
-    k32.OpenProcess.restype = ctypes.c_void_p
-    names = ('csrss.exe', 'smss.exe', 'wininit.exe', 'services.exe', 'lsass.exe', 'MsMpEng.exe')
-    rows = []
-    for process in psutil.process_iter(['pid', 'name'], ad_value=None):
-        pid, name = process.info['pid'], process.info['name']
-        rows.append(f'{pid} {name}')
-        if name not in names:
-            continue
-        full = k32.OpenProcess(0x0400, False, int(pid))         # PROCESS_QUERY_INFORMATION
-        limited = k32.OpenProcess(0x1000, False, int(pid))      # ..._LIMITED_INFORMATION
-        for handle in (full, limited):
-            if handle:
-                k32.CloseHandle(ctypes.c_void_p(handle))
-        if limited and not full:
-            return int(pid)
-    pytest.fail('no process here grants only limited query rights: ' + ', '.join(rows[:40]))
-
-
-def _dead_pid() -> int:
-    proc = subprocess.Popen([sys.executable, '-c', 'pass'])
-    proc.wait()
-    return proc.pid
-
-
-def _run(home: Path, *args: str, install: Path | None = None, timeout: int = 120):
-    command = ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(SCRIPT),
-               '-InstallRoot', str(install or home / 'hermes-agent'), '-NoUi', *args]
-    env = {**os.environ, 'HERMES_HOME': str(home), 'HERMES_RUNTIME_DIR': str(home / 'empty-store')}
-    proc = subprocess.Popen(command, cwd=home, env=env,
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    try:
-        out, _ = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        subprocess.run(['taskkill', '/T', '/F', '/PID', str(proc.pid)], capture_output=True, check=False)
-        out, _ = proc.communicate()
-        pytest.fail(f'hand-off did not finish within {timeout}s: {out}')
-    return proc.pid, proc.returncode, out
-
-
-def _result(home: Path) -> dict:
-    return json.loads((home / '.hermes-update-result.json').read_text(encoding='utf-8-sig'))
-
+sleeper = windows_marker_support.sleeper
 
 @pytest.mark.platforms('windows')
 def test_claim_is_the_first_action_and_writes_a_v2_body(tmp_path: Path) -> None:
@@ -140,71 +64,6 @@ def test_owner_creation_time_is_read_for_system_processes(tmp_path: Path, ct_mat
     else:
         assert code == 0, out
         assert (tmp_path / MARKER).read_bytes().decode().split('\n')[0] == str(pid)
-
-
-_BODIES = {   # contract A2: identical verdicts in every reader
-    'crlf-bom-v2': ('\ufeff{pid}\r\n{now}\r\nct:{ct}\r\n', 'live'),
-    'missing-line-2': ('{pid}\n', 'dead'),
-    'garbled-line-2': ('{pid}\nsoon\nct:{ct}\n', 'dead'),
-    'fractional-started-at': ('{pid}\n{now}.5\nct:{ct}\n', 'dead'),
-    'garbled-ct-is-v1-fresh': ('{pid}\n{now}\nct:garbage\n', 'live'),
-    'garbled-ct-is-v1-past-20min': ('{pid}\n{old}\nct:garbage\n', 'dead'),
-    'delegate-without-ct-is-ignored': ('999999\n{now}\nct:1.000\ndelegate:{pid}\n', 'dead'),
-}
-
-
-@pytest.mark.platforms('windows')
-@pytest.mark.parametrize('case', sorted(_BODIES))
-def test_marker_bodies_are_parsed_positionally_like_every_other_reader(
-    tmp_path: Path, sleeper: subprocess.Popen, case: str,
-) -> None:
-    template, verdict = _BODIES[case]
-    now = int(time.time())
-    body = template.format(pid=sleeper.pid, now=now, old=now - 1300, ct=_creation_time(sleeper.pid)).encode()
-    (tmp_path / MARKER).write_bytes(body)
-    pid, code, out = _run(tmp_path, '-SelfTestMarker', '-NoMarkerCleanup')
-    if verdict == 'live':
-        assert code == 2, out
-        assert (tmp_path / MARKER).read_bytes() == body
-    else:
-        assert code == 0, out
-        assert (tmp_path / MARKER).read_bytes().decode().split('\n')[0] == str(pid)
-
-
-@pytest.mark.platforms('windows')
-@pytest.mark.parametrize('bridge', ['absent', 'someone-else'])
-def test_desktop_started_handoff_only_adopts_its_bridge(
-    tmp_path: Path, sleeper: subprocess.Popen, bridge: str,
-) -> None:
-    """A4: the Desktop gave up on a late script: it must not claim fresh, run, or leave a result."""
-    other = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(600)'])
-    try:
-        body = f'{other.pid}\n{int(time.time())}\nct:{_creation_time(other.pid)}\n'.encode()
-        if bridge == 'someone-else':
-            (tmp_path / MARKER).write_bytes(body)
-        _, code, out = _run(tmp_path, '-DesktopPid', str(sleeper.pid))
-    finally:
-        other.kill(); other.wait()
-    assert code == 2, out
-    assert not (tmp_path / '.hermes-update-result.json').exists()
-    if bridge == 'absent':
-        assert not (tmp_path / MARKER).exists()
-    else:
-        assert (tmp_path / MARKER).read_bytes() == body
-
-
-@pytest.mark.platforms('windows')
-def test_live_desktop_bridge_marker_is_adopted_keeping_its_started_at(
-    tmp_path: Path, sleeper: subprocess.Popen,
-) -> None:
-    started = int(time.time()) - 30
-    (tmp_path / MARKER).write_bytes(f'{sleeper.pid}\n{started}\nct:{_creation_time(sleeper.pid)}\n'.encode())
-    pid, code, out = _run(tmp_path, '-SelfTestMarker', '-NoMarkerCleanup', '-DesktopPid', str(sleeper.pid))
-    assert code == 0, out
-    lines = (tmp_path / MARKER).read_bytes().decode().split('\n')
-    assert lines[:2] == [str(pid), str(started)], lines
-    assert lines[2].startswith('ct:'), lines
-    assert _result(tmp_path)['started_at'] == started
 
 
 @pytest.mark.platforms('windows')

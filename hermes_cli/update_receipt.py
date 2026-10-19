@@ -141,6 +141,39 @@ def _launcher_correlation_id() -> Optional[str]:
     return os.environ.get("HERMES_UPDATE_CORRELATION_ID", "").strip() or None
 
 
+def _classify_invoker() -> Optional[str]:
+    """Self-attribute WHO started this update, from environment alone (audit gap: a receipt
+    with no invoker and a ``null`` correlation id is unattributable without session/kanban log
+    correlation).
+
+    ``kind=kanban:`` — a kanban worker ran it (``HERMES_KANBAN_TASK`` is set by the dispatcher
+    and is the finest-grained attribution). ``kind=session:`` — an agent session ran it
+    (``HERMES_SESSION_ID`` is synced to ``os.environ`` for subprocesses). ``kind=cli`` —
+    everything else (a human shell, cron, or an unattended context with no session binding);
+    the suffix carries the TTY name when there is one, plus the login for correlation. Stdlib
+    only, and the whole thing is wrapped by the caller: the receipt must never fail to record
+    because attribution could not be resolved — an ``invoker`` of None is the old behaviour,
+    not an error.
+    """
+    with suppress(Exception):
+        task = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+        if task:
+            return f"kanban:{task}"
+        session = os.environ.get("HERMES_SESSION_ID", "").strip()
+        if session:
+            return f"session:{session}"
+        parts = ["cli"]
+        if os.name != "nt":
+            with suppress(Exception):
+                tty = os.ttyname(0) if hasattr(os, "ttyname") else None
+                if tty and tty not in ("/dev/null", "/dev/console"):
+                    parts.append(f"tty:{tty}")
+            with suppress(Exception):
+                parts.append(f"login:{os.getlogin()}")
+        return ":".join(parts)
+    return None
+
+
 class UpdateReceipt:
     """Collects the observable facts of one ``hermes update`` run."""
 
@@ -160,6 +193,15 @@ class UpdateReceipt:
         # The dashboard action that spawned this run: the receipt store is root-wide, so the
         # action-status route certifies an outcome only from a receipt naming ITS action.
         self.data["action_id"] = os.environ.get("HERMES_ACTION_ID", "").strip() or None
+        # WHO started this run (kanban worker / agent session / plain CLI): captured at begin,
+        # like action_id, so the receipt is self-attributing without session/kanban log
+        # correlation (the Oct-18 spare-update audit gap). The probe must never stop the receipt
+        # from opening: attribution failure degrades to the pre-field behaviour (no invoker),
+        # not a missing receipt.
+        try:
+            self.data["invoker"] = _classify_invoker()
+        except Exception:  # pragma: no cover - the classifier is itself suppress-wrapped
+            self.data["invoker"] = None
 
     def step(self, name: str, ok: bool, detail: str = "") -> None:
         self.data["steps"].append({"name": name, "ok": bool(ok), "detail": detail, "at": _utc_now_iso()})

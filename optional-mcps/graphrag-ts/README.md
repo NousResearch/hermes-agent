@@ -31,7 +31,32 @@ From the `graphrag-ts` repository root:
 
 ```sh
 cp .env.example .env
-# Edit .env: set the PostgreSQL password and reachable slice, judge, and embedding endpoints.
+```
+
+Before the first start, edit `.env`. The following Compose variables override the host-side `RAG_*` settings. Replace every example model/API-key value with settings for your provider:
+
+```dotenv
+POSTGRES_PASSWORD=replace-with-a-long-random-password
+POSTGRES_PASSWORD_URLENCODED=URL-encode-the-same-password
+COMPOSE_RAG_SLICE_PROVIDER=openai
+COMPOSE_RAG_SLICE_BASE_URL=http://host.docker.internal:1234/v1
+COMPOSE_RAG_SLICE_MODEL=your-chat-model
+COMPOSE_RAG_SLICE_API_KEY=your-chat-api-key
+COMPOSE_RAG_JUDGE_PROVIDER=openai
+COMPOSE_RAG_JUDGE_BASE_URL=http://host.docker.internal:1234/v1
+COMPOSE_RAG_JUDGE_MODEL=your-chat-model
+COMPOSE_RAG_JUDGE_API_KEY=your-chat-api-key
+COMPOSE_RAG_EMBED_PROVIDER=openai
+COMPOSE_RAG_EMBED_BASE_URL=http://host.docker.internal:1234/v1
+COMPOSE_RAG_EMBED_MODEL=your-embedding-model
+COMPOSE_RAG_EMBED_API_KEY=your-embedding-api-key
+```
+
+`POSTGRES_PASSWORD_URLENCODED` must be the URL-encoded form of the same raw database password. If a model server runs on the host, use an address reachable from Docker (for example, `host.docker.internal` on macOS/Windows), not the container's `127.0.0.1`. The embedding model must return exactly 768 dimensions. Keep `.env` untracked and use real secrets only there.
+
+Then build and start the stack:
+
+```sh
 docker compose up -d --build --wait
 curl --fail http://127.0.0.1:3000/healthz
 ```
@@ -58,6 +83,8 @@ Keep the same `workspace_id` when submitting a job, polling it, and querying. A 
 
 ## Rebuild and query the benchmark corpus
 
+**Use disposable benchmark storage.** Every benchmark submits a full index job. The MCP benchmark runner and `pnpm benchmark:docker:quick` omit `workspace_id`, so they target `default`; a successful build replaces that workspace's active snapshot. Run them with a fresh Compose project/database volume, not a database whose `default` workspace contains data you need. The manual Hermes flow below also replaces the active snapshot in its selected workspace, so choose a new, unused workspace ID.
+
 The benchmark corpus generator downloads selected public-domain chapters from Project Gutenberg. The three-book recipe below assumes a source checkout with CRLF normalization before Sherlock's anchored chapter selection; older revisions can generate an empty Sherlock body. For a smoke test reproducible from the published source tag without that fix, use `pnpm benchmark:docker:quick` and the committed quickstart corpus.
 
 Generate the three Markdown files from a checkout containing the normalization fix:
@@ -69,15 +96,15 @@ pnpm exec bun -e 'import { prepareLongMarkdownCorpus, describeCorpus } from "./e
 The recorded corpus contains Alice's Adventures in Wonderland, Frankenstein, and The Adventures of Sherlock Holmes. Mount it read-only and start the service:
 
 ```sh
-INPUT_HOST_DIR=./examples/generated/long-markdown-corpus docker compose up -d --build --wait
+COMPOSE_PROJECT_NAME=graphrag-benchmark MCP_PORT=3100 INPUT_HOST_DIR=./examples/generated/long-markdown-corpus docker compose up -d --build --wait
 ```
 
 In Hermes, submit one full index job for the mounted corpus, then poll the returned job ID until it is `succeeded` before querying:
 
 ```text
-Use graphrag-ts submit_index_job with workspace_id="benchmark-recall" and path=".".
-Poll get_index_job using workspace_id="benchmark-recall" and the returned job_id until status is "succeeded".
-Then use query_graph in workspace "benchmark-recall":
+Use graphrag-ts submit_index_job with a new workspace_id such as "benchmark-20261019" and path=".".
+Poll get_index_job using that same workspace_id and the returned job_id until status is "succeeded".
+Then use query_graph in that same workspace:
 What did Alice notice about the White Rabbit before following it down the rabbit-hole?
 Include the answer and supporting source excerpts. Do not infer facts absent from the excerpts.
 ```
@@ -85,10 +112,10 @@ Include the answer and supporting source excerpts. Do not infer facts absent fro
 For the repeatable MCP recall benchmark, with the long corpus mounted and the MCP server running:
 
 ```sh
-MCP_BENCHMARK_URL=http://127.0.0.1:3000/mcp pnpm --filter graphrag-mcp-server benchmark
+COMPOSE_PROJECT_NAME=graphrag-benchmark MCP_PORT=3100 MCP_BENCHMARK_URL=http://127.0.0.1:3100/mcp pnpm --filter graphrag-mcp-server benchmark
 ```
 
-That runner submits the mounted corpus through MCP, waits for publication, runs out-of-corpus scope probes and positive-control queries, and prints source-backed recall results. It uses lexical entity and ordered-phrase matching, not human semantic grading. For the smaller Docker smoke profile, run `pnpm benchmark:docker:quick` from the repository root; it selects the bundled quickstart corpus and three queries.
+That runner submits the mounted corpus through MCP, waits for publication, runs out-of-corpus scope probes and positive-control queries, and prints source-backed recall results. It uses lexical entity and ordered-phrase matching, not human semantic grading. For the smaller Docker smoke profile, run `COMPOSE_PROJECT_NAME=graphrag-benchmark MCP_PORT=3100 pnpm benchmark:docker:quick` from the repository root; it selects the bundled quickstart corpus and three queries in the isolated benchmark database.
 
 ## Recorded verification
 

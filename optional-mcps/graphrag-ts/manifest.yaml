@@ -32,8 +32,19 @@ post_install: |
   vectors. The endpoint has no authentication and must remain bound to loopback;
   do not expose it to a network or use it as a remote hosted service.
 
-  From the graphrag-ts repository, copy .env.example to .env, set a strong
-  PostgreSQL password, and configure reachable model endpoints. Run
+  From the graphrag-ts repository, copy .env.example to .env. Before the first
+  start, set POSTGRES_PASSWORD and POSTGRES_PASSWORD_URLENCODED (the URL-encoded
+  form of the same password), plus these Compose model settings:
+
+    COMPOSE_RAG_SLICE_PROVIDER, COMPOSE_RAG_SLICE_BASE_URL,
+    COMPOSE_RAG_SLICE_MODEL, COMPOSE_RAG_SLICE_API_KEY,
+    COMPOSE_RAG_JUDGE_PROVIDER, COMPOSE_RAG_JUDGE_BASE_URL,
+    COMPOSE_RAG_JUDGE_MODEL, COMPOSE_RAG_JUDGE_API_KEY,
+    COMPOSE_RAG_EMBED_PROVIDER, COMPOSE_RAG_EMBED_BASE_URL,
+    COMPOSE_RAG_EMBED_MODEL, COMPOSE_RAG_EMBED_API_KEY
+
+  The embedding endpoint must return exactly 768 dimensions. Keep .env
+  untracked. See the catalog README for a complete .env example. Start with
   `docker compose up -d --build`; the default MCP URL is
   http://127.0.0.1:3000/mcp. If MCP_PORT is changed, enter the matching URL
   during installation. If Hermes runs in a container, its backend must be able

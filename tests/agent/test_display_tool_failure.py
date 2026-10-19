@@ -154,6 +154,33 @@ class TestDetectToolFailureStructured:
 
 
 
+    def test_json_object_is_judged_by_top_level_shape(self):
+        """An "error" nested inside a success payload is data the tool read (a page's own
+        validation message in browser_cdp's result), never a failure; a top-level error, an
+        all-failed batch, and plain-text failures still flag, in both classifiers."""
+        ok = [
+            json.dumps({"success": True, "method": "Runtime.evaluate",
+                        "result": {"result": {"type": "object", "value": {"error": ["Vul een geldig telefoonnummer in."]}}}}),
+            json.dumps({"success": True, "rows": [{"ok": False, "error": "matched 0 elements"}]}),
+            json.dumps({"results": [{"task_index": 0, "error": "interrupted"}, {"task_index": 1, "summary": "done", "error": None}]}),
+            # process(wait) returns "timeout" for a job that is still running: not a failure
+            json.dumps({"status": "timeout", "command": "sleep 60", "output": "", "process_running": True}),
+        ]
+        bad = [
+            json.dumps({"error": "CDP call timed out after 30.0s", "method": "Runtime.evaluate"}),
+            json.dumps({"results": [{"task_index": 0, "status": "interrupted", "error": "child did not finish"},
+                                    {"task_index": 1, "status": "interrupted", "error": "child did not finish"}]}),
+            json.dumps({"status": "error", "stdout": "", "traceback": "boom"}),
+            "Error executing tool 'web_search': boom",
+        ]
+        for result in ok:
+            assert _detect_tool_failure("process", result) == (False, ""), result
+            assert classify_tool_failure("process", result) == (False, ""), result
+        for result in bad:
+            assert _detect_tool_failure("delegate_task", result)[0] is True, result
+            assert classify_tool_failure("delegate_task", result)[0] is True, result
+
+
 class TestGetCuteToolMessageFailureSuffix:
     """End-to-end: failure suffix is appended by get_cute_tool_message."""
 

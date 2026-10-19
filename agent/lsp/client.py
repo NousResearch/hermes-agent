@@ -55,7 +55,7 @@ MAX_TRACKED_FILES = 64
 _WRITE_ERRORS = (BrokenPipeError, ConnectionResetError, OSError)
 _LIVE_STATES = {"starting", "running"}
 
-_CLIENT_CAPABILITIES: Dict[str, Any] = {
+_CLIENT_CAPABILITIES: dict[str, Any] = {
     "window": {"workDoneProgress": True},
     "workspace": {"configuration": True, "workspaceFolders": True,
                   "didChangeWatchedFiles": {"dynamicRegistration": True}, "diagnostics": {"refreshSupport": False}},
@@ -84,7 +84,7 @@ def file_uri(path: str) -> str:
     return "file://" + quote(abs_path, safe="/:")
 
 
-def _folder(root: str) -> Dict[str, str]:
+def _folder(root: str) -> dict[str, str]:
     """Build an LSP ``WorkspaceFolder`` for ``root``."""
     return {"name": os.path.basename(root.rstrip(os.sep)) or root, "uri": file_uri(root)}
 
@@ -99,7 +99,7 @@ def uri_to_path(uri: str) -> str:
     return os.path.normpath(unquote(raw))
 
 
-def _end_position(text: str) -> Dict[str, int]:
+def _end_position(text: str) -> dict[str, int]:
     """LSP Position at the end of ``text`` (for a whole-document replace range)."""
     if not text:
         return {"line": 0, "character": 0}
@@ -119,8 +119,8 @@ class _DocState:
     publishDiagnostics get exact tagging; others are credited with the current version at receipt."""
     version: int = 0
     text: str = ""
-    push: List[Dict[str, Any]] = field(default_factory=list)
-    pull: List[Dict[str, Any]] = field(default_factory=list)
+    push: list[dict[str, Any]] = field(default_factory=list)
+    pull: list[dict[str, Any]] = field(default_factory=list)
     push_version: int = -1
     pull_version: int = -1
     seed_seen: bool = False
@@ -135,19 +135,28 @@ class _DocState:
         return self.fresh_push(version) or self.fresh_pull(version)
 
 
+def as_disk_read(text: str) -> str:
+    """``text`` as ``Path.read_text(encoding="utf-8-sig", errors="replace")`` returns the file holding it."""
+    try:
+        text = text.encode("utf-8", "surrogateescape").decode("utf-8-sig", "replace")
+    except UnicodeEncodeError:  # lone surrogate outside the escape range: keep the text, drop the BOM
+        text = text.removeprefix("\ufeff")
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 class LSPClient:
     """One server process + one workspace root.  ``start()`` → ``open_file()`` → ``wait_for_diagnostics()`` →
     ``diagnostics_for()`` → ``shutdown()``."""
 
-    def __init__(self, *, server_id: str, workspace_root: str, command: List[str],
-                 env: Optional[Dict[str, str]] = None, cwd: Optional[str] = None,
-                 initialization_options: Optional[Dict[str, Any]] = None,
+    def __init__(self, *, server_id: str, workspace_root: str, command: list[str],
+                 env: Optional[dict[str, str]] = None, cwd: Optional[str] = None,
+                 initialization_options: Optional[dict[str, Any]] = None,
                  seed_diagnostics_on_first_push: bool = False) -> None:
         self.server_id = server_id
         self.workspace_root = workspace_root
         # Roots this server serves.  Single-root servers only ever hold ``workspace_root``;
         # multi-root servers (pyright) grow this via ``add_workspace_folder`` instead of a second process.
-        self.workspace_folders: List[str] = [workspace_root]
+        self.workspace_folders: list[str] = [workspace_root]
         self._command = list(command)
         self._env = env
         self._cwd = cwd or workspace_root
@@ -157,20 +166,20 @@ class LSPClient:
         self._proc: Optional[asyncio.subprocess.Process] = None
         self._stderr_task: Optional[asyncio.Task] = None
         # Ring buffer of the most recent server stderr lines, surfaced when spawn/initialize fails.
-        self._stderr_tail: List[str] = []
+        self._stderr_tail: list[str] = []
         self._exit_code: Optional[int] = None
         self._reader_task: Optional[asyncio.Task] = None
         self._cleanup_lock = asyncio.Lock()
         self._cleanup_error: Optional[str] = None
         self._shutdown_task: Optional[asyncio.Task] = None
-        self._dispatch_tasks: Set[asyncio.Task] = set()
+        self._dispatch_tasks: set[asyncio.Task] = set()
         self._initialize_result: dict = {}
         self._next_id: int = 0
-        self._pending: Dict[int, asyncio.Future] = {}
+        self._pending: dict[int, asyncio.Future] = {}
 
         # Server → client requests; anything else gets method-not-found.  Capability (un)registration
         # and diagnostic refresh are acknowledged but not acted on: we re-pull on every touch anyway.
-        self._request_handlers: Dict[str, Callable[[Any], Awaitable[Any]]] = {
+        self._request_handlers: dict[str, Callable[[Any], Awaitable[Any]]] = {
             "window/workDoneProgress/create": self._handle_null,
             "workspace/configuration": self._handle_workspace_configuration,
             "client/registerCapability": self._handle_null,
@@ -179,13 +188,15 @@ class LSPClient:
             "workspace/diagnostic/refresh": self._handle_null,
         }
         # Server → client notifications; others (showMessage, $/progress) are dropped.
-        self._notification_handlers: Dict[str, Callable[[Any], None]] = {
+        self._notification_handlers: dict[str, Callable[[Any], None]] = {
             "textDocument/publishDiagnostics": self._handle_publish_diagnostics,
         }
 
-        self._docs: Dict[str, _DocState] = {}  # keyed by absolute path (NOT URI)
+        self._docs: dict[str, _DocState] = {}  # keyed by absolute path (NOT URI)
         self._state: str = "stopped"
         self._sync_kind: int = 1  # 1=Full, 2=Incremental
+        # Cleared when the server rejects textDocument/diagnostic as unknown: no further pulls.
+        self._pull_supported: bool = True
         self._stopping: bool = False
         # Waiters snapshot ``_push_counter`` and treat any increase as "recheck the
         # predicate" — avoids the asyncio.Event sticky-state trap.
@@ -324,7 +335,7 @@ class LSPClient:
 
     def failure_details(self) -> str:
         """Exit status + last stderr lines for a failed spawn/initialize; empty for a live server."""
-        parts: List[str] = []
+        parts: list[str] = []
         if exit_desc := self._describe_exit():
             parts.append(exit_desc)
         if self._stderr_tail:
@@ -366,7 +377,7 @@ class LSPClient:
             if unexpected_close:
                 await self._cleanup_process()
 
-    def _workspace_folders(self) -> List[Dict[str, str]]:
+    def _workspace_folders(self) -> list[dict[str, str]]:
         return [_folder(r) for r in self.workspace_folders]
 
     async def add_workspace_folder(self, root: str) -> None:
@@ -434,8 +445,10 @@ class LSPClient:
                 reader_task.cancel()
                 try:
                     await reader_task
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                except asyncio.CancelledError:
                     pass
+                except Exception:
+                    logger.warning("LSP background task failed during cleanup", exc_info=True)
             if self._reader_task is reader_task:
                 self._reader_task = None
 
@@ -458,8 +471,10 @@ class LSPClient:
                 stderr_task.cancel()
                 try:
                     await stderr_task
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                except asyncio.CancelledError:
                     pass
+                except Exception:
+                    logger.warning("LSP background task failed during cleanup", exc_info=True)
             if self._stderr_task is stderr_task:
                 self._stderr_task = None
 
@@ -564,7 +579,7 @@ class LSPClient:
         else:
             try:
                 reply = make_response(req_id, await handler(msg.get("params")))
-            except Exception as e:  # noqa: BLE001 — protocol must not blow up
+            except Exception as e:
                 logger.warning("[%s] request handler %s failed: %s", self.server_id, method, e)
                 reply = make_error_response(req_id, -32000, f"handler failed: {e}")
         await self._send_reply(reply)
@@ -575,7 +590,7 @@ class LSPClient:
             return
         try:
             handler(msg.get("params"))
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.debug("[%s] notification handler %s failed: %s", self.server_id, method, e)
 
     # ---- built-in server-→-client request handlers ----
@@ -629,15 +644,22 @@ class LSPClient:
 
     # ---- public file-sync API ----
 
-    async def open_file(self, path: str, *, language_id: str = "plaintext") -> int:
-        """Send didOpen (first time) or didChange (subsequent); return the new document version."""
+    async def open_file(self, path: str, *, language_id: str = "plaintext", text: Optional[str] = None) -> int:
+        """Send didOpen (first time) or didChange (subsequent); return the new document version.
+        ``text`` is the document content to sync (default: the file on disk) — the deferred write check
+        syncs the exact pre-/post-edit snapshots of the edit it checks, whatever the disk holds by then.
+        A supplied text is normalized as the disk read would decode it (BOM, newlines, undecodable bytes),
+        so a snapshot and the file it was written to sync identically."""
         if not self.is_running:
             raise LSPProtocolError("client not running")
         abs_path = os.path.abspath(path)
-        try:
-            text = Path(abs_path).read_text(encoding="utf-8-sig", errors="replace")
-        except OSError as e:
-            raise LSPProtocolError(f"cannot read {abs_path}: {e}") from e
+        if text is None:
+            try:
+                text = Path(abs_path).read_text(encoding="utf-8-sig", errors="replace")
+            except OSError as e:
+                raise LSPProtocolError(f"cannot read {abs_path}: {e}") from e
+        else:
+            text = as_disk_read(text)
         uri = file_uri(abs_path)
         doc = self._docs.get(abs_path)
         if doc is not None and doc.version < 0:
@@ -658,7 +680,7 @@ class LSPClient:
             return 0
         # pop + reinsert refreshes LRU recency (dicts are insertion-ordered).
         self._docs[abs_path] = self._docs.pop(abs_path)
-        change: Dict[str, Any] = {"text": text}
+        change: dict[str, Any] = {"text": text}
         if self._sync_kind == 2:
             change["range"] = {"start": {"line": 0, "character": 0}, "end": _end_position(doc.text)}
         new_version = doc.version + 1
@@ -704,7 +726,9 @@ class LSPClient:
                 "textDocument/diagnostic", {"textDocument": {"uri": file_uri(abs_path)}},
                 timeout=DIAGNOSTICS_REQUEST_TIMEOUT,
             )
-        except (LSPRequestError, LSPProtocolError, asyncio.TimeoutError) as e:
+        except (TimeoutError, LSPRequestError, LSPProtocolError) as e:
+            if isinstance(e, LSPRequestError) and e.code == ERROR_METHOD_NOT_FOUND:
+                self._pull_supported = False
             logger.debug("[%s] document diagnostic pull failed: %s", self.server_id, e)
             return
         if not isinstance(result, dict):
@@ -721,90 +745,49 @@ class LSPClient:
                 d.pull = items
                 d.pull_version = d.version if tag is None else tag
 
-    async def wait_for_diagnostics(
-        self,
-        path: str,
-        version: int,
-        *,
-        mode: str = "document",
-        timeout: Optional[float] = None,
-    ) -> bool:
-        """Wait for the server to publish diagnostics for ``path`` at ``version``.
+    async def wait_for_diagnostics(self, path: str, version: int, *, mode: str = "document",
+                                   timeout: Optional[float] = None) -> bool:
+        """Wait for fresh diagnostics for ``path`` at ``version``; True iff fresh data arrived in budget.
 
-        ``mode`` is ``"document"`` (5s budget, document pulls) or
-        ``"full"`` (10s budget, also workspace pulls).  ``timeout``
-        overrides the mode's default budget when provided — this is
-        how the user's ``lsp.wait_timeout`` config reaches the wait
-        loop (slow servers like tsserver on big projects need more
-        than the 5s default).
-
-        Returns ``True`` when *fresh* diagnostics arrived (a push at
-        or after our didChange, or a pull answered after it) and
-        ``False`` on timeout.  Callers must treat ``False`` as "no
-        data", NOT as "no errors" — the diagnostic stores may still
-        hold stale entries from the previous edit at that point.
-        Best-effort — never throws if the server doesn't support pull
-        diagnostics; we still get the push side.
+        ``mode`` is ``"document"`` (5s) or ``"full"`` (10s); ``timeout`` overrides the budget (how
+        ``lsp.wait_timeout`` reaches the loop).  Callers must treat False as "no data", NOT "no errors" —
+        the stores may still hold stale entries.  Never throws for servers lacking pull support.
         """
-        if timeout is not None and timeout > 0:
-            budget = timeout
-        else:
-            budget = DIAGNOSTICS_FULL_WAIT if mode == "full" else DIAGNOSTICS_DOCUMENT_WAIT
-        deadline = asyncio.get_event_loop().time() + budget
+        if not (timeout is not None and timeout > 0):
+            timeout = DIAGNOSTICS_FULL_WAIT if mode == "full" else DIAGNOSTICS_DOCUMENT_WAIT
+        now = asyncio.get_event_loop().time
+        deadline = now() + timeout
         abs_path = os.path.abspath(path)
-
-        while True:
-            if not self._connection_is_open():
-                raise LSPProtocolError(
-                    "server connection closed while waiting for diagnostics"
-                )
-            remaining = deadline - asyncio.get_event_loop().time()
-            if remaining <= 0:
-                return False
-
-            # Concurrent: document pull + push wait.  The parent owns both
-            # children across every exit path, including cancellation by the
-            # synchronous bridge when its outer timeout fires.
-            children: List[asyncio.Task] = []
-            try:
-                children.append(
-                    asyncio.create_task(
-                        self._pull_document_diagnostics(abs_path)
-                    )
-                )
-                children.append(
-                    asyncio.create_task(
-                        self._wait_for_fresh_push(abs_path, version, remaining)
-                    )
-                )
-                await asyncio.wait(
-                    children,
-                    timeout=remaining,
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-            finally:
-                for task in children:
-                    if not task.done():
-                        task.cancel()
-                if children:
-                    await asyncio.gather(*children, return_exceptions=True)
-
-            # If we got a fresh push for our version, we're done.
-            doc = self._docs.get(abs_path)
-            if doc and doc.fresh_push(version):
-                return True
-
-            # Pull may have answered for the current version — that's
-            # also success.
-            if doc and doc.fresh_pull(version):
-                return True
+        # Document pull + push wait run concurrently.  A pull that settles without a fresh verdict
+        # (push-only servers such as typescript-language-server reject it at once) is NOT re-sent:
+        # re-sending it spun this loop hundreds of thousands of times per wait.  The push wait alone
+        # then runs to the deadline.
+        pull = asyncio.create_task(self._pull_document_diagnostics(abs_path)) if self._pull_supported else None
+        push = asyncio.create_task(self._wait_for_fresh_push(abs_path, version, timeout))
+        try:
+            while True:
+                if not self._connection_is_open():
+                    raise LSPProtocolError("server connection closed while waiting for diagnostics")
+                doc = self._docs.get(abs_path)
+                if doc and doc.fresh(version):
+                    return True
+                remaining = deadline - now()
+                live = {t for t in (pull, push) if t is not None and not t.done()}
+                if remaining <= 0 or not live:
+                    return False
+                await asyncio.wait(live, timeout=remaining, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            pending = [t for t in (pull, push) if t is not None and not t.done()]
+            for t in pending:
+                t.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def _await_push(self, timeout: float) -> bool:
         """Block until the next publishDiagnostics or ``timeout``; True iff a push woke us."""
         self._push_event.clear()
         try:
             await asyncio.wait_for(self._push_event.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return False
         return True
 
@@ -834,7 +817,32 @@ class LSPClient:
                 continue
             await self._await_push(min(remaining, 0.5))
 
-    def diagnostics_for(self, path: str, *, fresh_only: bool = False) -> List[Dict[str, Any]]:
+    async def wait_for_seed(self, path: str, timeout: float) -> Optional[list[dict[str, Any]]]:
+        """For a server whose first push per document is a seed (never fresh): wait up to ``timeout``
+        for that push and return what it carried (the verdict on the text sent with didOpen), or None.
+        ``path`` must be absolute (the key ``open_file`` stored it under)."""
+        abs_path = path
+        now = asyncio.get_running_loop().time
+        deadline = now() + timeout
+        while True:
+            doc = self._docs.get(abs_path)
+            if doc is not None and doc.seed_seen:
+                return list(doc.push)
+            remaining = deadline - now()
+            if remaining <= 0 or not self._connection_is_open():
+                return None
+            await self._await_push(min(remaining, 0.5))
+
+    @property
+    def seeds_first_push(self) -> bool:
+        return self._seed_first_push
+
+    def document_text(self, path: str) -> Optional[str]:
+        """The text last synced to the server for ``path`` (None when never opened)."""
+        doc = self._docs.get(os.path.abspath(path))
+        return doc.text if doc is not None and doc.version >= 0 else None
+
+    def diagnostics_for(self, path: str, *, fresh_only: bool = False) -> list[dict[str, Any]]:
         """Merged + deduped push/pull diagnostics for one file.  With ``fresh_only=True`` a store only
         contributes once its version tag has caught up to the document's — report paths must use this
         so "stale" and "clean" aren't conflated."""
@@ -847,7 +855,7 @@ class LSPClient:
 
 
     @staticmethod
-    def _win_wrap_cmd(cmd: List[str]) -> List[str]:
+    def _win_wrap_cmd(cmd: list[str]) -> list[str]:
         """On Windows, wrap .cmd/.bat shims so CreateProcess can run them."""
         exe = cmd[0]
         if exe.lower().endswith((".cmd", ".bat")):
@@ -882,12 +890,12 @@ class LSPClient:
             if self.is_running:
                 try:
                     await asyncio.wait_for(self._send_request("shutdown", None), timeout=2.0)
-                except (asyncio.TimeoutError, LSPRequestError, LSPProtocolError):
+                except (TimeoutError, LSPRequestError, LSPProtocolError):
                     pass
                 try:
                     await self._send_notification("exit", None)
                 except Exception:
-                    pass
+                    logger.warning('LSP _shutdown_impl failed during retained cleanup', exc_info=True)
                 if (proc := self._proc) is not None and proc.returncode is None:
                     with contextlib.suppress(asyncio.TimeoutError):
                         await asyncio.wait_for(proc.wait(), timeout=SHUTDOWN_GRACE)
@@ -896,9 +904,9 @@ class LSPClient:
             await self._cleanup_process()
 
 
-def _dedupe(*lists: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    seen: Set[str] = set()
-    out: List[Dict[str, Any]] = []
+def _dedupe(*lists: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
     for d in (d for lst in lists for d in lst if isinstance(d, dict)):
         if (key := _diagnostic_key(d)) not in seen:
             seen.add(key)
@@ -906,7 +914,7 @@ def _dedupe(*lists: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
-def _diagnostic_key(d: Dict[str, Any]) -> str:
+def _diagnostic_key(d: dict[str, Any]) -> str:
     """Content-equality key: severity + code + source + message + range.  Shared with the manager's
     cross-edit delta filter (``_diag_key``) so both layers agree on identity.  Range is included so an
     identical error at a second site still surfaces as new (the manager line-shifts its baseline first)."""
@@ -921,4 +929,4 @@ def _diagnostic_key(d: Dict[str, Any]) -> str:
     ])
 
 
-__all__ = ["LSPClient", "file_uri", "uri_to_path", "INITIALIZE_TIMEOUT", "DIAGNOSTICS_DOCUMENT_WAIT", "DIAGNOSTICS_FULL_WAIT"]
+__all__ = ["DIAGNOSTICS_DOCUMENT_WAIT", "DIAGNOSTICS_FULL_WAIT", "INITIALIZE_TIMEOUT", "LSPClient", "file_uri", "uri_to_path"]

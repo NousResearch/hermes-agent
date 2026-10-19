@@ -14,12 +14,18 @@ def recover_plugin_publication(project: Path, row: dict, journal: Path) -> None:
 
 
 def publish_plugin(staged: Path, target: Path, old_metadata: dict, new_metadata: dict,
-                   *, target_digest: str | None = None, require_consent: bool = False) -> None:
+                   *, target_digest: str | None = None, require_consent: bool = False,
+                   assume_consent: bool = False) -> None:
+    """Publish *staged* into *target*. *assume_consent* is consent the caller
+    already holds (``--yes-deps``, or a memory-provider migration under
+    ``security.allow_lazy_installs``): the active-replacement consent veto is
+    skipped, so an unattended install carries that decision instead of being
+    refused non-interactively."""
     from pm.client import sync_venv
     from pm.plugin_inputs import StagedUpdate
     from pm.store import tree_digest
 
-    if require_consent:
+    if require_consent and not assume_consent:
         from hermes_cli import plugins_cmd
         from pm.workspace import enabled_plugin_dirs
 
@@ -27,8 +33,13 @@ def publish_plugin(staged: Path, target: Path, old_metadata: dict, new_metadata:
             consented, reason = plugins_cmd._install_plugin_python_deps(
                 plugins_cmd._read_manifest_for_install(staged), staged, plugins_cmd._console())
             if not consented:
+                outcome = ("Reinstall declined: {}. The installed plugin and active environment are unchanged."
+                           if target.exists() else "Install declined: {}. Nothing was installed.")
+                # The refusal carries its closed class (plugins_cmd_install._ConsentRefusal).
+                from hermes_cli.observability.shared_metrics_fields import tagged_failure_class
+
                 raise plugins_cmd.PluginOperationError(
-                    f"Reinstall declined: {reason}. The installed plugin and active environment are unchanged.")
+                    outcome.format(reason), failure_class=tagged_failure_class(reason) or "other")
 
     sync_venv(explicit=True, plugins=StagedUpdate({
         "staged": str(staged.resolve()), "target": str(target.absolute()),
@@ -175,7 +186,7 @@ def update_plugin(
                 raise pc.PluginOperationError(
                     f"The updated plugin renamed itself to '{installed_name}', but that plugin already exists.")
             pc._check_manifest_version(manifest, installed_name)
-            pc._scan_merged_tree(staged, source, merged, force=False)
+            pc._scan_merged_tree(staged, source, merged, force=False, reviewed_pin=catalog_entry is not None)
             pc._copy_example_files(staged, pc._console())
             _refresh_declared_dependencies(target, staged, manifest, interactive=interactive)
             if tree_digest(target) != before:

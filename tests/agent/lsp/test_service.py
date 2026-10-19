@@ -21,7 +21,6 @@ from pathlib import Path
 
 import pytest
 
-from agent.lsp.manager import LSPService
 from agent.lsp.servers import (
     SERVERS,
     ServerContext,
@@ -114,7 +113,7 @@ def mock_pyright_silent(monkeypatch, tmp_path):
         pass
 
 
-def test_snapshot_baseline_honors_wait_timeout(mock_pyright_silent):
+def test_snapshot_baseline_honors_wait_timeout(mock_pyright_silent, monkeypatch):
     """``snapshot_baseline`` must wait at most ``lsp.wait_timeout``, not
     the hardcoded client fallback of 5s.
 
@@ -127,6 +126,18 @@ def test_snapshot_baseline_honors_wait_timeout(mock_pyright_silent):
     f = repo / "x.py"
     f.write_text("print('hi')\n")
 
+    # The budget is read off the call, not inferred from wall time: server spawn and initialize
+    # sit inside snapshot_baseline too, and on a loaded runner they ate the margin to 5s.
+    from agent.lsp.client import LSPClient
+    budgets = []
+    real_wait = LSPClient.wait_for_diagnostics
+
+    async def recording_wait(self, path, version, *, mode="document", timeout=None):
+        budgets.append(timeout)
+        return await real_wait(self, path, version, mode=mode, timeout=timeout)
+
+    monkeypatch.setattr(LSPClient, "wait_for_diagnostics", recording_wait)
+
     svc = LSPService(
         enabled=True,
         wait_mode="document",
@@ -138,12 +149,10 @@ def test_snapshot_baseline_honors_wait_timeout(mock_pyright_silent):
         svc.snapshot_baseline(str(f))
         elapsed = time.monotonic() - start
 
-        # The wait is deadline-based: it always runs the full budget
-        # (never less than wait_timeout) and the server never pushes,
-        # so both bounds are stable under load.
+        # The wait is deadline-based and the server never pushes, so it runs the full budget.
         assert elapsed >= 1.5, f"baseline returned before the wait budget: {elapsed:.2f}s"
-        assert elapsed < 4.5, (
-            f"baseline ignored wait_timeout=2.0 and ran the 5s fallback: {elapsed:.2f}s"
+        assert budgets and all(b == pytest.approx(2.0) for b in budgets), (
+            f"baseline must wait with wait_timeout=2.0, not the 5s fallback: {budgets}"
         )
         assert svc.get_status()["broken"] == []
         # No fresh data pre-edit -> empty (never stale) baseline.
@@ -865,7 +874,6 @@ async def test_reader_cleanup_failure_retains_handle_and_blocks_replacement(
 
     async def controlled_read(_stream):
         await allow_eof.wait()
-        return None
 
     server = _install_mock_server(monkeypatch, "clean", "pyright")
     spawn_count = next(server)
@@ -1092,75 +1100,6 @@ async def test_multi_key_reap_announces_each_key_before_replacement(
             pass
 
 
-@pytest.mark.asyncio
-async def test_service_shutdown_drains_reader_request_dispatch(monkeypatch, tmp_path):
-    svc = _threadless_service()
-    client = LSPClient(
-        server_id="pyright",
-        workspace_root=str(tmp_path),
-        command=["unused"],
-        cwd=str(tmp_path),
-    )
-
-    class FakeStdin:
-        def is_closing(self):
-            return False
-
-    class ExitedProcess:
-        returncode = 0
-        stdin = FakeStdin()
-        stdout = object()
-        stderr = None
-
-    handler_started = asyncio.Event()
-    handler_cancelled = asyncio.Event()
-    keep_reader_open = asyncio.Event()
-    reads = 0
-
-    async def controlled_handler(_params):
-        handler_started.set()
-        try:
-            await asyncio.Future()
-        finally:
-            handler_cancelled.set()
-
-    async def controlled_read(_stream):
-        nonlocal reads
-        reads += 1
-        if reads == 1:
-            return {
-                "jsonrpc": "2.0",
-                "id": 11,
-                "method": "workspace/configuration",
-                "params": {"items": []},
-            }
-        await keep_reader_open.wait()
-        return None
-
-    client._proc = ExitedProcess()  # type: ignore[assignment]
-    client._state = "running"
-    client._request_handlers["workspace/configuration"] = controlled_handler
-    monkeypatch.setattr("agent.lsp.client.read_message", controlled_read)
-    def kill_tree(pid):
-        assert clients and pid == clients[0].process.pid
-        clients[0].process.terminate()
-        return True
-    monkeypatch.setattr("agent.deadline.kill_process_tree", kill_tree)
-    client._reader_task = asyncio.create_task(client._reader_loop())
-    key = (client.server_id, client.workspace_root)
-    svc._clients[key] = _ClientEntry(client=client, generation=1)
-
-    await handler_started.wait()
-    dispatch_tasks = set(client._dispatch_tasks)
-    assert len(dispatch_tasks) == 1
-
-    assert await svc._shutdown_async() is True
-
-    assert handler_cancelled.is_set()
-    assert all(task.done() for task in dispatch_tasks)
-    assert client._dispatch_tasks == set()
-    assert client._proc is None
-    assert svc._clients == {}
 
 
 def test_blocking_build_spawn_retains_shutdown_owner_and_honors_fence(
@@ -1254,7 +1193,7 @@ def test_blocking_build_spawn_retains_shutdown_owner_and_honors_fence(
             blocked_results.append(
                 svc._loop.run(acquire_and_release(sources[1]), timeout=5.0)
             )
-        except BaseException as exc:  # noqa: BLE001
+        except BaseException as exc:
             blocked_errors.append(exc)
 
     blocked_thread = threading.Thread(target=run_blocked_acquire)

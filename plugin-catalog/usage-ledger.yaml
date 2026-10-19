@@ -1,0 +1,24 @@
+name: usage-ledger
+repo: https://github.com/3DPrintPioneers/hermes-usage-ledger
+sha: 3fa6a32187c943ff2f43959b3a7d258cf9fe067e
+description: Local-only content-free usage tally and native Desktop statusline (Windows and macOS beta).
+maintainer: 3DPrintPioneers
+tier: community
+category: desktop
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/3DPrintPioneers/hermes-usage-ledger/blob/3fa6a32187c943ff2f43959b3a7d258cf9fe067e/README.md
+version: "0.4.4"
+readme: true
+platforms: [windows, macos]
+known_issues:
+  - "Native macOS validation covers macOS 14.3.1 on Apple Silicon/arm64; Intel Mac native UI is not yet verified."
+  - "If another updater owns tally.md, disable finalize_tally before enabling Agent collection; writer handoff requires quiescent, explicit baseline reconciliation."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - post_api_request
+    - post_llm_call
+    - on_session_finalize
+  provides_middleware: []
+  requires_env: []

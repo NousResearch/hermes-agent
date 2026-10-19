@@ -26,7 +26,7 @@ class _ServiceTombstone:
     error: str
 
 
-_service: Optional[Union[LSPService, _ServiceTombstone]] = None
+_service: Optional[LSPService | _ServiceTombstone] = None
 # Routed multiplex profiles (HERMES_HOME override) each get their own service: ``lsp.*`` config
 # (enabled, servers, idle timeout) is per profile, so one process-wide singleton would let the first
 # profile's settings decide whether every other profile gets diagnostics.
@@ -73,7 +73,7 @@ def release_workspace(path: str) -> int:
         try:
             owner = svc.service if isinstance(svc, _ServiceTombstone) else svc
             released += owner.release_workspace(path)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.debug("LSP workspace release failed for %s: %s", path, e)
     return released
 
@@ -86,9 +86,9 @@ def _shutdown_owner(current):
         if svc.shutdown() is True:
             return None
         error = svc._get_shutdown_error() or "teardown incomplete"
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         error = f"{type(e).__name__}: {e}"
-        logger.debug("LSP shutdown error: %s", error)
+        logger.warning('LSP shutdown error: %s', error, exc_info=True)
     return _ServiceTombstone(service=svc, error=error)
 
 
@@ -110,8 +110,8 @@ def _atexit_shutdown() -> None:
     """atexit wrapper; logs at debug since the user has already seen the final output."""
     try:
         shutdown_service()
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.debug("atexit LSP shutdown failed: %s", e)
 
 
-__all__ = ["get_service", "release_workspace", "shutdown_service", "LSPService"]
+__all__ = ["LSPService", "get_service", "release_workspace", "shutdown_service"]

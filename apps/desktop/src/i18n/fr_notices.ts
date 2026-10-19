@@ -24,6 +24,9 @@ export const frNotices = {
       'Cette discussion est occupée : la modification MCP s’applique à la fin de son tour et au prochain rechargement MCP, ou à la réouverture de la discussion',
     mcpReloadNotInChat: server => `${server} n’est pas activé dans cette discussion`,
     mcpReloadUnavailable: servers => `Connexion impossible : ${servers}`,
+    compactedTurnUnavailable:
+      'Ce message a été résumé lors de la compression de la conversation : il ne peut plus être restauré ni modifié.',
+    staleTurnUnavailable: 'Ce message ne fait plus partie de l’historique de cette discussion.',
     sessionCommands: frSessionCommands
   },
   keepAwakeOffer: {

@@ -1,0 +1,28 @@
+# Proposed MCP catalogue entry; approval requires upstream review and merge.
+manifest_version: 1
+name: ibara
+description: Computer use on Omarchy computers you own; requires installed ibara.
+source: https://github.com/MayberryDT/ibara
+transport:
+  type: stdio
+  command: ibara
+  args: [mcp]
+auth:
+  type: none
+suggest:
+  applications: [ibara]
+  requires_app: true
+post_install: |
+  Omarchy only. Install and set up ibara using https://ibara.app/docs/install
+  before connecting this entry. This manifest does not install ibara or its
+  Omarchy plugin and does not pair computers or grant desktop access.
+
+  On the Omarchy computer where Hermes runs, ibara must be on PATH. In Hermes,
+  paste the output of `ibara prompt` to link the ibara skill and add the
+  agent instructions while preserving your other configuration. If the MCP
+  server is already configured, reconcile it instead of adding a duplicate.
+
+  Check computer_status, then try https://ibara.app/docs/first-task on a ready,
+  paired and unlocked Omarchy spare. Start with the practice task that needs
+  no login. Hermes's MCP connection is local stdio; ibara still enforces the
+  computer's existing pairing, access and task rules.

@@ -244,6 +244,16 @@ The following patterns trigger approval prompts (defined in `tools/approval.py`)
 **Container bypass**: When running in `docker`, `singularity`, `modal`, `daytona`, or `vercel_sandbox` backends, dangerous command checks are **skipped** because the container itself is the security boundary. Destructive commands inside a container can't harm the host.
 :::
 
+### `execute_code` Scripts {#execute-code-scripts}
+
+A script run by [`execute_code`](./features/code-execution.md) can call `subprocess`, `os` or `shutil` directly, and those calls never pass through the patterns above. Messaging, API and other gateway sessions therefore ask once for the whole script before it starts; a denied or unanswered script never runs. `cron_mode`, `single_query_mode` and `unattended_mode` decide the script at once, as they decide a command; YOLO and `mode: off` skip the prompt.
+
+Local sessions (classic CLI, TUI, Desktop, ACP editor) follow the interactive CLI's rule instead. Under `manual` (and `smart`), a turn the session's viewer typed gets **no whole-script approval**: Python-level file and process operations inside the script run without a prompt, and only the script's `terminal()` calls ask, each on the session's own prompt, as in the CLI before the one-gateway runtime. The exemption needs both a turn the viewer submitted and a viewer attached who can answer approvals when the script starts. These keep the whole-script approval in a local session:
+
+- turns nobody typed in it: plugin `inject_message` turns, delegation completions, background-process and watch-pattern notices, `/loop` ticks, heartbeats, hosted-room tasks
+- `delegate_task` children and `/bg` / `/btw` side tasks
+- a viewer's turn that runs while no viewer who can approve is attached
+
 ### Approval Flow (CLI)
 
 In the interactive CLI, dangerous commands show an inline approval prompt:

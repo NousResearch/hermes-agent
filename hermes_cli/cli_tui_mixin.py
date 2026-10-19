@@ -2207,7 +2207,7 @@ class CLITuiMixin:
     def _tui_build_input_area(self):
         """Multi-line prompt TextArea with slash completion, paste-collapse tracking and
         placeholder/password processors."""
-        from cli import _estimate_tui_input_height
+        from cli import _composer_max_lines, _estimate_tui_input_height
         from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
         from prompt_toolkit.completion import ThreadedCompleter
         cli_ref = self
@@ -2216,8 +2216,9 @@ class CLITuiMixin:
             return cli_ref._get_tui_prompt_fragments()
 
         _completer = cli_slash_completer(self)
+        composer_max_lines = _composer_max_lines(self.config)
         input_area = TextArea(
-            height=Dimension(min=1, max=8, preferred=1),
+            height=Dimension(min=1, max=composer_max_lines, preferred=1),
             prompt=get_prompt,
             style='class:input-area',
             multiline=True,
@@ -2244,7 +2245,9 @@ class CLITuiMixin:
                     terminal_columns = get_app().output.get_size().columns
                 except Exception:
                     terminal_columns = shutil.get_terminal_size((80, 24)).columns
-                return _estimate_tui_input_height(doc.lines, self._get_tui_prompt_text(), terminal_columns)
+                return _estimate_tui_input_height(
+                    doc.lines, self._get_tui_prompt_text(), terminal_columns,
+                    max_height=composer_max_lines)
             except Exception:
                 return 1
 

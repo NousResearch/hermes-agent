@@ -14,7 +14,7 @@ import sys
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import Dict, Any, Optional, Mapping
+from typing import Any, Optional, Mapping
 from urllib.parse import unquote, urlparse
 
 from agent.i18n import t
@@ -567,6 +567,24 @@ def _estimate_tui_input_height(
         visual_lines += max(1, -(-display_width // columns))
 
     return min(max(visual_lines, 1), max(1, int(max_height or 1)))
+
+
+def _composer_max_lines(config: Optional[dict[str, Any]] = None) -> int:
+    """Return the bounded visible-line limit for the interactive composer."""
+    from cli import _int_or
+
+    display = config.get("display", {}) if isinstance(config, dict) else {}
+    value = display.get("composer_max_lines", 8) if isinstance(display, dict) else 8
+    if isinstance(value, bool):
+        return 8
+    parsed = _int_or(value, 8)
+    effective = min(max(parsed, 1), 50)
+    if effective != parsed:
+        logger.warning(
+            "display.composer_max_lines=%r is outside the supported range 1-50; using %s",
+            value, effective,
+        )
+    return effective
 
 
 def _status_bar_visible_from_display_config(display_config: object) -> bool:

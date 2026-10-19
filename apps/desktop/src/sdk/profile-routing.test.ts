@@ -22,7 +22,13 @@ vi.mock('@/components/pane-shell/tree/store', async () => {
   }
 })
 vi.mock('@/contrib/events', () => ({ onGatewayEvent: vi.fn() }))
-vi.mock('@/hermes', () => ({ deleteProfile: vi.fn(), getLogs: vi.fn(), getStatus: vi.fn(), hermesApi: vi.fn() }))
+vi.mock('@/hermes', () => ({
+  deleteProfile: vi.fn(),
+  getLogs: vi.fn(),
+  getStatus: vi.fn(),
+  hermesApi: vi.fn(),
+  resetProfile: vi.fn()
+}))
 vi.mock('@/store/notifications', () => ({ notify: vi.fn(), notifyError: vi.fn() }))
 vi.mock('@/store/system-actions', () => ({ runGatewayRestart: vi.fn() }))
 vi.mock('@/store/session', async () => {
@@ -140,7 +146,7 @@ vi.mock('@/store/gateway', async () => {
 const { HYDRATION_SYNC_BADGE_TIMEOUT_MS, host } = await import('./index')
 
 const { openSession: openSessionCore } = await import('@/app/open-session')
-const { deleteProfile, hermesApi } = await import('@/hermes')
+const { deleteProfile, hermesApi, resetProfile } = await import('@/hermes')
 
 const {
   activeGatewayConnectionId,
@@ -344,14 +350,20 @@ describe('connection-aware plugin host APIs', () => {
       })
     )
     expect(hermesApi).toHaveBeenNthCalledWith(2, {
-      connectionId: 'source-a', path: '/api/sessions/bot-chat/mutation-snapshot?profile=backend-worker'
+      connectionId: 'source-a',
+      path: '/api/sessions/bot-chat/mutation-snapshot?profile=backend-worker'
     })
     expect(hermesApi).toHaveBeenNthCalledWith(3, {
       connectionId: 'source-a',
       path: '/api/sessions/bot-chat',
       method: 'PATCH',
-      body: { hidden: true, profile: 'backend-worker', expected_revision: 31,
-        expected_generation: 5, request_id: expect.any(String) }
+      body: {
+        hidden: true,
+        profile: 'backend-worker',
+        expected_revision: 31,
+        expected_generation: 5,
+        request_id: expect.any(String)
+      }
     })
     expect(vi.mocked(hermesApi).mock.calls.every(([request]) => !('profile' in request))).toBe(true)
     expect(requestGatewayForAgent).not.toHaveBeenCalled()
@@ -449,17 +461,31 @@ describe('connection-aware plugin host APIs', () => {
     expect(retireLocalProfileGateways).not.toHaveBeenCalled()
   })
 
-  it('rejects an alias to backend default before the transport helper runs', async () => {
-    await expect(
-      host.deleteProfile({
-        connectionId: 'source-a',
-        mode: 'remote',
-        profile: 'worker',
-        targetProfile: 'default'
-      })
-    ).rejects.toThrow(/default profile cannot be deleted/i)
+  it('resets an alias to backend default on its owner connection instead of deleting it', async () => {
+    await host.deleteProfile({
+      connectionId: 'source-a',
+      mode: 'remote',
+      profile: 'worker',
+      targetProfile: 'default'
+    })
 
+    expect(resetProfile).toHaveBeenCalledWith('default', { connectionId: 'source-a', profile: 'worker' })
     expect(deleteProfile).not.toHaveBeenCalled()
+    expect(retireLocalProfileGateways).not.toHaveBeenCalled()
+  })
+
+  it('resets the local default profile without retiring its gateway or re-homing the app', async () => {
+    $activeGatewayProfile.set('default')
+
+    await host.deleteProfile('default')
+
+    expect(resetProfile).toHaveBeenCalledWith('default', undefined)
+    expect(deleteProfile).not.toHaveBeenCalled()
+    // The default profile's gateway serves every other profile: a reset must never retire it.
+    expect(retireLocalProfileGateways).not.toHaveBeenCalled()
+    expect(dropTilesForProfile).toHaveBeenCalledWith('default', undefined)
+    expect(refreshProfiles).toHaveBeenCalled()
+    expect($activeGatewayProfile.get()).toBe('default')
   })
 
   it('retires and deletes a local alias by its backend target profile', async () => {

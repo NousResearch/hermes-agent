@@ -25,6 +25,7 @@ import {
   listSessions,
   listSidebarSessions,
   pluginSocket,
+  resetProfile,
   resetSidebarBatchCapability,
   setApiRequestConnection,
   setApiRequestProfile,
@@ -521,7 +522,7 @@ describe('Hermes REST helpers', () => {
 
     await deleteProfile('backend-worker', { connectionId: 'source-a', profile: 'backend-worker' })
     await expect(deleteProfile('worker', { connectionId: 'source-a', profile: 'default' })).rejects.toThrow(
-      /default profile cannot be deleted/i
+      /default profile cannot be deleted; reset it instead/i
     )
 
     expect(api).toHaveBeenCalledOnce()
@@ -531,6 +532,21 @@ describe('Hermes REST helpers', () => {
       path: '/api/profiles/backend-worker',
       priority: 'foreground',
       profile: 'backend-worker'
+    })
+  })
+
+  it('resets a profile with a scoped POST to its reset endpoint, never a DELETE', async () => {
+    api.mockResolvedValue({ ok: true, profile: 'default', sessions_deleted: 3 })
+
+    await resetProfile('default', { connectionId: 'source-a', profile: 'default' })
+
+    expect(api).toHaveBeenCalledOnce()
+    expect(api).toHaveBeenCalledWith({
+      connectionId: 'source-a',
+      method: 'POST',
+      path: '/api/profiles/default/reset',
+      priority: 'foreground',
+      profile: 'default'
     })
   })
 

@@ -204,6 +204,15 @@ const en: BotsMessages = {
     duplicate: 'Duplicate',
     duplicateFailed: 'Duplicate failed',
     deleteTitle: 'Delete bot and profile?',
+    resetTitle: 'Reset the default bot?',
+    resetDescription:
+      'The default bot cannot be removed: its profile holds the Hermes install and your other bots. ' +
+      'Resetting erases its memories, skills, settings, persona, appearance and chats, and removes its cron jobs. ' +
+      'Your other bots, the install, and your API keys and logins are kept. This cannot be undone.',
+    resetAction: 'Reset',
+    resetting: 'Resetting…',
+    resetDone: 'Reset',
+    resetToast: name => `Reset ${name}`,
     removeFromAllGroups: 'Remove from all groups',
     createFirstHint: 'Open the Bots pane and hit “New Bot”.',
     createFailed: 'Could not create the profile yet',
@@ -645,6 +654,15 @@ const ja: BotsMessages = {
     duplicate: '複製',
     duplicateFailed: '複製に失敗しました',
     deleteTitle: 'ボットとプロファイルを削除しますか？',
+    resetTitle: 'デフォルトのボットをリセットしますか？',
+    resetDescription:
+      'デフォルトのボットは削除できません。そのプロファイルには Hermes 本体と他のボットが含まれています。' +
+      'リセットすると、メモリ、スキル、設定、ペルソナ、外観、チャットが消去され、cron ジョブも削除されます。' +
+      '他のボット、Hermes 本体、API キーとログイン情報は保持されます。この操作は元に戻せません。',
+    resetAction: 'リセット',
+    resetting: 'リセット中…',
+    resetDone: 'リセットしました',
+    resetToast: name => `${name} をリセットしました`,
     removeFromAllGroups: 'すべてのグループから外す',
     createFirstHint: 'ボットパネルを開いて「新しいボット」を押してください。',
     createFailed: 'プロファイルをまだ作成できませんでした',
@@ -1079,6 +1097,15 @@ const zh: BotsMessages = {
     duplicate: '复制',
     duplicateFailed: '复制失败',
     deleteTitle: '删除机器人和配置档案？',
+    resetTitle: '重置默认机器人？',
+    resetDescription:
+      '默认机器人无法删除：它的配置档案包含 Hermes 安装和你的其他机器人。' +
+      '重置会清除它的记忆、技能、设置、人设、外观和聊天，并移除它的定时任务。' +
+      '你的其他机器人、Hermes 安装以及 API 密钥和登录信息都会保留。此操作无法撤销。',
+    resetAction: '重置',
+    resetting: '正在重置…',
+    resetDone: '已重置',
+    resetToast: name => `已重置 ${name}`,
     removeFromAllGroups: '从所有群组中移除',
     createFirstHint: '打开机器人面板，点击“新建机器人”。',
     createFailed: '暂时无法创建配置档案',
@@ -1506,6 +1533,15 @@ const zhHant: BotsMessages = {
     duplicate: '複製',
     duplicateFailed: '複製失敗',
     deleteTitle: '刪除機器人和設定檔？',
+    resetTitle: '重設預設機器人？',
+    resetDescription:
+      '預設機器人無法刪除：它的設定檔包含 Hermes 安裝與你的其他機器人。' +
+      '重設會清除它的記憶、技能、設定、人設、外觀和聊天，並移除它的排程工作。' +
+      '你的其他機器人、Hermes 安裝以及 API 金鑰和登入資訊都會保留。此操作無法復原。',
+    resetAction: '重設',
+    resetting: '正在重設…',
+    resetDone: '已重設',
+    resetToast: name => `已重設 ${name}`,
     removeFromAllGroups: '從所有群組中移除',
     createFirstHint: '開啟機器人面板，點「新增機器人」。',
     createFailed: '暫時無法建立設定檔',

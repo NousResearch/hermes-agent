@@ -155,26 +155,37 @@ describe('the SDK delete verb is preferred over the CLI', () => {
   })
 })
 
-describe('deletes that must not happen', () => {
-  it('rejects an alias whose backend target is the default profile', async () => {
+describe('the default bot is reset, never removed', () => {
+  it('hands an alias whose backend target is default to the host verb, which resets it', async () => {
     const deleteProfile = vi.fn()
 
     overrides.deleteProfile = deleteProfile
 
     const { profileOps } = await loadModules()
 
-    await expect(
-      profileOps.deleteBot({
-        name: 'worker',
-        route: { ...remoteRoute, targetProfile: 'default' },
-        sourceScoped: true
-      } as RosterRow)
-    ).rejects.toThrow(/default profile cannot be deleted/i)
+    await profileOps.deleteBot({
+      name: 'worker',
+      route: { ...remoteRoute, targetProfile: 'default' },
+      sourceScoped: true
+    } as RosterRow)
 
-    expect(deleteProfile).not.toHaveBeenCalled()
+    expect(deleteProfile.mock.calls[0][0]).toMatchObject({ ...remoteRoute, targetProfile: 'default' })
     expect(request.mock.calls.some(([method]) => method === 'cli.exec')).toBe(false)
   })
 
+  it('falls back to `profile reset default`, never `profile delete`, on an older desktop', async () => {
+    const { profileOps } = await loadModules()
+
+    await profileOps.deleteBot({ name: 'default' } as RosterRow)
+
+    const exec = request.mock.calls.filter(([method]) => method === 'cli.exec')
+
+    expect(exec).toHaveLength(1)
+    expect(exec[0][1]).toEqual({ argv: ['profile', 'reset', 'default', '--yes'] })
+  })
+})
+
+describe('deletes that must not happen', () => {
   it('fails a source-scoped delete closed rather than shelling out', async () => {
     const { profileOps } = await loadModules()
 

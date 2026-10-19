@@ -12,6 +12,7 @@ import { jaModelSettings } from './ja_model_settings'
 import { jaNotices } from './ja_notices'
 import { jaOnboarding } from './ja_onboarding'
 import { jaPluginSettings } from './ja_plugins'
+import { jaProfileRemoval } from './ja_profile_removal'
 import { jaProjects } from './ja_projects'
 import { jaSharedMetrics } from './ja_shared_metrics'
 import { jaThemePicker } from './ja_theme_picker'
@@ -1901,11 +1902,7 @@ export const jaOverrides = {
     emptySoul: '空の SOUL.md — ペルソナの記述を始めてください...',
     saving: '保存中...',
     saveSoul: 'SOUL を保存',
-    deleteTitle: 'プロファイルを削除しますか？',
-    deleteDescPrefix: 'これにより ',
-    deleteDescMid: ' が削除され、その ',
-    deleteDescSuffix: ' ディレクトリが削除されます。この操作は元に戻せません。',
-    deleting: '削除中...',
+    removal: jaProfileRemoval,
     createDesc: 'プロファイルは独立した Hermes 環境です：設定、スキル、SOUL.md が別々になります。',
     nameLabel: '名前',
     cloneFrom: '複製元',

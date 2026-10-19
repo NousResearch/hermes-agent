@@ -11,6 +11,7 @@ import { esModelMenu } from './es_model_menu'
 import { esModelSettings } from './es_model_settings'
 import { esNotices } from './es_notices'
 import { esOnboarding } from './es_onboarding'
+import { esProfileRemoval } from './es_profile_removal'
 import { esProjects } from './es_projects'
 import { esSharedMetrics } from './es_shared_metrics'
 import { esThemePicker } from './es_theme_picker'
@@ -3333,11 +3334,7 @@ export const esOverrides = {
     emptySoul: 'SOUL.md vacío; empieza a escribir la persona...',
     saving: 'Guardando...',
     saveSoul: 'Guardar SOUL.md',
-    deleteTitle: '¿Eliminar perfil?',
-    deleteDescPrefix: 'Esto eliminará ',
-    deleteDescMid: ' y quitará su directorio ',
-    deleteDescSuffix: '. Esto no se puede deshacer.',
-    deleting: 'Eliminando...',
+    removal: esProfileRemoval,
     createDesc: 'Los perfiles son entornos independientes de Hermes: configuración, skills y SOUL.md separados.',
     nameLabel: 'Nombre',
     cloneFrom: 'Clonar desde',

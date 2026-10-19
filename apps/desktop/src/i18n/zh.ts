@@ -10,6 +10,7 @@ import { zhModelMenu } from './zh_model_menu'
 import { zhModelSettings } from './zh_model_settings'
 import { zhNotices } from './zh_notices'
 import { zhOnboarding } from './zh_onboarding'
+import { zhProfileRemoval } from './zh_profile_removal'
 import { zhProjects } from './zh_projects'
 import { zhSharedMetrics } from './zh_shared_metrics'
 import { zhThemePicker } from './zh_theme_picker'
@@ -2817,11 +2818,7 @@ export const zhOverrides = {
     emptySoul: '空的 SOUL.md —— 开始撰写人格设定…',
     saving: '保存中…',
     saveSoul: '保存 SOUL.md',
-    deleteTitle: '删除配置档案？',
-    deleteDescPrefix: '这将删除 ',
-    deleteDescMid: ' 并移除其 ',
-    deleteDescSuffix: ' 目录。此操作无法撤销。',
-    deleting: '删除中…',
+    removal: zhProfileRemoval,
     createDesc: '配置档案是相互独立的 Hermes 环境：各自拥有独立的配置、技能和 SOUL.md。',
     nameLabel: '名称',
     cloneFrom: '克隆来源',

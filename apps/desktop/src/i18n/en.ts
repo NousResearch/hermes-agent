@@ -14,6 +14,7 @@ import { enModelMenu } from './en_model_menu'
 import { enModelSettings } from './en_model_settings'
 import { enNotices } from './en_notices'
 import { enOnboarding } from './en_onboarding'
+import { enProfileRemoval } from './en_profile_removal'
 import { enProjects } from './en_projects'
 import { enSharedMetrics } from './en_shared_metrics'
 import { enThemePicker } from './en_theme_picker'
@@ -2899,11 +2900,7 @@ export const en: Translations = {
     emptySoul: 'Empty SOUL.md — start writing the persona...',
     saving: 'Saving...',
     saveSoul: 'Save SOUL.md',
-    deleteTitle: 'Delete profile?',
-    deleteDescPrefix: 'This will delete ',
-    deleteDescMid: ' and remove its ',
-    deleteDescSuffix: ' directory. This cannot be undone.',
-    deleting: 'Deleting...',
+    removal: enProfileRemoval,
     createDesc: 'Profiles are independent Hermes environments: separate config, skills, and SOUL.md.',
     nameLabel: 'Name',
     cloneFrom: 'Clone from',

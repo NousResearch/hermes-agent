@@ -10,6 +10,7 @@ import { ruModelSettings } from './ru_model_settings'
 import { ruNotices } from './ru_notices'
 import { ruOnboarding } from './ru_onboarding'
 import { ruPluginSettings } from './ru_plugins'
+import { ruProfileRemoval } from './ru_profile_removal'
 import { ruProjects } from './ru_projects'
 import { ruSharedMetrics } from './ru_shared_metrics'
 import { ruThemePicker } from './ru_theme_picker'
@@ -2176,11 +2177,7 @@ export const ruOverrides = {
     emptySoul: 'Пустой SOUL.md — начните писать персону...',
     saving: 'Сохранение...',
     saveSoul: 'Сохранить SOUL.md',
-    deleteTitle: 'Удалить профиль?',
-    deleteDescPrefix: 'Это удалит ',
-    deleteDescMid: ' и сотрёт его ',
-    deleteDescSuffix: ' каталог. Это действие необратимо.',
-    deleting: 'Удаление...',
+    removal: ruProfileRemoval,
     createDesc: 'Профили — это независимые среды Hermes: отдельные настройки, навыки и SOUL.md.',
     nameLabel: 'Имя',
     cloneFrom: 'Клонировать из',

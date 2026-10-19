@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import type * as Nanostores from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { deleteProfile, getProfileSoul, updateProfileSoul } from '@/hermes'
+import { deleteProfile, getProfileSoul, resetProfile, updateProfileSoul } from '@/hermes'
 import { retireLocalProfileGateways } from '@/store/gateway'
 import { refreshProfiles, selectProfile, setActiveProfile } from '@/store/profile'
 import type { ProfileInfo } from '@/types/hermes'
@@ -33,6 +33,7 @@ vi.mock('@/hermes', () => ({
   deleteProfile: vi.fn(async () => ({ ok: true, path: '/x' })),
   getProfileSoul: vi.fn(async () => ({ content: '', exists: true })),
   renameProfile: vi.fn(async () => ({ name: 'x', ok: true, path: '/x' })),
+  resetProfile: vi.fn(async () => ({ ok: true, path: '/x', profile: 'default' })),
   updateProfileSoul: vi.fn(async () => ({ ok: true }))
 }))
 
@@ -208,5 +209,29 @@ describe('ProfilesView', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull())
     expect(selectProfile).not.toHaveBeenCalled()
     expect(setActiveProfile).not.toHaveBeenCalled()
+  })
+  it('resets the default profile from its Delete action without retiring its gateway', async () => {
+    vi.mocked(deleteProfile).mockClear()
+    vi.mocked(retireLocalProfileGateways).mockClear()
+    vi.mocked(selectProfile).mockClear()
+    vi.mocked(refreshProfiles).mockResolvedValue([makeProfile('default', true), makeProfile(NAMED_PROFILE)])
+    activeGateway.set('default')
+
+    await renderProfilesView()
+    realClick(await findRowMenu('default'))
+    fireEvent.click(await screen.findByRole('menuitem', { name: /delete/i }))
+    // The confirmation says RESET and names what is kept, not a directory removal.
+    expect(await screen.findByText('Reset the default profile?')).toBeTruthy()
+    expect(screen.getByText(/API keys and logins are kept/)).toBeTruthy()
+    const confirm = await screen.findByRole('button', { name: 'Reset' })
+    await act(async () => {
+      fireEvent.click(confirm)
+    })
+
+    await waitFor(() => expect(resetProfile).toHaveBeenCalledWith('default'))
+    expect(deleteProfile).not.toHaveBeenCalled()
+    // Its backend is the gateway serving every other profile: never retired, never re-homed.
+    expect(retireLocalProfileGateways).not.toHaveBeenCalled()
+    expect(selectProfile).not.toHaveBeenCalled()
   })
 })

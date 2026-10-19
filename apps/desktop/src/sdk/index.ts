@@ -47,7 +47,7 @@ import {
 import { onGatewayEvent } from '@/contrib/events'
 import { registry } from '@/contrib/registry'
 import type { WorkspaceMode } from '@/contrib/types'
-import { deleteProfile, getLogs, getStatus, hermesApi, type HermesGateway } from '@/hermes'
+import { getLogs, getStatus, hermesApi, type HermesGateway } from '@/hermes'
 import { traceIdentityChange } from '@/lib/identity-trace'
 import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
 import {
@@ -57,8 +57,7 @@ import {
   openGatewayForProfile,
   requestGatewayForAgent,
   retainGatewayForAgent,
-  retainGatewayForRelay,
-  retireLocalProfileGateways
+  retainGatewayForRelay
 } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import {
@@ -73,8 +72,6 @@ import {
   normalizeProfileKey,
   prewarmProfileBackend,
   refreshProfiles,
-  selectProfile,
-  setActiveProfile,
   setShowAllProfiles
 } from '@/store/profile'
 import {
@@ -99,7 +96,6 @@ import {
   $focusedSessionState,
   $sessionStates,
   $sessionTiles,
-  dropTilesForProfile,
   focusWorkspaceOwnerSessionTile,
   sessionTileDelegate
 } from '@/store/session-states'
@@ -112,6 +108,7 @@ import { pluginDecisions, profiles, skills, toolsets } from './bridge'
 import { composerHost } from './composer'
 import { i18nHost } from './i18n'
 import { planPluginOpenSession } from './plugin-open-session-plan'
+import { deletePluginProfile } from './profile-delete'
 import {
   type PluginProfileRequestOptions,
   type PluginProfileRoute,
@@ -703,88 +700,13 @@ export const host = {
    *  `cli.exec ['profile','delete',…]`, which bypasses that interception
    *  entirely. When the deleted profile was the live gateway's, the app is
    *  re-homed to the default profile — same semantics as the core dialog.
+   *  The default profile cannot be removed (its home is the install and holds
+   *  every other profile), so for it this RESETS the profile instead
+   *  (`POST /api/profiles/default/reset`): its backend is the gateway serving
+   *  every other profile and stays up, so nothing is retired or re-homed.
    *  Rejects with the backend's error when the delete fails. */
-  deleteProfile: async (profile: string | PluginProfileRoute): Promise<void> => {
-    const route =
-      typeof profile === 'string'
-        ? null
-        : {
-            ...profile,
-            connectionId: String(profile.connectionId || '').trim(),
-            profile: String(profile.profile || '').trim(),
-            targetProfile: String(profile.targetProfile || '').trim()
-          }
-
-    const name = typeof profile === 'string' ? profile.trim() : route?.profile || ''
-
-    if (route && (!route.connectionId || !route.profile || !route.targetProfile)) {
-      throw new Error('deleteProfile: route requires connectionId, profile, and targetProfile')
-    }
-
-    const targetProfile = route?.targetProfile || name
-    // A name-only call is ambient, not local: Bot Mode's active SSH roster
-    // rows deliberately use the ambient gateway door and therefore carry no
-    // explicit owner route. Preserve the active registry connection so the
-    // profile teardown and DELETE both land on the VPS instead of retiring the
-    // unrelated local pool and leaving the warmed remote backend to recreate
-    // the deleted profile.
-    const ambientConnectionId = route ? null : String(activeGatewayConnectionId() || '').trim()
-
-    const ambientRemoteConnectionId =
-      ambientConnectionId && ambientConnectionId !== 'local' ? ambientConnectionId : null
-
-    if (!name) {
-      throw new Error('deleteProfile: profile name required')
-    }
-
-    if (normalizeProfileKey(targetProfile) === 'default') {
-      throw new Error('The default profile cannot be deleted.')
-    }
-
-    // Capture before the delete; re-home after so our write is the last one
-    // (mirrors DeleteProfileDialog — a refreshActiveProfile racing the dying
-    // backend can't clobber the pill back to the deleted profile).
-    const wasActive = route
-      ? route.connectionId === ($activeConnectionId.get() || '') &&
-        normalizeProfileKey(route.profile) === normalizeProfileKey($activeGatewayProfile.get())
-      : normalizeProfileKey(name) === normalizeProfileKey($activeGatewayProfile.get())
-
-    // A hover-warmed Bot Mode row owns a retained renderer socket. Retire it
-    // before Electron stops the profile backend so the socket closure cannot
-    // schedule a reconnect that resurrects the deleted profile.
-    if (route?.mode === 'local' || (!route && !ambientRemoteConnectionId)) {
-      retireLocalProfileGateways(targetProfile)
-    }
-
-    await deleteProfile(
-      targetProfile,
-      route
-        ? { connectionId: route.connectionId, profile: route.profile }
-        : ambientRemoteConnectionId
-          ? { connectionId: ambientRemoteConnectionId, profile: name }
-          : undefined
-    )
-
-    // The profile is gone. Drop its persisted tiles now — a leftover tile
-    // restores on relaunch and re-creates the deleted profile (hermes-agent#94235).
-    dropTilesForProfile(
-      route ? route.profile : name,
-      route
-        ? { connectionId: route.connectionId, profile: route.profile, targetProfile: route.targetProfile }
-        : undefined
-    )
-
-    // The profile rail paints from the shared $profiles cache; without a
-    // refresh the deleted profile's badge survives and clicking it starts a
-    // doomed spawn-retry loop against Electron's deletion guard (#88769).
-    // Best-effort: the delete itself already succeeded.
-    await refreshProfiles().catch(() => undefined)
-
-    if (wasActive) {
-      selectProfile('default')
-      setActiveProfile('default')
-    }
-  },
+  deleteProfile: (profile: string | PluginProfileRoute): Promise<void> =>
+    deletePluginProfile(profile, () => $activeConnectionId.get()),
 
   // ── Multi-source agents (the Bot Mode door) ───────────────────────────────
 

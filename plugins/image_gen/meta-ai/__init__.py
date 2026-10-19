@@ -37,7 +37,7 @@ def _resolve_base_url() -> str:
 
 
 # Model ids are sent verbatim to ``/v1/images/generations``.
-_MODELS: Dict[str, Dict[str, Any]] = {
+_MODELS: dict[str, dict[str, Any]] = {
     "muse-image-1.0": {
         "display": "Muse Image 1.0",
         "speed": "~10s",
@@ -48,7 +48,7 @@ _MODELS: Dict[str, Dict[str, Any]] = {
 DEFAULT_MODEL = "muse-image-1.0"
 
 
-def _resolve_model(caller_model: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
+def _resolve_model(caller_model: Optional[str] = None) -> tuple[str, dict[str, Any]]:
     return resolve_static_model(
         _MODELS, DEFAULT_MODEL, env_var="META_IMAGE_MODEL", config_key="meta-ai", explicit=caller_model,
     )
@@ -68,15 +68,15 @@ class MetaImageGenProvider(StaticImageGenProvider):
     def is_available(self) -> bool:
         return bool(_resolve_api_key()) and openai_importable()
 
-    def capabilities(self) -> Dict[str, Any]:
+    def capabilities(self) -> dict[str, Any]:
         # Text-to-image only until image-to-image is verified against Meta.
         return {"modalities": ["text"], "max_reference_images": 0}
 
     def generate(
         self, prompt: str, aspect_ratio: str = DEFAULT_ASPECT_RATIO, *,
-        image_url: Optional[str] = None, reference_image_urls: Optional[List[str]] = None,
+        image_url: Optional[str] = None, reference_image_urls: Optional[list[str]] = None,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         prompt = (prompt or "").strip()
         aspect = resolve_aspect_ratio(aspect_ratio)
         if not prompt:
@@ -117,7 +117,7 @@ class MetaImageGenProvider(StaticImageGenProvider):
                 return fail("Meta response contained neither b64_json nor URL", "empty_response")
         except Exception as exc:
             return fail(f"Failed to save Meta image: {exc}", "io_error")
-        extra: Dict[str, Any] = {"size": size}
+        extra: dict[str, Any] = {"size": size}
         if getattr(first, "revised_prompt", None):
             extra["revised_prompt"] = first.revised_prompt
         return success_response(

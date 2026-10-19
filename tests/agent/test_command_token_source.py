@@ -25,6 +25,7 @@ from agent.command_token_source import (
     _mint,
     build_command_token_provider,
 )
+from datetime import UTC
 
 
 class TestMinting:
@@ -246,7 +247,7 @@ class TestAbsoluteExpiry:
         from datetime import datetime, timedelta, timezone
 
         return (
-            datetime.now(timezone.utc) + timedelta(seconds=seconds_from_now)
+            datetime.now(UTC) + timedelta(seconds=seconds_from_now)
         ).isoformat()
 
     def test_iso_expiry_yields_a_ttl(self):

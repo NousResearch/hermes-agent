@@ -25,5 +25,7 @@ def test_llamacpp_backends_have_pins_for_their_supported_targets():
             assert [a["url"] for a in artifacts] == package.fetch_urls(version, target)
             assert all(len(bytes.fromhex(a["sha256"])) == 32 for a in artifacts)
             if backend == "cuda":
-                assert len(artifacts) == 2
                 assert any("cudart-" in a["url"] for a in artifacts)
+            # Upstream's Linux builds link the system OpenMP runtime, which minimal hosts lack.
+            if target in ("linux-x64", "linux-arm64"):
+                assert any("/libgomp1_" in a["url"] and a["url"].endswith(".deb") for a in artifacts)

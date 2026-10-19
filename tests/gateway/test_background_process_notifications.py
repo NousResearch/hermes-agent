@@ -17,6 +17,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from tests.module_clock import install_module_clock
+
 from gateway.config import GatewayConfig, Platform
 from gateway.run import GatewayRunner, _parse_session_key
 from gateway.run_notifications import INTERNAL_NOTIFICATION_FOOTER
@@ -342,19 +344,18 @@ async def test_post_turn_watch_drain_refused_event_backs_off_then_drops(monkeypa
     completion_queue = queue.Queue()
     completion_queue.put(_watch_event())
 
-    clock = {"now": 1000.0}
-    monkeypatch.setattr(run_notifications.time, "monotonic", lambda: clock["now"])
+    clock = install_module_clock(monkeypatch, run_notifications)
     attempt_times: list[float] = []
 
     async def refused(self, synth_text, evt, **kwargs):
-        attempt_times.append(clock["now"])
+        attempt_times.append(clock.now)
         return False
 
     monkeypatch.setattr(run_notifications.GatewayNotificationsMixin, "_inject_watch_notification", refused)
 
     for _ in range(500):
         await runner._drain_watch_notifications(completion_queue)
-        clock["now"] += 2.0
+        clock.now += 2.0
         if completion_queue.empty():
             break
 
@@ -382,8 +383,7 @@ async def test_post_turn_watch_drain_transient_refusal_recovers_without_drop(mon
     completion_queue = queue.Queue()
     completion_queue.put(_watch_event())
 
-    clock = {"now": 1000.0}
-    monkeypatch.setattr(run_notifications.time, "monotonic", lambda: clock["now"])
+    clock = install_module_clock(monkeypatch, run_notifications)
     flaky = {"refusals_left": 2}
 
     async def flaky_inject(self, synth_text, evt, **kwargs):
@@ -396,7 +396,7 @@ async def test_post_turn_watch_drain_transient_refusal_recovers_without_drop(mon
 
     for _ in range(500):
         await runner._drain_watch_notifications(completion_queue)
-        clock["now"] += 2.0
+        clock.now += 2.0
         if completion_queue.empty():
             break
 

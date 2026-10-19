@@ -3,10 +3,10 @@ forever: the session authority refuses it ``admission_conflict`` on every drain 
 Real GatewayRunner, DiscordAdapter, SessionAuthority and drain over SQLite; no agent turn runs."""
 import logging
 import queue
-import time
 
 import pytest
 
+from tests.module_clock import install_module_clock
 from tests.waiting import async_wait_until
 
 
@@ -135,10 +135,7 @@ async def test_unproven_refusal_requeues_with_backoff_until_the_cap(monkeypatch,
     try:
         pending = queue.Queue()
         pending.put(_notice(entry, await _foreign_pin(runner)))
-        # Only ever forward: the event loop keeps its own timers on the same clock.
-        skew = {'s': 0.0}
-        real = time.monotonic
-        monkeypatch.setattr(run_notifications.time, 'monotonic', lambda: real() + skew['s'])
+        clock = install_module_clock(monkeypatch, run_notifications)
 
         with caplog.at_level(logging.WARNING, logger='gateway.run'):
             await runner._drain_watch_notifications(pending)
@@ -146,7 +143,7 @@ async def test_unproven_refusal_requeues_with_backoff_until_the_cap(monkeypatch,
             for _ in range(200):
                 if pending.empty():
                     break
-                skew['s'] += 60
+                clock.now += 60
                 await runner._drain_watch_notifications(pending)
 
         messages = [r.getMessage() for r in caplog.records]

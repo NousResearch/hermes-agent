@@ -144,7 +144,8 @@ class GatewayNotificationOwnershipMixin:
         The session authority admits a notice only into its pinned session or that session's
         compression continuation, so after /new it refuses the notice on every retry and the drain
         would spin on it (#141562). This is the completion pre-flight's verdict, applied after the
-        refusal: a /resume reopens the pinned session, which delivers again.
+        refusal. A dropped notice is gone for good; a /resume reopens the pinned session, so the
+        process's later notices are admitted again.
         """
         pinned = str(evt.get("parent_session_id") or "").strip()
         if not pinned:

@@ -83,7 +83,8 @@ class SessionMutateParams(Params):
     """``operation`` + ``payload`` are validated by ``hermes_state_mutations.validate_action``;
     ``expected_generation`` is required for delete/rewind/reset/branch/model/compress/reasoning/workspace.
     ``reasoning`` (``{effort}``) and ``workspace`` (``{cwd}``, refused ``session_busy`` mid-turn) rewrite
-    the session's frozen policy: session-scope ``/reasoning`` and Desktop's Move to project."""
+    the session's frozen policy: session-scope ``/reasoning`` and Desktop's Move to project. ``edit_policy``
+    (``{policy}``: ask / workspace_session / session) is an ACP session's edit approval (main's ACP modes)."""
 
     session_id: str
     request_id: str
@@ -105,7 +106,7 @@ class SessionMutateResult(OpenModel):
 
 canonical_method("session.mutate", params=SessionMutateParams, result=SessionMutateResult,
                  doc="Revision-fenced, retry-idempotent session edit (rename, archive, sidebar, branch, "
-                     "delete, rewind, reset, model, reasoning, workspace, compress, import).")
+                     "delete, rewind, reset, model, reasoning, workspace, edit_policy, compress, import).")
 
 
 class SessionPruneParams(Params):
@@ -182,6 +183,8 @@ class CanonicalSessionInfo(SessionInventoryFields, OpenModel):
     desktop_protocol: str
     profile_name: str
     cwd: str | None = None
+    # An ACP session's edit approval policy (``session.mutate edit_policy``): ask / workspace_session / session.
+    edit_approval_policy: Literal["ask", "workspace_session", "session"] | None = None
     launch_request: dict[str, JsonValue] | None = None
     reasoning_effort: str | None = None
     reasoning_effort_wire: str | None = None

@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agent import account_usage
+from agent import account_usage, anthropic_credentials
 from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
 from agent.account_usage_cache import _snapshots
 from hermes_cli import main as hermes_main
@@ -74,6 +74,8 @@ def pool_home(tmp_path, monkeypatch):
             raise RuntimeError("HTTP 401: token expired")
         return _usage("anthropic")
 
+    # A Claude Code login on the machine (~/.claude/.credentials.json) would join the pool as one more account.
+    monkeypatch.setattr(anthropic_credentials, "read_claude_code_credentials", lambda: None)
     monkeypatch.setitem(account_usage._USAGE_FETCHERS, "anthropic", anthropic_usage)
     monkeypatch.setitem(account_usage._USAGE_FETCHERS, "openrouter", lambda base_url, api_key: _usage("openrouter"))
 

@@ -107,6 +107,8 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             raise ValueError(f"Invalid dialog_policy {dialog_policy!r}; must be one of {sorted(_VALID_POLICIES)}")
         self.task_id = task_id
         self.cdp_url = cdp_url
+        # Vault lookup stays task-scoped; managed-browser teardown uses its own cache key.
+        self.browser_session_key: Optional[str] = None
         self.dialog_policy = dialog_policy
         self.dialog_timeout_s = float(dialog_timeout_s)
 
@@ -504,6 +506,7 @@ class _SupervisorRegistry:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._by_task: dict[str, CDPSupervisor] = {}
+        self._starting: dict[str, tuple[object, Optional[str]]] = {}
 
     def get(self, task_id: str) -> Optional[CDPSupervisor]:
         with self._lock:
@@ -521,34 +524,69 @@ class _SupervisorRegistry:
         return capture(self, task_id, timeout=timeout)
 
     def get_or_start(self, task_id: str, cdp_url: str, *, dialog_policy: str = DEFAULT_DIALOG_POLICY,
-                     dialog_timeout_s: float = DEFAULT_DIALOG_TIMEOUT_S, start_timeout: float = 15.0) -> CDPSupervisor:
-        """Idempotently ensure a supervisor runs for ``(task_id, cdp_url)``; one bound to a
-        different ``cdp_url`` or unhealthy (dead thread / stopped loop) is stopped and replaced."""
+                     dialog_timeout_s: float = DEFAULT_DIALOG_TIMEOUT_S, start_timeout: float = 15.0,
+                     browser_session_key: Optional[str] = "") -> CDPSupervisor:
+        """Ensure a healthy supervisor; the latest attach wins a concurrent task rebind.
+
+        Omitted ownership means the built-in tools' task/session key. Explicit None means an
+        operator endpoint: unrelated backend cleanup must not stop its supervisor.
+        """
+        if browser_session_key == "":
+            browser_session_key = task_id
+        ticket = object()
         with self._lock:
+            self._starting.pop(task_id, None)
             existing = self._by_task.get(task_id)
             if existing is not None:
                 thread, loop = existing._thread, existing._loop
                 healthy = thread is not None and thread.is_alive() and loop is not None and loop.is_running()
                 if existing.cdp_url == cdp_url and healthy:
+                    existing.browser_session_key = browser_session_key
                     return existing
                 self._by_task.pop(task_id, None)
-        if existing is not None:
-            existing.stop()
-
+            self._starting[task_id] = (ticket, browser_session_key)
         supervisor = CDPSupervisor(task_id=task_id, cdp_url=cdp_url,
                                    dialog_policy=dialog_policy, dialog_timeout_s=dialog_timeout_s)
-        supervisor.start(timeout=start_timeout)
+        try:
+            if existing is not None:
+                existing.stop()
+            supervisor.start(timeout=start_timeout)
+        except BaseException:
+            with self._lock:
+                if self._starting.get(task_id, (None, None))[0] is ticket:
+                    self._starting.pop(task_id)
+            raise
         with self._lock:
-            # Guard against a concurrent get_or_start from another thread.
-            already = self._by_task.get(task_id)
-            if already is not None and already.cdp_url == cdp_url:
-                supervisor.stop()
-                return already
-            self._by_task[task_id] = supervisor
+            current = self._starting.get(task_id, (None, None))[0] is ticket
+            if current:
+                self._starting.pop(task_id)
+                supervisor.browser_session_key = browser_session_key
+                self._by_task[task_id] = supervisor
+        if not current:
+            supervisor.stop()
+            raise RuntimeError("Browser session closed during supervisor attachment or task rebound")
         return supervisor
 
+    def stop_session(self, session_key: str) -> None:
+        """Detach only supervisors still owned by this exact backend/profile session.
+
+        Cancel pending attaches too: startup must not publish after its browser was closed.
+        Pop under the registry lock so a task rebound to a different browser is not stopped.
+        """
+        with self._lock:
+            tasks = [task for task, supervisor in self._by_task.items()
+                     if supervisor.browser_session_key == session_key]
+            supervisors = [self._by_task.pop(task) for task in tasks]
+            pending = [task for task, (_, owner) in self._starting.items() if owner == session_key]
+            for task in pending:
+                self._starting.pop(task)
+        for supervisor in supervisors:
+            supervisor.stop()
+
     def stop(self, task_id: str) -> None:
-        supervisor = self._pop(task_id)
+        with self._lock:
+            self._starting.pop(task_id, None)
+            supervisor = self._by_task.pop(task_id, None)
         if supervisor is not None:
             supervisor.stop()
 
@@ -557,6 +595,7 @@ class _SupervisorRegistry:
         with self._lock:
             items = list(self._by_task.values())
             self._by_task.clear()
+            self._starting.clear()
         for supervisor in items:
             supervisor.stop()
 

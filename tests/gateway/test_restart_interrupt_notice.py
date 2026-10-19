@@ -224,8 +224,10 @@ def test_managed_worker_turn_settles_with_the_cause_of_the_stop_that_reached_it(
     assert complete['status'] == 'interrupted'
     if user_stopped_first:
         assert 'warning' not in complete, complete
+        assert _notices(db) == []
     else:
         assert complete['warning'] == RESTART_INTERRUPT_NOTICE
+        assert _notices(db) == [RESTART_INTERRUPT_NOTICE]  # GW-21: a reconnecting viewer reads it too
 
 
 @pytest.mark.parametrize('user_stopped_first', [False, True])
@@ -302,3 +304,308 @@ def test_restart_after_a_pending_redirect_still_gets_the_restart_notice():
         assert notice == RESTART_INTERRUPT_NOTICE, (agent._interrupt_message, notice)
     finally:
         set_interrupt(False)
+
+
+@pytest.mark.parametrize('cause', ['Gateway restarting', 'Gateway shutting down'])
+@pytest.mark.parametrize('row', [
+    {'principal_id': 'cron-owner', 'payload': {'text': 'job'}},
+    {'principal_id': 'automation:agent:main:telegram:dm:x', 'payload': {'text': 'done'}},
+    {'principal_id': 'person', 'payload': {'text': 'hook', 'native_text_v1': {'webhook_delivery': {}}}},
+])
+def test_automation_turn_the_owner_stop_interrupted_is_never_asked_to_resend(cause, row):
+    """#134889 GW-20: nobody sent an unattended turn, so the owner-stop notice is the neutral
+    automation copy (GW-10's rule), never "Send your message again"."""
+    from agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE
+    stream = _Stream()
+    live = SimpleNamespace(controls=SimpleNamespace(snapshot=lambda *a: None), event_stream=stream)
+    _publish_completion(SimpleNamespace(runner=None), live, SimpleNamespace(session_id='s'),
+                        {'admission_id': 'adm-1', 'request_id': 'sub-1', **row},
+                        {'outcome': 'interrupted'}, '', _cause(cause))
+    (frame,) = stream.frames
+    assert frame['warning'] == AUTOMATION_INTERRUPTED_NOTICE
+    assert 'again' not in frame['warning'].replace('not run again', '')
+
+
+def _settle_on_real_store(tmp_path, cause, principal='person', payload=None):
+    """One claimed admission on a real SessionDB settled through commit_and_publish (the owner's
+    worker-thread settlement) with *cause* recorded. Returns (db, row, frames, settlement)."""
+    from gateway.session_authority import LiveSession, SessionAuthority
+    from gateway.session_contract import SessionRef
+    from gateway.session_settlement_recovery import commit_and_publish
+    from hermes_state import SessionDB
+    from hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input
+
+    runner = SimpleNamespace(_draining=False, _running=True, _restart_requested=True)
+    db = SessionDB(db_path=tmp_path / 'state.db')
+    db.create_session('s', source='test')
+    epoch = begin_runtime_epoch(db, instance_id='owner')
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', db=db, epoch=epoch)
+    live = authority.sessions['s'] = LiveSession(None, 'route')
+    ref = SessionRef('owned', 's')
+    admit_session_input(db, epoch=epoch, principal_id=principal, session_id='s', request_id='r',
+                        payload=payload or {'text': 'please work'})
+    row = claim_session_input(db, epoch=epoch, session_id='s')
+    authority._stamp_claim(ref, live, row)
+    db.append_message('s', 'user', 'please work')  # the turn's own rows, as the agent wrote them
+    db.append_message('s', 'assistant', 'partial reply')
+    frames = []
+    live.event_stream.observers.add(frames.append)
+    result = {'final_response': 'partial reply', 'messages': [], 'interrupted': True, 'completed': False}
+    if cause:
+        result['interrupt_message'] = cause
+    settlement = {}
+    commit_and_publish(authority, live, ref, row, 'partial reply', 'interrupted', {'result': result}, settlement)
+    return db, authority, row, frames, settlement
+
+
+def _notices(db):
+    from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND
+    return [m['content'] for m in db.get_messages('s') if m.get('display_kind') == FAILED_TURN_DISPLAY_KIND]
+
+
+@pytest.mark.parametrize(('cause', 'notice'), [('Gateway restarting', RESTART_INTERRUPT_NOTICE),
+                                               ('Gateway shutting down', SHUTDOWN_INTERRUPT_NOTICE)])
+def test_owner_stop_reason_is_in_the_transcript_for_a_viewer_that_reconnects(tmp_path, cause, notice):
+    """#134889 GW-21: a viewer that reconnects after the restart reads the transcript, not the live
+    frame. The reason commits as a Hermes notice in the settlement's own write, once; the live
+    ``message.complete.warning`` stays."""
+    from gateway.session_results import finish_result
+    db, authority, row, frames, settlement = _settle_on_real_store(tmp_path, cause)
+    with db:
+        assert settlement['settled']['outcome'] == 'interrupted'
+        assert _notices(db) == [notice]
+        (complete,) = [f['params']['payload'] for f in frames if f['params']['type'] == 'message.complete']
+        assert complete['warning'] == notice
+        # A settlement retry that reads the committed row back never writes the notice again.
+        finish_result(db, epoch=authority.epoch, row=row, response='partial reply', outcome='interrupted',
+                      result={'result': {'final_response': 'partial reply', 'messages': [], 'interrupted': True,
+                                         'interrupt_message': cause}})
+        assert _notices(db) == [notice]
+
+
+@pytest.mark.parametrize('cause', [None, 'User requested stop'])
+def test_a_user_stop_writes_no_transcript_notice(tmp_path, cause):
+    db, *_ = _settle_on_real_store(tmp_path, cause)
+    with db:
+        assert _notices(db) == []
+
+
+def test_automation_turn_transcript_notice_is_the_neutral_copy(tmp_path):
+    from agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE
+    db, *_ = _settle_on_real_store(tmp_path, 'Gateway restarting', principal='cron-owner')
+    with db:
+        assert _notices(db) == [AUTOMATION_INTERRUPTED_NOTICE]
+
+
+
+def _core_closed_turn(tmp_path, monkeypatch, *, principal='person', earlier_failed=False):
+    """A claimed admission whose agent was interrupted by the restart before any assistant text:
+    the real AIAgent persists the user row and the real core closer
+    (``agent/conversation_loop.py::_close_durable_failed_turn``) writes its failed-turn boundary.
+    ``earlier_failed``: a previous turn already ended on a failed-turn boundary before this claim."""
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    from agent.conversation_loop import _close_durable_failed_turn
+    from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE
+    from gateway.session_authority import LiveSession, SessionAuthority
+    from gateway.session_contract import SessionRef
+    from hermes_state import SessionDB
+    from hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input
+    from run_agent import AIAgent
+
+    runner = SimpleNamespace(_draining=False, _running=True, _restart_requested=True)
+    db = SessionDB(db_path=tmp_path / 'state.db')
+    db.create_session('s', source='test')
+    if earlier_failed:
+        db.append_message('s', 'user', 'earlier request')
+        db.append_message('s', 'assistant', FAILED_TURN_NOTICE, display_kind=FAILED_TURN_DISPLAY_KIND)
+    epoch = begin_runtime_epoch(db, instance_id='owner')
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', db=db, epoch=epoch)
+    live = authority.sessions['s'] = LiveSession(None, 'route')
+    ref = SessionRef('owned', 's')
+    payload = {'text': 'please work'}
+    admit_session_input(db, epoch=epoch, principal_id=principal, session_id='s', request_id='r', payload=payload)
+    row = claim_session_input(db, epoch=epoch, session_id='s')
+    authority._stamp_claim(ref, live, row)
+    result = {'final_response': '', 'interrupted': True, 'completed': False, 'interrupt_message': 'Gateway restarting'}
+    if not earlier_failed:
+        agent = AIAgent(session_db=db, session_id='s', model='test-model', provider='openai-compat', api_key='test',
+                        base_url='http://127.0.0.1:1/v1', quiet_mode=True, skip_context_files=True, skip_memory=True)
+        messages = [{'role': 'user', 'content': 'please work'}]
+        agent._flush_messages_to_session_db(messages)  # the turn-start flush of the accepted user row
+        result['messages'] = messages
+        _close_durable_failed_turn(agent, result)
+    return db, authority, live, ref, row, result
+
+
+@pytest.mark.parametrize('principal', ['person', 'cron-owner'])
+def test_restart_notice_replaces_the_core_failed_turn_boundary_of_the_same_turn(tmp_path, monkeypatch, principal):
+    """#134889 GW-21 review (GW-A): the agent's own closer already ended this turn with
+    "Send it again"; settlement replaces that boundary with the restart notice in its own write,
+    so the transcript holds one Hermes boundary, and an automation row never keeps resend advice."""
+    from agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE, FAILED_TURN_NOTICE
+    from gateway.session_settlement_recovery import commit_and_publish
+    db, authority, live, ref, row, result = _core_closed_turn(tmp_path, monkeypatch, principal=principal)
+    with db:
+        assert _notices(db) == [FAILED_TURN_NOTICE]  # the real core closer wrote it
+        commit_and_publish(authority, live, ref, row, '', 'interrupted', {'result': result}, {})
+        expected = RESTART_INTERRUPT_NOTICE if principal == 'person' else AUTOMATION_INTERRUPTED_NOTICE
+        assert _notices(db) == [expected]
+        assert [m['role'] for m in db.get_messages('s')] == ['user', 'assistant']
+
+
+def test_an_earlier_turns_failed_boundary_is_kept_and_the_restart_notice_appended(tmp_path, monkeypatch):
+    """A failed-turn boundary written before this claim belongs to an earlier turn: it stays."""
+    from agent.turn_failure_copy import FAILED_TURN_NOTICE
+    from gateway.session_settlement_recovery import commit_and_publish
+    db, authority, live, ref, row, result = _core_closed_turn(tmp_path, monkeypatch, earlier_failed=True)
+    with db:
+        commit_and_publish(authority, live, ref, row, '', 'interrupted', {'result': result}, {})
+        assert _notices(db) == [FAILED_TURN_NOTICE, RESTART_INTERRUPT_NOTICE]
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize('ending', ['spawned', 'cancelled'])
+def test_shutdown_stop_before_the_managed_worker_spawned_carries_its_cause(tmp_path, monkeypatch, ending):
+    """#134889 GW-22: the gateway's stop lands while the managed worker is still being spawned
+    (no worker to signal yet). The authority latches the cause for that generation, so the
+    pre-bootstrap interrupted result carries it: the spawned child is stopped before it is ever
+    bootstrapped, or the cancelled spawn settles with the cause. Real child, real SQLite."""
+    import subprocess
+
+    from gateway import session_managed_worker as managed
+    from gateway.run_runtime import stop_authority_turns
+    from gateway.session_authority import LiveSession, SessionAuthority
+    from gateway.session_contract import Principal, SessionRef, Submission
+    from gateway.session_policy import build_policy
+    from hermes_state import SessionDB
+    from hermes_state_runtime import begin_runtime_epoch, claim_session_input
+    from tests.gateway.restart_test_helpers import make_restart_runner
+    from tests.waiting import async_wait_until
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    runner, _adapter = make_restart_runner()
+    db = SessionDB(db_path=tmp_path / 'state.db')
+    db.create_session('s', source='test')
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='i', db=db,
+                                 epoch=begin_runtime_epoch(db, instance_id='i'))
+    live = authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human', chat_id='c'), 'route')
+    actor = Principal('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
+    ref = SessionRef('owned', 's')
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    spawning, release, bootstrapped = threading.Event(), threading.Event(), []
+
+    class Child(subprocess.Popen):
+        def __init__(self, args, **kw):
+            spawning.set()
+            release.wait(30)
+            super().__init__([sys.executable, '-c', STOPPABLE_CHILD], **kw)
+    monkeypatch.setattr(managed.subprocess, 'Popen', Child)
+    monkeypatch.setattr(managed, '_bootstrap', lambda *a: bootstrapped.append(a) or pytest.fail('bootstrapped'))
+    policy = build_policy({'cwd': str(tmp_path), 'model': 'm'}, {}, profile_terminal=False)
+
+    async def scenario():
+        await authority.submit(actor, Submission('turn', ref, {'text': 'go'}, 'queue'))
+        row = claim_session_input(db, epoch=authority.epoch, session_id='s')
+        authority._stamp_claim(ref, live, row)
+        task = asyncio.create_task(managed.execute_managed(authority, ref, row, policy))
+        await asyncio.to_thread(spawning.wait, 30)
+        assert stop_authority_turns(authority, reason='Gateway restarting') == 1
+        if ending == 'cancelled':
+            task.cancel()
+        release.set()
+        async with asyncio.timeout(20):
+            await async_wait_until(task.done, timeout=20, what='the stopped turn to end')
+        return row, await task
+
+    with db:
+        row, response = asyncio.run(scenario())
+    result = authority.pending_results[row['admission_id']]['result']
+    assert response == '' and not bootstrapped
+    assert result['interrupted'] and result['interrupt_message'] == 'Gateway restarting'
+
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize('stopper', ['shutdown', 'user'])
+def test_a_stop_during_context_reference_expansion_never_spawns_the_worker(tmp_path, monkeypatch, stopper):
+    """#134889 GW-22 review (GW-B): ``managed_turn_text`` (``@`` expansion; it may fetch the model's
+    context length) runs before the worker exists. A gateway shutdown Stop there is latched for the
+    generation, so no worker is spawned and the turn settles interrupted with the restart cause. A
+    user's Stop there is honoured too and leaves no cause. Real authority and SQLite; only the
+    expansion is slowed and Popen is observed."""
+    import subprocess
+
+    from gateway import session_context_refs
+    from gateway import session_managed_worker as managed
+    from gateway.run_runtime import stop_authority_turns
+    from gateway.session_authority import LiveSession, SessionAuthority
+    from gateway.session_contract import Principal, SessionRef, Submission
+    from gateway.session_policy import build_policy
+    from hermes_state import SessionDB
+    from hermes_state_runtime import begin_runtime_epoch, claim_session_input
+    from tests.gateway.restart_test_helpers import make_restart_runner
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    runner, _adapter = make_restart_runner()
+    db = SessionDB(db_path=tmp_path / 'state.db')
+    db.create_session('s', source='test')
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='i', db=db,
+                                 epoch=begin_runtime_epoch(db, instance_id='i'))
+    live = authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human', chat_id='c'), 'route')
+    actor = Principal('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
+    ref = SessionRef('owned', 's')
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    expanding, release, spawned = threading.Event(), threading.Event(), []
+
+    async def slow_expansion(authority, row, policy):  # stands in for a slow context-length lookup
+        expanding.set()
+        await asyncio.to_thread(release.wait, 30)
+        return None, None
+    monkeypatch.setattr(session_context_refs, 'managed_turn_text', slow_expansion)
+
+    class Child(subprocess.Popen):
+        def __init__(self, args, **kw):
+            spawned.append(True)
+            super().__init__([sys.executable, '-c', STOPPABLE_CHILD], **kw)
+    monkeypatch.setattr(managed.subprocess, 'Popen', Child)
+    policy = build_policy({'cwd': str(tmp_path), 'model': 'm'}, {}, profile_terminal=False)
+
+    async def scenario():
+        await authority.submit(actor, Submission('turn', ref, {'text': 'look at @file:x'}, 'queue'))
+        row = claim_session_input(db, epoch=authority.epoch, session_id='s')
+        authority._stamp_claim(ref, live, row)
+        task = asyncio.create_task(managed.execute_managed(authority, ref, row, policy))
+        await asyncio.to_thread(expanding.wait, 30)
+        if stopper == 'shutdown':
+            assert stop_authority_turns(authority, reason='Gateway shutting down') == 1
+        else:
+            await authority.interrupt(actor, ref, row['generation'])
+        release.set()
+        async with asyncio.timeout(30):
+            return row, await task
+
+    with db:
+        row, response = asyncio.run(scenario())
+    result = authority.pending_results[row['admission_id']]['result']
+    assert response == '' and spawned == [] and result['interrupted']
+    if stopper == 'shutdown':
+        assert result['interrupt_message'] == 'Gateway shutting down'
+    else:
+        assert 'interrupt_message' not in result
+    assert 's' not in authority._managed_spawning and 's' not in authority.pending_stops
+
+
+def test_a_user_stop_first_keeps_no_shutdown_cause_before_spawn():
+    """A user's Stop latched for the pending generation came first: shutdown records no cause."""
+    from gateway.run_runtime import stop_authority_turns
+    live = SimpleNamespace(event_stream=SimpleNamespace(execution={'execution_generation': 4}))
+    authority = SimpleNamespace(_managed_workers={}, _managed_spawning={'s': 4}, sessions={'s': live},
+                                pending_stops={'s': 4}, pending_stop_causes={})
+    assert stop_authority_turns(authority, reason='Gateway restarting') == 1
+    assert authority.pending_stop_causes == {} and authority.pending_stops == {'s': 4}
+    authority.pending_stops = {}
+    stop_authority_turns(authority)  # no reason (profile retire): latches the Stop, never a cause
+    assert authority.pending_stop_causes == {} and authority.pending_stops == {'s': 4}
+    authority.pending_stops = {}
+    assert stop_authority_turns(authority, reason='Gateway shutting down') == 1
+    assert authority.pending_stop_causes == {'s': (4, 'Gateway shutting down')}

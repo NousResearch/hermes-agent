@@ -1448,6 +1448,15 @@ class GatewayAdapterLifecycleMixin:
                     platform.value, profile_name,
                 )
                 return None, None
+            # Startup's same-credential guard, mirrored for the retry path: while this adapter was
+            # down, another profile (or the primary) may have claimed the same credential, and the
+            # scoped lock cannot tell two adapters apart inside one PID. Connecting would make two
+            # live pollers on one account — park it fatal instead, like startup does.
+            owner = self._secondary_reconnect_claim_owner(profile_name, platform, adapter)
+            if owner is not None:
+                claim = self._adapter_credential_claim(platform, adapter)
+                self._refuse_duplicate_claim(claim, {claim: owner}, profile_name, platform, "credential")
+                return None, None
             carry_inbound_dedup(predecessor, adapter)
             try:
                 self._configure_profile_adapter(adapter, profile_name, platform)
@@ -1458,6 +1467,15 @@ class GatewayAdapterLifecycleMixin:
                 hand_over_held_inbound(adapter, predecessor)
                 raise
             return adapter, success
+
+    def _secondary_reconnect_claim_owner(self, profile_name: str, platform: Platform, adapter) -> Optional[str]:
+        """Profile that currently owns *adapter*'s credential claim, or ``None`` when the claim is
+        free, undiscoverable, or already this profile's own (its predecessor / other adapters)."""
+        claim = self._adapter_credential_claim(platform, adapter)
+        if claim is None:
+            return None
+        owner = self._live_resource_claims(self._active_profile_name()).get(claim)
+        return None if owner in (None, profile_name) else owner
 
     async def _run_secondary_profile_reconnect(
         self, profile_name: str, platform: Platform, predecessor=None
@@ -1882,6 +1900,7 @@ class GatewayAdapterLifecycleMixin:
                 "_project_secret",  # Photon/Spectrum: project credentials, not a bot token
                 "_app_id",  # Feishu/Lark app_id — stable, log-safe, already the _app_lock_identity
                 "_client_id", "_bot_id",  # Teams / WeCom app-style id pairs
+                "account",  # Signal: the registered E.164 number IS the bot identity; signal-cli has no token
             )
         ] + [(getattr(adapter, "config", None), attr) for attr in ("token", "bot_token")]
         for obj, attr in candidates:

@@ -7,14 +7,17 @@ state (when available) is acknowledged through its authoritative SQLite API.
 """
 
 import asyncio
+import itertools
 import json
 import queue
+import time
 from collections import OrderedDict
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from gateway import run_notifications
 from gateway.config import Platform
 from gateway.run import GatewayRunner
 from tools.process_registry import ProcessRegistry, ProcessSession
@@ -986,6 +989,9 @@ def test_watch_drain_retries_transport_failure(monkeypatch, isolated_registry):
     evt = dict(_completion_event(started_at=1), type="watch_match", pattern="READY", output="READY")
     isolated_registry.completion_queue.put(evt)
     _stop_after_sleeps(monkeypatch, runner, count=3)
+    # The refused event backs off (#140899); each read is a minute later, so the retry is due.
+    real, minutes = time.monotonic, itertools.count()
+    monkeypatch.setattr(run_notifications.time, "monotonic", lambda: real() + 60 * next(minutes))
     asyncio.run(runner._async_delegation_watcher(interval=0))
     assert adapter.handle_message.await_count == 2
     assert isolated_registry.completion_queue.empty()

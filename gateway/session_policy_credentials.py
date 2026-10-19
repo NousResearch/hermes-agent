@@ -71,6 +71,8 @@ def policy_identity(policy, unhashed=()):
             data.pop(name, None)
     if not data.get('client_env_remote'):
         data.pop('client_env_remote', None)
+    if data.get('edit_approval_policy', 'ask') == 'ask':
+        data.pop('edit_approval_policy', None)
     for name in unhashed:  # _legacy_identities: a field the stamping gateway did not have yet
         data.pop(name, None)
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()

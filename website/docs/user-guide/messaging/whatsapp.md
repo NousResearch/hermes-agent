@@ -184,7 +184,7 @@ gateway:
 
 - `unauthorized_dm_behavior: pair` is the global default. Unknown DM senders get a pairing code.
 - `whatsapp.unauthorized_dm_behavior: ignore` makes WhatsApp stay silent for unauthorized DMs, which is usually the better choice for a private number.
-- `gateway.platforms.whatsapp.extra.reactions` controls native processing-status reactions and defaults to `true`. Set it to `false` to disable them.
+- `gateway.platforms.whatsapp.extra.reactions` controls native processing-status reactions and defaults to `true`. Set it to `false` to disable them. Reactions only go to senders the gateway authorizes, so an unpaired or unlisted contact never sees one.
 
 ### Group chats (bot mode)
 

@@ -412,6 +412,18 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return self._coerce_bool(configured)
         return True
 
+    def _reaction_sender_authorized(self, event: MessageEvent) -> bool:
+        """The lifecycle hooks run before run.py's auth gate, so a 👀 to an unauthorized sender (an unpaired DM
+        under ``dm_policy: pairing``, anyone off the allowlist) would reveal a listening bot. React only when the
+        runner's auth check (pairing store + allowlists) admits the sender; with no check registered (bare
+        adapter) fall back to the strict access-policy ``_is_dm_allowed``."""
+        source = event.source
+        user_id = str(getattr(source, "user_id", None) or "").strip()
+        if not user_id:
+            return False
+        verdict = self._is_sender_authorized(user_id, source.chat_type, source.chat_id)
+        return verdict if verdict is not None else self._is_dm_allowed(user_id)
+
     def _bridge_url(self, path: str) -> str:
         return f"http://127.0.0.1:{self._bridge_port}/{path}"
 
@@ -942,7 +954,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """React with 👀 while the message is being processed."""
-        if not self._reactions_enabled():
+        if not self._reactions_enabled() or not self._reaction_sender_authorized(event):
             return
         chat_id = getattr(event.source, "chat_id", None) if event.source else None
         message_id = event.message_id
@@ -954,7 +966,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Swap the in-progress reaction for the final outcome reaction."""
-        if not self._reactions_enabled():
+        if not self._reactions_enabled() or not self._reaction_sender_authorized(event):
             return
         if outcome == ProcessingOutcome.SUCCESS:
             emoji = "✅"

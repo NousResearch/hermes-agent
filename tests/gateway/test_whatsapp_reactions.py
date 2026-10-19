@@ -1,5 +1,6 @@
 """Tests for WhatsApp processing lifecycle reactions."""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -7,6 +8,16 @@ import pytest
 from gateway.config import Platform
 from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+
+@pytest.fixture(autouse=True)
+def _isolate_auth_env(monkeypatch):
+    for var in ("WHATSAPP_ALLOWED_USERS", "WHATSAPP_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS", "GATEWAY_ALLOW_ALL_USERS"):
+        monkeypatch.delenv(var, raising=False)
+
+
+def _authorize_all(*_args, **_kwargs):
+    return True
 
 
 class _AsyncCM:
@@ -22,9 +33,14 @@ class _AsyncCM:
         return False
 
 
-def _make_adapter(*, config_extra=None, running=True, http_session=None):
-    """Create a WhatsAppAdapter with test attributes (bypass __init__)."""
+def _make_adapter(*, config_extra=None, running=True, http_session=None, authorization_check=_authorize_all,
+                  dm_policy="pairing", allow_from=()):
+    """Create a WhatsAppAdapter with test attributes (bypass __init__). By default the runner's auth check
+    admits every sender; ``authorization_check=None`` exercises the bare-adapter access-policy fallback."""
     adapter = WhatsAppAdapter.__new__(WhatsAppAdapter)
+    adapter._authorization_check = authorization_check
+    adapter._dm_policy = dm_policy
+    adapter._allow_from = set(allow_from)
     adapter.platform = Platform.WHATSAPP
     adapter.config = MagicMock()
     adapter.config.extra = config_extra or {}
@@ -39,14 +55,15 @@ def _make_adapter(*, config_extra=None, running=True, http_session=None):
     return adapter
 
 
-def _event(*, chat_id="chat@s.whatsapp.net", message_id="msg-123", sender_id="sender@s.whatsapp.net", from_me=False):
+def _event(*, chat_id="chat@s.whatsapp.net", message_id="msg-123", sender_id="sender@s.whatsapp.net", from_me=False,
+           chat_type="dm"):
     from gateway.platforms.base import SessionSource
 
     source = SessionSource(
         platform=Platform.WHATSAPP,
         chat_id=chat_id,
         chat_name="Chat",
-        chat_type="dm",
+        chat_type=chat_type,
         user_id=sender_id,
         user_name="Sender",
     )
@@ -160,3 +177,110 @@ class TestWhatsAppLifecycleReactions:
         payload = adapter._http_session.post.call_args.kwargs["json"]
         assert payload["chatId"] == "1234567890@s.whatsapp.net"
         assert payload["senderId"] == "1234567890@s.whatsapp.net"
+
+
+def _recording_session(adapter):
+    resp = MagicMock(status=200)
+    resp.json = AsyncMock(return_value={"success": True})
+    adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+    return adapter._http_session.post
+
+
+def _sent_emojis(post):
+    return [call.kwargs["json"]["emoji"] for call in post.call_args_list]
+
+
+async def _run_lifecycle(adapter, outcome=ProcessingOutcome.SUCCESS, **event_kwargs):
+    await adapter.on_processing_start(_event(**event_kwargs))
+    await adapter.on_processing_complete(_event(**event_kwargs), outcome)
+
+
+class TestWhatsAppReactionSenderGate:
+    """The hooks run before run.py's auth gate: an unauthorized sender must not see a reaction."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("outcome", [ProcessingOutcome.SUCCESS, ProcessingOutcome.FAILURE])
+    async def test_unauthorized_dm_sender_gets_no_reaction(self, outcome):
+        adapter = _make_adapter(authorization_check=lambda *_a, **_k: False)
+        post = _recording_session(adapter)
+
+        await _run_lifecycle(adapter, outcome)
+
+        post.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("outcome, final", [(ProcessingOutcome.SUCCESS, "✅"), (ProcessingOutcome.FAILURE, "❌")])
+    async def test_authorized_dm_sender_gets_start_and_outcome(self, outcome, final):
+        adapter = _make_adapter()
+        post = _recording_session(adapter)
+
+        await _run_lifecycle(adapter, outcome)
+
+        assert _sent_emojis(post) == ["👀", final]
+
+    @pytest.mark.asyncio
+    async def test_check_sees_the_event_sender_and_chat(self):
+        seen = []
+        adapter = _make_adapter(authorization_check=lambda *args, **_k: seen.append(args) or True)
+        _recording_session(adapter)
+
+        await adapter.on_processing_start(_event(chat_id="120363@g.us", sender_id="member@s.whatsapp.net", chat_type="group"))
+
+        assert seen == [("member@s.whatsapp.net", "group", "120363@g.us")]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("paired", [False, True])
+    async def test_runner_auth_chain_decides_under_default_pairing(self, paired):
+        """Real ``GatewayRunner._is_user_authorized``: an unpaired DM under ``dm_policy: pairing`` gets no 👀,
+        a paired one does."""
+        from gateway.run import GatewayRunner
+        from gateway.session import SessionSource
+
+        runner = object.__new__(GatewayRunner)
+        runner.pairing_store = SimpleNamespace(is_approved=lambda *_a, **_k: paired)
+
+        def check(user_id, chat_type=None, chat_id=None, **_kwargs):
+            return runner._is_user_authorized(SessionSource(
+                platform=Platform.WHATSAPP, chat_id=chat_id or "", chat_type=chat_type or "dm", user_id=user_id))
+
+        adapter = _make_adapter(authorization_check=check, dm_policy="pairing")
+        runner.adapters = {Platform.WHATSAPP: adapter}
+        post = _recording_session(adapter)
+
+        await _run_lifecycle(adapter)
+
+        assert _sent_emojis(post) == (["👀", "✅"] if paired else [])
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("dm_policy, allow_from, reacts", [
+        ("pairing", (), False),
+        ("allowlist", ("other@s.whatsapp.net",), False),
+        ("allowlist", ("sender@s.whatsapp.net",), True),
+        ("allowlist", ("*",), True),
+    ])
+    async def test_without_runner_check_falls_back_to_access_policy(self, dm_policy, allow_from, reacts):
+        adapter = _make_adapter(authorization_check=None, dm_policy=dm_policy, allow_from=allow_from)
+        post = _recording_session(adapter)
+
+        await _run_lifecycle(adapter)
+
+        assert _sent_emojis(post) == (["👀", "✅"] if reacts else [])
+
+    @pytest.mark.asyncio
+    async def test_open_policy_with_opt_in_keeps_reacting_without_runner_check(self, monkeypatch):
+        monkeypatch.setenv("WHATSAPP_ALLOW_ALL_USERS", "true")
+        adapter = _make_adapter(authorization_check=None, dm_policy="open")
+        post = _recording_session(adapter)
+
+        await _run_lifecycle(adapter)
+
+        assert _sent_emojis(post) == ["👀", "✅"]
+
+    @pytest.mark.asyncio
+    async def test_event_without_sender_gets_no_reaction(self):
+        adapter = _make_adapter()
+        post = _recording_session(adapter)
+
+        await _run_lifecycle(adapter, sender_id=None)
+
+        post.assert_not_called()

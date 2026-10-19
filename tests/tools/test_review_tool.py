@@ -169,3 +169,25 @@ def test_review_stays_inline_and_emits_one_post_hook_per_executor_path(monkeypat
     assert posts == ["conc", "seq"]
     assert all(kw["parent_agent"] is agent and kw["focus"] == "x" for kw in seen)
     assert seen[0]["messages"] is _MSGS
+
+
+@pytest.mark.parametrize("saved", [[], ["web"], ["web", "terminal"]])
+def test_saved_selection_without_delegation_never_gains_review(saved):
+    """`review` ships inside the configurable `delegation` toolset: a saved `platform_toolsets` list that leaves
+    delegation unchecked (including an explicit empty list) must stay free of it after resolution — the
+    one-tool `review` deny handle must never be recovered onto it."""
+    import model_tools
+    from hermes_cli.tools_config import _get_platform_tools
+
+    enabled = sorted(_get_platform_tools({"platform_toolsets": {"cli": saved}}, "cli"))
+    assert "review" not in enabled and "delegation" not in enabled
+    names = {d["function"]["name"] for d in model_tools.get_tool_definitions(enabled_toolsets=enabled, quiet_mode=True)}
+    assert "review" not in names
+
+
+def test_disabled_toolsets_drops_review_but_keeps_delegation():
+    import model_tools
+
+    names = {d["function"]["name"] for d in model_tools.get_tool_definitions(
+        enabled_toolsets=["hermes-cli"], disabled_toolsets=["review"], quiet_mode=True)}
+    assert "review" not in names and "delegate_task" in names

@@ -53,18 +53,23 @@ def _reclone_plugin_update(target: Path, source: str, previous_revision: object)
     These installs carry no local ``.git``, so the staged replacement also carries user-owned
     config/data from *target* before publication instead of silently deleting it (#122006).
     """
-    from hermes_cli.plugins_cmd_catalog import _carry_user_files
+    from hermes_cli.plugins_cmd_catalog import _back_up_discarded_files, _carry_user_files
 
-    new_target, _manifest, _name = _pc()._install_plugin_core(
-        source,
-        force=True,
-        before_swap=lambda _manifest, tree: _carry_user_files(target, tree, None),
-    )
-    revision = str(_pc()._read_install_metadata().get(new_target.name, {}).get("revision") or "")
     previous = previous_revision if isinstance(previous_revision, str) else ""
-    if revision and revision == previous:
-        return "Already up to date."
-    return f"Re-installed from {source}: {previous[:8]}..{revision[:8]}"
+    # Outside the plugins dir: the discovery scanners recurse into every subdirectory there.
+    backup = _pc()._plugins_dir().parent / "plugins-backup" / f"{target.name}-{previous[:8] or 'old'}"
+    warnings: list[str] = []
+
+    def _carry(_manifest, tree: Path) -> list[str]:
+        carried = _carry_user_files(target, tree, None)
+        warnings.append(_back_up_discarded_files(target, tree, backup, source, previous))
+        return carried
+
+    new_target, _manifest, _name = _pc()._install_plugin_core(source, force=True, before_swap=_carry)
+    revision = str(_pc()._read_install_metadata().get(new_target.name, {}).get("revision") or "")
+    unchanged = bool(revision) and revision == previous
+    headline = "Already up to date." if unchanged else f"Re-installed from {source}: {previous[:8]}..{revision[:8]}"
+    return "\n".join([headline, *filter(None, warnings)])
 
 
 def cmd_update(name: str, *, interactive: bool = True) -> None:
@@ -110,6 +115,10 @@ def cmd_update(name: str, *, interactive: bool = True) -> None:
     out = output.strip()
     if "Already up to date" in out:
         console.print(f"[green]✓[/green] Plugin [bold]{name}[/bold] is already up to date.")
+        # A re-install at the same revision still replaces edited files; its backup notice follows the headline.
+        notice = out.partition("\n")[2]
+        if notice:
+            console.print(f"[yellow]⚠ {notice}[/yellow]")
     else:
         console.print(f"[green]✓[/green] Plugin [bold]{name}[/bold] updated.")
         console.print(f"[dim]{out}[/dim]")

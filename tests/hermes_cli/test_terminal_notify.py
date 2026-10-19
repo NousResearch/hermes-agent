@@ -34,6 +34,45 @@ def test_osc9_body_emitted_and_sanitized_only_when_flag_on(monkeypatch):
     assert _ring(monkeypatch, flag_on=False, env={}, context="approval") == ""
 
 
+def test_program_status_uses_st_and_encodes_safe_message():
+    seq = terminal_notify.program_status_sequence("blocked", kind="permission", message="Allow\ncommand?")
+    assert seq == "\x1b]7501;state=blocked:app=hermes:kind=permission:msg=QWxsb3djb21tYW5kPw==\x1b\\"
+
+
+def test_program_status_rejects_invalid_state_or_kind():
+    with pytest.raises(ValueError):
+        terminal_notify.program_status_sequence("clear")
+    with pytest.raises(ValueError):
+        terminal_notify.program_status_sequence("working", kind="permission")
+
+
+def test_program_status_does_not_write_without_an_interactive_stdout(monkeypatch):
+    written = []
+    monkeypatch.setattr(terminal_notify, "write_tty", written.append)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: False)
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.program_status_enabled = True
+    cli._report_program_status("working")
+    assert written == []
+
+
+def test_running_app_does_not_receive_program_status_when_stdout_is_redirected(monkeypatch):
+    monkeypatch.setattr("sys.stdout.isatty", lambda: False)
+
+    class _Output:
+        def write_raw(self, _data):
+            pytest.fail("program status leaked to redirected app output")
+
+    class _App:
+        _is_running = True
+        output = _Output()
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.program_status_enabled = True
+    cli._app = _App()
+    cli._report_program_status("working")
+
+
 def test_warp_osc777_only_under_supported_warp_build(monkeypatch):
     out = _ring(monkeypatch, flag_on=True, env=_WARP_OK, context="approval", detail="rm -rf build")
     prefix = "\x1b]777;notify;warp://cli-agent;"

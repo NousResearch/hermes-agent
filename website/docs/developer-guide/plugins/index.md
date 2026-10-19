@@ -975,6 +975,35 @@ Never read `.env`, `auth.json` or another tool's credential files yourself (cata
 The `plugins.manage settings` action refuses secret keys and any value whose type
 or `choices` disagree with the schema.
 
+**Portable packages (`plugin.json`)** declare the same schema under the Hermes
+vendor namespace, since Agent Plugins v1 rejects unknown top-level fields:
+
+```json
+{
+  "extensions": {
+    "com.nousresearch.hermes": {
+      "config_schema": {
+        "api_key": { "type": "secret", "env": "MY_PLUGIN_API_KEY" },
+        "show_chip": { "type": "bool", "default": true, "label": "Show the status-bar chip" }
+      }
+    }
+  }
+}
+```
+
+A secret whose `env` names a variable your `mcp.json` passes through
+(`"env": { "MY_PLUGIN_API_KEY": "${MY_PLUGIN_API_KEY}" }`) reaches the MCP server
+right away: after a save, Hermes reconnects the plugin's servers whose resolved
+launch inputs changed (a new key does, a toggle does not), so the form is also
+where users set the server's key.
+
+**React to a save without polling.** Every save broadcasts
+`plugin.<id>.settings.changed` (payload `{ written: [...keys] }`; a secret-only
+save sends an empty list), so a Desktop half re-reads its preferences at once:
+`ctx.onEvent('plugin.my-plugin.settings.changed', reload)`. Read the values from
+your own `plugin_api.py` with `load_config_readonly()` from `hermes_cli.config`
+(`plugins.entries.<id>.settings`), falling back to the schema defaults.
+
 ## Step 6: Test it
 
 Start Hermes:

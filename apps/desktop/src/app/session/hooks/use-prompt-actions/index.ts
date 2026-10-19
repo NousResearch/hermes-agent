@@ -41,6 +41,7 @@ import {
   setTurnStartedAt
 } from '@/store/session'
 import { $sessionStates, isLiveTurnAwaitingEvents, isSessionRemote } from '@/store/session-states'
+import { flushStreamDeltas } from '@/store/stream-delta-flush'
 import { clearSessionSubagents } from '@/store/subagents'
 import { runGatewayRestart } from '@/store/system-actions'
 import { clearSessionTodos } from '@/store/todos'
@@ -73,6 +74,7 @@ import {
   rebindSurvivorRowIds,
   retryKeepsDeepConfirm,
   runRewindSubmit,
+  sealAcceptedCorrection,
   type SurvivorUserRowIds
 } from './rewind'
 import { useSlashCommand } from './slash'
@@ -890,21 +892,8 @@ export function usePromptActions({
 
           if (result?.status === 'redirected') {
             if (mode === 'interrupt') {
-              updateSessionState(id, state => {
-                const message = state.messages.find(candidate => candidate.id === messageId)
-
-                // A newer reply may precede this ACK; it already owns its boundary.
-                const hasNewReply = state.messages
-                  .slice(state.messages.findIndex(candidate => candidate.id === messageId) + 1)
-                  .some(candidate => candidate.role === 'assistant')
-
-                return message && state.streamId && !hasNewReply
-                  ? appendMidTurnUserMessage(
-                      { ...state, messages: state.messages.filter(candidate => candidate.id !== messageId) },
-                      message
-                    )
-                  : state
-              })
+              flushStreamDeltas(id)
+              updateSessionState(id, state => sealAcceptedCorrection(state, messageId))
             }
 
             triggerHaptic('submit')
@@ -913,9 +902,12 @@ export function usePromptActions({
           }
 
           if (result?.status === 'queued') {
-            // Build-window redirects become the next turn, not part of the
-            // active reply, so retain the optimistic row at the tail.
-            if (mode === 'interrupt') {
+            // A redirect queued in the build window is the next turn; an
+            // accepted steer joins this one after its running tool.
+            if (mode === 'steer') {
+              flushStreamDeltas(id)
+              updateSessionState(id, state => sealAcceptedCorrection(state, messageId, { keepRunningTools: true }))
+            } else {
               moveOptimisticMessageToEnd()
             }
 

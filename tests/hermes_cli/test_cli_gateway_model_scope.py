@@ -321,6 +321,41 @@ def test_once_sends_the_alias_it_resolved_through(monkeypatch, session_model):
     assert not _model_routes(conn)[0]
 
 
+def test_once_through_an_alias_named_like_the_session_model_still_sends_it(monkeypatch):
+    """Review by @dokterdok: the session runs ``shared-model`` on its own endpoint and key, and a
+    ``model_aliases`` entry ``shared-model`` names that model at another endpoint. ``/model shared-model
+    --once`` resolves the alias, but the submit compared the staged ``shared-model`` with the session's
+    route again, dropped it, and the turn ran on the session's endpoint and key."""
+    from gateway.session_cli_turn import one_turn_runtime
+    from hermes_cli import model_switch
+    resolve = model_switch.switch_model
+    conn = RecordingConnection({"model": "shared-model", "provider": "custom"})
+    cli_mod, stub, printed = _chat_cli(monkeypatch, conn)
+    monkeypatch.setattr(model_switch, "switch_model", resolve)  # the real resolver over this alias
+    monkeypatch.setitem(model_switch.DIRECT_ALIASES, "shared-model", model_switch.DirectAlias(
+        model="shared-model", provider="custom", base_url="http://127.0.0.1:7003/v1", api_key="sk-alias"))
+    monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model", lambda *_a, **_k: {
+        "accepted": True, "persist": True, "recognized": True, "message": ""})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
+    session = {"provider": "custom", "api_key": "sk-session", "base_url": "http://127.0.0.1:7001/v1"}
+    stub.model, stub.provider, stub.requested_provider = "shared-model", "custom", "custom"
+    stub.base_url = stub._explicit_base_url = session["base_url"]
+    stub.api_key = stub._explicit_api_key = session["api_key"]
+    stub.agent.model, stub.agent.provider = "shared-model", "custom"
+    cli_mod.HermesCLI._handle_model_switch(stub, "/model shared-model --once")
+    assert not [line for line in printed if "fail" in line.lower()], printed
+    assert stub.base_url == "http://127.0.0.1:7003/v1", "the CLI shows the alias's endpoint"
+    stub.chat("run on the alias")
+    stub.chat("the turn after")
+    once, after = _submits(conn)
+    override = once.get("model_override")
+    assert override == {"model": "shared-model", "provider": "custom"}, once
+    assert "model_override" not in after, after
+    _model, runtime = one_turn_runtime(override, "shared-model", {**session, "api_mode": "chat_completions"}, {})
+    assert (runtime["base_url"], runtime["api_key"]) == ("http://127.0.0.1:7003/v1", "sk-alias")
+    assert not _model_routes(conn)[0]
+
+
 class BusyOnceConnection(RecordingConnection):
     """The owner refuses the first ``prompt.submit`` with ``session_busy``: nothing was admitted."""
 

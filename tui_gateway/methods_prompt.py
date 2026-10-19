@@ -953,9 +953,10 @@ def _(rid, params: dict) -> dict:
     if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
         # Refused HERE — before the busy queue, db row and agent build — so a refusal
         # leaves the session untouched.  The reason travels as machine-readable data.
-        return _with_client_turn_ack(
-            _slot_refusal(rid, sid, session, text, params, limit_message, internal_hosted_submit),
-            turn, state=turn_identity.ACCEPTED)
+        refusal = _slot_refusal(rid, sid, session, text, params, limit_message, internal_hosted_submit)
+        if "error" in refusal:
+            _fail_client_turn(turn)  # no turn runs and none is queued: the id must not stay accepted
+        return _with_client_turn_ack(refusal, turn, state=turn_identity.ACCEPTED)
     # Rewritten every submit: a session alternates app window / HUD / live voice; a stale value misinforms.
     session["client_surface"] = params.get("surface") if params.get("surface") in _CLIENT_SURFACES else ""
     # Live-voice delegations carry the recent spoken transcript for the MODEL INPUT only (the persisted
@@ -1066,10 +1067,12 @@ def _(rid, params: dict) -> dict:
             _run_after_agent_ready(
                 rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback,
                 turn_author, client_turn_id=client_turn_id)
-        finally:
-            # Backstop: a crash before the turn loop's own finally must still end the client turn
-            # (``turn_identity.mark`` refuses to reopen a turn that already reached terminal).
+        except BaseException:
+            # Backstop for a wrapper that DIED before the turn loop took over: this thread returns as
+            # soon as the turn is dispatched to its own worker, so a normal (or merely slow) turn must
+            # never be ended from here — only an exception means no loop will ever end it.
             _finish_client_turn(session, turn_identity.FAILED)
+            raise
 
     run_thread = threading.Thread(target=_turn_thread, daemon=True)
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.

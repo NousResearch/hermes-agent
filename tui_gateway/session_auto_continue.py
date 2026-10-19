@@ -490,10 +490,7 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     kwargs: dict = {"queued_prompt_generation": queue_generation}
     if queued.get("image_paths"):
         kwargs["image_paths"] = queued["image_paths"]
-    if queued.get("client_turn_id"):
-        # The drained turn owns this id: it records ``running`` and then its own outcome, so a
-        # retry that arrives while the message waits in the queue replays instead of queueing twice.
-        kwargs["client_turn_id"] = queued["client_turn_id"]
+    client_turn_id = queued.get("client_turn_id")
     # Re-place the accept-time rows (if any) at the transcript END before the turn's rows follow
     # them, and slot the dispatching envelope's fresh row for adoption. EVERY queued envelope is
     # re-placed in acceptance order: a later-accepted prompt's row must never sit behind while an
@@ -517,7 +514,11 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     dispatch_failed = False
     try:
         if not use_compute_host:
-            _run_prompt_submit(rid, sid, session, queued["text"], **kwargs, **author_kwargs)
+            # The drained turn owns this id: it records ``running`` and then its own outcome, so a
+            # retry that arrives while the message waits in the queue replays instead of queueing
+            # twice. (The compute-host bridge has no id of its own — the child owns that turn.)
+            _run_prompt_submit(rid, sid, session, queued["text"], **kwargs, **author_kwargs,
+                               **({"client_turn_id": client_turn_id} if client_turn_id else {}))
         elif (resp := _submit_prompt_to_compute_host(rid, sid, session, queued["text"], **kwargs)).get("error"):
             with session["history_lock"]:
                 session["running"] = False

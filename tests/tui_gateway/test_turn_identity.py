@@ -20,6 +20,8 @@ from tui_gateway import server, turn_identity
 
 SID = "turn-idem-sid"
 KEY = "turn-idem-key"
+#: The real class, captured before the fixture swaps ``threading.Thread`` for an inline runner.
+_REAL_THREAD = threading.Thread
 
 
 class _InlineThread:
@@ -194,6 +196,41 @@ def test_a_retry_while_the_prompt_waits_in_the_queue_replays(registry, sessions)
     assert again["state"] == "accepted", "nothing has run yet: the message is still queued"
     assert session.get("queued_prompts") is None, "a replay must not enqueue a second copy"
     assert turns == []
+
+
+def test_the_dispatching_thread_does_not_end_a_turn_it_just_dispatched(registry, sessions, monkeypatch):
+    """A real turn outlives the thread that dispatched it: only the turn loop ends its id.
+
+    ``_run_prompt_submit`` returns as soon as the turn has its own worker, so anything the
+    dispatching thread does on the way out must leave a live turn alone.
+    """
+    monkeypatch.setattr(server.threading, "Thread", _REAL_THREAD)  # real threads, real race
+    release, seen_running = threading.Event(), threading.Event()
+    turns: list = []
+
+    def blocking_run(*a, **k):
+        turns.append(a)
+        seen_running.set()
+        release.wait(timeout=10)
+        return {"final_response": "done"}
+
+    agent = types.SimpleNamespace(session_id=KEY, clear_interrupt=lambda: None,
+                                  run_conversation=blocking_run)
+    _install(sessions, agent)
+    ack = _submit(text="hello", client_turn_id="ct-live")["result"]
+    try:
+        assert seen_running.wait(timeout=10)
+        # The dispatching thread has long returned here; the turn is still in flight.
+        assert _status("ct-live")["result"]["state"] == "running", "the live turn was ended early"
+    finally:
+        release.set()
+    deadline = time.time() + 10
+    while time.time() < deadline and _status("ct-live")["result"]["state"] != "terminal":
+        time.sleep(0.02)
+    assert _status("ct-live")["result"] == {
+        "known": True, "client_turn_id": "ct-live", "server_turn_id": ack["server_turn_id"],
+        "state": "terminal"}
+    assert len(turns) == 1
 
 
 def test_a_redirected_submit_ends_with_the_turn_it_joined(registry, sessions):

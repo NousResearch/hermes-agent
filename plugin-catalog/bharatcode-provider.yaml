@@ -1,0 +1,17 @@
+name: bharatcode-provider
+repo: https://github.com/thenabbu/bharatcode-hermes
+sha: 34f72f63b25551525008584678fd9d2c70f6bb77
+subdir: model-providers/bharatcode
+description: BharatCode AI (bharatcode.ai) OpenAI-compatible model provider — free student tier, native /model integration.
+maintainer: thenabbu
+tier: community
+category: models
+requires_hermes: ">=0.21.3"
+docs_url: https://github.com/thenabbu/bharatcode-hermes#readme
+version: "1.0.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - BHARATCODE_API_KEY

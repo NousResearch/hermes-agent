@@ -617,7 +617,11 @@ def relaunch_command(
         if option in ("-W", "-X") and index < len(original):
             options.append(original[index])
             index += 1
-    prefix = f"import sys, runpy; sys.path.insert(0, {str(root)!r}); sys.argv = {argv!r}; "
+    # Re-entry can reach dependency imports before the entry point's own late
+    # bootstrap import (e.g. cron's package initializer). Select and lease the
+    # PM generation before replaying any application code on store Python.
+    prefix = (f"import sys, runpy; sys.path.insert(0, {str(root)!r}); sys.argv = {argv!r}; "
+              "import hermes_bootstrap; ")
     if argv[0] == "-c":
         body = f"exec({original[index + 1]!r})"
     elif module and module != "__main__":

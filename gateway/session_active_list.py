@@ -9,7 +9,9 @@ turn that was still running. Rows keep ``server._session_live_item``'s shape; ``
 """
 from __future__ import annotations
 
-from gateway.session_contract import SessionRef
+import asyncio
+
+from gateway.session_contract import LISTING_YIELD_EVERY, SessionRef
 from hermes_state_runtime import RuntimeStoreError
 
 
@@ -31,7 +33,11 @@ async def active_list(connection, ref, params):
     authority = connection.authority
     current = str(params.get('current_session_id') or '')
     rows = []
-    for sid, live in tuple(authority.sessions.items()):
+    for index, (sid, live) in enumerate(tuple(authority.sessions.items())):
+        if index and not index % LISTING_YIELD_EVERY:
+            # Same reason as ``session.list``: this walks every live session on the loop that also
+            # serves the turns' own I/O, so a long list must give it a turn per batch.
+            await asyncio.sleep(0)
         candidate = SessionRef(connection.actor.profile_id, sid)
         try:
             handle = await authority.resolve(connection.actor, candidate)
@@ -39,7 +45,7 @@ async def active_list(connection, ref, params):
             if exc.reason not in {'permission_denied', 'profile_mismatch', 'not_found'}:
                 raise
             continue
-        row = authority.db.get_session(sid) or {}
+        row = authority.db.get_session_list_row(sid) or {}
         # The same population as the live ``session.list`` feed, hidden chats included: a hidden
         # chat open in a pane still needs its turn's liveness.
         if row.get('source') in INTERNAL_LISTING_SOURCES or closed_and_unviewed(authority, sid, handle):

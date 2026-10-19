@@ -8,6 +8,11 @@ JsonObject = Mapping[str, object]
 # Authenticated local WebSocket family, separate from the legacy Desktop API contract.
 CANONICAL_GATEWAY_PROTOCOL = 'hermes-gateway-v1'
 
+# The live listings (`session.list`, `session.active_list`) walk every live session in one request
+# on the gateway's loop, the thread that also serves platform I/O, WS dispatch and delivery. Yield
+# this often so a long list interleaves instead of holding the thread for its whole duration.
+LISTING_YIELD_EVERY = 64
+
 
 @dataclass(frozen=True)
 class Principal:

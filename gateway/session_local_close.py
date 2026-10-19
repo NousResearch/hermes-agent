@@ -17,12 +17,16 @@ def _local_target(authority, session_id):
 
 
 def closed_and_unviewed(authority, session_id, handle):
-    """A live-feed row main would list as resumable: closed, idle and with no viewer left."""
+    """A live-feed row main would list as resumable: closed, idle and with no viewer left.
+
+    Reads the local target's own columns rather than hydrating the row: the listing asks this per
+    session on the gateway's loop, where a ``get_session`` (prompt/tool JOIN + token flush) per
+    candidate is the cost the sweep must not pay."""
     live = authority.sessions.get(session_id)
     if live is None or live.subscribers or handle.execution_state != 'idle':
         return False
     if live.superseded:
         return True  # an old messaging conversation opened read-only: history once no one views it
     target = _local_target(authority, session_id)
-    row = authority.db.get_session(target) if target else None
+    row = authority.db.get_session_list_row(target) if target else None
     return bool(row and row.get('ended_at') is not None)

@@ -841,6 +841,18 @@ class SessionSessionsMixin:
         )
         return self._session_row_dict(row) if row else None
 
+    def get_session_list_row(self, session_id: str) -> Optional[dict[str, Any]]:
+        """The picker fields only, without ``get_session``'s prompt/tool JOIN and token flush.
+
+        The live listing reads one row per listed session on the gateway's loop; a full hydration
+        there is the cost the sweep does not need (title/source/activity/is-it-closed are columns)."""
+        row = self._read_one(
+            "SELECT id, source, title, started_at, ended_at, message_count, model, hidden, archived "
+            "FROM sessions WHERE id = ?",
+            (session_id,),
+        )
+        return dict(row) if row else None
+
     def get_recent_session_model_route(self, session_id: str) -> Optional[dict[str, Any]]:
         """Most recently used main-loop model route as one coherent per-call tuple
         (``session_model_usage`` keeps model+provider together; ``sessions`` mixes route changes).

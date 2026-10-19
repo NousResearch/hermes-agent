@@ -107,7 +107,7 @@ class TestSmartApprovePolicyInjection(unittest.TestCase):
         mock_call_llm.return_value = _make_response("APPROVE")
         mock_cfg.side_effect = RuntimeError("config unreadable")
         # _smart_approve's outer try/except catches this and escalates
-        assert _smart_approve("echo hi", "flagged") == "escalate"
+        assert _smart_approve("echo hi", "flagged")[0] == "escalate"
 
 
 
@@ -124,7 +124,7 @@ class TestSmartApprovePolicyInjection(unittest.TestCase):
         mock_cfg.return_value = {"mode": "smart"}
 
         with patch("tools.approval_smart.logger") as mock_logger:
-            assert _smart_approve("echo hi", "flagged") == "escalate"
+            assert _smart_approve("echo hi", "flagged")[0] == "escalate"
 
         assert mock_logger.warning.called
         args, _ = mock_logger.warning.call_args

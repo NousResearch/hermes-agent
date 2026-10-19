@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
+from utils import atomic_json_write
+
 logger = logging.getLogger(__name__)
 
 LIGHTPANDA_INSTALL_URL = "https://lightpanda.io/docs/run-locally/installation/one-liner"
@@ -28,7 +30,7 @@ _READY_TIMEOUT_S = 10.0
 _POLL_INTERVAL_S = 0.1
 _STDERR_TAIL_LIMIT = 2000
 
-_servers: dict[str, "LightpandaServer"] = {}
+_servers: "dict[str, LightpandaServer]" = {}
 _servers_lock = threading.Lock()
 
 
@@ -119,6 +121,7 @@ def _binary_supports_http_cache(binary: str) -> bool:
             [binary, "help"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3.0,
             stdin=subprocess.DEVNULL,
+            check=False,
         )
         return _HTTP_CACHE_FLAG in ((proc.stdout or "") + (proc.stderr or ""))
     except Exception as e:
@@ -188,7 +191,9 @@ def _write_record(server: LightpandaServer) -> None:
     record = {"pid": server.proc.pid, "port": server.port, "owner_pid": os.getpid(),
               "start_time": server.start_time, "started_at": time.time()}
     try:
-        (_state_dir() / f"{server.session_name}.json").write_text(json.dumps(record), encoding="utf-8")
+        # Temp + rename: an orphan sweep (another Hermes, or a cleanup thread) unlinks a record it
+        # cannot parse, so a torn in-place write would drop a live server's record.
+        atomic_json_write(_state_dir() / f"{server.session_name}.json", record, indent=None)
     except OSError as e:
         logger.debug("could not write lightpanda record for %s: %s", server.session_name, e)
 

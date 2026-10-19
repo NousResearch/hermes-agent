@@ -119,7 +119,7 @@ A worker that is blocked on `t_parent` and creates a support card for the missin
 
 **Use Kanban when** work crosses agent boundaries, needs to survive restarts, might need human input, might be picked up by a different role, or needs to be discoverable after the fact.
 
-They coexist: a kanban worker may call `delegate_task` internally during its run.
+They coexist, but not inside one run: a kanban task executes in an isolated managed worker under the profile's gateway, and that worker is not offered `delegate_task` (a delegated child would need its own owner-registered execution, which the single-turn worker cannot reserve). Split work that needs fan-out into child cards instead (`kanban_create` with `parents`).
 
 ## Core concepts
 
@@ -1341,6 +1341,26 @@ in the board DB. No relays, credential sharing, or extra dispatchers are
 needed — each profile gateway simply delivers through its own adapters.
 
 ## Runs — one row per attempt
+
+Canonical workers execute through the assigned profile's gateway owner. The local
+transport carries the dispatcher's exact board database path, including custom
+paths and shared boards assigned to another profile; it does not create a separate
+transcript writer. The owner validates the task/run/claim and freezes its policy.
+
+If the owner or managed worker disappears with an **unknown** admission while the
+interpreter the owner bound to the attempt (its `worker_bound` event) may still be
+running, the card keeps its run and claim: expired claims, stale heartbeats and
+runtime limits do not reexecute that ambiguous attempt, and an unavailable owner
+ledger also pauses reclaim. Once that bound interpreter is itself dead, nothing can
+still be running the attempt, so the crash sweep reclaims it like any dead worker:
+the run closes as crashed and the card returns to `ready` (or `review`) under the
+normal crash budget, which can re-execute effects the lost attempt already had.
+Resolve an unknown admission explicitly using `prompt.resolve_unknown` with its
+admission ID and execution generation. This acknowledges uncertainty; it does
+**not** authorize another Kanban attempt. Inspect the effects, then explicitly
+complete or block the card; unblock a blocked card only when a new attempt is
+intended. Confirmed timeouts and provider rate-limit results retain their ordinary
+retry/failure-accounting behavior.
 
 A task is a logical unit of work; a **run** is one attempt to execute it. When the dispatcher claims a ready task it creates a row in `task_runs` and points `tasks.current_run_id` at it. When that attempt ends — completed, blocked, crashed, timed out, spawn-failed, reclaimed — the run row closes with an `outcome` and the task's pointer clears. A task that's been attempted three times has three `task_runs` rows.
 

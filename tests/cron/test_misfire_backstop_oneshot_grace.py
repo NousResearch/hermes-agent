@@ -74,7 +74,7 @@ class TestMisfireBackstopOneShotGrace:
     def test_overdue_recurring_job_still_fires(self, monkeypatch):
         now = _hermes_now()
         overdue = _job("overdue-cron", "cron", now - timedelta(hours=2))
-        provider, fired = _run_backstop(monkeypatch, [overdue])
+        provider, _fired = _run_backstop(monkeypatch, [overdue])
         assert provider.claimed == ["overdue-cron"]
 
     def test_oneshot_within_oneshot_grace_but_past_misfire_grace(

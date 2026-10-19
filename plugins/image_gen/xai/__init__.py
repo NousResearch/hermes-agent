@@ -257,7 +257,7 @@ class XAIImageGenProvider(StaticImageGenProvider):
                 "No xAI credentials found. Configure xAI OAuth in `hermes model` or set XAI_API_KEY.",
                 "missing_api_key")
 
-        model_id, meta = _resolve_model(kwargs.get("model"))
+        model_id, _meta = _resolve_model(kwargs.get("model"))
         aspect = resolve_aspect_ratio(aspect_ratio)
         xai_res = _resolve_resolution()
         source_images = collect_source_images(image_url, reference_image_urls)

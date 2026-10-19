@@ -139,7 +139,7 @@ def _probe_gh_cli_token() -> Optional[str]:
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8',
                                     errors='replace', timeout=5, env=clean_env,
-                                    stdin=subprocess.DEVNULL, **_popen_kwargs)
+                                    stdin=subprocess.DEVNULL, **_popen_kwargs, check=False)
         except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
             logger.debug("gh CLI token lookup failed (%s): %s", gh_path, exc)
             continue

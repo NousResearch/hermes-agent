@@ -348,10 +348,9 @@ hermes auth remove openrouter 2                          # 按索引删除
 hermes auth reset openrouter                             # 清除冷却时间
 hermes auth status anthropic                             # 显示某 provider 的认证状态
 hermes auth logout anthropic                             # 登出并清除已存储的认证状态
-hermes auth spotify                                      # 通过 PKCE 将 Hermes 与 Spotify 认证
 ```
 
-子命令：`add`、`list`、`remove`、`reset`、`status`、`logout`、`spotify`。不带子命令调用时，启动交互式管理向导。
+子命令：`add`、`list`、`remove`、`reset`、`status`、`logout`。Spotify 登录已移至插件目录 `spotify` 插件的 `hermes spotify login`。不带子命令调用时，启动交互式管理向导。
 
 ## `hermes status`
 
@@ -1238,11 +1237,11 @@ PM 管理工具和 Python 依赖，不负责替换应用发布包。
 hermes update [--check] [--backup] [--restart-gateway]
 ```
 
-拉取最新的 `hermes-agent` 代码并在受管理的 venv 中重新安装依赖，然后重新运行安装后 hook（MCP 服务器、skill 同步、补全安装）。可在运行中的安装上安全执行。使用 `--check` 查看你的检出是否落后于 `origin/main`，而不安装。
+拉取最新的 `hermes-agent` 代码并在受管理的 venv 中重新安装依赖，然后重新运行安装后 hook（MCP 服务器、skill 同步、补全安装）。可在运行中的安装上安全执行。官方仓库的源码检出默认跟踪 `stable` 渠道（最新正式发布的 `vX.Y.Z` 版本）；运行 `hermes update --set-channel main` 改为跟踪 `main` 上的每个提交，`hermes update --set-channel stable` 切换回来。使用 `--check` 查看你的检出是否落后于所选渠道，而不安装。
 
 | 选项 | 说明 |
 |--------|-------------|
-| `--check` | 并排打印当前 commit 和最新 `origin/main` commit，同步时退出码为 0，落后时为 1。不拉取、不安装、不重启任何内容。 |
+| `--check` | 并排打印当前 commit 和所选渠道的目标 commit，同步时退出码为 0，落后时为 1。不拉取、不安装、不重启任何内容。 |
 | `--backup` | 在拉取前创建 `HERMES_HOME` 的带标签预更新快照（config、auth、会话、skill、配对数据）。默认**关闭**——之前的始终备份行为在大型主目录上每次更新会增加数分钟。通过 `config.yaml` 中的 `update.backup: true` 永久开启。 |
 | `--restart-gateway` | 成功更新后重启正在运行的 gateway 服务。如果安装了多个 profile，隐含 `--all` 语义。 |
 

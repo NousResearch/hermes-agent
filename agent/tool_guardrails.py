@@ -14,7 +14,8 @@ from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Mapping
 
 from utils import safe_json_loads
-from agent.tool_result_classification import file_mutation_result_landed, is_guardrail_refusal
+from agent.tool_result_classification import (
+    shape_failure_error, file_mutation_result_landed, has_failure_marker, is_guardrail_refusal)
 
 
 IDEMPOTENT_TOOL_NAMES = frozenset({
@@ -106,7 +107,7 @@ class LoopCapConfig:
     max_subagents: int = _DEFAULT_MAX_SUBAGENTS_PER_TURN
 
     @classmethod
-    def from_mapping(cls, data: Mapping[str, Any] | None) -> "LoopCapConfig":
+    def from_mapping(cls, data: Mapping[str, Any] | None) -> LoopCapConfig:
         """Build config from the ``tool_loop_guardrails.loop_caps`` section."""
         if not isinstance(data, Mapping):
             return cls()
@@ -134,7 +135,7 @@ class ToolCallGuardrailConfig:
     @classmethod
     def from_mapping(
         cls, data: Mapping[str, Any] | None, *, platform: str | None = None,
-    ) -> "ToolCallGuardrailConfig":
+    ) -> ToolCallGuardrailConfig:
         """Build config from `tool_loop_guardrails`; nested ``warn_after`` / ``hard_stop_after`` win over flat legacy keys."""
         if not isinstance(data, Mapping):
             data = {}
@@ -170,7 +171,7 @@ class ToolCallSignature:
     args_hash: str
 
     @classmethod
-    def from_call(cls, tool_name: str, args: Mapping[str, Any] | None) -> "ToolCallSignature":
+    def from_call(cls, tool_name: str, args: Mapping[str, Any] | None) -> ToolCallSignature:
         return cls(tool_name=tool_name, args_hash=_sha256(canonical_tool_args(args or {})))
 
     def to_metadata(self) -> dict[str, str]:
@@ -233,12 +234,16 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
         exit_code = data.get("exit_code") if isinstance(data, dict) else None
         return (True, f" [exit {exit_code}]") if exit_code is not None and exit_code != 0 else (False, "")
 
-    if tool_name == "memory":
-        data = safe_json_loads(result)
-        if isinstance(data, dict) and data.get("success") is False and "exceed the limit" in data.get("error", ""):
+    data = safe_json_loads(result)
+    if isinstance(data, dict):
+        failed = data.get("success") is False
+        if tool_name == "memory" and failed and "exceed the limit" in data.get("error", ""):
             return True, " [full]"
-    lower = result[:500].lower()
-    return (True, " [error]") if '"error"' in lower or '"failed"' in lower or result.startswith("Error") else (False, "")
+        # Same rule as _detect_tool_failure: a JSON object is judged by its top-level
+        # shape, never by a substring scan of its nested content.
+        err = data.get("error") or data.get("message")
+        return (True, " [error]") if (err and (failed or "error" in data)) or shape_failure_error(data) else (False, "")
+    return (True, " [error]") if has_failure_marker(result) else (False, "")
 
 
 # Guardrail verdict text injected into the conversation, keyed by decision code.

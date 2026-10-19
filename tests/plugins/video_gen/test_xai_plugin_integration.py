@@ -148,7 +148,7 @@ class TestXAIValidation:
 
 
     def test_too_many_references_rejects(self, xai_provider):
-        provider, captured = xai_provider
+        provider, _captured = xai_provider
         result = provider.generate(
             "x",
             reference_image_urls=[f"https://example.com/r{i}.png" for i in range(8)],

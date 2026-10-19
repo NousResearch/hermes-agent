@@ -3,11 +3,11 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, fields, replace
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
 
-from agent.model_metadata import fetch_endpoint_model_metadata, fetch_model_metadata
+from agent.model_metadata import fetch_endpoint_model_metadata, fetch_model_metadata, strip_codex_context_variant_suffix
 from utils import base_url_host_matches, base_url_hostname, base_url_origin
 
 logger = logging.getLogger(__name__)
@@ -80,7 +80,7 @@ class CanonicalUsage:
     def total_tokens(self) -> int:
         return self.prompt_tokens + self.output_tokens
 
-    def __add__(self, other: "CanonicalUsage") -> "CanonicalUsage":
+    def __add__(self, other: CanonicalUsage) -> CanonicalUsage:
         """Sum two usage buckets. ``raw_usage`` (single-response detail) is
         dropped; ``request_count`` adds so callers see how many API calls a
         combined figure covers."""
@@ -133,7 +133,7 @@ class CostResult:
     notes: tuple[str, ...] = ()
 
 
-_UTC_NOW = lambda: datetime.now(timezone.utc)
+_UTC_NOW = lambda: datetime.now(UTC)
 _INCLUDED_ENTRY = PricingEntry(
     input_cost_per_million=_ZERO, output_cost_per_million=_ZERO, cache_read_cost_per_million=_ZERO,
     cache_write_cost_per_million=_ZERO, source="none", pricing_version="included-route",
@@ -207,6 +207,10 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
     ("deepseek", "https://api-docs.deepseek.com/quick_start/pricing", "deepseek-pricing-2026-09-10", {
         ("deepseek-flash", "deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner"): ("0.15", "0.60", "0.003"),
         "deepseek-v4-pro": ("0.66", "1.98", "0.022"),
+    }),
+    # Introductory rates through 2026-11-30; from 2026-12-01 they double ($4 / $20 / $0.20).
+    ("google", "https://ai.google.dev/gemini-api/docs/pricing", "google-pricing-2026-10-13", {
+        "gemini-4-argon": ("2.00", "10.00", "0.10"),
     }),
     ("google", "https://ai.google.dev/gemini-api/docs/pricing", "google-pricing-2026-09-02", {
         ("gemini-3.8-flash", "gemini-3.7-flash"): ("0.75", "3.75", "0.075"),
@@ -309,6 +313,16 @@ _OPENAI_ULTRAFAST_PRICING: dict[str, PricingEntry] = {
         output_cost_per_million_above=Decimal("450.00"),
         cache_read_cost_per_million_above=Decimal("12.00"),
         cache_write_cost_per_million_above=Decimal("150.00"),
+    ),
+    "gpt-6.1-sol": _snap(
+        "12.00", "60.00", "0.60", "15.00",
+        url="https://developers.openai.com/api/docs/pricing?latest-pricing=ultrafast",
+        version="openai-ultrafast-2026-10-08",
+        tier_threshold_tokens=272_000,
+        input_cost_per_million_above=Decimal("24.00"),
+        output_cost_per_million_above=Decimal("90.00"),
+        cache_read_cost_per_million_above=Decimal("1.20"),
+        cache_write_cost_per_million_above=Decimal("30.00"),
     ),
 }
 
@@ -425,6 +439,8 @@ def resolve_billing_route(
         elif provider_name == "fireworks" or host("api.fireworks.ai"):
             snapshot_provider = "fireworks"
     if snapshot_provider:
+        if snapshot_provider == "openai" and (not url or host("api.openai.com")):
+            bare = strip_codex_context_variant_suffix(bare)
         return BillingRoute(provider=snapshot_provider, model=bare, base_url=url, billing_mode="official_docs_snapshot")
     if provider_name in {"custom", "local"} or (base and base_url_hostname(base) in ("localhost", "127.0.0.1")):
         return BillingRoute(provider=provider_name or "custom", model=model, base_url=url, billing_mode="unknown")

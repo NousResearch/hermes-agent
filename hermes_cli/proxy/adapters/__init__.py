@@ -19,4 +19,4 @@ def get_adapter(name: str) -> UpstreamAdapter:
     return ADAPTERS[key]()
 
 
-__all__ = ["UpstreamAdapter", "ADAPTERS", "get_adapter"]
+__all__ = ["ADAPTERS", "UpstreamAdapter", "get_adapter"]

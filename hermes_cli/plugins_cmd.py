@@ -263,7 +263,7 @@ def _sanitize_plugin_name(name: str, plugins_dir: Path, *, allow_subdir: bool = 
     """Validate a plugin name and return the safe target path inside *plugins_dir*.
 
     Raises ``ValueError`` on traversal or a target outside the plugins directory. ``allow_subdir``
-    permits forward slashes so category keys like ``observability/langfuse`` can be looked up
+    permits forward slashes so category keys like ``web/firecrawl`` can be looked up
     (``..`` and backslashes stay rejected); install paths keep ``False`` — a clone lands top-level.
     """
     if allow_subdir and name:
@@ -463,6 +463,9 @@ def _unknown_plugin_message(name: str, *, downloaded_only: bool = False) -> str:
     """``No plugin named ...`` with the exact-name rule and the two commands that resolve it."""
     scope = (" This command only works on downloaded plugins; bundled ones can only be enabled or disabled."
              if downloaded_only else " Bundled plugins can only be enabled or disabled.")
+    from hermes_cli.left_core_migration import moved_plugin_hint
+    if moved := moved_plugin_hint(name):
+        return f"[red]No plugin named '{name}'.[/red] {moved}"
     return (f"[red]No plugin named '{name}'.[/red] Run `hermes plugins list` to see the exact names "
             f"(nested plugins use their full key, e.g. web/firecrawl).{scope} "
             "To add one: `hermes plugins install <owner/repo>`.")
@@ -541,7 +544,7 @@ def ensure_basic_auth_plugin_enabled_in_config(cfg: dict) -> bool:
 
 
 def _discard_key_and_leaf(names: set, key: str) -> None:
-    """Drop *key* and its bare leaf (``observability/langfuse`` -> ``langfuse``) from *names*, so a
+    """Drop *key* and its bare leaf (``web/exa`` -> ``exa``) from *names*, so a
     stale legacy bare-name entry can't keep vetoing the canonical key."""
     names.discard(key)
     names.discard(key.split("/")[-1])
@@ -552,7 +555,8 @@ def _plugin_aliases(key: str, entries: Optional[list] = None) -> set:
     The loader matches BOTH the canonical key (``web/firecrawl``) and the manifest name
     (``web-firecrawl``), so a stale entry under any form vetoes an enable ("explicit disable wins").
     Pass *entries* to reuse one :func:`_discover_all_plugins` scan across several keys."""
-    names = {key, key.split("/")[-1]}
+    from hermes_cli.left_core_migration import legacy_plugin_keys
+    names = {key, key.split("/")[-1], *legacy_plugin_keys(key)}
     names.update(e[0] for e in (_discover_all_plugins() if entries is None else entries) if e[5] == key)
     return names
 
@@ -665,11 +669,13 @@ def _catalog_installed_dir(name: str) -> Optional[Path]:
 def _find_plugin_entry(name: str) -> Optional[tuple]:
     """THE plugin name resolver for every verb (enable/disable/show/capabilities/remove/update, the
     dashboard and the Desktop hub): the discovered ``(name, version, description, source, dir_path, key)``
-    entry for a canonical key or manifest name; else a bare leaf (``langfuse`` ->
-    ``observability/langfuse``) only when unique; else the catalog name the plugin was installed under.
+    entry for a canonical key or manifest name; else a bare leaf (``exa`` ->
+    ``web/exa``) only when unique; else the catalog name the plugin was installed under.
     Never guesses between two candidates."""
     entries = _discover_all_plugins()
-    exact = next((entry for entry in entries if name in (entry[0], entry[5])), None)
+    from hermes_cli.left_core_migration import legacy_plugin_alias
+    target = legacy_plugin_alias(name) or name  # ``observability/langfuse`` -> its catalog plugin
+    exact = next((entry for entry in entries if target in (entry[0], entry[5])), None)
     if exact is not None:
         return exact
     leaf_matches = [entry for entry in entries if name == entry[5].split("/")[-1]]
@@ -717,16 +723,21 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
         except PluginOperationError as exc:
             _fail(console, f"[red]Error:[/red] {exc}")
 
-    if _activate_key(key, enable=True, console=console):
+    changed = _activate_key(key, enable=True, console=console)
+    if changed:
         from hermes_cli.plugins_activation import activate_plugin_now, activation_hint
-        console.print(f"[green]✓[/green] Plugin [bold]{key}[/bold] enabled. Takes effect on next session.")
+        console.print(f"[green]✓[/green] Plugin [bold]{key}[/bold] enabled.")  # the hint says when it applies
         console.print(f"[dim]{activation_hint(activate_plugin_now(key, in_process=False))}[/dim]")
     else:
         console.print(f"[dim]Plugin '{key}' is already enabled.[/dim]")
+    if source != "bundled":
+        _enable_consent(console, key, allow_tool_override)
+    if changed:  # after consent: register() sees the grants; same saved-list edit as the Desktop toggle
+        _toggle_plugin_toolset(key, enable=True)
 
-    # Built-in tool override is a privileged grant; bundled plugins are trusted.
-    if source == "bundled":
-        return
+
+def _enable_consent(console, key: str, allow_tool_override: Optional[bool]) -> None:
+    """Capability consent and the legacy tool-override grant for a non-bundled plugin's enable."""
     # When the manifest declares capabilities the consent screen is the canonical grant path
     # (it covers tools.override too); the legacy prompt then only runs on an explicit flag.
     # See #64228.
@@ -745,11 +756,14 @@ def cmd_disable(name: str) -> None:
     key = _resolve_plugin_key(name)
     if key is None:
         _fail(console, _unknown_plugin_message(name))
+    toolset_key = _saved_list_toolset_key(key)  # resolve while the plugin still loads
     if not _activate_key(key, enable=False, console=console):
         console.print(f"[dim]Plugin '{key}' is already disabled.[/dim]")
         return
-    console.print(
-        f"[yellow]\u2298[/yellow] Plugin [bold]{key}[/bold] disabled. Takes effect on next session.")
+    _toggle_plugin_toolset(key, enable=False, toolset_key=toolset_key)
+    from hermes_cli.plugins_activation import gateway_reload_hint, reload_running_gateway
+    console.print(f"[yellow]⊘[/yellow] Plugin [bold]{key}[/bold] disabled.")
+    console.print(f"[dim]{gateway_reload_hint(reload_running_gateway(), key)}[/dim]")
 
 
 def _read_manifest_info(d: Path, prefix: str):
@@ -878,7 +892,7 @@ def _category_active_names() -> set:
 
 
 def _plugin_status(name: str, enabled: set, disabled: set, key: str = "", *, source: str = "",
-                   dir_path=None, active: "frozenset | set" = frozenset()) -> str:
+                   dir_path=None, active: frozenset | set = frozenset()) -> str:
     """User-facing activation state for a plugin name or key. Mirrors ``gate_manifest``: an explicit
     disable wins, then the allow-list, then the activations that need no list entry — bundled
     backends/platforms and model providers from any source (*source* + *dir_path*) and category-selected providers
@@ -939,12 +953,24 @@ def _get_plugin_toolset_key(name: str) -> Optional[str]:
     return None
 
 
-def _toggle_plugin_toolset(name: str, *, enable: bool) -> None:
+def _saved_list_toolset_key(name: str) -> Optional[str]:
+    """The plugin's toolset key, or None without loading any plugin when no platform has a SAVED
+    ``platform_toolsets`` list (the only lists :func:`_toggle_plugin_toolset` edits)."""
+    from hermes_cli.config import load_config
+    from hermes_cli.toolset_validation import parse_platform_toolsets_value
+    saved = load_config().get("platform_toolsets")
+    if not isinstance(saved, dict) or all(parse_platform_toolsets_value(v) is None for v in saved.values()):
+        return None
+    return _get_plugin_toolset_key(name)
+
+
+def _toggle_plugin_toolset(name: str, *, enable: bool, toolset_key: Optional[str] = None) -> None:
     """Add/remove a plugin's toolset in every SAVED ``platform_toolsets`` list (no-op when the plugin
     provides no tools). Platforms with no saved list are left alone: a plugin toolset is already on
     there by default, and seeding ``[<plugin_ts>]`` would replace the core composite and strip every
-    built-in tool."""
-    toolset_key = _get_plugin_toolset_key(name)
+    built-in tool. The key resolves only while the plugin is loaded, so enable calls this after the
+    plugin loads and disable resolves *toolset_key* before the disable is written."""
+    toolset_key = toolset_key or _saved_list_toolset_key(name)
     if not toolset_key:
         return
     from hermes_cli.config import load_config, save_config
@@ -974,6 +1000,7 @@ def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool) -> dict[str,
         return {"ok": False, "error": f"Plugin '{name}' is not installed or bundled."}
     from hermes_cli.plugins_admission import AdmissionRefused
 
+    toolset_key = None if enabled else _saved_list_toolset_key(key)
     try:
         changed = _activate_key(key, enable=enabled)
     except AdmissionRefused as exc:
@@ -984,13 +1011,17 @@ def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool) -> dict[str,
             "unchanged": True,
             "restart_required": False,
         }
-    if changed:
-        _toggle_plugin_toolset(key, enable=enabled)
     if changed and enabled:
         # Load it now, here and in the running gateway; ``activation`` tells the UI what is live vs
         # deferred, and ``restart_required`` only survives when no gateway answered (#87770).
         from hermes_cli.plugins_activation import activate_plugin_now
-        return {"ok": True, "name": key, "unchanged": False, **activate_plugin_now(key)}
+        result = {"ok": True, "name": key, "unchanged": False, **activate_plugin_now(key)}
+        # Only now is the plugin loaded here, so its toolset key resolves: a backend that scanned
+        # while the plugin was off held a placeholder and the toolset was never re-added.
+        _toggle_plugin_toolset(key, enable=True)
+        return result
+    if changed:
+        _toggle_plugin_toolset(key, enable=False, toolset_key=toolset_key)
     # Disable is config-only: there is no un-wire primitive, so a running gateway keeps the plugin's
     # handlers until restart and every UI says so — #71595/#54941.
     return {"ok": True, "name": key, "unchanged": not changed, "restart_required": changed}

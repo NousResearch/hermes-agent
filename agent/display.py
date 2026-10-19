@@ -18,7 +18,8 @@ from urllib.parse import urlsplit
 from utils import safe_json_loads
 from agent.i18n import t
 from agent.redact import redact_sensitive_text
-from agent.tool_result_classification import file_mutation_result_landed, is_guardrail_refusal
+from agent.tool_result_classification import (
+    shape_failure_error, file_mutation_result_landed, has_failure_marker, is_guardrail_refusal)
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +126,24 @@ def set_tool_preview_max_len(n: int) -> None:
 def get_tool_preview_max_len() -> int:
     """Return the configured max preview length (0 = unlimited)."""
     return _tool_preview_max_len
+
+
+_JSON_ESCAPE_RE = re.compile(r"\\(.)")
+
+
+def verbose_tool_args_text(args: dict, max_len: int, code_block: bool) -> str:
+    """Verbose tool-progress args: compact JSON (capped at ``max_len``; 0 = no cap). On markdown
+    platforms it goes in a code block so the formatter keeps it verbatim (``**x**``/``a_b`` are
+    otherwise rendered as markup), with JSON's ``\\n``/``\\t`` shown as real line breaks. Args
+    holding ``` stay plain: Slack and Discord end a code block at any ``` inside it."""
+    import json
+    text = json.dumps(args, ensure_ascii=False, default=str)
+    if max_len > 0 and len(text) > max_len:
+        text = text[:max_len - 3] + "..."
+    if not code_block or "```" in text:
+        return text
+    decoded = _JSON_ESCAPE_RE.sub(lambda m: {"n": "\n", "t": "\t"}.get(m.group(1), m.group(0)), text)
+    return f"```\n{decoded}\n```"
 
 
 def set_friendly_tool_labels(enabled: bool) -> None:
@@ -423,9 +442,9 @@ def _preview_memory(args: dict, _max_len: int) -> str:
     action, target = args.get("action", ""), args.get("target", "")
     if action == "add":
         return f"+{target}: \"{_clip(_oneline(args.get('content', '')), 25)}\""
-    if action in ("replace", "remove"):
+    if action in ("replace", "patch", "remove"):
         old = _oneline(args.get("old_text") or "") or t("display.preview.missing_old_text")
-        return f"{'~' if action == 'replace' else '-'}{target}: \"{old[:20]}\""
+        return f"{'-' if action == 'remove' else '~'}{target}: \"{old[:20]}\""
     return action
 
 
@@ -951,7 +970,7 @@ class KawaiiSpinner:
         redirect_stdout(devnull) because _write targets the stdout captured at creation."""
         self._write(f"\r{self._clear_line_blanks()}\r  {text}" if self.running else f"  {text}", flush=True)
 
-    def stop(self, final_message: str = None):
+    def stop(self, final_message: str | None = None):
         self.running = False
         if self.thread:
             self.thread.join(timeout=0.5)
@@ -1030,10 +1049,14 @@ def _detect_tool_failure(tool_name: str, result: Any) -> tuple[bool, str]:
         err = data.get("error") or data.get("message")
         if err and (failed or "error" in data):
             return True, f" [{_trim_error(str(err))}]"
+        if shape_err := shape_failure_error(data):
+            return True, f" [{_trim_error(shape_err)}]"
+        # A JSON object is judged by its top-level shape only. An ``error`` key nested
+        # inside a success payload is data the tool read (a page's own validation
+        # message inside browser_cdp's ``result``), not a failure of the call.
+        return False, ""
     # Multimodal results (dicts) are successes; failures arrive as JSON-encoded strings.
-    if isinstance(result, str) and (
-        '"error"' in result[:500].lower() or '"failed"' in result[:500].lower() or result.startswith("Error")
-    ):
+    if isinstance(result, str) and has_failure_marker(result):
         return True, t("display.failure.generic")
     return False, ""
 
@@ -1093,9 +1116,9 @@ def _cute_memory(a: dict, _r) -> str:
     action, target = a.get("action", "?"), a.get("target", "")
     if action == "add":
         return _cute_row("🧠", "memory", f"+{target}: \"{_cute_trunc(a.get('content', ''))}\"")
-    if action in ("replace", "remove"):
+    if action in ("replace", "patch", "remove"):
         old = a.get("old_text") or t("display.preview.missing_old_text")
-        return _cute_row("🧠", "memory", f"{'~' if action == 'replace' else '-'}{target}: \"{_cute_trunc(old)}\"")
+        return _cute_row("🧠", "memory", f"{'-' if action == 'remove' else '~'}{target}: \"{_cute_trunc(old)}\"")
     return _cute_row("🧠", "memory", str(action))
 
 

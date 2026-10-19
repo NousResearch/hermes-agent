@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 from agent.usage_pricing import CanonicalUsage, estimate_usage_cost, format_cost_label, format_duration_compact, has_known_pricing
 from hermes_cli.timefmt import coerce_epoch
 from hermes_time import safe_strftime
+import itertools
 
 _TOKEN_KEYS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
 _SKILL_TOOLS = {"skill_view", "skill_manage"}
@@ -76,9 +77,16 @@ def _day(ts: Any) -> str:
     return safe_strftime(datetime.fromtimestamp(ts), "%b %d") if ts and (ts := coerce_epoch(ts)) else "?"
 
 
-def _scoped(before: str, after: str = "", *, src: str = " AND s.source = ?") -> tuple[str, str]:
+# A source filter also matches the gateway's ``local`` rows that surface created: interactive local
+# sessions are stored as ``local`` with the surface kept in ``created_source``
+# (gateway/session_a2a.storage_source), so ``--source cli`` still finds the classic CLI's sessions.
+_LOCAL_SURFACE = " OR ({a}source = 'local' AND {a}created_source = ?)"
+
+
+def _scoped(before: str, after: str = "", *, alias: str = "s.") -> tuple[str, str]:
     """(unfiltered, source-filtered) query pair sharing one body. Built once at class definition,
     so no runtime value can alter query structure."""
+    src = f" AND ({alias}source = ?{_LOCAL_SURFACE.format(a=alias)})"
     return before + after, before + src + after
 
 
@@ -94,7 +102,7 @@ class InsightsEngine:
     _GET_SESSIONS_ALL, _GET_SESSIONS_WITH_SOURCE = _scoped(
         f"SELECT {_SESSION_COLS} FROM sessions WHERE started_at >= ?",
         " ORDER BY started_at DESC",
-        src=" AND source = ?",
+        alias="",
     )
 
     # ``INDEXED BY`` pins the partial index so the plan is deterministic on a
@@ -150,6 +158,8 @@ class InsightsEngine:
         " WHERE s.started_at >= ?",
     )
     _PINNED = ("_GET_TOOL_CALLS", "_GET_SKILL_CALLS")
+    _SOURCE_SCOPED = ("_GET_SESSIONS", "_GET_TOOL_CALLS", "_GET_SKILL_CALLS", "_GET_TOOL_NAMES",
+                      "_GET_MESSAGE_STATS", "_GET_MODEL_USAGE")
 
     def __init__(self, db):
         self.db = db
@@ -164,13 +174,26 @@ class InsightsEngine:
             for base in self._PINNED:
                 for suffix in ("_ALL", "_WITH_SOURCE"):
                     setattr(self, base + suffix, getattr(self, base + suffix).replace(strip, ""))
+        # Same read-only caveat: an older writer's DB has no ``created_source`` (and no ``local`` rows).
+        try:
+            self._local_surfaces = any(row[1] == "created_source" for row in self._conn.execute("PRAGMA table_info(sessions)"))
+        except sqlite3.Error:
+            self._local_surfaces = False
+        if not self._local_surfaces:
+            for base in self._SOURCE_SCOPED:
+                sql = getattr(self, base + "_WITH_SOURCE")
+                for alias in ("", "s."):
+                    sql = sql.replace(_LOCAL_SURFACE.format(a=alias), "")
+                setattr(self, base + "_WITH_SOURCE", sql)
 
     def _query(self, base: str, cutoff: float, source: Optional[str]) -> list:
         """Rows of ``<base>_WITH_SOURCE`` or ``<base>_ALL`` (instance attrs, so the unpinned fallback applies)."""
-        sql, params = (getattr(self, base + "_WITH_SOURCE"), (cutoff, source)) if source else (getattr(self, base + "_ALL"), (cutoff,))
-        return self._conn.execute(sql, params).fetchall()
+        if not source:
+            return self._conn.execute(getattr(self, base + "_ALL"), (cutoff,)).fetchall()
+        params = (cutoff, source, source) if self._local_surfaces else (cutoff, source)
+        return self._conn.execute(getattr(self, base + "_WITH_SOURCE"), params).fetchall()
 
-    def generate(self, days: int = 30, source: str = None) -> dict[str, Any]:
+    def generate(self, days: int = 30, source: str | None = None) -> dict[str, Any]:
         """Generate a complete insights report for the last ``days`` days, optionally filtered by source platform."""
         cutoff = time.time() - (days * 86400)
         # Drain the SessionDB's async accounting queue so counters are exact
@@ -197,7 +220,7 @@ class InsightsEngine:
             "top_sessions": self._compute_top_sessions(sessions),
         }
 
-    def get_usage_breakdown(self, days: int = 30, source: str = None) -> dict[str, Any]:
+    def get_usage_breakdown(self, days: int = 30, source: str | None = None) -> dict[str, Any]:
         """Analytics-usage payload (tools + skills) without a full generate(); the
         instr()-prefiltered skill query loads only skill_view/skill_manage messages."""
         cutoff = time.time() - (days * 86400)
@@ -206,7 +229,7 @@ class InsightsEngine:
 
     # ------------------------------------------------------------------ SQL
 
-    def _get_sessions(self, cutoff: float, source: str = None) -> list[dict]:
+    def _get_sessions(self, cutoff: float, source: str | None = None) -> list[dict]:
         # Coerce the two epoch columns once at load: one corrupt/TEXT cell must degrade to "unknown"
         # for that session, never abort the whole report (#99959).
         rows = [dict(row) for row in self._query("_GET_SESSIONS", cutoff, source)]
@@ -215,7 +238,7 @@ class InsightsEngine:
                 row[col] = coerce_epoch(row.get(col), session_id=row.get("id"), field=col)
         return rows
 
-    def _get_tool_usage(self, cutoff: float, source: str = None) -> list[dict]:
+    def _get_tool_usage(self, cutoff: float, source: str | None = None) -> list[dict]:
         """Tool call counts from two sources: ``tool_name`` on 'tool' rows (set
         by the gateway) and ``tool_calls`` JSON on assistant rows (covers CLI,
         where tool_name is not populated). The two views are reconciled PER
@@ -237,7 +260,7 @@ class InsightsEngine:
             tool_counts[key[1]] += max(by_session_tool.get(key, 0), calls_by_session_tool.get(key, 0))
         return [{"tool_name": name, "count": count} for name, count in tool_counts.most_common()]
 
-    def _get_skill_usage(self, cutoff: float, source: str = None) -> list[dict]:
+    def _get_skill_usage(self, cutoff: float, source: str | None = None) -> list[dict]:
         """Extract per-skill usage from assistant tool calls."""
         skill_counts: dict[str, dict[str, Any]] = {}
         for row in self._query("_GET_SKILL_CALLS", cutoff, source):
@@ -255,11 +278,11 @@ class InsightsEngine:
                     entry["last_used_at"] = timestamp
         return list(skill_counts.values())
 
-    def _get_message_stats(self, cutoff: float, source: str = None) -> dict:
+    def _get_message_stats(self, cutoff: float, source: str | None = None) -> dict:
         rows = self._query("_GET_MESSAGE_STATS", cutoff, source)
         return dict(rows[0]) if rows else {"total_messages": 0, "user_messages": 0, "assistant_messages": 0, "tool_messages": 0}
 
-    def _get_model_usage(self, cutoff: float, source: str = None) -> list[dict]:
+    def _get_model_usage(self, cutoff: float, source: str | None = None) -> list[dict]:
         """Per-model usage rows; [] when the table is missing (older DB) so the caller falls back to the per-session aggregate."""
         try:
             return [dict(row) for row in self._query("_GET_MODEL_USAGE", cutoff, source)]
@@ -315,7 +338,7 @@ class InsightsEngine:
             "included_cost_sessions": status_counts["included"],
         }
 
-    def _compute_model_breakdown(self, sessions: list[dict], cutoff: float, source: str = None) -> list[dict]:
+    def _compute_model_breakdown(self, sessions: list[dict], cutoff: float, source: str | None = None) -> list[dict]:
         """Tokens/cost per model from session_model_usage, so a session that
         switched models via ``/model`` splits across every model it used.
         Sessions without per-model rows (pre-table data) fall back to their
@@ -427,7 +450,7 @@ class InsightsEngine:
         if daily_counts:
             dates = [datetime.strptime(d, "%Y-%m-%d") for d in sorted(daily_counts)]
             current_streak = max_streak = 1
-            for prev, cur in zip(dates, dates[1:]):
+            for prev, cur in itertools.pairwise(dates):
                 current_streak = current_streak + 1 if (cur - prev).days == 1 else 1
                 max_streak = max(max_streak, current_streak)
         return {"by_day": day_breakdown, "by_hour": hour_breakdown, "busiest_day": max(day_breakdown, key=lambda x: x["count"]),

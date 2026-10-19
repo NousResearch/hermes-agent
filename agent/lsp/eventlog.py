@@ -173,8 +173,19 @@ def reset_announce_caches() -> None:
 
 
 __all__ = [
-    "event_log", "log_clean", "log_disabled", "log_active", "log_diagnostics", "log_no_project_root",
-    "log_server_unavailable", "log_timeout", "log_server_error", "log_spawn_failed", "log_skipped_broken", "log_root_excluded",
-    "log_untrusted_skipped", "log_reaped",
+    "event_log",
+    "log_active",
+    "log_clean",
+    "log_diagnostics",
+    "log_disabled",
+    "log_no_project_root",
+    "log_reaped",
+    "log_root_excluded",
+    "log_server_error",
+    "log_server_unavailable",
+    "log_skipped_broken",
+    "log_spawn_failed",
+    "log_timeout",
+    "log_untrusted_skipped",
     "reset_announce_caches",
 ]

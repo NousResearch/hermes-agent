@@ -67,9 +67,9 @@ def _interpret_signal_exit(exit_code: int) -> str | None:
 
 # Informational non-zero exit codes per base command.
 _EXIT_CODE_SEMANTICS: dict[str, dict[int, str]] = {
-    **dict.fromkeys(("grep", "egrep", "fgrep", "rg", "ag", "ack"), {1: "No matches found (not an error)"}),
-    **dict.fromkeys(("diff", "colordiff"), {1: "Files differ (expected, not an error)"}),
-    **dict.fromkeys(("test", "["), {1: "Condition evaluated to false (expected, not an error)"}),
+    **{key: {1: "No matches found (not an error)"} for key in ("grep", "egrep", "fgrep", "rg", "ag", "ack")},
+    **{key: {1: "Files differ (expected, not an error)"} for key in ("diff", "colordiff")},
+    **{key: {1: "Condition evaluated to false (expected, not an error)"} for key in ("test", "[")},
     "find": {1: "Some directories were inaccessible (partial results may still be valid)"},
     "curl": {6: "Could not resolve host", 7: "Failed to connect to host",
              22: "HTTP response code indicated error (e.g. 404, 500)", 28: "Operation timed out"},

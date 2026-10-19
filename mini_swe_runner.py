@@ -130,7 +130,7 @@ def _gpt_content(msg: dict[str, Any], content: str) -> str:
 class MiniSWERunner:
     """Tool-calling agent loop over a Hermes execution environment, emitting Hermes trajectories."""
 
-    def __init__(self, model: str = "anthropic/claude-sonnet-4.6", base_url: str = None, api_key: str = None,
+    def __init__(self, model: str = "anthropic/claude-sonnet-4.6", base_url: str | None = None, api_key: str | None = None,
                  env_type: str = "local", image: str = "python:3.11-slim", cwd: str | None = None,
                  max_iterations: int = 15, command_timeout: int = 60, verbose: bool = False):
         self.model, self.max_iterations, self.command_timeout, self.verbose = model, max_iterations, command_timeout, verbose
@@ -173,7 +173,7 @@ class MiniSWERunner:
                 stop()
             self.env = None
 
-    def _execute_command(self, command: str, timeout: int = None) -> dict[str, Any]:
+    def _execute_command(self, command: str, timeout: int | None = None) -> dict[str, Any]:
         """Run ``command`` in the environment; returns ``{output, exit_code, error}``."""
         if self.env is None:
             self._create_env()
@@ -346,12 +346,12 @@ def _load_prompts(prompts_file: str) -> list[str]:
 
 
 def main(
-    task: str = None,
-    prompts_file: str = None,
+    task: str | None = None,
+    prompts_file: str | None = None,
     output_file: str = "swe-runner-test1.jsonl",
     model: str = "claude-sonnet-4-20250514",
-    base_url: str = None,
-    api_key: str = None,
+    base_url: str | None = None,
+    api_key: str | None = None,
     env: str = "local",
     image: str = "python:3.11-slim",
     cwd: str | None = None,

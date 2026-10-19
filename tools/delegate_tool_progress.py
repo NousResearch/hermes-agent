@@ -38,7 +38,8 @@ def _safe_progress(cb: Any, event_type: Any, *args: Any, **kwargs: Any) -> None:
 def _clean_error_text(error: Any, max_chars: int = 200) -> str:
     """Reduce an error payload (traceback / JSON wall) to one clean line: the exception message (last line of a
     traceback) or the first non-empty line, hard-capped in length."""
-    lines = [ln.strip() for ln in str(error or "").strip().splitlines() if ln.strip()]
+    from tools.delegation_redaction import redact_child_text
+    lines = [ln.strip() for ln in redact_child_text(str(error or ""), force=False).strip().splitlines() if ln.strip()]
     if not lines:
         return ""
     line = lines[-1] if lines[0].startswith("Traceback") else lines[0]
@@ -119,8 +120,9 @@ _LEGACY_EVENT_MAP: dict[str, DelegateEvent] = {
 # Event → _ChildProgressRelay method name. Lifecycle strings are emitted by the orchestrator itself (not
 # DelegateEvent). Any other DelegateEvent (TASK_TOOL_STARTED and the reserved TASK_* values) takes the tool-started
 # path; None means "recognised but ignored".
-_LIFECYCLE_EVENTS = frozenset({"subagent.start", "subagent.complete", "subagent.text"})
+_LIFECYCLE_EVENTS = frozenset({"subagent.spawn_requested", "subagent.start", "subagent.complete", "subagent.text"})
 _EVENT_HANDLERS: dict[Any, Optional[str]] = {
+    "subagent.spawn_requested": "_on_spawn_requested",
     "subagent.start": "_on_start",
     "subagent.complete": "_on_complete",
     "subagent.text": "_on_text",
@@ -326,7 +328,7 @@ class _ChildProgressRelay:
         kw["tool_count"] = self.tool_count
         return kw
 
-    def _relay(self, event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
+    def _relay(self, event_type: str, tool_name: str | None = None, preview: str | None = None, args=None, **kwargs):
         if self.parent_cb:
             # kwargs override identity (e.g. status, duration_seconds).
             with _quiet("Parent callback failed: %s"):
@@ -345,6 +347,9 @@ class _ChildProgressRelay:
             self.batch.clear()
 
     # ── Lifecycle events emitted by the orchestrator itself ──
+    def _on_spawn_requested(self, tool_name, preview, args, kwargs):
+        self._relay("subagent.spawn_requested", preview=preview or self.goal_label or "", **kwargs)
+
     def _on_start(self, tool_name, preview, args, kwargs):
         if self.goal_label:
             self._tree_line(f"🔀 {_short(self.goal_label, 55)}")
@@ -409,7 +414,7 @@ class _ChildProgressRelay:
             if len(self.batch) >= self._BATCH_SIZE:
                 self._flush()
 
-    def __call__(self, event_type, tool_name: str = None, preview: str = None, args=None, **kwargs):
+    def __call__(self, event_type, tool_name: str | None = None, preview: str | None = None, args=None, **kwargs):
         key = _normalize_event(event_type)
         method = None if key is None else _EVENT_HANDLERS.get(key, "_on_tool_started")
         if method is not None:

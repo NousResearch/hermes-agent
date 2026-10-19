@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
+import itertools
 
 
 # ---------------------------------------------------------------------------
@@ -595,7 +596,7 @@ class TestAnthropicAdapterMultimodal:
         span = range(OUTBOUND_IMAGE_LIMIT - 2, OUTBOUND_IMAGE_LIMIT + 3 * IMAGE_EVICTION_BATCH)
         counts = [placeholder_count(n) for n in span]
         assert all(n - c <= OUTBOUND_IMAGE_LIMIT for n, c in zip(span, counts)), counts
-        steps = sum(a != b for a, b in zip(counts, counts[1:]))
+        steps = sum(a != b for a, b in itertools.pairwise(counts))
         assert steps == 3, (
             f"eviction frontier moved {steps} times over {len(span)} screenshots (counts={counts}); "
             "each step invalidates the cached prefix"
@@ -1219,7 +1220,7 @@ class TestCuaDriverSessionReconnect:
             stderr = ""
             # Daemon returns a path, not inline base64.
             stdout = ('{"element_count": 7, "tree_markdown": "- [0] AXButton",'
-                      ' "screenshot_file_path": "%s"}' % str(shot))
+                      f' "screenshot_file_path": "{shot!s}"}}')
 
         import subprocess as _sp
         orig_run = _sp.run
@@ -1792,7 +1793,7 @@ class TestMcpInvocationResolution:
             yield
 
     @staticmethod
-    def _fake_run(stdout: str = "", returncode: int = 0, raises: Exception = None):
+    def _fake_run(stdout: str = "", returncode: int = 0, raises: Exception | None = None):
         """Build a patched subprocess.run that yields the supplied result."""
         from unittest.mock import MagicMock
         def _run(*args, **kwargs):
@@ -1841,7 +1842,7 @@ class TestMcpInvocationResolution:
             '{"command":"cua-driver","args":"mcp"}}'  # args should be list
         )
         with patch("subprocess.run", new=self._fake_run(stdout=manifest)):
-            cmd, args = _resolve_mcp_invocation("cua-driver")
+            _cmd, args = _resolve_mcp_invocation("cua-driver")
         assert args == ["mcp"]
 
 
@@ -2176,7 +2177,7 @@ class TestCuaToolCoverageExpansion:
         id without the wrapper clobbering it."""
         backend = self._backend()
         backend.call_tool("any_tool", {"session": "harness-1", "arg": 1})
-        name, args = backend._session.call_tool.call_args.args
+        _name, args = backend._session.call_tool.call_args.args
         assert args["session"] == "harness-1"
 
 

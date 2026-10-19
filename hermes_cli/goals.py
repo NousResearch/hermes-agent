@@ -17,7 +17,7 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass, field, asdict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -299,7 +299,7 @@ class GoalContract:
         return {f: getattr(self, f) for f in _CONTRACT_FIELDS}
 
     @classmethod
-    def from_dict(cls, data: Optional[dict[str, Any]]) -> "GoalContract":
+    def from_dict(cls, data: Optional[dict[str, Any]]) -> GoalContract:
         if not isinstance(data, dict):
             return cls()
         return cls(**{f: str(data.get(f) or "").strip() for f in _CONTRACT_FIELDS})
@@ -358,7 +358,7 @@ class GoalGate:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: Optional[dict[str, Any]]) -> "GoalGate":
+    def from_dict(cls, data: Optional[dict[str, Any]]) -> GoalGate:
         if not isinstance(data, dict):
             return cls(command="")
         return cls(
@@ -403,6 +403,7 @@ def run_gate(gate: GoalGate, *, cwd: Optional[str] = None) -> tuple[bool, int, s
         proc = subprocess.run(
             gate.command, shell=True, capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=max(1, int(gate.timeout_seconds)), cwd=cwd or None,
+            check=False,
         )
         combined = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
         return proc.returncode == 0, proc.returncode, combined[-_GATE_OUTPUT_TAIL_CHARS:]
@@ -455,7 +456,7 @@ class GoalState:
         return json.dumps(asdict(self), ensure_ascii=False)
 
     @classmethod
-    def from_json(cls, raw: str) -> "GoalState":
+    def from_json(cls, raw: str) -> GoalState:
         data = json.loads(raw)
         raw_subgoals = data.get("subgoals") or []
         ints = {k: int(data.get(k) or 0) for k in ("turns_used", "consecutive_parse_failures", "consecutive_transport_failures", "waiting_on_delegations")}
@@ -928,7 +929,7 @@ def judge_goal(
         response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
         background_block=_render_background_block(background_processes)
         + (JUDGE_DELEGATIONS_BLOCK_TEMPLATE.format(count=active_delegations) if active_delegations > 0 else ""),
-        current_time=safe_strftime(datetime.now(tz=timezone.utc).astimezone(), "%Y-%m-%d %H:%M:%S %Z"),
+        current_time=safe_strftime(datetime.now(tz=UTC).astimezone(), "%Y-%m-%d %H:%M:%S %Z"),
     )
     if contract is not None and not contract.is_empty():
         contract_block = contract.render_block()
@@ -1749,11 +1750,27 @@ def run_kanban_goal_loop(
 
 
 __all__ = [
-    "GoalState", "GoalContract", "GoalGate", "GoalManager", "parse_contract", "draft_contract", "run_gate",
-    "CONTINUATION_PROMPT_TEMPLATE", "CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE",
-    "CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE", "JUDGE_USER_PROMPT_TEMPLATE",
-    "JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE", "JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE",
-    "DRAFT_CONTRACT_SYSTEM_PROMPT", "KANBAN_GOAL_CONTINUATION_TEMPLATE", "KANBAN_GOAL_FINALIZE_TEMPLATE",
-    "DEFAULT_MAX_TURNS", "load_goal", "save_goal", "clear_goal", "migrate_goal_to_session", "judge_goal",
+    "CONTINUATION_PROMPT_TEMPLATE",
+    "CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE",
+    "CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE",
+    "DEFAULT_MAX_TURNS",
+    "DRAFT_CONTRACT_SYSTEM_PROMPT",
+    "JUDGE_USER_PROMPT_TEMPLATE",
+    "JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE",
+    "JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE",
+    "KANBAN_GOAL_CONTINUATION_TEMPLATE",
+    "KANBAN_GOAL_FINALIZE_TEMPLATE",
+    "GoalContract",
+    "GoalGate",
+    "GoalManager",
+    "GoalState",
+    "clear_goal",
+    "draft_contract",
+    "judge_goal",
+    "load_goal",
+    "migrate_goal_to_session",
+    "parse_contract",
+    "run_gate",
     "run_kanban_goal_loop",
+    "save_goal",
 ]

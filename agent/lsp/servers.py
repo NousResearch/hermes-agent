@@ -524,5 +524,14 @@ def custom_servers(servers_cfg: Any) -> list[ServerDef]:
     return out
 
 
-__all__ = ["ServerDef", "ServerContext", "SpawnSpec", "SERVERS", "UNTRUSTED_SAFE_SERVERS", "custom_servers",
-           "find_server_for_file", "language_id_for", "LANGUAGE_BY_EXT"]
+__all__ = [
+    "LANGUAGE_BY_EXT",
+    "SERVERS",
+    "UNTRUSTED_SAFE_SERVERS",
+    "ServerContext",
+    "ServerDef",
+    "SpawnSpec",
+    "custom_servers",
+    "find_server_for_file",
+    "language_id_for",
+]

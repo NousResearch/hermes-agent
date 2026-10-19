@@ -8,7 +8,7 @@ import functools
 import os
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Dict, Optional
 
 # Same logger the code used before extraction (record parity).
@@ -324,7 +324,7 @@ def _nous_plain_poller(session_id: str, sess: dict[str, Any]) -> None:
     if _cancelled():
         return
     # Same post-processing as _nous_device_code_login (validate/refresh JWT)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     token_ttl = int(token_data.get("expires_in") or 0)
     auth_state = {
         "portal_base_url": portal_base_url,
@@ -336,7 +336,7 @@ def _nous_plain_poller(session_id: str, sess: dict[str, Any]) -> None:
         "refresh_token": token_data.get("refresh_token"),
         "obtained_at": now.isoformat(),
         "expires_at": (
-            datetime.fromtimestamp(now.timestamp() + token_ttl, tz=timezone.utc).isoformat()
+            datetime.fromtimestamp(now.timestamp() + token_ttl, tz=UTC).isoformat()
             if token_ttl else None
         ),
         "expires_in": token_ttl,
@@ -380,7 +380,7 @@ def _minimax_poller(session_id: str, sess: dict[str, Any]) -> None:
             user_code=sess["user_code"], code_verifier=sess["code_verifier"],
             expired_in=sess["expired_in_raw"], interval_ms=sess.get("interval_ms"),
         )
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     expires_at_ts = _minimax_resolve_token_expiry_unix(int(token_data["expired_in"]), now=now)
     auth_state = {
         "provider": "minimax-oauth",
@@ -394,7 +394,7 @@ def _minimax_poller(session_id: str, sess: dict[str, Any]) -> None:
         "refresh_token": token_data["refresh_token"],
         "resource_url": token_data.get("resource_url"),
         "obtained_at": now.isoformat(),
-        "expires_at": datetime.fromtimestamp(expires_at_ts, tz=timezone.utc).isoformat(),
+        "expires_at": datetime.fromtimestamp(expires_at_ts, tz=UTC).isoformat(),
         "expires_in": max(0, int(expires_at_ts - now.timestamp())),
     }
     with _profile_scope(sess.get("profile")):
@@ -438,7 +438,7 @@ def _xai_device_poller(session_id: str, sess: dict[str, Any]) -> None:
         # set_active=False: persist without hijacking an existing active chat provider.
         _save_xai_oauth_tokens(
             tokens, discovery=discovery, auth_mode="oauth_device_code", set_active=False,
-            last_refresh=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            last_refresh=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         )
         # Mirror `hermes auth add xai-oauth`: first credential may become active; never overwrite.
         mark_provider_active_if_unset("xai-oauth")

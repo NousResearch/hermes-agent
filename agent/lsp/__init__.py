@@ -100,4 +100,4 @@ def _atexit_shutdown() -> None:
         logger.debug("atexit LSP shutdown failed: %s", e)
 
 
-__all__ = ["get_service", "release_workspace", "shutdown_service", "LSPService"]
+__all__ = ["LSPService", "get_service", "release_workspace", "shutdown_service"]

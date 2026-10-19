@@ -375,7 +375,7 @@ def install_pack_plugins(
         console.print(f"[dim]Installing {display} @ {rp.entry.ref[:12]}...[/dim]")
         try:
             # A bare pack name resolved through the plugin catalog; repo entries are custom sources.
-            target, manifest, installed_name = recorded_install(
+            _target, manifest, installed_name = recorded_install(
                 lambda: _install_plugin_core(rp.identifier, force=force, ref=rp.entry.ref),
                 catalog_name=None if rp.entry.repo else rp.entry.name, identifier=rp.identifier)
         except PluginOperationError as exc:
@@ -515,7 +515,7 @@ def cmd_pack_show(source: str) -> None:
     """``hermes plugins pack show <path-or-url>`` — dry-run review."""
     from hermes_cli.plugins_cmd import _console
     console = _console()
-    pack, resolved = _load_and_review(console, source)
+    _pack, resolved = _load_and_review(console, source)
     unresolved = [rp for rp in resolved if rp.identifier is None]
     if unresolved:
         console.print(

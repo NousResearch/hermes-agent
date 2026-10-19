@@ -95,7 +95,7 @@ class TestEditMessageHappyPath:
             id=42,
             edit=AsyncMock(side_effect=lambda *, content: edits.append(content)),
         )
-        channel, sends = _wire_channel(adapter, original_msg=msg)
+        _channel, sends = _wire_channel(adapter, original_msg=msg)
 
         result = await adapter.edit_message("555", "42", "short reply")
 
@@ -120,7 +120,7 @@ class TestMidStreamOverflowTruncates:
             id=42,
             edit=AsyncMock(side_effect=lambda *, content: edits.append(content)),
         )
-        channel, sends = _wire_channel(adapter, original_msg=msg)
+        _channel, sends = _wire_channel(adapter, original_msg=msg)
 
         big = "p" * 6000
         result = await adapter.edit_message("555", "42", big, finalize=False)
@@ -158,7 +158,7 @@ class TestSaturatedPreviewDedup:
             id=42,
             edit=AsyncMock(side_effect=lambda *, content: edits.append(content)),
         )
-        channel, sends = _wire_channel(adapter, original_msg=msg)
+        _channel, _sends = _wire_channel(adapter, original_msg=msg)
 
         # First oversized edit: delivers the truncated preview (1 API call).
         r1 = await adapter.edit_message("555", "42", "x" * 2500, finalize=False)
@@ -203,7 +203,7 @@ class TestFinalOverflowSplits:
             to_reference=MagicMock(return_value=SimpleNamespace(kind="ref")),
             edit=AsyncMock(side_effect=lambda *, content: edits.append(content)),
         )
-        channel, sends = _wire_channel(adapter, original_msg=msg)
+        _channel, sends = _wire_channel(adapter, original_msg=msg)
 
         big = "q" * 6000  # ~3-4 chunks at 2000 cap
         result = await adapter.edit_message("555", "42", big, finalize=True)
@@ -231,7 +231,7 @@ class TestFinalOverflowSplits:
             to_reference=MagicMock(return_value=object()),
             edit=AsyncMock(side_effect=lambda *, content: edits.append(content)),
         )
-        channel, sends = _wire_channel(adapter, original_msg=msg)
+        _channel, sends = _wire_channel(adapter, original_msg=msg)
 
         # Distinctive marker at the very end must survive end-to-end.
         body = "a" * 5000 + "END_MARKER_XYZ"
@@ -268,7 +268,7 @@ class TestReactiveOverflowDetection:
             to_reference=MagicMock(return_value=object()),
             edit=AsyncMock(side_effect=edit_effect),
         )
-        channel, sends = _wire_channel(adapter, original_msg=msg)
+        _channel, _sends = _wire_channel(adapter, original_msg=msg)
 
         # Content is UNDER the cap so pre-flight passes; the 50035 on edit
         # forces the reactive split.
@@ -301,7 +301,7 @@ class TestPartialMessageContinuationReferences:
     async def test_continuations_threaded_with_ids_built_reference(self):
         adapter = _make_adapter()
         partial = SimpleNamespace(id=42, edit=AsyncMock())  # no to_reference
-        channel, sends = _wire_channel(adapter, original_msg=partial)
+        _channel, sends = _wire_channel(adapter, original_msg=partial)
 
         long_text = "chunk alpha " * 600  # > MAX_MESSAGE_LENGTH
         result = await adapter.edit_message("555", "42", long_text, finalize=True)

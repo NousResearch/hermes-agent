@@ -449,7 +449,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         await self._install_dialog_bridge(sid)
 
     async def _cdp(self, method: str, params: Optional[dict[str, Any]] = None, *,
-                   session_id: Optional[str] = None, timeout: float = 10.0) -> dict[str, Any]:
+                   session_id: Optional[str] = None, timeout: Optional[float] = 10.0) -> dict[str, Any]:
         """Send a CDP command and await its response."""
         if self._ws is None:
             raise RuntimeError("supervisor WebSocket is not connected")
@@ -504,6 +504,7 @@ class _SupervisorRegistry:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._by_task: dict[str, CDPSupervisor] = {}
+        self._home_by_task: dict[str, str] = {}  # profile home that started it (``stop_home``)
 
     def get(self, task_id: str) -> Optional[CDPSupervisor]:
         with self._lock:
@@ -511,9 +512,10 @@ class _SupervisorRegistry:
 
     def _pop(self, task_id: str) -> Optional[CDPSupervisor]:
         with self._lock:
+            self._home_by_task.pop(task_id, None)
             return self._by_task.pop(task_id, None)
 
-    def capture(self, task_id: str, *, timeout: float = 10.0) -> "CapturedCDP":
+    def capture(self, task_id: str, *, timeout: float = 10.0) -> CapturedCDP:
         """Public CDP seam for trusted in-process plugins: a handle pinned to this task's
         current connection and default page session (``tools.browser_supervisor_capture``)."""
         from tools.browser_supervisor_capture import capture
@@ -524,6 +526,8 @@ class _SupervisorRegistry:
                      dialog_timeout_s: float = DEFAULT_DIALOG_TIMEOUT_S, start_timeout: float = 15.0) -> CDPSupervisor:
         """Idempotently ensure a supervisor runs for ``(task_id, cdp_url)``; one bound to a
         different ``cdp_url`` or unhealthy (dead thread / stopped loop) is stopped and replaced."""
+        from hermes_constants import hermes_home_key
+        home = hermes_home_key()
         with self._lock:
             existing = self._by_task.get(task_id)
             if existing is not None:
@@ -545,6 +549,7 @@ class _SupervisorRegistry:
                 supervisor.stop()
                 return already
             self._by_task[task_id] = supervisor
+            self._home_by_task[task_id] = home
         return supervisor
 
     def stop(self, task_id: str) -> None:
@@ -552,11 +557,19 @@ class _SupervisorRegistry:
         if supervisor is not None:
             supervisor.stop()
 
+    def stop_home(self, home_key: str) -> None:
+        """Stop the supervisors one profile home started (``/browser connect`` on a multiplexed gateway)."""
+        with self._lock:
+            tasks = [task for task, home in self._home_by_task.items() if home == home_key]
+        for task_id in tasks:
+            self.stop(task_id)
+
     def stop_all(self) -> None:
         """Stop every running supervisor. For shutdown / test teardown."""
         with self._lock:
             items = list(self._by_task.values())
             self._by_task.clear()
+            self._home_by_task.clear()
         for supervisor in items:
             supervisor.stop()
 
@@ -564,4 +577,4 @@ class _SupervisorRegistry:
 SUPERVISOR_REGISTRY = _SupervisorRegistry()
 
 
-__all__ = ["CDPSupervisor", "SUPERVISOR_REGISTRY", "SupervisorSnapshot", "_SupervisorRegistry"]
+__all__ = ["SUPERVISOR_REGISTRY", "CDPSupervisor", "SupervisorSnapshot", "_SupervisorRegistry"]

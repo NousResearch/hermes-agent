@@ -148,7 +148,7 @@ def test_stage_cache_correctness(tmp_path, lib_source, corruption):
 
 def test_collision_identical_ok_conflicting_raises(tmp_path, lib_source):
     """Co-installed packages may share a soname only with identical bytes."""
-    server, table = lib_source
+    _server, table = lib_source
     out = _stage(tmp_path, table)
     # libb + libc both ship libb.so with identical bytes: merged once.
     assert (out / "libb.so").read_bytes().startswith(b"FAKE-ELF libb.so")

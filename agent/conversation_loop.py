@@ -724,11 +724,19 @@ def _refresh_bot_chat_tools(agent) -> None:
     gateway keeps agents alive across turns; every other surface builds a fresh agent whose
     tools[] already reflects config. No prefix preservation: a disabled toolset must drop,
     and the prompt rebuild this rides on already breaks the cache."""
+    from gateway.session_policy import active_policy
+    policy = active_policy()
     platform = getattr(agent, "platform", None)
-    if platform not in ("desktop", "tui"):
+    if policy is None and platform not in ("desktop", "tui"):
         return
     try:
         from tools.mcp_tool_agent import refresh_agent_mcp_tools
+        if policy is not None:
+            # Gateway-owned session (managed worker / owner turn): toolsets are frozen in its
+            # launch policy, so live config edits never widen or narrow a running session.
+            refresh_agent_mcp_tools(agent, enabled_override=list(policy.toolsets),
+                                    quiet_mode=True, content_aware=True)
+            return
         from tui_gateway.server import _load_disabled_toolsets, _load_enabled_toolsets
         refresh_agent_mcp_tools(
             agent, enabled_override=_load_enabled_toolsets(platform),
@@ -1547,9 +1555,9 @@ def _codex_app_server_turn(agent: Any, s: Any) -> Optional[dict[str, Any]]:
 def _run_conversation_turn(
     agent,
     user_message: Any,
-    system_message: str = None,
-    conversation_history: list[dict[str, Any]] = None,
-    task_id: str = None,
+    system_message: str | None = None,
+    conversation_history: list[dict[str, Any]] | None = None,
+    task_id: str | None = None,
     stream_callback: Optional[callable] = None,
     persist_user_message: Optional[Any] = None,
     persist_user_timestamp: Optional[float] = None,
@@ -1709,9 +1717,9 @@ def _run_conversation_turn(
 def run_conversation(
     agent,
     user_message: Any,
-    system_message: str = None,
-    conversation_history: list[dict[str, Any]] = None,
-    task_id: str = None,
+    system_message: str | None = None,
+    conversation_history: list[dict[str, Any]] | None = None,
+    task_id: str | None = None,
     stream_callback: Optional[callable] = None,
     persist_user_message: Optional[Any] = None,
     persist_user_timestamp: Optional[float] = None,

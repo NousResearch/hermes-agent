@@ -23,6 +23,7 @@ import statistics
 from typing import Any, Dict, List
 
 from evals.postmortem.forensics.common import Run
+import itertools
 
 _LINE = re.compile(
     r"^(\S+ \S+) INFO \[(\S+)\] agent\.conversation_loop: API call #(\d+): model=(\S+) provider=\S+ "
@@ -100,7 +101,7 @@ def main(argv=None) -> int:
     strict_pairs = strict_uncached = loose_pairs = loose_uncached = pairs = uncached_total = 0
     for cs in by_sid.values():
         cs.sort(key=lambda c: c["n"])
-        for prev, cur in zip(cs, cs[1:]):
+        for prev, cur in itertools.pairwise(cs):
             pairs += 1
             u = max(0, cur["inp"] - cur["hit"]); uncached_total += u
             if cur["inp"] > prev["inp"]:

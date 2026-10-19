@@ -77,4 +77,4 @@ def truncate(s: str, *, limit: int = MAX_TOTAL_CHARS) -> str:
     return elide(s, limit)
 
 
-__all__ = ["SEVERITY_NAMES", "DEFAULT_SEVERITIES", "MAX_PER_FILE", "format_diagnostic", "report_for_file", "truncate"]
+__all__ = ["DEFAULT_SEVERITIES", "MAX_PER_FILE", "SEVERITY_NAMES", "format_diagnostic", "report_for_file", "truncate"]

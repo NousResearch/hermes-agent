@@ -183,7 +183,7 @@ def test_sa_file_rotation_invalidates_creds_cache(vertex_adapter, monkeypatch, t
         vertex_adapter, "_resolve_credentials_path", lambda explicit=None: str(sa_file)
     )
 
-    token1, project1 = vertex_adapter.get_vertex_credentials()
+    token1, _project1 = vertex_adapter.get_vertex_credentials()
     assert token1 == "ya29.FAKE"
     assert len(vertex_adapter._creds_cache) == 1
 

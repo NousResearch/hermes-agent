@@ -62,6 +62,13 @@ _SECRET_SOURCE_WRITES_BY_HOME: dict[str, dict[str, tuple[str, str, str | None]]]
 # several hot modules, so without this the Bitwarden status line prints 3-5x per startup and the config
 # re-parse + ASCII sweep re-run each time (Bitwarden's own cache only saves the network call).
 _APPLIED_HOMES: set[str] = set()
+# Homes whose LAST external-source pass had a failing source. ``_APPLIED_HOMES`` is set after a failed
+# attempt too (startup must not re-fetch on every import), so without this tag the empty/partial snapshot
+# that pass published became process-lifetime truth: a vault that was unreachable at boot left the launch
+# profile's scope ``.env``-only, and every scoped read (gateway turn, cron pre-flight, MCP/browser
+# adoption) reported a missing credential long after the vault was reachable again. A scope build
+# (``hydrate_profile_secret_sources``) re-attempts instead of serving a failed pass's snapshot.
+_SECRET_SOURCE_FAILED_HOMES: set[str] = set()
 _SECRET_SOURCE_CACHE_LOCK = threading.RLock()
 
 # What THIS process has published from dotenv files, per variable: (value before our first publish, or
@@ -159,6 +166,21 @@ def managed_dotenv_keys() -> frozenset[str]:
     return frozenset(_MANAGED_DOTENV_KEYS)
 
 
+def _note_source_pass(home_key: str, report) -> bool:
+    """Record one external-source pass's outcome for *home_key*; True when every source fetched.
+
+    A clean pass clears the home's retry tag; a failed or partial pass sets it, so the next
+    ``_hydrate_profile_secret_sources`` re-attempts instead of serving the empty/partial snapshot
+    this pass published. Callers guard the empty-report case (no source ran: nothing to retry).
+    """
+    ok = all(src.result.ok for src in report.sources)
+    if ok:
+        _SECRET_SOURCE_FAILED_HOMES.discard(home_key)
+    else:
+        _SECRET_SOURCE_FAILED_HOMES.add(home_key)
+    return ok
+
+
 def get_secret_source_values(hermes_home: str | os.PathLike) -> dict[str, str]:
     """Return the external-secret value snapshot for ``hermes_home``."""
     return dict(_SECRET_SOURCE_VALUES_BY_HOME.get(str(Path(hermes_home).resolve()), {}))
@@ -175,8 +197,17 @@ def hydrate_profile_secret_sources(hermes_home: str | os.PathLike) -> dict[str, 
 
 def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
     """Locked implementation for :func:`hydrate_profile_secret_sources`."""
+    from agent.safe_worker_policy import worker_config_snapshot
+
+    if worker_config_snapshot() is not None:
+        return {}
     home_key = str(home.resolve())
-    if home_key in _APPLIED_HOMES:
+    # A home whose last pass failed is NOT served from its snapshot: the failure may have published
+    # nothing (or a partial set), and a scope built from it silently hides credentials the vault is
+    # now supplying. Re-attempting is the policy the routed-profile path below already applies; the
+    # price is one fetch per scope build (turn, cron fire) while the source stays down, which is what
+    # recovers the profile without a process restart.
+    if home_key in _APPLIED_HOMES and home_key not in _SECRET_SOURCE_FAILED_HOMES:
         return get_secret_source_values(home)
 
     # A retry must not keep serving a partial result after the source is removed, disabled, or can no
@@ -216,7 +247,7 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
     # Routed profiles have no runtime reset path. Keep a failed source retryable so correcting its
     # profile-local bootstrap credentials takes effect on the next turn; successful sources from a
     # mixed report are still snapshotted below and can be used while the failed source recovers.
-    if all(src.result.ok for src in report.sources):
+    if _note_source_pass(home_key, report):
         _APPLIED_HOMES.add(home_key)
     # Same ownership bookkeeping as the process-global path: a name this profile's source supplied — applied,
     # or skipped because the private mapping already had it — is a source-owned name the routed-child scrub
@@ -247,11 +278,13 @@ def reset_secret_source_cache(hermes_home: str | os.PathLike | None = None) -> N
         _SECRET_SOURCE_VALUES_BY_HOME.clear()
         _SECRET_SOURCE_RESTORE_BY_HOME.clear()
         _SECRET_SOURCE_WRITES_BY_HOME.clear()
+        _SECRET_SOURCE_FAILED_HOMES.clear()
         return
     home_key = str(Path(hermes_home).resolve())
     _APPLIED_HOMES.discard(home_key)
     _SECRET_SOURCE_VALUES_BY_HOME.pop(home_key, None)
     _SECRET_SOURCE_RESTORE_BY_HOME.pop(home_key, None)
+    _SECRET_SOURCE_FAILED_HOMES.discard(home_key)
 
 
 def format_secret_source_suffix(env_var: str) -> str:
@@ -337,8 +370,7 @@ def _load_dotenv_with_fallback(
         # first key name and silently drop it from os.environ under its canonical name.
         text = raw.decode("utf-8-sig")
     except UnicodeDecodeError:
-        if raw.startswith(codecs.BOM_UTF8):  # strip the BOM by hand: utf-8-sig can't once we decode latin-1
-            raw = raw[len(codecs.BOM_UTF8) :]
+        raw = raw.removeprefix(codecs.BOM_UTF8)
         text = raw.decode("latin-1")
     # Imported here, not at module level: gateway tests stub ``sys.modules["dotenv"]`` with a bare module
     # exposing only ``load_dotenv``, and ``gateway.run`` imports this module at import time.
@@ -460,6 +492,12 @@ def load_hermes_dotenv(
 ) -> list[Path]:
     """Load Hermes env files: ``~/.hermes/.env`` overrides stale shell exports; project ``.env`` is a dev
     fallback that only fills gaps when the user env exists (and overrides shell vars when it does not)."""
+    from agent.safe_worker_policy import worker_config_snapshot
+
+    # The private bootstrap supplies credentials explicitly; do not rehydrate
+    # profile behavior, external secret plugins, or managed env in this worker.
+    if worker_config_snapshot() is not None:
+        return []
     # Process home on purpose (never the per-turn override): a startup .env load must not follow a routed
     # profile — see the multiplex guard below.
     from hermes_constants import get_process_hermes_home
@@ -651,6 +689,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     # review). A config READ failure above keeps them — fail-open, same as the fetch-failure path below.
     if not cfg:
         _revoke_secret_source_writes(home_path, keep=lambda _name, _source: False)
+        _SECRET_SOURCE_FAILED_HOMES.discard(home_key)
         return
 
     # Defer the registry import until a source is enabled — bitwarden eagerly loads cryptography._rust.pyd,
@@ -659,6 +698,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     any_enabled = any(isinstance(v, dict) and v.get("enabled") is True for v in cfg.values())
     if not any_enabled:
         _revoke_secret_source_writes(home_path, keep=lambda _name, _source: False)
+        _SECRET_SOURCE_FAILED_HOMES.discard(home_key)
         return
 
     try:
@@ -685,9 +725,12 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         return
 
     # A real fetch attempt happened (success OR error): mark the home so the 3-5 import-time calls per
-    # startup don't re-fetch / re-print (error retries are opt-in via reset_secret_source_cache()).
-    # Marking AFTER the attempt keeps the earlier failure paths retryable.
+    # startup don't re-fetch / re-print (error retries are opt-in via reset_secret_source_cache()). The
+    # pass's outcome is recorded too: a failed pass leaves the home retryable through
+    # ``hydrate_profile_secret_sources`` (a scope build), which is where a later turn/fire can recover
+    # without a process restart.
     _APPLIED_HOMES.add(home_key)
+    _note_source_pass(home_key, report)
 
     if report.applied_any:
         _sanitize_loaded_credentials()  # vault values carry the same copy-paste corruption risk as .env

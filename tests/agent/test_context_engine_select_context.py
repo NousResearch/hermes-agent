@@ -35,14 +35,14 @@ class _MinimalEngine(ContextEngine):
     def update_from_response(self, usage: dict[str, Any]) -> None:
         pass
 
-    def should_compress(self, prompt_tokens: int = None) -> bool:
+    def should_compress(self, prompt_tokens: int | None = None) -> bool:
         return False
 
     def compress(
         self,
         messages: list[dict[str, Any]],
-        current_tokens: int = None,
-        focus_topic: str = None,
+        current_tokens: int | None = None,
+        focus_topic: str | None = None,
     ) -> list[dict[str, Any]]:
         return messages
 

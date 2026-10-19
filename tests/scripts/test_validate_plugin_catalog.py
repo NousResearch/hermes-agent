@@ -49,6 +49,7 @@ def run_validator(*args: str) -> subprocess.CompletedProcess:
         [sys.executable, str(SCRIPT), *args],
         capture_output=True,
         text=True,
+        check=False,
     )
 
 
@@ -164,6 +165,10 @@ def test_source_fields_the_pinned_gate_joins_or_echoes(tmp_path, field, value, o
 
 def test_bad_tier_fails(tmp_path):
     _expect_error(tmp_path, {"tier": "platinum"}, "tier")
+
+
+def test_verified_tier_passes(tmp_path):
+    assert run_validator(str(write_entry(tmp_path, {**VALID_ENTRY, "tier": "verified"}))).returncode == 0
 
 
 def test_empty_description_fails(tmp_path):

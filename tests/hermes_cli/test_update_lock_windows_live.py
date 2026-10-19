@@ -39,7 +39,7 @@ time.sleep(300)
 
 def _alive(pid: int) -> bool:
     out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], text=True, encoding="utf-8", errors="replace",
-                         capture_output=True).stdout
+                         capture_output=True, check=False).stdout
     return str(pid) in out
 
 
@@ -317,7 +317,7 @@ def test_a_git_child_the_job_refuses_never_runs_unfenced(tmp_path):
     outcome = _writer_fenced_or_refused(
         tmp_path, install, [_GIT_REFUSED_OWNER, str(REPO_ROOT), str(install), str(tmp_path / "m")])
     if outcome == "refused":  # refused before it ran: the checkout is untouched
-        stash = subprocess.run(["git", "-C", str(install), "stash", "list"], capture_output=True)
+        stash = subprocess.run(["git", "-C", str(install), "stash", "list"], capture_output=True, check=False)
         assert stash.stdout == b"", stash
 
 
@@ -336,7 +336,7 @@ def test_a_refused_job_join_never_runs_the_command(tmp_path):
     launcher.write_text(_JOIN_JOB, encoding="utf-8")
     report = tmp_path / "report.txt"
     out = subprocess.run([sys.executable, "-I", "-S", str(launcher), "0", str(report), sys.executable, "-c", child],
-                         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+                         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60, check=False)
     assert out.returncode == _REFUSED_EXIT, out
     assert "built" not in out.stdout
     assert _CUSTODY_UNAVAILABLE in out.stderr
@@ -385,7 +385,7 @@ def _escaping_job_launch(tmp_path: Path, *, process_limit: int = 0):
     info.lpAttributeList = {"handle_list": [job]}
     out = subprocess.run([sys.executable, "-I", "-S", str(launcher), str(job), str(tmp_path / "report.txt"),
                           sys.executable, "-c", "print('built')"], startupinfo=info, capture_output=True,
-                         text=True, encoding="utf-8", errors="replace", timeout=60)
+                         text=True, encoding="utf-8", errors="replace", timeout=60, check=False)
     usage = _Accounting()
     assert kernel32.QueryInformationJobObject(job, 1, ctypes.byref(usage), ctypes.sizeof(usage), None), \
         ctypes.get_last_error()
@@ -502,7 +502,7 @@ def test_a_refusal_the_readers_swallow_is_what_the_update_reports(tmp_path):
     out = subprocess.run([sys.executable, "-c", _SWALLOWING_OWNER.replace("REFUSE_JOBS", refuse), str(REPO_ROOT),
                           str(install)], stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8",
                          errors="replace", timeout=120,
-                         env={**os.environ, "HERMES_HOME": str(home), "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"})
+                         env={**os.environ, "HERMES_HOME": str(home), "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}, check=False)
     text = out.stdout + out.stderr
     assert out.returncode == 1, text
     assert "`hermes update` stopped: Windows would not put `git` in this update's process job" in text, text
@@ -589,7 +589,7 @@ def test_a_build_descendant_left_by_its_leader_never_writes_after_a_normal_relea
     assert lock.acquire()
     try:
         with contained_command(leader, root=install) as (argv, custody):
-            done = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, timeout=60, **custody)
+            done = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, timeout=60, **custody, check=False)
     finally:
         lock.release()
     assert done.returncode == 3, done

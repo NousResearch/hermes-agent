@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from os import getenv
 from typing import Any
 
@@ -18,7 +18,7 @@ def build_graph_client() -> MicrosoftGraphClient:
 
 
 def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def utc_timestamp(hours_from_now: int = 0, *, base: datetime | None = None) -> str:

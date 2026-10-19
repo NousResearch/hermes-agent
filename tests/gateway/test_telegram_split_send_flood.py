@@ -12,6 +12,7 @@ import pytest
 
 from gateway.config import PlatformConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
+import itertools
 
 
 class _FloodError(Exception):
@@ -111,5 +112,5 @@ async def test_concurrent_split_sends_to_one_chat_do_not_interleave():
     await asyncio.gather(adapter.send("1", long("REPORT")), adapter.send("1", long("ALERT")))
 
     assert len(order) >= 4
-    switches = sum(1 for a, b in zip(order, order[1:]) if a != b)
+    switches = sum(1 for a, b in itertools.pairwise(order) if a != b)
     assert switches == 1, order

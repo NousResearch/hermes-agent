@@ -189,6 +189,6 @@ def test_oneshot_resume_refuses_kanban_session(tmp_path):
 def test_oneshot_resume_ordinary_session_still_works(tmp_path):
     from hermes_cli.oneshot import _load_resume_target
     db = _db(tmp_path, source="cli", session_id="chat-1")
-    sid, history, meta = _load_resume_target(db, "chat-1")
+    sid, history, _meta = _load_resume_target(db, "chat-1")
     assert sid == "chat-1"
     assert len(history) == 2

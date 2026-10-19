@@ -12,7 +12,7 @@ import json
 import logging
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Dict, List, Optional, Union
 
 from hermes_state_common import _BOUNDARY_END_REASONS
@@ -75,7 +75,7 @@ def _loud(fn, log_msg, error_prefix, *log_args):
         return None, tool_error(f"{error_prefix}: {e}", success=False)
 
 
-def _format_timestamp(ts: Union[float, str, None]) -> str:
+def _format_timestamp(ts: float | str | None) -> str:
     """Unix timestamp -> readable date; ISO strings pass through; "unknown" for None."""
     if ts is None:
         return "unknown"
@@ -141,12 +141,12 @@ def _parse_iso_bound(value: Optional[str]) -> Optional[int]:
     if rel := _RELATIVE_BOUND_RE.match(text):
         return int(time.time()) - int(rel.group(1)) * _RELATIVE_UNIT_SECONDS[rel.group(2).lower()]
     try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(text)
     except ValueError:
         raise ValueError(f"invalid time bound: {value!r} (expected ISO date/datetime like "
                          "2026-07-01, or a relative duration like 7d, 24h, 2w)") from None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
     return int(parsed.timestamp())
 
 
@@ -251,7 +251,7 @@ def _shape_message(m: dict[str, Any], anchor_id: Optional[int] = None,
     return {k: v for k, v in entry.items() if v is not None or k == "content"}
 
 
-def _session_link(session_id: str, profile: str = None) -> str:
+def _session_link(session_id: str, profile: str | None = None) -> str:
     """The reference the agent writes for a session — same value the desktop composer
     emits, so it renders as a titled link. The profile segment is omitted when it
     can't be named confidently (a bare id still resolves, just not across profiles)."""
@@ -352,7 +352,7 @@ def _hydrate_hit(db, lineage_root: str, match_info: dict[str, Any], result_detai
 
 
 def _discover(db, query: str, role_filter: Optional[list[str]], limit: int, sort: Optional[str],
-              detail: str, current_session_id: str = None, link_profile: str = None,
+              detail: str, current_session_id: str | None = None, link_profile: str | None = None,
               after_ts: Optional[int] = None, before_ts: Optional[int] = None,
               exclude_session_ids: Optional[list[str]] = None) -> str:
     """Discovery shape: FTS5 plus adaptive or full result hydration."""
@@ -444,7 +444,7 @@ def _resolve_profile_db(profile: str):
     return SessionDB(db_path=profiles_mod.get_profile_dir(canon) / "state.db", read_only=True)
 
 
-def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_profile: str = None) -> str:
+def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_profile: str | None = None) -> str:
     """Read shape: whole session, or ``head`` + ``tail`` messages with a scroll pointer."""
     meta = _get_session_meta(db, session_id)
     if not meta:
@@ -477,7 +477,7 @@ def _read_scoped(db, sid: str, profile: Optional[str]) -> str:
                       "profile, pass profile=<name> (or the @session:<profile>/<id> link).", success=False)
 
 
-def _list_recent_sessions(db, limit: int, current_session_id: str = None, link_profile: str = None) -> str:
+def _list_recent_sessions(db, limit: int, current_session_id: str | None = None, link_profile: str | None = None) -> str:
     """Browse shape: metadata for the most recent sessions (no LLM, no FTS5)."""
     def _browse():
         # Never use list_sessions_rich(order_by_last_active=True) here: it walks every
@@ -529,7 +529,7 @@ def _anchor_in_live_context(db, anchor_state, anchor_sid: str, current_session_i
 
 
 def _scroll(db, session_id: str, around_message_id: int, window: int = 5,
-            current_session_id: str = None) -> str:
+            current_session_id: str | None = None) -> str:
     """Scroll shape: a window centered on an anchor (no FTS5, no bookends)."""
     try:
         around_message_id = int(around_message_id)
@@ -575,27 +575,9 @@ def _scroll(db, session_id: str, around_message_id: int, window: int = 5,
 
 
 def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
-              around_message_id, window, sort, profile, detail, owned_dbs,
+              around_message_id, window, sort, profile, detail,
               after=None, before=None, exclude_session_ids=None) -> str:
-    """Mode dispatch (see module docstring); scroll wins when an anchor is set.
-    Profile DBs opened here are appended to *owned_dbs* for the caller to close."""
-    # A raw `@session:<profile>/<id>` link as session_id: ids never contain "/", so
-    # split on it and adopt the embedded profile only when none was passed.
-    if isinstance(session_id, str) and "/" in session_id:
-        emb_profile, _, emb_id = session_id.partition("/")
-        if emb_id:
-            session_id = emb_id
-            if emb_profile and (profile is None or not str(profile).strip()):
-                profile = emb_profile
-    # Cross-profile: swap in the named profile's DB (read-only) for every shape;
-    # current-lineage guards key off ids that won't collide, so they stay inert.
-    try:
-        profile_db = _resolve_profile_db(profile)
-    except Exception as e:
-        return tool_error(f"profile '{profile}': {e}", success=False)
-    if profile_db is not None:
-        db, current_session_id = profile_db, None
-        owned_dbs.append(profile_db)
+    """Mode dispatch (see module docstring); scroll wins when an anchor is set."""
     if isinstance(session_id, str) and session_id.strip():
         if around_message_id is not None:
             return _scroll(db, session_id.strip(), around_message_id, window, current_session_id)
@@ -616,23 +598,45 @@ def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
         exclude_session_ids=_normalize_exclude_session_ids(exclude_session_ids))
 
 
-def session_search(query: str = "", role_filter: str = None, limit: int = 3, db=None,
-                   current_session_id: str = None, session_id: str = None, around_message_id: int = None,
-                   window: int = 5, sort: str = None, profile: str = None, detail: str = "adaptive",
-                   after: str = None, before: str = None, exclude_session_ids: Optional[list[str]] = None) -> str:
+def session_search(query: str = "", role_filter: str | None = None, limit: int = 3, db=None,
+                   current_session_id: str | None = None, session_id: str | None = None, around_message_id: int | None = None,
+                   window: int = 5, sort: str | None = None, profile: str | None = None, detail: str = "adaptive",
+                   after: str | None = None, before: str | None = None, exclude_session_ids: Optional[list[str]] = None) -> str:
     """Run session search, closing DBs opened here. Positional order is frozen for old callers;
     new parameters are appended after ``detail``."""
-    from hermes_state import format_session_db_unavailable
-    from hermes_state_registry import acquire, release_or_close
+    from hermes_constants import get_hermes_home
+    from hermes_state import SessionDB, format_session_db_unavailable
+    from hermes_state_registry import release_or_close
     owned_dbs: list[Any] = []
+    # A raw `@session:<profile>/<id>` link as session_id: ids never contain "/", so
+    # split on it and adopt the embedded profile only when none was passed.
+    if isinstance(session_id, str) and "/" in session_id:
+        emb_profile, _, emb_id = session_id.partition("/")
+        if emb_id:
+            session_id = emb_id
+            if emb_profile and (profile is None or not str(profile).strip()):
+                profile = emb_profile
+    # Cross-profile: swap in the named profile's DB (read-only) for every shape;
+    # current-lineage guards key off ids that won't collide, so they stay inert.
+    try:
+        profile_db = _resolve_profile_db(profile)
+    except Exception as e:
+        logging.debug("session_search: cannot open profile %r", profile, exc_info=True)
+        return tool_error(f"profile '{profile}': {e}", success=False)
+    if profile_db is not None:
+        db, current_session_id = profile_db, None
+        owned_dbs.append(profile_db)
     if db is None:
-        db = _quiet(acquire, None, "SessionDB unavailable for session_search")
+        db = _quiet(
+            lambda: SessionDB(db_path=get_hermes_home() / "state.db", read_only=True),
+            None, "SessionDB unavailable for session_search",
+        )
         if db is None:
             return tool_error(format_session_db_unavailable(), success=False)
         owned_dbs.append(db)
     try:
         return _dispatch(query, role_filter, limit, db, current_session_id, session_id,
-                         around_message_id, window, sort, profile, detail, owned_dbs,
+                         around_message_id, window, sort, profile, detail,
                          after=after, before=before, exclude_session_ids=exclude_session_ids)
     finally:
         for owned_db in reversed(owned_dbs):

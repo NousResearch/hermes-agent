@@ -79,6 +79,10 @@ class PluginHost:
         return self._proc.pid if self._proc is not None else None
 
     @property
+    def home(self) -> Path:
+        return self._home
+
+    @property
     def alive(self) -> bool:
         return (self._channel is not None and self._channel.closed_reason is None
                 and self._proc is not None and self._proc.poll() is None)
@@ -287,12 +291,16 @@ class PluginHost:
                                            "attr": attr, "args": encode(list(args)), "kwargs": encode(kwargs)})
 
     def asgi_request(self, plugin_name: str, dashboard_dir: str, api_file: str, method: str, path: str,
-                     query: str, headers: list, body: bytes) -> dict[str, Any]:
-        """One dashboard ``/api/plugins/<name>/`` request, served by the plugin's router in the host."""
+                     query: str, headers: list, body: bytes, *, timeout: Optional[float] = None,
+                     authenticated: bool = False) -> dict[str, Any]:
+        """One dashboard ``/api/plugins/<name>/`` request, served by the plugin's router in the host;
+        ``TimeoutError`` when no answer comes within ``timeout`` seconds (the host is left running)."""
         self.ensure_started()
         return self._call("asgi", {"plugin": plugin_name, "dashboard_dir": dashboard_dir, "api_file": api_file,
                                    "method": method, "path": path, "query": query,
-                                   "headers": [list(h) for h in headers], "body": encode(body)})
+                                   "authenticated": authenticated is True,
+                                   "headers": [list(h) for h in headers], "body": encode(body)},
+                          timeout=timeout)
 
     def _unload(self, plugin_key: str) -> None:
         self._contexts.pop(plugin_key, None)
@@ -304,7 +312,8 @@ class PluginHost:
             logger.warning("Plugin '%s' on_unload callback failed in the plugin host: %s", plugin_key, error)
 
     # -- parent -> host -----------------------------------------------------------------------------
-    def _call(self, method: str, params: dict[str, Any], *, generation: Optional[int] = None) -> Any:
+    def _call(self, method: str, params: dict[str, Any], *, generation: Optional[int] = None,
+              timeout: Optional[float] = None) -> Any:
         channel = self._channel
         try:
             if channel is None:
@@ -314,7 +323,7 @@ class PluginHost:
             if self._releases:
                 released, self._releases = self._releases, []
                 channel.call("release", {"refs": released})
-            return decode(channel.call(method, params), self._resolve_ref)
+            return decode(channel.call(method, params, timeout=timeout), self._resolve_ref)
         except PluginHostUnavailable as exc:
             raise PluginHostUnavailable(self._exit_reason()) from exc
 
@@ -327,19 +336,19 @@ class PluginHost:
         return self._call("invoke", {"ref": ref, "args": encode(list(args)), "kwargs": encode(kwargs)},
                           generation=generation)
 
-    def obj_invoke(self, slot: "_ObjectSlot", method: str, args: tuple, kwargs: dict) -> Any:
+    def obj_invoke(self, slot: _ObjectSlot, method: str, args: tuple, kwargs: dict) -> Any:
         ref, generation = slot.live()
         return self._call("obj_invoke", {"ref": ref, "method": method, "args": encode(list(args)),
                                          "kwargs": encode(kwargs)}, generation=generation)
 
-    def obj_getattr(self, slot: "_ObjectSlot", name: str) -> Any:
+    def obj_getattr(self, slot: _ObjectSlot, name: str) -> Any:
         ref, generation = slot.live()
         value = self._call("obj_getattr", {"ref": ref, "name": name}, generation=generation)
         if isinstance(value, dict) and set(value) == {"__missing__"}:
             raise AttributeError(name)
         return value
 
-    def obj_setattr(self, slot: "_ObjectSlot", name: str, value: Any) -> None:
+    def obj_setattr(self, slot: _ObjectSlot, name: str, value: Any) -> None:
         ref, generation = slot.live()
         self._call("obj_setattr", {"ref": ref, "name": name, "value": encode(value)}, generation=generation)
 

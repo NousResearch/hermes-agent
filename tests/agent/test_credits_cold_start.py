@@ -17,7 +17,7 @@ def _cold_start_notices(state: CreditsState):
     latch = {"active": set(), "seen_below_90": False}
     if state.used_fraction is not None:
         latch["seen_below_90"] = True
-    show, clear = evaluate_credits_notices(state, latch)
+    show, _clear = evaluate_credits_notices(state, latch)
     return [n.key for n in show]
 
 

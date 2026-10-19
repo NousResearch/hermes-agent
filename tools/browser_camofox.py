@@ -98,7 +98,8 @@ def is_camofox_mode() -> bool:
     written, a set ``CAMOFOX_URL`` still activates Camofox). A CDP override (``BROWSER_CDP_URL``
     env or ``browser.cdp_url``, same precedence as ``browser_tool_cdp._get_cdp_override()``) wins.
     """
-    if os.getenv("BROWSER_CDP_URL", "").strip() or _config_cdp_url():
+    from tools.browser_tool_cdp import env_cdp_url, live_cdp_override
+    if live_cdp_override() or env_cdp_url() or _config_cdp_url():
         return False
     try:
         from tools.tool_backend_helpers import read_selection
@@ -321,16 +322,16 @@ def _post(path: str, body: dict, timeout: Optional[int] = None) -> dict:
     return _request("post", path, timeout, json=body).json()
 
 
-def _get(path: str, params: dict = None, timeout: Optional[int] = None) -> dict:
+def _get(path: str, params: dict | None = None, timeout: Optional[int] = None) -> dict:
     return _request("get", path, timeout, params=params).json()
 
 
-def _get_raw(path: str, params: dict = None, timeout: Optional[int] = None) -> requests.Response:
+def _get_raw(path: str, params: dict | None = None, timeout: Optional[int] = None) -> requests.Response:
     """GET and return the raw response (for binary data)."""
     return _request("get", path, timeout, params=params)
 
 
-def _delete(path: str, body: dict = None, timeout: Optional[int] = None) -> dict:
+def _delete(path: str, body: dict | None = None, timeout: Optional[int] = None) -> dict:
     return _request("delete", path, timeout, json=body).json()
 
 

@@ -405,6 +405,75 @@ def test_cold_profile_hydration_clears_partial_snapshot_when_sources_are_removed
     assert "OPENAI_API_KEY" not in build_profile_secret_scope(tmp_path)
 
 
+def test_failed_process_global_pass_stays_retryable_for_scope_build(tmp_path, monkeypatch):
+    """A vault outage during the process-global pass must not shadow that home's scope forever.
+
+    Regression for the gateway shape: ``load_hermes_dotenv()`` runs the process-global pass at boot.
+    When the vault is unreachable the pass reports a failed source, marks the home applied and
+    publishes no snapshot. Serving that snapshot to later scope builds left the launch profile's
+    scope ``.env``-only, so every scoped read (turn, cron pre-flight) saw a credential the vault was
+    supplying as missing until the process restarted. A scope build hydrates first and must retry.
+    """
+    from agent.secret_scope import build_profile_secret_scope
+    from agent.secret_sources.base import ErrorKind, FetchResult
+    from agent.secret_sources.registry import AppliedVar, ApplyReport, SourceReport
+    from agent.secret_sources import registry as reg_module
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "secrets:\n  command:\n    enabled: true\n", encoding="utf-8"
+    )
+    attempts = 0
+
+    def _apply_fails_then_recovers(_cfg, _home_path, environ=None):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            failed = FetchResult().fail("vault unreachable", ErrorKind.NETWORK)
+            return ApplyReport(
+                sources=[SourceReport(name="command", label="command", result=failed)]
+            )
+        target = environ if environ is not None else os.environ
+        target["ALIBABA_CODING_PLAN_API_KEY"] = "bws-key"
+        return ApplyReport(
+            sources=[
+                SourceReport(
+                    name="command",
+                    label="command",
+                    result=FetchResult(secrets={"ALIBABA_CODING_PLAN_API_KEY": "bws-key"}),
+                    applied=["ALIBABA_CODING_PLAN_API_KEY"],
+                )
+            ],
+            provenance={
+                "ALIBABA_CODING_PLAN_API_KEY": AppliedVar(
+                    name="ALIBABA_CODING_PLAN_API_KEY",
+                    source="command",
+                    shape="bulk",
+                    overrode_env=False,
+                )
+            },
+        )
+
+    monkeypatch.setattr(reg_module, "apply_all", _apply_fails_then_recovers)
+
+    # Boot: the source fails, so the home is marked applied with no published snapshot.
+    env_loader._apply_external_secret_sources(tmp_path)
+    assert env_loader.get_secret_source_values(tmp_path) == {}
+    assert "ALIBABA_CODING_PLAN_API_KEY" not in build_profile_secret_scope(tmp_path)
+
+    # Scope build: hydrate retries instead of serving the failed pass's empty snapshot.
+    assert env_loader.hydrate_profile_secret_sources(tmp_path) == {
+        "ALIBABA_CODING_PLAN_API_KEY": "bws-key"
+    }
+    assert build_profile_secret_scope(tmp_path)["ALIBABA_CODING_PLAN_API_KEY"] == "bws-key"
+
+    # The recovered snapshot is cached: a clean pass must not re-fetch on every turn.
+    assert env_loader.hydrate_profile_secret_sources(tmp_path) == {
+        "ALIBABA_CODING_PLAN_API_KEY": "bws-key"
+    }
+    assert attempts == 2
+
+
 def test_apply_external_secret_sources_noop_when_disabled(tmp_path, monkeypatch):
     """Disabled Bitwarden config must not touch the source map."""
 

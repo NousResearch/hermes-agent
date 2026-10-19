@@ -27,14 +27,14 @@ _UNIT = {"kind": "systemd", "scope": "user", "unit": "hermes-gateway-p2probe.ser
 def test_a_killed_updaters_supervised_units_are_adopted_by_the_next_update(tmp_path):
     """The updater stopped a systemd unit and was SIGKILLed: the next ``hermes update`` must own
     restarting that unit (the record's only debt), never drop it."""
-    owner = _child("""
+    owner = _child(f"""
         import time
         from hermes_cli import update_pause_record as r
-        r.write(r.stamp_tree({"platform": "posix", "resume_needed": True, "posix_units": [%r]}),
+        r.write(r.stamp_tree({{"platform": "posix", "resume_needed": True, "posix_units": [{_UNIT!r}]}}),
                 owner=r.identity())
         print("written", flush=True)
         time.sleep(120)
-    """ % _UNIT, env={"HERMES_HOME": str(tmp_path)})
+    """, env={"HERMES_HOME": str(tmp_path)})
     assert owner.stdout.readline().strip() == "written"
     owner.send_signal(signal.SIGKILL)  # windows-footgun: ok — module skips on Windows
     owner.wait(timeout=10)

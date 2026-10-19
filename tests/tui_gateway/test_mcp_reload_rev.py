@@ -69,7 +69,7 @@ def test_failed_reload_is_an_error_and_no_generation_advance(reload_env, monkeyp
     """The exact client-facing contract: a failure must NOT look like an ack.
     quietRpc on the TUI side collapses this error to null and keeps the
     revision un-accepted, so the next poll retries."""
-    calls, _ = reload_env
+    _calls, _ = reload_env
 
     def _boom():
         raise RuntimeError("flapping server")

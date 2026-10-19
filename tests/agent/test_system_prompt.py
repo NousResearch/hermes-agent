@@ -394,31 +394,6 @@ class TestExecutionGuidanceInjection:
             "deepseek/deepseek-v4-pro", valid_tool_names=())
 
 
-class TestAsyncDelegationHandoffGuidance:
-    """A background child cannot re-enter until the parent yields its current turn (#124072)."""
-
-    def _prompt(self, valid_tool_names):
-        return _stable_prompt(_make_agent(
-            valid_tool_names=list(valid_tool_names),
-            model="openai/gpt-5.5",
-            _tool_use_enforcement="auto",
-            _execution_guidance="auto",
-        ))
-
-    @pytest.mark.parametrize("tools,expected", [
-        (("delegate_task", "execute_code"), True),
-        (("execute_code",), False),
-    ])
-    def test_handoff_injected_only_with_delegate_task(self, tools, expected):
-        stable = self._prompt(tools)
-        assert ("Async handoff" in stable) is expected
-        if expected:
-            assert stable.count("Async handoff") == 1
-            # Must follow the generic "keep working" blocks so it reads as their exception.
-            assert stable.index("Async handoff") > stable.index("Tool-use enforcement")
-            assert stable.index("Async handoff") > stable.index("Execution discipline")
-
-
 class TestNamedProfileHintIntegration:
     """The same defect through the REAL resolution chain (#72894).
 
@@ -981,3 +956,34 @@ class TestConversationStartedTwoLine:
         vol = self._volatile(agent)
         assert "Conversation started:" not in vol
         assert "as of the last context rebuild" not in vol
+
+
+def test_kanban_guidance_contains_completion_integrity_rule():
+    """The completion-integrity rule must be present in KANBAN_GUIDANCE.
+
+    Regression test for t_d112dedd: workers were completing cards that touched
+    live surfaces (deploy/*, ~/.hermes/bin/*, LaunchAgents, etc.) without posting
+    observed output as proof. The rule must state that 'done' means the live
+    surface changed, not just that the diff merged.
+    """
+    from agent.prompt_builder import KANBAN_GUIDANCE
+
+    # The rule must name the key concepts
+    assert "Completion integrity" in KANBAN_GUIDANCE, (
+        "KANBAN_GUIDANCE must contain a 'Completion integrity' section"
+    )
+    assert "live surface changed" in KANBAN_GUIDANCE, (
+        "KANBAN_GUIDANCE must state that 'done' means the live surface changed"
+    )
+    assert "Committed and merged" in KANBAN_GUIDANCE, (
+        "KANBAN_GUIDANCE must distinguish code facts from deployment facts"
+    )
+    assert "Installed, loaded, and serving" in KANBAN_GUIDANCE, (
+        "KANBAN_GUIDANCE must name the deployment fact"
+    )
+    assert "observed result" in KANBAN_GUIDANCE or "observed output" in KANBAN_GUIDANCE, (
+        "KANBAN_GUIDANCE must require observed output, not intent summaries"
+    )
+    assert "deploy/*" in KANBAN_GUIDANCE or "deploy/" in KANBAN_GUIDANCE, (
+        "KANBAN_GUIDANCE must name live surface examples"
+    )

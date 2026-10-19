@@ -111,7 +111,7 @@ class ApplyResult:
     config_changed: bool
 
 
-def _walk_to_parent(yaml_doc: Any, dotted_path: str) -> "tuple[Any, str]":
+def _walk_to_parent(yaml_doc: Any, dotted_path: str) -> tuple[Any, str]:
     """Resolve a dotted slot path to (parent_mapping, leaf_key)."""
     *parents, leaf = dotted_path.split(".")
     if not parents:

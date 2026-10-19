@@ -4,7 +4,7 @@
 missing. With no Desktop/CLI in the loop that create used to mint an API row nothing can ever bind
 (the peer is a remote sender, never a native ticket), so every DM answered 502 "admission refused:
 not_found" (#139370). The titled create now goes through the owner's own Bot Chat creation step;
-a peer-created API row left over from before is refused by a named reason, never a bare not_found.
+an ordinary API-created Bot Chat left over from before remains reachable through API admission.
 """
 from types import SimpleNamespace
 
@@ -148,14 +148,27 @@ def _assert_displaced(db, old, new):
     assert [r[0] for r in titled] == [new] and str(db.get_session(new)['chat_id']).startswith('local-')
 
 
-@pytest.mark.parametrize('source', ['api_server', 'bot_peer_dm'])
 @pytest.mark.asyncio
-async def test_peer_dm_into_an_api_created_bot_chat_lands_in_a_local_bot_chat(headless, source):
-    # #140769 / MSG-21: main refused every DM with ``bot_chat_not_local`` ("rename or delete it
-    # there"), and neither is possible: the canonical title cannot be renamed and the API has no
-    # rename route. The owner now moves the API row aside and mints the local Bot Chat.
+async def test_peer_created_api_bot_chat_runs_as_an_api_conversation(headless):
+    # A row an older gateway minted through the plain API create remains API-owned.  It must not
+    # be sent to the local Bot Chat FIFO, but peer DM can still run it through the API admission.
     db = headless.authority.db
-    old = _api_bot_chat(db, source=source)
+    db.create_session('api_1_stale', 'api_server')
+    db.set_session_title('api_1_stale', 'Bot Chat')
+    resp = await headless.cli.post("/api/sessions/api_1_stale/chat", json={"message": "ping", "author": AUTHOR})
+    body = await resp.json()
+    assert resp.status == 200, body
+    assert body['message']['content'] == 'pong', body
+    assert headless.executed == [('api_1_stale', 'api', 'ping')]
+    assert len(_api_admissions(headless.authority)) == 1
+
+
+@pytest.mark.asyncio
+async def test_peer_dm_into_a_non_api_bot_chat_lands_in_a_local_bot_chat(headless):
+    # #140769 / MSG-21: a non-API row holding the canonical title has no local FIFO. The owner
+    # moves it aside and mints the local Bot Chat; an API-owned row instead retains API admission.
+    db = headless.authority.db
+    old = _api_bot_chat(db, source='bot_peer_dm')
     resp = await headless.cli.post(f"/api/sessions/{old}/chat", json={"message": 'one', "author": AUTHOR})
     body = await resp.json()
     assert resp.status == 200, body
@@ -173,9 +186,9 @@ async def test_peer_dm_into_an_api_created_bot_chat_lands_in_a_local_bot_chat(he
 
 
 @pytest.mark.asyncio
-async def test_peer_create_if_missing_after_the_api_row_moved_finds_the_local_chat(headless):
+async def test_peer_create_if_missing_after_the_non_api_row_moved_finds_the_local_chat(headless):
     db = headless.authority.db
-    old = _api_bot_chat(db)
+    old = _api_bot_chat(db, source='bot_peer_dm')
     resp = await headless.cli.post(f"/api/sessions/{old}/chat", json={"message": "one", "author": AUTHOR})
     assert resp.status == 200, await resp.text()
     # ``hermes peer dm``'s next create-if-missing collides on the local chat's title, as for any
@@ -397,11 +410,11 @@ async def test_peer_minted_bot_chat_is_the_local_rosters_canonical_session(headl
 @pytest.mark.asyncio
 async def test_a_turn_after_the_move_aside_names_the_local_bot_chat(headless, door):
     # The turn runs in the newly minted local Bot Chat, so every answer names that chat: a client
-    # that keeps the id it was given must not continue in the displaced API row.
+    # that keeps the id it was given must not continue in the displaced non-API row.
     import asyncio
     import json
     db = headless.authority.db
-    old = _api_bot_chat(db)
+    old = _api_bot_chat(db, source='bot_peer_dm')
     if door == 'chat':
         resp = await headless.cli.post(f"/api/sessions/{old}/chat", json={"message": 'one', "author": AUTHOR})
         body = await resp.json()

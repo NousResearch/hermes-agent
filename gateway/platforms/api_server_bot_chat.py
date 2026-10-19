@@ -136,6 +136,12 @@ async def admit_peer_turn(runner, session_id, message, author):
     tip = bot_chat_tip(authority, session_id)
     if tip is None:
         return None
+    # Older gateways could create the canonical title through the ordinary API route.  That
+    # conversation is already API-owned, so it must use the ordinary API admission below rather
+    # than the local Bot Chat FIFO.  Other non-local rows remain refused by ``deliver``: accepting
+    # one would bind remote input to a history whose owner is unknown.
+    if tip['source'] == 'api_server' and not str(tip.get('chat_id') or '').startswith('local-'):
+        return None
     home = Path(authority.db.db_path).parent.resolve()
     from gateway.session_bot import displaceable_bot_chat
     if displaceable_bot_chat(authority, authority.db.get_session_by_title('Bot Chat') or tip) is not None:

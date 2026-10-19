@@ -19,8 +19,16 @@ def _mirror_busy(cli, arg):
         cli.busy_input_mode = arg.lower()
 
 
+def _watch_reviewer(cli, _arg):
+    """/review spawns its reviewer off-turn: have the live-work dock poll for it right away."""
+    from hermes_cli.gateway_tools import process_view
+    view = process_view()
+    if view is not None:
+        view.watch_subagents()
+
+
 GATEWAY_SETTINGS = {"personality": None, "busy": _mirror_busy, "approvals": None, "footer": None, "fast": None,
-                    "refine": None, "review": None}
+                    "refine": None, "review": _watch_reviewer}
 
 
 def run(cli, canonical, cmd):
@@ -47,3 +55,4 @@ def run(cli, canonical, cmd):
     if mirror is not None:
         mirror(cli, arg)
     return True
+

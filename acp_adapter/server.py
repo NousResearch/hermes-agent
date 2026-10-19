@@ -445,7 +445,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             return
         try:
             from model_tools import get_tool_definitions
-            from agent.memory_manager import inject_memory_provider_tools
+            from agent.memory_manager_tools import inject_memory_provider_tools
 
             agent = state.agent
             agent.enabled_toolsets = _expand_acp_enabled_toolsets(

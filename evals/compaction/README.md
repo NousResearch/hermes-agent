@@ -88,72 +88,6 @@ priced at the OpenRouter list price of the model that answered). The run
 also writes `eval_usage.json` — the harness's own question/answer/judge
 token bill.
 
-## Frozen-summary evidence augmentation
-
-The Jev replacement arm above asks whether tool filtering can replace summaries.
-This opt-in experiment asks a different question: **does adding a small amount of
-Jev-selected original evidence improve an unchanged native compaction result?**
-
-```bash
-python -m evals.compaction.runner \
-  --transcript /path/to/lineage.json --policies current \
-  --evidence-top-n 1 2 3 4 5 --evidence-budget 2000 \
-  --out /path/to/private-evaluation-output
-```
-
-Configure summary, answer, search-query and judge calls through Hermes'
-`auxiliary.compression` route. `--model` selects the host model for native
-compression sizing; it does not override that inference route. Jev uses the
-existing OpenRouter Decisions transport (`OPENROUTER_API_KEY`) by default.
-For the first-party [System One API](https://api.typesafe.ai/docs), use
-`--evidence-provider typesafe` with `TYPESAFE_API_KEY`. An optional
-`--evidence-model` pins the decision model; otherwise the provider's Jev alias
-is used. No additional SDK is required.
-
-For each requested native policy:
-
-1. Run the full native `compress()` once, including pruning, head/tail selection,
-   summary generation and conversation repair. Reject a no-op compaction.
-2. Freeze its output. Collect text from original assistant/tool messages that
-   did not survive verbatim; exclude system/user messages and earlier summary
-   carriers. Force Hermes secret redaction, then split into contiguous chunks
-   (`--evidence-chunk-chars`, default 2000). IDs identify source messages and
-   offsets in their redacted text. Candidate bodies come from the pre-pruning
-   snapshot, so pruning cannot hide the evidence from Jev.
-3. Rank once using the task plus candidate bodies, with bounded requests.
-   `--evidence-goal` defaults to the last three user prompts. Neither evaluation
-   questions, gold answers nor the generated summary are sent to the selector.
-4. Reuse that ranking across every Top N. Select a descending-score prefix,
-   breaking ties by source order; stop before the framing-inclusive evidence
-   budget would be exceeded. No unit is partially retained. Restore source
-   order when rendering. A recent-first selector uses the same candidates,
-   budget and packing rule as a simple control.
-5. Evaluate the frozen baseline and each supplement both closed-book and with
-   one recovery round. All pairs share the same original recovery archive,
-   search rules and question bank. Supplements are quoted text for the exam,
-   not synthetic tool messages or changes to the native summary.
-
-`<policy>-frozen.json` saves the native output, redacted candidates, scores and
-shared usage; each result records its SHA-256, selected IDs and actual count.
-Ranking errors and invalid answers remain observable and those units cannot be
-selected. An entirely failed ranking therefore evaluates the unchanged baseline,
-not a substituted selector. The recent-first control still runs independently.
-Native compression and Jev usage are shared metadata, **not separate bills for
-every row**. A provider that omits cost yields `cost_usd: null`, not zero.
-Completed pairs are checkpointed in `<policy>-paired-scorecard.json`.
-
-Compare recall gain with added context, selection latency and usage. Token sizes
-and evidence budgets use the harness's **chars/4 estimate**, not exact provider
-tokenization; reported API usage is separate. Equal budget ceilings do not imply
-equal realized sizes. More evidence can hurt, and no optimal N is assumed.
-This is a one-shot recall experiment, not continuous-compaction, cache-efficiency
-or agent task-completion evidence. Native compaction defaults remain unchanged.
-Frozen files contain conversation data: keep them outside Git, just like source
-transcripts. Publish only aggregate results for private sessions.
-
-The [synthetic pipeline smoke](results/SCORECARD-2026-10-19-evidence.md) completed
-all pairs but hit 100% baseline recall, so it demonstrates no quality gain.
-
 ## Repeated-compaction simulation (`scripts/jev_cycles.py`)
 
 A one-shot recall score misses the failure mode of "decide, don't summarise"
@@ -197,3 +131,9 @@ one 200K run was stuck after 0.42M tokens of work, one transcript never fit.
   engine as production). A bare policy name (`current`) is closed-book — the
   summary with its recovery pointer unused — and scores 30+ pts lower on
   needle questions. Use it only when you specifically want that floor.
+# Summary and evidence study
+
+For the separate fixture-based paired study, see [STUDY.md](STUDY.md).
+Run it with `python -m evals.compaction.study`; it freezes summaries and Jev
+rankings before evaluating exact fields from the same fourteen-task corpus.
+

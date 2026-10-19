@@ -220,25 +220,9 @@ def generate_questions(messages, n: int, cache_path: Path) -> list:
     region = summarized_region(cc, messages)
     text = serialize_for_exam(region)
     raw = _call(QUESTION_PROMPT.format(n=n, transcript=text), max_tokens=4000)
-    questions = parse_question_bank(raw)[:n]
+    questions = _extract_json(raw)[:n]
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_text(json.dumps(questions, indent=1), encoding="utf-8")
-    return questions
-
-
-def parse_question_bank(raw: str) -> list:
-    """Accept an array or JSONL questions without rewriting their content."""
-    try:
-        questions = _extract_json(raw)
-    except json.JSONDecodeError:
-        questions = [json.loads(line) for line in raw.splitlines() if line.strip()]
-    if isinstance(questions, dict):
-        questions = [questions]
-    if not isinstance(questions, list) or any(
-        not isinstance(q, dict) or any(not isinstance(q.get(key), str) for key in ("q", "gold", "where"))
-        for q in questions
-    ):
-        raise ValueError("Question bank needs q/gold/where string fields")
     return questions
 
 
@@ -344,15 +328,11 @@ def _compress_with_policy(spec: dict, messages) -> tuple:
 
 
 def run_policy(name: str, spec: dict, messages, questions, out_dir: Path,
-               with_recovery: bool = False, *, prepared: tuple | None = None,
-               evidence: dict | None = None) -> dict:
+               with_recovery: bool = False) -> dict:
     before = copy.deepcopy(messages)
-    usage_before = dict(EVAL_USAGE)
     t0 = time.time()
-    compressed, comp, compaction_cost = prepared if prepared is not None else _compress_with_policy(spec, messages)
+    compressed, comp, compaction_cost = _compress_with_policy(spec, messages)
     elapsed = time.time() - t0
-    if prepared is not None:
-        elapsed = compaction_cost.get("shared_compress_seconds", 0)
     label = f"{name}+recovery" if with_recovery else name
     if compressed is None:
         summary = {"policy": label, "before_tokens": total_tokens(before), "after_tokens": None,
@@ -368,15 +348,13 @@ def run_policy(name: str, spec: dict, messages, questions, out_dir: Path,
     for m in compressed:
         c = m.get("content")
         if isinstance(c, str) and c:
-            surviving.add(c)
+            surviving.add(c[:200])
     archive = [
         m for m in before
-        if isinstance(m.get("content"), str) and m["content"] not in surviving
+        if isinstance(m.get("content"), str) and (m.get("content") or "")[:200] not in surviving
     ]
 
     context_text = serialize_for_exam(compressed, char_cap=700_000)
-    supplement = (evidence or {}).get("text", "")
-    context_text += supplement
     results = []
     for qa in questions:
         if with_recovery:
@@ -417,86 +395,20 @@ def run_policy(name: str, spec: dict, messages, questions, out_dir: Path,
     summary = {
         "policy": label,
         "before_tokens": total_tokens(before),
-        "after_tokens": total_tokens(compressed) + estimate_tokens({"content": supplement}),
+        "after_tokens": total_tokens(compressed),
         "after_msgs": len(compressed),
         "compress_seconds": round(elapsed, 1),
         "recall_pct": round(100 * sum(scored) / (2 * len(scored)), 1) if scored else 0.0,
         "scores": scored,
-        "eval_usage": {key: value - usage_before[key] for key, value in EVAL_USAGE.items()},
         "summary_error": getattr(comp, "_last_summary_error", None),
         **compaction_cost,
     }
-    if evidence is not None:
-        summary["evidence"] = {key: value for key, value in evidence.items() if key != "text"}
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / f"{label.replace('+', '_')}.json").write_text(json.dumps({"summary": summary, "results": results}, indent=1), encoding="utf-8")
     return summary
 
 
-def run_evidence_pairs(name, spec, messages, questions, out_dir, top_ns, budget_tokens, goal, chunk_chars,
-                       provider="openrouter", model=""):
-    """Freeze one native compression and one ranking for every paired condition."""
-    if spec.get("engine") == "jev":
-        raise ValueError("Evidence pairs require a native summary policy")
-    from dataclasses import asdict
-
-    from evals.compaction.evidence import collect_evidence, evidence_asker, rank_evidence, render_evidence, select_evidence
-    from evals.compaction.jev_arm import goal_from_messages
-
-    print(f"{name}: preparing one native compaction", flush=True)
-    started = time.monotonic()
-    prepared = _compress_with_policy(spec, messages)
-    compressed, _, cost = prepared
-    cost["shared_compress_seconds"] = round(time.monotonic() - started, 3)
-    if compressed is None:
-        raise ValueError("Evidence pairs require a successful native compaction")
-    if compressed == messages:
-        raise ValueError("Native compaction was a no-op; use a longer transcript or a smaller tail policy")
-    units = collect_evidence(messages, compressed, chunk_chars)
-    task = goal or goal_from_messages(messages)
-    from agent.redact import redact_sensitive_text
-
-    task = redact_sensitive_text(task, force=True, redact_url_credentials=True)
-    if not task.strip():
-        raise ValueError("Evidence ranking needs a task; supply --evidence-goal")
-    print(f"{name}: ranking {len(units)} original evidence units via {provider}", flush=True)
-    scores, usage = rank_evidence(units, task, evidence_asker(provider, model))
-    print(f"{name}: scored {len(scores)} units in {usage['requests']} requests", flush=True)
-    recent = {u.id: float(i) for i, u in enumerate(units)}
-    frozen = {"compressed": compressed, "compaction_cost": cost, "goal": task,
-              "candidates": [asdict(u) for u in units], "scores": scores, "ranking_usage": usage,
-              "protocol": {"top_ns": top_ns, "budget_tokens": budget_tokens, "chunk_chars": chunk_chars,
-                           "provider": provider, "model": model, "host_model": EVAL_MODEL,
-                           "source_sha256": hashlib.sha256(json.dumps(messages, sort_keys=True).encode()).hexdigest()}}
-    snapshot = json.dumps(frozen, ensure_ascii=False, sort_keys=True)
-    digest = hashlib.sha256(snapshot.encode()).hexdigest()
-    out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / f"{name}-frozen.json").write_text(snapshot + "\n", encoding="utf-8")
-    arms = [(name, {"text": "", "selected": [], "selector": "none"})]
-    for selector, ranking in (("jev", scores), ("recent", recent)):
-        for n in top_ns:
-            selected = select_evidence(units, ranking, n, budget_tokens)
-            text = render_evidence(selected)
-            arms.append((f"{name}_{selector}_top{n}", {
-                "text": text, "selected": [u.id for u in selected], "selector": selector,
-                "requested_n": n, "actual_n": len(selected),
-                "budget_tokens": budget_tokens, "added_tokens": estimate_tokens({"content": text}),
-            }))
-    results = []
-    for label, supplement in arms:
-        supplement.update(frozen_sha256=digest, ranking_usage=usage)
-        for recovery in (False, True):
-            result = run_policy(label, spec, messages, questions, out_dir, recovery,
-                                prepared=prepared, evidence=supplement)
-            results.append(result)
-            # Keep completed arms available if a later model request fails.
-            (out_dir / f"{name}-paired-scorecard.json").write_text(json.dumps(results, indent=1), encoding="utf-8")
-            print(json.dumps(result), flush=True)
-    return results
-
-
 def main():
-    global EVAL_MODEL
     ap = argparse.ArgumentParser()
     ap.add_argument("--transcript", required=True)
     ap.add_argument("--cap-tokens", type=int, default=500_000)
@@ -505,22 +417,7 @@ def main():
     ap.add_argument("--questions", type=int, default=15)
     ap.add_argument("--out", required=True)
     ap.add_argument("--also-uncompacted", action="store_true")
-    ap.add_argument("--model", default=EVAL_MODEL, help="host model used for native compression sizing; inference uses auxiliary.compression")
-    ap.add_argument("--evidence-top-n", type=int, nargs="+",
-                    help="opt-in native-summary pairs: baseline, Jev/recent Top N, each with/without recovery")
-    ap.add_argument("--evidence-budget", type=int, default=2000, help="additional evidence budget (chars/4 estimate)")
-    ap.add_argument("--evidence-chunk-chars", type=int, default=2000)
-    ap.add_argument("--evidence-goal", default="", help="task for selection; default: last three user prompts")
-    ap.add_argument("--evidence-provider", choices=("openrouter", "typesafe"), default="openrouter")
-    ap.add_argument("--evidence-model", default="", help="Jev model; defaults to the selected provider's alias")
     args = ap.parse_args()
-    EVAL_MODEL = args.model
-    if args.evidence_top_n is not None:
-        if min(args.evidence_top_n) <= 0 or args.evidence_budget <= 0 or args.evidence_chunk_chars <= 0:
-            ap.error("evidence counts, budget and chunk size must be positive")
-        if any(POLICIES.get(p.strip().removesuffix("+recovery"), {}).get("engine") == "jev"
-               for p in args.policies.split(",")):
-            ap.error("evidence pairs require native summary policies, not the Jev replacement engine")
 
     messages = load_transcript(args.transcript, cap_tokens=args.cap_tokens)
     out_dir = Path(args.out)
@@ -555,23 +452,12 @@ def main():
         summaries.append(ctl)
         print(json.dumps(ctl, indent=1))
 
-    paired = set()
     for name in args.policies.split(","):
         name = name.strip()
         with_recovery = name.endswith("+recovery")
         base = name[:-len("+recovery")] if with_recovery else name
         if base not in POLICIES:
             print(f"unknown policy {base}, skipping"); continue
-        if args.evidence_top_n is not None:
-            if base in paired:
-                continue
-            paired.add(base)
-            summaries.extend(run_evidence_pairs(
-                base, POLICIES[base], messages, questions, out_dir,
-                sorted(set(args.evidence_top_n)), args.evidence_budget, args.evidence_goal, args.evidence_chunk_chars,
-                args.evidence_provider, args.evidence_model,
-            ))
-            continue
         s = run_policy(base, POLICIES[base], messages, questions, out_dir,
                        with_recovery=with_recovery)
         summaries.append(s)

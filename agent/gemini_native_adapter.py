@@ -886,7 +886,7 @@ class GeminiNativeClient:
 
     def __init__(
         self, *, api_key: str | Callable[[], str], base_url: Optional[str] = None, default_headers: Optional[dict[str, str]] = None,
-        timeout: Any = None, http_client: Optional[httpx.Client] = None, default_query: Optional[dict[str, Any]] = None, **_: Any,
+        timeout: Any = httpx.USE_CLIENT_DEFAULT, http_client: Optional[httpx.Client] = None, default_query: Optional[dict[str, Any]] = None, **_: Any,
     ) -> None:
         if not callable(api_key) and not (isinstance(api_key, str) and api_key.strip()):
             raise RuntimeError(self.MISSING_KEY_ERROR)
@@ -896,9 +896,13 @@ class GeminiNativeClient:
         self._default_headers = dict(default_headers or {})
         self._custom_query = dict(default_query or {})
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create_chat_completion))
+        # The relay path injects the shared keepalive client, whose own socket defaults would otherwise
+        # swallow a caller-configured timeout: keep it and resolve requests against it.
+        self._request_timeout = timeout
         # read=1200: Gemini 4 hops can think for minutes; Google asks for a >=20 min read timeout (its
         # stream limit), and a shorter one cuts long-decode hops off mid-think.
-        self._http = http_client or httpx.Client(timeout=timeout or httpx.Timeout(connect=15.0, read=1200.0, write=30.0, pool=30.0))
+        self._http = http_client or httpx.Client(timeout=httpx.Timeout(connect=15.0, read=1200.0, write=30.0, pool=30.0)
+                                                if timeout is None or timeout is httpx.USE_CLIENT_DEFAULT else timeout)
         self._client = self._http  # Let the owner-safe watchdog traverse this adapter's socket pool.
 
     def close(self) -> None:
@@ -924,7 +928,23 @@ class GeminiNativeClient:
                 "User-Agent": f"{_API_CLIENT} (gemini-native)", "X-Goog-Api-Client": _API_CLIENT, **self._default_headers}
 
     def _http_error(self, response: httpx.Response, body_text: Optional[str] = None) -> GeminiAPIError:
-        return gemini_http_error(response, body_text=body_text, api_key=self.api_key, base_url=self.base_url)
+        from agent.gemini_routing import is_opencode_zen_base_url
+
+        # A relay holds its own credential kind, so Google's key fixes (free tier, legacy "Standard"
+        # key) are wrong advice for a key the user bought from the relay (#83753).
+        return gemini_http_error(response, body_text=body_text, api_key=self.api_key, base_url=self.base_url,
+                                 key_guidance=not is_opencode_zen_base_url(self.base_url))
+
+    def _request_headers(self, extra_headers: Optional[dict[str, str]]) -> httpx.Headers:
+        """Caller headers override the adapter's own, merged case-insensitively.
+
+        A caller header that differs from an adapter/default header only by case must replace it:
+        a plain dict merge sends both, and the relay then sees two values for one header name.
+        """
+        headers = httpx.Headers()
+        headers.update(self._headers())
+        headers.update(extra_headers or {})
+        return headers
 
     @staticmethod
     def _advance_stream_iterator(iterator: Iterator[_GeminiStreamChunk]) -> tuple[bool, Optional[_GeminiStreamChunk]]:
@@ -935,8 +955,10 @@ class GeminiNativeClient:
         self, *, model: str = "gemini-3.7-flash", messages: Optional[list[dict[str, Any]]] = None, stream: bool = False,
         tools: Any = None, tool_choice: Any = None, temperature: Optional[float] = None, max_tokens: Optional[int] = None,
         top_p: Optional[float] = None, stop: Any = None, response_format: Any = None, extra_body: Optional[dict[str, Any]] = None,
-        timeout: Any = None, extra_headers: Optional[dict[str, str]] = None, **_: Any,
+        timeout: Any = httpx.USE_CLIENT_DEFAULT, extra_headers: Optional[dict[str, str]] = None, **_: Any,
     ) -> Any:
+        if timeout is httpx.USE_CLIENT_DEFAULT:
+            timeout = self._request_timeout
         extra = extra_body if isinstance(extra_body, dict) else {}
         # Long-decode budget (Gemini 4, effort above high) raises the total cap; an explicit larger cap still wins.
         budget = extra.get("max_output_tokens")
@@ -963,7 +985,7 @@ class GeminiNativeClient:
         return translate_gemini_response(merge_hop_responses(hops) if len(hops) > 1 else hops[0], model=model)
 
     def _generate(self, url: str, request: dict[str, Any], timeout: Any, extra_headers: Optional[dict[str, str]] = None) -> dict[str, Any]:
-        response = self._http.post(url, json=request, headers={**self._headers(), **(extra_headers or {})}, timeout=timeout)
+        response = self._http.post(url, json=request, headers=self._request_headers(extra_headers), timeout=timeout)
         if response.status_code != 200:
             raise self._http_error(response)
         try:
@@ -984,7 +1006,8 @@ class GeminiNativeClient:
         resume, sends = None, 0
         while True:
             try:
-                headers = {**self._headers(), **(extra_headers or {}), "Accept": "text/event-stream"}
+                headers = self._request_headers(extra_headers)
+                headers["Accept"] = "text/event-stream"
                 with self._http.stream("POST", url, json=body, headers=headers, timeout=timeout) as response:
                     if response.status_code != 200:
                         raise self._http_error(response, read_streaming_error_body(response))

@@ -134,6 +134,7 @@ def _prepare_for_chat(monkeypatch, cli_mod, stub):
     stub._agent_status_print = lambda *_a, **_k: None
     stub._pending_title = None
     stub._auto_load_skills_result = None
+    stub._mark_automation_stale = lambda: None
 
 
 def _chat_cli(monkeypatch, conn):

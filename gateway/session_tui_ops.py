@@ -22,6 +22,7 @@ from hermes_state_runtime import RuntimeStoreError
 
 def handlers(connection):
     return {'session.save': partial(save_session, connection),
+            'session.export': partial(export_session, connection),
             'reload.env': partial(reload_env, connection),
             'delegation.pause': partial(pause_delegation, connection),
             'rollback.list': partial(rollback, connection, kind='list'),
@@ -79,6 +80,40 @@ async def save_session(connection, ref, params):
             raise RuntimeStoreError('storage_unavailable') from exc
         return {'file': str(path)}
     return await asyncio.to_thread(write)
+
+
+async def export_session(connection, ref, params):
+    """``session.export``: the ``/save`` transcript rendered for the CLIENT to write (json/md/html,
+    optional force-redaction). Nothing is written on the gateway host, so a remote Desktop and a
+    local Ink both save to the user's own disk (T10/T11)."""
+    _live_ref(connection, ref, params, {'session_id', 'profile', 'format', 'redact'}, 'session:read')
+    fmt, redact = params.get('format', 'json'), params.get('redact', False)
+    if not isinstance(fmt, str) or not isinstance(redact, bool):
+        raise RuntimeStoreError('invalid_params')
+    from hermes_cli.session_export import default_save_filename, normalize_save_format
+    try:
+        fmt = normalize_save_format(fmt)
+    except ValueError:
+        raise RuntimeStoreError('invalid_params') from None
+    authority = connection.authority
+    from gateway.session_ancillary import physical_target
+    target = physical_target(authority, ref)
+
+    def render():
+        from hermes_cli.session_export import load_save_snapshot, render_session_for_save
+        from hermes_state import SessionExportTooLargeError
+        try:
+            data = load_save_snapshot(authority.db, target, fmt)
+        except SessionExportTooLargeError as exc:
+            raise RuntimeStoreError('export_too_large') from exc
+        if not data:
+            raise RuntimeStoreError('not_found')
+        if redact:
+            from hermes_cli.session_export_md import redact_session_data
+            data = redact_session_data(data)
+        return render_session_for_save(data, fmt)
+    content = await asyncio.to_thread(render)
+    return {'format': fmt, 'filename': default_save_filename(target, fmt), 'content': content}
 
 
 async def reload_env(connection, ref, params):

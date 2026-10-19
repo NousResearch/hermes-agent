@@ -438,6 +438,21 @@ def test_reasoning_level_change_is_the_session_reasoning_mutation(make_agent):
     assert agent2.reasoning_config == {"enabled": False}
 
 
+def test_an_explicit_level_the_session_already_inherits_is_still_committed(make_agent):
+    """``/reasoning high`` (the rebuilt agent) or a model pick's ``--reasoning high`` while the session runs
+    high by inheritance: still the owner's reasoning mutation, so a later profile change can't move it. An
+    implicit re-derivation (/new, a one-turn restore) of the same level commits nothing."""
+    from types import SimpleNamespace
+    from hermes_cli.cli_model_switch_mixin import _apply_reasoning_after_switch
+    agent, client = make_agent([])
+    agent.connection.state(SID).info["reasoning_effort"] = "high"
+    GatewayAgent(connection=agent.connection, session_id=SID, reasoning_config={"enabled": True, "effort": "high"},
+                 push_reasoning=True)
+    _apply_reasoning_after_switch(SimpleNamespace(agent=agent), "high", persist_global=False)
+    agent.reasoning_config = {"enabled": True, "effort": "high"}
+    assert [p["payload"] for m, p in client.calls if m == "session.mutate"] == [{"effort": "high"}] * 2
+
+
 def test_a_config_resolved_effort_never_overrides_the_sessions_launch_policy(make_agent):
     """Building the agent with the CLI's config-resolved effort (no /reasoning pick) commits nothing:
     a resumed `-q --resume` must keep the session's frozen --reasoning, not the profile default."""
@@ -732,10 +747,10 @@ def test_a_transport_loss_at_submit_is_still_gateway_connection():
 
 
 def test_model_switch_is_the_session_model_mutation_and_a_rebuilt_agent_shows_it(make_agent):
-    """/model, /model --once and /new's reset to the config default call main's
-    ``agent.switch_model`` (#134889 M1). The gateway commits the target as a generation-fenced
-    ``session.mutate model`` (no key or endpoint leaves the CLI), and the agent main rebuilds for the
-    next turn reads the committed model from the session, not the old one."""
+    """A session-scoped ``/model`` calls ``agent.switch_model`` (#134889 M1). The gateway commits
+    the target as a generation-fenced ``session.mutate model`` (no key or endpoint leaves the CLI),
+    and the agent main rebuilds for the next turn reads the committed model from the session.
+    ``/model --once`` is not this path: that pick is one admission's ``model_override``."""
     agent, client = make_agent([], model="old-model", provider="openrouter")
     agent.switch_model(new_model="new-model", new_provider="anthropic", api_key="sk-local",
                        base_url="https://example.invalid", api_mode="anthropic_messages", capabilities=None)

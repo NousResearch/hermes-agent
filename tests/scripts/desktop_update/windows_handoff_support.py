@@ -130,3 +130,16 @@ def _wait_for_log(home: Path, needle: str, timeout: int = 90) -> str:
         assert time.monotonic() < deadline, f'{needle!r} never logged: {_log(home)}'
         time.sleep(0.1)
     return _log(home)
+
+
+_CHECKOUT_HOLDER = """
+import msvcrt, os, sys, time
+from pathlib import Path
+fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT | os.O_BINARY, 0o644)
+# offset 1 MiB: exactly hermes_cli/update_lock.py::_try_lock; 1 MiB + 1..16: one R5b lease byte
+os.lseek(fd, (1 << 20) + (int(sys.argv[3]) if len(sys.argv) > 3 else 0), os.SEEK_SET)
+msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+Path(sys.argv[2] + '.ready').write_text('1', encoding='utf-8')
+while not Path(sys.argv[2]).exists():
+    time.sleep(0.05)
+"""

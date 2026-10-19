@@ -154,3 +154,64 @@ def test_restored_rows_fail_closed_on_intake_and_deliver_only_via_a_unique_owner
     bare = SessionSource(platform=Platform.TELEGRAM, chat_id="42", chat_type="dm", user_id="42")
     assert solo.runner._intake_adapter_for(bare) is solo.runner._delivery_adapter_for(bare) is solo.primary
     assert solo.runner._intake_adapter_for(None) is None and solo.runner._delivery_adapter_for(None) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chat_id", ["1", "999"])
+@pytest.mark.parametrize("transport_state", ["connected", "reconnected", "offline"])
+async def test_detached_voice_resolves_secondary_transport_after_turn(
+    mux, tmp_path, monkeypatch, caplog, chat_id, transport_state,
+):
+    """TTS finishes after text, with no live source ref; identity still owns egress."""
+    import asyncio
+    import json
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+    from gateway.platforms.event import MessageEvent, MessageType
+
+    runner = mux.runner
+    runner._background_tasks = set()
+    source, _ = _live(mux, mux.team_b, chat_id, transport_profile="team_b")
+    event = MessageEvent(text="hi", source=source, message_type=MessageType.TEXT, message_id="m1")
+    runner._should_send_voice_reply = Mock(return_value=True)
+    mux.team_b._streaming_tts_turn_completed = lambda *_: False
+    mux.team_b.send_voice = AsyncMock(return_value=SimpleNamespace(success=True))
+    mux.primary.send_voice = AsyncMock()
+    started, release = asyncio.Event(), asyncio.Event()
+    audio = tmp_path / "reply.ogg"
+    audio.write_bytes(b"test transport payload")
+
+    async def synthesize(_tool, **_kwargs):
+        started.set()
+        await release.wait()
+        return json.dumps({"success": True, "file_path": str(audio)})
+
+    monkeypatch.setattr("gateway.run_voice.asyncio.to_thread", synthesize)
+    monkeypatch.setattr("gateway.run_voice.build_auto_tts_output_path", lambda *_: str(audio))
+    response = await runner._hmwa_deliver_turn_response(
+        event, source, None, "key", 1, {}, [], "reply", None, False,
+    )
+    assert response == "reply"
+    await asyncio.wait_for(started.wait(), 2)
+    # End the delivery call and drop live provenance while synthesis remains pending.
+    source._transport_adapter_ref = None
+    target = mux.team_b
+    if transport_state == "reconnected":
+        target = _stub(Platform.TELEGRAM, runner, "RECONNECTED")
+        target.send_voice = AsyncMock(return_value=SimpleNamespace(success=True))
+        runner._profile_adapters["team_b"][Platform.TELEGRAM] = target
+    elif transport_state == "offline":
+        runner._profile_adapters["team_b"] = {}
+        runner._profile_failed_platforms = {"team_b": {Platform.TELEGRAM: {}}}
+    tasks = tuple(runner._background_tasks)
+    release.set()
+    await asyncio.wait_for(asyncio.gather(*tasks), 2)
+    mux.primary.send_voice.assert_not_awaited()
+    if transport_state == "offline":
+        target.send_voice.assert_not_awaited()
+        assert "Auto voice reply has no delivery adapter" in caplog.text
+    else:
+        target.send_voice.assert_awaited_once()
+        assert target.send_voice.await_args.kwargs["chat_id"] == chat_id
+        if transport_state == "reconnected":
+            mux.team_b.send_voice.assert_not_awaited()

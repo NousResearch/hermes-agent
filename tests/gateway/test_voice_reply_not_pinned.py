@@ -91,3 +91,24 @@ async def test_deliver_turn_response_spawns_voice_reply_and_returns_text():
 
     assert delivered == "final reply"
     runner._spawn_voice_reply_task.assert_called_once_with(event, "final reply")
+
+
+@pytest.mark.asyncio
+async def test_voice_reply_logs_failed_send(caplog):
+    from types import SimpleNamespace
+
+    runner, adapter = _runner_with_adapter()
+    adapter.is_in_voice_channel.return_value = False
+    adapter.send_voice = AsyncMock(return_value=SimpleNamespace(success=False, error="upload refused"))
+    await runner._deliver_voice_reply(_event(), ["reply.ogg"])
+    assert "Auto voice reply send_voice failed: upload refused" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_voice_reply_logs_unsupported_adapter(caplog):
+    from types import SimpleNamespace
+
+    runner, _ = _runner_with_adapter()
+    runner.adapters = {Platform.TELEGRAM: SimpleNamespace()}
+    await runner._deliver_voice_reply(_event(), ["reply.ogg"])
+    assert "Auto voice reply adapter does not support send_voice" in caplog.text

@@ -109,6 +109,8 @@ def get_session_run_generation() -> int | None:
 # The current human turn text is transient host context for tools that need an
 # explicit user instruction. It is never inferred from a model tool argument.
 _TURN_USER_MESSAGE: ContextVar[str] = ContextVar("turn_user_message", default="")
+_API_TRANSFER_IDENTITY: ContextVar[tuple[str, str, str]] = ContextVar(
+    "api_transfer_identity", default=("", "", ""))
 
 
 def set_turn_user_message(message: str) -> None:
@@ -117,6 +119,20 @@ def set_turn_user_message(message: str) -> None:
 
 def get_turn_user_message() -> str:
     return _TURN_USER_MESSAGE.get()
+
+
+def set_api_transfer_identity(principal: str, family: str, conversation: str) -> None:
+    """Bind only a verified bearer request's API transfer identity to this turn."""
+    _API_TRANSFER_IDENTITY.set((principal, family, conversation))
+
+
+def get_api_transfer_identity() -> tuple[str, str, str]:
+    return _API_TRANSFER_IDENTITY.get()
+
+
+def get_ui_session_id() -> str:
+    value = _SESSION_UI_SESSION_ID.get()
+    return "" if value is _UNSET else str(value or "")
 
 
 @contextmanager
@@ -179,6 +195,7 @@ def set_session_vars(
     global _session_context_engaged
     _session_context_engaged = True
     _TURN_USER_MESSAGE.set("")
+    _API_TRANSFER_IDENTITY.set(("", "", ""))
     values = (
         platform, source, chat_id, chat_type, chat_name, thread_id, user_id, user_id_alt,
         user_name, scope_id, session_key, session_id, ui_session_id, message_id, profile,
@@ -202,6 +219,7 @@ def clear_session_vars(tokens: list) -> None:
     for var in _SESSION_VARS:
         var.set("")
     _TURN_USER_MESSAGE.set("")
+    _API_TRANSFER_IDENTITY.set(("", "", ""))
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
     _SESSION_HISTORY_DELIVERY.set(_UNSET)
     _runtime_cwd("clear_session_cwd")

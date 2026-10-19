@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -524,6 +525,7 @@ class _RunLaunch:
     browser_control_principal: Any
     browser_control_transport_family: Any
     turn_author: Optional[dict[str, Any]] = None  # memory-attribution label only; grants nothing
+    api_transfer_principal: str = ""
     admission: Any = None
 
     @property
@@ -802,6 +804,12 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
                 self._run_statuses, self._run_owners)
             return _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error)
         self._run_idempotency_ids.add(run_id)
+    expected_api_key = self._expected_api_key()
+    authorization = request.headers.get("Authorization", "")
+    bearer = authorization[7:].strip() if authorization.startswith("Bearer ") else ""
+    api_transfer_principal = (
+        self._derive_browser_control_principal(_api_server._api_request_profile.get() or "default")
+        if expected_api_key and hmac.compare_digest(bearer.encode(), expected_api_key.encode()) else "")
     launch = _RunLaunch(
         self, run_id, q, session_id, gateway_session_key, _declared_selected, user_message,
         conversation_history, session_history_delivery,
@@ -811,8 +819,9 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
             **{k: agent_overrides.get(k) for k in ("requested_model", "requested_provider", "model_options")}),
         request_profile=_api_server._api_request_profile.get(),
         browser_control_principal=_api_server._api_request_browser_control_principal.get(),
-        browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
-        turn_author=turn_author)
+        browser_control_transport_family=(_api_server._api_request_browser_control_transport_family.get() or
+                                          self._browser_control_transport_family(request)),
+        turn_author=turn_author, api_transfer_principal=api_transfer_principal)
     # A canonical Bot Chat that a Desktop holds live is that Desktop's to run: executing here would
     # be a second writer beside its lease (#114959). The owner's mailbox takes the turn and its
     # receipt drives this run's status, so `peer run` keeps its run_id and `peer status` still works.
@@ -862,7 +871,8 @@ def _served_runtime(agent) -> dict[str, str]:
 
 def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_server):
     """Executor-thread body of one run; returns ``(result, usage, served_runtime)``."""
-    from gateway.session_context import clear_session_vars
+    from gateway.session_context import (clear_session_vars, set_api_transfer_identity,
+                                         set_turn_user_message)
     from gateway.hosted_room_execution_policy import (
         RoomExecutionPolicy, bind_room_execution_policy, reset_room_execution_policy)
     # No eager slash-worker pre-warm: slash.exec spawns one on demand (its error path already relies on that
@@ -900,6 +910,11 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
                 session_history_delivery="1" if run.session_history_delivery else "")
             if session_tokens:
                 resets.append((session_tokens, clear_session_vars))
+            if run.api_transfer_principal:
+                set_turn_user_message(run.user_message)
+                set_api_transfer_identity(run.api_transfer_principal,
+                                          run.browser_control_transport_family,
+                                          run.gateway_session_key or run.session_id)
             if run.agent_kwargs["room_dispatch"] is not None:
                 policy = RoomExecutionPolicy.from_mapping(run.agent_kwargs["room_execution_policy"] or {})
                 resets.append((bind_room_execution_policy(policy), reset_room_execution_policy))

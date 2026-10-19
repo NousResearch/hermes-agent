@@ -238,13 +238,18 @@ class ToolInvocationContext:
     browser_control_provider: str = ""
     browser_control_subject: str = ""
     user_message: str = ""
+    ui_session_id: str = ""
+    api_control_principal: str = ""
+    api_control_transport_family: str = ""
+    api_conversation_key: str = ""
 
 
 def _current_tool_invocation_context() -> ToolInvocationContext:
     """Snapshot task-local gateway identity for one tool invocation."""
     try:
-        from gateway.session_context import (browser_control_identity, get_session_env,
-                                             get_session_run_generation, get_turn_user_message)
+        from gateway.session_context import (browser_control_identity, get_api_transfer_identity,
+                                             get_session_env, get_session_run_generation,
+                                             get_turn_user_message, get_ui_session_id)
     except Exception:
         return ToolInvocationContext()
 
@@ -252,6 +257,7 @@ def _current_tool_invocation_context() -> ToolInvocationContext:
         return str(get_session_env(name, "") or "")
 
     browser_control_provider, browser_control_subject = browser_control_identity()
+    api_principal, api_family, api_conversation = get_api_transfer_identity()
     from agent.delegation_context import is_delegated_child_process_context
     delegated_child = is_delegated_child_process_context()
     return ToolInvocationContext(
@@ -269,6 +275,10 @@ def _current_tool_invocation_context() -> ToolInvocationContext:
         browser_control_provider="" if delegated_child else browser_control_provider,
         browser_control_subject="" if delegated_child else browser_control_subject,
         user_message="" if delegated_child else get_turn_user_message(),
+        ui_session_id="" if delegated_child else get_ui_session_id(),
+        api_control_principal="" if delegated_child else api_principal,
+        api_control_transport_family="" if delegated_child else api_family,
+        api_conversation_key="" if delegated_child else api_conversation,
     )
 
 

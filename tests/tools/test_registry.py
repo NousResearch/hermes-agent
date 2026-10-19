@@ -33,7 +33,8 @@ def _make_schema(name="test_tool"):
 class TestRegisterAndDispatch:
     def test_delegated_child_does_not_inherit_parent_host_instruction(self):
         from agent.delegation_context import delegated_child_context
-        from gateway.session_context import clear_session_vars, set_session_vars, set_turn_user_message
+        from gateway.session_context import (clear_session_vars, set_api_transfer_identity,
+                                             set_session_vars, set_turn_user_message)
         from tools.registry import _current_tool_invocation_context
 
         tokens = set_session_vars(profile="alpha", platform="desktop", session_key="parent-chat",
@@ -41,6 +42,7 @@ class TestRegisterAndDispatch:
                                   browser_control_subject="user")
         try:
             set_turn_user_message("Transfer ISSUE-1 to this chat")
+            set_api_transfer_identity("principal:alpha", "local-api", "conversation")
             parent = _current_tool_invocation_context()
             with delegated_child_context("child-session"):
                 child = _current_tool_invocation_context()
@@ -50,6 +52,8 @@ class TestRegisterAndDispatch:
             assert child.user_message == ""
             assert child.browser_control_provider == ""
             assert child.browser_control_subject == ""
+            assert child.api_control_principal == ""
+            assert child.api_conversation_key == ""
         finally:
             clear_session_vars(tokens)
 

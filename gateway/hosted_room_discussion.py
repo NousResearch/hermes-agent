@@ -233,8 +233,10 @@ def _validate_member_target(value: Any, *, profile: str, known_profiles: set[str
     target = _exact_fields(value, label=f"member {index} {kind} target", required=_TARGET_FIELDS[kind])
     target_profile = _identifier(target["profile"], label=f"member {index} target profile")
     if kind == "local":
-        if target_profile != profile or profile not in known_profiles:
-            raise DiscussionValidationError(f"member {index} local target does not match a local profile")
+        if target_profile != profile:
+            raise DiscussionValidationError(f"member {index} local target profile does not match member profile")
+        if profile not in known_profiles:
+            raise DiscussionValidationError(f"member {index} profile '{profile}' is not local to this gateway")
         return {"kind": "local", "profile": profile}
     if target_profile != profile:
         raise DiscussionValidationError(f"member {index} peer target profile does not match member profile")

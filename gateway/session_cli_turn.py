@@ -39,19 +39,25 @@ def admit_cli_turn(params):
             committed['api_text'] = api_text
     override = params.get('model_override')
     if override is not None:
-        if (not isinstance(override, dict) or set(override) - {'model', 'provider'}
+        from hermes_constants import parse_reasoning_effort
+        if (not isinstance(override, dict) or set(override) - {'model', 'provider', 'reasoning'}
                 or not isinstance(override.get('model'), str) or not override['model'].strip()
-                or not isinstance(override.get('provider', ''), str)):
+                or not isinstance(override.get('provider', ''), str)
+                or ('reasoning' in override and (not isinstance(override['reasoning'], str)
+                                                 or parse_reasoning_effort(override['reasoning']) is None))):
             raise RuntimeStoreError('invalid_params')
+        # ``reasoning``: ``/model B --once --reasoning X`` runs X for this admission only; the session's
+        # reasoning policy (and its ``session_pins``) is never written.
         committed['model_override'] = {'model': override['model'].strip(),
-                                       **({'provider': override['provider']} if override.get('provider') else {})}
+                                       **({'provider': override['provider']} if override.get('provider') else {}),
+                                       **({'reasoning': override['reasoning']} if 'reasoning' in override else {})}
     batch = params.get('clarify_batch')
     if batch is not None and type(batch) is not bool:
         raise RuntimeStoreError('invalid_params')
     if batch:
-        # The submitting viewer is main's HermesCLI, which answers the clarify tool's whole batch
-        # in one ``clarify`` server request (its batch panel). Other viewers of a ``cli``-source
-        # session (an ACP editor, a raw WebSocket client) answer per-question cards.
+        # The submitting viewer answers the clarify tool's whole batch in one ``clarify`` server
+        # request (main's batch panel: classic CLI, Ink TUI). Viewers that never set it (an ACP
+        # editor, a raw WebSocket client) answer per-question cards.
         committed['clarify_batch'] = True
     return {'cli_turn_v1': committed} if committed else {}
 
@@ -100,13 +106,30 @@ def one_turn_runtime(override, model, runtime_kwargs, config):
     if not result.success:
         raise RuntimeError(result.error_message or f"model {override['model']!r} could not be resolved")
     runtime = dict(runtime_kwargs)
-    if result.target_provider != runtime_kwargs.get('provider'):
-        # The previous provider's pool and ACP command belong to that provider only.
-        runtime.update(credential_pool=None, command=None, args=[])
-    runtime.update(provider=result.target_provider, requested_provider=result.target_provider,
-                   api_key=result.api_key, base_url=result.base_url, api_mode=result.api_mode or None,
-                   request_overrides=dict(result.request_overrides or {}),
-                   capabilities=dict(result.runtime_capabilities or {}))
+    current_provider = runtime_kwargs.get('provider') or ''
+    same_provider = (result.target_provider or '').strip().lower() == current_provider.strip().lower()
+    if same_provider and not result.resolved_via_alias:
+        # A plain model pick on the session's provider: the explicit provider re-resolved that provider's
+        # default endpoint and key, and the session already has both (a mirror, a proxy, a pool), so keep
+        # them. The wire follows the target only where the provider picks it per model (Copilot, Nous
+        # Portal, OpenCode; ``_rederive_per_model_route``); otherwise ``result.api_mode`` describes the
+        # default host, not this session's endpoint, and the session's wire stays.
+        from hermes_cli.model_switch import model_derived_api_mode
+        from hermes_cli.models import normalize_opencode_base_url, opencode_provider_family
+        if model_derived_api_mode(result.target_provider, result.new_model) is not None and result.api_mode:
+            runtime['api_mode'] = result.api_mode
+        api_mode = runtime.get('api_mode') or None
+        runtime['api_mode'] = api_mode
+        if runtime.get('base_url') and opencode_provider_family(result.target_provider):
+            runtime['base_url'] = normalize_opencode_base_url(result.target_provider, api_mode, runtime['base_url'])
+    else:
+        # A different provider, or an alias that names its own endpoint and key (``model_aliases``), does
+        # not keep this session's pool, endpoint, or key: the route ``switch_model`` resolved runs whole.
+        runtime.update(credential_pool=None, command=None, args=[],
+                       api_key=result.api_key, base_url=result.base_url, api_mode=result.api_mode or None,
+                       request_overrides=dict(result.request_overrides or {}),
+                       capabilities=dict(result.runtime_capabilities or {}))
+    runtime.update(provider=result.target_provider, requested_provider=result.target_provider)
     return result.new_model, runtime
 
 
@@ -132,9 +155,13 @@ def classic_cli_turn(turn):
 
 
 def clarify_batch_turn(turn):
-    """The clarify tool's batch goes to main's batch panel as one request: a classic-CLI turn that
-    the classic CLI itself submitted (``clarify_batch`` committed with its admission)."""
-    return classic_cli_turn(turn) and bool(cli_turn(getattr(turn._ctx, 'inbound_message_id', None)).get('clarify_batch'))
+    """The clarify tool's batch goes to main's batch panel as one request: a local-viewer turn whose
+    submitter declared it answers the whole set (``clarify_batch`` committed with its admission).
+    Main's classic CLI, Ink TUI and Desktop all showed every question at once (TUI-18); a viewer that
+    never asks (an ACP editor, a raw WebSocket client) keeps one ``clarify.request`` card per question."""
+    from gateway.run_turn_progress import local_viewer_turn
+    return local_viewer_turn(turn) and bool(
+        cli_turn(getattr(turn._ctx, 'inbound_message_id', None)).get('clarify_batch'))
 
 
 def take_cli_result_fields(result, *, aux_before=None, session_db=None, session_id=None):
@@ -166,6 +193,16 @@ def one_turn_route(turn, policy, model, runtime_kwargs):
     from gateway.session_authorities import active_authority
     config = policy.config(active_authority(turn._runner)) if policy else turn._ctx.user_config
     return one_turn_runtime(override, model, runtime_kwargs, config)
+
+
+def one_turn_reasoning(turn, reasoning_config):
+    """The executing admission's one-turn reasoning level (``model_override.reasoning``), else
+    *reasoning_config* (the session's)."""
+    override = cli_turn(turn._ctx.inbound_message_id).get('model_override') or {}
+    if 'reasoning' not in override:
+        return reasoning_config
+    from hermes_constants import parse_reasoning_effort
+    return parse_reasoning_effort(override['reasoning']) or reasoning_config
 
 
 def run_classic_cli_turn(turn, run):

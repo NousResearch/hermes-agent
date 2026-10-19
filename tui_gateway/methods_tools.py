@@ -504,9 +504,13 @@ def _run_plugin_command(handler, arg: str, session=None) -> str:
     saw ``""`` or the launch process's inherited values. Same class as the messaging gateway's
     #108698; ``_set_session_context`` is the turn path's own seam."""
     plugins = _tools_mod("hermes_cli.plugins")
-    tokens = _set_session_context(session.get("session_key", "") or "", cwd=str(session.get("cwd") or "")) if session else []
+    invoke = _tools_mod("hermes_cli.plugin_command_dispatch").invoke_plugin_command
+    key = str(session.get("session_key") or "") if session else ""
+    tokens = _set_session_context(key, cwd=str(session.get("cwd") or "")) if session else []
+    context = {"source": None, "session_key": key, "platform": _session_source(session),
+               "session_id": getattr(session.get("agent"), "session_id", None) or key if session else ""}
     try:
-        return str(plugins.resolve_plugin_command_result(handler(arg)) or "")
+        return str(plugins.resolve_plugin_command_result(invoke(handler, arg, **context)) or "")
     finally:
         _clear_session_context(tokens)
 
@@ -865,7 +869,8 @@ def _cmd_undo(rid, params, session, name, arg):
             lambda: hasattr(agent, "_invalidate_system_prompt") and agent._invalidate_system_prompt(),
             lambda: hasattr(agent, "_last_flushed_db_idx") and setattr(agent, "_last_flushed_db_idx", len(active)),
         ):
-            with contextlib.suppress(Exception):
+            # The session's profile scope: a multiplexed manager refuses a hook naming no profile (#140058).
+            with contextlib.suppress(Exception), _session_profile_runtime_scope(session):
                 step()
     _tui_model_friction("undo", session, turns_undone)
     turn_word = "turn" if turns_undone == 1 else "turns"
@@ -1126,6 +1131,9 @@ def _(rid, params: dict, session) -> dict:
     target, file_path = params.get("hash", ""), params.get("file_path", "")
     if not target:
         return _err(rid, 4014, "hash required")
+    if params.get("all") is not None and not isinstance(params["all"], bool):  # the owner's rule: null is omitted
+        return _err(rid, 4001, "invalid_params",
+                    data={"reason": "invalid_params", "field": "all", "detail": "must be a boolean"})
     # Full-history rollback mutates session history → rejected mid-turn (prompt.submit
     # would drop the agent's output or clobber it). File-scoped only touches disk.
     if not file_path and session.get("running"):
@@ -1134,7 +1142,9 @@ def _(rid, params: dict, session) -> dict:
     def go(mgr, cwd):
         if reason := _container_checkpoint_refusal(session, mgr, cwd):
             return {"success": False, "error": reason}
-        result = mgr.restore(cwd, _resolve_checkpoint_hash(mgr, cwd, target), file_path=file_path or None)
+        # A whole-tree restore keeps the user's hand-edits unless ``all`` (main's --all), as on the owner.
+        result = mgr.restore(cwd, _resolve_checkpoint_hash(mgr, cwd, target), file_path=file_path or None,
+                             safe=not file_path and params.get("all") is not True)
         if result.get("success") and not file_path:
             removed = 0
             with session["history_lock"]:

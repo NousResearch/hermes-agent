@@ -2,6 +2,7 @@ import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process'
 import { statSync } from 'node:fs'
 import path from 'node:path'
 
+import type { GatewayTicketPurpose } from './local-gateway'
 import { hiddenWindowsChildOptions } from './windows-child-options'
 
 interface TicketEndpoint {
@@ -77,7 +78,7 @@ class TicketBridge {
     this.child.on('close', () => this.dispose())
   }
 
-  request(endpoint: TicketEndpoint, purpose: 'interactive' | 'native-http' | 'native-profile-create'): Promise<string> {
+  request(endpoint: TicketEndpoint, purpose: GatewayTicketPurpose): Promise<string> {
     clearTimeout(this.idleTimer)
 
     return new Promise((resolve, reject) => {
@@ -238,7 +239,7 @@ export function createGatewayTicketResolver(resolveBackend: () => Promise<Resolv
   let cached: Promise<{ command: string; env?: NodeJS.ProcessEnv }> | undefined
   let cachedGeneration = -1
 
-  return async (endpoint: TicketEndpoint, purpose: 'interactive' | 'native-http' | 'native-profile-create'): Promise<string> => {
+  return async (endpoint: TicketEndpoint, purpose: GatewayTicketPurpose): Promise<string> => {
     const generation = bridgeGeneration
 
     if (!cached || cachedGeneration !== generation) {
@@ -264,7 +265,7 @@ export function mintGatewayTicketWithPython(
   backend: { command: string; env?: NodeJS.ProcessEnv },
   cwd: string,
   endpoint: TicketEndpoint,
-  purpose: 'interactive' | 'native-http' | 'native-profile-create'
+  purpose: GatewayTicketPurpose
 ): Promise<string> {
   const env = { ...process.env, ...backend.env, HERMES_HOME: endpoint.profile_id,
     PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' }

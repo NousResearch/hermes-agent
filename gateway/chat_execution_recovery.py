@@ -447,10 +447,12 @@ class ChatExecutionStore:
             if not claim or not claim["session_id"]:
                 db.rollback(); return denied
             keys = self._lineage_keys(db, session_key)
+            ancestor = db.execute("SELECT 1 FROM session_key_lineage WHERE child_key=? LIMIT 1",
+                                  (session_key,)).fetchone()
             # Core cannot prove that another Linear issue does not own a later
-            # segment of this physical chat. Refuse the whole transfer before
+            # or earlier segment of this physical chat. Refuse before
             # fencing any segment; the plugin must refuse before preparing intent.
-            if len(keys) != 1:
+            if ancestor or len(keys) != 1:
                 db.rollback(); return {**denied, "reason": "compressed_lineage"}
             marks = ",".join("?" for _ in keys)
             fences = {row["session_key"]: row for row in db.execute(

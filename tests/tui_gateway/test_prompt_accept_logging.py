@@ -83,6 +83,29 @@ def turn_env(turn_stubs, monkeypatch):
 def _records(caplog, needle):
     return [r for r in caplog.records if needle in r.getMessage()]
 
+
+@pytest.mark.parametrize("correction_after_stop", [False, True])
+def test_stop_settles_accepted_correction_claim_before_followup_dispatch(tmp_path, correction_after_stop):
+    from gateway.chat_execution_recovery import ChatExecutionStore
+    from tui_gateway.prompt_turn import _run_post_turn_followups
+    from tui_gateway.session_auto_continue import _abandon_queued_chat_submits
+
+    store = ChatExecutionStore(tmp_path)
+    assert store.start_local_worker("gw-session-key", "actual-turn") == 1
+    assert store.worker_finished("gw-session-key", 1)
+    assert store.begin_submit("gw-session-key", "accepted-steer")
+    session = _session(profile_home=tmp_path, _turn_cancel_requested=True,
+                       _chat_pending_submit_ids={"accepted-steer"})
+    if not correction_after_stop:
+        session["_chat_followup_corrections"] = [("gw-session-key", "accepted-steer")]
+    with session["history_lock"]:
+        _abandon_queued_chat_submits(session)
+    if correction_after_stop:
+        session["_chat_followup_corrections"] = [("gw-session-key", "accepted-steer")]
+    _run_post_turn_followups("rid", "ui-sid", session, {"pending_steer": "correction"}, None)
+    assert not store.submit_claims_active("gw-session-key", ("accepted-steer",))
+    assert store.retire_for_handoff("gw-session-key", 1, "handoff")["status"] == "retired"
+
 SECRETISH_PROMPT = "please rotate QDRANT_API_KEY=hunter2-super-secret now"
 
 def test_accepted_and_finished_records_on_success(turn_env, caplog):

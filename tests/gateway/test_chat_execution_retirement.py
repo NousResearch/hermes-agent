@@ -110,7 +110,23 @@ def test_real_desktop_compression_lineage_refuses_retirement_without_fencing_oth
     assert store.worker_finished("compressed-key", 1)
     assert store.lineage_keys("old-key") == ("old-key", "compressed-key")
     assert store.retire_for_handoff("old-key", 1, "handoff")["status"] == "blocked"
+    assert store.retire_for_handoff("compressed-key", 1, "handoff")["reason"] == "compressed_lineage"
     assert store.start_local_worker("compressed-key", "late-compressed") == 2
+
+
+def test_active_compression_child_cannot_retire_while_ancestor_resource_is_live(tmp_path):
+    store = ChatExecutionStore(tmp_path)
+    assert store.start_local_worker("parent", "parent-session") == 1
+    assert store.reserve_concurrent_tool_resource("parent", 1, "delegation", "async_delegation_thread")
+    assert store.start_concurrent_tool_resource("parent", 1, "delegation", "parent-session", "async_delegation_thread")
+    assert store.worker_finished("parent", 1)
+    assert store.link_session_keys("parent", "child")
+    assert store.start_local_worker("child", "child-session") == 1
+    assert store.worker_finished("child", 1)
+    receipt = store.retire_for_handoff("child", 1, "handoff")
+    assert receipt["status"] == "blocked"
+    assert receipt["reason"] == "compressed_lineage"
+    assert store.start_local_worker("parent", "late-parent") == 2
 
 
 def test_compute_host_rotation_frame_refuses_old_key_retirement(monkeypatch, tmp_path):

@@ -145,7 +145,7 @@ def _ac_inflight_original(session: dict) -> str:
 
 
 def _abandon_queued_chat_submits(session: dict) -> None:
-    """Settle claims for queued turns cancelled before they can be dispatched."""
+    """Settle queued and accepted correction claims cancelled before dispatch."""
     from gateway.chat_execution_recovery import ChatExecutionStore
     from hermes_constants import get_process_hermes_home
     store = ChatExecutionStore(session.get("profile_home") or get_process_hermes_home())
@@ -157,6 +157,9 @@ def _abandon_queued_chat_submits(session: dict) -> None:
             for submit_id in entry.get("_chat_submit_ids") or ():
                 store.abandon_submit(str(entry.get("_chat_submit_key") or key), submit_id)
                 session.get("_chat_pending_submit_ids", set()).discard(submit_id)
+    for source_key, submit_id in session.pop("_chat_followup_corrections", []):
+        store.abandon_submit(source_key, submit_id)
+        session.get("_chat_pending_submit_ids", set()).discard(submit_id)
 
 
 def _enqueue_prompt(session: dict, text: Any, transport: Any, image_paths: list[str] | None = None,

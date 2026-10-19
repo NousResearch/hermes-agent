@@ -456,6 +456,9 @@ def _run_post_turn_followups(
                 return
         with session["history_lock"]:
             if session.get("_turn_cancel_requested"):
+                for source_key, submit_id in corrections:
+                    store.abandon_submit(source_key, submit_id)
+                    session.get("_chat_pending_submit_ids", set()).discard(submit_id)
                 return
             envelope = _enqueue_prompt(session, steer, session.get("transport"))
             if envelope is not None and corrections:

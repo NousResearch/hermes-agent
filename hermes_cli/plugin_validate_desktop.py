@@ -14,9 +14,9 @@ from pathlib import Path
 from typing import List, Tuple
 
 # (rule, regex) applied to comment-stripped source; every hit fails the "desktop surface" check.
-# ``X.prototype.y =`` is checked separately (``_foreign_prototype_writes``): it fails only when ``X``
-# is not a class/function the file declares itself, because a bundled library setting fields on its
-# own classes (three.js: ``Vector2.prototype.isVector2 = true``) is not reaching into the renderer.
+# ``X.prototype.y =`` is checked separately (``_foreign_prototype_writes``): it passes only where ``X``
+# is provably the file's own class/function, because a bundled library setting fields on its own
+# classes (three.js: ``Vector2.prototype.isVector2 = true``) is not reaching into the renderer.
 _FORBIDDEN: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("prototype patching",
      re.compile(r"\bObject\.definePropert(?:y|ies)\(\s*[\w$.]+\.prototype\b")),
@@ -81,11 +81,6 @@ def _mask_regex_literals(source: str) -> str:
 
 
 _PROTOTYPE_WRITE = re.compile(r"\b([A-Za-z_$][\w$]*)\.prototype\.[\w$]+\s*=[^=]")
-# ``class X``/``function X`` anywhere, plus ``Y = class [X]`` / ``Y = function [X]`` (bundlers emit
-# ``var Vector2 = class _Vector2 {...}`` and the methods then write ``_Vector2.prototype``).
-_DECLARED_NAME = re.compile(
-    r"(?<![\w$.])([A-Za-z_$][\w$]*)\s*=\s*(?:class|function)\b(?:\s+([A-Za-z_$][\w$]*))?"
-    r"|\b(?:class|function)\s+([A-Za-z_$][\w$]*)")
 _RENDERER_GLOBAL_NAMES = (
     r"Object|Function|Array|String|Number|Boolean|Symbol|Promise|RegExp|Date|Error|JSON|Map|Set"
     r"|WeakMap|WeakSet|Proxy|Reflect|Storage|Window|Document|Node|EventTarget|Event|Location|History"
@@ -94,25 +89,70 @@ _RENDERER_GLOBAL_NAMES = (
 # A regex cannot see scope, so a same-named local declaration elsewhere in the file must not excuse
 # a write to a renderer global: these receivers always fail, declared or not.
 _RENDERER_GLOBAL = re.compile(rf"^(?:{_RENDERER_GLOBAL_NAMES})$")
-# ...and neither may an alias of one (``const S = window.Storage``, ``{ Storage: S } = window``): a
-# class named ``S`` declared in some other scope of the file would otherwise excuse ``S.prototype``.
-_GLOBAL_ALIAS = re.compile(
-    rf"(?<![\w$.])([A-Za-z_$][\w$]*)\s*=\s*(?:(?:window|globalThis|self)\s*\.\s*)?(?:{_RENDERER_GLOBAL_NAMES})"
-    r"(?![\w$(])")
-# Destructuring counts only when the source is the global object itself: an ordinary constructor
-# registry (``{ Array: Track }``) names a global as a KEY and must not turn ``Track`` into an alias.
-_GLOBAL_DESTRUCTURE = re.compile(r"\{([^{}]*)\}\s*=\s*(?:window|globalThis|self)(?![\w$.])")
-_DESTRUCTURED_GLOBAL = re.compile(rf"\b(?:{_RENDERER_GLOBAL_NAMES})\s*:\s*([A-Za-z_$][\w$]*)")
+# A regex cannot see scope, and minifiers reuse one-letter names (three.js minified is
+# ``class s{constructor(){s.prototype.isVector2=!0}}`` beside a dozen unrelated ``s=`` locals), so
+# file-wide name checks cannot decide. The write passes only where ``X`` provably IS the class:
+# inside the body of ``class X``/``function X``, or after such a declaration statement in the same
+# block, with nothing rebinding ``X`` in between. ``window["Storage"]``, ``(0, window.Storage)`` and every
+# other aliasing spelling then fail by default, wherever an unrelated ``class X`` lives.
+_OWN_DECLARATION = r"(?:\bclass\s+{0}\b[^{{]*|\bfunction\s*\*?\s*{0}\s*\([^)]*\)\s*)\{{"
+# ``var X = class {...}`` / ``X = function () {...}``: what bundlers emit; binds ``X`` in its block.
+_ASSIGNED_DECLARATION = (r"(?<![\w$.]){0}\s*=\s*(?:class\b[^{{]*|function\s*\*?\s*[\w$]*\s*\([^)]*\)\s*)\{{")
+_REBINDING = r"(?<![\w$.]){0}\s*=(?![=>])|(?:\b(?:let|const|var|class|function)\s+|[(,{{]\s*(?:\.\.\.)?){0}\s*[,)=}}:]"
+_STRING_OR_REGEX = re.compile(_JS_STRING + r"|`(?:[^`\\]|\\.)*`|" + _REGEX_LITERAL.pattern)
+
+
+def _brace_pairs(source: str) -> dict[int, int]:
+    """``{`` offset -> matching ``}`` offset, ignoring braces inside strings and regex literals."""
+    masked = _STRING_OR_REGEX.sub(lambda m: " " * len(m.group(0)), source)
+    pairs: dict[int, int] = {}
+    stack: list[int] = []
+    for i, ch in enumerate(masked):
+        if ch == "{":
+            stack.append(i)
+        elif ch == "}" and stack:
+            pairs[stack.pop()] = i
+    return pairs
+
+
+def _enclosing_block_end(pairs: dict[int, int], at: int, size: int) -> int:
+    """End of the innermost ``{...}`` containing *at* (``size`` at top level)."""
+    ends = [close for open_, close in pairs.items() if open_ < at < close]
+    return min(ends) if ends else size
+
+
+def _own_class_write(source: str, name: str, at: int, pairs: dict[int, int]) -> bool:
+    """The write is inside ``X``'s own body (any declaration form), or follows a ``class X`` /
+    ``function X`` STATEMENT in the same block; either way with no rebinding of ``X`` in between."""
+    escaped = re.escape(name)
+    rebinding = re.compile(_REBINDING.format(escaped))
+    named = re.compile(_OWN_DECLARATION.format(escaped))
+    assigned = re.compile(_ASSIGNED_DECLARATION.format(escaped))
+    decls = sorted([(d, False) for d in named.finditer(source, 0, at)] + [(d, True) for d in assigned.finditer(source, 0, at)],
+                   key=lambda item: item[0].start())
+    for decl, is_assignment in decls:
+        body = decl.end() - 1
+        close = pairs.get(body, -1)
+        if close > at:
+            if not rebinding.search(source, body + 1, at):
+                return True
+            continue
+        # A class EXPRESSION's own name is visible only in its body; a statement or ``X = class``
+        # binds ``X`` for the rest of its block.
+        statement = is_assignment or not re.search(
+            r"[=(,:?&|]\s*$|\breturn\s*$", source[max(0, decl.start() - 20):decl.start()])
+        if (statement and close != -1 and _enclosing_block_end(pairs, decl.start(), len(source)) > at
+                and not rebinding.search(source, close + 1, at)):
+            return True
+    return False
 
 
 def _foreign_prototype_writes(source: str) -> list[int]:
-    """Offsets of ``X.prototype.y =`` where ``X`` is a renderer global, an alias of one, or not
-    declared in the file."""
-    declared = {name for names in _DECLARED_NAME.findall(source) for name in names if name}
-    aliases = set(_GLOBAL_ALIAS.findall(source)) | {
-        name for body in _GLOBAL_DESTRUCTURE.findall(source) for name in _DESTRUCTURED_GLOBAL.findall(body)}
-    return [m.start() for m in _PROTOTYPE_WRITE.finditer(source)
-            if m.group(1) not in declared or m.group(1) in aliases or _RENDERER_GLOBAL.match(m.group(1))]
+    """Offsets of ``X.prototype.y =`` that are not provably on ``X``'s own class (see above)."""
+    writes = [(m.start(), m.group(1)) for m in _PROTOTYPE_WRITE.finditer(source)]
+    pairs = _brace_pairs(source) if writes else {}
+    return [at for at, name in writes
+            if _RENDERER_GLOBAL.match(name) or not _own_class_write(source, name, at, pairs)]
 
 
 def desktop_surface_findings(source: str) -> list[tuple[str, int]]:

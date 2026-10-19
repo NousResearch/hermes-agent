@@ -524,6 +524,10 @@ export const jaOverrides = {
       sessionDensityCompact: 'コンパクト',
       sessionDensityComfortable: '標準',
       sessionDensityDetailed: '詳細',
+      powerUsageTitle: '電力使用量',
+      powerUsageDesc: 'より単純なウィジェットで CPU 使用量を削減します',
+      powerUsageNormal: '標準',
+      powerUsageLow: '低',
       tabStripTitle: 'タブバー',
       tabStripDesc:
         'ゾーンの上にタブを表示します。自動では、他にチャットやタイルのゾーンがない限り、ペインが1つのときに隠します。',

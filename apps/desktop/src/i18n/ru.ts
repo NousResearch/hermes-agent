@@ -524,6 +524,10 @@ export const ruOverrides = {
       sessionDensityCompact: 'Компактно',
       sessionDensityComfortable: 'Комфортно',
       sessionDensityDetailed: 'Подробно',
+      powerUsageTitle: 'Энергопотребление',
+      powerUsageDesc: 'Снижает нагрузку на CPU за счёт более простых виджетов',
+      powerUsageNormal: 'Обычное',
+      powerUsageLow: 'Низкое',
       tabStripTitle: 'Панель вкладок',
       tabStripDesc:
         'Показывать вкладки над зоной. Автоматически скрываются для одной панели, если не открыта другая зона чата или плитки.',

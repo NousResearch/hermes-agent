@@ -1037,6 +1037,10 @@ export const frOverrides = {
       sessionDensityCompact: 'Compacte',
       sessionDensityComfortable: 'Confortable',
       sessionDensityDetailed: 'Détaillée',
+      powerUsageTitle: 'Consommation',
+      powerUsageDesc: 'Réduire la consommation CPU en utilisant des widgets plus simples',
+      powerUsageNormal: 'Normale',
+      powerUsageLow: 'Faible',
       tabStripTitle: "Barre d'onglets",
       tabStripDesc:
         "Affiche les onglets au-dessus d'une zone. Le mode automatique les masque lorsqu'une zone ne contient qu'un seul panneau.",

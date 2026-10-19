@@ -803,6 +803,10 @@ export interface Translations extends NoticeTranslations {
       sessionDensityCompact: string
       sessionDensityComfortable: string
       sessionDensityDetailed: string
+      powerUsageTitle: string
+      powerUsageDesc: string
+      powerUsageNormal: string
+      powerUsageLow: string
       tabStripTitle: string
       tabStripDesc: string
       tabStripAuto: string

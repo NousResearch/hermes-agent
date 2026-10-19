@@ -34,6 +34,7 @@ import { installClipboardShim } from './lib/clipboard'
 import { queryClient } from './lib/query-client'
 import { installRendererAnimationPauseState } from './lib/renderer-loop-pause'
 import { installSelectionCopyColorGuard } from './lib/selection-copy-colors'
+import { installPowerUsageAttribute } from './store/power-usage'
 import { ThemeProvider } from './themes/context'
 
 installClipboardShim()
@@ -88,6 +89,10 @@ if (winParam === 'overlay') {
   // main window's visibility state to :root so decorative infinite
   // animations stop producing frames when nobody can see them.
   installRendererAnimationPauseState()
+
+  // Appearance → Power usage: mirrors the preference onto :root so low-power
+  // trimming can happen in CSS alone.
+  installPowerUsageAttribute()
 
   createRoot(document.getElementById('root')!).render(
     <StrictMode>

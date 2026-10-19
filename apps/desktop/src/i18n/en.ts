@@ -1001,6 +1001,10 @@ export const en: Translations = {
       sessionDensityCompact: 'Compact',
       sessionDensityComfortable: 'Comfortable',
       sessionDensityDetailed: 'Detailed',
+      powerUsageTitle: 'Power usage',
+      powerUsageDesc: 'Reduce CPU power usage by using simpler widgets',
+      powerUsageNormal: 'Normal',
+      powerUsageLow: 'Low',
       tabStripTitle: 'Tab Strip',
       tabStripDesc:
         'Show tabs above a zone. Auto hides them for a single pane unless another chat or tile zone is open.',

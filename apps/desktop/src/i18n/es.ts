@@ -1035,6 +1035,10 @@ export const esOverrides = {
       sessionDensityCompact: 'Compacta',
       sessionDensityComfortable: 'Cómoda',
       sessionDensityDetailed: 'Detallada',
+      powerUsageTitle: 'Consumo de energía',
+      powerUsageDesc: 'Reduce el consumo de CPU usando widgets más simples',
+      powerUsageNormal: 'Normal',
+      powerUsageLow: 'Bajo',
       tabStripTitle: 'Barra de pestañas',
       tabStripDesc:
         'Muestra pestañas encima de una zona. Auto las oculta si hay un solo panel, salvo que haya otra zona de chat o de mosaico abierta.',

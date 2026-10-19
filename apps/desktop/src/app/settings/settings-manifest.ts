@@ -86,6 +86,11 @@ export const SETTINGS_MANIFEST = {
       ['sidebar', 'sessions', 'compact', 'comfortable', 'density'],
       'sessionDensity'
     ),
+    powerUsage: appearanceSetting(
+      'window-layout',
+      ['sidebar', 'sessions', 'power', 'usage', 'cpu', 'battery', 'animation', 'effects', 'performance'],
+      'powerUsage'
+    ),
     tabStrip: appearanceSetting('window-layout', ['tabs', 'tab bar', 'strip'], 'tabStrip'),
     appActions: appearanceSetting(
       'window-layout',

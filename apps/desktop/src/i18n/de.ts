@@ -1032,6 +1032,10 @@ export const deOverrides = {
       sessionDensityCompact: 'Kompakt',
       sessionDensityComfortable: 'Komfortabel',
       sessionDensityDetailed: 'Detailreich',
+      powerUsageTitle: 'Energieverbrauch',
+      powerUsageDesc: 'Reduziert die CPU-Last durch einfachere Widgets',
+      powerUsageNormal: 'Normal',
+      powerUsageLow: 'Niedrig',
       tabStripTitle: 'Tab-Leiste',
       tabStripDesc:
         'Zeigt Tabs über einer Zone. Blendet sie automatisch aus, wenn eine Zone nur einen einzelnen Bereich enthält.',

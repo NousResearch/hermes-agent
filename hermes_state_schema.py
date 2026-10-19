@@ -30,6 +30,7 @@ from hermes_state_fts import _drop_orphan_fts_shadow_tables
 from hermes_state_holders import _read_proc_argv
 from hermes_state_search import _delete_meta, _meta_row
 from hermes_state_errors import is_sqlite_lock_error
+from hermes_state_titles import next_title_in_lineage
 
 # Pre-split logger identity so log filtering/capture is unchanged.
 logger = logging.getLogger("hermes_state")
@@ -631,7 +632,7 @@ class SessionSchemaMixin:
                 with contextlib.suppress(sqlite3.Error):
                     self._conn.commit()
                 return recovered
-        except Exception:  # noqa: BLE001 - background retry must never raise
+        except Exception:
             logger.warning(
                 "In-process retry of the deferred stale state.db FTS rebuild failed; will retry later.", exc_info=True,
             )
@@ -704,7 +705,7 @@ class SessionSchemaMixin:
     # ── Declarative column reconciliation ──────────────────────────────────
 
     @staticmethod
-    def _parse_schema_columns(schema_sql: str) -> Dict[str, Dict[str, str]]:
+    def _parse_schema_columns(schema_sql: str) -> dict[str, dict[str, str]]:
         """Expected columns per table: execute SCHEMA_SQL in an in-memory database and read
         PRAGMA table_info (no regex). Memoized on disk keyed by a DDL hash (~85ms per
         startup otherwise); only the reference-side parse is cached — diffing the LIVE
@@ -725,11 +726,11 @@ class SessionSchemaMixin:
         ref = sqlite3.connect(":memory:")
         try:
             ref.executescript(schema_sql)
-            table_columns: Dict[str, Dict[str, str]] = {}
+            table_columns: dict[str, dict[str, str]] = {}
             for (tbl,) in ref.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
             ).fetchall():
-                cols: Dict[str, str] = {}
+                cols: dict[str, str] = {}
                 info = ref.execute(f'PRAGMA table_info("{tbl}")').fetchall()
                 for _cid, col_name, col_type, notnull, default, pk in info:
                     # Reconstruct the type expression for ALTER TABLE ADD COLUMN
@@ -761,6 +762,8 @@ class SessionSchemaMixin:
                 rows = cursor.execute(f'PRAGMA table_info("{table_name}")').fetchall()
             except sqlite3.OperationalError:
                 continue  # Table doesn't exist yet (shouldn't happen after executescript)
+            if not rows:
+                continue  # PRAGMA table_info returns [] for a missing table; the DDL creates it whole
             # PRAGMA table_info rows: (cid, name, type, notnull, dflt_value, pk)
             live_cols = {row[1] for row in rows}
             for col_name, col_type in declared_cols.items():
@@ -784,7 +787,7 @@ class SessionSchemaMixin:
                     )
 
     @staticmethod
-    def _live_pk_columns(cursor: sqlite3.Cursor, table: str) -> Optional[List[str]]:
+    def _live_pk_columns(cursor: sqlite3.Cursor, table: str) -> Optional[list[str]]:
         """PRIMARY KEY column names of *table* in key order; None when the table is
         missing or has no columns (SCHEMA_SQL creates it correctly)."""
         try:
@@ -989,7 +992,7 @@ class SessionSchemaMixin:
             cursor.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
             # Store provenance so fresh vs wiped stores are distinguishable.
             # See #97568.
-            now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            now_iso = datetime.datetime.now(datetime.UTC).isoformat()
             cursor.executemany(
                 "INSERT OR IGNORE INTO state_meta (key, value) VALUES (?, ?)",
                 [("store_instance_id", str(uuid.uuid4())), ("store_created_at_utc", now_iso),
@@ -1103,6 +1106,9 @@ class SessionSchemaMixin:
             ).fetchone() is None:
                 self.set_meta("fts_storage_version", str(FTS_STORAGE_VERSION), cursor=cursor)
 
+        # v32: nothing to run here. The declared tables/columns #106742 added under v31 were already
+        # created by _init_schema's executescript(SCHEMA_SQL) + _reconcile_columns() before this chain;
+        # the version only records that the store has them (#140315).
         # Advance schema_version — deliberately NOT gated on the FTS opt-in (that would block
         # every future migration for a user who never optimizes). FTS5 unavailable is the
         # one skip: claiming current would lie.
@@ -1169,25 +1175,46 @@ class SessionSchemaMixin:
             logger.debug("v22 session_model_usage rebuild skipped: %s", exc)
 
     def _ensure_unique_title_index(self, cursor: sqlite3.Cursor) -> None:
-        """Unique title index. Older DBs may hold duplicate aliases from before the constraint;
-        the newest keeps the alias. Must never abort opening the DB, so the repair is guarded."""
+        """Unique title index. Older DBs may hold duplicate titles from before the constraint.
+        Per title a user-owned (user/NULL) row beats llm > derived (``_title_rank``). User rows are
+        never dropped: the oldest keeps the title and newer ones become ``Title #k`` in started_at
+        order, so the "#N"-preferring lookup still opens the newest (#126764). Among auto titles
+        only, the newest highest-ranked keeps it; lower-ranked auto titles are cleared. Each change
+        is logged. Must never abort opening the DB, so the repair is guarded."""
         try:
             cursor.execute(_TITLE_UNIQUE_INDEX_SQL)
         except sqlite3.IntegrityError:
+            # Savepoint: a failure part-way must not leave a half-repaired store for
+            # _init_schema to commit without the index.
+            cursor.execute("SAVEPOINT title_repair")
             try:
-                cursor.execute("""UPDATE sessions AS older
-                       SET title = NULL
-                       WHERE title IS NOT NULL
-                         AND EXISTS (
-                             SELECT 1 FROM sessions AS newer
-                             WHERE newer.title = older.title
-                               AND newer.rowid > older.rowid
-                         )""")
-                logger.warning(
-                    "Cleared %d duplicate session title(s) while restoring the unique index", cursor.rowcount,
-                )
+                rows = cursor.execute(
+                    "SELECT rowid, title, title_source, started_at FROM sessions WHERE title IN "
+                    "(SELECT title FROM sessions WHERE title IS NOT NULL GROUP BY title HAVING COUNT(*) > 1)"
+                ).fetchall()
+                groups: dict[str, list] = {}
+                for row in sorted(rows, key=lambda r: (self._title_rank(r[2]), r[3], r[0]), reverse=True):
+                    groups.setdefault(row[1], []).append(row)
+                user_rank = self._TITLE_SOURCE_RANK[self.TITLE_SOURCE_USER]
+                for title, group in groups.items():
+                    # User titles: the OLDEST keeps the base and newer ones get "#k" in
+                    # chronological order, so resolve_session_by_title (which prefers the
+                    # latest "#N") still lands on the newest session.
+                    users = [r for r in reversed(group) if self._title_rank(r[2]) == user_rank]
+                    keep = users[0] if users else group[0]
+                    for rowid, *_ in users[1:]:
+                        renamed = next_title_in_lineage(cursor.connection, title)
+                        cursor.execute("UPDATE sessions SET title = ? WHERE rowid = ?", (renamed, rowid))
+                        logger.warning("Renamed duplicate user session title %r to %r", title, renamed)
+                    for rowid, _title, source, _started in group:
+                        if rowid != keep[0] and self._title_rank(source) != user_rank:
+                            cursor.execute("UPDATE sessions SET title = NULL WHERE rowid = ?", (rowid,))
+                            logger.warning("Cleared duplicate %s session title %r", source, title)
                 cursor.execute(_TITLE_UNIQUE_INDEX_SQL)
+                cursor.execute("RELEASE title_repair")
             except sqlite3.Error:
+                cursor.execute("ROLLBACK TO title_repair")
+                cursor.execute("RELEASE title_repair")
                 logger.exception("Could not repair duplicate session titles; unique title index not created")
         except sqlite3.OperationalError:
             pass  # Index already exists
@@ -1323,8 +1350,21 @@ class SessionSchemaMixin:
             )
 
 
+def apply_declared_schema(cursor: sqlite3.Cursor) -> None:
+    """The one additive catch-up order for raw ``state.db`` connections: columns (SCHEMA_SQL indexes may
+    name columns an old table lacks), then the canonical DDL statement by statement (no
+    ``executescript`` implicit COMMIT, so callers keep their own transaction), then columns again
+    (a no-op for tables the script just created whole). Locking, snapshots and commit stay with the
+    callers. ``_reconcile_columns`` only touches the staticmethod ``_parse_schema_columns``, so a bare
+    instance is enough and the column reconciler keeps one implementation."""
+    shim = object.__new__(SessionSchemaMixin)
+    shim._reconcile_columns(cursor)
+    SessionSchemaMixin._execute_ddl_script_transactional(cursor, SCHEMA_SQL)
+    shim._reconcile_columns(cursor)
+
+
 def reconcile_state_schema(conn: sqlite3.Connection) -> None:
-    """Bring a raw ``state.db`` connection to the canonical SCHEMA_SQL shape.
+    """Bring a raw ``state.db`` connection to the canonical SCHEMA_SQL shape and commit.
 
     Single durable-shape authority for callers that open ``state.db``
     outside SessionDB. The async-delegation tool used to carry its own
@@ -1332,14 +1372,8 @@ def reconcile_state_schema(conn: sqlite3.Connection) -> None:
     from SCHEMA_SQL (same-name columns with different nullability/defaults
     depending on which authority touched the database first, #94691). This
     helper instead replays the canonical DDL (every statement is
-    IF NOT EXISTS/idempotent) and reuses SessionDB's declarative column
-    reconciliation, so out-of-band openers can never grow a second
-    hand-maintained shape for the same durable tables.
+    IF NOT EXISTS/idempotent) through :func:`apply_declared_schema`.
     """
-    conn.executescript(SCHEMA_SQL)
-    # _reconcile_columns only touches the staticmethod _parse_schema_columns,
-    # so a bare instance works; reusing it keeps one reconciliation
-    # implementation (one authority) instead of a near-copy on raw
-    # connections.
-    shim = object.__new__(SessionSchemaMixin)
-    shim._reconcile_columns(conn.cursor())
+    apply_declared_schema(conn.cursor())
+    if conn.in_transaction:
+        conn.commit()

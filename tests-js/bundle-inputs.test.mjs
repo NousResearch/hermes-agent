@@ -6,7 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, expect, test } from 'vitest'
-import { stageBundleInputs } from '../tests/install/e2e-assets/bundle-inputs.mjs'
+import { downloadArtifact, stageBundleInputs } from '../tests/install/e2e-assets/bundle-inputs.mjs'
 import { validateBundleInputs, validateDownloadedBundle } from '../tests/install/e2e-assets/bundle-manifest.cjs'
 import { validateBundledManifest } from '../tests/install/e2e-assets/windows-bundled-helpers.mjs'
 import { bundledMatrix, renderMarkdownResults } from '../scripts/sandbox/generate-e2e-matrix.mjs'
@@ -150,4 +150,30 @@ test('explicit bundled routes refuse absent package inputs instead of reporting 
   execFileSync(process.execPath, [script], { env: { ...env, BUNDLE_ROUTE: 'all' }, stdio: 'pipe' })
   expect(await readFile(env.GITHUB_STEP_SUMMARY, 'utf8')).toContain('no signed package pair supplied')
   expect(await readFile(env.GITHUB_OUTPUT, 'utf8')).toContain('windows={"include":[]}')
+})
+
+test('a download whose connection resets mid-body is retried, a wrong digest is not', async () => {
+  const bytes = Buffer.from('x'.repeat(4096))
+  let requests = 0
+  const server = createServer((req, res) => {
+    requests++
+    if (requests === 1) {
+      res.writeHead(200, { 'content-length': String(bytes.length) })
+      res.write(bytes.subarray(0, 100), () => res.socket.destroy())
+      return
+    }
+    res.end(bytes)
+  })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  cleanup.push(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve) }))
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'bundle-retry-test-'))
+  cleanup.push(() => rm(directory, { recursive: true, force: true }))
+  const url = `http://127.0.0.1:${server.address().port}/new.zip`
+  const sha256 = createHash('sha256').update(bytes).digest('hex')
+  await downloadArtifact({ url, sha256 }, path.join(directory, 'new.zip'))
+  expect(requests).toBe(2)
+  expect((await readFile(path.join(directory, 'new.zip'))).equals(bytes)).toBe(true)
+  requests = 1
+  await expect(downloadArtifact({ url, sha256: 'f'.repeat(64) }, path.join(directory, 'bad.zip'))).rejects.toThrow('SHA-256 mismatch')
+  expect(requests).toBe(2)
 })

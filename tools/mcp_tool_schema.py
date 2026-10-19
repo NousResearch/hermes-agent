@@ -15,7 +15,7 @@ logger = logging.getLogger("tools.mcp_tool")
 # Prompt-injection indicators in MCP tool descriptions. WARNING-level only: log but never
 # block, since false positives would break legitimate servers.
 _MCP_INJECTION_PATTERNS = [
-    (re.compile(pattern, re.I), reason)
+    (re.compile(pattern, re.IGNORECASE), reason)
     for pattern, reason in (
         (r"ignore\s+(all\s+)?previous\s+instructions", "prompt override attempt ('ignore previous instructions')"),
         (r"you\s+are\s+now\s+a", "identity override attempt ('you are now a...')"),
@@ -29,7 +29,7 @@ _MCP_INJECTION_PATTERNS = [
         (r"import\s+(subprocess|os|shutil|socket)", "dangerous import reference"))]
 
 
-def _scan_mcp_description(server_name: str, tool_name: str, description: str) -> List[str]:
+def _scan_mcp_description(server_name: str, tool_name: str, description: str) -> list[str]:
     """Scan a tool description for injection patterns; returns finding strings (empty =
     clean) and logs a warning when any match."""
     if not description:
@@ -212,7 +212,7 @@ _UTILITY_TOOL_SPECS = (
      }, ["name"]))
 
 
-def _build_utility_schemas(server_name: str) -> List[dict]:
+def _build_utility_schemas(server_name: str) -> list[dict]:
     """Schemas for the resource/prompt utility tools as ``{schema, handler_key}`` dicts."""
     out = []
     for handler_key, description, properties, required in _UTILITY_TOOL_SPECS:

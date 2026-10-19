@@ -32,6 +32,21 @@ export function validateBundledManifest(manifest, { expectedPublisher, arch = 'x
   }
 }
 
+/**
+ * Resolve one `Range: bytes=` header against a file size. App Installer fetches packages through
+ * Delivery Optimization, which refuses a server without byte ranges (0x80D05011,
+ * DO_E_INSUFFICIENT_RANGE_SUPPORT). Returns null for "send the whole file" (no header, or a
+ * multi-range list, which a server may ignore), `{ start, end }` for a slice, or `'unsatisfiable'`.
+ */
+export function byteRange(header, size) {
+  const match = /^bytes=(\d*)-(\d*)$/.exec(String(header || '').trim())
+  if (!match || (match[1] === '' && match[2] === '')) return header && !String(header).includes(',') ? 'unsatisfiable' : null
+  let start, end
+  if (match[1] === '') { start = Math.max(0, size - Number(match[2])); end = size - 1 }
+  else { start = Number(match[1]); end = match[2] === '' ? size - 1 : Math.min(Number(match[2]), size - 1) }
+  return start > end || start >= size ? 'unsatisfiable' : { start, end }
+}
+
 /** Load the production msix-shared module from an explicit path. */
 export async function loadMsixShared(msixSharedPath) {
   const resolved = path.resolve(msixSharedPath)
@@ -104,12 +119,23 @@ async function main() {
           return
         }
         const mime = shared.contentTypeFor(path.basename(target)) || 'application/octet-stream'
-        res.writeHead(200, { 'Content-Type': mime, 'Content-Length': stat.size, 'Cache-Control': 'no-store' })
-        const stream = fs.createReadStream(target)
+        const headers = { 'Content-Type': mime, 'Accept-Ranges': 'bytes', 'Cache-Control': 'no-store' }
+        const range = byteRange(req.headers.range, stat.size)
+        if (range === 'unsatisfiable') {
+          res.writeHead(416, { ...headers, 'Content-Range': `bytes */${stat.size}` }).end()
+          console.log(`[feed] 416 ${urlPath} (${req.headers.range})`)
+          return
+        }
+        const { start, end } = range || { start: 0, end: stat.size - 1 }
+        const status = range ? 206 : 200
+        res.writeHead(status, { ...headers, 'Content-Length': end - start + 1,
+          ...(range ? { 'Content-Range': `bytes ${start}-${end}/${stat.size}` } : {}) })
+        if (req.method === 'HEAD' || stat.size === 0) { res.end(); return }
+        const stream = fs.createReadStream(target, { start, end })
         stream.on('error', () => res.destroy())
         res.on('close', () => stream.destroy())
         stream.pipe(res)
-        console.log(`[feed] 200 ${urlPath} (${mime})`)
+        console.log(`[feed] ${status} ${urlPath} (${mime}${range ? ` bytes ${start}-${end}` : ''})`)
       })
     })
     server.listen(0, '127.0.0.1', () => {

@@ -14,10 +14,12 @@ of an unrelated session's sandbox. Regression for #130875.
 
 import contextvars
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from gateway import media_fetch
+from gateway.config import Platform
 from gateway.platforms.base import BasePlatformAdapter
 from tools.environments.base import BaseEnvironment, FileFetchError
 
@@ -164,14 +166,47 @@ def test_supplied_session_key_outranks_the_context_less_default_sandbox(monkeypa
     assert unrelated.fetched == []
 
 
-def test_sandbox_keyed_by_session_id_is_found_without_a_session_key(monkeypatch, registered_sandbox):
-    """Per-session-isolated docker keys by task id, so the session-id lookup must keep working."""
-    from tools import terminal_tool
-    from gateway.session_context import scoped_current_session_id
-    env, _ = registered_sandbox
-    monkeypatch.setitem(terminal_tool._active_environments, SESSION_ID, env)
+class _DeliveryAdapter(BasePlatformAdapter):
+    """Concrete adapter whose session store maps the turn's key to its session id."""
 
-    with scoped_current_session_id(SESSION_ID):
-        delivered = BasePlatformAdapter.filter_media_delivery_paths([("/home/agent/out/report.txt", False)])
+    def __init__(self, session_ids: dict):
+        from gateway.config import Platform, PlatformConfig
+        super().__init__(PlatformConfig(enabled=True), Platform.SLACK)
+        self._session_store = SimpleNamespace(peek_session_id=session_ids.get)
 
-    assert [Path(p).read_bytes() for p, _ in delivered] == [b"hello from sandbox"]
+    async def connect(self) -> bool:  # pragma: no cover - not exercised
+        return True
+
+    async def disconnect(self) -> None:  # pragma: no cover - not exercised
+        return None
+
+    async def get_chat_info(self, chat_id):  # pragma: no cover - not exercised
+        return {"name": chat_id, "type": "dm"}
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):  # pragma: no cover
+        raise AssertionError("extraction must not send")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("session_ids, expected", [
+    ({SESSION_KEY: SESSION_ID}, [b"hello from sandbox"]),
+    ({}, []),  # the store cannot name the session: no id, and the key alone does not find it
+])
+async def test_per_session_docker_sandbox_is_found_through_the_session_id(
+        monkeypatch, registered_sandbox, session_ids, expected):
+    """Per-session-isolated docker keys its sandbox by the turn's session ID, which delivery only
+    has through the adapter's session store -- the key it is handed resolves to a different slot."""
+    from gateway.platforms.event import MessageEvent
+    from gateway.session import SessionSource
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "false")
+    _, register = registered_sandbox
+    key = register(SESSION_ID)
+    assert SESSION_ID in key and SESSION_KEY not in key  # docker isolation keys by session ID
+    source = SessionSource(platform=Platform.SLACK, chat_id="D0BQR84JBLY", chat_type="dm", user_id="U1")
+
+    extracted = await _DeliveryAdapter(session_ids)._extract_response_content(
+        "here it is MEDIA:/home/agent/out/report.txt", MessageEvent(text="hi", source=source),
+        SESSION_KEY, is_ephemeral_response=False)
+
+    assert [Path(p).read_bytes() for p, _ in extracted.media_files] == expected

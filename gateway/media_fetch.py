@@ -22,8 +22,10 @@ import os
 import posixpath
 import re
 import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path, PurePosixPath
-from typing import Optional
+from typing import Callable, Iterator, Optional
 
 from gateway.platforms.base import (
     _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS, _MEDIA_DELIVERY_DENIED_PREFIXES, _ROOT_CREDENTIAL_PATHS)
@@ -75,13 +77,29 @@ def _active_remote_env():
     return get_active_env(get_session_env("HERMES_SESSION_ID") or get_session_env("HERMES_SESSION_KEY") or "default")
 
 
+_SESSION_ID_FOR: ContextVar[Optional[Callable[[str], Optional[str]]]] = ContextVar(
+    "media_fetch_session_id_for", default=None)
+
+
+@contextmanager
+def session_id_resolver(resolve: Callable[[str], Optional[str]]) -> Iterator[None]:
+    """Let ``fetch_remote_media`` map its ``session_key`` to the turn's session id. ``resolve`` must
+    not raise, and runs only when the remote fallback fires, so ordinary deliveries never read the
+    session store."""
+    token = _SESSION_ID_FOR.set(resolve)
+    try:
+        yield
+    finally:
+        _SESSION_ID_FOR.reset(token)
+
+
 def fetch_remote_media(path: str, session_key: str = "") -> Optional[str]:
     """Host path of a validated copy of sandbox file ``path``, or None (never raises). Only fires
     when a remote backend is active; the caller has already failed local validation.
     ``session_key``: the turn's key, for a caller that runs outside the turn's context and still
     holds it. It is AUTHORITATIVE -- see below."""
     from gateway.media_policy import media_delivery_strict
-    from gateway.session_context import scoped_session_key
+    from gateway.session_context import scoped_current_session_id, scoped_session_key
     if media_delivery_strict():
         return None
     # A supplied key names the session whose sandbox holds the artifact, so it is tried FIRST. The
@@ -94,12 +112,15 @@ def fetch_remote_media(path: str, session_key: str = "") -> Optional[str]:
     # environment -- the file is fetched out of an unrelated sandbox instead.
     #
     # The key is bound rather than turned into `session:<key>` here, so `_resolve_container_task_id`
-    # keeps deciding the registry key for every backend. Only the key: profile-scoped persistent
-    # docker keys off the session PROFILE, which resolves to "default" either way, so this changes
-    # nothing for that branch.
+    # keeps deciding the registry key for every backend. Per-session-isolated docker keys by session
+    # ID instead, which the key alone cannot reach, so the id is bound beside it when the caller can
+    # name it (`session_id_resolver`). Profile-scoped persistent docker keys off the session PROFILE,
+    # which neither changes.
     env = None
     if session_key:
-        with scoped_session_key(session_key):
+        resolve = _SESSION_ID_FOR.get()
+        session_id = resolve(session_key) if resolve else None
+        with scoped_session_key(session_key), scoped_current_session_id(session_id):
             env = _active_remote_env()
     if env is None:
         env = _active_remote_env()      # no key supplied, or the session has no sandbox of its own

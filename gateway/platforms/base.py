@@ -2593,6 +2593,17 @@ class BasePlatformAdapter(ABC):
             if self._pending_text_batch_tasks.get(key) is current_task:
                 self._pending_text_batch_tasks.pop(key, None)
 
+    def _delivery_session_id(self, session_key: str) -> Optional[str]:
+        """The session id ``session_key`` routes to, or None (no store, unknown key, lookup error)."""
+        peek = getattr(getattr(self, "_session_store", None), "peek_session_id", None)
+        if not callable(peek):
+            return None
+        try:
+            return peek(session_key) or None
+        except Exception:
+            logger.debug("[%s] Session id lookup failed for %s", self.name, session_key, exc_info=True)
+            return None
+
     def _history_media_paths_for_session(self, session_key: str) -> Optional[set]:
         """Return media paths already delivered in prior turns of this session
         (MEDIA: tags / image_generate payloads), so an echoed old tag isn't re-sent."""
@@ -4462,7 +4473,8 @@ class BasePlatformAdapter(ABC):
         pre_extract = response
         # The handler's routed profile scope is gone by now; Docker MEDIA translation and the
         # bare-path validator infer the sandbox from the ACTIVE profile (#109024).
-        with self._media_delivery_scope(event.source):
+        from gateway.media_fetch import session_id_resolver
+        with self._media_delivery_scope(event.source), session_id_resolver(self._delivery_session_id):
             media_files, response = self.extract_media(response)
             media_files = self.filter_media_delivery_paths(media_files, session_key=session_key)
             images, text_content = self.extract_images(response)

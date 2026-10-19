@@ -275,3 +275,26 @@ def test_the_built_in_browser_still_answers_a_lane_session_that_never_had_a_cont
 
     assert _call("browser_snapshot") == {"success": True}
     assert len(ran) == 1
+
+
+# --- tool search can defer the rarely used extension tools ---------------------------------------------------------
+
+
+def test_the_rarely_used_extension_tools_are_deferred_behind_tool_search(broker):
+    from tools.tool_search import ToolSearchConfig
+
+    cold = {"browser_drag", "browser_tab_activate", "browser_tab_group", "browser_tab_ungroup"}
+    assert cold <= ToolSearchConfig.from_raw(None).effective_defer_tools
+    _attach(broker)
+
+    tokens = set_session_vars(session_id="session-1", **IDENTITY)
+    try:
+        laned = get_tool_definitions(enabled_toolsets=["browser"], quiet_mode=True)
+    finally:
+        clear_session_vars(tokens)
+    stock = get_tool_definitions(enabled_toolsets=["browser"], quiet_mode=True)
+
+    names = set(_by_name(laned))
+    assert "tool_search" in names and cold.isdisjoint(names)
+    assert (lane.EXTENSION_ONLY_TOOLS - cold) <= names
+    assert not [name for name in lane.EXTENSION_ONLY_TOOLS if name in json.dumps(stock)]

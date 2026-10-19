@@ -1,15 +1,15 @@
 name: hermes-seo
 title: Hermes SEO
 repo: https://github.com/yuzushi-dev/hermes-seo
-sha: 5f04951e8fddc8b869378236a7ff5b584a0d023d
-version: "0.1.0"
+sha: 4090e55ee8ce8e215b858bfb7745e7c2ae576f22
+version: "0.1.1"
 description: "Native Hermes port of Claude SEO 2.4.2: 45 SEO workflow and specialist skills, a credential-scoped hermes_seo_run tool, an isolated Python runtime, and advisory JSON-LD feedback. Derived from Claude SEO 2.4.2 (MIT; FLOW prompt materials CC BY 4.0). Disclosure — derived from Claude SEO 2.4.2 (MIT; FLOW prompt materials CC BY 4.0); the hermes_seo_run tool starts local subprocesses in the Hermes host process, not a Docker terminal sandbox, and model-supplied script arguments may name host paths, so it can read host files (the Gemini image-edit utility uploads the named file to Google, the IndexNow utility reads a URL-list file); `hermes seo setup` downloads Python packages from PyPI within version ranges into a private environment and optionally Chromium through Playwright; audits fetch user-selected websites; separately configured providers (Moz, Bing Webmaster, Keywords Everywhere, Google APIs, Matomo, DataForSEO, IndexNow, Google Gemini) receive the data sent to them and may incur charges; skills ask before paid or mutating calls but the tool does not enforce approvals; Gemini images are saved to ~/Documents/nanobanana_generated, and other runtime state stays in Hermes plugin data storage; provider keys are read from the active Hermes profile and passed only to the script that needs them; Google OAuth workflows are disabled; no telemetry, bundled credentials, background process or self-updater."
 maintainer: yuzushi-dev
 tier: community
 category: tools
 requires_hermes: ">=0.22.2"
 docs_url: https://github.com/yuzushi-dev/hermes-seo#readme
-image: https://raw.githubusercontent.com/yuzushi-dev/hermes-seo/5f04951e8fddc8b869378236a7ff5b584a0d023d/assets/hermes-seo-card.png
+image: https://raw.githubusercontent.com/yuzushi-dev/hermes-seo/4090e55ee8ce8e215b858bfb7745e7c2ae576f22/assets/hermes-seo-card.png
 platforms: [linux, macos]
 capabilities:
   provides_tools: [hermes_seo_run]

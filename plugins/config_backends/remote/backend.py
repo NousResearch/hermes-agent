@@ -106,6 +106,28 @@ class _Private:
 
 _PRIVATE: contextvars.ContextVar[Optional[_Private]] = contextvars.ContextVar("remote_config_private", default=None)
 _PRIVATE_SERIAL = itertools.count(1)
+# The diff base each profile had when THIS context last read it: {id(state): base}. A document
+# save means "turn what I read into this", so its intent is diffed against that read, never
+# against whatever a poll (or another writer) installed between the read and the save. Replaced,
+# never mutated: copied contexts (threads, tasks) must not share one dict.
+_READ_BASE: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar("remote_config_read_base", default=None)
+
+
+def _remember_read(st: _ProfileState) -> None:
+    """Record (by reference: ``st.base`` / ``st.server_config`` are replaced, never mutated) the
+    base this context just read under st.lock."""
+    seen = dict(_READ_BASE.get() or {})
+    seen[id(st)] = (st, st.base if st.base is not None else st.server_config)
+    _READ_BASE.set(seen)
+
+
+def _read_base_for(st: _ProfileState) -> Optional[dict[str, Any]]:
+    held = (_READ_BASE.get() or {}).get(id(st))
+    if held is None or held[0] is not st or held[1] is None:
+        return None  # never read in this context, or a different (reset) profile state
+    base = copy.deepcopy(held[1])
+    base.pop("_config_version", None)
+    return base
 
 
 def _private_for(st: _ProfileState) -> Optional[_Private]:
@@ -404,6 +426,8 @@ class RemoteBackend:
 
         def take():
             m = _private_for(st)
+            if m is None:
+                _remember_read(st)
             return (copy.deepcopy(m.doc if m is not None else st.doc), self._version_of(st),
                     {encode(p): level for p, level in st.locks})
 
@@ -416,6 +440,8 @@ class RemoteBackend:
 
         def take():
             m = _private_for(st)
+            if m is None:
+                _remember_read(st)
             return m.doc if m is not None else st.doc
 
         return self._snapshot(st, take)
@@ -433,7 +459,13 @@ class RemoteBackend:
         return (st.changed_ns, st.etag, st.gen)
 
     def version(self, home: Path) -> tuple[Any, ...]:
-        return self._version_of(self._state(home))
+        # A config cache validates on this signature and then hands out the doc it cached for it:
+        # that doc is what the caller now holds, so this is the read a later save diffs against.
+        st = self._state(home)
+        with st.lock:
+            if _private_for(st) is None and st.postprocessed:
+                _remember_read(st)
+            return self._version_of(st)
 
     def exists(self, home: Path) -> bool:
         return True  # the plane always resolves a document (an absent level is empty, contract R4)
@@ -487,6 +519,7 @@ class RemoteBackend:
                         raise ConfigWriteError(f"Remote Config write failed: {exc}", code="config_plane_unreachable") from exc
                     if resp.status == 200 and _effective_ok(resp.body):
                         self._install(st, resp.body, resp.etag)
+                        _remember_read(st)  # the caller now holds what it wrote
                         self._warn_inherited(st, unsets)
                         return
                     if resp.status == 409 and attempt == 1:
@@ -507,9 +540,17 @@ class RemoteBackend:
         return base
 
     def _intent(self, st: _ProfileState, changes: Changes) -> tuple[dict[KeyPath, Any], list[KeyPath]]:
-        """The key-level edit ``changes`` makes to the last read doc (§15.2 steps 1-5)."""
+        """The key-level edit ``changes`` makes to the last read doc (§15.2 steps 1-5).
+
+        A document is diffed against the base THIS context read it from (``_READ_BASE``): a poll
+        landing between the caller's read and its save must not turn every key the poll changed
+        into an edit of ours, sent with the already-current expectedVersion (no 409 to catch it).
+        A keyed set/unset names its own keys, so it applies to the current base."""
         base = self._diff_base(st)
         if changes.document is not None:
+            read = _read_base_for(st) if _private_for(st) is None else None
+            if read is not None:
+                base = read
             new = to_wire(copy.deepcopy(changes.document))
             if not isinstance(new, dict):
                 raise ConfigValueError("the config document must be a mapping")

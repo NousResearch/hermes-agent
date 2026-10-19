@@ -5,7 +5,8 @@ and the reasoning default came from the config it started with, while the stored
 The owner keeps that line on ``session.resume``: it re-derives exactly those fields from the session profile's
 current config and commits them as a new policy generation. ``reload.mcp`` commits the MCP part alone for the
 calling session. The creation flags (request_json), the model route and a committed ``/reasoning`` or workspace
-pick stay; a session with a turn running or queued keeps the policy that turn was admitted under.
+pick stay; a session with a turn running or queued keeps the policy that turn was admitted under. A Bot Chat an
+earlier build committed frozen follows its profile from the open on (``follow_bot_chat``).
 """
 import asyncio
 import json
@@ -51,12 +52,14 @@ def refreshed_policy(policy, live, terminal, *, picked=(), mcp_only=False):
 
 def _settings(policy, config, live, picked):
     """Follow the config-derived settings into *config*; the toolsets they select."""
-    from gateway.session_policy import _resolve_toolsets
+    from gateway.session_policy import _resolve_toolsets, session_pinned
     request = json.loads(policy.request_json)
     live_agent = live.get('agent') or {}
     agent = dict(config.get('agent') or {})
     keys = [] if 'max_turns' in request else ['max_turns']
-    keys += [] if 'reasoning' in request or 'reasoning' in picked else ['reasoning_effort', 'reasoning_overrides']
+    # The session's own record (a pick, or a reset back to the profile) wins over the receipt history.
+    chosen = session_pinned(config, 'reasoning', 'reasoning' in request or 'reasoning' in picked)
+    keys += [] if chosen else ['reasoning_effort', 'reasoning_overrides']
     toolsets = policy.toolsets
     if 'toolsets' not in request and policy.editor_mcp_json is None:
         keys.append('disabled_toolsets')
@@ -131,9 +134,10 @@ def _server_name(servers, name):
     return name[4:] if name.startswith('mcp-') and name not in servers else name
 
 
-def _prepare(authority, session_id, mcp_only=False):
+def _prepare(authority, session_id, mcp_only=False, adopt_only=False):
     """Off the owner loop: the stored policy, its refresh from this profile home's files, and the generation
-    it was derived at. None when the session takes no refresh or nothing moved."""
+    it was derived at. None when the session takes no refresh or nothing moved. *adopt_only*: the adoption
+    of a frozen Bot Chat alone, without the config-derived settings (a later open on the same attachment)."""
     from gateway.run import _load_gateway_config
     from gateway.session_policy import SURFACES, restore_policy
     from hermes_state_local import local_receipt
@@ -146,22 +150,39 @@ def _prepare(authority, session_id, mcp_only=False):
     if old.ignore_user_config or old.source not in SURFACES:
         return None
     home = Path(authority.db.db_path).resolve().parent
-    terminal = {} if mcp_only else build_profile_terminal_scope(home)
-    policy, secrets, replaced = refreshed_policy(old, _load_gateway_config(home / 'config.yaml'), terminal,
-                                                 picked=policy_picks(authority.db, session_id), mcp_only=mcp_only)
+    terminal = {} if mcp_only or adopt_only else build_profile_terminal_scope(home)
+    live, picked = _load_gateway_config(home / 'config.yaml'), policy_picks(authority.db, session_id)
+    base = old
+    if not mcp_only:
+        # Opening a Bot Chat an earlier build froze adopts it: it follows its profile from now on.
+        from gateway.session_local_migration import follow_bot_chat
+        base = follow_bot_chat(authority, session_id, old, live, picked)
+    if adopt_only:
+        return None if base is old else (stored, old, base, {}, set(), generation)
+    policy, secrets, replaced = refreshed_policy(base, live, terminal, picked=picked, mcp_only=mcp_only)
     return None if policy is old else (stored, old, policy, secrets, replaced, generation)
 
 
 def _rebind(authority, session_id, old, policy, fresh, replaced):
     """Re-bind the private values like a policy mutation: policy identity covers config and terminal, and the
     refreshed sections' private values are the profile's current ones (the stored ones there are neither
-    re-read nor checked: a rotated key is what the refresh picks up, not a revoked credential)."""
+    re-read nor checked: a rotated key is what the refresh picks up, not a revoked credential). A policy
+    that follows its profile from this open on keeps none of its followed sections' frozen values."""
     from gateway.session_policy import FOLLOW_SECTIONS, bind_launch_key, launch_key
     from gateway.session_policy_credentials import recover_config_secrets
-    skip = (*(FOLLOW_SECTIONS if old.follows_profile else ()), *replaced)
+    skip = (*(FOLLOW_SECTIONS if policy.follows_profile else ()), *replaced)
     secrets = recover_config_secrets(authority, old, skip) if old.config_secret_ref else {}
     secrets.update(fresh)
     return bind_launch_key(authority, session_id, policy, launch_key(authority, old), config_secrets=secrets)
+
+
+def _pending_adoptions(authority):
+    """Frozen Bot Chats an open found to adopt but could not commit (a turn running or queued, a concurrent
+    edit): the next open retries, whether or not that client is already attached."""
+    found = getattr(authority, '_pending_adoptions', None)
+    if found is None:
+        found = authority._pending_adoptions = set()
+    return found
 
 
 def _in_flight(authority):
@@ -181,7 +202,7 @@ async def refresh_settled(authority, session_id):
         await asyncio.wait({running})  # its outcome is its caller's; a cancelled waiter leaves it running
 
 
-async def commit_refresh(authority, ref, *, mcp_only=False):
+async def commit_refresh(authority, ref, *, mcp_only=False, adopt_only=False):
     """Commit an idle local session's refresh as its next policy generation: True when one was committed,
     False when nothing moved. Raises the store's refusal (``session_busy`` while a turn runs or waits).
     One refresh per session at a time, run to its publication even when the caller is cancelled: a second
@@ -189,19 +210,25 @@ async def commit_refresh(authority, ref, *, mcp_only=False):
     from gateway.session_runtime_workers import track_mutation
     await refresh_settled(authority, ref.session_id)
     refreshes = _in_flight(authority)
-    task = refreshes[ref.session_id] = track_mutation(authority, _commit_refresh(authority, ref, mcp_only))
+    task = refreshes[ref.session_id] = track_mutation(authority, _commit_refresh(authority, ref, mcp_only, adopt_only))
     task.add_done_callback(lambda done: refreshes.pop(ref.session_id, None) if refreshes.get(ref.session_id)
                            is done else None)
     return await asyncio.shield(task)
 
 
-async def _commit_refresh(authority, ref, mcp_only):
+async def _commit_refresh(authority, ref, mcp_only, adopt_only=False):
     from gateway.session_runtime_workers import tracked_write
     from hermes_state_mutation_prepared import commit_refreshed_policy
-    prepared = await asyncio.to_thread(_prepare, authority, ref.session_id, mcp_only)
+    prepared = await asyncio.to_thread(_prepare, authority, ref.session_id, mcp_only, adopt_only)
+    # An MCP-only refresh never runs follow_bot_chat: it neither settles nor commits an adoption, so it
+    # leaves a pending one for the next open.
+    pending = _pending_adoptions(authority) if not mcp_only else set()
     if prepared is None:
+        pending.discard(ref.session_id)
         return False
     stored, old, policy, secrets, replaced, generation = prepared
+    if policy.follows_profile and not old.follows_profile:
+        pending.add(ref.session_id)  # until this commit lands
     moved = json.loads(policy.terminal_json) != json.loads(old.terminal_json)
     policy = _rebind(authority, ref.session_id, old, policy, secrets, replaced)
     # Compare-and-swap against the receipt as stored (JSON lists), not its restored tuple form. The
@@ -211,15 +238,21 @@ async def _commit_refresh(authority, ref, mcp_only):
                                            session_id=ref.session_id, old=stored, new=asdict(policy),
                                            generation=generation),
                         then=lambda _generation: _publish(authority, ref, moved))
+    pending.discard(ref.session_id)
     return True
 
 
-async def refresh_resumed_policy(authority, ref):
+async def refresh_resumed_policy(authority, ref, *, attached=False):
     """Commit the config refresh of an idle local session before it is attached. Never fails the resume:
     a busy session, a revoked launch credential or an unreadable profile keeps the stored policy. Only a turn
-    running or queued (or admitted during the commit) is expected; anything else is a WARNING."""
+    running or queued (or admitted during the commit) is expected; anything else is a WARNING.
+
+    *attached*: this client already holds the session (Desktop's warm reopen). The settings refresh is once
+    per attachment, but a frozen Bot Chat whose adoption a busy open refused is adopted on any later open."""
+    if attached and ref.session_id not in _pending_adoptions(authority):
+        return
     try:
-        await commit_refresh(authority, ref)
+        await (commit_refresh(authority, ref, adopt_only=True) if attached else commit_refresh(authority, ref))
     except Exception as exc:  # health: allow BLE001 -- a refresh is best-effort; the resume itself must proceed
         reason = getattr(exc, 'reason', None) or type(exc).__name__
         busy = reason in {'session_busy', 'unknown_execution', 'revision_conflict'}
@@ -237,9 +270,12 @@ def _drop_terminal(authority, ref):
     from tools.terminal_tool_lifecycle import cleanup_vm
     ids = {ref.session_id, local_receipt(authority.db, ref.session_id)['entry']['session_id']}
     route = authority.sessions[ref.session_id].route
+    from gateway.session_policy import unbind_turn_workspace
     with owner_scope(authority):
         keys = {_qualify_task_key(key) for key in (f'session:{route}', *ids)}
         for key in (route, *ids):
+            # The turn's workspace binding goes with them: it wins over the new binding's cwd too.
+            unbind_turn_workspace(key)
             clear_session_cwd(key)
     for key in keys:
         cleanup_vm(key)

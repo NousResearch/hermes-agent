@@ -236,6 +236,51 @@ def test_side_agent_runs_in_its_sessions_workspace(home, tmp_path, persistent):
     assert terminal_tool.resolve_task_overrides('bg_123456') == {}  # released with the side task
 
 
+def test_secondary_profiles_side_agent_never_gets_the_launch_profiles_workspace_container(home, tmp_path, monkeypatch):
+    # Review (@dokterdok, round 2): beta's /bg in a folder with a live default session got default's env.
+    from types import SimpleNamespace
+    from gateway.session_tui_side import _side_scope
+    from tools import terminal_tool, terminal_tool_lifecycle
+    from tools.terminal_tool import workspace_key_for
+    ws1 = tmp_path / 'ws1'
+    ws1.mkdir()
+    beta = home / 'profiles' / 'beta'
+    beta.mkdir(parents=True)
+    monkeypatch.setattr(terminal_tool, '_active_environments', {})
+    monkeypatch.setattr(terminal_tool, '_last_activity', {})
+    policy = _policy(home, ws1, persistent=True)
+    with _turn(policy, 'local-a'):
+        launch_key = _plan('local-a')[0]
+    terminal_tool._active_environments[launch_key] = launch_env = object()
+    authority = SimpleNamespace(profile_id=str(beta),
+                                runner=SimpleNamespace(config=SimpleNamespace(multiplex_profiles=True)))
+    with _side_scope(authority, policy, 'bg_123456'):
+        key = _plan('bg_123456')[0]
+        env = terminal_tool_lifecycle.get_active_env('bg_123456')
+    # Beta's own workspace container, keyed as beta's routed turns key it; never default's live one.
+    assert key == f'profile:beta:ws:{workspace_key_for(str(ws1))}'
+    assert env is not launch_env
+
+
+def test_named_launch_profiles_side_agent_keeps_its_sessions_workspace_container(home, tmp_path, monkeypatch):
+    # The launch home's own turns bind no profile (``agent:main``), whatever its name: its side agent
+    # must key the same container as they do, not ``profile:<name>``.
+    from types import SimpleNamespace
+    from gateway.session_tui_side import _side_scope
+    ws1 = tmp_path / 'ws1'
+    ws1.mkdir()
+    beta = home / 'profiles' / 'beta'
+    beta.mkdir(parents=True)
+    monkeypatch.setenv('HERMES_HOME', str(beta))  # `hermes -p beta gateway`
+    policy = _policy(beta, ws1, persistent=True)
+    with _turn(policy, 'local-a'):
+        session_key = _plan('local-a')[0]
+    authority = SimpleNamespace(profile_id=str(beta),
+                                runner=SimpleNamespace(config=SimpleNamespace(multiplex_profiles=True)))
+    with _side_scope(authority, policy, 'bg_123456'):
+        assert _plan('bg_123456')[0] == session_key
+
+
 def test_managed_worker_turn_runs_in_its_sessions_workspace(home, tmp_path, monkeypatch):
     # Review (@kshitijk4poor S2): out-of-process (managed worker) turns never bound the workspace.
     from gateway import session_kanban
@@ -258,3 +303,55 @@ def test_managed_worker_turn_runs_in_its_sessions_workspace(home, tmp_path, monk
     assert seen['task_id'] == 'worker-s1'
     assert ':ws:' in seen['plan'][0]
     assert seen['plan'][1] == str(ws1)
+
+
+def test_secondary_profiles_managed_worker_turn_keys_its_own_workspace_container(home, tmp_path, monkeypatch):
+    from gateway import session_kanban
+    from gateway.session_policy import policy_scope
+    from tools.terminal_tool import workspace_key_for
+    ws1 = tmp_path / 'ws1'
+    ws1.mkdir()
+    beta = home / 'profiles' / 'beta'
+    beta.mkdir(parents=True)
+    monkeypatch.setenv('HERMES_HOME', str(beta))  # the worker process runs under its owning home
+    policy = _policy(beta, ws1, persistent=True)
+    seen = {}
+
+    class Agent:
+        def run_conversation(self, text, **kwargs):
+            seen['key'] = _plan(kwargs['task_id'])[0]
+            return {}
+
+    frame = {'home': str(beta), 'policy': asdict(policy), 'text': 'hi', 'route': 'agent:beta:local:dm:worker-s1',
+             'scope': {'session_id': 'worker-s1'}}
+    with policy_scope(policy):
+        session_kanban.run_worker_turns(Agent(), frame, [])
+    # The key beta's in-gateway turns and side agents use, not the `default:ws:` one.
+    assert seen['key'] == f'profile:beta:ws:{workspace_key_for(str(ws1))}'
+
+
+def test_named_launch_profiles_managed_worker_turn_keeps_its_sessions_workspace_container(home, tmp_path, monkeypatch):
+    # `hermes -p beta gateway` (a named profile never multiplexes): its routes are `agent:main`, its
+    # in-process turns and side agents bind no profile, and its worker turns must key the same container.
+    from gateway import session_kanban
+    from gateway.session_policy import policy_scope
+    ws1 = tmp_path / 'ws1'
+    ws1.mkdir()
+    beta = home / 'profiles' / 'beta'
+    beta.mkdir(parents=True)
+    monkeypatch.setenv('HERMES_HOME', str(beta))
+    policy = _policy(beta, ws1, persistent=True)
+    with _turn(policy, 'local-a'):
+        session_key = _plan('local-a')[0]
+    seen = {}
+
+    class Agent:
+        def run_conversation(self, text, **kwargs):
+            seen['key'] = _plan(kwargs['task_id'])[0]
+            return {}
+
+    frame = {'home': str(beta), 'policy': asdict(policy), 'text': 'hi', 'route': 'agent:main:local:dm:worker-s1',
+             'scope': {'session_id': 'worker-s1'}}
+    with policy_scope(policy):
+        session_kanban.run_worker_turns(Agent(), frame, [])
+    assert seen['key'] == session_key

@@ -141,8 +141,54 @@ async def forward(connection, params):
                 result=saved['result'] if saved is not None else None)
 
 
-async def forward_to_owner(home, *, agent, tenant, peer, context_id, input_id, text, timeout):
-    """Transport-only caller; a timeout never cancels or re-identifies accepted work."""
+async def status(connection, params):
+    """Read-only ledger read for one forwarded turn: its admission state at its exact identity.
+
+    The counterpart of ``forward`` for accept-then-poll. A peer holding a task id asks the owning
+    profile where the work is, without keeping a socket open and without the A2A plugin opening the
+    served profile's database — the same rule ``forward`` follows.
+    """
+    authority, actor = connection.authority, connection.actor
+    if actor.profile_id != authority.profile_id:
+        raise RuntimeStoreError('profile_mismatch')
+    if 'session:read' not in actor.capabilities:
+        raise RuntimeStoreError('permission_denied')
+    fields = {'agent', 'tenant', 'peer', 'context_id', 'input_id'}
+    if (set(params) != fields or any(not isinstance(params[k], str) for k in fields)
+            or any(not params[k] for k in fields - {'tenant'})
+            or any(len(params[k]) > 1024 for k in fields)):
+        raise RuntimeStoreError('invalid_params')
+    identity = [params[k] for k in ('agent', 'tenant', 'peer', 'context_id')]
+    key = 'a2a:' + hashlib.sha256(json.dumps(identity, separators=(',', ':')).encode()).hexdigest()
+    from gateway.session_local_recovery import local_identity
+    from hermes_state_mutation_retirement import first_generation
+    from hermes_state_terminal import identity_key
+    request_id = lambda n: key if n == 0 else f'{key}:{n}'
+    pinned = lambda conn, sid: conn.execute('SELECT 1 FROM state_meta WHERE key=?', (
+        identity_key(actor.subject, sid, params['input_id']),)).fetchone() is not None
+    # Same derivation as forward(), so the read lands on the generation the write used.
+    _generation, sid = first_generation(
+        authority.db, lambda n: local_identity(authority.profile_id, actor.subject, request_id(n)), pinned=pinned)
+    from hermes_state_runtime import find_session_admission
+    row = find_session_admission(authority.db, principal_id=actor.subject, session_id=sid,
+                                 request_id=params['input_id'])
+    if row is None:
+        return {'status': 'missing', 'session_id': sid, 'admission_id': '', 'result': None}
+    result = None
+    if row['status'] == 'terminal':
+        from gateway.session_results import admission_result
+        saved = admission_result(authority.db, row['admission_id'])
+        result = saved['result'] if saved is not None else None
+    return {'status': row['status'], 'session_id': sid, 'admission_id': row['admission_id'], 'result': result}
+
+
+async def forward_to_owner(home, *, agent, tenant, peer, context_id, input_id, text, timeout, wait=True):
+    """Transport-only caller; a timeout never cancels or re-identifies accepted work.
+
+    ``wait=False`` is accept-then-poll: return the first durable receipt (queued/started/terminal)
+    instead of holding the socket until the turn completes, so the caller holds the task id at once
+    and reads progress later through :func:`status_from_owner`.
+    """
     from hermes_cli.gateway_client import (GATEWAY_WS_PROTOCOL, GatewayClient, GatewayClientError,
         _session_ticket, gateway_ws_target)
     from hermes_cli.gateway_runtime import ensure_gateway_runtime
@@ -166,7 +212,9 @@ async def forward_to_owner(home, *, agent, tenant, peer, context_id, input_id, t
                     receipt = await client.rpc('a2a.forward', **params)
                     if receipt['status'] == 'unknown':
                         raise GatewayClientError('unknown_execution')
-                    if receipt['status'] == 'terminal':
+                    if not wait or receipt['status'] == 'terminal':
+                        # Accept-then-poll hands back the first durable receipt; the caller holds the
+                        # task id and reads progress through status_from_owner().
                         return receipt
                     # The forward subscribed this socket to the session: wait for the admission's
                     # completion frame, re-reading the exact durable receipt on a backed-off
@@ -176,6 +224,32 @@ async def forward_to_owner(home, *, agent, tenant, peer, context_id, input_id, t
                             await _completion(client, receipt['admission_id'])
                     except TimeoutError:
                         backoff = min(backoff * 2, 5.0)
+
+
+async def status_from_owner(home, *, agent, tenant, peer, context_id, input_id, timeout):
+    """Read one forwarded turn's admission state from the owning profile's gateway (read-only).
+
+    The read side of accept-then-poll: the A2A plugin never opens the served profile's database, it
+    asks the owner. ``status`` is ``queued``/``started``/``unknown``/``terminal``/``missing``.
+    """
+    from hermes_cli.gateway_client import (GATEWAY_WS_PROTOCOL, GatewayClient, GatewayClientError,
+        _session_ticket, gateway_ws_target)
+    from hermes_cli.gateway_runtime import ensure_gateway_runtime
+    from websockets.asyncio.client import connect
+    home = await asyncio.to_thread(Path(home).resolve)
+    async with asyncio.timeout(timeout):
+        ready = await asyncio.to_thread(ensure_gateway_runtime, home)
+        if ready.state != 'ready' or ready.endpoint is None:
+            raise GatewayClientError(f'gateway_{ready.state}:{ready.reason_code or "not_ready"}')
+        ticket = await asyncio.to_thread(_session_ticket, home, ready.endpoint)
+        url, protocols = gateway_ws_target(ready.endpoint, ticket)
+        async with connect(url, subprotocols=protocols, open_timeout=10, max_size=8 * 1024 * 1024,
+                           proxy=None) as ws:
+            if ws.subprotocol != GATEWAY_WS_PROTOCOL:
+                raise GatewayClientError('gateway_protocol_mismatch')
+            async with GatewayClient(ws) as client:
+                return await client.rpc('a2a.status', agent=agent, tenant=tenant, peer=peer,
+                                        context_id=context_id, input_id=input_id)
 
 
 async def _completion(client, admission_id):

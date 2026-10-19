@@ -433,6 +433,27 @@ canonical_method("a2a.forward", params=A2aForwardParams, result=A2aForwardResult
                  doc="Forward one A2A input into the conversation its identity tuple names.")
 
 
+class A2aStatusParams(Params):
+    agent: str
+    tenant: str
+    peer: str
+    context_id: str
+    input_id: str
+
+
+class A2aStatusResult(Result):
+    """The admission state of one forwarded A2A turn, read from the owner's ledger."""
+
+    status: Literal["queued", "started", "unknown", "terminal", "missing"]
+    session_id: str
+    admission_id: str
+    result: JsonValue | None
+
+
+canonical_method("a2a.status", params=A2aStatusParams, result=A2aStatusResult,
+                 doc="Read one forwarded A2A turn's admission state at its exact identity.")
+
+
 # ── managed workers ───────────────────────────────────────────────────────────────────────────
 
 

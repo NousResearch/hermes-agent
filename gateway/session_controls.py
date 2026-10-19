@@ -179,6 +179,7 @@ class AuthorityConnection:
                     'bot_relay.settle': self.bot_settle,
                     'bot_relay.roster.sync': self.bot_roster, 'bot_relay.outbox.drain': self.bot_outbox,
                     'bot_relay.reply': self.bot_reply, 'a2a.forward': self.a2a_forward,
+                    'a2a.status': self.a2a_status,
                     'kanban.run': self.kanban_run,
                     'cron.submit': self.cron_submit, 'cron.status': self.cron_status,
                     'cron.cancel': self.cron_cancel, 'cron.recover': self.cron_recover,
@@ -331,6 +332,10 @@ class AuthorityConnection:
     async def a2a_forward(self, ref, params):
         from gateway.session_a2a import forward
         return await forward(self, params)
+
+    async def a2a_status(self, ref, params):
+        from gateway.session_a2a import status
+        return await status(self, params)
 
     async def kanban_run(self, ref, params):
         from gateway.session_kanban import run_task

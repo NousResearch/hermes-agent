@@ -124,9 +124,19 @@ def _exit_reason(completed: bool, result: Optional[dict], *,
             if not completed else "run reported completed but no terminal kanban call")
 
 
+# Best-effort reconciliation sits on the process exit path: bound how long a
+# locked board may hold the exiting worker before the guard gives up.
+_BUSY_TIMEOUT_MS = 2000
+
+
+def _bound_lock_wait(conn: Any) -> None:
+    with contextlib.suppress(Exception):
+        conn.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
+
+
 @contextlib.contextmanager
 def _board_connection():
-    """Open the board DB on either runtime layout.
+    """Open the board DB on either runtime layout, with a bounded lock wait.
 
     Upstream exposes ``hermes_cli.kanban_db_connect.connect_closing``; older
     builds (and the fleet fork) expose ``kanban_db.connect``.
@@ -137,12 +147,14 @@ def _board_connection():
         kbc = None
     if kbc is not None and hasattr(kbc, "connect_closing"):
         with kbc.connect_closing() as conn:
+            _bound_lock_wait(conn)
             yield conn
         return
     from hermes_cli import kanban_db as kb
 
     conn = kb.connect()
     try:
+        _bound_lock_wait(conn)
         yield conn
     finally:
         with contextlib.suppress(Exception):
@@ -162,6 +174,10 @@ def reconcile_worker_exit(
     """
     try:
         if not _enabled():
+            return SKIPPED
+        if result is None:
+            # No settled turn result is no evidence of a violation (the funnel
+            # already guards this; the module enforces it independently).
             return SKIPPED
 
         tid = (task_id or os.environ.get("HERMES_KANBAN_TASK") or "").strip()

@@ -128,6 +128,7 @@ def test_fallback_connection_when_connect_closing_unavailable(clean_env, tmp_pat
     monkeypatch.delattr(kbc, "connect_closing", raising=False)
 
     closed = []
+    seen = []
 
     class _Proxy:
         def __init__(self, real):
@@ -136,6 +137,10 @@ def test_fallback_connection_when_connect_closing_unavailable(clean_env, tmp_pat
         def __getattr__(self, name):
             return getattr(self._real, name)
 
+        def execute(self, sql, *args):
+            seen.append(sql)
+            return self._real.execute(sql, *args)
+
         def close(self):
             closed.append(True)
             self._real.close()
@@ -143,6 +148,7 @@ def test_fallback_connection_when_connect_closing_unavailable(clean_env, tmp_pat
     monkeypatch.setattr(kb, "connect", lambda: _Proxy(sqlite3.connect(db)), raising=False)
     assert reconcile_worker_exit(completed=False, result={"messages": []}) == "recorded"
     assert closed == [True]
+    assert any("busy_timeout" in sql for sql in seen)
     assert any(e["kind"] == "protocol_violation" for e in _events(db, task_id))
 
 
@@ -245,3 +251,42 @@ def test_attempted_terminal_call_with_error_keeps_both_facts(clean_env, tmp_path
     reason = events[0]["payload"]["reason"]
     assert "truncated tool-call arguments" in reason
     assert "did not land" in reason
+
+
+def test_noop_without_turn_result(clean_env, tmp_path):
+    """No settled result is no evidence of a violation, even for a running task."""
+    from agent.kanban_terminal_guard import reconcile_worker_exit
+
+    db, task_id = _make_task(tmp_path, clean_env, "running")
+    assert reconcile_worker_exit(completed=False, result=None) == "skipped"
+    assert not [e for e in _events(db, task_id) if e["kind"] == "protocol_violation"]
+
+
+def test_primary_connection_bounds_lock_wait(clean_env, tmp_path, monkeypatch):
+    """The exit path must not wait indefinitely on a locked board."""
+    from hermes_cli import kanban_db_connect as kbc
+    import agent.kanban_terminal_guard as guard
+
+    _make_task(tmp_path, clean_env, "running")
+    seen = []
+    real = kbc.connect_closing
+
+    class _Spy:
+        def __init__(self, conn):
+            self._conn = conn
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+        def execute(self, sql, *args):
+            seen.append(sql)
+            return self._conn.execute(sql, *args)
+
+    @contextlib.contextmanager
+    def _spy_connect(*a, **k):
+        with real(*a, **k) as conn:
+            yield _Spy(conn)
+
+    monkeypatch.setattr(kbc, "connect_closing", _spy_connect)
+    assert guard.reconcile_worker_exit(completed=False, result={"messages": []}) == "recorded"
+    assert any("busy_timeout" in sql for sql in seen)

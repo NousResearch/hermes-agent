@@ -109,6 +109,38 @@ describe('publish-time eviction', () => {
     expect($unreadFinishedSessionIds.get()).not.toContain('tg-old')
   })
 
+  it("keeps a local completion lit when only another profile's same-id tree row is messaging", () => {
+    $projectTree.set([
+      {
+        id: 'proj',
+        label: 'proj',
+        path: null,
+        repos: [
+          {
+            id: 'repo',
+            label: 'repo',
+            path: null,
+            groups: [
+              {
+                id: 'lane',
+                label: 'lane',
+                path: null,
+                sessions: [makeSessionInfo({ id: 'shared', profile: 'beta', source: 'telegram' })]
+              }
+            ],
+            sessionCount: 1
+          }
+        ],
+        sessionCount: 1
+      }
+    ])
+
+    publishSessionState('rt-local', state('shared', { busy: true }))
+    publishSessionState('rt-local', state('shared', { busy: false }))
+
+    expect($unreadFinishedSessionIds.get()).toContain('shared')
+  })
+
   it('keeps a busy session with no surface — its background turn feeds the sidebar dot', () => {
     publishSessionState('rt-1', state('stored-1', { busy: true }))
     publishSessionState('rt-1', state('stored-1', { busy: true, awaitingResponse: true }))

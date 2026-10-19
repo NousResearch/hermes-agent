@@ -25,6 +25,16 @@ def _estimate_tokens(history: list, agent: Any, system_prompt: str | None = None
     return estimate_request_tokens_rough(history, system_prompt=system_prompt, tools=tools)
 
 
+def _provider_label(agent: Any, default: str = "auto") -> str:
+    """Provider name to display: a NAMED custom provider resolves to the runtime class ``custom``
+    and keeps its configured name in ``requested_provider`` — show that, like /model does."""
+    for value in (getattr(agent, "requested_provider", None), getattr(agent, "provider", None)):
+        label = str(value or "").strip()
+        if label and label != "custom":
+            return label
+    return str(getattr(agent, "provider", "") or "").strip() or default
+
+
 def _queue_prompt(state: SessionState, text: str) -> int:
     with state.runtime_lock:
         state.queued_prompts.append(text)
@@ -139,11 +149,12 @@ class SlashCommandsMixin:
     def _cmd_model(self, args: str, state: SessionState) -> str:
         if not args:
             model = state.model or getattr(state.agent, "model", "unknown")
-            provider = getattr(state.agent, "provider", None) or "auto"
+            provider = _provider_label(state.agent)
             return f"Current model: {model}\nProvider: {provider}"
 
         current_provider, target_provider, new_model = self._switch_model(state, args)
-        provider_label = getattr(state.agent, "provider", None) or target_provider or current_provider or "openrouter"
+        provider_label = (_provider_label(state.agent, default="") or target_provider
+                          or current_provider or "openrouter")
         logger.info("Session %s: model switched to %s", state.session_id, new_model)
         return f"Model switched to: {new_model}\nProvider: {provider_label}"
 
@@ -188,7 +199,7 @@ class SlashCommandsMixin:
 
         agent = state.agent
         model = state.model or getattr(agent, "model", "")
-        provider = getattr(agent, "provider", None) or "auto"
+        provider = _provider_label(agent)
         compressor = getattr(agent, "context_compressor", None)
         context_length = int(getattr(compressor, "context_length", 0) or 0)
         threshold_tokens = int(getattr(compressor, "threshold_tokens", 0) or 0)

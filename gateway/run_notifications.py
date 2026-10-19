@@ -804,34 +804,14 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         from gateway.wake import session_owned_by_profile
         primary = getattr(self, "_primary_profile_name", None) or "default"
         hinted = str(getattr(self._build_process_event_source(evt), "profile", None) or "").strip()
-        if hinted and hinted != primary:
+        if hinted:
+            if hinted == primary:
+                return None
             if session_owned_by_profile(self.config, hinted, raw_sid):
                 return hinted
             raise LookupError(f"session is not in served profile {hinted!r}'s own store")
         return next((name for name, _home in _multiplex_profile_homes(self.config)
                      if name != primary and session_owned_by_profile(self.config, name, raw_sid)), None)
-
-    @contextlib.asynccontextmanager
-    async def _served_api_server_event_scope(self, evt: dict, raw_sid: str):
-        """Owning served profile's scope for a raw api_server event, else the launch profile's."""
-        from gateway.run import _async_profile_runtime_scope
-        from hermes_constants import get_hermes_home_override
-        from tui_gateway.launch_profile_policy import async_launch_profile_scope_if_multiplexed
-        try:
-            served = await asyncio.to_thread(self._served_api_server_wake_profile, evt, raw_sid)
-        except LookupError:
-            served = None  # the persist step re-checks ownership and refuses the delivery
-        if not served:
-            async with async_launch_profile_scope_if_multiplexed():
-                yield
-            return
-        source = SessionSource(platform=Platform.API_SERVER, chat_id=raw_sid, profile=served)
-        profile_home = self._resolve_profile_home_for_source(source)
-        if get_hermes_home_override() == str(profile_home):
-            yield
-            return
-        async with _async_profile_runtime_scope(profile_home):
-            yield
 
     def _resolve_injection_adapter(self, platform_name: str, source=None):
         """Adapter for a synthetic-event platform: alias-aware transport resolver first (one
@@ -1185,14 +1165,22 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         """Scope of the served profile whose own store holds a raw api_server session (its events name no
         profile), else the launch profile's, as for any unrouted event."""
         from gateway.run import _async_profile_runtime_scope
+        from hermes_constants import get_hermes_home_override
         from tui_gateway.launch_profile_policy import async_launch_profile_scope_if_multiplexed
-        served = await asyncio.to_thread(self._served_api_server_wake_profile, evt, raw_sid)
-        if served:
-            source = SessionSource(platform=Platform.API_SERVER, chat_id=raw_sid, profile=served)
-            scope = _async_profile_runtime_scope(self._resolve_profile_home_for_source(source))
-        else:
-            scope = async_launch_profile_scope_if_multiplexed()
-        async with scope:
+        try:
+            served = await asyncio.to_thread(self._served_api_server_wake_profile, evt, raw_sid)
+        except LookupError:
+            served = None  # the persist step re-checks ownership and refuses the delivery
+        if not served:
+            async with async_launch_profile_scope_if_multiplexed():
+                yield
+            return
+        source = SessionSource(platform=Platform.API_SERVER, chat_id=raw_sid, profile=served)
+        profile_home = self._resolve_profile_home_for_source(source)
+        if get_hermes_home_override() == str(profile_home):
+            yield
+            return
+        async with _async_profile_runtime_scope(profile_home):
             yield
 
     async def _deliver_completion_notification(

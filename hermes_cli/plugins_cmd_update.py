@@ -269,7 +269,8 @@ def cmd_check_updates(args: Any | None = None) -> None:
     console.print()
     console.print(table)
     console.print()
-    console.print("[dim]Check-only. Apply with: hermes plugins update <name>[/dim]")
+    console.print("[dim]Check-only. Apply with: hermes plugins update <name>, or "
+                  "hermes plugins update to update them all[/dim]")
 
 
 def dashboard_update_user_plugin(name: str, *, accept_capabilities: bool = False) -> dict[str, Any]:

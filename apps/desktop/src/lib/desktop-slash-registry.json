@@ -28,6 +28,7 @@
   "/debug": null,
   "/deny": null,
   "/diff": null,
+  "/discard": null,
   "/egress": null,
   "/exit": "terminal",
   "/export": null,

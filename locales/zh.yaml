@@ -445,6 +445,9 @@ gateway:
     state_no: "否"
     queued: "**排队的后续：** {count}"
     platforms: "**已连接平台：** {platforms}"
+  discard:
+    nothing: "没有可丢弃的内容：此聊天没有在重启时丢失的回合。"
+    done: "🗑️ 已丢弃 {count} 个丢失的回合；未重新执行。现在会回复你已保存的消息。"
   stop:
     stopped_pending: "⚡ 已停止。代理尚未启动 — 你可以继续此会话。"
     stopped: "⚡ 已停止。你可以继续此会话。"
@@ -1530,6 +1533,8 @@ slash:
     description: "将分享的配置档归档导入为新配置档"
   stop:
     description: "终止所有正在运行的后台进程"
+  discard:
+    description: "丢弃 Hermes 重启时丢失的回合，让此聊天的队列继续运行"
   pause:
     description: "全局暂停新工作（紧急停止）；'/pause off' 恢复"
   deny:
@@ -3004,6 +3009,10 @@ cli:
       usage_disconnect: "disconnect   恢复为默认浏览器后端"
       usage_status: "status       显示当前浏览器模式"
       usage_use: "use [off]    切换到 Browser Use 模式（CLI 3.0）/ 切回内置工具"
+      remote_gateway: "/browser connect 和 /browser disconnect 管理网关主机上的 Chromium 系浏览器 — 仅在连接到本地网关时可用。"
+      checking: "正在检查 {url} 的 Chromium 系浏览器远程调试..."
+      new_sessions_only: "应用于新会话 — 此会话保留当前工具（/new 开始新的）。"
+      status_gateway_default: "🌐 浏览器：网关的默认浏览器后端（无实时 CDP 连接）"
     heartbeat:
       label: "心跳"
       paused: "⏸ 心跳已暂停：{prompt}"

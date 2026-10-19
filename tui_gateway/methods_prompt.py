@@ -236,10 +236,10 @@ def _pending_reaction_notes(session: dict) -> str:
 
 # ── prompt.submit pieces ────────────────────────────────────────────────────
 
-def _typed_stop_phrase_response(rid, text):
-    """RPC reply ending the voice chat when a bare stop phrase is TYPED while backend voice
+def _typed_stop_phrase_response(rid, text, sid=None):
+    """RPC reply ending the voice chat when a bare stop phrase is TYPED while the session's voice
     mode is on (typed twin of the spoken stop phrase), or None for a normal message."""
-    if not (isinstance(text, str) and _voice_mode_enabled()):
+    if not (isinstance(text, str) and _session_voice_enabled(sid)):
         return None
     try:
         # Typed bare stop phrase while backend voice mode is active ends the voice chat instead of sending
@@ -251,7 +251,7 @@ def _typed_stop_phrase_response(rid, text):
             return None
     except Exception:
         return None
-    _end_voice_chat(stop_loop=True, stop_tts=True)
+    _end_session_voice_chat(sid, stop_loop=True, stop_tts=True)
     _voice_emit("voice.transcript", {"stop_phrase": True, "typed": True})
     logger.info("prompt.submit: typed stop phrase — voice chat ended")
     return _ok(rid, {"voice_stopped": True})
@@ -815,7 +815,7 @@ def _(rid, params: dict) -> dict:
         if isinstance(title_preview, str) and title_preview.strip()
         else None
     )
-    if (stopped := _typed_stop_phrase_response(rid, text)) is not None:
+    if (stopped := _typed_stop_phrase_response(rid, text, sid)) is not None:
         return stopped
     if params.get("interrupted"):
         # Client-side barge-in: latch so this turn's model message carries the note.

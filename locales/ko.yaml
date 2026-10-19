@@ -445,6 +445,9 @@ gateway:
     state_no: "아니오"
     queued: "**대기 중인 후속 작업:** {count}"
     platforms: "**연결된 플랫폼:** {platforms}"
+  discard:
+    nothing: "버릴 것이 없습니다: 이 채팅에는 재시작으로 손실된 턴이 없습니다."
+    done: "🗑️ 손실된 턴 {count}개를 버렸습니다. 다시 실행하지 않았습니다. 저장된 메시지에 이제 응답합니다."
   stop:
     stopped_pending: "⚡ 중지되었습니다. 에이전트가 아직 시작되지 않았습니다 — 이 세션을 계속할 수 있습니다."
     stopped: "⚡ 중지되었습니다. 이 세션을 계속할 수 있습니다."
@@ -1530,6 +1533,8 @@ slash:
     description: "공유된 프로필 아카이브를 새 프로필로 가져오기"
   stop:
     description: "실행 중인 모든 백그라운드 프로세스 종료"
+  discard:
+    description: "Hermes 재시작 중 손실된 턴을 버리고 이 채팅의 대기열을 다시 실행합니다"
   pause:
     description: "새 작업을 전체 일시 중지 (긴급 정지); '/pause off'로 재개"
   deny:
@@ -3004,6 +3009,10 @@ cli:
       usage_disconnect: "disconnect   기본 브라우저 백엔드로 되돌리기"
       usage_status: "status       현재 브라우저 모드 표시"
       usage_use: "use [off]    Browser Use 모드(CLI 3.0)로 전환 / 내장 도구로 복귀"
+      remote_gateway: "/browser connect 및 /browser disconnect는 게이트웨이 호스트의 Chromium 계열 브라우저를 관리합니다 — 로컬 게이트웨이에 연결된 경우에만 사용할 수 있습니다."
+      checking: "{url}에서 Chromium 계열 브라우저 원격 디버깅을 확인하는 중..."
+      new_sessions_only: "새 세션에 적용됩니다 — 이 세션은 현재 도구를 유지합니다 (/new로 새로 시작)."
+      status_gateway_default: "🌐 브라우저: 게이트웨이 기본 브라우저 백엔드 (실시간 CDP 연결 없음)"
     heartbeat:
       label: "하트비트"
       paused: "⏸ 하트비트 일시 중지됨: {prompt}"

@@ -69,6 +69,24 @@ async def _rewind_command(agent, session_id, command, arg):
     return await _rewind(agent, await agent._client(), session_id, command, arg)
 
 
+async def _discard_unknown(agent, session_id, _command, admission_id):
+    """Acknowledge one exact lost turn and refresh its FIFO snapshot."""
+    if not admission_id:
+        return 'Usage: /discard <lost admission id>', None
+    # Pending-only refreshes: adopting the whole snapshot would advance its reply cursor past
+    # messages and approvals the editor's event pump has not projected yet.
+    await agent._refresh_unknown(session_id)
+    lost = next((row for row in agent._snapshots[session_id].get('pending', [])
+                 if row.get('admission_id') == admission_id and row.get('status') == 'unknown'), None)
+    if lost is None:
+        return (f'No unknown (lost) admission with id {admission_id}; refresh the session and try again.', None)
+    client = await agent._client()
+    await client.rpc('prompt.resolve_unknown', session_id=session_id, admission_id=admission_id,
+                     execution_generation=lost['execution_generation'])
+    await agent._refresh_unknown(session_id)
+    return 'Discarded the lost turn. Queued messages can continue.', None
+
+
 async def _forward(agent, client, session_id, command, arg):
     """The owner's ``slash.exec`` answer: its report, a turn to submit (a skill body or the turn a
     command built, after its notice), or the shared refusal for a command it does not serve."""
@@ -257,6 +275,7 @@ def _tools_text(info):
 # "new session + clear screen"; here it is ``/new``'s reset of this session.
 ROUTES = {
     'branch': ('ACP fork_session', _branch),
+    'discard': ('prompt.resolve_unknown', _discard_unknown),
     'help': ('local', _help),
     'steer': ('session.steer', _prompt),
     'queue': ('prompt.submit', _prompt),

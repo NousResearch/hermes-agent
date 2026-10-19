@@ -36487,6 +36487,18 @@
             ],
             "default": null,
             "title": "Last Seen"
+          },
+          "replay_epoch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Replay Epoch"
           }
         },
         "required": [
@@ -36598,6 +36610,68 @@
           "max_bytes_process"
         ],
         "title": "SessionEventsStatsResult",
+        "type": "object"
+      },
+      "SessionExportParams": {
+        "additionalProperties": false,
+        "description": "``format``: json (default) / md / markdown / html / snapshot (``normalize_save_format``).",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "format": {
+            "default": "json",
+            "title": "Format",
+            "type": "string"
+          },
+          "redact": {
+            "default": false,
+            "title": "Redact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "SessionExportParams",
+        "type": "object"
+      },
+      "SessionExportResult": {
+        "additionalProperties": false,
+        "description": "``gateway/session_tui_ops.py::export_session``: the rendered ``/save`` body and its default\nfile name. The client writes it (the gateway may be remote); nothing is written on the host.",
+        "properties": {
+          "format": {
+            "title": "Format",
+            "type": "string"
+          },
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          }
+        },
+        "required": [
+          "format",
+          "filename",
+          "content"
+        ],
+        "title": "SessionExportResult",
         "type": "object"
       },
       "SessionForeignIdParams": {
@@ -47479,6 +47553,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/CanonicalEventsResult"
+        }
+      }
+    },
+    {
+      "name": "session.export",
+      "summary": "The /save transcript rendered for the client to write (the gateway writes nothing).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionExportParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionExportResult"
         }
       }
     },

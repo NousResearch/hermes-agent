@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 from utils import safe_json_loads
 from agent.i18n import t
 from agent.redact import redact_sensitive_text
-from agent.tool_result_classification import file_mutation_result_landed, is_guardrail_refusal
+from agent.tool_result_classification import file_mutation_result_landed, has_failure_marker, is_guardrail_refusal
 
 logger = logging.getLogger(__name__)
 
@@ -1049,9 +1049,7 @@ def _detect_tool_failure(tool_name: str, result: Any) -> tuple[bool, str]:
         if err and (failed or "error" in data):
             return True, f" [{_trim_error(str(err))}]"
     # Multimodal results (dicts) are successes; failures arrive as JSON-encoded strings.
-    if isinstance(result, str) and (
-        '"error"' in result[:500].lower() or '"failed"' in result[:500].lower() or result.startswith("Error")
-    ):
+    if isinstance(result, str) and has_failure_marker(result):
         return True, t("display.failure.generic")
     return False, ""
 

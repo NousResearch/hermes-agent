@@ -2624,7 +2624,7 @@ class _BedrockStream:
                     on_text_delta=self._after_first(agent._fire_stream_delta) if agent._has_stream_consumers() else None,
                     on_tool_start=self._after_first(agent._fire_tool_gen_started),
                     on_reasoning_delta=self._after_first(agent._fire_reasoning_delta) if wants_reasoning else None,
-                    on_interrupt_check=lambda: agent._interrupt_requested, on_event=_stamp_event)
+                    on_interrupt_check=lambda: agent._interrupt_requested, on_event=_stamp_event, watch_runaway=True)
             except EmptyStreamError:
                 # IAM-denied fallback: no stream events, but converse() already completed.
                 if stream.final_response is None:

@@ -1081,6 +1081,42 @@ def normalize_converse_response(response: dict) -> SimpleNamespace:
 
 # --- Streaming response conversion ---
 
+class _ConverseRunawayWatch:
+    """Mid-stream repetition cut for the Converse stream: ``events()`` stops yielding at the delta that
+    trips a channel's ``RunawayStreamWatch``; ``cut_response()`` then returns what streamed so far with
+    ``stop_reason=max_tokens`` and ``_runaway_repetition`` set, the hand-off the length path ends the turn on.
+    A tool call cut mid-arguments is dropped, as no tool has run yet. Disabled, it passes events through."""
+
+    def __init__(self, *, enabled: bool) -> None:
+        from agent.repetition_guard import RunawayStreamWatch
+        self.enabled, self.channel = enabled, None
+        self._watches = {"content": RunawayStreamWatch(), "reasoning": RunawayStreamWatch()}
+
+    def _tripped(self, event: dict[str, Any]) -> Optional[str]:
+        delta = event.get("contentBlockDelta", {}).get("delta", {})
+        reasoning = delta.get("reasoningContent")
+        channel, text = ("reasoning", reasoning.get("text")) if isinstance(reasoning, dict) else ("content", delta.get("text"))
+        return channel if isinstance(text, str) and text and self._watches[channel].feed(text) else None
+
+    def events(self, stream):
+        for event in stream:
+            if self.enabled and isinstance(event, dict) and "contentBlockDelta" in event:
+                self.channel = self._tripped(event)
+                if self.channel:
+                    logger.warning("Stream cut: the Bedrock %s turned into a runaway repetition loop.", self.channel)
+                    return
+            yield event
+
+    def cut_response(self, parts, stream_blocks, usage_data, flush_text):
+        finished = {call.id for call in parts.tool_calls}
+        blocks = [stream_blocks[i] for i in sorted(stream_blocks)
+                  if "toolUse" not in stream_blocks[i] or stream_blocks[i]["toolUse"].get("toolUseId") in finished]
+        flush_text()
+        response = parts.build(blocks, usage_data, "max_tokens", "")
+        response._runaway_repetition = True
+        return response
+
+
 def normalize_converse_stream_events(event_stream) -> SimpleNamespace:
     """Consume a ConverseStream event stream (no callbacks) → same shape as ``normalize_converse_response()``."""
     return stream_converse_with_callbacks(event_stream)
@@ -1088,7 +1124,7 @@ def normalize_converse_stream_events(event_stream) -> SimpleNamespace:
 
 def stream_converse_with_callbacks(
     event_stream, on_text_delta=None, on_tool_start=None, on_reasoning_delta=None,
-    on_interrupt_check=None, on_event=None,
+    on_interrupt_check=None, on_event=None, watch_runaway=False,
 ) -> SimpleNamespace:
     """boto3 ``converse_stream()`` response + callbacks → the ``normalize_converse_response()`` shape.
     ``on_text_delta`` only fires while no toolUse block has been seen (as on the Anthropic/chat_completions
@@ -1096,7 +1132,11 @@ def stream_converse_with_callbacks(
     and its exceptions are swallowed so a watchdog hook can never abort the stream.
 
     Blocks are keyed by the ``contentBlockIndex`` Bedrock stamps on every contentBlockStart/Delta/Stop:
-    text blocks get NO contentBlockStart, so a counter keyed on starts shredded them (#108200)."""
+    text blocks get NO contentBlockStart, so a counter keyed on starts shredded them (#108200).
+
+    ``watch_runaway`` cuts a text or reasoning channel that turns into a repetition loop mid-stream, with the
+    ``RunawayStreamWatch`` the chat_completions and Anthropic streams use (#130551): Converse sends no
+    ``maxTokens`` by default, so nothing else bounds the loop. See :class:`_ConverseRunawayWatch`."""
     parts = _ResponseParts()
     stream_blocks: dict[int, dict[str, Any]] = {}
     current_block_index: Optional[int] = None
@@ -1106,6 +1146,7 @@ def stream_converse_with_callbacks(
     stop_reason = None
     interrupted = False
     usage_data: dict[str, int] = {}
+    watch = _ConverseRunawayWatch(enabled=watch_runaway)
 
     def block_index(payload: dict[str, Any], *, new_block: bool = False) -> int:
         """Index of the block a contentBlock* event addresses. Without ``contentBlockIndex`` (test doubles,
@@ -1120,7 +1161,7 @@ def stream_converse_with_callbacks(
             parts.text_parts.append("".join(current_text_buffer))
             current_text_buffer.clear()
 
-    for event in event_stream.get("stream", []):
+    for event in watch.events(event_stream.get("stream", [])):
         if on_event is not None:
             with suppress(Exception):
                 on_event()
@@ -1172,6 +1213,8 @@ def stream_converse_with_callbacks(
         elif "metadata" in event:
             meta_usage = event["metadata"].get("usage", {})
             usage_data = {key: meta_usage.get(key, 0) for key in ("inputTokens", "outputTokens", "cacheReadInputTokens", "cacheWriteInputTokens")}
+    if watch.channel:
+        return watch.cut_response(parts, stream_blocks, usage_data, flush_text)
     if stop_reason is None and not interrupted:
         raise EmptyStreamError("Bedrock Converse stream ended before messageStop; response is incomplete")
     flush_text()

@@ -266,7 +266,7 @@ def test_cli_stop_parks_when_host_control_socket_is_unavailable(served_root, mon
     from gateway import control_socket
     monkeypatch.setattr(gw, "find_gateway_pids", lambda *a, **k: [])
     monkeypatch.setattr(gw, "_refuse_from_inside_gateway", lambda *a, **k: None)
-    monkeypatch.setattr(control_socket, "request_unserve_profile", lambda home, name: None)
+    monkeypatch.setattr(control_socket, "request_unserve_profile", lambda home, name, **kwargs: None)
     output = io.StringIO()
     with contextlib.redirect_stdout(output):
         gw._cmd_stop(argparse.Namespace(system=False, all=False))

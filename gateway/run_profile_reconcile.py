@@ -459,8 +459,8 @@ def _profile_lifecycle_verb(runner, *, serve: bool):
     """Build on the owning loop; socket handlers themselves run on executor threads."""
     loop = asyncio.get_running_loop()
 
-    async def apply(name):
-        from hermes_cli.profiles import profiles_to_serve, profile_is_parked
+    async def apply(name, park=False):
+        from hermes_cli.profiles import parked_marker_path, profiles_to_serve, profile_is_parked
         if not runner._multiplex_on() or not runner._running or runner._served_profile_homes is None:
             return {"error": "host multiplexer is not ready"}
         async with runner._reconcile_lock():
@@ -471,7 +471,10 @@ def _profile_lifecycle_verb(runner, *, serve: bool):
             if not serve:
                 if name not in known:
                     return {"error": f"profile '{name}' is not served"}
-                await runner._unserve_profile(name, known.pop(name))
+                home = known.pop(name)
+                await runner._unserve_profile(name, home)
+                if park:
+                    parked_marker_path(home).touch()
                 runner._record_served_profiles(active, list(known.items()))
                 return {"unserved": name, "served_profiles": runner.served_profile_names()}
             installed = dict(profiles_to_serve(True, include_parked=True))
@@ -488,7 +491,7 @@ def _profile_lifecycle_verb(runner, *, serve: bool):
             return {"served": name, "served_profiles": result["served_profiles"]}
 
     def handler(params):
-        future = asyncio.run_coroutine_threadsafe(apply(params.get("name")), loop)
+        future = asyncio.run_coroutine_threadsafe(apply(params.get("name"), params.get("park", False)), loop)
         try:
             return future.result(timeout=5.0)
         except TimeoutError:
@@ -496,7 +499,7 @@ def _profile_lifecycle_verb(runner, *, serve: bool):
             return {"pending": True, "served_profiles": runner.served_profile_names()}
         except Exception as exc:
             logger.warning("Profile lifecycle request failed", exc_info=True)
-            return {"error": f"{type(exc).__name__}: {exc}"}
+            return {"error": f"{type(exc).__name__}: {exc}", "served_profiles": runner.served_profile_names()}
 
     return handler
 

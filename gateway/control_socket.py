@@ -503,8 +503,9 @@ def rescan_gateway_profiles(home: Path, *, timeout: float = 8.0) -> Optional[dic
     return query_gateway_control(home, "rescan-profiles", timeout=timeout)
 
 
-def request_unserve_profile(home: Path, name: str) -> Optional[dict[str, Any]]:
-    return query_gateway_control(home, "unserve-profile", params={"name": name}, timeout=8.0)
+def request_unserve_profile(home: Path, name: str, *, park: bool = False) -> Optional[dict[str, Any]]:
+    """Ask the host to unserve a profile, optionally committing its parked marker atomically."""
+    return query_gateway_control(home, "unserve-profile", params={"name": name, "park": park}, timeout=8.0)
 
 
 def request_serve_profile_hot(home: Path, name: str) -> Optional[dict[str, Any]]:

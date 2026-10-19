@@ -233,12 +233,12 @@ async def test_profile_control_verbs_round_trip_and_refusals(tmp_path, monkeypat
                               (start, "worker"), (start, "default")]:
             assert (await asyncio.to_thread(handler, {"name": name}))["error"]
         old = runner._profile_adapters["worker"][Platform.DISCORD]
-        answer = await asyncio.to_thread(stop, {"name": "worker"})
+        answer = await asyncio.to_thread(stop, {"name": "worker", "park": True})
         assert answer["unserved"] == "worker"
         assert answer["served_profiles"] == _served_record(home) == ["default"]
         assert old.disconnected
         marker = secondary / "gateway.parked"
-        marker.touch()
+        assert marker.exists()
         assert (await asyncio.to_thread(start, {"name": "worker"}))["error"]
         marker.unlink()
         (secondary / ".env").write_text("DISCORD_BOT_TOKEN=new-worker-token\n")

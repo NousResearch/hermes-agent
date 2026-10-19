@@ -370,10 +370,16 @@ def _process_fingerprint(pid: int) -> Optional[str]:
     time alone (``/proc/<pid>/stat`` field 22 on Linux) is clock ticks since THIS boot, so a row that
     survives a reboot could match an unrelated process with the same PID and the same tick value;
     ``gateway.drain_control.current_instantiation_epoch`` (``boot_id`` + PID-1 start) changes on every
-    reboot / container recreate, so the composed value never survives one. ``None`` when unreadable."""
+    reboot / container recreate, so the composed value never survives one. ``None`` when unreadable.
+
+    The start time must come out identical from every checker process. ``psutil``'s
+    ``Process.create_time()`` does not: on macOS it shifts the kernel's value by the gap between the
+    boot time captured when that checker imported ``psutil`` and the boot time read now, so two
+    long-lived checkers report different creation times for one live process and exact comparison
+    declares it dead. ``_raw_process_start_time`` reads the kernel value before that adjustment."""
     from gateway.drain_control import current_instantiation_epoch
-    from gateway.status import get_process_start_time
-    start = get_process_start_time(int(pid))
+    from gateway.status import _raw_process_start_time
+    start = _raw_process_start_time(int(pid))
     if start is None:
         return None
     return f"{current_instantiation_epoch()}|{start}"

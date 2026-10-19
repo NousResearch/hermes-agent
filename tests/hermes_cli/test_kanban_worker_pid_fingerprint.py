@@ -118,7 +118,7 @@ def test_unverified_fingerprint_capture_never_authorizes_a_signal(board, monkeyp
 
     conn = board
     killed = []
-    monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
+    monkeypatch.setattr(status, "_raw_process_start_time", lambda pid: None)
     tid = kb.create_task(conn, title="job", assignee="worker", max_runtime_seconds=1)
     kb.claim_task(conn, tid)
     kbd._set_worker_pid(conn, tid, os.getpid())

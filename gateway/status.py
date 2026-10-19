@@ -507,6 +507,38 @@ def get_process_start_time(pid: int) -> Optional[int]:
     return _get_process_start_time(pid)
 
 
+def _raw_process_start_time(pid: int) -> Optional[int]:
+    """Creation time exactly as the kernel reports it, before any per-process clock adjustment.
+
+    ``psutil.Process.create_time()`` on macOS shifts the kernel's ``kinfo_proc`` creation time by the
+    difference between the boot time captured when the *calling* process imported ``psutil`` and the
+    boot time read now (``psutil._psosx.adjust_proc_create_time``). Two long-lived checkers that
+    imported ``psutil`` at different moments therefore disagree about one live process, and a liveness
+    guard that compares those readings declares the process dead. The kernel value has no such
+    per-checker term, so every checker derives the same fingerprint from it.
+
+    Linux ``/proc/<pid>/stat`` field 22 is already a raw kernel value (clock ticks since boot), so it
+    passes through unchanged. ``None`` when the process is gone or the platform exposes no raw source;
+    callers fall back to :func:`get_process_start_time` rather than guessing.
+    """
+    stat_path = Path(f"/proc/{pid}/stat")
+    try:
+        return int(stat_path.read_text(encoding="utf-8").split()[21])  # windows-footgun: ok (/proc is BOM-free)
+    except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
+        pass
+    try:
+        import psutil  # type: ignore
+        proc = psutil.Process(pid)
+        proc.oneshot()  # psutil wraps the platform process; the cache then holds the raw kinfo row
+        raw = getattr(proc._proc, "_get_kinfo_proc", None)
+        mapping = getattr(getattr(psutil, "_psosx", None), "kinfo_proc_map", None)
+        if raw is None or not mapping or "ctime" not in mapping:
+            return None
+        return round(raw()[mapping["ctime"]] * 100)
+    except Exception:
+        return None
+
+
 def _read_process_cmdline(pid: int) -> Optional[str]:
     """Process command line as one string: /proc, then psutil, then ``ps``.
 

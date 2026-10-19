@@ -167,6 +167,41 @@ def test_stdio_submit_cannot_borrow_attached_desktop_transfer_identity(turn_env,
     assert seen == [("basic", "alice", "")]
 
 
+def test_desktop_worker_tracks_agent_rebuilt_during_turn_preparation(turn_env, monkeypatch, tmp_path):
+    from agent.chat_execution_context import observe_tool_before_execution
+    from gateway.chat_execution_recovery import ChatExecutionStore
+    from tools.registry import _current_tool_invocation_context
+
+    seen = []
+    def run_new(*_args, **_kwargs):
+        ctx = _current_tool_invocation_context()
+        seen.append((ctx.session_id, ctx.run_generation, observe_tool_before_execution()))
+        return {"final_response": "done"}
+
+    old = types.SimpleNamespace(session_id="old-rotated-tip",
+                                run_conversation=lambda *_a, **_k: (_ for _ in ()).throw(
+                                    AssertionError("old agent must not execute")),
+                                clear_interrupt=lambda: None, _session_title_hint="Bot Chat")
+    new = types.SimpleNamespace(session_id="new-live-tip", run_conversation=run_new,
+                                clear_interrupt=lambda: None)
+    session = _session(agent=old, running=True, profile_home=tmp_path, source="desktop",
+                       bot_caps_seen="previous-capabilities")
+    monkeypatch.setitem(server._sessions, "ui-sid", session)
+    from tools import bot_mode_probe
+    monkeypatch.setattr(bot_mode_probe, "capability_fingerprint", lambda _home: "new-capabilities")
+    def rebuild(_sid, record, **_kwargs):
+        record["agent"] = new
+        return new
+    monkeypatch.setattr(server, "_rebuild_session_agent", rebuild)
+
+    server._run_prompt_submit("rid", "ui-sid", session, "continue")
+
+    assert seen == [("new-live-tip", 1, True)]
+    receipt = ChatExecutionStore(tmp_path).retire_for_handoff("gw-session-key", 1, "handoff")
+    assert receipt["status"] == "retired"
+    assert receipt["session_id"] == "new-live-tip"
+
+
 @pytest.mark.parametrize("settle_info_raises", [False, True])
 def test_turn_settles_before_post_turn_trim(turn_stubs, monkeypatch, caplog, settle_info_raises):
     """A blocked post-turn trim must not hold the session running or its bookend (#131740);

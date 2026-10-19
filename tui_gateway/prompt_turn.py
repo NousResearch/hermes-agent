@@ -655,7 +655,8 @@ def _stage_first_contact_onboarding_note(session: dict, agent, history_empty: bo
         logger.debug("first-contact onboarding note failed", exc_info=True)
 
 
-def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images: list[str]):
+def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images: list[str],
+                        admit_worker=None):
     """Bind scopes, sync the agent, snapshot history, build the run message; returns
     ``(prompt, run_message, cols, streamer)`` or None when @-expansion was refused.
     Scopes fill field by field so a failure midway still leaves every bound token for the
@@ -696,6 +697,8 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     _sync_bot_capabilities(sid, session)  # Bot Chat: adopt Settings->Capabilities edits
     _adopt_out_of_band_turns(session)
     st.agent = agent = session["agent"]
+    if admit_worker is not None:
+        admit_worker(agent)
     # Snapshot after the model sync: a deferred switch's history mutation belongs to this turn.
     with session["history_lock"]:
         st.history = list(session["history"])
@@ -1184,22 +1187,32 @@ def _run_prompt_submit(
         execution_store = None
         execution_scope = None
         execution_started = False
+        generation = None
         try:
             from gateway.chat_execution_recovery import ChatExecutionStore
             from agent.chat_execution_context import bind_chat_execution
             from hermes_constants import get_process_hermes_home
             home = str(session.get("profile_home") or get_process_hermes_home())
             key = str(session.get("session_key") or "")
-            actual_session_id = str(getattr(st.agent, "session_id", "") or "")
             execution_store = ChatExecutionStore(home)
-            generation = execution_store.start_local_worker(key, actual_session_id)
-            if generation is None:
-                raise RuntimeError("Durable Desktop/TUI worker admission refused")
-            execution_started = True
-            st.chat_execution_generation = generation
-            execution_scope = bind_chat_execution(home, key, generation)
-            execution_scope.__enter__()
-            prepared = _prepare_turn_input(sid, session, st, text, images)
+
+            def admit_worker(agent):
+                nonlocal generation, execution_started, execution_scope
+                from gateway.session_context import set_session_run_generation
+                actual_session_id = str(getattr(agent, "session_id", "") or "")
+                generation = execution_store.start_local_worker(key, actual_session_id)
+                if generation is None:
+                    raise RuntimeError("Durable Desktop/TUI worker admission refused")
+                execution_started = True
+                st.chat_execution_generation = generation
+                execution_scope = bind_chat_execution(home, key, generation)
+                execution_scope.__enter__()
+                # The capability sync may have rebuilt the agent after the first
+                # session bind. Rebind every identity field from the selected agent.
+                st.scopes.session_tokens = _set_session_context(key, ui_session_id=sid)
+                set_session_run_generation(generation)
+
+            prepared = _prepare_turn_input(sid, session, st, text, images, admit_worker=admit_worker)
             if prepared is None:
                 if st.terminal_callback is not None and not st.receipt_attempted:
                     st.receipt_attempted = True

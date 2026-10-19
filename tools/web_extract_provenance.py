@@ -1,10 +1,10 @@
 """Observed extraction delivery facts, independent of page freshness claims."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 def retrieval_time():
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def new_extract_facts(requested_count):

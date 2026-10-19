@@ -33,7 +33,7 @@ class ResponseIntakeVerdict:
     action: str
     assistant_message: Any
     finish_reason: Any
-    result: Optional[Dict[str, Any]] = None
+    result: Optional[dict[str, Any]] = None
     active_system_prompt: Any = None
 
 
@@ -127,7 +127,7 @@ def normalize_model_response(
     assistant_message = normalize_response_for_agent(agent, response)
     finish_reason = assistant_message.finish_reason
 
-    def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> ResponseIntakeVerdict:
+    def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> ResponseIntakeVerdict:
         return ResponseIntakeVerdict(
             action=action, assistant_message=assistant_message, finish_reason=finish_reason,
             result=result, active_system_prompt=active_system_prompt,

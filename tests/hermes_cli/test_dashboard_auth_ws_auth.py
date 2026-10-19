@@ -490,11 +490,17 @@ class TestWsHostOriginGuardOrigins:
 
 
 
-    def test_gated_cross_site_http_origin_still_host_checked(self, gated_app):
+    @pytest.mark.parametrize("origin", [
+        "https://evil.test",
+        # Malformed authorities make urlparse raise; they must fail closed.
+        "http://[::1",
+        "https://[not-an-ip]:52133",
+    ])
+    def test_gated_cross_site_http_origin_still_host_checked(self, gated_app, origin):
         # An http(s) origin is still subjected to the same-host check even on a
         # gated bind: a cross-site http origin whose netloc doesn't match the
         # bound host is rejected. Real browser DNS-rebinding defence unchanged.
-        ws = self._ws(origin="https://evil.test", host="fly-app.fly.dev")
+        ws = self._ws(origin=origin, host="fly-app.fly.dev")
         assert _web_server_chat._ws_host_origin_is_allowed(ws) is False
 
 

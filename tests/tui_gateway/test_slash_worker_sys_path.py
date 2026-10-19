@@ -38,6 +38,7 @@ def test_slash_worker_imports_from_cwd_with_colliding_utils(tmp_path):
         capture_output=True,
         text=True,
         timeout=120,
+        check=False,
     )
 
     assert result.returncode == 0, (

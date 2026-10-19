@@ -311,7 +311,11 @@ def import_provider_module(name: str, submodule: Optional[str] = None):
 
 
 def _instantiate_subclass(namespace) -> Optional[MemoryProvider]:
-    """First instantiable ``MemoryProvider`` subclass found among *namespace*'s attributes."""
+    """First instantiable ``MemoryProvider`` subclass found among *namespace*'s attributes.
+
+    A constructor that raises is logged at WARNING with its traceback: discarding it made a
+    provider whose store cannot be opened look identical to one that is not installed.
+    """
     from agent.memory_provider import MemoryProvider
 
     for attr_name in dir(namespace):
@@ -319,8 +323,9 @@ def _instantiate_subclass(namespace) -> Optional[MemoryProvider]:
         if isinstance(attr, type) and issubclass(attr, MemoryProvider) and attr is not MemoryProvider:
             try:
                 return attr()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Memory provider class %s raised %s: %s",
+                               attr_name, type(e).__name__, e, exc_info=True)
     return None
 
 
@@ -381,7 +386,8 @@ def _load_provider_from_dir(provider_dir: Path, *, register_skills: bool = True)
             # falling through to the subclass scan would hand back a bare second
             # instance — a silent downgrade that looks like success.
             if collector.provider is None:
-                logger.debug("register() failed for %s: %s", name, e)
+                logger.warning("Memory provider '%s' register() raised %s: %s",
+                               name, type(e).__name__, e, exc_info=True)
             else:
                 logger.warning(
                     "Memory provider '%s' raised after registering (%s) — "

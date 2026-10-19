@@ -380,8 +380,9 @@ def begin_update_receipt(*, previous: dict | None = None, correlation_id: str | 
                 rows = list((prior.get("plan") or {}).get("runtimes") or [])
                 rows += list(prior.get("pending_manual_serves") or [])
                 rows += list(prior.get("carried_manual_serves") or [])  # a run killed before finalize
-                receipt.data["carried_manual_serves"] = [
-                    row for row in rows if isinstance(row, dict) and row.get("supervisor") == "manual-serve"]
+                from hermes_cli.update_serve_obligations import is_reminder_row
+
+                receipt.data["carried_manual_serves"] = [row for row in rows if is_reminder_row(row)]
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("Could not start update receipt: %s", exc)
         return

@@ -899,7 +899,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         lock_holder: Optional[str] = None, tail_count: int = 0,
         carried_messages: Optional[list[dict[str, Any]]] = None,
         covered_ids: Optional[list[int]] = None,
-        unresolved_held: Optional[list[dict[str, Any]]] = None) -> int:
+        unresolved_held: Optional[list[dict[str, Any]]] = None,
+        held_for_cas: Optional[list[dict[str, Any]]] = None) -> int:
         """Non-destructive in-place compaction under ONE session id: soft-archive the active rows (``active=0,
         compacted=1``: summarized away, still searchable) and insert *compacted_messages* as fresh active
         rows, atomically; returns the new ACTIVE count (= ``message_count``). *watermark* (compression
@@ -915,6 +916,11 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         They are resolved inside this transaction by row id when present, else by unique durable identity +
         timestamp. Those originals and the clones' originals are superseded duplicates and get rewind flags
         (``active=0, compacted=0``) so search doesn't return each carried message once per compaction.
+        ``held_for_cas``: the caller's held message dicts for the lease-less staleness gate — re-verified
+        against the live rows INSIDE this transaction (see :meth:`held_row_mismatches`), so a rewrite that
+        lands after the caller's precheck aborts the commit as :class:`HeldRowRewrittenError` before any
+        row is archived (#124102). The lease path leaves it ``None``: its lease rules out an overlapping
+        rewrite, and the turn's own writes are the ones a CAS here would misread.
         ``model_config_patch`` merges in the same txn (``None`` removes a key).
 
         Concurrent-append safety (#75316): when *watermark* is provided (the value of
@@ -928,7 +934,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         return self._execute_transcript_write(lambda conn: self._archive_and_compact_on_conn(
             conn, session_id, compacted_messages, model_config_patch=model_config_patch,
             watermark=watermark, lock_holder=lock_holder, tail_count=tail_count,
-            carried_messages=carried_messages, covered_ids=covered_ids, unresolved_held=unresolved_held), compacted_messages)
+            carried_messages=carried_messages, covered_ids=covered_ids,
+            unresolved_held=unresolved_held, held_for_cas=held_for_cas), compacted_messages)
 
     def _archive_and_compact_on_conn(
             self, conn, session_id: str, compacted_messages: list[dict[str, Any]], *,
@@ -936,7 +943,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             lock_holder: Optional[str] = None, tail_count: int = 0,
             carried_messages: Optional[list[dict[str, Any]]] = None,
             covered_ids: Optional[list[int]] = None,
-            unresolved_held: Optional[list[dict[str, Any]]] = None) -> int:
+            unresolved_held: Optional[list[dict[str, Any]]] = None,
+            held_for_cas: Optional[list[dict[str, Any]]] = None) -> int:
         """:meth:`archive_and_compact` on the caller's write transaction (never commits). The owner
         and the worker/canonical-mutation verbs share this one body so they cannot drift."""
         from hermes_state import SessionCompressionInProgressError
@@ -949,6 +957,16 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         # on_missing="raise": never commit against a vanished session row (caller keeps the original).
         patched_model_config = self._merge_model_config_json(
             conn, session_id, model_config_patch, on_missing="raise") if patch else None
+        # The in-transaction half of the lease-less staleness gate (#124102): the caller's
+        # rewritten_held_row_ids precheck runs outside the write lock, so a concurrent in-place
+        # rewrite landing between precheck and BEGIN IMMEDIATE was archived and its stale held
+        # body republished. Re-verify on the connection this commit holds, before any row moves.
+        if held_for_cas:
+            mismatches = getattr(self, "held_row_mismatches", None)
+            if callable(mismatches) and mismatches(conn, session_id, held_for_cas):
+                from hermes_state_errors import HeldRowRewrittenError
+                raise HeldRowRewrittenError(
+                    f"a held row of session {session_id} was rewritten in place before the commit")
         proved = self._proved_coverage(conn, session_id, covered_ids, unresolved_held, watermark)
         if proved is not None:
             return self._archive_named_rows(
@@ -999,56 +1017,6 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         if not getattr(self, "_message_columns_cache", None):
             self._message_columns_cache = [r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()]
         return self._message_columns_cache
-
-    def set_latest_user_api_content(self, session_id: str, content: Any, api_content: str) -> int:
-        """Backfill the ``api_content`` sidecar onto the newest ACTIVE user row (0/1 rows). Preflight compaction
-        inserts that row BEFORE the sidecar exists and the later persist identity-skips compacted dicts;
-        without this a reload reopens the prompt-cache divergence. ``content`` match guards a racing rewrite.
-
-        POSITIONAL, and only safe when the caller already knows the newest
-        active user row IS the message it stamped. The content match is NOT
-        sufficient on its own: repeated identical user turns ("ok", "y",
-        "continue") make an OLDER row compare equal, so calling this before
-        the current turn's row exists overwrites the previous turn's sidecar
-        with this turn's bytes — durable wrong-bytes replay, a worse cache
-        break than the missing sidecar. When the caller holds the durable row
-        id (``_row_id``, synced onto the live dict by
-        ``sync_flushed_message_markers`` and stamped by
-        :meth:`_insert_message_rows`), use :meth:`set_message_api_content`
-        instead — it addresses the exact row and cannot land on a neighbour.
-        """
-        return self._write_rowcount(
-            "UPDATE messages SET api_content = ? WHERE id = (SELECT id FROM messages "
-            "WHERE session_id = ? AND role = 'user' AND active = 1 ORDER BY id DESC LIMIT 1"
-            ") AND content IS ?",
-            (_scrub_surrogates(api_content), session_id, self._encode_content(content)))
-
-    def set_message_api_content(
-        self, session_id: str, row_id: int, content: Any, api_content: str
-    ) -> int:
-        """Backfill the ``api_content`` sidecar onto ONE known durable row.
-
-        Row-addressed counterpart to :meth:`set_latest_user_api_content`: the
-        caller passes the ``_row_id`` the write path stamped on the live
-        message dict, so the update cannot drift onto a neighbouring row that
-        merely carries the same text.
-
-        Used by the turn prologue whenever the current turn's user row was
-        already materialized before the sidecar could be composed (in-place
-        preflight compaction, a close/early flush that raced the prologue).
-        The crash persist then marker-skips that message, so this is the only
-        way the stamped bytes reach the store.
-
-        ``active = 1`` and the ``content`` match stay as defensive guards: a
-        row the compaction archived, or one a racing rewrite changed, is left
-        untouched.
-        """
-        if not session_id or isinstance(row_id, bool) or not isinstance(row_id, int) or row_id <= 0:
-            return 0
-        return self._write_rowcount(
-            "UPDATE messages SET api_content = ? WHERE id = ? AND session_id = ? "
-            "AND role = 'user' AND active = 1 AND content IS ?",
-            (_scrub_surrogates(api_content), row_id, session_id, self._encode_content(content)))
 
     def set_user_message_content(self, session_id: str, row_id: int, content: Any) -> int:
         """Rewrite the content of ONE known active user row. Used when a user turn was written at submit
@@ -1202,7 +1170,10 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             for row in rows:
                 last_id = row["id"]
                 identity = self._display_identity(self._display_dedupe_key(row))
-                order = first_id.setdefault(identity, last_id)
+                # A row already holding this identity keeps its stored slot (an in-place prune changes a
+                # row's content, not its place); otherwise the slot is the identity's first row.
+                kept = row["display_order"] if row["display_identity"] == identity else None
+                order = first_id.setdefault(identity, last_id if kept is None else kept)
                 if order != row["display_order"] or identity != row["display_identity"]:
                     updates.append((order, identity, last_id))
             rows.close()

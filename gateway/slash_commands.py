@@ -689,6 +689,8 @@ class GatewaySlashCommandsMixin(
         def _set_mode(mode: str) -> None:
             self._voice_mode[voice_key] = mode
             self._save_voice_modes()
+            from gateway.session_config import local_voice_transition
+            local_voice_transition(event.source, mode)
             if not adapter:
                 return
             if mode == "off":

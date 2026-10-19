@@ -1,6 +1,6 @@
 name: reaction-ledger
 repo: https://github.com/olric3015/hermes-plugins
-sha: e3d9fb3b95969b1f714b5fbbd7d05d98167c09c2
+sha: c3cf4f480a7a7ee33be542703dd00d5b90bce7cc
 subdir: reaction-ledger
 description: "Local ledger of the emoji reactions people leave on messages in your Telegram chats with Hermes: /reaction-log counts each message once, with the reactions it has now, and shows per emoji how many messages carry it, in how many chats and how long ago it was last set, or per day with the day's most used emoji, for the last 24 hours, any number of hours or days, or everything recorded; /reaction-log recent lists the newest reaction changes (ten, or up to 100 with /reaction-log recent 50). Only reactions the gateway authorizes reach it. Disclosure — subscribes to gateway_platform_event as an observer only and ignores every event but a reaction change; writes the emoji a message has after the change, a count of custom emoji and 12-digit hashes of the chat and message ids (never a user id, user name or message text) to plugin-data/reaction-ledger/reactions.jsonl, trimmed to 5,000 rows past 2 MB; no network"
 maintainer: olric3015
@@ -9,6 +9,7 @@ category: tools
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/olric3015/hermes-plugins/tree/main/reaction-ledger
 version: "1.0.0"
+image: https://raw.githubusercontent.com/olric3015/hermes-plugins/c3cf4f480a7a7ee33be542703dd00d5b90bce7cc/docs/reaction-ledger-card.png
 platforms: []
 capabilities:
   provides_tools: []

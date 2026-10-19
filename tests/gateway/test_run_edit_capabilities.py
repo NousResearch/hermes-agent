@@ -8,8 +8,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import Platform
-from gateway.platforms.base import SendResult
+from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import SendResult, utf16_len
+from plugins.platforms.signal.adapter import SignalAdapter
 from tests.gateway.test_run_progress_topics import _ACTIVE_ADAPTER, FakeAgent, ProgressCaptureAdapter, _run_with_agent
 from tests.waiting import wait_until
 
@@ -90,6 +91,37 @@ class _StreamingAgent:
             self.stream_delta_callback("Hello")
             self.stream_delta_callback(" world")
         return {"final_response": "Hello world", "messages": [], "api_calls": 1}
+
+
+class _RecordingSignalAdapter(SignalAdapter):
+    """The real Signal adapter with its JSON-RPC stubbed; every send/edit params dict is kept."""
+
+    def __init__(self, platform=Platform.SIGNAL):
+        super().__init__(PlatformConfig(enabled=True, extra={"http_url": "http://localhost:8080",
+                                                             "account": "+155****0000"}))
+        self.rpc_sends = []
+
+    async def _rpc(self, method, params, rpc_id=None, **kwargs):
+        if method == "send":
+            self.rpc_sends.append(dict(params))
+        return {"timestamp": 1712345678000 + len(self.rpc_sends)}
+
+
+class _EmojiBurstAgent:
+    """One progress line, then a burst of emoji-heavy lines (two UTF-16 units per rocket) that the
+    turn-end drain rolls into fresh bubbles."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
+        adapter = _ACTIVE_ADAPTER["adapter"]
+        self.tool_progress_callback("tool.started", "emoji_probe", "000 " + "\U0001F680" * 36, {})
+        wait_until(lambda: adapter.rpc_sends, what="the progress bubble was sent")
+        for idx in range(1, 200):
+            self.tool_progress_callback("tool.started", "emoji_probe", f"{idx:03d} " + "\U0001F680" * 36, {})
+        return {"final_response": "done", "messages": [], "api_calls": 1}
 
 
 async def _run_signal(monkeypatch, tmp_path, agent_cls, adapter_cls, session_id, config_data=None):
@@ -183,6 +215,21 @@ async def test_progress_without_an_edit_handle_degrades_to_one_line_per_update(m
     assert result["final_response"] == "done"
     assert [len(call["content"].splitlines()) for call in adapter.sent] == [1, 1]
     assert adapter.edits == []
+
+
+@pytest.mark.asyncio
+async def test_signal_progress_bubbles_roll_over_within_the_utf16_limit(monkeypatch, tmp_path):
+    """Signal's 8000 limit counts UTF-16 units: an emoji-heavy bubble must roll over before it, or
+    send() splits it into "(1/2)" parts and later edits push the whole oversized text at one part."""
+    monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "")
+    adapter, result = await _run_signal(monkeypatch, tmp_path, _EmojiBurstAgent, _RecordingSignalAdapter, "sess-utf16")
+
+    messages = [params["message"] for params in adapter.rpc_sends]
+    assert result["final_response"] == "done"
+    assert sum("editTimestamp" not in params for params in adapter.rpc_sends) >= 2  # rolled into a new bubble
+    assert any("editTimestamp" in params for params in adapter.rpc_sends)
+    assert max(utf16_len(text) for text in messages) <= adapter.MAX_MESSAGE_LENGTH
+    assert not any(text.endswith("(1/2)") for text in messages)
 
 
 @pytest.mark.asyncio

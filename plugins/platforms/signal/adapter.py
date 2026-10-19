@@ -190,6 +190,11 @@ class SignalAdapter(BasePlatformAdapter):
     # Each edit mints a fresh timestamp, and the next edit must target that one.
     EDIT_RESULT_ID_IS_NEXT_TARGET = True
 
+    @property
+    def message_len_fn(self):
+        """Signal measures message length in UTF-16 code units (as send()'s splitter does)."""
+        return utf16_len
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SIGNAL)
         extra = config.extra or {}

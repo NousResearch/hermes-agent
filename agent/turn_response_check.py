@@ -17,7 +17,7 @@ from agent.error_classifier import FailoverReason
 from agent.turn_api_call import stop_thinking_spinner
 from agent.turn_failure_copy import invalid_response_failure_reason, provider_label_for, site_copy, stamp_failure
 from agent.turn_truncation import handle_content_policy_refusal, recover_from_truncation
-from agent.turn_usage import record_response_usage
+from agent.turn_usage import record_response_usage, wire_model_from_api_kwargs
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -191,11 +191,15 @@ def check_api_response(
             return _verdict(_tv.action, _tv.result)
 
     # Fold provider usage into compressor / anchors / session counters / state.db
-    # (agent/turn_usage.py). A rearmed budget also clears the preflight-block latch.
+    # (agent/turn_usage.py). A rearmed budget also clears the preflight-block latch. The WIRE
+    # model comes from the request actually sent: a provider profile can rewrite the outgoing
+    # model (OpenRouter speed-tier pins), and the router answering with that rewritten slug is
+    # not a reroute.
     _usage_outcome = record_response_usage(
         agent, response, messages=messages, api_call_count=api_call_count,
         api_duration=api_duration, compression_attempts=compression_attempts,
         max_compression_attempts=max_compression_attempts,
+        wire_model=wire_model_from_api_kwargs(api_kwargs),
     )
     compression_attempts = _usage_outcome.compression_attempts
     if _usage_outcome.rearmed:

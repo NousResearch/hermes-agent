@@ -71,6 +71,55 @@ def _fold_moa_usage(agent, canonical_usage):
     return _moa_client, canonical_usage, _moa_ref_cost
 
 
+def _served_model_fields(agent: Any, response: Any, wire_model: Any) -> Optional[str]:
+    """The model the route reports serving, when it differs from the model SENT on the wire.
+
+    Both the non-streaming SDK object and the streaming finish block stamp ``response.model``;
+    ``agent/served_model.py``'s httpx hook sees headers only (reading a body there buffers the
+    SSE stream), so the turn seam is where a served MODEL becomes visible. Compare against the
+    WIRE model, not ``agent.model``: OpenRouter's speed-tier pins rewrite ``top_level["model"]``
+    (``plugins/model-providers/openrouter``), so a pinned slug legitimately answers with the base
+    slug and must not produce a bogus ``served=`` value.
+
+    Same-or-absent clears a stamp THIS function made (``_turn_served_model``) so a value never
+    outlives the response that produced it, while a proxy deployment id captured by the header
+    hook is left alone. Fail-open: any surprise reports "nothing captured".
+    """
+    try:
+        _served_raw = getattr(response, "model", None)
+        _wire_raw = wire_model if isinstance(wire_model, str) and wire_model.strip() else getattr(agent, "model", None)
+        served = _served_raw.strip() if isinstance(_served_raw, str) else ""
+        wire = _wire_raw.strip() if isinstance(_wire_raw, str) else ""
+        if not served or served == wire:
+            # Nothing new for this response: drop only our own previous stamp.
+            _stamp = getattr(agent, "_turn_served_model", None)
+            if _stamp is not None and getattr(agent, "last_served_model", None) == _stamp:
+                agent.last_served_model = None
+            agent._turn_served_model = None
+            return None
+        agent.last_served_model = served
+        agent._turn_served_model = served
+        return served
+    except Exception:  # accounting never raises into a turn
+        return None
+
+
+def wire_model_from_api_kwargs(api_kwargs: Any) -> Optional[str]:
+    """The model field of the request actually SENT (``model``; Bedrock's ``modelId``).
+
+    Served-model comparison must be against what went on the wire, not ``agent.model``: a
+    provider profile may rewrite the outgoing model (OpenRouter speed-tier pins), and the
+    router answering with that rewritten slug is not a reroute. Fail-open -> None.
+    """
+    try:
+        if not isinstance(api_kwargs, dict):
+            return None
+        value = api_kwargs.get("model") or api_kwargs.get("modelId")
+        return value.strip() if isinstance(value, str) and value.strip() else None
+    except Exception:  # accounting never raises into a turn
+        return None
+
+
 def _provider_actual_cost(canonical_usage: Any, response: Any) -> Optional[float]:
     """The provider's own billed cost for THIS call, from the response usage
     (``usage.cost`` as OpenRouter reports it), or ``None`` when the route doesn't
@@ -95,6 +144,7 @@ def _provider_actual_cost(canonical_usage: Any, response: Any) -> Optional[float
 def record_response_usage(
     agent: Any, response: Any, *, messages: list[dict[str, Any]], api_call_count: int,
     api_duration: float, compression_attempts: int, max_compression_attempts: int,
+    wire_model: Optional[str] = None,
 ) -> ResponseUsageOutcome:
     """Fold ``response.usage`` into compressor, anchors, session counters, state.db
     and the API-call log line (see module docstring). No-usage responses only
@@ -105,6 +155,9 @@ def record_response_usage(
     # Token/cost accounting below stays gated on real usage, but the request itself
     # must remain observable.
     agent.session_api_calls += 1
+    # Served model: stamped/cleared on EVERY completed attempt (including usage-less ones) so a
+    # value can never outlive the response that produced it.
+    _served = _served_model_fields(agent, response, wire_model)
     if not (hasattr(response, 'usage') and response.usage):
         if getattr(compressor, "awaiting_real_usage_after_compression", False):
             # No usage -> cannot adjudicate the prior compaction; consume the
@@ -231,6 +284,10 @@ def record_response_usage(
     _upstream = getattr(response, "provider", None)
     if isinstance(_upstream, str) and _upstream:
         _ident += f" upstream={_upstream}"
+    # The served MODEL (the route's own answer to "who ran this") differs from what we sent only
+    # when the router rerouted. Compared against the WIRE model so an endpoint pin isn't a reroute.
+    if _served:
+        _ident += f" served={_served}"
     logger.info(
         "API call #%d: model=%s provider=%s in=%d out=%d total=%d latency=%.1fs%s%s",
         agent.session_api_calls, agent.model, agent.provider or "unknown",

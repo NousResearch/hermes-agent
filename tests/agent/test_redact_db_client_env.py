@@ -91,3 +91,14 @@ def test_terminal_output_libpq_conninfo_any_command():
 def test_idempotent():
     once = redact_sensitive_text(f"export PGPASSWORD={SECRET}")
     assert redact_sensitive_text(once) == once
+
+
+@pytest.mark.parametrize("text, expected", [
+    # libpq has no ``;`` delimiter: it belongs to the value.
+    (f"host=db password={SECRET[:6]};{SECRET[6:]} dbname=core", "host=db password=*** dbname=core"),
+    # Backslash escapes a space inside an unquoted value.
+    (f"host=db password={SECRET[:6]}\\ {SECRET[6:]} dbname=core", "host=db password=*** dbname=core"),
+    (f"host=db password='{SECRET[:6]}\\' {SECRET[6:]}' dbname=core", "host=db password='***' dbname=core"),
+])
+def test_libpq_value_grammar_leaves_no_tail(text, expected):
+    assert redact_sensitive_text(text) == expected

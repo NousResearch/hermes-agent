@@ -27,6 +27,7 @@ from typing import Optional
 from typing import TYPE_CHECKING
 
 from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
+from hermes_cli.kanban_db_dispatch_logs import _open_worker_log, _positive_int
 
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
@@ -35,10 +36,6 @@ if TYPE_CHECKING:
 # After this many consecutive non-success attempts on a task/profile the
 # dispatcher parks the task in ``blocked`` with a reason — prevents retry storms.
 DEFAULT_FAILURE_LIMIT = 2
-
-# Worker log files larger than this at spawn time are rotated.
-DEFAULT_LOG_ROTATE_BYTES = 2 * 1024 * 1024   # 2 MiB
-DEFAULT_LOG_BACKUP_COUNT = 1
 
 # Keep a little wall-clock budget for the worker to observe a terminal timeout
 # and make a terminal board call (kanban_block/kanban_complete/kanban_request_review)
@@ -2452,66 +2449,6 @@ def _dispatch_once_locked(
     return result
 
 
-def _positive_int(value: Any, default: int, *, minimum: int = 1) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return default
-    return parsed if parsed >= minimum else default
-
-
-def worker_log_rotation_config(kanban_cfg: Optional[dict] = None) -> tuple[int, int]:
-    """Return ``(rotate_bytes, backup_count)`` for worker log rotation.
-    Defaults: rotate at 2 MiB, keep one backup (``.log.1``); both overridable
-    from ``config.yaml``.
-    """
-    if kanban_cfg is None:
-        try:
-            from hermes_cli.config import load_config
-
-            kanban_cfg = (load_config().get("kanban") or {})
-        except Exception:
-            kanban_cfg = {}
-    kanban_cfg = kanban_cfg or {}
-    max_bytes = _positive_int(kanban_cfg.get("worker_log_rotate_bytes"), DEFAULT_LOG_ROTATE_BYTES, minimum=1)
-    backup_count = _positive_int(kanban_cfg.get("worker_log_backup_count"), DEFAULT_LOG_BACKUP_COUNT, minimum=0)
-    return max_bytes, backup_count
-
-
-def _rotated_log_path(log_path: Path, generation: int) -> Path:
-    return log_path.with_suffix(log_path.suffix + f".{generation}")
-
-
-def _rotate_worker_log(
-    log_path: Path,
-    max_bytes: int,
-    backup_count: int = DEFAULT_LOG_BACKUP_COUNT,
-) -> None:
-    """Rotate ``<log>`` when it exceeds ``max_bytes``: ``<log>`` → ``<log>.1``,
-    older generations shift up to ``backup_count``.
-    """
-    try:
-        if not log_path.exists() or log_path.stat().st_size <= max_bytes:
-            return
-        backup_count = _positive_int(backup_count, DEFAULT_LOG_BACKUP_COUNT, minimum=0)
-        if backup_count == 0:
-            log_path.unlink()
-            return
-        oldest = _rotated_log_path(log_path, backup_count)
-        with contextlib.suppress(OSError):
-            if oldest.exists():
-                oldest.unlink()
-        for generation in range(backup_count - 1, 0, -1):
-            src = _rotated_log_path(log_path, generation)
-            if not src.exists():
-                continue
-            with contextlib.suppress(OSError):
-                src.rename(_rotated_log_path(log_path, generation + 1))
-        log_path.rename(_rotated_log_path(log_path, 1))
-    except OSError:
-        pass
-
-
 def _module_hermes_argv() -> list[str]:
     """Interpreter-bound Hermes CLI invocation (``hermes_cli.main`` is the
     console-script target — there is no top-level ``hermes`` package)."""
@@ -2746,19 +2683,6 @@ def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> li
     """The profile owner executes; this subprocess only waits for its receipt."""
     import sys
     return [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
-
-
-def _open_worker_log(task: Task, board: Optional[str]):
-    """Append-mode per-task log (a re-run on unblock appends, never overwrites),
-    rotated first. Anchored at the board root (not the shared kanban root) so
-    `hermes kanban log` reads its own file and boards sharing task ids don't
-    collide."""
-    log_dir = _kb.worker_logs_dir(board=board)
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / f"{task.id}.log"
-    rotate_bytes, backup_count = worker_log_rotation_config()
-    _rotate_worker_log(log_path, rotate_bytes, backup_count)
-    return open(log_path, "ab")
 
 
 def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:

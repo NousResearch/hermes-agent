@@ -308,6 +308,54 @@ class ChatExecutionStore:
     def _unknown(session_key, generation):
         return {"version": VERSION, "session_id": None, "session_key": session_key, "run_generation": generation, "worker": "unknown", "effects": "unknown"}
 
+    def retire_for_handoff(self, session_key, claim_generation, recovery_id):
+        """Fence a quiescent thread for control handoff, never authorize replay or execution.
+
+        Historical tool effects remain unknown. The successor must reconcile them;
+        this receipt is deliberately not an execution-recovery receipt.
+        """
+        denied = {"version": VERSION, "status": "blocked", "effects": "unknown",
+                  "execution_admitted": False}
+        if (not session_key or not self._valid_generation(claim_generation)
+                or not isinstance(recovery_id, str) or not recovery_id):
+            return {**denied, "status": "stale"}
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            claim = db.execute("SELECT session_id FROM executions WHERE session_key=? AND generation=?",
+                               (session_key, claim_generation)).fetchone()
+            if not claim or not claim["session_id"]:
+                db.rollback(); return denied
+            fence = db.execute("SELECT * FROM session_fences WHERE session_key=?", (session_key,)).fetchone()
+            if fence:
+                if fence["recovery_id"] != recovery_id or fence["state"] != "fenced":
+                    db.rollback(); return {**denied, "status": "stale"}
+                if fence["receipt"]:
+                    receipt = json.loads(fence["receipt"])
+                    db.rollback()
+                    return receipt if receipt.get("kind") == "chat-retirement/v1" and receipt.get("claim_generation") == claim_generation else {**denied, "status": "stale"}
+            latest = db.execute("SELECT * FROM executions WHERE session_key=? ORDER BY generation DESC LIMIT 1",
+                                (session_key,)).fetchone()
+            if not fence:
+                db.execute("INSERT INTO session_fences VALUES (?, ?, ?, 'fenced', NULL)",
+                           (session_key, latest["generation"], recovery_id))
+            pending = db.execute("SELECT 1 FROM executions WHERE session_key=? AND "
+                                 "(worker!='completed' OR worker_started!=1 OR session_id='') LIMIT 1", (session_key,)).fetchone()
+            resources = db.execute("SELECT 1 FROM concurrent_tool_resources WHERE session_key=? AND state!='finished' LIMIT 1",
+                                   (session_key,)).fetchone()
+            if pending or resources:
+                db.commit(); return denied
+            unknown = db.execute("SELECT 1 FROM executions WHERE session_key=? AND "
+                                 "(effects!='none' OR tool_observed!=0) LIMIT 1", (session_key,)).fetchone()
+            receipt = {"version": VERSION, "kind": "chat-retirement/v1", "status": "retired",
+                       "profile_home": str(self.home), "session_key": session_key,
+                       "claim_generation": claim_generation, "run_generation": latest["generation"],
+                       "session_id": latest["session_id"], "recovery_id": recovery_id,
+                       "worker": "completed", "effects": "unknown" if unknown else "none",
+                       "execution_admitted": False}
+            db.execute("UPDATE session_fences SET receipt=? WHERE session_key=?", (json.dumps(receipt), session_key))
+            db.commit()
+            return receipt
+
     def begin_recovery(self, session_key, generation, recovery_id):
         if not self._valid_generation(generation) or not recovery_id:
             return False
@@ -318,7 +366,8 @@ class ChatExecutionStore:
                 db.rollback(); return False
             current = db.execute("SELECT * FROM session_fences WHERE session_key=?", (session_key,)).fetchone()
             if current:
-                same = current["generation"] == generation and current["recovery_id"] == recovery_id
+                same = (current["generation"] == generation and current["recovery_id"] == recovery_id
+                        and not current["receipt"])
                 db.rollback()
                 return same
             latest_active = db.execute("SELECT generation FROM executions WHERE session_key=? AND worker!='completed' ORDER BY generation DESC LIMIT 1", (session_key,)).fetchone()

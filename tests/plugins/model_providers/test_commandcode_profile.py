@@ -150,8 +150,10 @@ class TestCommandCodeFetchModelsPickerContract:
         """
         from hermes_cli.providers import resolve_provider_full
 
-        # Exercise the plugin-only fallback even after models.dev adds this provider.
+        # Exercise plugin-only resolution even after the catalog or built-in overlay adds it.
+        import hermes_cli.providers as provider_defs
         monkeypatch.setattr("agent.models_dev.get_provider_info", lambda *args, **kwargs: None)
+        monkeypatch.delitem(provider_defs.HERMES_OVERLAYS, "commandcode", raising=False)
         chat = resolve_provider_full("commandcode", {}, [])
         assert chat is not None and chat.id == "commandcode"
         assert chat.transport == "openai_chat"

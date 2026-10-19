@@ -85,6 +85,8 @@ def _idp_token() -> str:
             f"{IDP_ENV_PREFIX}TOKEN_URL is set but {IDP_ENV_PREFIX}CLIENT_ID / {IDP_ENV_PREFIX}CLIENT_SECRET "
             "are not: Remote Config needs the OAuth2 client-credentials grant (both values in .env).",
             retryable=False)
+    from .destination import CredentialDestinationError, checked_url, open_credentialed
+    checked_url(token_url, env_name=f"{IDP_ENV_PREFIX}TOKEN_URL")  # before the secret leaves the process
     key = (token_url, client_id, scope)
     now = time.monotonic()
     with _IDP_LOCK:
@@ -98,8 +100,10 @@ def _idp_token() -> str:
         token_url, data=urllib.parse.urlencode(form).encode(), method="POST",
         headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_S) as resp:
+        with open_credentialed(req, timeout=_HTTP_TIMEOUT_S) as resp:
             payload = json.loads(resp.read().decode() or "{}")
+    except CredentialDestinationError:
+        raise
     except Exception as exc:  # noqa: BLE001 — HTTP and network errors alike; the message has no secret
         raise PlaneCredentialError(f"IdP token request to {token_url} failed: {exc}", retryable=True) from exc
     access_token = payload.get("access_token") if isinstance(payload, dict) else None

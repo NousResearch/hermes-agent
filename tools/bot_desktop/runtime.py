@@ -544,7 +544,7 @@ def is_running() -> bool:
 def open_rfb_stream() -> subprocess.Popen:
     """Popen whose stdin/stdout carry RFB bytes for a sandbox-hosted screen (``in_sandbox()`` only)."""
     from tools.bot_desktop import sandbox_host
-    env = _sandbox_env(create=False)
+    env = _owned_sandbox_env()
     if env is None:
         raise RuntimeError("the sandbox hosting this screen is not running")
     return sandbox_host.open_rfb_stream(env, _profile_name())

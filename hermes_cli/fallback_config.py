@@ -96,6 +96,22 @@ def pre_agent_fallback_notice(
     return f"⚠️ Provider fallback: {primary_desc} unavailable; using {fallback_desc} for this response."
 
 
+def runtime_fallback_notice(
+    primary_provider: Any, primary_model: Any, fallback_provider: Any, fallback_model: Any,
+    *, cooldown_remaining: int | None = None,
+) -> str:
+    """Mid-turn switch line. Same wording as :func:`pre_agent_fallback_notice` so a failover
+    inside the conversation loop is not a different sentence from credential-resolution
+    fallback (#141025). The cooldown suffix is appended only when leaving the primary on a
+    rate limit."""
+    notice = pre_agent_fallback_notice(
+        primary_provider, primary_model, fallback_provider, fallback_model,
+    )
+    if cooldown_remaining is not None:
+        notice += f" Primary retry eligible in ~{int(cooldown_remaining)} s; recovery is not guaranteed."
+    return notice
+
+
 
 def _iter_fallback_entries(raw: Any) -> list[dict[str, Any]]:
     candidates = [raw] if isinstance(raw, dict) else raw if isinstance(raw, list) else []

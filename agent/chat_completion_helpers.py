@@ -1779,40 +1779,6 @@ def _fallback_entry_unavailable_without_network(agent, fb: dict) -> Optional[str
     return None if has_token else "nous_token_missing"
 
 
-_FALLBACK_REASON_LABELS = {
-    FailoverReason.auth: "authentication failed",
-    FailoverReason.auth_permanent: "authentication permanently failed",
-    FailoverReason.billing: "billing or quota exhausted",
-    FailoverReason.rate_limit: "rate limit",
-    FailoverReason.upstream_rate_limit: "upstream model rate limit",
-    FailoverReason.overloaded: "provider overloaded",
-    FailoverReason.server_error: "provider server error",
-    FailoverReason.timeout: "request timeout",
-    FailoverReason.ssl_cert_verification: "TLS certificate verification failed",
-    FailoverReason.context_overflow: "context window exceeded",
-    FailoverReason.payload_too_large: "request payload too large",
-    FailoverReason.image_too_large: "image payload too large",
-    FailoverReason.model_not_found: "model not found",
-    FailoverReason.provider_policy_blocked: "provider policy blocked the request",
-    FailoverReason.content_policy_blocked: "content policy blocked the request",
-    FailoverReason.format_error: "request format rejected",
-    FailoverReason.role_alternation: "adjacent same-role messages rejected",
-    FailoverReason.invalid_encrypted_content: "encrypted reasoning state rejected",
-    FailoverReason.multimodal_tool_content_unsupported: "multimodal tool content unsupported",
-    FailoverReason.thinking_signature: "thinking signature rejected",
-    FailoverReason.long_context_tier: "long-context tier unavailable",
-    FailoverReason.oauth_long_context_beta_forbidden: "OAuth long-context beta unavailable",
-    FailoverReason.llama_cpp_grammar_pattern: "grammar pattern rejected",
-    FailoverReason.unknown: "provider failure",
-}
-
-
-def _fallback_reason_text(reason: FailoverReason | None) -> str:
-    """Return a concise operator-facing explanation for a fallback switch."""
-    label = _FALLBACK_REASON_LABELS.get(reason)
-    return label or str(getattr(reason, "value", None) or reason or "provider failure").replace("_", " ")
-
-
 def _is_anthropic_wire_url(url: str) -> bool:
     """Same Messages-only host match as determine_api_mode() / _detect_api_mode_for_url(): api.anthropic.com,
     a /anthropic suffix, or Kimi Code's api.kimi.com/coding (its /chat/completions 404s — #77256)."""
@@ -2042,14 +2008,28 @@ def _rescope_fallback_extra_body(agent, old_model: str, old_provider: str, old_b
 
 
 def _buffer_fallback_notice(agent, notice: str) -> None:
-    """Buffer the switch notice for terminal failure AND retain it as a durable one-shot for
-    _emit_pending_fallback_notice (a successful fallback clears retry chatter)."""
+    """Buffer the switch notice for terminal failure, retain it for the success-path one-shot,
+    and send it now as a plain status.
+
+    Messaging platforms drop diagnostic status, so a runtime failover stayed silent until the
+    turn finished — and a fallback 429 means the turn does not finish (#141025). The live send
+    is recorded so ``_emit_pending_fallback_notice`` does not repeat it."""
     agent._buffer_diagnostic_status(notice)
     pending = getattr(agent, "_pending_fallback_notice", None)
     if isinstance(pending, list):
         pending.append(notice)
     else:
         agent._pending_fallback_notice = [str(pending), notice] if pending else [notice]
+    live = getattr(agent, "_fallback_notices_live", None)
+    if not isinstance(live, set):
+        live = set()
+        agent._fallback_notices_live = live
+    try:
+        agent._emit_status(notice)
+    except Exception:
+        logger.debug("live fallback notice failed", exc_info=True)
+        return
+    live.add(notice)
 
 
 def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=None) -> bool:
@@ -2085,12 +2065,13 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
             fb_model = agent.model  # normalized by the binder
             rewrite_prompt_model_identity(agent, fb_model, fb_provider)
 
-            notice = (
-                f"⚠️ Model fallback: {old_model} via {old_provider} unavailable "
-                f"({_fallback_reason_text(reason)}); using {fb_model} via {fb_provider}.")
+            from hermes_cli.fallback_config import runtime_fallback_notice
+            remaining = None
             if cooldown_seconds is not None:
                 remaining = max(0, math.ceil(agent._rate_limited_until - time.monotonic()))
-                notice += f" Primary retry eligible in ~{remaining} s; recovery is not guaranteed."
+            notice = runtime_fallback_notice(
+                old_provider, old_model, fb_provider, fb_model, cooldown_remaining=remaining,
+            )
             _buffer_fallback_notice(agent, notice)
             # ``_fallback_activated`` is also reused by `/model --once` restoration; separate
             # provenance so the restore path only emits a recovery notice after a real fallback.

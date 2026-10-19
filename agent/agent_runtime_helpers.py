@@ -1480,16 +1480,63 @@ def restore_primary_runtime(agent) -> bool:
         agent._provider_fallback_active = False
         agent._provider_fallback_route = None
         if provider_fallback_active:
-            # Notification surfaces are best-effort and must never undo a successful restore.
+            from_rate_limit = bool(getattr(agent, "_failback_from_fallback_rate_limit", False))
+            agent._failback_from_fallback_rate_limit = False
+            # Plain status, not a diagnostic: messaging hides DiagnosticText, so failback
+            # was invisible until /status (#141025).
             with contextlib.suppress(Exception):
-                agent._emit_diagnostic_status(
-                    f"✅ Primary model restored: {agent.model} via {agent.provider}; "
-                    f"fallback {previous_model} via {previous_provider} is no longer active."
-                )
+                agent._emit_status(primary_restored_notice(
+                    agent, previous_model, previous_provider, from_fallback_rate_limit=from_rate_limit,
+                ))
         return True
     except Exception as e:
         logger.warning("Failed to restore primary runtime: %s", e)
         return False
+
+
+def primary_restored_notice(
+    agent, previous_model: str, previous_provider: str, *, from_fallback_rate_limit: bool,
+) -> str:
+    """User-visible failback line. The rate-limit preface is only for a probe that
+    interrupted a fallback 429, not for the ordinary per-turn restore."""
+    line = (
+        f"✅ Primary model restored: {agent.model} via {agent.provider}; "
+        f"fallback {previous_model} via {previous_provider} is no longer active."
+    )
+    if from_fallback_rate_limit:
+        return f"⚠️ Fallback rate-limited, retrying primary now. {line}"
+    return line
+
+
+_FALLBACK_PRIMARY_PROBE_COOLDOWN_S = 30.0
+
+
+def try_failback_before_fallback_rate_limit(agent) -> bool:
+    """Before sleeping a fallback's own 429, try the primary once.
+
+    ``restore_primary_runtime`` still refuses while the primary's own cooldown is armed.
+    A successful switch stamps a short probe window so a dead primary and a 429 fallback
+    cannot spin (#141025).
+    """
+    if not getattr(agent, "_provider_fallback_active", False):
+        return False
+    if not getattr(agent, "_fallback_activated", False):
+        return False
+    now = time.monotonic()
+    last = float(getattr(agent, "_fallback_primary_probe_at", 0) or 0)
+    if now - last < _FALLBACK_PRIMARY_PROBE_COOLDOWN_S:
+        return False
+    agent._failback_from_fallback_rate_limit = True
+    try:
+        restored = bool(agent._restore_primary_runtime())
+    except Exception:
+        logger.debug("primary failback probe failed", exc_info=True)
+        restored = False
+    if not restored:
+        agent._failback_from_fallback_rate_limit = False
+        return False
+    agent._fallback_primary_probe_at = now
+    return True
 
 
 # Transient transport failures worth one more attempt with a rebuilt client / connection pool.

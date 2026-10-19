@@ -403,6 +403,15 @@ def settle_unrecovered_error(
             base_url=_base, model=_model, delivered=_delivered,
         ))
 
+    # A fallback 429 with a long Retry-After used to park the turn for up to an hour
+    # even after the primary had recovered. Try the primary once before that sleep (#141025).
+    if is_rate_limited:
+        from agent.agent_runtime_helpers import try_failback_before_fallback_rate_limit
+        if try_failback_before_fallback_rate_limit(agent):
+            active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
+            retry_count = compression_attempts = 0
+            return _verdict("break")
+
     wait_time = compute_error_backoff(
         agent, api_error, retry_count=retry_count, max_retries=max_retries,
         is_rate_limited=is_rate_limited, is_zai_coding_overload=_is_zai_coding_overload,

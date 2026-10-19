@@ -604,7 +604,9 @@ class MemoryManager:
                 )
                 if type(result.context) is not str or spilled_context != structured_context:
                     result = MemoryPrefetchResult(
-                        context=spilled_context, observations=result.observations
+                        context=spilled_context,
+                        observations=result.observations,
+                        _wire_truncated=result._wire_truncated,
                     )
         return result
 

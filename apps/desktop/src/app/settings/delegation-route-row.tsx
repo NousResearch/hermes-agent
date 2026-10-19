@@ -1,6 +1,6 @@
 import type { ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
-import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
+import type { HermesConfigRecord } from '@/types/hermes'
 
 import { FIELD_DESCRIPTIONS } from './constants'
 import { DelegationModelProviderField, type DelegationModelProviderValue } from './delegation-model-provider-field'
@@ -31,12 +31,10 @@ export function applyDelegationRoute(
 /** One provider + model route draft for subagents, read from and written back to the owner's config. */
 export function DelegationRouteRow({
   config,
-  schema,
   scope,
   onConfigChange
 }: {
   config: HermesConfigRecord
-  schema: ConfigFieldSchema
   scope?: ProfileScope
   onConfigChange: (next: HermesConfigRecord) => void
 }) {
@@ -44,8 +42,7 @@ export function DelegationRouteRow({
 
   const description =
     fieldCopyForSchemaKey(t.settings.fieldDescriptions, 'delegation.model') ??
-    fieldCopyForSchemaKey(FIELD_DESCRIPTIONS, 'delegation.model') ??
-    schema.description
+    fieldCopyForSchemaKey(FIELD_DESCRIPTIONS, 'delegation.model')
 
   return (
     <div data-tour="field-delegation.model">

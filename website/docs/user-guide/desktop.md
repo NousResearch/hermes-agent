@@ -115,7 +115,7 @@ Open **Settings → Model → Subagents** to choose a delegated agent's provider
 
 Provider and model changes remain a local draft until you click **Apply**. **Cancel**, leaving the page, or changing the settings profile discards an unapplied route. A provider switch requires a model; select **Use parent model** explicitly for a provider-only override, and make sure that provider supports the parent's model.
 
-**Inherit from main agent** uses the parent's model and credentials. **Custom model (use parent credentials)** overrides only the model. Existing direct endpoints are shown as **Direct endpoint override**. Applying a different route clears the superseded delegation endpoint and its stored key together, without removing other request settings. If the catalog is unavailable, use **Custom provider...** and **Custom model…** to enter a route manually, or click **Retry** without losing your draft.
+**Inherit from main agent** uses the parent's model and credentials. **Custom model (use parent credentials)** overrides only the model. Existing direct endpoints are shown as **Direct endpoint override**. Applying a different route clears the superseded delegation endpoint, its stored key and its wire protocol together, without removing other request settings. If the catalog is unavailable, use **Custom provider...** and **Custom model…** to enter a route manually, or click **Retry** without losing your draft.
 
 ### File browser
 

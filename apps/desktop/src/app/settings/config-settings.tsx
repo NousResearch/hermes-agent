@@ -509,12 +509,7 @@ function ConfigSettingsInner({
           {visibleFields.map(([key, field]) => (
             <div className="scroll-mt-6 rounded-lg" id={`setting-field-${key}`} key={key}>
               {key === 'delegation.model' ? (
-                <DelegationRouteRow
-                  config={config}
-                  onConfigChange={updateConfig}
-                  schema={field}
-                  scope={writeScope ?? scopeProfile}
-                />
+                <DelegationRouteRow config={config} onConfigChange={updateConfig} scope={writeScope ?? scopeProfile} />
               ) : (
                 <ConfigField
                   descriptionExtra={

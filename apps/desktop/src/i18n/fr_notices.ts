@@ -1,4 +1,5 @@
 import type { TranslationOverrides } from './define-locale'
+import { frDesktopCommands } from './fr_desktop_commands'
 import { frSessionCommands } from './fr_session_commands'
 
 // Shell notices (remote-display toast, butterbar, keep-awake offer), spread into fr.ts.
@@ -27,7 +28,8 @@ export const frNotices = {
     compactedTurnUnavailable:
       'Ce message a été résumé lors de la compression de la conversation : il ne peut plus être restauré ni modifié.',
     staleTurnUnavailable: 'Ce message ne fait plus partie de l’historique de cette discussion.',
-    sessionCommands: frSessionCommands
+    sessionCommands: frSessionCommands,
+    desktopCommands: frDesktopCommands
   },
   keepAwakeOffer: {
     title: 'Votre ordinateur s’est mis en veille pendant que Hermes travaillait',

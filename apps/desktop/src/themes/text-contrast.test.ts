@@ -1,8 +1,9 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { describe, expect, it } from 'vitest'
 
 import { contrastRatio, mix } from '@hermes/shared/color'
+import { describe, expect, it } from 'vitest'
+
 import { BUILTIN_THEME_LIST } from './presets'
 import { TEXT_RAMP, TEXT_RAMP_CSS_VARS } from './text-ramp'
 import type { DesktopTheme, DesktopThemeColors } from './types'

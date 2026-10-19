@@ -507,8 +507,9 @@ def sandbox_screen_running() -> bool:
     names is alive — registered in this process, or (after a gateway restart emptied the registry) the
     marker's recorded container still running. Only a sandbox that is provably gone (its container removed
     out from under us) drops the marker, so the next start rebuilds instead of the browser exec-ing into a
-    dead container; an unregistered-but-alive one is re-attached by ``_sandbox_env(create=True)`` at the
-    next spawn (the terminal planner reuses the persisted container by label)."""
+    dead container; an unregistered-but-alive one is re-attached by ``_sandbox_env`` binding to the
+    marker's recorded container (never a planner acquire — that builds a duplicate for session-scoped
+    sandboxes)."""
     from tools.bot_desktop import sandbox_host
     marker = sandbox_host._read_marker()
     if not marker:
@@ -525,16 +526,7 @@ def _owned_sandbox_env():
     """The environment hosting the screen the marker records, re-attaching after a restart when the recorded
     sandbox is still alive; None when there is no marker or its sandbox is gone. Never builds a sandbox for
     a screen that is not there."""
-    from tools.bot_desktop import sandbox_host
-    marker = sandbox_host._read_marker()
-    if not marker:
-        return None
-    env = _sandbox_env(create=False)
-    if env is not None:
-        return env
-    if sandbox_host.marker_sandbox_alive(marker):
-        return _sandbox_env(create=True)
-    return None
+    return _sandbox_env(create=False)
 
 
 def is_running() -> bool:
@@ -773,9 +765,22 @@ def _spawn_and_wait(sd: Path, wait_seconds: float) -> DesktopStatus:
 
 
 def _sandbox_env(*, create: bool):
-    """The terminal environment hosting this profile's screen, or None. ``create=False`` for status probes
-    (a status call must never build a container)."""
-    return placement.terminal_environment(create=create)
+    """The terminal environment hosting this profile's screen, or None.
+
+    Marker first: the container ``bot-desktop/sandbox.json`` records IS the screen's sandbox and
+    outlives the creating process's active-env registry entry, so an alive one is re-attached by
+    binding to that recorded container. A planner acquire here instead built a DUPLICATE container
+    for session-scoped sandboxes (their ``persist_across_processes`` is off, so the planner's
+    label-based reuse never runs for them). ``create`` only builds a sandbox when no marker names a
+    live container — a fresh screen start. ``create=False`` never builds anything."""
+    from tools.bot_desktop import sandbox_host
+    marker = sandbox_host._read_marker()
+    if marker and marker.get("container") and sandbox_host.marker_sandbox_alive(marker):
+        return sandbox_host.marker_env(marker)
+    env = placement.terminal_environment(create=False)
+    if env is not None or not create:
+        return env
+    return placement.terminal_environment(create=True)
 
 
 def _start_in_sandbox(wait_seconds: float) -> DesktopStatus:

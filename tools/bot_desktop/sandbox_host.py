@@ -99,6 +99,17 @@ def marker_sandbox_alive(marker: dict[str, Any]) -> bool:
     return alive
 
 
+def marker_env(marker: dict[str, Any]) -> Optional[Any]:
+    """An exec handle bound to the container the marker records — the screen's own sandbox. This is
+    the re-attach after a restart: never a planner acquire, which builds a duplicate container for
+    session-scoped sandboxes. None for markers without a recorded container (other backends)."""
+    from tools.environments.docker import DockerEnvironment
+    container = marker.get("container")
+    if not container:
+        return None
+    return DockerEnvironment.attach_recorded(container, marker.get("docker") or "docker")
+
+
 def _remote_dir(env: Any, profile: str) -> str:
     return f"{env.get_temp_dir().rstrip('/')}/hermes-bot-desktop/{profile}"
 

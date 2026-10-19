@@ -1000,6 +1000,19 @@ class DockerEnvironment(BaseEnvironment):
             container_id[:12], task_label, profile_name, state)
         return True
 
+    @classmethod
+    def attach_recorded(cls, container_id: str, docker_exe: str = "docker") -> "DockerEnvironment":
+        """An exec-only handle on a container this process did not create — the bot-desktop marker
+        recovery: the screen's sandbox outlives the creating process's active-env registry entry,
+        and a planner acquire would build a DUPLICATE container (session-scoped sandboxes have
+        ``persist_across_processes`` off, so :meth:`_attach_existing_container` never runs for
+        them). Only ``tools.environments.streams`` exec and ``get_temp_dir()`` are valid on the
+        result; it never enters the terminal tool's registry or cleanup."""
+        env = cls.__new__(cls)
+        env._container_id = container_id
+        env._docker_exe = docker_exe
+        return env
+
     def _image_available_locally(self) -> bool:
         """True once ``self._image`` is in the local image store, pulling it when it is not. Called BEFORE a
         container replacement removes anything: a pull that fails must leave the old sandbox intact."""

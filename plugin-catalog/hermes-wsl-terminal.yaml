@@ -22,7 +22,7 @@ description: >-
 maintainer: Yicheng-Mark
 tier: community
 category: tools
-requires_hermes: ">=0.20.6"
+requires_hermes: ">=0.21.6"
 docs_url: https://github.com/Yicheng-Mark/hermes-wsl-terminal#readme
 version: "0.1.0"
 platforms:

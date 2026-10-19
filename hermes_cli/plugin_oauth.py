@@ -288,11 +288,14 @@ def _token_request(client: OAuthClient, key: str) -> Callable[[dict[str, str]], 
         form = {**fields, "client_id": _env(client.client_id_env, "oauth_client_id_missing", key)}
         if client.client_secret_env:
             form["client_secret"] = _env(client.client_secret_env, "oauth_client_secret_missing", key)
+        failure = ""
         try:
             response = httpx.post(client.token_url, data=form, headers={"Accept": "application/json"},
                                   timeout=_TOKEN_TIMEOUT, verify=_default_verify(), follow_redirects=False)
         except httpx.HTTPError as exc:
-            raise _auth_error(key, f"the token request failed ({type(exc).__name__}).", "oauth_refresh_failed") from None
+            failure = type(exc).__name__
+        if failure:  # raised outside the handler: httpx's error keeps the request, whose body holds the secrets
+            raise _auth_error(key, f"the token request failed ({failure}).", "oauth_refresh_failed")
         payload = _json_object(response)
         if not 200 <= response.status_code < 300:  # a redirect is a failure too: it is never followed
             raise _token_error(key, response.status_code, payload)

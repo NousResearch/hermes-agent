@@ -102,6 +102,12 @@ def _calling_plugin_dir() -> Optional[Path]:
     return None
 
 
+def _detached(exc: BaseException) -> BaseException:
+    """*exc* without traceback or chain: those frames hold the token, refresh token or client secret."""
+    exc.__cause__ = exc.__context__ = None
+    return exc.with_traceback(None)
+
+
 def declared_auth_providers(manifest: Mapping[str, Any]) -> list[str]:
     """``requires_auth`` from a manifest dict: the providers whose sign-in the plugin uses."""
     raw = (manifest or {}).get("requires_auth")
@@ -156,15 +162,33 @@ def credentialed_provider_request(
     origins, resolve = spec
     if url_origin(url) not in origins:
         raise PermissionError(f"Refusing to send the {provider} sign-in to {url_origin(url)[1] or url!r}")
-    auth_headers, credential_base = resolve(url)
-    if url_origin(credential_base) not in origins:
-        # A pooled gateway key belongs to its own host only (#121486).
-        raise PermissionError(f"This profile's {provider} credential routes to a custom endpoint; refusing")
-    sent = {k: v for k, v in (headers or {}).items() if str(k).lower() not in {h.lower() for h in auth_headers}}
     import httpx
 
+    # Every error the plugin receives past this point is rebuilt without traceback, chain or request: those
+    # reach the frames and httpx objects that hold the token, refresh token or client secret.
+    refusal: Optional[BaseException] = None
     with httpx.Client(timeout=timeout, follow_redirects=False) as client:
-        response = client.request(method, url, json=json, headers={**sent, **auth_headers})
+        request = client.build_request(method, url, json=json, headers=dict(headers or {}))  # no credential yet
+        try:
+            auth_headers, credential_base = resolve(url)
+        except (RuntimeError, OSError, ValueError, LookupError, TypeError) as exc:
+            refusal = _detached(exc)
+        else:
+            if url_origin(credential_base) not in origins:
+                # A pooled gateway key belongs to its own host only (#121486).
+                refusal = PermissionError(
+                    f"This profile's {provider} credential routes to a custom endpoint; refusing")
+            else:
+                for name in auth_headers:
+                    request.headers.pop(name, None)
+                request.headers.update(auth_headers)
+                try:
+                    response = client.send(request)
+                except httpx.HTTPError as exc:
+                    refusal = type(exc)(str(exc))
+            auth_headers = request = None
+    if refusal is not None:
+        raise refusal
     return ProviderResponse(response.status_code, dict(response.headers), response.content)
 
 

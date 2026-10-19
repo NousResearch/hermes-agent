@@ -65,14 +65,15 @@ meaningful:
    `sys.modules[...]`, writes into a core module's tables). Two plugins
    patching the same seam silently break each other, and every core release
    can break both. `hermes plugins validate` refuses these at admission (`no
-   core override` check). If the hook you need does not exist, open an issue
-   describing it: we would rather add the seam than list a patch.
+   core override` check), and warns (without failing) on each import of an
+   undocumented core module, by file and line. If the hook you need does not
+   exist, open an issue describing it: we would rather add the seam than list
+   a patch.
 10. **Dependency security policy is the plugin's.** Hermes's 3-day
    `exclude-newer` release-age check covers Hermes's own dependencies only, at
    the time Hermes locks them; a plugin's `python_dependencies` /
-   `pyproject.toml` install under the plugin's policy (no age check). Packages
-   Hermes itself locks stay at Hermes's locked versions, so a plugin cannot
-   require a different version of one. Reviewers read the
+   `pyproject.toml` install under the plugin's policy (no age check), inside
+   Hermes's core constraints: Hermes's exact pins cannot move. Reviewers read the
    dependency list at the pinned SHA: bare floors (`>=X` with no upper bound)
    and floors on the newest release get a request for the oldest
    API-compatible floor plus an upper bound, and authors are strongly
@@ -156,7 +157,8 @@ subdir: ""                  # optional; plain relative path inside the repo
                             # segments, absolute, or backslash forms)
 description: One-line description.
 maintainer: OwnerName
-tier: official              # official | community (default community)
+tier: community             # official | verified | community (default community);
+                            # official and verified are set by Nous maintainers only
 category: memory            # desktop | memory | platform | web | tools | voice | automation | models | general
                             # (default desktop) — the shelf the entry sits on at /docs/plugins
 requires_hermes: ">=0.19"   # optional
@@ -176,6 +178,14 @@ capabilities:
   provides_middleware: []
   requires_env: []
 ```
+
+`tier` says who stands behind an entry. `official`: maintained by NousResearch.
+`verified`: verified by the Nous team to come from the company that makes what
+the plugin integrates into Hermes, and that company is well known or reputable.
+`community`: everything else. Only Nous maintainers set `official` or
+`verified`; a contributor PR that sets either is changed to `community` in
+review (the `/plugin-catalog/` CODEOWNERS review is the gate; no CI check
+inspects the tier value).
 
 `version`, `image`, `screenshots` and `readme` are cosmetic: none is parsed or
 used to pick what installs. The sha stays the release; bump `version` in the

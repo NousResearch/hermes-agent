@@ -584,9 +584,8 @@ remain under uv and npm's own retry policies.
 Every Python package Hermes itself depends on must be at least three days old
 when Hermes locks it (uv's `exclude-newer`, enforced by CI's lock check), so a
 freshly published, possibly compromised release cannot reach `uv.lock`. Users
-install from that lock. Installing or enabling a plugin keeps every package
-Hermes locks at its locked version and never re-checks dates, so package mirrors
-that publish no upload times work. Set a mirror with `index-url` in `pip.conf`,
+install from that lock, and installing or enabling a plugin never re-checks
+dates, so package mirrors that publish no upload times work. Set a mirror with `index-url` in `pip.conf`,
 which Hermes passes to uv, or with `UV_INDEX_URL`.
 
 `hermes pm lock` is the one step that applies the check. Run against a mirror

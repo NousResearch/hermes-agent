@@ -400,8 +400,19 @@ class SearchMixin:
             if time.monotonic() > deadline:
                 exit_code = 124
                 break
+        if exit_code is None and not bounded.is_set():
+            # rg closed stdout at EOF and is exiting on its own: reap it instead of
+            # racing a kill. On macOS os.getpgid() fails with ESRCH once the child
+            # is a zombie, which surfaced as "[Errno 3] No such process".
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
         if proc.poll() is None:
-            _kill_process_group_posix(proc)  # native lane is POSIX-only (gate above)
+            try:
+                _kill_process_group_posix(proc)  # native lane is POSIX-only (gate above)
+            except ProcessLookupError:
+                pass  # exited between poll() and the kill: nothing left to stop
         proc.wait()
         drainer.join()
         proc.stdout.close()

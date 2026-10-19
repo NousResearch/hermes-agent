@@ -185,7 +185,12 @@ export const describeSlashExecError = (command: string, err: unknown): string =>
   const text = message ?? ''
 
   if (isUnsupportedCommand(err)) {
-    return t('canonical.controls.notAvailable', command)
+    // The owner names what to use instead for its client-local refusals (gateway/session_commands.py
+    // REFUSAL_HINTS) in `data.detail`; print it under the refusal.
+    const detail = (err as { data?: { detail?: unknown } } | null)?.data?.detail
+    const refusal = t('canonical.controls.notAvailable', command)
+
+    return typeof detail === 'string' && detail.trim() ? `${refusal}\n${detail.trim()}` : refusal
   }
 
   if (/slash worker timed out/.test(text)) {

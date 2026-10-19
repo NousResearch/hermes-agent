@@ -181,127 +181,22 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private boolean isHermesInstalled() {
-        File hermesExec = new File(hermesDir, "bin/hermes");
-        return hermesExec.exists();
+        // With Chaquopy, hermes-agent is bundled as a Python package
+        // Check if we can import it via Python
+        try {
+            Python python = PythonManager.getPython();
+            python.getModule("hermes_cli");
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private boolean downloadAndInstallHermes() {
-        try {
-            // Create directories
-            hermesDir.mkdirs();
-            pythonDir.mkdirs();
-            
-            // Download the latest hermes-agent wheel or package
-            // For now, we'll use a simple approach: download from GitHub releases
-            String releaseUrl = "https://api.github.com/repos/NousResearch/hermes-agent/releases/latest";
-            String downloadUrl = getLatestReleaseAssetUrl(releaseUrl);
-            
-            if (downloadUrl == null || downloadUrl.isEmpty()) {
-                Log.e(TAG, "Could not find download URL");
-                return false;
-            }
-            
-            File downloadFile = new File(getCacheDir(), "hermes-latest.tar.gz");
-            
-            // Download the file
-            downloadFile(downloadUrl, downloadFile);
-            
-            // Extract and install
-            return installHermes(downloadFile);
-            
-        } catch (Exception e) {
-            Log.e(TAG, "Download and install failed: " + e.getMessage(), e);
-            return false;
-        }
-    }
-
-    private String getLatestReleaseAssetUrl(String apiUrl) {
-        try {
-            URL url = new URL(apiUrl);
-            HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-            connection.setRequestMethod("GET");
-            connection.setRequestProperty("Accept", "application/vnd.github.v3+json");
-            
-            int responseCode = connection.getResponseCode();
-            if (responseCode == HttpURLConnection.HTTP_OK) {
-                BufferedReader in = new BufferedReader(
-                        new InputStreamReader(connection.getInputStream()));
-                String inputLine;
-                StringBuilder response = new StringBuilder();
-                
-                while ((inputLine = in.readLine()) != null) {
-                    response.append(inputLine);
-                }
-                in.close();
-                
-                // Parse JSON to find the APK or Android asset
-                String json = response.toString();
-                if (json.contains("android") || json.contains("apk") || json.contains("termux")) {
-                    // For now, return a placeholder - in production this would parse the JSON
-                    // and find the appropriate Android asset
-                    return "https://github.com/NousResearch/hermes-agent/releases/latest/download/hermes-agent.apk";
-                }
-            }
-            connection.disconnect();
-        } catch (Exception e) {
-            Log.e(TAG, "Failed to get release info: " + e.getMessage(), e);
-        }
-        
-        // Fallback: use a direct URL for testing
-        return "https://hermes-assets.nousresearch.com/android/hermes-agent-latest.apk";
-    }
-
-    private void downloadFile(String fileUrl, File outputFile) throws IOException {
-        URL url = new URL(fileUrl);
-        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-        connection.connect();
-        
-        int fileLength = connection.getContentLength();
-        
-        try (InputStream input = connection.getInputStream();
-             OutputStream output = new FileOutputStream(outputFile)) {
-            
-            byte[] buffer = new byte[4096];
-            int bytesRead;
-            long totalRead = 0;
-            
-            while ((bytesRead = input.read(buffer)) != -1) {
-                output.write(buffer, 0, bytesRead);
-                totalRead += bytesRead;
-                
-                // Update progress
-                final long current = totalRead;
-                final long total = fileLength;
-                runOnUiThread(() -> {
-                    if (total > 0) {
-                        int progress = (int) ((current * 100) / total);
-                        progressBar.setProgress(progress);
-                    }
-                });
-            }
-        }
-        
-        connection.disconnect();
-    }
-
-    private boolean installHermes(File archiveFile) {
-        try {
-            // For APK builds, we'll bundle the hermes executable directly
-            // For now, we'll copy from assets
-            copyAssetFolder(this, "hermes", hermesDir);
-            
-            // Make sure the hermes script is executable
-            File hermesScript = new File(hermesDir, "bin/hermes");
-            if (hermesScript.exists()) {
-                hermesScript.setExecutable(true);
-            }
-            
-            return true;
-            
-        } catch (Exception e) {
-            Log.e(TAG, "Install failed: " + e.getMessage(), e);
-            return false;
-        }
+        // With Chaquopy, hermes-agent is installed via pip during build
+        // No need to download at runtime - it's already bundled in the APK
+        Log.i(TAG, "Hermes is pre-installed via Chaquopy pip configuration");
+        return true;
     }
 
     private void startHermes() {
@@ -349,38 +244,9 @@ public class MainActivity extends AppCompatActivity {
         Toast.makeText(this, message, Toast.LENGTH_LONG).show();
     }
 
-    private void copyAssetFolder(Context context, String assetPath, File destination) {
-        try {
-            String[] files = context.getAssets().list(assetPath);
-            if (files != null && files.length > 0) {
-                for (String file : files) {
-                    File destFile = new File(destination, file);
-                    if (file.contains(".")) {
-                        copyAssetFile(context, assetPath + "/" + file, destFile);
-                    } else {
-                        destFile.mkdirs();
-                        copyAssetFolder(context, assetPath + "/" + file, destFile);
-                    }
-                }
-            }
-        } catch (IOException e) {
-            Log.e(TAG, "Failed to copy asset folder: " + assetPath, e);
-        }
-    }
-
-    private void copyAssetFile(Context context, String assetPath, File destination) {
-        try (InputStream in = context.getAssets().open(assetPath)) {
-            FileOutputStream out = new FileOutputStream(destination);
-            byte[] buf = new byte[1024];
-            int len;
-            while ((len = in.read(buf)) > 0) {
-                out.write(buf, 0, len);
-            }
-            out.close();
-        } catch (IOException e) {
-            Log.e(TAG, "Failed to copy asset file: " + assetPath, e);
-        }
-    }
+    // Asset copying methods removed - not needed with Chaquopy
+    // Python packages are bundled automatically by Chaquopy
+    // Hermes is installed via pip in build.gradle configuration
 
     @Override
     protected void onDestroy() {

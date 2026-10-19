@@ -55,46 +55,11 @@ public class PythonManager {
             String pythonPath = hermesDir.getAbsolutePath();
             System.setProperty("python.path", pythonPath);
             
-            // Copy bundled Python files if they exist
-            copyAssetFolder(context, "python", hermesDir);
+            // Note: Python packages are handled by Chaquopy's pip configuration in build.gradle
+            // No need to copy from assets - Chaquopy bundles Python and packages automatically
             
         } catch (Exception e) {
             Log.e(TAG, "Failed to setup Python environment: " + e.getMessage(), e);
-        }
-    }
-
-    private static void copyAssetFolder(Context context, String assetPath, File destination) {
-        try {
-            String[] files = context.getAssets().list(assetPath);
-            if (files != null && files.length > 0) {
-                for (String file : files) {
-                    File destFile = new File(destination, file);
-                    if (file.contains(".")) {
-                        // It's a file
-                        copyAssetFile(context, assetPath + "/" + file, destFile);
-                    } else {
-                        // It's a directory
-                        destFile.mkdirs();
-                        copyAssetFolder(context, assetPath + "/" + file, destFile);
-                    }
-                }
-            }
-        } catch (IOException e) {
-            Log.e(TAG, "Failed to copy asset folder: " + assetPath, e);
-        }
-    }
-
-    private static void copyAssetFile(Context context, String assetPath, File destination) {
-        try (InputStream in = context.getAssets().open(assetPath)) {
-            java.io.FileOutputStream out = new java.io.FileOutputStream(destination);
-            byte[] buf = new byte[1024];
-            int len;
-            while ((len = in.read(buf)) > 0) {
-                out.write(buf, 0, len);
-            }
-            out.close();
-        } catch (IOException e) {
-            Log.e(TAG, "Failed to copy asset file: " + assetPath, e);
         }
     }
 

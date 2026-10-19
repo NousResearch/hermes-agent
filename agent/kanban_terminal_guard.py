@@ -108,13 +108,14 @@ def session_called_terminal_tool(result: Optional[dict]) -> bool:
 def _exit_reason(completed: bool, result: Optional[dict], *,
                  terminal_attempted: bool = False) -> str:
     """Human-meaningful reason, so the board says WHY rather than 'violation'."""
+    attempt_note = "; a terminal kanban call did not land" if terminal_attempted else ""
     if isinstance(result, dict):
         err = result.get("error")
         if err:
-            return str(err)[:300]
+            return str(err)[:300] + attempt_note
         if result.get("partial"):
             return ("run ended partial (truncation / budget / compression) "
-                    "without a terminal kanban call")
+                    "without a terminal kanban call" + attempt_note)
     if terminal_attempted:
         return ("a terminal kanban call did not land; the task is still running"
                 if not completed else

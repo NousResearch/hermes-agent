@@ -226,3 +226,22 @@ def test_status_change_before_append_does_not_record(clean_env, tmp_path, monkey
     monkeypatch.setattr(guard, "_board_connection", _racing_board)
     assert guard.reconcile_worker_exit(completed=False, result={"messages": []}) == "not_running"
     assert not [e for e in _events(db, task_id) if e["kind"] == "protocol_violation"]
+
+
+def test_attempted_terminal_call_with_error_keeps_both_facts(clean_env, tmp_path):
+    """An error reason must not erase that the terminal call did not land."""
+    from agent.kanban_terminal_guard import reconcile_worker_exit
+
+    db, task_id = _make_task(tmp_path, clean_env, "running")
+    result = {
+        "error": "truncated tool-call arguments",
+        "messages": [
+            {"role": "assistant", "tool_calls": [
+                {"function": {"name": "kanban_block", "arguments": "{}"}}]},
+        ],
+    }
+    assert reconcile_worker_exit(completed=False, result=result) == "recorded"
+    events = [e for e in _events(db, task_id) if e["kind"] == "protocol_violation"]
+    reason = events[0]["payload"]["reason"]
+    assert "truncated tool-call arguments" in reason
+    assert "did not land" in reason

@@ -19,6 +19,10 @@ export interface NoticeTranslations {
     mcpReloadNotInChat: (server: string) => string
     /** Configured MCP servers that did not connect on reload. */
     mcpReloadUnavailable: (servers: string) => string
+    /** An edit/restore/regenerate whose target compaction archived: the owner refused the rewind. */
+    compactedTurnUnavailable: string
+    /** The same refusal for any other stale target: undone in another window, not a user turn, or gone. */
+    staleTurnUnavailable: string
     /** Typed /undo /retry /steer /queue lines (the Ink TUI's wording on the same gateway). */
     sessionCommands: SessionCommandNotices
   }
@@ -42,4 +46,10 @@ export interface SessionCommandNotices {
   queueFailed: string
   countOne: (count: string) => string
   countOther: (count: string) => string
+  /** A canonical queued row's edit the owner refused, or whose row started mid-edit. */
+  queueEditKeptTitle: string
+  queueEditKept: string
+  /** A canonical queued row's save whose answer was lost: the edit stays open for a retry. */
+  queueEditUnconfirmedTitle: string
+  queueEditUnconfirmed: string
 }

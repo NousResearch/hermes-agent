@@ -392,6 +392,43 @@ def _id_chunks(ids, size: int = _SQL_IN_CHUNK):
         yield ids[start:start + size]
 
 
+def emit_session_deleted(db, deleted_ids, *, reason, primary=None, sessions_dir=None):
+    """Fire ``on_session_delete`` after a committed delete or deliberate archive (#124511).
+
+    Call right after the write transaction commits (before follow-up cleanup that can raise), with
+    the ids it removed or, for ``reason="archive"``, hid. *primary* is the session the caller asked
+    for; without it the first id stands in (bulk sweeps). ``deleted_ids`` rides along when more
+    than one row went. Dispatch runs under the store's own profile home, so a process touching
+    another profile's store (``sessions repair-profiles``) reaches THAT profile's plugins.
+    Late-bound and fail-open: never breaks the delete.
+    """
+    ids = sorted({sid for sid in (deleted_ids or ()) if isinstance(sid, str) and sid})
+    if not ids:
+        return
+    try:
+        from hermes_cli.lifecycle import invoke_hook
+        from hermes_constants import (
+            get_hermes_home, profile_name_for_home, reset_hermes_home_override, set_hermes_home_override,
+        )
+
+        home = os.path.dirname(os.path.abspath(os.fspath(db.db_path)))
+        profile = profile_name_for_home(home)
+        payload: dict = {"session_id": primary if primary in ids else ids[0], "reason": reason, "profile": profile}
+        if len(ids) > 1:
+            payload["deleted_ids"] = ids
+        if sessions_dir is not None:
+            payload["sessions_dir"] = str(sessions_dir)
+        rebind = profile is not None and os.path.realpath(home) != os.path.realpath(get_hermes_home())
+        token = set_hermes_home_override(home) if rebind else None
+        try:
+            invoke_hook("on_session_delete", **payload)
+        finally:
+            if token is not None:
+                reset_hermes_home_override(token)
+    except Exception:
+        logger.warning("on_session_delete dispatch failed", exc_info=True)
+
+
 _FTS_TRIGGERS = ("messages_fts_insert", "messages_fts_delete", "messages_fts_update",
                  "messages_fts_trigram_insert", "messages_fts_trigram_delete", "messages_fts_trigram_update")
 
@@ -470,6 +507,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     hidden INTEGER NOT NULL DEFAULT 0,
     last_read_at REAL,
     tool_names TEXT,
+    transcript_revision INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id),
     FOREIGN KEY (system_prompt_hash) REFERENCES system_prompts(hash)
 );
@@ -729,6 +767,16 @@ WHEN EXISTS (SELECT 1 FROM session_admissions WHERE target_session_id = old.id)
   OR EXISTS (SELECT 1 FROM worker_executions WHERE session_id = old.id)
 BEGIN
     SELECT RAISE(ABORT, 'Refused to delete a session that has gateway runtime history: state.db was upgraded by a newer Hermes, and this older Hermes cannot delete such sessions. Downgrading is unsupported. Run hermes update to go back to the newer release, or restore the pre-update snapshot: https://hermes-agent.nousresearch.com/docs/getting-started/updating#rolling-back-to-an-older-release');
+END;
+DROP TRIGGER IF EXISTS messages_transcript_revision_update;
+CREATE TRIGGER IF NOT EXISTS messages_transcript_revision_update
+AFTER UPDATE OF role, content, api_content, tool_calls, tool_call_id, tool_name, reasoning, reasoning_content,
+    reasoning_details ON messages
+BEGIN
+    -- An in-place rewrite (prompt expansion, multimodal context, a redaction) moves neither the
+    -- active row count nor the highest id; this write-side revision is what a transcript-derived
+    -- cache keys on (conversation_revision). Whoever wrote the row, old builds included.
+    UPDATE sessions SET transcript_revision = transcript_revision + 1 WHERE id = new.session_id;
 END;
 CREATE INDEX IF NOT EXISTS idx_messages_session_active
     ON messages(session_id, active, timestamp);

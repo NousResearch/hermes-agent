@@ -1,0 +1,18 @@
+name: post-cortex
+repo: https://github.com/julymetodiev/hermes-plugin-post-cortex
+sha: f271162a6c20c6a0f72a0240c81953053b3cc18b
+description: "Self-hosted long-term memory through a post-cortex daemon (https://github.com/julymetodiev/post-cortex): typed records (decisions, fixed problems, code changes) in an entity graph with local semantic search. Recalls related records from the profile's workspace before each turn, mirrors built-in memory writes as records, and adds post_cortex_search, post_cortex_record and post_cortex_context (graph neighbours and reverse dependencies of named components) plus the post-cortex:memory skill. Profiles are mapped to shared workspaces by name glob, so a team of profiles recalls each other's records. Disclosure — talks only to the post-cortex daemon at the configured URL (default http://127.0.0.1:3737; a remote daemon over plain HTTP should sit on a private network or behind TLS): each non-trivial user prompt (up to 2,000 characters) is sent as a search query, and built-in memory writes and post_cortex_record calls are sent as records; nothing goes to third parties. Disclosure — the daemon stores records in its own database and redacts credentials, e-mail addresses, phone numbers and public IPv4 addresses on write. Disclosure — PCX_TOKEN (and optionally PCX_URL) is read through the Hermes secret scope; the only local state is $HERMES_HOME/post-cortex.json (0600, never holds the token). No background threads or processes, no shell commands, no deletes in post-cortex; cron and subagent runs never write automatically."
+maintainer: julymetodiev
+tier: community
+category: memory
+requires_hermes: ">=0.22.2"
+version: "0.1.0"
+docs_url: https://github.com/julymetodiev/hermes-plugin-post-cortex#readme
+readme: true
+known_issues:
+- "Requires a post-cortex daemon 0.4.0 or newer; a daemon bound to 0.0.0.0 must list the host in the plugin URL in its allowed_hosts, or every request gets 403."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -30,6 +30,8 @@ def _refusal_data(exc: RuntimeStoreError) -> dict:
     for key in ('revision', 'execution_generation'):
         if isinstance(getattr(exc, key, None), int):
             data[key] = getattr(exc, key)
+    if getattr(exc, 'admitted', None) is False:
+        data['admitted'] = False  # nothing admitted yet: the sender may finalize with ``bot_relay.settle``
     return data
 
 
@@ -87,6 +89,7 @@ _END_REASON = re.compile(r'[a-z][a-z_]{0,31}')
 # Verbs whose param sets are closed and never carried a ``profile`` key.
 _PROFILE_IMPLICIT = frozenset({'session.create', 'session.list', 'session.info', 'session.resume', 'session.detach',
                                'prompt.submit', 'prompt.receipt', 'prompt.cancel', 'prompt.resolve_unknown',
+                               'prompt.steer_queued', 'prompt.replace_queued',
                                'session.interrupt', 'session.events.since', 'session.mutate', 'session.stats',
                                'approval.respond', 'clarify.respond'})
 
@@ -98,6 +101,13 @@ def display_projection(history, profile_home):
     from tui_gateway import server
     rows = [{**row, '_row_id': row['row_id']} if 'row_id' in row else row for row in history]
     return server._history_to_messages(rows, profile_home=profile_home)
+
+
+def model_only(row):
+    """A live row the model reads but nobody typed as one message (a micro-compaction merge): never rendered."""
+    from agent.context_compressor import MODEL_ONLY_DISPLAY_METADATA_KEY
+    metadata = row.get('display_metadata')
+    return isinstance(metadata, dict) and bool(metadata.get(MODEL_ONLY_DISPLAY_METADATA_KEY))
 
 
 class AuthorityConnection:
@@ -166,6 +176,7 @@ class AuthorityConnection:
                     'slash.exec': self.slash_exec, 'command.dispatch': self.command_dispatch,
                     'session.list': self.list_sessions, 'session.info': self.info,
                     'session.mutate': self.mutate, 'bot_relay.deliver': self.bot_deliver,
+                    'bot_relay.settle': self.bot_settle,
                     'bot_relay.roster.sync': self.bot_roster, 'bot_relay.outbox.drain': self.bot_outbox,
                     'bot_relay.reply': self.bot_reply, 'a2a.forward': self.a2a_forward,
                     'kanban.run': self.kanban_run,
@@ -182,6 +193,8 @@ class AuthorityConnection:
                     'approval.respond': self.respond, 'clarify.respond': self.respond_clarify}
         from gateway.session_busy_controls import handlers as busy_handlers
         handlers.update(busy_handlers(self))
+        from gateway.session_queued_controls import handlers as queued_handlers
+        handlers.update(queued_handlers(self))
         from gateway.session_config import handlers as config_handlers
         handlers.update(config_handlers(self))
         from gateway.session_tui_config import handlers as tui_config_handlers
@@ -213,6 +226,8 @@ class AuthorityConnection:
         handlers['message.react'] = partial(react, self)
         from gateway.session_clarify_lock import clarify_lock
         handlers['clarify.lock'] = partial(clarify_lock, self)
+        from gateway.session_connections import handlers as connection_handlers
+        handlers.update(connection_handlers(self))
         from gateway.session_control_actions import control
         handlers['session.control'] = partial(control, self)
         return handlers
@@ -282,12 +297,14 @@ class AuthorityConnection:
             # launch profile's config into a served secondary's session. Under a single profile
             # the scope is that profile's own home, so behaviour is unchanged.
             from gateway.session_authorities import owner_scope
+            from gateway.session_connections import METHODS as CONNECTION_METHODS, session_owned
             with owner_scope(self.authority):
                 if method in GROUP_METHODS or method == 'profiles.list':
                     result = await dispatch_group_control(self, method, params)
-                elif method not in handlers:
+                elif method not in handlers or (method in CONNECTION_METHODS and not session_owned(params)):
                     # JSON-RPC's own verdict: clients key compat fallbacks on -32601, and a
                     # 4001 'invalid_params' would read as a bad argument on a method that exists.
+                    # An account-owned connector call (the Connectors page) keeps its legacy handler.
                     return {'jsonrpc': '2.0', 'id': rid, 'error': {
                         'code': -32601, 'message': f'unknown method: {method}',
                         'data': {'reason': 'unknown_method'}}}
@@ -301,8 +318,10 @@ class AuthorityConnection:
             return {'jsonrpc': '2.0', 'id': rid, 'result': result}
         except RuntimeStoreError as exc:
             _log_refusal(getattr(self.actor, 'profile_id', None), method, exc)
+            # A connector refusal keeps the legacy handlers' code and message (gateway/session_connections.py).
             return {'jsonrpc': '2.0', 'id': rid, 'error': {
-                'code': 4001, 'message': exc.reason, 'data': _refusal_data(exc)}}
+                'code': getattr(exc, 'wire_code', 4001), 'message': getattr(exc, 'wire_message', exc.reason),
+                'data': _refusal_data(exc)}}
         except sqlite3.Error as exc:
             _log_storage_failure(getattr(self.actor, 'profile_id', None), method,
                                  params.get('session_id'), exc)
@@ -348,6 +367,10 @@ class AuthorityConnection:
     async def bot_deliver(self, ref, params):
         from gateway.session_bot import deliver
         return await deliver(self, params)
+
+    async def bot_settle(self, ref, params):
+        from gateway.session_bot import settle
+        return await settle(self, params)
 
     async def worker_register(self, ref, params):
         from gateway.session_worker import worker_request
@@ -407,9 +430,10 @@ class AuthorityConnection:
             return await self._create(params, title)
 
     async def _create(self, params, title):
-        from gateway.session_local import stage_local_session
+        from gateway.session_local import stage_local_session, staged_creation_follows
         from gateway.session_local_recovery import restore_local_session
         from gateway.session_local_title import resolve_titled_session, title_new_session
+        from gateway.session_policy import BYPASS_FIELDS
         from gateway.session_runtime_workers import tracked_write
         from hermes_state_local import commit_local_session
         # Bot Mode's forever-chat mint: born hidden from the sidebar. `follow_profile_config` stays in
@@ -418,6 +442,13 @@ class AuthorityConnection:
         if type(hidden) is not bool:
             raise RuntimeStoreError('invalid_params', field='hidden', detail='must be a boolean')
         ref = title and resolve_titled_session(self.authority, self.actor, title, missing_ok=True)
+        if (not ref and title == 'Bot Chat'
+                and not any(params.get(name) is True for name in BYPASS_FIELDS)
+                and staged_creation_follows(self.authority, self.actor, params.get('request_id'))):
+            # ``chat -c "Bot Chat" --create-if-missing`` and any other titled create. A safe-mode
+            # or ignore-user-config launch never reads the profile, so it stays frozen. An exact
+            # retry of a creation staged without the flag keeps that frozen request.
+            params.setdefault('follow_profile_config', True)
         if not ref:
             skills_prompt = None
             if 'skills' in params:
@@ -584,11 +615,12 @@ class AuthorityConnection:
         # reopens it (``reopen_local_session`` in the drain), so opening a finished chat
         # never re-lights DB-derived liveness with no new activity.
         self.authority.authorize(self.actor, ref, 'session:read')
-        if 'session:control' in self.actor.capabilities and ref.session_id not in self.subscriptions:
+        if 'session:control' in self.actor.capabilities:
             # A client attaching (main's `hermes -c` was a new process) re-reads the config-derived settings
-            # (CFG-2); a snapshot poll on this attachment does not.
+            # (CFG-2); a snapshot poll on this attachment does not. Any open still adopts a frozen Bot Chat
+            # whose earlier open found it busy (Desktop's warm `session.activate` resumes on one connection).
             from gateway.session_policy_refresh import refresh_resumed_policy
-            await refresh_resumed_policy(self.authority, ref)
+            await refresh_resumed_policy(self.authority, ref, attached=ref.session_id in self.subscriptions)
         snapshot = await self.authority.attach(self.actor, ref)
         self.subscriptions[ref.session_id] = snapshot.subscription_id
         self._spawn_notice(ref)
@@ -600,9 +632,12 @@ class AuthorityConnection:
             from gateway.session_policy import policy_for_source, refresh_profile_hooks
             await asyncio.to_thread(refresh_profile_hooks, policy_for_source(self.authority.runner, source))
             info = await snapshot_info(self.authority, snapshot.handle.ref)
+        from gateway.session_connections import pending_connection
         display = {}
         if params.get('display_projection'):
-            display['display_messages'] = display_projection(snapshot.history, self.authority.profile_id)
+            # A micro-compaction merge stays in ``messages`` (an undo target); its originals are what shows.
+            display['display_messages'] = display_projection(
+                [row for row in snapshot.history if not model_only(row)], self.authority.profile_id)
         return {'session_id': ref.session_id, 'stored_session_id': ref.session_id,
                 'messages': list(snapshot.history), **display, 'message_count': len(snapshot.history),
                 'running': snapshot.handle.execution_state == 'running',
@@ -611,7 +646,8 @@ class AuthorityConnection:
                 'subscription_id': snapshot.subscription_id, 'revision': snapshot.handle.revision,
                 'execution_generation': snapshot.handle.execution_generation,
                 'pending': [asdict(r) for r in snapshot.pending],
-                'prompts': list(snapshot.prompts), 'info': info}
+                'prompts': list(snapshot.prompts), 'info': info,
+                'pending_connection': pending_connection(self.authority, ref.session_id)}
 
     def _spawn_notice(self, ref):
         """Low-disk auto-prune question for this viewer, off the resume reply's path."""
@@ -654,6 +690,13 @@ class AuthorityConnection:
         return self.authority.sessions[ref.session_id].event_stream.since(epoch, sequence)
 
     async def submit(self, ref, params):
+        # The interactive WS is the one surface a restart's after-turn wait admits (#139041).
+        receipt = await self.authority.submit(self.actor, self.submission(ref, params),
+                                              queue_while_restarting=self._operator is True)
+        return asdict(receipt)
+
+    def submission(self, ref, params):
+        """The admission a ``prompt.submit``-shaped request asks for (``prompt.replace_queued`` too)."""
         if ref.session_id not in self.subscriptions:
             raise RuntimeStoreError('permission_denied')
         forbidden = set(params) - {'session_id', 'text', 'submission_id', 'input_id', 'queued', 'attachments', 'finite', 'unattended',
@@ -672,10 +715,7 @@ class AuthorityConnection:
                    **submit_display_fields(params), **submit_cli_turn_fields(params)}
         if 'attachments' in params:
             payload['attachments'] = params['attachments']
-        # The interactive WS is the one surface a restart's after-turn wait admits (#139041).
-        receipt = await self.authority.submit(self.actor, Submission(request_id, ref, payload, 'queue'),
-                                              queue_while_restarting=self._operator is True)
-        return asdict(receipt)
+        return Submission(request_id, ref, payload, 'queue')
 
     async def mutate(self, ref, params):
         from gateway.session_mutations import mutate_session

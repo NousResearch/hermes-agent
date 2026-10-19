@@ -922,21 +922,14 @@ class GatewayBusySessionMixin:
                     session_store=self.session_store,
                 )
             except Exception as _hook_exc:
-                logger.warning("pre_gateway_dispatch (busy path) invocation failed: %s", _hook_exc)
+                logger.warning("pre_gateway_dispatch (busy path) invocation failed: %s", _hook_exc, exc_info=True)
                 _hook_results = []
 
             for _result in _hook_results or []:
                 if not isinstance(_result, dict):
                     continue
                 if _result.get("action") == "skip":
-                    try:
-                        _platform_str = (
-                            event.source.platform.value
-                            if event.source.platform
-                            else "unknown"
-                        )
-                    except Exception:
-                        _platform_str = "unknown"
+                    _platform_str = getattr(event.source.platform, "value", None) or "unknown"
                     logger.info(
                         "pre_gateway_dispatch skip (busy path): reason=%s platform=%s chat=%s",
                         _result.get("reason"),

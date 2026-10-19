@@ -98,14 +98,19 @@ _RENDERER_GLOBAL = re.compile(rf"^(?:{_RENDERER_GLOBAL_NAMES})$")
 # class named ``S`` declared in some other scope of the file would otherwise excuse ``S.prototype``.
 _GLOBAL_ALIAS = re.compile(
     rf"(?<![\w$.])([A-Za-z_$][\w$]*)\s*=\s*(?:(?:window|globalThis|self)\s*\.\s*)?(?:{_RENDERER_GLOBAL_NAMES})"
-    rf"(?![\w$(])|\b(?:{_RENDERER_GLOBAL_NAMES})\s*:\s*([A-Za-z_$][\w$]*)")
+    r"(?![\w$(])")
+# Destructuring counts only when the source is the global object itself: an ordinary constructor
+# registry (``{ Array: Track }``) names a global as a KEY and must not turn ``Track`` into an alias.
+_GLOBAL_DESTRUCTURE = re.compile(r"\{([^{}]*)\}\s*=\s*(?:window|globalThis|self)(?![\w$.])")
+_DESTRUCTURED_GLOBAL = re.compile(rf"\b(?:{_RENDERER_GLOBAL_NAMES})\s*:\s*([A-Za-z_$][\w$]*)")
 
 
 def _foreign_prototype_writes(source: str) -> list[int]:
     """Offsets of ``X.prototype.y =`` where ``X`` is a renderer global, an alias of one, or not
     declared in the file."""
     declared = {name for names in _DECLARED_NAME.findall(source) for name in names if name}
-    aliases = {name for names in _GLOBAL_ALIAS.findall(source) for name in names if name}
+    aliases = set(_GLOBAL_ALIAS.findall(source)) | {
+        name for body in _GLOBAL_DESTRUCTURE.findall(source) for name in _DESTRUCTURED_GLOBAL.findall(body)}
     return [m.start() for m in _PROTOTYPE_WRITE.finditer(source)
             if m.group(1) not in declared or m.group(1) in aliases or _RENDERER_GLOBAL.match(m.group(1))]
 

@@ -349,7 +349,8 @@ class TestDesktopSurface:
         _Vector2 { constructor() { _Vector2.prototype.isVector2 = true } }``, ``function Track(){}``)
         is not prototype patching. A write to a renderer global or an undeclared receiver still is,
         including a global the file shadows with a same-named class elsewhere, and an alias of a
-        global whose name some unrelated scope also declares as a class."""
+        global (assigned or destructured from ``window``) whose name some unrelated scope also
+        declares as a class. A constructor registry naming a global as a key is not an alias."""
         d = self._desktop_plugin(tmp_path, (
             "var Vector2 = class _Vector2 { constructor() { _Vector2.prototype.isVector2 = true } }\n"
             "function Track() {}\nTrack.prototype.ValueTypeName = 'vector'\n"
@@ -357,12 +358,15 @@ class TestDesktopSurface:
             "class Storage {}\nStorage.prototype.setItem = noop\n"
             "HTMLElement.prototype.click = spy\n"
             "function unused() { class H {} }\nconst H = window.Storage\nH.prototype.setItem = noop\n"
+            "function K() {}\nK.prototype.ValueTypeName = 'v'\nconst types = { Array: K }\n"
+            "function unused2() { class W {} }\nconst { Storage: W } = window\nW.prototype.setItem = noop\n"
         ))
         assert desktop_surface_hits(d) == [
             "prototype patching (desktop/plugin.js:5)",
             "prototype patching (desktop/plugin.js:7)",
             "prototype patching (desktop/plugin.js:8)",
             "prototype patching (desktop/plugin.js:11)",
+            "prototype patching (desktop/plugin.js:17)",
         ]
 
     def test_node_sidecar_and_test_mjs_outside_desktop_are_not_the_surface(self, tmp_path):

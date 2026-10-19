@@ -413,6 +413,10 @@ _IMAGE_REJECTION_PHRASES = (
     # request until exhaustion, and the gateway leaves every subsequent message queued behind the stuck turn
     # — the P1 in issue #21160.
     "no endpoints found that support image input",
+    # OpenCode Go gateway wrapper around a text-only upstream 400: "[unsupported_request] Message content
+    # supports text content only. Images, audio and files are not enabled." Without it the base64 stays in
+    # history and every later turn fails the same way (issue #141563).
+    "message content supports text content only", "images, audio and files are not enabled",
 )
 
 # Provider error bodies meaning "this particular image payload is bad" — the model CAN see, it

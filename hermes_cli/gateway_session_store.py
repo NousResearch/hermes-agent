@@ -34,6 +34,7 @@ _READS = frozenset({
     "is_kanban_owned_session", "list_sessions_rich", "search_sessions", "get_next_title_in_lineage",
     "get_handoff_state", "get_meta", "get_compression_tip", "resolve_session_by_title", "get_messages",
     "session_count", "sanitize_title", "session_yolo_enabled",
+    "get_session_model_config_value",
 })
 # Writes the gateway already performs itself (persistence, accounting, maintenance).
 _GATEWAY_OWNED = frozenset({
@@ -60,6 +61,8 @@ def _zero(*_a, **_k):
 class GatewaySessionStore:
     """Truthy until the viewer's gateway connection is final (main's ``if self._session_db:`` guards);
     a gateway hang-up stays truthy, and the next call redials."""
+
+    current: dict | None = None  # the opened session's snapshot; never ``__getattr__``'s refusal
 
     def __init__(self, connection=None):
         self.connection = connection or GatewayConnection.shared()
@@ -221,7 +224,7 @@ class GatewaySessionStore:
         from hermes_state_rewind import (
             _HISTORY_CHANGED, RewindOutcome, RewindTargetUnavailableError, _comparison_content, _user_indices)
         snapshot = self.call("session.resume", session_id=session_id)
-        durable = list(snapshot.get("messages") or [])
+        durable = [m for m in snapshot.get("messages") or [] if not m.get("archived")]  # the live rows
         durable_user = _user_indices(durable)
         if user_ordinal < 0:
             user_ordinal = max(len(durable_user) + user_ordinal, 0)
@@ -288,6 +291,8 @@ class GatewaySessionStore:
             try:
                 # Hung up: redial first, so the detach names the subscription the reconnect resumed.
                 self.connection.start()
+                if state.gaps != state.attached_gaps:  # a replay gap retired it: re-attach, so the detach lands
+                    self.connection.reattach(session_id)
             except GatewayClientError as exc:
                 logger.debug("redial for session.detach failed: %s", exc)
                 reachable = False

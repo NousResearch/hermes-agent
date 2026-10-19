@@ -108,6 +108,7 @@ Every `ctx.*` API below is available inside a plugin's `register(ctx)` function.
 | Dispatch tools from commands | `ctx.dispatch_tool(name, args)` — invokes a registered tool with parent-agent context auto-wired |
 | Add CLI commands | `ctx.register_cli_command(name, help, setup_fn, handler_fn)` — adds `hermes <plugin> <subcommand>` |
 | Inject messages | `ctx.inject_message(content, role="user", session_key=... \| origin=...)` - see [Injecting Messages](#injecting-messages) |
+| Post and edit a status message | `handle = ctx.post_message(text)`, then `handle.edit(text)` — see [Posting a live message](#posting-a-live-message) |
 | Ship data files | `Path(__file__).parent / "data" / "file.yaml"` |
 | Bundle skills | `ctx.register_skill(name, path)` — namespaced as `plugin:skill`, loaded via `skill_view("plugin:skill")` |
 | Gate on env vars | `requires_env: [API_KEY]` in plugin.yaml — prompted during `hermes plugins install` |
@@ -129,7 +130,7 @@ A `/command` registered with `ctx.register_command()` runs in the gateway proces
 
 - **Return its text** instead of calling `print()`. Printed output goes to the gateway's stdout, not to the user's chat.
 - **Read the session's working directory with `agent.runtime_cwd.resolve_agent_cwd()`**, not `os.getcwd()`, which is the gateway's own directory. The gateway pins the session's directory while the handler runs.
-- **Read session identity with `gateway.session_context.get_session_env("HERMES_SESSION_PLATFORM")`** (and the other `HERMES_SESSION_*` names, such as `HERMES_SESSION_ID` and `HERMES_SESSION_KEY`), not `os.environ`. These values are bound per session around the handler, so a background job the handler starts records the session as its parent.
+- **Take the calling session as handler keywords**: declare `session_id`, `session_key`, `platform` or `source` (the sender's `SessionSource`) and Hermes passes them; one-argument handlers keep working unchanged. The same values are bound as `HERMES_SESSION_*` around the handler (`gateway.session_context.get_session_env`, never `os.environ`), so a background job the handler starts records the session as its parent.
 
 The classic CLI waits for the reply for as long as the handler runs. Ctrl+C stops the wait, not the handler: the handler finishes in the gateway and its reply is not shown. The command runs over its own connection to the gateway, so the session's prompts, interrupts and other commands are not held up while it runs.
 
@@ -349,7 +350,7 @@ Plugins can register the 27 lifecycle events currently accepted by `hermes_cli.p
 |---|---|
 | **Directive/control** | `pre_tool_call`, `pre_llm_call`, `pre_verify`, `pre_gateway_dispatch` |
 | **Transform** | `transform_tool_result`, `transform_terminal_output`, `transform_llm_output`, `pre_transcription` |
-| **Observer** | `post_tool_call`, `post_llm_call`, `pre_api_request`, `post_api_request`, `api_request_error`, `pre_auxiliary_call`, `post_auxiliary_call`, `on_stream_start`, `on_stream_delta`, `on_stream_end`, `on_interim_message`, `on_session_start`, `on_session_end`, `on_session_finalize`, `on_session_reset`, `agent_loop_stopped`, `on_skill_lifecycle`, `subagent_start`, `subagent_stop`, `pre_approval_request`, `post_approval_response`, `on_human_input_request`, `on_human_input_resolved`, `pre_command`, `kanban_task_claimed`, `kanban_task_completed`, `kanban_task_blocked` |
+| **Observer** | `post_tool_call`, `post_llm_call`, `pre_api_request`, `post_api_request`, `api_request_error`, `pre_auxiliary_call`, `post_auxiliary_call`, `on_stream_start`, `on_stream_delta`, `on_stream_end`, `on_interim_message`, `on_session_start`, `on_session_end`, `on_session_finalize`, `on_session_reset`, `post_compaction`, `on_session_delete`, `agent_loop_stopped`, `on_skill_lifecycle`, `subagent_start`, `subagent_stop`, `pre_approval_request`, `post_approval_response`, `on_human_input_request`, `on_human_input_resolved`, `pre_command`, `kanban_task_claimed`, `kanban_task_completed`, `kanban_task_blocked` |
 
 These categories describe current behavior rather than defining future naming rules. Plugin middleware remains a separate registry/surface.
 ## Plugin types
@@ -925,12 +926,65 @@ The default for a newly-installed or bundled plugin is `not enabled`. `hermes pl
 
 In a running session, `/plugins` shows which plugins are currently loaded.
 
+## Posting a live message
+
+A plugin can post one message into the conversation it is working for and update that same message
+later, on any channel, with no per-platform code. Use it for live progress (a checklist while a long
+tool runs, a plan card that changes as the plan is revised):
+
+```python
+def run_migration(args, **kwargs):
+    status = ctx.post_message("Migrating: 0/3 tables")
+    for i, table in enumerate(TABLES, 1):
+        migrate(table)
+        status.edit(f"Migrating: {i}/3 tables")
+    status.edit("Migration done ✓")
+    return tool_result({"migrated": len(TABLES)})
+```
+
+**Signatures:** `ctx.post_message(text: str) -> PluginMessage` and
+`PluginMessage.edit(text: str) -> dict`. From `async` code that already runs on the gateway's event loop
+(an async hook or slash-command handler) use `await ctx.apost_message(text)` and `await handle.aedit(text)`
+instead; the sync forms refuse there with `error: "on_event_loop"` rather than deadlocking the loop.
+
+**Which conversation.** The current conversation is the session bound to the calling code: a tool
+handler or hook running in that session's turn, its slash command, or a hook fired for it. The plugin
+never names a chat, so it cannot post anywhere else. A thread the plugin starts itself does not inherit
+that binding (start it with `contextvars.copy_context().run(...)` if it should), and a timer, a cron
+run or a process with no live gateway has no conversation at all.
+
+**Never raises.** Every call returns a result. `handle.ok`, `handle.message_id` and `handle.error`
+describe the last operation; `edit()` returns `{"ok", "message_id", "edited"}` plus
+`"fallback": True` when it had to post a new message. Error codes: `no_conversation` (nothing is bound
+in the calling context, the session is not live, or it belongs to another profile),
+`gateway_unavailable`, `adapter_unavailable`, `send_failed`, `edit_failed`, `on_event_loop`, `timeout`.
+A refused post returns a handle whose `edit()` is refused the same way, so the happy path needs no
+branching. `timeout` means the gateway has not answered within 30 s: the operation keeps running and
+its outcome still lands on the handle (`handle.pending` is true meanwhile), and the next `edit()` waits
+for it first, so a slow post never leaves a message the handle cannot edit. An edit that the platform
+refuses or that raises falls back to a fresh message the same way as a platform without edit support. Every post and edit is logged as `plugin_message plugin=<id> op=post|edit ...`.
+
+What each surface does:
+
+| Surface | `post_message` | `edit` |
+|---|---|---|
+| Messaging platforms that can edit (Telegram, Discord, Slack, Matrix, ...) | the adapter's normal `send` into the chat/thread | edits the same message in place |
+| Platforms without edit support (SMS, email, plugin adapters that do not implement `edit_message`) | `send` | sends a new message; the handle follows it (`edited: False, fallback: True`) |
+| Desktop and the Ink TUI | a keyed notice to the session's viewers (Desktop toast, TUI status line) | replaces that notice in place |
+| Classic CLI (`hermes chat`) | queued as a notice line, printed at the end of the next turn (the classic CLI has no live notice slot) | each edit queues another line |
+
+Text is clamped to the platform's message limit with an ellipsis (never split). It is plain text: an
+adapter may render its own formatting, but the plugin should not depend on it. No permission is needed,
+because the message can only reach the conversation that already invoked the plugin.
+`ctx.post_message` is not available to plugins running in the out-of-process plugin host
+(`plugins.isolation: host`): the handle is bound to the gateway's event loop and live adapter.
+
 ## Injecting Messages
 
 Plugins can inject messages into a CLI conversation, a known gateway session, or a new gateway session in a given chat using `ctx.inject_message()`:
 
 ```python
-# Active CLI conversation
+# The chat the plugin is working for (see "Without a session key" below; prefer passing session_key)
 ctx.inject_message("New data arrived from the webhook", role="user")
 
 # Existing gateway conversation
@@ -956,17 +1010,24 @@ ctx.inject_message(
 
 **Signature:** `ctx.inject_message(content: str, role: str = "user", *, session_key: str | None = None, origin: Mapping[str, Any] | None = None) -> bool`
 
-In CLI mode:
+When the classic CLI runs plugins in its own process (no gateway session):
 
 - If the agent is **idle** (waiting for user input), the message is queued as the next input and starts a new turn.
 - If the agent is **mid-turn** (actively running), the message interrupts the current operation — the same as a user typing a new message and pressing Enter.
 - For non-`"user"` roles, the content is prefixed with `[role]` (e.g. `[system] ...`).
 - Returns `True` if the message was queued successfully.
 
-In gateway mode:
+Without a session key (`session_key` and `origin` both omitted), when the plugin runs in the gateway (or its plugin host) — which is where plugins run for classic CLI, TUI and Desktop sessions — the gateway picks the chat:
 
-- `session_key` is required and must identify an existing gateway session. It is the stable routing key, not the CLI session ID.
-- Exception: a hook or tool running for a classic CLI session (`hermes chat`, whose turns run in the gateway) may omit both `session_key` and `origin`, as it could in the CLI. The text is committed to that session's queue and runs as its next turn; it no longer interrupts a running one. The turn and its reply are in the session's transcript, but the attached classic CLI does not display them. `allow_gateway_injection` is still required.
+1. If the plugin is handling a local session's own call (its slash command, a hook fired for that session, or a tool or hook in its turn), the message goes to that session. This never guesses, however many sessions are open.
+2. With no session in the calling context (a timer, a background thread — a thread the plugin starts does not inherit the call's context), it goes to the one local session of the plugin's profile that was started by the classic CLI (`hermes chat`) and has a viewer attached. TUI and Desktop sessions, messaging chats and other profiles' sessions are never picked this way.
+3. Otherwise (no such session, or several) it is refused: `False`, nothing is injected anywhere, and the gateway log names the plugin and says to pass a session key.
+
+The chosen session receives the text as a queued input, the same way as a keyed injection; it needs the `allow_gateway_injection` permission below. When that is a classic CLI session, the turn and its reply are in the session's transcript, but the attached classic CLI does not display them. A call made for a messaging chat without a key is refused, as before. Prefer passing `session_key`: a key-less call can be refused when the chat is ambiguous, and key-less injection may be retired later.
+
+In gateway mode with a key:
+
+- `session_key` must identify an existing gateway session. It is the stable routing key, not the CLI session ID.
 - Hermes reuses that session's stored platform, chat, thread, profile, and conversation history. Plugins cannot change that route through `session_key`.
 - The session must belong to the plugin's own profile: the key of another profile's chat or local session gets `False` right away, with the reason in the gateway log.
 - Hermes rechecks the stored route against the gateway's current authorisation rules before dispatch.
@@ -975,7 +1036,7 @@ In gateway mode:
 - The route and conversation are pinned while dispatch is pending. Hermes drops the request if topic recovery changes the route or the session rotates before handling starts.
 - The request enters the platform adapter's normal message path. Active sessions use the existing busy-session queue rather than starting a competing turn.
 - Returns `True` when the live gateway accepts the request for asynchronous dispatch. This does not confirm that the agent turn or platform delivery has completed.
-- Returns `False` when neither `session_key` nor `origin` is given (or both are), the permission is not granted, or no live host can accept the request. Unknown or unroutable session keys discovered after asynchronous acceptance are written to the gateway log.
+- Returns `False` when both `session_key` and `origin` are given, neither is given and no chat is chosen (above), the permission is not granted, or no live host can accept the request. Unknown or unroutable session keys discovered after asynchronous acceptance are written to the gateway log.
 
 Starting a session with `origin` (gateway mode only):
 

@@ -286,7 +286,8 @@ def test_a_redial_to_a_restarted_gateway_and_slash_new_reread_the_plugin_command
     # B's catalog has no /alpha: one refresh on the miss, never a slash.exec, no plugin output
     assert stale[1] == ['commands.catalog'] and 'RAN_alpha' not in stale[0], stale
     assert c.session_id != first and conn.epoch == epoch_b
-    assert new_calls == [('commands.catalog', None), ('slash.exec', c.session_id)], new_calls
+    # /new reads the new session's own catalog (its skills come from that session's folder)
+    assert new_calls == [('commands.catalog', c.session_id), ('slash.exec', c.session_id)], new_calls
     assert f'RAN_beta PID={b.pid}' in after_new, after_new
 
 
@@ -314,12 +315,14 @@ def test_a_command_a_plugin_reload_removed_is_dispatched_again(tmp_path, monkeyp
     from gateway.control_socket import reload_gateway_plugins
     _no_local_plugins(monkeypatch)
     ran_skill = []
-    monkeypatch.setattr(cli_mod, '_ensure_skill_commands', lambda: {'/pptwin': {'name': 'pptwin'}})
+    monkeypatch.setattr(cli_mod, '_ensure_skill_commands', dict)  # the skill is the gateway's, below
     monkeypatch.setattr(cli_mod, 'get_skill_bundles', dict)
     monkeypatch.setattr(HermesCLI, '_run_skill_slash_command', lambda self, *a: ran_skill.append(a[0]))
     work = tmp_path / 'work'
     work.mkdir()
     with _plugin_home(tmp_path, _RELOADED.replace('TWIN', _TWIN)) as (root, home, env):
+        (home / 'skills' / 'pptwin').mkdir(parents=True)
+        (home / 'skills' / 'pptwin' / 'SKILL.md').write_text('---\nname: pptwin\ndescription: Twin skill\n---\nSay SKILL_TWIN.\n')
         with daemon(root, home, env, barrier=True, fixture='plugin_mcp_daemon.py') as (proc, desc):
             wire = _Wire(home, desc)
             try:
@@ -382,12 +385,14 @@ def test_a_plugin_whose_register_fails_leaves_its_name_to_a_same_named_skill(tmp
     from cli import HermesCLI
     _no_local_plugins(monkeypatch)
     ran_skill = []
-    monkeypatch.setattr(cli_mod, '_ensure_skill_commands', lambda: {'/pptwin': {'name': 'pptwin'}})
+    monkeypatch.setattr(cli_mod, '_ensure_skill_commands', dict)  # the skill is the gateway's, below
     monkeypatch.setattr(cli_mod, 'get_skill_bundles', dict)
     monkeypatch.setattr(HermesCLI, '_run_skill_slash_command', lambda self, *a: ran_skill.append(a[0]))
     work = tmp_path / 'work'
     work.mkdir()
     with _plugin_home(tmp_path, _BROKEN) as (root, home, env):
+        (home / 'skills' / 'pptwin').mkdir(parents=True)
+        (home / 'skills' / 'pptwin' / 'SKILL.md').write_text('---\nname: pptwin\ndescription: Twin skill\n---\nSay SKILL_TWIN.\n')
         with daemon(root, home, env, barrier=True, fixture='plugin_mcp_daemon.py') as (proc, desc):
             wire = _Wire(home, desc)
             try:

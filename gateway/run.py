@@ -1542,7 +1542,7 @@ def _collect_history_media_paths(agent_history: list[dict[str, Any]]) -> set:
     return paths
 
 def _home_target_env_var(platform_name: str) -> str:
-    """Home-target env var: built-in ``_HOME_TARGET_ENV_VARS``, plugin registry, then
+    """Home-target env var: the plugin's ``cron_deliver_env_var``, then
     ``<PLATFORM>_HOME_CHANNEL``."""
     from cron.scheduler_delivery import _resolve_home_env_var
     return _resolve_home_env_var(platform_name) or f"{platform_name.upper()}_HOME_CHANNEL"
@@ -2197,7 +2197,7 @@ from gateway.run_turn import GatewayTurnMixin, is_context_overflow_failure_resul
 from gateway.run_shutdown import GatewayShutdownMixin, _resolve_gateway_exit_verdict
 from gateway.run_busy import GatewayBusySessionMixin
 from gateway.run_config_loaders import GatewayConfigLoadersMixin
-from gateway.run_startup import GatewayStartupMixin
+from gateway.run_startup import GatewayStartupMixin, _own_policy_envs
 from gateway.run_watchers import GatewaySessionWatchersMixin
 from gateway.run_notifications import GatewayNotificationsMixin
 from gateway.run_inbound import GatewayInboundMixin
@@ -2236,20 +2236,15 @@ def _best_effort(fn: Callable[[], Any], debug_msg: Optional[str] = None) -> Any:
 _EXECUTOR_QUIESCE_TIMEOUT = 2.0
 
 
-_OWN_POLICY_OPEN_ENV = {
-    Platform.WECOM: ("WECOM_DM_POLICY", "WECOM_GROUP_POLICY", "WECOM_ALLOW_ALL_USERS"),
-    Platform.WEIXIN: ("WEIXIN_DM_POLICY", "WEIXIN_GROUP_POLICY", "WEIXIN_ALLOW_ALL_USERS"),
-    Platform.YUANBAO: ("YUANBAO_DM_POLICY", "YUANBAO_GROUP_POLICY", "YUANBAO_ALLOW_ALL_USERS"),
-    Platform.QQBOT: (None, None, "QQ_ALLOW_ALL_USERS"),
-    Platform.WHATSAPP: ("WHATSAPP_DM_POLICY", "WHATSAPP_GROUP_POLICY", "WHATSAPP_ALLOW_ALL_USERS")}
-
-
 def _own_policy_open_startup_violation(config) -> Optional[str]:
     """Return a startup-abort reason when open policy lacks allow-all opt-in."""
+    with suppress(Exception):  # idempotent; callers may hand in a config load_gateway_config never built
+        from hermes_cli.plugins import discover_plugins
+        discover_plugins()
     for platform, platform_config in getattr(config, "platforms", {}).items():
         if not getattr(platform_config, "enabled", False):
             continue
-        open_env = _OWN_POLICY_OPEN_ENV.get(platform)
+        open_env = _own_policy_envs(platform)
         if not open_env:
             continue
         dm_env, group_env, allow_all_env = open_env
@@ -4210,7 +4205,7 @@ class GatewayRunner(
                 logger.warning(
                     "Rejecting profile route %r: target profile %r is not served",
                     matched.name, matched.profile)
-                raise ProfileRouteRejected(matched.name)
+                raise ProfileRouteRejected(matched.name, matched.profile)
             return matched.profile
         logger.debug(
             "No profile route matched: platform=%s chat_id=%s thread_id=%s parent_chat_id=%s",

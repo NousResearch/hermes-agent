@@ -587,10 +587,25 @@ class LegacyPluginRow(Result):
     name: str
     version: str
     enabled: bool
+    # The canonical gateway's rows also carry the load details the classic CLI's /plugins prints.
+    key: str | None = None
+    tools: int | None = None
+    hooks: int | None = None
+    commands: int | None = None
+    error: str | None = None
+
+
+class PluginToolsetRow(Result):
+    key: str
+    label: str
+    description: str
 
 
 class PluginsListResult(Result):
     plugins: list[LegacyPluginRow]
+    # The canonical gateway's plugin toolsets and portable MCP servers (the classic CLI's /tools reads them).
+    toolsets: list[PluginToolsetRow] | None = None
+    portable_mcp_servers: list[str] | None = None
 
 
 method("plugins.list", params=PluginsListParams, result=PluginsListResult,

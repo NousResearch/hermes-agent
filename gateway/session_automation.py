@@ -6,11 +6,14 @@ A producer ACK means committed input, not successful inference or outbound deliv
 from copy import deepcopy
 from datetime import UTC, datetime
 import json
+import logging
 
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session_contract import SessionRef
-from hermes_state_runtime import RuntimeStoreError, admit_session_input
+from hermes_state_runtime import RuntimeStoreError, admit_session_input, list_session_admissions
+
+logger = logging.getLogger(__name__)
 
 
 def producer_identity(runner, event):
@@ -30,14 +33,227 @@ def completion_admission(runner, event):
         return None
     from hermes_state_runtime import list_session_admissions
     identity = producer_identity(runner, event)
-    # Compression moves the route's transcript to a child; admissions stay on the logical root.
-    sid = (entry.origin.chat_id if entry.origin.platform == Platform.LOCAL
-           else authority.logical_owner(entry.session_id))
-    for row in list_session_admissions(authority.db, session_id=sid, pending_only=False):
+    for row in list_session_admissions(authority.db, session_id=_route_owner(authority, entry), pending_only=False):
         descriptor = row['payload'].get('local_automation_v1') or row['payload'].get('native_text_v1', {}).get('automation', {})
         if identity in descriptor.get('identities', [descriptor.get('identity')]):
             return row
     return None
+
+
+async def deliver_heartbeat(runner, event):
+    """Prepare, format and admit one liveness tick as one critical section with a completion's
+    admit-and-withdraw (``admit_process_notice``): a completion that lands while this tick is on its
+    way in withdraws it once it is in, and a tick checked after it sees it. True when admitted, None
+    to drop it, False to requeue the original event."""
+    from gateway.run import _format_gateway_process_notification
+    async with _heartbeat_lock(runner):
+        for _attempt in range(2):
+            try:
+                prepared = await prepare_heartbeat(runner, event)
+            except Exception:
+                # One tick's failure must not drop the rest of the drained events.
+                logger.exception("Heartbeat preparation error; the tick is requeued")
+                return False
+            text = prepared and _format_gateway_process_notification(prepared)
+            if not text:
+                return None
+            try:
+                delivered = await runner._inject_watch_notification(text, prepared)
+            except Exception:
+                logger.exception("Watch notification injection error")
+                return False
+            if delivered is not False or not _replaced_tick_claimed(runner, prepared):
+                return delivered
+            # The tick it replaced started first and runs with its own output: admit this one alone.
+        return False
+
+
+def _replaced_tick_claimed(runner, prepared):
+    from gateway.session_authorities import active_authority
+    from hermes_state_runtime import get_session_admission
+    replaced = prepared.get('_replaces')
+    authority = active_authority(runner) if replaced else None
+    row = authority and get_session_admission(authority.db, admission_id=replaced)
+    return bool(row) and row['status'] != 'queued'
+
+
+async def admit_process_notice(runner, authority, adapter, event, evt):
+    """Admit a process notice. A completion and the withdrawal of its process's waiting ticks hold
+    the heartbeat lock together; a tick already holds it (``deliver_heartbeat``)."""
+    identity = producer_identity(runner, evt)
+    if evt.get('type') == 'heartbeat':
+        # The tick's raw output rides its stored admission: a later tick folds from the ledger.
+        event.metadata['heartbeat_tick'] = {'output': str(evt.get('output') or ''),
+                                            'omitted': int(evt.get('omitted') or 0)}
+        if evt.get('_replaces'):
+            return await authority.admit_automation(adapter, event, identity, replaces=evt['_replaces'])
+    if evt.get('type') != 'completion':
+        return await authority.admit_automation(adapter, event, identity)
+    async with _heartbeat_lock(runner):
+        receipt = await authority.admit_automation(adapter, event, identity)
+        await withdraw_process_ticks(runner, evt)
+        return receipt
+
+
+async def prepare_heartbeat(runner, event):
+    """The liveness tick to admit for ``event``, or None to drop it because its process's completion
+    is already in the session: a later tick would be a stale "still running" turn. The caller holds
+    the heartbeat lock.
+
+    Otherwise a tick of the same process still queued is replaced: this one carries its stored
+    output, and ``_replaces`` names it, so its cancellation commits in this tick's own admission
+    (``admit_automation``) and a refused replacement leaves it queued. A tick's output is never sent
+    again, so a busy session gets one waiting turn holding every tick's output instead of one turn
+    per tick. A queued tick that started or settled first ran with its own output, and this one
+    queues behind it. A retry of a tick already admitted is dropped."""
+    import asyncio
+    from gateway.session_authorities import active_authority
+    authority = active_authority(runner)
+    entry = runner.session_store.lookup_by_session_key(str(event.get('session_key') or '')) if authority else None
+    if entry is None:
+        return event
+    owner, process = _route_owner(authority, entry), str(event.get('session_id') or '')
+    if await asyncio.to_thread(_process_completed, runner, authority, owner, event):
+        logger.debug("Dropped heartbeat %s of process %s: its completion is already admitted",
+                     event.get('event_id'), process)
+        return None
+    from hermes_state_runtime import find_session_admission
+    if await asyncio.to_thread(find_session_admission, authority.db, principal_id='automation:' + entry.session_key,
+                               session_id=owner, request_id=producer_identity(runner, event)):
+        return None  # a retry of a tick already admitted (its acknowledgement lost)
+    pending = await asyncio.to_thread(list_session_admissions, authority.db, session_id=owner)
+    waiting = next((row for row in pending if _queued_tick(row, process, entry.session_key)), None)
+    earlier = waiting and _descriptor(waiting['payload']).get('tick')
+    if not isinstance(earlier, dict):
+        return event
+    from tools.process_registry_notifications import join_heartbeat_outputs
+    return {**event, **join_heartbeat_outputs(earlier, event), '_replaces': waiting['admission_id']}
+
+
+def _descriptor(payload):
+    return payload.get('local_automation_v1') or (payload.get('native_text_v1') or {}).get('automation') or {}
+
+
+def _tick_metadata(metadata):
+    """A liveness tick's stored output (``heartbeat_tick``): what a later tick folds in."""
+    tick = metadata.get('heartbeat_tick')
+    if tick is None:
+        return {}
+    if (not isinstance(tick, dict) or set(tick) != {'output', 'omitted'} or not isinstance(tick['output'], str)
+            or type(tick['omitted']) is not int or tick['omitted'] < 0):
+        raise RuntimeStoreError('invalid_params')
+    return {'tick': dict(tick)}
+
+
+def _replace_queued(admission_id, session_id, replaced):
+    """Write guard: cancel the replaced queued tick in the replacement's own transaction; refuse the
+    replacement when that tick was claimed or settled first (its output already ran)."""
+    def guard(conn):
+        changed = conn.execute("UPDATE session_admissions SET status='terminal',outcome='cancelled' "
+                               "WHERE admission_id=? AND target_session_id=? AND status='queued'",
+                               (admission_id, session_id)).rowcount
+        if changed != 1:
+            raise RuntimeStoreError('stale_generation')
+        replaced[:] = [admission_id]
+    return guard
+
+
+async def withdraw_process_ticks(runner, event):
+    """A process's completion is in the session: its ticks still queued there would run after it as
+    stale "still running" turns, and the completion carries the final output, so they are cancelled.
+    A tick that already started is left alone. Never raises: the completion is already admitted, and
+    a retry of it takes the lost-acknowledgement path, not this one. The caller holds the heartbeat
+    lock (``admit_process_notice``)."""
+    import asyncio
+    from gateway.session_authorities import active_authority
+    try:
+        authority = active_authority(runner)
+        entry = runner.session_store.lookup_by_session_key(str(event.get('session_key') or '')) if authority else None
+        if entry is None:
+            return
+        finished = {identity[1] for identity in _identities(
+            [producer_identity(runner, event), *(event.get('_automation_identities') or ())])
+            if identity[0] == 'completion' and len(identity) > 1}
+        pending = await asyncio.to_thread(
+            list_session_admissions, authority.db, session_id=_route_owner(authority, entry))
+        for row in pending:
+            if any(_queued_tick(row, process, entry.session_key) for process in finished):
+                await _withdraw(authority, row)
+    except Exception:
+        logger.warning("Could not withdraw the waiting heartbeats of finished process %s",
+                       event.get('session_id'), exc_info=True)
+
+
+def _heartbeat_lock(runner):
+    # A tick's check-and-admit and a completion's admit-and-withdraw: interleaved, a tick checked
+    # before the completion landed is admitted after its withdrawal and runs as a stale turn.
+    import asyncio
+    lock = runner.__dict__.get('_heartbeat_lock')
+    if lock is None:
+        lock = runner.__dict__['_heartbeat_lock'] = asyncio.Lock()
+    return lock
+
+
+def _process_completed(runner, authority, owner, event):
+    """Whether the completion of tick ``event``'s process is admitted into the session ``owner``: by
+    its exact identity (``started_at`` names the process incarnation), or as a sibling in a batch,
+    pending or settled: only the batch's primary is its ``request_id``."""
+    completion = runner._completion_delivery_identity(
+        {'type': 'completion', 'session_id': event.get('session_id'), 'started_at': event.get('started_at')})
+    if completion is None:
+        return False
+    identity = json.dumps(completion, separators=(',', ':'))
+    with authority.db._read_ctx() as conn:
+        if conn.execute('SELECT 1 FROM session_admissions WHERE target_session_id=? AND request_id=?',
+                        (owner, identity)).fetchone():
+            return True
+    for row in list_session_admissions(authority.db, session_id=owner, pending_only=False):
+        descriptor = row['payload'].get('local_automation_v1') or row['payload'].get('native_text_v1', {}).get('automation', {})
+        if identity in (descriptor.get('identities') or ()):
+            return True
+    return False
+
+
+def _identities(raws):
+    parsed = []
+    for raw in raws:
+        try:
+            identity = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(identity, list) and identity:
+            parsed.append(identity)
+    return parsed
+
+
+def _queued_tick(row, process, route):
+    """Whether *row* is the gateway's own queued liveness tick of *process* on *route*: the route's
+    producer admitted ``["heartbeat", process, event_id]``. A client input whose id merely looks like
+    one, and the ``/heartbeat`` wake (four parts), never match."""
+    if row['status'] != 'queued' or row['principal_id'] != 'automation:' + route:
+        return False
+    return any(len(identity) == 3 and identity[:2] == ['heartbeat', process]
+               for identity in _identities([row['request_id']]))
+
+
+async def _withdraw(authority, row):
+    """Cancel the gateway's own queued automation *row*; False when it was claimed or settled first."""
+    from gateway.session_contract import Principal
+    # The row's own principal, with the operator access a LOCAL route requires of anyone but its viewer.
+    actor = Principal(row['principal_id'], authority.profile_id,
+                      frozenset({'session:submit', 'session:control', 'session:operator'}), 'producer-withdraw')
+    try:
+        receipt = await authority.cancel_queued(
+            actor, SessionRef(authority.profile_id, row['target_session_id']), row['admission_id'])
+    except RuntimeStoreError:
+        return False
+    return receipt.outcome == 'cancelled'
+
+
+def _route_owner(authority, entry):
+    # Compression moves the route's transcript to a child; admissions stay on the logical root.
+    return (entry.origin.chat_id if entry.origin.platform == Platform.LOCAL
+            else authority.logical_owner(entry.session_id))
 
 
 def _owner(runner, event, authority):
@@ -69,26 +285,28 @@ _DISPLAY_TEXT_LIMIT = 2000
 
 
 def automation_display_metadata(metadata):
-    """Validate a producer's async-result card: both keys or neither, kind from the closed set."""
+    """Validate a producer's card (an async result, or a liveness tick's one-line receipt): both keys
+    or neither, kind from the closed producer set."""
     if 'display_kind' not in metadata and 'display_text' not in metadata:
         return {}
-    from gateway.response_filters import PRODUCER_NOTICE_DISPLAY_KINDS
+    from gateway.response_filters import PRODUCER_CARD_KINDS
     kind, text = metadata.get('display_kind'), metadata.get('display_text')
-    if (kind not in PRODUCER_NOTICE_DISPLAY_KINDS or not isinstance(text, str) or not text.strip()
+    if (kind not in PRODUCER_CARD_KINDS or not isinstance(text, str) or not text.strip()
             or len(text) > _DISPLAY_TEXT_LIMIT):
         raise RuntimeStoreError('invalid_params')
     return {'display_kind': kind, 'display_text': text}
 
 # notification_origin / original_trigger_message_id are producer debug context (#52694) and are not
 # persisted; notification_category="diagnostic" rides the snapshot so the replayed wake still mutes,
-# and display_kind/display_text so the persisted row is the card the producer named.
+# and display_kind/display_text so the persisted row is the card the producer named; heartbeat_tick is
+# a liveness tick's own output, persisted so a later tick of its process folds from the ledger.
 # gateway_proven_session_id / gateway_completion_ids are main's delivery-time ownership proof for the
 # classic resolver (802fd5782f3, fd4e277c849). They are accepted and not persisted (a sibling set in the
 # fingerprint would make the same completion's retry a new identity); execute_admission re-stamps the
 # proof at execution from the target the pre-claim check validated, and the turn's resolver reads it.
 _AUTOMATION_METADATA = frozenset({'gateway_session_key', 'gateway_session_id', 'automation_identities',
     'turn_author', 'notification_origin', 'original_trigger_message_id', 'notification_category',
-    'display_kind', 'display_text', 'gateway_proven_session_id', 'gateway_completion_ids'})
+    'display_kind', 'display_text', 'gateway_proven_session_id', 'gateway_completion_ids', 'heartbeat_tick'})
 
 
 def admission_display(payload):
@@ -129,7 +347,8 @@ def snapshot_automation(authority, adapter, event, identity):
             or event.media_urls or event.prompt_response or event.source.platform == Platform.API_SERVER
             or set(event.metadata) - _AUTOMATION_METADATA):
         raise RuntimeStoreError('invalid_params')
-    notification = automation_notification_metadata(event.metadata) | automation_display_metadata(event.metadata)
+    notification = (automation_notification_metadata(event.metadata) | automation_display_metadata(event.metadata)
+                    | _tick_metadata(event.metadata))
     entry = _owner(runner, event, authority)
     if event.source.platform == Platform.LOCAL:
         return snapshot_local_automation(authority, adapter, event, identity, entry)
@@ -195,6 +414,7 @@ def snapshot_local_automation(authority, adapter, event, identity, entry):
                   'route': entry.session_key, 'target': entry.session_id}
     descriptor.update(automation_notification_metadata(event.metadata))
     descriptor.update(automation_display_metadata(event.metadata))
+    descriptor.update(_tick_metadata(event.metadata))
     if event.metadata.get('turn_author') is not None:
         from agent.turn_author import parse_turn_author
         descriptor['turn_author'] = parse_turn_author(event.metadata['turn_author'])
@@ -240,7 +460,10 @@ def restore_local_automation(authority, ref, row):
     return event
 
 
-async def admit_automation(authority, adapter, event, identity):
+async def admit_automation(authority, adapter, event, identity, replaces=None):
+    """``replaces``: a queued automation row of the same session this input supersedes (a liveness
+    tick carrying the output of the one still waiting). Its cancellation commits in this admission's
+    own transaction, so neither lands without the other."""
     authority._require_admission_open()
     payload, entry = snapshot_automation(authority, adapter, event, identity)
     from gateway.session_authority import LiveSession
@@ -249,11 +472,17 @@ async def admit_automation(authority, adapter, event, identity):
     authority.sessions.setdefault(ref.session_id, LiveSession(event.source, entry.session_key))
     from functools import partial
     from gateway.session_runtime_workers import tracked_write
+    admitted, replaced = partial(authority._admitted, ref, event), []
+    if replaces is not None:
+        def admitted(row, admitted=admitted):
+            if replaced:  # the guard ran in the committed write; an exact replay runs no guard
+                authority._settle_cancelled(ref, replaces)
+            return admitted(row)
     return await tracked_write(authority, partial(
         admit_session_input, authority.db, epoch=authority.epoch, principal_id='automation:' + entry.session_key,
         session_id=ref.session_id, request_id=identity, payload=deepcopy(payload),
-        _authorize_write=authority._admission_gate()), then=partial(authority._admitted, ref, event), ordered=True,
-        after=partial(authority._schedule_admitted, ref))
+        _authorize_write=authority._admission_gate(replaces and _replace_queued(replaces, ref.session_id, replaced))),
+        then=admitted, ordered=True, after=partial(authority._schedule_admitted, ref))
 
 
 _ROUTE_WAKE_PRODUCERS = frozenset({'kanban-wake', 'loop-tick'})
@@ -304,6 +533,40 @@ async def move_route_wakes(runner, session_key, old_session_id):
             ordered=True, after=partial(authority._schedule_admitted, new))
 
 
+def _local_owner(authority, session_key):
+    """The LOCAL FIFO serving ``session_key`` (its owner is the receipt id, which a reset keeps)."""
+    for sid, live in list(authority.sessions.items()):
+        if live.route == session_key and getattr(live.source, 'platform', None) == Platform.LOCAL:
+            return SessionRef(authority.profile_id, sid)
+    return None
+
+
+async def _reset_and_retarget_local(authority, runner, session_key, old_session_id, owner):
+    """A LOCAL route (the Bot Chat ``hermes peer dm`` lands in) keeps its FIFO owner across the
+    reset, so nothing moves between FIFOs. Its queued automation rows (a DM that arrived while the
+    exhausted turn ran) still name the pre-reset transcript and are retargeted at the fresh one,
+    in the same ordered worker step as the rotation; left stale, the drain refuses them
+    (``admission_conflict``) and the Bot Chat's FIFO pauses for good, across restarts."""
+    from gateway.session_runtime_workers import tracked_write
+    from hermes_state_runtime import retarget_local_automation
+    live = authority.sessions[owner.session_id]
+
+    def rotate_and_retarget():
+        old_targets = authority.db.get_compression_lineage(old_session_id) or [old_session_id]
+        entry = runner.session_store.reset_session(session_key)
+        if entry is None or entry.session_id in old_targets:
+            return entry, []
+        return entry, retarget_local_automation(
+            authority.db, epoch=authority.epoch, session_id=owner.session_id,
+            principal_id='automation:' + session_key, old_targets=old_targets, new_target=entry.session_id)
+
+    async with live.mutation_lock:
+        entry, moved = await tracked_write(authority, rotate_and_retarget, ordered=True)
+    if moved:
+        authority._publish_pending(owner)
+    return entry
+
+
 async def reset_and_rehome_messages(runner, session_key, old_session_id):
     """The compression-exhaustion auto-reset: rotate the route to a fresh session and move the old
     owner's still-queued native ``messaging:*`` rows onto it, same order and request ids. Left
@@ -323,6 +586,9 @@ async def reset_and_rehome_messages(runner, session_key, old_session_id):
     authority = active_authority(runner)
     old = SessionRef(authority.profile_id, authority.logical_owner(old_session_id)) if authority else None
     live = authority.sessions.get(old.session_id) if old and old_session_id else None
+    local = _local_owner(authority, session_key) if authority else None
+    if local is not None:
+        return await _reset_and_retarget_local(authority, runner, session_key, old_session_id, local), lambda: None
     if live is None:
         return await runner.async_session_store.reset_session(session_key), lambda: None
     import asyncio

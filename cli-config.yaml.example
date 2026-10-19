@@ -392,6 +392,15 @@ model:
 # worktree_sync: true   # Default — branch from the fetched remote tip
 # worktree_sync: false  # Branch from local HEAD (offline / pinned base)
 
+# Stale worktree sweep (startup of `hermes -w` + every 6h from the cron ticker, over
+# every repo Hermes created a worktree in). Idle dirty/unpushed trees are archived to
+# refs/hermes/archive/<tree> and removed; `hermes worktree restore <name>` brings one back.
+# worktrees:
+#   archive_dirty: true          # false = never remove dirty/unpushed trees (old behaviour)
+#   archive_max_file_mb: 50      # untracked files above this are not archived; their tree is kept
+#   archive_retention_days: 30   # archive refs older than this are deleted (0 = keep)
+#   max_total_gb: 0              # optional budget for idle trees; oldest evicted first
+
 # =============================================================================
 # Kanban Review Dispatch
 # =============================================================================
@@ -431,6 +440,9 @@ terminal:
   home_mode: "auto"
   docker_mount_cwd_to_workspace: false  # SECURITY: off by default. Opt in to mount the launch cwd into Docker /workspace.
   lifetime_seconds: 300
+  # Two process_manage wait/poll calls in a row with no new output on a running background process
+  # turn on notify_on_complete for it and tell the agent to stop checking; false = poll as before.
+  process_wait_auto_notify: true
   # A `hermes` / `hermes --tui` session's local tools (terminal, background processes, execute_code)
   # start with the launching shell's toolchain: PATH, an activated venv and CONDA_* / NODE_* / NVM_* /
   # PYENV_* (plus GOPATH, GOROOT, CARGO_HOME, RUSTUP_HOME, JAVA_HOME), for that session only, when

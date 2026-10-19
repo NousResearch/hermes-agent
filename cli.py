@@ -425,7 +425,6 @@ _single_query_finalize_attempted_session_ids: set[str | None] = set()
 # the handed-off session.
 _handed_off_session_ids: set[str | None] = set()
 _active_agent_ref = None  # active AIAgent, for memory-provider shutdown at exit
-_deferred_agent_startup_done = False
 # Set once the TUI app starts (focus reporting + mouse tracking on); gates the on-exit
 # terminal reset so non-TUI one-shot runs never emit codes for modes they never enabled.
 _tui_input_modes_active = False
@@ -438,23 +437,6 @@ def _mark_tui_input_modes_active() -> None:
     """Record that the TUI app started, so _run_cleanup resets input modes."""
     global _tui_input_modes_active
     _tui_input_modes_active = True
-
-
-def _prepare_deferred_agent_startup() -> None:
-    """Run Termux-deferred plugin discovery before the first real agent turn. MCP servers, shell
-    hooks and outbound webhooks belong to the gateway that runs the turn (session policy)."""
-    global _deferred_agent_startup_done
-    if _deferred_agent_startup_done:
-        return
-    if os.environ.get("HERMES_DEFER_AGENT_STARTUP") != "1":
-        return
-    _deferred_agent_startup_done = True
-    try:
-        from hermes_cli.plugins import discover_plugins
-
-        discover_plugins()
-    except Exception:
-        logger.warning("plugin discovery failed at deferred CLI startup", exc_info=True)
 
 
 _signal_watchdog_armed = False
@@ -576,6 +558,9 @@ def _cleanup_worktree(info: dict[str, str] | None = None) -> None:
     if not Path(wt_path).exists():
         return
     _active_worktree = None
+    from hermes_cli.worktree_exit import apply_exit_choice
+    if apply_exit_choice(info, _cprint):  # an exit-question answer not applied yet (normally none)
+        return
 
     if _worktree_is_dirty(wt_path, repo_root, timeout=10):
         # Uncommitted work: say so, and don't hint at `remove --force`, which would destroy it.
@@ -590,6 +575,12 @@ def _cleanup_worktree(info: dict[str, str] | None = None) -> None:
         else:
             _cprint(f"\n\033[33m{_t('cli.worktree.unpushed_keeping', path=wt_path)}\033[0m")
             print(f"  {_t('cli.worktree.clean_up_manually', path=wt_path)}")
+        return
+
+    from hermes_cli.worktree_ops import removal_blocked
+    blocked = removal_blocked(wt_path)  # an embedded repo or private ref dies with it
+    if blocked:
+        _cprint(f"\n\033[33m{_t('cli.worktree.kept_reason', path=wt_path, reason=blocked[1])}\033[0m")
         return
 
     # Release the tree's language servers while the path still exists, then unlock so `remove`
@@ -733,6 +724,14 @@ def _ensure_skill_commands() -> dict:
 
 def get_skill_commands() -> dict:
     return _ensure_skill_commands()
+
+
+def _session_skill_commands(cli) -> dict:
+    """Skill commands for ``cli``: on its gateway session the gateway's (its plugin skills included), so
+    this process scans no plugin to list them; otherwise this process's own."""
+    from hermes_cli import gateway_plugin_commands
+    found = gateway_plugin_commands.skills(cli)
+    return _ensure_skill_commands() if found is None else found
 
 
 build_skill_invocation_message = _lazy_shim("agent.skill_commands", "build_skill_invocation_message")
@@ -1059,16 +1058,17 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             config_path = Path(__file__).parent / 'cli-config.yaml'
         config_status = _t("cli.config.loaded") if config_path.exists() else _t("cli.config.not_found")
 
-        # ``api_key`` may be a callable (Entra ID bearer provider): never invoke it. Prefer the
-        # LIVE agent's key: the constructor seeds self.api_key from env before provider
-        # resolution, so on non-OpenAI providers it can be another vendor's key.
-        from agent.azure_identity_adapter import is_token_provider
+        # ``api_key`` may be a callable bearer provider (Entra ID, Vertex OAuth, key_cmd, ...):
+        # label it by its tagged source and never invoke it (that would mint a token just to mask
+        # it). Prefer the LIVE agent's key: the constructor seeds self.api_key from env before
+        # provider resolution, so on non-OpenAI providers it can be another vendor's key.
+        from agent.credential_source import credential_label
 
         display_key = self.api_key
         if self.agent is not None and getattr(self.agent, "api_key", None):
             display_key = self.agent.api_key
-        if is_token_provider(display_key):
-            api_key_display = _t("cli.config.microsoft_entra_id")
+        if label := credential_label(display_key):
+            api_key_display = label
         elif isinstance(display_key, str) and len(display_key) > 12:
             api_key_display = f"{display_key[:8]}...{display_key[-4:]}"
         else:
@@ -1170,14 +1170,6 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             from hermes_cli.observability.shared_metrics_events import record_slash_command
             record_slash_command(command=canonical, surface=self._slash_metrics_surface)
 
-        # Observer-only pre_command plugin hook (return values ignored; never raises).
-        if _cmd_def is not None:
-            from hermes_cli.plugins import fire_pre_command_hook
-            fire_pre_command_hook(
-                surface="cli", command=canonical, alias_used=_base_word, args_raw=_slash_args(cmd_original),
-                session_key=getattr(self, "session_id", None), platform="cli",
-            )
-
         # A bare `/resume` prompt is one-shot: any other command disarms it so a later
         # number isn't swallowed as a stale selection.
         # See #34584.
@@ -1189,11 +1181,22 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             self._pending_resume_sessions = None
 
         entry = self._slash_handler(canonical)
+        from hermes_cli.gateway_setting_commands import run as run_gateway_setting
+        if entry is not None and run_gateway_setting(self, canonical, cmd_original):
+            return True  # a per-session setting the gateway's handler applied (pre_command fired there)
+        # Observer-only pre_command plugin hook (return values ignored; never raises), fired by the gateway
+        # for a command this process runs (not a named refusal, not a command with no handler here).
+        from hermes_cli.gateway_cli_commands import REFUSED
+        from hermes_cli.gateway_plugin_commands import observe
+        runs = entry is not None and canonical not in REFUSED
+        if _cmd_def is not None and not observe(self, _base_word, _slash_args(cmd_original), runs=runs):
+            from hermes_cli.plugins import fire_pre_command_hook
+            fire_pre_command_hook(
+                surface="cli", command=canonical, alias_used=_base_word, args_raw=_slash_args(cmd_original),
+                session_key=getattr(self, "session_id", None), platform="cli",
+            )
         if entry is None:
             return self._process_unregistered_slash(cmd_original, cmd_lower)
-        from hermes_cli.gateway_setting_commands import run as run_gateway_setting
-        if run_gateway_setting(self, canonical, cmd_original):
-            return True  # a per-session setting the gateway's handler applied
         from hermes_cli.gateway_cli_commands import run as run_gateway_command
         if run_gateway_command(self, canonical, cmd_original):
             return True  # state the gateway session owns (checkpoints, .env, handoff)
@@ -1206,7 +1209,6 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         """Slash input with no built-in handler; precedence: quick_commands -> plugins -> bundles -> skills -> prefix expansion."""
         base_cmd = cmd_lower.split()[0]
         bare = base_cmd.lstrip("/")
-        skill_commands = _ensure_skill_commands()
         skill_bundles = get_skill_bundles()
         quick_commands = self.config.get("quick_commands", {})
         user_args = cmd_original[len(base_cmd):].strip()
@@ -1218,10 +1220,12 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         except gateway_plugin_commands.CatalogUnavailable:
             return True  # printed; an unreadable catalog never selects a skill, bundle or expansion
         gone = False
+        skill_commands = _session_skill_commands(self)  # after lookup: the catalog its miss re-read
         if plugin or (plugin is None and bare in _get_plugin_cmd_handler_names()):
             gone = self._run_plugin_slash_command(base_cmd, user_args) is gateway_plugin_commands.GONE
             if not gone:
                 return True
+            skill_commands = _session_skill_commands(self)  # the reload may have changed the skills
         if base_cmd in skill_bundles:  # also a name a gateway plugin reload just dropped (GONE)
             self._run_skill_bundle_command(base_cmd, skill_bundles[base_cmd], user_args)
         elif base_cmd in skill_commands:
@@ -1277,12 +1281,16 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         answered = gateway_plugin_commands.run(self, base_cmd.lstrip("/"), user_args)
         if answered:
             return answered  # ran beside the plugin's hooks, tools and MCP servers in the gateway, or GONE
+        from hermes_cli.plugin_command_dispatch import invoke_plugin_command
         from hermes_cli.plugins import get_plugin_command_handler, resolve_plugin_command_result
         plugin_handler = get_plugin_command_handler(base_cmd.lstrip("/"))
         if not plugin_handler:
             return
+        session_id = getattr(self, "session_id", None) or ""
         try:
-            result = resolve_plugin_command_result(plugin_handler(user_args))
+            result = resolve_plugin_command_result(invoke_plugin_command(
+                plugin_handler, user_args, source=None, session_id=session_id, session_key=session_id,
+                platform="cli"))
             if result:
                 _cprint(str(result))
         except Exception as e:
@@ -1310,6 +1318,9 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
 
     def _run_skill_slash_command(self, base_cmd: str, skill_info: dict, rest: str) -> None:
         """``/<skill> ...``; stacked ``/skill-a /skill-b do XYZ`` loads every leading skill (up to 5)."""
+        from hermes_cli import gateway_plugin_commands
+        if gateway_plugin_commands.run_skill(self, base_cmd, rest):
+            return  # the gateway session's skill, loaded there
         from agent.skill_commands import build_stacked_skill_invocation_message, split_stacked_skill_commands
 
         # Interactive surface: stacked tokens resolve against the interactive
@@ -1518,16 +1529,14 @@ def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url
         for t in toolsets:
             toolsets_list.extend([x.strip() for x in t.split(",")] if isinstance(t, str) else [str(t)])
     elif not toolsets:
-        # Coding posture inside a code workspace, else the shared platform resolver. Neither is a
-        # pick: the gateway resolves both from the session's cwd, so this list only feeds the display.
+        # Coding posture inside a code workspace, else the profile default the gateway resolves (its
+        # platform resolver reads plugin toolsets, which only the gateway loads: adopted when the session
+        # opens). Neither is a pick: this list only feeds the display.
         try:
             from agent.coding_context import coding_selection
             toolsets_list = coding_selection(platform="cli", config=CLI_CONFIG)
         except Exception:
             toolsets_list = None
-        if toolsets_list is None:
-            from hermes_cli.tools_config import _get_platform_tools
-            toolsets_list = sorted(_get_platform_tools(CLI_CONFIG, "cli"))
 
     parsed_skills = _parse_skills_argument(skills)
 
@@ -1568,6 +1577,12 @@ def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url
     if not auto_load_names:
         cli._auto_load_skills_result = ("", [], [])
     if parsed_skills or auto_load_names:
+        cli._preload_skills_requested = [*auto_load_names, *(s for s in parsed_skills if s not in auto_load_names)]
+        from hermes_cli.gateway_session_store import GatewaySessionStore
+        if isinstance(getattr(cli, "_session_db", None), GatewaySessionStore):
+            # The gateway session renders -s at creation and its agent loads skills.auto_load (plugin
+            # skills included); this process's prompt never reaches it, so nothing is loaded here.
+            return cli
         # Load the skill payloads in the background: skill_view walks the full skills
         # tree per skill (~0.5s for a large library) and the result is only consumed
         # at agent init, not by the banner. finalize_preloaded_skills() joins the
@@ -1582,7 +1597,6 @@ def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url
             except Exception as exc:  # surfaced by finalize
                 cli._preload_skills_error = exc
 
-        cli._preload_skills_requested = [*auto_load_names, *(s for s in parsed_skills if s not in auto_load_names)]
         cli._preload_skills_thread = threading.Thread(target=_load_preloaded_skills, name="skills-preload", daemon=True)
         cli._preload_skills_thread.start()
     return cli

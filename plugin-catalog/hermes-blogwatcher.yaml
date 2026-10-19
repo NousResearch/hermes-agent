@@ -29,3 +29,4 @@ capabilities:
   provides_hooks: []
   provides_middleware: []
   requires_env: []
+requires_hermes: ">=0.21.6"

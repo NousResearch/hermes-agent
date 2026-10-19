@@ -549,3 +549,19 @@ describe('hydrateFullConfig', () => {
     expect(setBell).toHaveBeenCalledWith(true)
   })
 })
+
+describe('hydrateVoiceMode (T9)', () => {
+  it("seeds the voice bit from the session's gateway /voice mode on the shared owner", async () => {
+    const request = vi.fn(async () => ({ value: 'voice_only' }))
+    const setVoiceEnabled = vi.fn()
+    const { hydrateVoiceMode } = await import('../app/useConfigSync.js')
+
+    await hydrateVoiceMode({ isCanonical: true, request } as never, setVoiceEnabled, { isCurrent: () => true, sid: 's1' })
+    expect(request).toHaveBeenCalledWith('config.get', { key: 'voice', session_id: 's1' })
+    expect(setVoiceEnabled).toHaveBeenCalledWith(true)
+
+    request.mockClear()
+    await hydrateVoiceMode({ isCanonical: false, request } as never, setVoiceEnabled, { isCurrent: () => true, sid: 's1' })
+    expect(request).not.toHaveBeenCalled()
+  })
+})

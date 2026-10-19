@@ -806,6 +806,8 @@
   "slashCmd.core.battery.statusLive",
   "slashCmd.core.battery.statusNoBattery",
   "slashCmd.core.battery.usage",
+  "slashCmd.core.busy.compressing",
+  "slashCmd.core.busy.replying",
   "slashCmd.core.clear.cancelLabel",
   "slashCmd.core.clear.confirmClear",
   "slashCmd.core.clear.confirmNew",

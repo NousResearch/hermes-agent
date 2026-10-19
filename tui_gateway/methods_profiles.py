@@ -749,8 +749,19 @@ def _configure_cfg_sections(profile_dir, params, applied) -> None:
             mcp_cfg = load_config() or {}
             applied["mcp_servers"] = _best_effort(lambda: _save_mcp_toggles(
                 mcp_cfg, params["enabled_mcp_servers"], launch_mcp, save_config)) \
-                and _landed(mcp_cfg, ("mcp_servers",), lambda v: {
-                    k: e.get("enabled") for k, e in v.items() if isinstance(e, dict)} if isinstance(v, dict) else v)
+                and _landed(mcp_cfg, ("mcp_servers",), _mcp_toggle_state)
+
+
+def _mcp_toggle_state(servers):
+    """Every toggle field ``_save_mcp_toggles`` writes, per server: ``enabled`` AND the legacy
+    ``disabled`` it removes. A lock that kept ``disabled: true`` leaves the server off for the
+    editor (and on for the runtime) although ``enabled`` landed, so it must not read as applied."""
+    if not isinstance(servers, dict):
+        return servers
+    return {k: (e.get("enabled"), e.get("disabled", _ABSENT)) for k, e in servers.items() if isinstance(e, dict)}
+
+
+_ABSENT = "<absent>"
 
 
 def _landed(cfg: dict, path: tuple, key=lambda v: v) -> bool:

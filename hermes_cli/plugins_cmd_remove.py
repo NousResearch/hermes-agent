@@ -135,6 +135,8 @@ def _remove_user_plugin(plugins_dir: Path, name: str, target: Path) -> dict[str,
     aliases = _pc()._plugin_aliases(key) | {target.name}
     _pc()._toggle_plugin_toolset(key, enable=False)
     _remove_plugin_core(target)
+    from hermes_cli.plugin_oauth import forget_plugin_grants
+    forget_plugin_grants(key)  # a later plugin installed under the same key must not inherit the sign-in
     return {"ok": True, "name": name, **_pc()._forget_plugin_config(aliases)}
 
 

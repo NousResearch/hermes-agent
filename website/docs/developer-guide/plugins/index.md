@@ -521,9 +521,16 @@ def create_document(title: str) -> dict:
 
 The Codex rules above apply, plus:
 
+- **HTTPS only.** `authorize_url`, `token_url` and every `hosts` entry are
+  `https` (there is no loopback exception); `hermes plugins validate` and
+  catalog admission fail anything else.
 - **Declared hosts only.** The bearer goes to `https://<host>` (port 443) for
-  the entry's `hosts`. Any other URL, `http`, or a URL with user info raises
-  `PermissionError` before a request is made.
+  the entry's `hosts`, matched exactly (no subdomains). Any other URL, `http`,
+  or a URL with user info raises `PermissionError` before a request is made.
+  A host outside the sign-in provider's domains is a warning reviewers check.
+- **Your own client variables.** `client_id_env` and `client_secret_env` name
+  the plugin's own variables; a variable Hermes itself uses (a provider API key,
+  a platform token) is refused, since Hermes sends these to `token_url`.
 - **The plugin's own grant.** The grant is stored under the calling plugin's
   key, so another plugin declaring the same `id` cannot use it, and the plugin's
   own entry wins over a Hermes sign-in of the same name.
@@ -538,7 +545,14 @@ The Codex rules above apply, plus:
   `unauthorized_client` and `invalid_scope` (the IdP rejected the client; the
   user has to fix it), `oauth_refresh_failed` (network or server error; try
   later). A revoked grant (`invalid_grant`) is retired: nothing goes to the
-  network until the next sign-in.
+  network until the next sign-in. Errors reach the plugin without a traceback,
+  chain or request object, so none leads back to the token, refresh token or
+  client secret.
+- **Sign-in and removal.** `hermes auth add` prints which hosts get the code,
+  the client secret and the token before opening the browser, and refuses to
+  run from the gateway, cron or an agent session. `hermes plugins remove` drops
+  the plugin's grants, and `hermes auth logout <plugin>:<id>` still works after
+  the plugin is gone.
 
 `hermes plugins validate` checks the `oauth:` block and that its client
 variables are declared, and warns when plugin code names the token URL. Like

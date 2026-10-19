@@ -239,6 +239,20 @@ def _read_grant(key: str) -> Optional[dict]:
     return dict(row) if isinstance(row, dict) else None
 
 
+def forget_plugin_grants(plugin: str) -> None:
+    """Drop every grant of plugin key *plugin* from the active profile (``hermes plugins remove``)."""
+    from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
+
+    with _auth_store_lock():
+        store = _load_auth_store()
+        section = store.get(_SECTION)
+        stale = [k for k in section if k.rsplit(":", 1)[0] == plugin] if isinstance(section, dict) else []
+        if stale:
+            for key in stale:
+                section.pop(key)
+            _save_auth_store(store)
+
+
 def _write_grant(key: str, row: Optional[dict]) -> None:
     """Replace one grant (``None`` removes it) under the auth-store lock; other sections stay as they are."""
     from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store, _store_section
@@ -384,7 +398,7 @@ def _refresh(client: OAuthClient, key: str, row: dict) -> str:
                              {"grant_type": "refresh_token", "refresh_token": refresh_token}, code="oauth_refresh_failed")
     except AuthError as exc:
         if exc.code in _OAUTH_GRANT_DEAD_CODES:
-            _write_grant(key, {**row, "dead": exc.code})
+            _write_grant(key, {"dead": exc.code, "fingerprint": row.get("fingerprint")})  # keep no dead tokens
             raise _revoked(client, key, str(exc.code)) from None
         raise
     _write_grant(key, {**row, **fields})
@@ -443,10 +457,23 @@ def _installed_client(plugin: str, oauth_id: str) -> Optional[tuple[Path, OAuthC
     return (plugin_dir, client) if client is not None else None
 
 
+def _unattended() -> bool:
+    from tools.approval_context import _is_gateway_approval_context, _no_user_can_answer
+
+    return _no_user_can_answer() or _is_gateway_approval_context()
+
+
 def _cli_add(args: Any, client: OAuthClient, key: str) -> bool:
     from hermes_cli.auth_constants import AuthError
     from hermes_cli.auth_oauth_pkce_plugin import login
 
+    if _unattended():
+        raise SystemExit(f"`hermes auth add {key}` signs you in through a browser; run it in your own terminal, "
+                         "not from a gateway, cron job or agent session.")
+    secret = " and the client secret" if client.client_secret_env else ""
+    print(f"Plugin '{key.rsplit(':', 1)[0]}' signs in to {client.id} at {urlparse(client.authorize_url).hostname}. "
+          f"The sign-in code{secret} go to {urlparse(client.token_url).hostname}; the token is sent only to "
+          f"{', '.join(client.hosts)}.")
     try:
         fields = login(key, _pkce_config(client, key, timeout=getattr(args, "timeout", None)),
                        open_browser=not getattr(args, "no_browser", False))
@@ -508,6 +535,10 @@ def handle_auth_action(action: str, args: Any, provider: str) -> Optional[bool]:
         found = _installed_client(plugin, oauth_id)
     except ValueError as exc:
         raise SystemExit(str(exc)) from None
+    if found is None and action == "logout" and _read_grant(provider) is not None:
+        _write_grant(provider, None)  # the plugin is gone; its grant still goes
+        print(f"Signed out of {provider}; the grant was removed from this profile.")
+        return True
     if found is None:
         return None
     plugin_dir, client = found
@@ -515,6 +546,6 @@ def handle_auth_action(action: str, args: Any, provider: str) -> Optional[bool]:
 
 
 __all__ = [
-    "OAuthClient", "handle_auth_action", "oauth_admission_problems", "oauth_admission_warnings",
-    "oauth_notice", "oauth_surface", "parse_oauth_clients", "plugin_key",
+    "OAuthClient", "forget_plugin_grants", "handle_auth_action", "oauth_admission_problems",
+    "oauth_admission_warnings", "oauth_notice", "oauth_surface", "parse_oauth_clients", "plugin_key",
 ]

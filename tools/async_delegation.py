@@ -18,7 +18,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, List, Optional
 
 from hermes_constants import get_hermes_home, hermes_home_key
 from tools.daemon_pool import DaemonThreadPoolExecutor
@@ -532,7 +532,7 @@ def renew_completion_delivery(delegation_id: str, claim_id: str) -> bool:
         return cur.rowcount == 1
 
 
-def renew_event_delivery(evt: Dict[str, Any], claim_id: str) -> bool:
+def renew_event_delivery(evt: dict[str, Any], claim_id: str) -> bool:
     """Renew a durable delegation claim; non-durable events need no lease."""
     if not claim_id or evt.get("type") != "async_delegation":
         return True

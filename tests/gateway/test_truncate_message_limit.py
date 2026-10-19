@@ -89,3 +89,25 @@ def test_a_split_moved_off_an_open_code_span_keeps_a_word_with_an_ampersand():
     break: ``R&D`` just before that break must stay whole."""
     chunks = truncate("x" * 15 + "R&D\n`" + "y" * 80 + "`", 60)
     assert chunks[0].rsplit(" (", 1)[0] == "x" * 15 + "R&D"
+
+
+# 85 characters: the 86-character body budget of a 100-character chunk holds the span alone, not
+# the span after ``ab``.
+@pytest.mark.parametrize("span", [
+    "`" + "c" * 83 + "`",
+    "<https://example.com/" + "p" * 58 + "|docs>",
+], ids=["code-span", "slack-link"])
+def test_a_span_that_fits_a_chunk_moves_whole_even_from_before_the_floor(span):
+    """The span opens early (before a quarter of the budget) with no space before it: the split
+    lands on its opener, not inside it, because the span alone fits the next chunk."""
+    assert len(span) == 85
+    chunks = truncate("ab" + span + "z" * 200, 100)
+    bodies = [chunk.rsplit(" (", 1)[0] for chunk in chunks]
+    assert bodies[0] == "ab"
+    assert bodies[1].startswith(span)
+
+
+def test_a_span_longer_than_a_chunk_is_still_split_inside():
+    chunks = truncate("ab`" + "c" * 300 + "`", 100)
+    assert max(len(chunk) for chunk in chunks) <= 100
+    assert "".join(chunk.rsplit(" (", 1)[0] for chunk in chunks) == "ab`" + "c" * 300 + "`"

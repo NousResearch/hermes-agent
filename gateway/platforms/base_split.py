@@ -25,13 +25,22 @@ def _indicator(index: int, count: int) -> str:
     return f" ({index}/{count})"
 
 
-def _unbroken_split(candidate: str, hard_cut: bool, floor: int) -> int:
-    """``len(candidate)``, or an earlier offset (above ``floor``) so the chunk does not end inside
-    an inline code span, an HTML entity (Slack mrkdwn and Telegram HTML escape ``& < >``) or an
-    open ``<...>`` span (a Slack link or mention, an HTML tag): its tail would render broken.
-    ``hard_cut`` is a cut between two non-space characters; an entity holds no whitespace, so a
-    natural break can never be inside one."""
-    split_at = len(candidate)
+def _fits_whole(remaining: str, start: int, closer: str, cp_limit: int) -> bool:
+    """The span opening at ``start`` closes, on its line, within one chunk's ``cp_limit``."""
+    end = remaining.find(closer, start + 1, start + cp_limit)
+    return end != -1 and "\n" not in remaining[start:end]
+
+
+def _unbroken_split(remaining: str, split_at: int, hard_cut: bool, cp_limit: int) -> int:
+    """``split_at``, or an earlier offset so the chunk does not end inside an inline code span, an
+    HTML entity (Slack mrkdwn and Telegram HTML escape ``& < >``) or an open ``<...>`` span (a
+    Slack link or mention, an HTML tag): its tail would render broken. A span that fits a chunk on
+    its own moves whole to the next one however early it opens; a longer span keeps its tail
+    only when a break above ``floor`` (a quarter of the budget) precedes it, else it is split
+    inside. ``hard_cut`` is a cut between two non-space characters; an entity holds no
+    whitespace, so a natural break can never be inside one."""
+    candidate = remaining[:split_at]
+    floor = cp_limit // 4
     backtick_count = candidate.count("`") - candidate.count("\\`")
     if backtick_count % 2 == 1:
         last_bt = candidate.rfind("`")
@@ -41,6 +50,8 @@ def _unbroken_split(candidate: str, hard_cut: bool, floor: int) -> int:
             safe = max(candidate.rfind(" ", 0, last_bt), candidate.rfind("\n", 0, last_bt))
             if safe > floor:
                 split_at, hard_cut = safe, False  # now a natural break
+            elif _fits_whole(remaining, last_bt, "`", cp_limit):
+                split_at, hard_cut = last_bt, False  # a span boundary is a natural break too
     amp = candidate.rfind("&", 0, split_at)
     entity_head = candidate[amp + 1:split_at].lstrip("#")
     # An empty head is a cut right after the ``&``: the next chunk would open on ``amp;``.
@@ -48,8 +59,9 @@ def _unbroken_split(candidate: str, hard_cut: bool, floor: int) -> int:
             and (not entity_head or entity_head.isalnum())):
         split_at = amp
     lt = candidate.rfind("<", 0, split_at)
-    if (lt > floor and _SPAN_OPEN.match(candidate, lt) and candidate.rfind(">", 0, split_at) < lt
-            and "\n" not in candidate[lt:split_at]):
+    if (lt > 0 and _SPAN_OPEN.match(candidate, lt) and candidate.rfind(">", 0, split_at) < lt
+            and "\n" not in candidate[lt:split_at]
+            and (lt > floor or _fits_whole(remaining, lt, ">", cp_limit))):
         split_at = lt
     return split_at
 
@@ -65,7 +77,7 @@ def _split_point(remaining: str, cp_limit: int) -> int:
         # the utf16 budget) would never shrink ``remaining``; overshooting beats a hang.
         split_at = max(1, cp_limit)
     hard_cut = split_at < len(remaining) and not remaining[split_at].isspace()
-    return max(1, _unbroken_split(remaining[:split_at], hard_cut, cp_limit // 4))
+    return max(1, _unbroken_split(remaining, split_at, hard_cut, cp_limit))
 
 
 def _split(content: str, max_length: int, _len: Callable[[str], int], reserve: int) -> list[str]:

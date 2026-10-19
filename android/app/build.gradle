@@ -1,6 +1,7 @@
 plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
+    id 'com.chaquo.python' version '12.0.1'
 }
 
 android {
@@ -60,23 +61,20 @@ dependencies {
     implementation 'com.google.android.material:material:1.11.0'
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
     
-    // For Python execution
-    implementation 'com.chaquo.python:android:12.0.1'
-    
+    // Chaquopy will be applied via plugin, no need for explicit dependency
     testImplementation 'junit:junit:4.13.2'
     androidTestImplementation 'androidx.test.ext:junit:1.1.5'
     androidTestImplementation 'androidx.test.espresso:espresso-core:3.5.1'
 }
 
 // Configuration for Chaquopy (Python for Android)
-apply plugin: 'com.chaquo.python'
-
 android {
     defaultConfig {
         python {
             version "3.10"
             pip {
-                install "hermes-agent" --index-url https://hermes-assets.nousresearch.com/python
+                // Install hermes-agent from PyPI
+                install "hermes-agent"
             }
         }
     }

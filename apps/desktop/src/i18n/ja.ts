@@ -1,7 +1,6 @@
 import { billingRiskJa as billingRiskCopy } from './billing-risk-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introJa } from './intro-ja'
-import { jaAuxTasks } from './ja_aux_tasks'
 import { jaBoot } from './ja_boot'
 import { jaClarify } from './ja_clarify'
 import { jaConnectors } from './ja_connectors'
@@ -2841,7 +2840,6 @@ export const jaOverrides = {
   },
   settings: {
     ...jaSettings,
-    model: { ...jaSettings.model, tasks: jaAuxTasks },
     localModels: jaLocalModels
   },
   billingRisk: billingRiskCopy,

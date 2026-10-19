@@ -15,6 +15,7 @@ from agent.message_metadata import append_message
 from agent.reasoning_promotion import answer_in_reasoning_capability
 from agent.repetition_guard import STOP_PATH_MIN_CHARS, is_runaway_repetition
 from agent.turn_failure_copy import stamp_failure
+from agent.turn_followup_promise import UNBACKED_PROMISE_NUDGE, log_continuation, unbacked_followup_promise
 from agent.turn_empty_response import recover_empty_response
 from agent.turn_stop_gates import apply_stop_gates
 from agent.turn_truncation import partial_result, repetition_copy
@@ -197,11 +198,19 @@ def finish_text_response(
         and _tool_rows > 0
         and looks_like_degenerate_final(_stall_text, user_message=user_message)
     )
-    # Precedence: an announced next action outranks the fragment shape; the codex ack is last.
+    # Unbacked follow-up promise (stall-guard family, same budget): the reply promises to come back later
+    # but nothing will run the agent again after this turn.
+    _promise = (
+        bool(getattr(agent, "_stall_guards", True)) and agent.valid_tool_names and codex_ack_continuations < 2
+        and unbacked_followup_promise(agent, _stall_text, messages)
+    )
+    # Precedence: an announced next action outranks the fragment shape and an unbacked promise; the codex ack is last.
     if _stall_continue_intent:
         _continuation_kind = "stall"
     elif _degenerate_final:
         _continuation_kind = "degenerate"
+    elif _promise:
+        _continuation_kind = "promise"
     elif (
         _ack_mode != "off"
         and agent.valid_tool_names
@@ -215,18 +224,8 @@ def finish_text_response(
     else:
         _continuation_kind = None
     if _continuation_kind:
-        if _continuation_kind == "stall":
-            logger.info(
-                "Stall guard: turn ending on trailing continue-"
-                "intent with no tool calls — re-prompting to act "
-                "(%d/2)", codex_ack_continuations + 1,
-            )
-        elif _continuation_kind == "degenerate":
-            logger.warning(
-                "Degenerate final: %d-char fragment %r ended the turn after %d tool result(s) — "
-                "re-prompting (%d/2)", len(_stall_text), _stall_text[:40], _tool_rows,
-                codex_ack_continuations + 1,
-            )
+        log_continuation(_continuation_kind, codex_ack_continuations + 1, text=_stall_text, tool_rows=_tool_rows,
+                         promise=_promise)
         codex_ack_continuations += 1
         interim_msg = agent._build_assistant_message(assistant_message, "incomplete")
         if _promoted:
@@ -235,13 +234,10 @@ def finish_text_response(
             interim_msg["api_content"] = final_response
         append_message(messages, interim_msg)
         agent._emit_interim_assistant_message(interim_msg)
-        append_message(messages, {
-            "role": "user",
-            "content": (
-                _DEGENERATE_FINAL_NUDGE if _continuation_kind == "degenerate"
-                else _CODEX_ACK_CONTINUATION_NUDGE
-            ),
-        })
+        append_message(messages, {"role": "user", "content": {
+            "degenerate": _DEGENERATE_FINAL_NUDGE,
+            "promise": UNBACKED_PROMISE_NUDGE.format(phrase=_promise),
+        }.get(_continuation_kind, _CODEX_ACK_CONTINUATION_NUDGE)})
         agent._session_messages = messages
         # An acknowledgment is non-final: its text must not suppress iteration-limit
         # summarization if the continuation exhausts budget.

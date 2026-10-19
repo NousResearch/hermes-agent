@@ -1,0 +1,193 @@
+"""Unbacked follow-up promise guard.
+
+The agent is inert between turns. A final reply that promises a later follow-up ("I'll check again in ~10
+minutes") with nothing armed to wake it — no notify-on-complete background process, no background delegation, no
+cron job, /loop or /heartbeat — is never kept; the user finds out only by asking. The guard re-prompts once on the
+shared continuation budget so the model does the work now, arms a wake source, or drops the promise.
+"""
+
+from __future__ import annotations
+
+import json
+import time
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from agent.turn_followup_promise import has_armed_wake_source, unbacked_promise_phrase
+
+
+class TestPromiseDetector:
+    @pytest.mark.parametrize("text", [
+        # Real reply tails that were never followed up.
+        "Not stalled, slow. It is writing files locally first. I'll check again in ~10 minutes; if the "
+        "transcript hasn't advanced by then I'll steer it.",
+        "It should finish in time: the 17:47 sweep is well inside the limit. I'll check on it after the sweep.",
+        "Nothing merged; the live host is untouched. I'll ping you when W1 completes or blocks.",
+        "A background watcher is following CI and the review bot; I'll report back when it finishes.",
+        "Both reviews are running. I will report back with the merged, verified findings once both reviews return.",
+        "Kicked off the build. I'll let you know when it's done.",
+    ])
+    def test_flags_deferred_followups(self, text):
+        assert unbacked_promise_phrase(text)
+
+    @pytest.mark.parametrize("text", [
+        # Waits on the user, who will be writing anyway.
+        "Send the Discord DM now. Tell me when it's sent and I'll poll the control plane for the wake signature.",
+        "Tap that, then I'll re-check.",
+        "Tell me when you've finished the authorization and I'll re-check LIST_TEAMS.",
+        "If you can get a capture, I'll finish the updater properly.",
+        # Offers and present-tense work, not deferred promises.
+        "Want me to watch the checks and report back when they settle?",
+        "The tests pass and the PR is merged.",
+        "I'll report back the numbers below: 3 failures, all flaky.",
+        # A promise mid-reply, followed by the real result.
+        "I'll check back when it finishes. It finished: exit 0, 412 tests passed. Here is the summary of what "
+        "changed in the build, the cache behaviour and the lint baseline, with no further action needed from you. "
+        "The release notes are attached, the changelog is updated, and the tag is pushed to the remote. Nothing "
+        "else is pending on this branch and the worktree has been removed. Everything is green across all lanes.",
+        "",
+    ])
+    def test_ignores_non_promises(self, text):
+        assert not unbacked_promise_phrase(text)
+
+
+def _agent(**kw):
+    return SimpleNamespace(session_id="sess-1", platform="desktop", _delegate_depth=0,
+                           _process_owner_task_ids={"task-1"}, **kw)
+
+
+class TestWakeSources:
+    @pytest.fixture()
+    def registry(self):
+        from tools.process_registry import process_registry
+        saved = dict(process_registry._running)
+        process_registry._running.clear()
+        yield process_registry
+        process_registry._running.clear()
+        process_registry._running.update(saved)
+
+    def _spawn(self, registry, owner="task-1", **kw):
+        from tools.process_registry import ProcessSession
+        proc = ProcessSession(id=f"proc_{len(registry._running)}", command="ci-watch", owner_task_id=owner,
+                              started_at=time.time(), **kw)
+        registry._running[proc.id] = proc
+
+    def test_nothing_armed(self, registry):
+        assert not has_armed_wake_source(_agent(), [])
+
+    @pytest.mark.parametrize("notify", [{"notify_on_complete": True}, {"watch_patterns": ["VERDICT"]}])
+    def test_notifying_background_process_counts(self, registry, notify):
+        self._spawn(registry, **notify)
+        assert has_armed_wake_source(_agent(), [])
+
+    def test_silent_or_foreign_process_does_not_count(self, registry):
+        self._spawn(registry)  # no notify: it will never wake the agent
+        self._spawn(registry, owner="another-task", notify_on_complete=True)
+        assert not has_armed_wake_source(_agent(), [])
+
+    def test_live_background_delegation_counts(self, registry):
+        with patch("tools.async_delegation.has_live_for_session", return_value=True) as live:
+            assert has_armed_wake_source(_agent(), [])
+        live.assert_called_once_with(parent_session_id="sess-1")
+
+    def test_cron_scheduled_this_turn_counts(self, registry):
+        call = {"function": {"name": "tool_call", "arguments": json.dumps(
+            {"calls": [{"name": "cronjob_manage", "arguments": {"action": "create"}}]})}}
+        messages = [{"role": "user", "content": "x"}, {"role": "assistant", "tool_calls": [call]},
+                    {"role": "tool", "content": "ok"}]
+        assert has_armed_wake_source(_agent(), messages)
+
+    def test_cron_from_an_earlier_turn_does_not_count(self, registry):
+        call = {"function": {"name": "cronjob_manage", "arguments": "{}"}}
+        messages = [{"role": "assistant", "tool_calls": [call]}, {"role": "tool", "content": "ok"},
+                    {"role": "user", "content": "now what"}]
+        assert not has_armed_wake_source(_agent(), messages)
+
+    def test_unreadable_source_fails_open(self, registry):
+        with patch("tools.async_delegation.has_live_for_session", side_effect=RuntimeError("registry down")):
+            assert has_armed_wake_source(_agent(), [])
+
+
+# ── through the real turn loop ─────────────────────────────────────────────
+
+PROMISE = "The review is running in the background. I'll report back when it finishes."
+
+
+@pytest.fixture()
+def loop_agent():
+    from run_agent import AIAgent
+    with (
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
+    ):
+        agent = AIAgent(api_key="test-key-1234567890", base_url="https://openrouter.ai/api/v1", quiet_mode=True,
+                        skip_context_files=True, skip_memory=True, platform="desktop")
+    agent.client = MagicMock()
+    agent._cached_system_prompt = "You are helpful."
+    agent._use_prompt_caching = False
+    agent.tool_delay = 0
+    agent.compression_enabled = False
+    agent.save_trajectories = False
+    agent.valid_tool_names = {"terminal"}
+    return agent
+
+
+def _run(agent, stages):
+    from tests.agent.test_run_agent import _mock_response
+    agent.client.chat.completions.create.side_effect = [_mock_response(content=t, finish_reason="stop")
+                                                        for t in stages]
+    with (
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        return agent.run_conversation("start the review")
+
+
+def _last_user_row_sent(agent, call_index):
+    kwargs = agent.client.chat.completions.create.call_args_list[call_index].kwargs
+    return [m["content"] for m in kwargs["messages"] if m.get("role") == "user"][-1]
+
+
+def test_unbacked_promise_is_reprompted_once(loop_agent):
+    result = _run(loop_agent, [PROMISE, "Review started; ask me for the result when you want it."])
+
+    assert loop_agent.client.chat.completions.create.call_count == 2
+    nudge = _last_user_row_sent(loop_agent, 1)
+    assert "nothing will run you again" in nudge and "I'll report back when it finishes" in nudge
+    assert result["final_response"] == "Review started; ask me for the result when you want it."
+
+
+def test_persistent_promise_is_bounded(loop_agent):
+    """The shared continuation budget caps it: a model that keeps promising still ends the turn."""
+    result = _run(loop_agent, [PROMISE, PROMISE, PROMISE])
+
+    assert loop_agent.client.chat.completions.create.call_count == 3
+    assert result["final_response"] == PROMISE
+
+
+def test_armed_wake_source_lets_the_promise_stand(loop_agent):
+    with patch("agent.turn_followup_promise.has_armed_wake_source", return_value=True):
+        result = _run(loop_agent, [PROMISE])
+
+    assert loop_agent.client.chat.completions.create.call_count == 1
+    assert result["final_response"] == PROMISE
+
+
+def test_stall_guards_off_disables_it(loop_agent):
+    loop_agent._stall_guards = False
+    _run(loop_agent, [PROMISE])
+
+    assert loop_agent.client.chat.completions.create.call_count == 1
+
+
+@pytest.mark.parametrize("attrs", [{"platform": "cron"}, {"_delegate_depth": 1}])
+def test_cron_runs_and_delegated_children_are_exempt(loop_agent, attrs):
+    for name, value in attrs.items():
+        setattr(loop_agent, name, value)
+    _run(loop_agent, [PROMISE])
+
+    assert loop_agent.client.chat.completions.create.call_count == 1

@@ -1562,8 +1562,8 @@ platform_toolsets:
 #   timeout: per-tool-call timeout in seconds (default: 300, or timeouts.mcp.tool_call
 #     when that is set); connecting is bounded by connect_timeout
 #   connect_timeout: connection timeout in seconds (default: 60): the initial connect
-#     and MCP initialize handshake, each reconnect, and the HTTP client's connect
-#     phase for HTTP and SSE servers
+#     and MCP initialize handshake, each reconnect, and the HTTP client's connect,
+#     write, and pool waits for HTTP and SSE servers (reads use 300 seconds)
 #   keepalive_interval: liveness ping cadence in seconds (floored at 5s).
 #     HTTP servers default to 180s; lower it below the server's session TTL for
 #     servers that expire idle sessions quickly (e.g. Unreal Engine editor MCP,

@@ -93,7 +93,7 @@ let
       connect_timeout = mkOption {
         type = types.nullOr types.int;
         default = null;
-        description = "Initial connection timeout in seconds (default: 60).";
+        description = "Connection timeout in seconds (default: 60): the initial connect and MCP initialize handshake, each reconnect, and the HTTP client's connect, write, and pool waits for HTTP and SSE servers (reads use 300 seconds).";
       };
 
       # Tool filtering

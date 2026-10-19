@@ -4,6 +4,7 @@
 (no I/O).
 """
 
+import contextlib
 import os
 import posixpath
 import re
@@ -373,6 +374,15 @@ class SearchMixin:
                 start_new_session=True)
         except OSError as exc:
             return ExecuteResult(stdout=f"rg: {exc}", exit_code=2)
+
+        # The private session's group can disappear between poll() and cleanup.
+        # Save its identity now, just as LocalEnvironment does, so the shared
+        # teardown can handle a vanished leader without losing drained output.
+        proc._hermes_pgid = proc.pid
+        with contextlib.suppress(ProcessLookupError):
+            proc._hermes_pgid = os.getpgid(proc.pid)
+            from gateway.status import get_process_start_time
+            proc._hermes_pgid_start = get_process_start_time(proc.pid)
 
         # Drain on a thread so a silent rg (huge tree, no hits yet) cannot pin the
         # caller past the deadline or past a /stop; the waiter below owns both.

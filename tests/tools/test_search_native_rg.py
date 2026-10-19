@@ -140,3 +140,24 @@ def test_local_search_runs_the_pinned_ripgrep_not_the_first_on_path(_local_env, 
                         lambda name: InstalledPackage(pinned.parent, "15", pinned) if name == "ripgrep" else None)
     ops = ShellFileOperations(_local_env, cwd=str(tmp_path))
     assert ops._resolve_command("rg") == str(pinned).replace("\\", "/")
+
+
+def test_native_search_keeps_output_when_child_exits_after_poll(tree, ops_factory, monkeypatch):
+    """A stale alive observation must not turn an already drained result into ESRCH."""
+    import shlex
+    import subprocess
+    import sys
+
+    real_popen = subprocess.Popen
+
+    class ExitsAfterPoll(real_popen):
+        def poll(self):
+            # Force the race deterministically: the caller observed alive, but the child
+            # has exited and been reaped before its process group is looked up.
+            self.wait(timeout=5)
+
+    monkeypatch.setattr(subprocess, "Popen", ExitsAfterPoll)
+    result = ops_factory(tree, [])._run_rg_native(
+        [shlex.quote(sys.executable), "-c", shlex.quote("print('needle')")], 10, timeout=5)
+    assert result.exit_code == 0
+    assert result.stdout == "needle\n"

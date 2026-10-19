@@ -8,6 +8,7 @@ import pytest
 from tools.bot_desktop import resources, runtime
 
 
+@pytest.mark.platforms("linux")
 def test_start_refuses_and_status_explains_when_memory_is_short(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path / "bd")
     monkeypatch.setattr(runtime, "missing_binaries", list)
@@ -23,6 +24,12 @@ def test_start_refuses_and_status_explains_when_memory_is_short(tmp_path, monkey
     with pytest.raises(RuntimeError, match="Not enough free memory"):
         runtime.start()
     assert spawned == [], "the launcher must not be spawned on a host that cannot hold it"
+
+
+def test_low_memory_blocker_reports_capacity_on_every_host():
+    blocker = resources.memory_blocker(resources.MemoryInfo(available_mb=900, limit_mb=4096), need=1536)
+    assert blocker and "Not enough free memory" in blocker
+    assert "900 MB" in blocker and "4096 MB" in blocker and "1536 MB" in blocker
 
 
 @pytest.mark.parametrize("info", [

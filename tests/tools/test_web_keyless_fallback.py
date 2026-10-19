@@ -291,7 +291,8 @@ class TestProviderRouting:
     def test_keyless_disabled_falls_through_to_key_error(self, monkeypatch):
         monkeypatch.setattr(registry, "_keyless_tier_enabled", lambda: False)
         provider = ParallelWebSearchProvider()
-        out = provider.search("q")
+        with patch("pm.ensure_import", side_effect=AssertionError("no SDK install without a key")):
+            out = provider.search("q")
         assert out["success"] is False
         assert "PARALLEL_API_KEY" in out["error"]
 
@@ -320,7 +321,8 @@ class TestProviderRouting:
     def test_tier_paid_forces_keyed_without_key(self, monkeypatch):
         monkeypatch.setattr(keyless_mcp, "provider_tier", lambda name: "paid")
         provider = ParallelWebSearchProvider()
-        with patch.object(keyless_mcp, "parallel_search_keyless") as keyless:
+        with patch.object(keyless_mcp, "parallel_search_keyless") as keyless, \
+                patch("pm.ensure_import", side_effect=AssertionError("no SDK install without a key")):
             out = provider.search("q")
         keyless.assert_not_called()
         assert out["success"] is False
